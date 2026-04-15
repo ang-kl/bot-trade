@@ -1,18 +1,51 @@
 @import "tailwindcss";
 
 /*
- * Accessibility tokens (user is red/green colour-blind).
- * Blue  = #2563eb → up / long / positive / BUY
- * Red   = #dc2626 → down / short / negative / SELL
- * NO GREEN anywhere. CI gate scripts/check-no-green.sh enforces.
+ * Design tokens — driven by data-theme on <html>.
+ *
+ * Accessibility invariant (user is red/green colour-blind):
+ *   Blue = up / long / positive / BUY
+ *   Red  = down / short / negative / SELL
+ * NO GREEN anywhere. CI gate: scripts/check-no-green.sh.
+ *
+ * Four themes: light (default), dark, sepia, system (resolved at runtime).
  */
-:root {
-  --color-up: #2563eb;
-  --color-down: #dc2626;
-  --color-bg: #ffffff;
-  --color-fg: #171717;
-  --color-border: #e5e5e5;
-  --color-muted: #737373;
+
+:root,
+[data-theme="light"] {
+  --color-up:         #2563eb;
+  --color-down:       #dc2626;
+  --color-bg:         #ffffff;
+  --color-surface:    #f7f7f7;
+  --color-fg:         #171717;
+  --color-fg-subtle:  #525252;
+  --color-border:     #e5e5e5;
+  --color-muted:      #737373;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --color-up:         #3b82f6;
+  --color-down:       #ef4444;
+  --color-bg:         #0a0a0a;
+  --color-surface:    #171717;
+  --color-fg:         #fafafa;
+  --color-fg-subtle:  #a3a3a3;
+  --color-border:     #262626;
+  --color-muted:      #737373;
+  color-scheme: dark;
+}
+
+[data-theme="sepia"] {
+  --color-up:         #1d4ed8;
+  --color-down:       #b91c1c;
+  --color-bg:         #f4ecd8;
+  --color-surface:    #ebe2c4;
+  --color-fg:         #44382a;
+  --color-fg-subtle:  #6b5a45;
+  --color-border:     #d4c4a0;
+  --color-muted:      #8a7860;
+  color-scheme: light;
 }
 
 html, body, #root {
