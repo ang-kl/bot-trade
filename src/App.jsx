@@ -3,6 +3,7 @@ import Feed from './pages/Feed.jsx'
 import Settings from './pages/Settings.jsx'
 import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
+import LinkUp from './pages/LinkUp.jsx'
 import Button from './components/common/Button.jsx'
 import { useTheme, THEMES } from './lib/theme.js'
 
@@ -65,6 +66,7 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/vault" element={<Vault />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/link-up" element={<LinkUp />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </main>
