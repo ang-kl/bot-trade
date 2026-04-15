@@ -22,7 +22,8 @@ export default function WatchlistTab() {
     <Card>
       <h2 className="font-semibold mb-2">Watchlist</h2>
       <p className="text-sm text-[var(--color-fg-subtle)] mb-3">
-        Symbols the agent monitors. Use arrows to reorder, and toggle which sub-agents run for each row.
+        Ported from v1 as a default pool — every row starts disabled so you (or the agent) pick the handful
+        worth trading today. Use arrows to reorder, and toggle which sub-agents run for each row.
       </p>
       <div className="flex gap-2 mb-4">
         <Input
@@ -47,7 +48,21 @@ export default function WatchlistTab() {
                   onChange={() => dispatch({ type: 'WATCHLIST_TOGGLE_ENABLED', symbol: w.symbol })}
                   aria-label={`${w.symbol} enabled`}
                 />
-                <span className="text-sm font-medium flex-1">{w.symbol}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm font-medium">{w.symbol}</span>
+                    {w.label && (
+                      <span className="text-xs text-[var(--color-fg-subtle)] truncate">
+                        {w.label}
+                      </span>
+                    )}
+                  </div>
+                  {w.category && (
+                    <span className="inline-block mt-0.5 px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded border border-[var(--color-border)] text-[var(--color-fg-subtle)]">
+                      {w.category}
+                    </span>
+                  )}
+                </div>
                 <Button
                   size="sm"
                   variant="ghost"

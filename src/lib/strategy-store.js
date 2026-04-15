@@ -12,6 +12,72 @@ export const SUB_AGENTS = ['news', 'technical', 'macro', 'history']
 
 export const DEFAULT_AGENTS = { news: true, technical: true, macro: true, history: true }
 
+// Category buckets mirrored from the v1 abot project so the default seed
+// renders in the same order the user already knows.
+export const WATCHLIST_CATEGORIES = [
+  'Futures',
+  'Metals',
+  'Indices',
+  'Stocks',
+  'Currencies',
+  'Crypto',
+]
+
+// Default 39-entry watchlist ported from v1. Every row lands disabled so the
+// user (or the agent) explicitly picks which handful to trade each session.
+function seed(symbol, label, category) {
+  return { symbol, label, category, enabled: false, agents: { ...DEFAULT_AGENTS } }
+}
+
+export const DEFAULT_WATCHLIST = [
+  // Futures
+  seed('NATGAS', 'Natural Gas', 'Futures'),
+  seed('COCOA', 'Cocoa Cash', 'Futures'),
+  seed('ALUMINIUM', 'Aluminium', 'Futures'),
+  seed('STLD', 'Steel Dynamics', 'Futures'),
+  seed('COFFEE', 'Coffee Cash', 'Futures'),
+  seed('COPPER', 'CFDs on Copper', 'Futures'),
+  seed('SOYBEANS', 'Soybeans Cash', 'Futures'),
+  seed('SPOTCRUDE', 'WTI Cash', 'Futures'),
+  // Metals
+  seed('XAGUSD', 'Silver / USD', 'Metals'),
+  seed('XAUUSD', 'Gold Spot / USD', 'Metals'),
+  seed('XPTUSD', 'Platinum / USD', 'Metals'),
+  seed('USDX', 'US Dollar Index', 'Metals'),
+  // Indices
+  seed('VIX', 'Volatility S&P 500', 'Indices'),
+  seed('JPN225', 'Nikkei 225', 'Indices'),
+  seed('US500', 'US 500 Index', 'Indices'),
+  seed('US30', 'Dow Jones Index', 'Indices'),
+  seed('NAS100', 'NASDAQ 100', 'Indices'),
+  seed('GER40', 'German 40 Index', 'Indices'),
+  seed('SDY', 'SPDR S&P Dividend', 'Indices'),
+  // Stocks
+  seed('MSFT', 'Microsoft Corp.', 'Stocks'),
+  seed('NVDA', 'NVIDIA Corp', 'Stocks'),
+  seed('AAPL', 'Apple Inc.', 'Stocks'),
+  seed('GOOGL', 'Alphabet Inc', 'Stocks'),
+  seed('CRWD', 'CrowdStrike', 'Stocks'),
+  seed('WDC', 'Western Digital', 'Stocks'),
+  seed('WST', 'West Pharmaceutical', 'Stocks'),
+  seed('GLW', 'Corning Inc.', 'Stocks'),
+  seed('AVY', 'Avery Dennison', 'Stocks'),
+  seed('GEV', 'GE Vernova', 'Stocks'),
+  seed('MU', 'Micron Technology', 'Stocks'),
+  seed('TSLA', 'Tesla Inc', 'Stocks'),
+  seed('COPX', 'Global X Copper Miners', 'Stocks'),
+  seed('VRTX', 'Vertex Pharmaceuticals', 'Stocks'),
+  seed('AMAT', 'Applied Materials', 'Stocks'),
+  // Currencies
+  seed('EURUSD', 'Euro / USD', 'Currencies'),
+  seed('USDJPY', 'USD / JPY', 'Currencies'),
+  seed('AUDJPY', 'AUD / JPY', 'Currencies'),
+  // Crypto (CN50 lives here in v1's grouping)
+  seed('BTCUSD', 'Bitcoin / USD', 'Crypto'),
+  seed('ETHUSD', 'Ethereum / USD', 'Crypto'),
+  seed('CN50', 'China 50 Index', 'Crypto'),
+]
+
 export const INITIAL_STATE = {
   ctrader: {
     linkedAccountId: null,
@@ -19,7 +85,7 @@ export const INITIAL_STATE = {
     refreshToken: '',
     accounts: [],
   },
-  watchlist: [],
+  watchlist: DEFAULT_WATCHLIST,
   news: {
     briefingWindow: 'morning',
     sources: ['osinet'],
@@ -34,6 +100,10 @@ export const INITIAL_STATE = {
     maxTradesPerDay: 10,
   },
 }
+
+// A variant of INITIAL_STATE with no seeded watchlist — used by tests that
+// drive the watchlist reducer from a clean slate.
+export const EMPTY_STATE = { ...INITIAL_STATE, watchlist: [] }
 
 function clampNum(v, lo, hi) {
   const n = Number(v)
@@ -65,6 +135,8 @@ export function reducer(state, action) {
       const sym = normalizeSymbol(action.symbol)
       if (!sym || state.watchlist.some(w => w.symbol === sym)) return state
       const row = { symbol: sym, enabled: true, agents: { ...DEFAULT_AGENTS } }
+      if (typeof action.label === 'string' && action.label) row.label = action.label
+      if (typeof action.category === 'string' && action.category) row.category = action.category
       return { ...state, watchlist: [...state.watchlist, row] }
     }
     case 'WATCHLIST_REMOVE': {
@@ -141,11 +213,16 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
   const watchlist = Array.isArray(raw.watchlist)
     ? raw.watchlist
         .filter(w => w && typeof w.symbol === 'string')
-        .map(w => ({
-          symbol: normalizeSymbol(w.symbol),
-          enabled: !!w.enabled,
-          agents: { ...DEFAULT_AGENTS, ...(w.agents && typeof w.agents === 'object' ? w.agents : {}) },
-        }))
+        .map(w => {
+          const row = {
+            symbol: normalizeSymbol(w.symbol),
+            enabled: !!w.enabled,
+            agents: { ...DEFAULT_AGENTS, ...(w.agents && typeof w.agents === 'object' ? w.agents : {}) },
+          }
+          if (typeof w.label === 'string' && w.label) row.label = w.label
+          if (typeof w.category === 'string' && WATCHLIST_CATEGORIES.includes(w.category)) row.category = w.category
+          return row
+        })
     : []
   const news = { ...fallback.news, ...(raw.news && typeof raw.news === 'object' ? raw.news : {}) }
   if (!BRIEFING_WINDOWS.includes(news.briefingWindow)) news.briefingWindow = fallback.news.briefingWindow

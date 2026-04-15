@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   INITIAL_STATE,
+  EMPTY_STATE,
+  DEFAULT_WATCHLIST,
+  WATCHLIST_CATEGORIES,
   STORAGE_KEY,
   BRIEFING_WINDOWS,
   SOURCE_OPTIONS,
@@ -49,6 +52,36 @@ describe('reducer: hydrate + unknown', () => {
   })
 })
 
+describe('default watchlist seed', () => {
+  it('ships more than 30 rows', () => {
+    expect(DEFAULT_WATCHLIST.length).toBeGreaterThan(30)
+  })
+  it('seeds every row disabled so the user/agent picks what to trade', () => {
+    expect(DEFAULT_WATCHLIST.every(w => w.enabled === false)).toBe(true)
+  })
+  it('every seed row uses a known category', () => {
+    for (const w of DEFAULT_WATCHLIST) {
+      expect(WATCHLIST_CATEGORIES).toContain(w.category)
+    }
+  })
+  it('every seed row has a human-readable label', () => {
+    for (const w of DEFAULT_WATCHLIST) {
+      expect(typeof w.label).toBe('string')
+      expect(w.label.length).toBeGreaterThan(0)
+    }
+  })
+  it('INITIAL_STATE points at the default watchlist', () => {
+    expect(INITIAL_STATE.watchlist).toBe(DEFAULT_WATCHLIST)
+  })
+  it('EMPTY_STATE has an empty watchlist', () => {
+    expect(EMPTY_STATE.watchlist).toEqual([])
+  })
+  it('seed includes the canonical FX + crypto anchors', () => {
+    const symbols = DEFAULT_WATCHLIST.map(w => w.symbol)
+    expect(symbols).toEqual(expect.arrayContaining(['EURUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NAS100']))
+  })
+})
+
 describe('reducer: cTrader', () => {
   it('sets access + refresh tokens', () => {
     const s = reducer(INITIAL_STATE, { type: 'CTRADER_SET_TOKENS', accessToken: 'abc', refreshToken: 'def' })
@@ -76,11 +109,15 @@ describe('reducer: cTrader', () => {
 })
 
 describe('reducer: watchlist', () => {
-  const seed = (...symbols) => symbols.reduce((s, sym) => reducer(s, { type: 'WATCHLIST_ADD', symbol: sym }), INITIAL_STATE)
+  const seed = (...symbols) => symbols.reduce((s, sym) => reducer(s, { type: 'WATCHLIST_ADD', symbol: sym }), EMPTY_STATE)
 
   it('adds a symbol with default agents', () => {
-    const s = reducer(INITIAL_STATE, { type: 'WATCHLIST_ADD', symbol: 'eurusd' })
+    const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'eurusd' })
     expect(s.watchlist).toEqual([{ symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS } }])
+  })
+  it('stores optional label + category when provided', () => {
+    const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'NATGAS', label: 'Natural Gas', category: 'Futures' })
+    expect(s.watchlist[0]).toMatchObject({ symbol: 'NATGAS', label: 'Natural Gas', category: 'Futures' })
   })
   it('rejects duplicates case-insensitively', () => {
     const s = seed('EURUSD')
@@ -88,7 +125,7 @@ describe('reducer: watchlist', () => {
     expect(after.watchlist).toHaveLength(1)
   })
   it('ignores blank symbols', () => {
-    expect(reducer(INITIAL_STATE, { type: 'WATCHLIST_ADD', symbol: '   ' }).watchlist).toHaveLength(0)
+    expect(reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: '   ' }).watchlist).toHaveLength(0)
   })
   it('removes a symbol', () => {
     const s = seed('EURUSD', 'GBPUSD')
