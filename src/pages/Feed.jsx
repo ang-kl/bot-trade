@@ -75,6 +75,15 @@ export default function Feed() {
 
   const editorialText = state.news.latestRundown || null
 
+  const askContext = useMemo(
+    () => ({
+      watchlist: state.watchlist,
+      rundown: state.news.latestRundown,
+      stories: stories.map((s) => ({ symbol: s.symbol, state: s.state, side: s.side })),
+    }),
+    [state.watchlist, state.news.latestRundown, stories],
+  )
+
   return (
     <section className="space-y-4">
       <AgentBrief stories={stories} />
@@ -103,7 +112,7 @@ export default function Feed() {
           </ul>
         </details>
       )}
-      <AskDock />
+      <AskDock context={askContext} />
       {tightenFor && (
         <TightenSLDialog
           story={tightenFor}

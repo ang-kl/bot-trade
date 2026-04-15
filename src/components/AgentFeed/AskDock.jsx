@@ -1,13 +1,14 @@
 // Ask Dock — small chat-bar at the bottom of the feed. Hits /api/chat
-// which will stream a reply in Phase 5+ (currently the endpoint returns
-// 501, so we show whatever error the server sends).
+// which forwards the question to Claude along with the current watchlist
+// and rundown so replies stay grounded in what the user is actually
+// watching. Non-streaming for now; upgrade to SSE when the API does.
 
 import { useState } from 'react'
 import Card from '../common/Card.jsx'
 import Input from '../common/Input.jsx'
 import Button from '../common/Button.jsx'
 
-export default function AskDock({ onAsk }) {
+export default function AskDock({ context, onAsk }) {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [reply, setReply] = useState(null)
@@ -21,7 +22,7 @@ export default function AskDock({ onAsk }) {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ q: question }),
+        body: JSON.stringify({ q: question, context }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `chat ${res.status}`)
