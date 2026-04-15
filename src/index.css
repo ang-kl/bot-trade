@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/*
+ * Accessibility tokens (user is red/green colour-blind).
+ * Blue  = #2563eb → up / long / positive / BUY
+ * Red   = #dc2626 → down / short / negative / SELL
+ * NO GREEN anywhere. CI gate scripts/check-no-green.sh enforces.
+ */
+:root {
+  --color-up: #2563eb;
+  --color-down: #dc2626;
+  --color-bg: #ffffff;
+  --color-fg: #171717;
+  --color-border: #e5e5e5;
+  --color-muted: #737373;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
