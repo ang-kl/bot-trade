@@ -10,7 +10,7 @@
 // Setup:
 // 1. Register app at https://openapi.ctrader.com
 // 2. Set env vars: CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET
-// 3. Add redirect URI: https://cbot-trade.vercel.app/link-up
+// 3. Add redirect URI from the deployment origin (/link-up route)
 
 import WebSocket from 'ws'
 
@@ -43,9 +43,6 @@ const PT = {
   ERROR_RES:          2142,
   GET_ACCOUNTS_REQ:   2149,
   GET_ACCOUNTS_RES:   2150,
-  SUBSCRIBE_SPOTS_REQ: 2127,
-  SUBSCRIBE_SPOTS_RES: 2128,
-  SPOT_EVENT:         2131,
 }
 
 // Trendbar period enum — maps abot timeframes to cTrader ProtoOATrendbarPeriod
@@ -184,7 +181,9 @@ export default async function handler(req, res) {
 
   if (req.method === 'GET' && req.query.action === 'auth-url') {
     if (!clientId) return res.status(500).json({ error: 'CTRADER_CLIENT_ID not configured' })
-    const redirectUri = `${req.headers.origin || 'https://cbot-trade.vercel.app'}/link-up`
+    const origin = req.headers.origin
+    if (!origin) return res.status(400).json({ error: 'auth-url requires an Origin header' })
+    const redirectUri = `${origin}/link-up`
     const url = `${CTRADER_API}/apps/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=trading`
     return res.status(200).json({ url, redirectUri })
   }
@@ -503,8 +502,6 @@ export default async function handler(req, res) {
         maxVolume: sym.maxVolume != null ? sym.maxVolume : null,
         stepVolume: sym.stepVolume != null ? sym.stepVolume : null,
         tradingMode: sym.tradingMode || null,
-        // raw dump for client-side logging
-        raw: sym,
       })
     } catch (err) {
       return res.status(500).json({ error: err.message })
@@ -545,9 +542,6 @@ export default async function handler(req, res) {
         leverage: trader.leverageInCents != null ? trader.leverageInCents / 100 : null,
         moneyDigits,
         accountId,
-        // Debug: include raw balance/equity so we can verify parsing if the UI
-        // shows something unexpected. Stripped from the UI display.
-        _raw: { balance: trader.balance, equity: trader.equity },
       })
     } catch (err) {
       return res.status(500).json({ error: err.message })
@@ -623,7 +617,6 @@ export default async function handler(req, res) {
       comment = 'abot test',
       label = 'abot-ema9',
       isLive = false,
-      balance = 0,            // caller-provided, used for 1% cap check
     } = req.body
 
     // ── Safety gates (server-enforced) ──
@@ -755,8 +748,6 @@ export default async function handler(req, res) {
         side: tradeSide,
         volume,
         symbolId,
-        // Include the raw execution event for client-side debugging
-        rawExecutionType: exec.executionType,
         timestamp: new Date().toISOString(),
       })
     } catch (err) {

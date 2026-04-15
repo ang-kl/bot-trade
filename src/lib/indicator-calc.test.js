@@ -266,3 +266,99 @@ describe('dispatcher', () => {
     })
   })
 })
+
+// ── Integration: end-to-end over the full indicator registry ───────────
+// Drives a realistic 60-candle OHLCV series through every ID that
+// computeIndicator supports, then checks each result's shape and the
+// classifier contract (computeIndicator render hint === getIndicatorRenderType).
+describe('integration: indicator registry', () => {
+  // 60 candles of a sine-wave-ish price series — deterministic, non-trivial.
+  const series = Array.from({ length: 60 }, (_, i) => {
+    const c = 100 + Math.sin(i / 4) * 5 + i * 0.1
+    return { t: i * 60_000, o: c - 0.2, h: c + 0.4, l: c - 0.4, c, v: 1000 + i * 10 }
+  })
+
+  const overlayLine = ['ema', 'sma', 'wma', 'hma', 'dema', 'tema', 'vwap']
+  const overlayBand = ['bbands', 'keltner', 'donchian']
+  const panelLine = ['rsi', 'atr', 'obv']
+  const panelBar = ['volume']
+
+  for (const id of overlayLine) {
+    it(`computeIndicator('${id}') → overlay line of length 60`, () => {
+      const r = computeIndicator(id, {}, series)
+      expect(r).not.toBeNull()
+      expect(r.type).toBe('line')
+      expect(r.render).toBe('overlay')
+      expect(r.data).toHaveLength(series.length)
+      expect(getIndicatorRenderType(id)).toBe(r.render)
+    })
+  }
+
+  for (const id of overlayBand) {
+    it(`computeIndicator('${id}') → overlay band with upper ≥ middle ≥ lower`, () => {
+      const r = computeIndicator(id, {}, series)
+      expect(r.type).toBe('band')
+      expect(r.render).toBe('overlay')
+      const last = series.length - 1
+      expect(r.data.upper[last]).toBeGreaterThanOrEqual(r.data.middle[last])
+      expect(r.data.middle[last]).toBeGreaterThanOrEqual(r.data.lower[last])
+      expect(getIndicatorRenderType(id)).toBe('overlay')
+    })
+  }
+
+  for (const id of panelLine) {
+    it(`computeIndicator('${id}') → panel line of length 60`, () => {
+      const r = computeIndicator(id, {}, series)
+      expect(r.type).toBe('line')
+      expect(r.render).toBe('panel')
+      expect(r.data).toHaveLength(series.length)
+      expect(getIndicatorRenderType(id)).toBe('panel')
+    })
+  }
+
+  for (const id of panelBar) {
+    it(`computeIndicator('${id}') → panel bar matching candle volumes`, () => {
+      const r = computeIndicator(id, {}, series)
+      expect(r.type).toBe('bar')
+      expect(r.render).toBe('panel')
+      expect(r.data).toEqual(series.map(c => c.v))
+      expect(getIndicatorRenderType(id)).toBe('panel')
+    })
+  }
+
+  it('macd returns a histogram matching line - signal', () => {
+    const r = computeIndicator('macd', {}, series)
+    expect(r.type).toBe('macd')
+    expect(r.render).toBe('panel')
+    for (let i = 0; i < r.data.line.length; i++) {
+      expect(r.data.histogram[i]).toBeCloseTo(r.data.line[i] - r.data.signal[i], 9)
+    }
+  })
+
+  it('stochastic returns k and d bounded inside [0, 100]', () => {
+    const r = computeIndicator('stochastic', {}, series)
+    expect(r.type).toBe('stochastic')
+    expect(r.yRange).toEqual([0, 100])
+    for (let i = 20; i < r.data.k.length; i++) {
+      expect(r.data.k[i]).toBeGreaterThanOrEqual(0)
+      expect(r.data.k[i]).toBeLessThanOrEqual(100)
+      expect(r.data.d[i]).toBeGreaterThanOrEqual(0)
+      expect(r.data.d[i]).toBeLessThanOrEqual(100)
+    }
+  })
+
+  it('rsi returns values bounded inside [0, 100] after warmup', () => {
+    const r = computeIndicator('rsi', { period: 14 }, series)
+    for (let i = 14; i < r.data.length; i++) {
+      expect(r.data[i]).toBeGreaterThanOrEqual(0)
+      expect(r.data[i]).toBeLessThanOrEqual(100)
+    }
+  })
+
+  it('dispatcher accepts custom params and propagates them', () => {
+    const r1 = computeIndicator('ema', { period: 5 }, series)
+    const r2 = computeIndicator('ema', { period: 20 }, series)
+    // Different periods produce different tails for a non-flat series.
+    expect(r1.data[r1.data.length - 1]).not.toBe(r2.data[r2.data.length - 1])
+  })
+})
