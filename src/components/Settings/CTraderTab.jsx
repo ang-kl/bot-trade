@@ -8,9 +8,21 @@ import Input from '../common/Input.jsx'
 import Badge from '../common/Badge.jsx'
 import { useStrategy } from '../../lib/strategy-store.js'
 
+// The v1-ported api/ctrader.js handler only serves `auth-url` via GET with
+// query params. Every other action reads its args from the JSON body, so we
+// POST for those. Keep this split in one helper so callers stay simple.
 async function callCtrader(action, params = {}) {
-  const qs = new URLSearchParams({ action, ...params })
-  const res = await fetch(`/api/ctrader?${qs.toString()}`)
+  const init = action === 'auth-url'
+    ? { method: 'GET' }
+    : {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action, ...params }),
+      }
+  const url = action === 'auth-url'
+    ? `/api/ctrader?action=${encodeURIComponent(action)}`
+    : '/api/ctrader'
+  const res = await fetch(url, init)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `ctrader ${action} ${res.status}`)
   return data
@@ -27,8 +39,9 @@ export default function CTraderTab() {
   const onOpenOAuth = async () => {
     setBusy('oauth'); setError(null)
     try {
-      const { authUrl } = await callCtrader('auth-url')
-      if (authUrl && typeof window !== 'undefined') window.open(authUrl, '_blank', 'noopener')
+      // v1 api/ctrader.js returns { url, redirectUri } for auth-url.
+      const { url } = await callCtrader('auth-url')
+      if (url && typeof window !== 'undefined') window.open(url, '_blank', 'noopener')
     } catch (e) {
       setError(e.message)
     } finally {
@@ -96,14 +109,16 @@ export default function CTraderTab() {
         ) : (
           <ul className="divide-y divide-[var(--color-border)]">
             {accounts.map((a) => {
-              const id = a.ctidTraderAccountId
+              // v1 api/ctrader.js flattens each account to:
+              //   { accountId, accountNumber, brokerTitle, isLive, balance, currency }
+              const id = a.accountId
               const linked = linkedAccountId === id
               return (
                 <li key={id} className="py-2 flex items-center gap-2">
                   <span className="text-sm flex-1 truncate">
-                    #{id} · {a.brokerName || a.accountType || 'account'} · {a.depositCurrency || '—'}
+                    #{a.accountNumber ?? id} · {a.brokerTitle || 'cTrader'} · {a.currency || '—'}
                   </span>
-                  {a.live ? <Badge tone="down">LIVE</Badge> : <Badge>demo</Badge>}
+                  {a.isLive ? <Badge tone="down">LIVE</Badge> : <Badge>demo</Badge>}
                   <Button
                     size="sm"
                     variant={linked ? 'primary' : 'ghost'}

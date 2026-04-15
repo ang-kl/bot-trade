@@ -4,6 +4,7 @@ import {
   EMPTY_STATE,
   DEFAULT_WATCHLIST,
   WATCHLIST_CATEGORIES,
+  SCHEMA_VERSION,
   STORAGE_KEY,
   BRIEFING_WINDOWS,
   SOURCE_OPTIONS,
@@ -228,6 +229,24 @@ describe('sanitize', () => {
     expect(out.news.briefingWindow).toBe('morning')
     expect(out.news.sources).toEqual(['osinet'])
     expect(out.risk).toEqual({ perTradePct: 100, dailyMaxLossPct: 0, maxTradesPerDay: 1000, armed: true })
+  })
+  it('migrates pre-v2 empty watchlist to the default seed', () => {
+    // Simulates a returning visitor whose localStorage was persisted before
+    // the default pool shipped.
+    const raw = { watchlist: [], risk: { perTradePct: 2 } }
+    const out = sanitize(raw)
+    expect(out.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(out.watchlist).toBe(DEFAULT_WATCHLIST)
+  })
+  it('preserves an intentional v2 empty watchlist', () => {
+    // A user who already migrated and deliberately removed every row.
+    const raw = { schemaVersion: SCHEMA_VERSION, watchlist: [] }
+    const out = sanitize(raw)
+    expect(out.watchlist).toEqual([])
+  })
+  it('stamps schemaVersion onto sanitized output', () => {
+    const out = sanitize({ watchlist: [{ symbol: 'EURUSD', enabled: true }] })
+    expect(out.schemaVersion).toBe(SCHEMA_VERSION)
   })
 })
 

@@ -6,6 +6,11 @@ import { createContext, useContext } from 'react'
 
 export const STORAGE_KEY = 'bot-trade:strategy'
 
+// Persisted schema version. Bump this whenever INITIAL_STATE gains a new
+// seeded default (like the v1 watchlist pool) that returning visitors with
+// stale localStorage should be migrated into.
+export const SCHEMA_VERSION = 2
+
 export const BRIEFING_WINDOWS = ['morning', 'noon', 'adhoc']
 export const SOURCE_OPTIONS = ['osinet', 'reuters', 'bloomberg', 'ft']
 export const SUB_AGENTS = ['news', 'technical', 'macro', 'history']
@@ -79,6 +84,7 @@ export const DEFAULT_WATCHLIST = [
 ]
 
 export const INITIAL_STATE = {
+  schemaVersion: SCHEMA_VERSION,
   ctrader: {
     linkedAccountId: null,
     accessToken: '',
@@ -210,7 +216,9 @@ export function reducer(state, action) {
 
 export function sanitize(raw, fallback = INITIAL_STATE) {
   if (!raw || typeof raw !== 'object') return fallback
-  const watchlist = Array.isArray(raw.watchlist)
+  const rawVersion = Number(raw.schemaVersion) || 0
+  const needsWatchlistMigration = rawVersion < SCHEMA_VERSION
+  const storedWatchlist = Array.isArray(raw.watchlist)
     ? raw.watchlist
         .filter(w => w && typeof w.symbol === 'string')
         .map(w => {
@@ -223,11 +231,19 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
           if (typeof w.category === 'string' && WATCHLIST_CATEGORIES.includes(w.category)) row.category = w.category
           return row
         })
-    : []
+    : null
+  // v1 → v2 migration: if the stored watchlist is missing or empty, seed it
+  // with the new default pool. Users who deliberately trimmed a v2 watchlist
+  // down to zero rows are preserved because their rawVersion already equals
+  // SCHEMA_VERSION.
+  const watchlist = (needsWatchlistMigration && (!storedWatchlist || storedWatchlist.length === 0))
+    ? fallback.watchlist
+    : (storedWatchlist || [])
   const news = { ...fallback.news, ...(raw.news && typeof raw.news === 'object' ? raw.news : {}) }
   if (!BRIEFING_WINDOWS.includes(news.briefingWindow)) news.briefingWindow = fallback.news.briefingWindow
   news.sources = Array.isArray(news.sources) ? news.sources.filter(s => SOURCE_OPTIONS.includes(s)) : fallback.news.sources
   return {
+    schemaVersion: SCHEMA_VERSION,
     ctrader: { ...fallback.ctrader, ...(raw.ctrader && typeof raw.ctrader === 'object' ? raw.ctrader : {}), accounts: Array.isArray(raw.ctrader?.accounts) ? raw.ctrader.accounts : [] },
     watchlist,
     news,
