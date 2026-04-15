@@ -242,15 +242,14 @@ export function computeIndicator(indicatorId, params, candles) {
 }
 
 // Given an indicator ID, return where it should render.
+// Only IDs actually handled by computeIndicator are listed — YAGNI.
 export function getIndicatorRenderType(indicatorId) {
   const overlays = new Set([
-    'ema', 'sma', 'wma', 'hma', 'dema', 'tema', 'vwma', 'ichimoku',
-    'psar', 'psar_dev', 'supertrend', 'bbands', 'keltner', 'donchian', 'vwap',
+    'ema', 'sma', 'wma', 'hma', 'dema', 'tema',
+    'bbands', 'keltner', 'donchian', 'vwap',
   ])
   const panels = new Set([
-    'rsi', 'macd', 'stochastic', 'cci', 'willr', 'mfi', 'roc', 'momentum',
-    'tsi', 'ao', 'pvo', 'adx', 'aroon', 'atr', 'atrpct', 'stddev',
-    'volume', 'obv', 'cvd', 'ad', 'cmf', 'fi',
+    'rsi', 'macd', 'stochastic', 'atr', 'volume', 'obv',
   ])
   if (overlays.has(indicatorId)) return 'overlay'
   if (panels.has(indicatorId)) return 'panel'
