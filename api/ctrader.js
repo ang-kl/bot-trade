@@ -16,6 +16,20 @@ import WebSocket from 'ws'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
 
+// Reconstructs the request origin without relying on the browser sending an
+// Origin header. Browsers only guarantee Origin on cross-origin/POST, so
+// same-origin GETs (like auth-url) arrive without one on most platforms.
+// Vercel, Netlify and other proxies expose x-forwarded-host/proto; fall
+// back to the raw Host header for direct node invocations.
+function resolveOrigin(req) {
+  const h = req.headers || {}
+  if (typeof h.origin === 'string' && h.origin) return h.origin
+  const host = h['x-forwarded-host'] || h.host
+  if (!host) return null
+  const proto = h['x-forwarded-proto'] || (host.startsWith('localhost') ? 'http' : 'https')
+  return `${proto}://${host}`
+}
+
 // Payload types — from github.com/spotware/openapi-proto-messages
 const PT = {
   HEARTBEAT:          51,
@@ -181,8 +195,10 @@ export default async function handler(req, res) {
 
   if (req.method === 'GET' && req.query.action === 'auth-url') {
     if (!clientId) return res.status(500).json({ error: 'CTRADER_CLIENT_ID not configured' })
-    const origin = req.headers.origin
-    if (!origin) return res.status(400).json({ error: 'auth-url requires an Origin header' })
+    // Browsers often omit Origin on same-origin GETs, so fall back to the
+    // forwarded host headers Vercel (and most reverse proxies) inject.
+    const origin = resolveOrigin(req)
+    if (!origin) return res.status(400).json({ error: 'unable to resolve request origin' })
     const redirectUri = `${origin}/link-up`
     const url = `${CTRADER_API}/apps/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=trading`
     return res.status(200).json({ url, redirectUri })
