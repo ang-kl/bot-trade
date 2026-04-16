@@ -1,17 +1,7 @@
-// Market Calendar API — generates a structured calendar of key events
-// from today up to one month out. Sources: ForexFactory economic calendar,
-// market holidays, macroeconomic releases, political key dates, earnings.
-//
-// Actions:
-//   - generate: Asks Claude to produce a JSON calendar of events
-//   - symbol-events: Returns events relevant to a specific symbol
-//
-// POST with JSON body. Returns structured JSON for the Feed calendar card.
+// Market Calendar API — fetches real market events from Polygon.io (Massive).
+// Dividends, stock splits, and market holidays for watchlist symbols.
 
-import Anthropic from '@anthropic-ai/sdk'
-
-const MODEL = 'claude-sonnet-4-5'
-const MAX_TOKENS = 4096
+const BASE = 'https://api.polygon.io'
 
 function readBody(req) {
   if (req.body && typeof req.body === 'object') return req.body
@@ -21,48 +11,20 @@ function readBody(req) {
   return {}
 }
 
-function calendarPrompt(symbols = []) {
-  const today = new Date().toISOString().slice(0, 10)
-  const endDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
-  const symbolList = symbols.length > 0 ? symbols.join(', ') : 'major forex pairs, indices, commodities, and crypto'
-
-  return `You are a market calendar analyst. Generate a comprehensive calendar of key market events from ${today} to ${endDate}.
-
-Include events from these categories:
-1. **Economic Calendar** (ForexFactory-style): Central bank rate decisions, NFP, CPI, PPI, GDP, PMI, employment data, retail sales, trade balance, consumer confidence — for US, EU, UK, Japan, China, Australia, Canada, Switzerland
-2. **Market Holidays**: NYSE, LSE, TSE, HKEX, ASX closures or early closes
-3. **Earnings**: Major company reporting dates relevant to the watchlist
-4. **Political**: G7/G20 summits, trade negotiations, elections, tariff deadlines, sanctions reviews
-5. **Central Bank**: FOMC meetings, ECB/BOJ/BOE/RBA/RBNZ rate decisions, minutes releases
-6. **Sector Events**: OPEC meetings, crop reports, tech conferences, pharma FDA dates
-
-Watchlist symbols to consider for relevance: ${symbolList}
-
-Return a JSON array (no code fences, no commentary) where each entry has:
-{
-  "date": "YYYY-MM-DD",
-  "time": "HH:MM" (UTC, or "all-day"),
-  "event": "Short event name",
-  "category": "economic|holiday|earnings|political|central-bank|sector",
-  "impact": "high|medium|low",
-  "currency": "USD|EUR|GBP|JPY|..." (if applicable, else null),
-  "symbols": ["EURUSD", "US500"] (affected symbols from watchlist, max 5),
-  "details": "One-sentence description"
+async function polygonGet(path, apiKey, params = {}) {
+  const url = new URL(path, BASE)
+  url.searchParams.set('apiKey', apiKey)
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== '') url.searchParams.set(k, String(v))
+  }
+  const res = await fetch(url.toString())
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || data.message || `Polygon ${res.status}`)
+  return data
 }
 
-Sort by date ascending, then by impact (high first). Include 30-60 events covering the full date range. Return ONLY the JSON array.`
-}
-
-function symbolEventsPrompt(symbol, events) {
-  return `Given the following market calendar events and the symbol ${symbol}, select the ONE most relevant upcoming event and write a single concise line (max 80 chars) about it.
-
-Events:
-${JSON.stringify(events.slice(0, 20))}
-
-Format: "[DATE] EVENT_NAME - brief impact note"
-Example: "17/04 FOMC Minutes - hawkish tone may pressure gold"
-
-Return ONLY the one-line string, no quotes, no commentary.`
+function formatDate(d) {
+  return d.toISOString().slice(0, 10)
 }
 
 export default async function handler(req, res) {
@@ -71,56 +33,108 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'method not allowed' })
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY missing' })
-  }
-
   const body = readBody(req)
+  const apiKey = body.apiKey || process.env.MASSIVE_API_KEY
+  if (!apiKey) return res.status(400).json({ error: 'Massive API key required' })
+
   const { action } = body
+  if (!action) return res.status(400).json({ error: 'action required' })
 
   try {
-    const client = new Anthropic({ apiKey })
-
     if (action === 'generate') {
       const { symbols = [] } = body
-      const resp = await client.messages.create({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        messages: [{ role: 'user', content: calendarPrompt(symbols) }],
-      })
-      const text = (resp.content || []).filter(p => p?.type === 'text').map(p => p.text).join('').trim()
-      let events = []
+      const today = formatDate(new Date())
+      const monthOut = formatDate(new Date(Date.now() + 30 * 86_400_000))
+      const events = []
+
+      // 1. Market holidays
       try {
-        events = JSON.parse(text)
-      } catch {
-        // Try to extract JSON array from response
-        const match = text.match(/\[[\s\S]*\]/)
-        if (match) events = JSON.parse(match[0])
+        const holidays = await polygonGet('/v1/marketstatus/upcoming', apiKey)
+        if (Array.isArray(holidays)) {
+          for (const h of holidays) {
+            if (h.date && h.date >= today && h.date <= monthOut) {
+              events.push({
+                date: h.date,
+                time: 'all-day',
+                event: h.name || 'Market Holiday',
+                category: 'holiday',
+                impact: h.status === 'closed' ? 'high' : 'medium',
+                currency: null,
+                symbols: [],
+                details: h.exchange ? `${h.exchange}: ${h.status || 'closed'}` : (h.status || 'closed'),
+              })
+            }
+          }
+        }
+      } catch {}
+
+      // 2. Dividends for watchlist stocks
+      const stockTickers = symbols.filter(s => /^[A-Z]{1,5}$/.test(s))
+      if (stockTickers.length > 0) {
+        try {
+          const divData = await polygonGet('/v3/reference/dividends', apiKey, {
+            'ticker.in': stockTickers.join(','),
+            'ex_dividend_date.gte': today,
+            'ex_dividend_date.lte': monthOut,
+            order: 'asc',
+            limit: 50,
+          })
+          for (const d of (divData.results || [])) {
+            events.push({
+              date: d.ex_dividend_date,
+              time: 'all-day',
+              event: `${d.ticker} Ex-Dividend`,
+              category: 'earnings',
+              impact: 'medium',
+              currency: d.currency || 'USD',
+              symbols: [d.ticker],
+              details: d.cash_amount ? `$${d.cash_amount} ${d.frequency === 4 ? 'quarterly' : d.frequency === 12 ? 'monthly' : ''} dividend` : 'Dividend date',
+            })
+          }
+        } catch {}
       }
+
+      // 3. Stock splits
+      if (stockTickers.length > 0) {
+        try {
+          const splitData = await polygonGet('/v3/reference/stock-splits', apiKey, {
+            'ticker.in': stockTickers.join(','),
+            'execution_date.gte': today,
+            'execution_date.lte': monthOut,
+            order: 'asc',
+            limit: 50,
+          })
+          for (const s of (splitData.results || [])) {
+            events.push({
+              date: s.execution_date,
+              time: 'all-day',
+              event: `${s.ticker} Stock Split`,
+              category: 'sector',
+              impact: 'high',
+              currency: 'USD',
+              symbols: [s.ticker],
+              details: `${s.split_from}:${s.split_to} split`,
+            })
+          }
+        } catch {}
+      }
+
+      // Sort by date, then impact
+      const impactOrder = { high: 0, medium: 1, low: 2 }
+      events.sort((a, b) => {
+        const dc = a.date.localeCompare(b.date)
+        if (dc !== 0) return dc
+        return (impactOrder[a.impact] ?? 2) - (impactOrder[b.impact] ?? 2)
+      })
+
       return res.status(200).json({
         events,
         generatedAt: new Date().toISOString(),
-        usage: resp.usage || null,
       })
     }
 
-    if (action === 'symbol-events') {
-      const { symbol, events = [] } = body
-      if (!symbol) return res.status(400).json({ error: 'symbol required' })
-      if (events.length === 0) return res.status(200).json({ line: null })
-
-      const resp = await client.messages.create({
-        model: MODEL,
-        max_tokens: 128,
-        messages: [{ role: 'user', content: symbolEventsPrompt(symbol, events) }],
-      })
-      const line = (resp.content || []).filter(p => p?.type === 'text').map(p => p.text).join('').trim()
-      return res.status(200).json({ symbol, line, usage: resp.usage || null })
-    }
-
-    return res.status(400).json({ error: `unknown action: ${action || '(none)'}` })
+    return res.status(400).json({ error: `unknown action: ${action}` })
   } catch (e) {
-    return res.status(500).json({ error: e?.message || 'calendar failed' })
+    return res.status(500).json({ error: e.message || 'calendar failed' })
   }
 }

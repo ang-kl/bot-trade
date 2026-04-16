@@ -336,7 +336,7 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                     const trendBias = syn?.consensus_bias || d.scan?.bias || 'neutral'
                     const trendLabel = trendBias === 'long' ? 'Bullish' : trendBias === 'short' ? 'Bearish' : 'Sideways'
                     const trendColor = trendBias === 'long' ? 'text-[var(--color-up)]' : trendBias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
-                    const emaStack = syn?.ema_stack || d.scan?.ema_stack || null
+                    const emaStack = mm.ema_stack?.stack || syn?.ema_stack || d.scan?.ema_stack || null
 
                     return (
                       <tr
@@ -942,20 +942,23 @@ export default function Feed() {
 
   // ── Calendar ──
   const fetchCalendar = useCallback(async () => {
+    if (!state.massive.apiKey) return
     setCalendarLoading(true)
     try {
       const syms = enabledSymbols.map(w => w.symbol)
-      const data = await apiPost('/api/calendar', { action: 'generate', symbols: syms })
+      const data = await apiPost('/api/calendar', {
+        action: 'generate',
+        symbols: syms,
+        apiKey: state.massive.apiKey,
+      })
       const events = data.events || []
       setCalendarEvents(events)
-      if (data.usage?.output_tokens) trackTokens('calendar', data.usage.output_tokens)
 
-      // Generate per-symbol event lines
+      // Build per-symbol event lines from real data
       const lines = {}
-      for (const sym of syms.slice(0, 20)) {
+      for (const sym of syms) {
         const relevant = events.filter(e =>
-          (e.symbols || []).some(s => s.toUpperCase() === sym.toUpperCase()) ||
-          (e.currency && sym.toUpperCase().includes(e.currency)),
+          (e.symbols || []).some(s => s.toUpperCase() === sym.toUpperCase()),
         )
         if (relevant.length > 0) {
           const ev = relevant[0]
@@ -971,7 +974,7 @@ export default function Feed() {
     } finally {
       setCalendarLoading(false)
     }
-  }, [enabledSymbols, addLog, trackTokens])
+  }, [enabledSymbols, state.massive.apiKey, addLog])
 
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {

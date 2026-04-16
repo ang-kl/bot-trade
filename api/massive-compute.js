@@ -231,6 +231,29 @@ function computeBeta(tickerReturns, spyReturns) {
   return round(cov / varSpy, 4)
 }
 
+// ── EMA Stack ──
+
+function computeEMA(bars, period) {
+  if (bars.length === 0) return null
+  const k = 2 / (period + 1)
+  let ema = bars[0].c
+  for (let i = 1; i < bars.length; i++) {
+    ema = bars[i].c * k + ema * (1 - k)
+  }
+  return round(ema, 4)
+}
+
+function computeEmaStack(bars) {
+  if (bars.length < 50) return { ema9: null, ema21: null, ema50: null, stack: null }
+  const ema9 = computeEMA(bars, 9)
+  const ema21 = computeEMA(bars, 21)
+  const ema50 = computeEMA(bars, 50)
+  let stack = 'Mixed'
+  if (ema9 > ema21 && ema21 > ema50) stack = 'Bull 9>21>50'
+  else if (ema50 > ema21 && ema21 > ema9) stack = 'Bear 50>21>9'
+  return { ema9, ema21, ema50, stack }
+}
+
 function round(n, d) {
   const f = Math.pow(10, d)
   return Math.round(n * f) / f
@@ -308,6 +331,9 @@ async function computeForTicker(ticker, apiKey, requestedPeriods, spyBarsCache) 
     beta: isSpy ? 1.0 : computeBeta(returns252, spyReturns252),
   }
 
+  // EMA stack from last 252 bars
+  const ema_stack = computeEmaStack(last252)
+
   return {
     ticker: ticker.toUpperCase(),
     computed_at: new Date().toISOString(),
@@ -317,6 +343,7 @@ async function computeForTicker(ticker, apiKey, requestedPeriods, spyBarsCache) 
     volume_profile,
     vwap,
     risk_metrics,
+    ema_stack,
     _spyBarsCache: spyData, // internal: for batch reuse
   }
 }
