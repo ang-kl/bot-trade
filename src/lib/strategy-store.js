@@ -11,8 +11,7 @@ export const STORAGE_KEY = 'bot-trade:strategy'
 // stale localStorage should be migrated into.
 export const SCHEMA_VERSION = 2
 
-export const BRIEFING_WINDOWS = ['morning', 'noon', 'adhoc']
-export const SOURCE_OPTIONS = ['osinet', 'reuters', 'bloomberg', 'ft']
+export const SOURCE_OPTIONS = ['osinet', 'reuters', 'bloomberg', 'ft', 'telegram', 'x', 'rss', 'forexfactory']
 export const SUB_AGENTS = ['news', 'technical', 'macro', 'history']
 
 export const DEFAULT_AGENTS = { news: true, technical: true, macro: true, history: true }
@@ -94,8 +93,8 @@ export const INITIAL_STATE = {
   },
   watchlist: DEFAULT_WATCHLIST,
   news: {
-    briefingWindow: 'morning',
     sources: ['osinet'],
+    telegramChannels: [],
     structure: null,
     latestRundown: null,
     lastGeneratedAt: null,
@@ -205,9 +204,6 @@ export function reducer(state, action) {
       }
     }
 
-    case 'NEWS_SET_WINDOW':
-      if (!BRIEFING_WINDOWS.includes(action.window)) return state
-      return { ...state, news: { ...state.news, briefingWindow: action.window } }
     case 'NEWS_TOGGLE_SOURCE': {
       if (!SOURCE_OPTIONS.includes(action.source)) return state
       const has = state.news.sources.includes(action.source)
@@ -223,6 +219,34 @@ export function reducer(state, action) {
           ...state.news,
           latestRundown: typeof action.rundown === 'string' ? action.rundown : null,
           lastGeneratedAt: action.at || new Date().toISOString(),
+        },
+      }
+
+    case 'NEWS_ADD_TELEGRAM_CHANNEL': {
+      const ch = {
+        id: action.id || `tg-${Date.now()}`,
+        name: action.name || '',
+        username: action.username || '',
+        enabled: action.enabled !== false,
+      }
+      if (!ch.name && !ch.username) return state
+      // No duplicates by username
+      if (ch.username && state.news.telegramChannels.some(c => c.username === ch.username)) return state
+      return { ...state, news: { ...state.news, telegramChannels: [...state.news.telegramChannels, ch] } }
+    }
+    case 'NEWS_REMOVE_TELEGRAM_CHANNEL':
+      return {
+        ...state,
+        news: { ...state.news, telegramChannels: state.news.telegramChannels.filter(c => c.id !== action.id) },
+      }
+    case 'NEWS_TOGGLE_TELEGRAM_CHANNEL':
+      return {
+        ...state,
+        news: {
+          ...state.news,
+          telegramChannels: state.news.telegramChannels.map(c =>
+            c.id === action.id ? { ...c, enabled: !c.enabled } : c,
+          ),
         },
       }
 
@@ -306,8 +330,9 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
     ? fallback.watchlist
     : (storedWatchlist || [])
   const news = { ...fallback.news, ...(raw.news && typeof raw.news === 'object' ? raw.news : {}) }
-  if (!BRIEFING_WINDOWS.includes(news.briefingWindow)) news.briefingWindow = fallback.news.briefingWindow
+  delete news.briefingWindow // removed in v3
   news.sources = Array.isArray(news.sources) ? news.sources.filter(s => SOURCE_OPTIONS.includes(s)) : fallback.news.sources
+  news.telegramChannels = Array.isArray(news.telegramChannels) ? news.telegramChannels : []
   return {
     schemaVersion: SCHEMA_VERSION,
     ctrader: { ...fallback.ctrader, ...(raw.ctrader && typeof raw.ctrader === 'object' ? raw.ctrader : {}), accounts: Array.isArray(raw.ctrader?.accounts) ? raw.ctrader.accounts : [] },

@@ -6,7 +6,6 @@ import {
   WATCHLIST_CATEGORIES,
   SCHEMA_VERSION,
   STORAGE_KEY,
-  BRIEFING_WINDOWS,
   SOURCE_OPTIONS,
   SUB_AGENTS,
   DEFAULT_AGENTS,
@@ -27,16 +26,16 @@ function makeStorage(initial = {}) {
 }
 
 describe('strategy-store constants', () => {
-  it('exposes the expected briefing windows', () => {
-    expect(BRIEFING_WINDOWS).toEqual(['morning', 'noon', 'adhoc'])
-  })
   it('lists sub-agents matching DEFAULT_AGENTS keys', () => {
     expect(SUB_AGENTS.sort()).toEqual(Object.keys(DEFAULT_AGENTS).sort())
   })
-  it('has reputable source options, no X/twitter', () => {
+  it('has expanded source options including telegram, x, rss, forexfactory', () => {
     expect(SOURCE_OPTIONS).toContain('osinet')
+    expect(SOURCE_OPTIONS).toContain('telegram')
+    expect(SOURCE_OPTIONS).toContain('x')
+    expect(SOURCE_OPTIONS).toContain('rss')
+    expect(SOURCE_OPTIONS).toContain('forexfactory')
     expect(SOURCE_OPTIONS).not.toContain('twitter')
-    expect(SOURCE_OPTIONS).not.toContain('x')
   })
 })
 
@@ -165,21 +164,21 @@ describe('reducer: watchlist', () => {
 })
 
 describe('reducer: news (Market Rundown)', () => {
-  it('sets the briefing window when valid', () => {
-    const s = reducer(INITIAL_STATE, { type: 'NEWS_SET_WINDOW', window: 'noon' })
-    expect(s.news.briefingWindow).toBe('noon')
-  })
-  it('rejects unknown briefing windows', () => {
-    expect(reducer(INITIAL_STATE, { type: 'NEWS_SET_WINDOW', window: 'midnight' })).toBe(INITIAL_STATE)
-  })
   it('toggles a known source on and off', () => {
     const s = reducer(INITIAL_STATE, { type: 'NEWS_TOGGLE_SOURCE', source: 'bloomberg' })
     expect(s.news.sources).toContain('bloomberg')
     const s2 = reducer(s, { type: 'NEWS_TOGGLE_SOURCE', source: 'bloomberg' })
     expect(s2.news.sources).not.toContain('bloomberg')
   })
+  it('accepts new source types (telegram, x, rss, forexfactory)', () => {
+    let s = INITIAL_STATE
+    for (const src of ['telegram', 'x', 'rss', 'forexfactory']) {
+      s = reducer(s, { type: 'NEWS_TOGGLE_SOURCE', source: src })
+      expect(s.news.sources).toContain(src)
+    }
+  })
   it('rejects unknown sources', () => {
-    expect(reducer(INITIAL_STATE, { type: 'NEWS_TOGGLE_SOURCE', source: 'x' })).toBe(INITIAL_STATE)
+    expect(reducer(INITIAL_STATE, { type: 'NEWS_TOGGLE_SOURCE', source: 'twitter' })).toBe(INITIAL_STATE)
   })
   it('stores a rundown with a timestamp', () => {
     const at = '2026-04-15T12:00:00.000Z'
@@ -190,6 +189,24 @@ describe('reducer: news (Market Rundown)', () => {
   it('coerces non-string structure payload to null', () => {
     const s = reducer(INITIAL_STATE, { type: 'NEWS_SET_STRUCTURE', structure: 42 })
     expect(s.news.structure).toBeNull()
+  })
+  it('adds and removes telegram channels', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX News', username: 'fxnews' })
+    expect(s.news.telegramChannels).toHaveLength(1)
+    expect(s.news.telegramChannels[0].username).toBe('fxnews')
+    const s2 = reducer(s, { type: 'NEWS_REMOVE_TELEGRAM_CHANNEL', id: s.news.telegramChannels[0].id })
+    expect(s2.news.telegramChannels).toHaveLength(0)
+  })
+  it('rejects duplicate telegram channels by username', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX', username: 'fxnews' })
+    const s2 = reducer(s, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX2', username: 'fxnews' })
+    expect(s2.news.telegramChannels).toHaveLength(1)
+  })
+  it('toggles telegram channel enabled state', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX', username: 'fxnews' })
+    const id = s.news.telegramChannels[0].id
+    const s2 = reducer(s, { type: 'NEWS_TOGGLE_TELEGRAM_CHANNEL', id })
+    expect(s2.news.telegramChannels[0].enabled).toBe(false)
   })
 })
 
@@ -223,11 +240,11 @@ describe('sanitize', () => {
       { symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS, news: false }, autoTradeThreshold: 8, maxVolume: 0.01 },
     ])
   })
-  it('coerces risk numerics and drops unknown sources', () => {
-    const raw = { news: { briefingWindow: 'midnight', sources: ['osinet', 'x'] }, risk: { perTradePct: 999, dailyMaxLossPct: -5, maxTradesPerDay: 9999, armed: true } }
+  it('coerces risk numerics and keeps valid expanded sources', () => {
+    const raw = { news: { sources: ['osinet', 'telegram', 'badone'] }, risk: { perTradePct: 999, dailyMaxLossPct: -5, maxTradesPerDay: 9999, armed: true } }
     const out = sanitize(raw)
-    expect(out.news.briefingWindow).toBe('morning')
-    expect(out.news.sources).toEqual(['osinet'])
+    expect(out.news.sources).toEqual(['osinet', 'telegram'])
+    expect(out.news.briefingWindow).toBeUndefined()
     expect(out.risk).toEqual({ perTradePct: 100, dailyMaxLossPct: 0, maxTradesPerDay: 1000, armed: true })
   })
   it('migrates pre-v2 empty watchlist to the default seed', () => {

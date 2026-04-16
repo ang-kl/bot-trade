@@ -1,10 +1,11 @@
-// Market Rundown API — replaces the Phase 6 X-API endpoint.
+// Market Rundown API — generates daily market briefings from multiple sources.
 //
 // Two actions:
 //   - structure: asks Claude to produce the reusable markdown outline.
 //   - generate:  asks Claude to produce today's briefing against an
 //                existing structure (or infers one if the client didn't
-//                cache one yet).
+//                cache one yet). Now accepts telegramChannels for curated
+//                Telegram feed integration.
 //
 // Both actions are POST with JSON bodies. Network errors surface as 5xx.
 
@@ -56,10 +57,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ action, markdown })
     }
     if (action === 'generate') {
-      const { window, sources, structure } = body
+      const { sources, structure, telegramChannels, telegramMessages } = body
+      // telegramMessages is pre-formatted text from the client or telegram-feed endpoint
       const markdown = await runClaude(
         client,
-        rundownDailyPrompt({ window, sources, structure }),
+        rundownDailyPrompt({ sources, structure, telegramMessages: telegramMessages || '' }),
       )
       return res.status(200).json({ action, markdown, generatedAt: new Date().toISOString() })
     }

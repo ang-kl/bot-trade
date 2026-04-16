@@ -39,7 +39,7 @@ function logEntry(agent, message, extra = {}) {
 
 // ── Symbol result card ──
 
-function SymbolCard({ symbol, scan, analysis, onOrder }) {
+function SymbolCard({ symbol, scan, analysis, onOrder, eventLine }) {
   const hasAnalysis = !!analysis
   const synthesis = analysis?.synthesis
   const reports = analysis?.reports || []
@@ -72,6 +72,13 @@ function SymbolCard({ symbol, scan, analysis, onOrder }) {
           <Badge tone="warning" pill>Trade at: {scan.trade_at}</Badge>
         )}
       </div>
+
+      {/* Calendar event one-liner */}
+      {eventLine && (
+        <p className="t-meta text-[var(--color-special-text)] bg-[var(--color-special-bg)] px-2 py-1 rounded-[4px] mb-1.5">
+          {'\u{1F4C5}'} {eventLine}
+        </p>
+      )}
 
       {/* Scout thesis */}
       {scan?.thesis && !hasAnalysis && (
@@ -313,6 +320,132 @@ function SummaryMatrix({ symbols }) {
   )
 }
 
+// ── Impact colour helpers ──
+
+const IMPACT_TONE = { high: 'down', medium: 'warning', low: 'neutral' }
+const CATEGORY_ICON = {
+  economic: '\u{1F4CA}',
+  holiday: '\u{1F3D6}',
+  earnings: '\u{1F4B0}',
+  political: '\u{1F3DB}',
+  'central-bank': '\u{1F3E6}',
+  sector: '\u{1F3ED}',
+}
+
+// ── Calendar card ──
+
+function CalendarCard({ events, loading, onRefresh }) {
+  const [range, setRange] = useState('week') // today | week | month
+
+  const filtered = useMemo(() => {
+    if (!events || events.length === 0) return []
+    const now = new Date()
+    const today = now.toISOString().slice(0, 10)
+    const tomorrow = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10)
+    const weekEnd = new Date(now.getTime() + 7 * 86_400_000).toISOString().slice(0, 10)
+    const monthEnd = new Date(now.getTime() + 30 * 86_400_000).toISOString().slice(0, 10)
+
+    let cutoff = monthEnd
+    if (range === 'today') cutoff = tomorrow
+    else if (range === 'week') cutoff = weekEnd
+
+    return events.filter(e => e.date >= today && e.date < cutoff)
+  }, [events, range])
+
+  // Group by date
+  const grouped = useMemo(() => {
+    const groups = {}
+    for (const e of filtered) {
+      if (!groups[e.date]) groups[e.date] = []
+      groups[e.date].push(e)
+    }
+    return groups
+  }, [filtered])
+
+  const dateKeys = Object.keys(grouped).sort()
+
+  const fmtDate = (d) => {
+    const dt = new Date(d + 'T00:00:00')
+    const today = new Date().toISOString().slice(0, 10)
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    if (d === today) return 'Today'
+    if (d === tomorrow) return 'Tomorrow'
+    return dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h2 className="t-label">Market Calendar</h2>
+        <div className="flex items-center gap-1">
+          {['today', 'week', 'month'].map(r => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRange(r)}
+              className={`px-2 py-0.5 text-[10px] rounded-[4px] font-bold cursor-pointer ${
+                range === r
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
+              }`}
+            >
+              {r.charAt(0).toUpperCase() + r.slice(1)}
+            </button>
+          ))}
+          <Button size="sm" variant="ghost" onClick={onRefresh} disabled={loading} className="ml-1">
+            {loading ? 'Loading...' : '\u21BB'}
+          </Button>
+        </div>
+      </div>
+
+      {filtered.length === 0 && !loading && (
+        <p className="t-sub text-[var(--color-muted)] py-3 text-center">
+          No events loaded. Click refresh to generate the calendar.
+        </p>
+      )}
+
+      {dateKeys.length > 0 && (
+        <div className="space-y-2 max-h-[400px] overflow-y-auto">
+          {dateKeys.map(date => (
+            <div key={date}>
+              <p className="t-meta font-bold text-[var(--color-text)] sticky top-0 bg-[var(--color-surface)] py-0.5">
+                {fmtDate(date)}
+              </p>
+              <div className="space-y-0.5 pl-2 border-l-2 border-[var(--color-border)]">
+                {grouped[date].map((e, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[11px]">
+                    <span className="shrink-0 w-[38px] font-mono text-[var(--color-muted)]">
+                      {e.time === 'all-day' ? 'all' : e.time || '--:--'}
+                    </span>
+                    <span className="shrink-0">{CATEGORY_ICON[e.category] || '\u25CF'}</span>
+                    <Badge
+                      tone={IMPACT_TONE[e.impact] || 'neutral'}
+                      className="shrink-0 text-[8px] px-1"
+                    >
+                      {e.impact?.toUpperCase()}
+                    </Badge>
+                    <span className="text-[var(--color-text)]">
+                      <span className="font-semibold">{e.event}</span>
+                      {e.currency && (
+                        <span className="text-[var(--color-accent)] ml-1">{e.currency}</span>
+                      )}
+                    </span>
+                    {e.details && (
+                      <span className="text-[var(--color-muted)] truncate hidden sm:inline">
+                        {e.details}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ── Main page ──
 
 export default function Feed() {
@@ -336,6 +469,9 @@ export default function Feed() {
   const [autoTradeActive, setAutoTradeActive] = useState(false)
   const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
   const [autoTradeCount, setAutoTradeCount] = useState(0)
+  const [calendarEvents, setCalendarEvents] = useState([])
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [symbolEventLines, setSymbolEventLines] = useState({})
 
   const scanTimerRef = useRef(null)
 
@@ -665,6 +801,39 @@ export default function Feed() {
     setAutoTradeCount(count)
   }, [monitoredTrades, sessionStart])
 
+  // ── Calendar ──
+  const fetchCalendar = useCallback(async () => {
+    setCalendarLoading(true)
+    try {
+      const syms = enabledSymbols.map(w => w.symbol)
+      const data = await apiPost('/api/calendar', { action: 'generate', symbols: syms })
+      const events = data.events || []
+      setCalendarEvents(events)
+      if (data.usage?.output_tokens) trackTokens('calendar', data.usage.output_tokens)
+
+      // Generate per-symbol event lines
+      const lines = {}
+      for (const sym of syms.slice(0, 20)) {
+        const relevant = events.filter(e =>
+          (e.symbols || []).some(s => s.toUpperCase() === sym.toUpperCase()) ||
+          (e.currency && sym.toUpperCase().includes(e.currency)),
+        )
+        if (relevant.length > 0) {
+          const ev = relevant[0]
+          const d = new Date(ev.date + 'T00:00:00')
+          const dd = String(d.getDate()).padStart(2, '0')
+          const mm = String(d.getMonth() + 1).padStart(2, '0')
+          lines[sym] = `${dd}/${mm} ${ev.event}${ev.details ? ' - ' + ev.details : ''}`
+        }
+      }
+      setSymbolEventLines(lines)
+    } catch (e) {
+      addLog('calendar', `Failed: ${e.message}`)
+    } finally {
+      setCalendarLoading(false)
+    }
+  }, [enabledSymbols, addLog, trackTokens])
+
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {
     setOrderFor({ symbol, synthesis })
@@ -766,6 +935,13 @@ export default function Feed() {
       {/* Activity log */}
       <ActivityLog entries={log} />
 
+      {/* Market calendar */}
+      <CalendarCard
+        events={calendarEvents}
+        loading={calendarLoading}
+        onRefresh={fetchCalendar}
+      />
+
       {/* Summary matrix */}
       {displaySymbols.length > 0 && (
         <SummaryMatrix symbols={displaySymbols} />
@@ -791,6 +967,7 @@ export default function Feed() {
               scan={d.scan}
               analysis={d.analysis}
               onOrder={handleOpenOrder}
+              eventLine={symbolEventLines[d.symbol] || null}
             />
           ))}
         </div>
