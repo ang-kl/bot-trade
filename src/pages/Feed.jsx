@@ -1,197 +1,175 @@
-// Agent Feed - story cards driven by the strategy-store watchlist.
-// Scans enabled symbols through /api/scan for AI-generated theses.
-// Bottom bar shows token usage and a discrete logout link.
+// Trading Floor — mission control for the minion swarm.
+// Scout → Analyst (parallel minions) → Synthesis → Trade → Monitor.
+// Activity log shows every agent action in real time.
 
-import { useMemo, useState, useCallback, useEffect } from 'react'
-import AgentBrief from '../components/AgentFeed/AgentBrief.jsx'
-import Editorial from '../components/AgentFeed/Editorial.jsx'
-import StoryCard from '../components/AgentFeed/StoryCard.jsx'
-import TimelineStrip from '../components/AgentFeed/TimelineStrip.jsx'
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import TradingFloor from '../components/AgentFeed/TradingFloor.jsx'
+import ActivityLog from '../components/AgentFeed/ActivityLog.jsx'
+import OrderDialog from '../components/AgentFeed/OrderDialog.jsx'
 import AskDock from '../components/AgentFeed/AskDock.jsx'
-import TightenSLDialog from '../components/AgentFeed/TightenSLDialog.jsx'
 import BottomBar from '../components/AgentFeed/BottomBar.jsx'
 import Card from '../components/common/Card.jsx'
-import Button from '../components/common/Button.jsx'
 import Badge from '../components/common/Badge.jsx'
-import { buildStory } from '../lib/story-builder.js'
+import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 
-// Seed: turn each enabled watchlist symbol into a WATCHING story
-// so the feed has content before the advisor runs.
-function seedStories(watchlist, scanResults) {
-  return watchlist
-    .filter((w) => w.enabled)
-    .map((w) => {
-      const scan = scanResults[w.symbol]
-      const story = buildStory(
-        {
-          id: `watch-${w.symbol}`,
-          symbol: w.symbol,
-          side: scan?.bias === 'short' ? 'short' : 'long',
-          volume: 0,
-          entryPrice: 0,
-          currentPrice: 0,
-          reasoning: scan?.thesis || null,
-          confidence: scan?.confidence || null,
-        },
-        'WATCHING',
-      )
-      // Attach scan metadata for richer card rendering
-      if (scan) {
-        story.scanBias = scan.bias
-        story.scanTimeframe = scan.timeframe
-        story.scanSessionFit = scan.session_fit
-        story.scanKeyLevels = scan.key_levels
-      }
-      return story
-    })
-}
+const SCAN_INTERVAL = 5 * 60 // 5 minutes in seconds
 
-async function amendPosition(story, nextStopLoss) {
-  const body = {
-    action: 'amend-position',
-    positionId: story.id,
-    stopLoss: nextStopLoss,
-    takeProfit: story.takeProfit,
-  }
-  const res = await fetch('/api/ctrader', {
+// ── API helpers ──
+
+async function apiPost(url, body) {
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `ctrader amend ${res.status}`)
+  if (!res.ok) throw new Error(data.error || `${url} ${res.status}`)
   return data
 }
 
-async function runScan(symbols, timezone) {
-  const res = await fetch('/api/scan', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ symbols, timezone }),
-  })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `scan ${res.status}`)
-  return data
+// ── Activity log helpers ──
+
+let logId = 0
+function logEntry(agent, message, extra = {}) {
+  return { id: ++logId, ts: Date.now(), agent, message, ...extra }
 }
+
+// ── Symbol result card ──
+
+function SymbolCard({ symbol, scan, analysis, onOrder }) {
+  const hasAnalysis = !!analysis
+  const synthesis = analysis?.synthesis
+  const reports = analysis?.reports || []
+
+  const bias = synthesis?.consensus_bias || scan?.bias || 'neutral'
+  const conviction = synthesis?.overall_conviction || scan?.confidence || 0
+  const isSkip = bias === 'skip' || bias === 'neutral'
+  const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : '\u25CF'
+  const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
+
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <Card>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className={`t-body font-bold ${sideColor}`}>{arrow} {symbol}</span>
+        <Badge tone={isSkip ? 'neutral' : bias === 'long' ? 'up' : 'down'} pill>
+          {bias.toUpperCase()}
+        </Badge>
+        <Badge tone="info" pill>{conviction}/10</Badge>
+        {synthesis?.consensus_summary && (
+          <span className="t-meta text-[var(--color-muted)]">{synthesis.consensus_summary}</span>
+        )}
+        {scan?.session_fit && (
+          <span className="t-meta text-[var(--color-muted)]">Session: {scan.session_fit}</span>
+        )}
+      </div>
+
+      {/* Scout thesis */}
+      {scan?.thesis && !hasAnalysis && (
+        <p className="t-sub text-[var(--color-text-sub)] mb-2">{scan.thesis}</p>
+      )}
+
+      {/* Synthesis summary */}
+      {synthesis?.synthesis && (
+        <p className="t-sub text-[var(--color-text-sub)] mb-2">{synthesis.synthesis}</p>
+      )}
+
+      {/* Minion reports (expandable) */}
+      {reports.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded(prev => !prev)}
+            className="t-meta text-[var(--color-accent)] cursor-pointer mb-2 hover:underline"
+          >
+            {expanded ? '\u25BC' : '\u25B6'} {reports.length} minion reports
+          </button>
+          {expanded && (
+            <div className="space-y-1 mb-2 pl-2 border-l-2 border-[var(--color-border)]">
+              {reports.map((r, i) => (
+                <div key={i} className="text-[12px]">
+                  <span className="font-bold text-[var(--color-accent)]">
+                    {r.icon || '\u25CF'} {r.name}
+                  </span>
+                  <span className="text-[var(--color-muted)] ml-1">({r.role})</span>
+                  <Badge
+                    tone={r.bias === 'long' ? 'up' : r.bias === 'short' ? 'down' : 'neutral'}
+                    className="ml-1"
+                  >
+                    {r.bias?.toUpperCase()}
+                  </Badge>
+                  <span className="text-[var(--color-muted)] ml-1">{r.conviction}/10</span>
+                  <p className="text-[var(--color-text-sub)] ml-4">{r.report}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Levels */}
+      {synthesis?.entry != null && (
+        <div className="flex gap-4 t-meta mb-2 flex-wrap">
+          <span>Entry: <span className="font-mono font-semibold">{synthesis.entry}</span></span>
+          {synthesis.sl != null && <span className="text-[var(--color-down)]">SL: {synthesis.sl}</span>}
+          {synthesis.tp1 != null && <span className="text-[var(--color-up)]">TP1: {synthesis.tp1}</span>}
+          {synthesis.tp2 != null && <span className="text-[var(--color-up)]">TP2: {synthesis.tp2}</span>}
+        </div>
+      )}
+
+      {/* Dissent */}
+      {synthesis?.dissent && (
+        <p className="t-meta text-[var(--color-warning-text)] mb-2">
+          Dissent: {synthesis.dissent}
+        </p>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-2 flex-wrap">
+        {!isSkip && synthesis?.entry != null && (
+          <Button size="sm" variant="primary" onClick={() => onOrder(symbol, synthesis)}>
+            {arrow} Place Order
+          </Button>
+        )}
+        {hasAnalysis && synthesis?.auto_trade && (
+          <Badge tone="up" pill>AUTO-TRADE ELIGIBLE</Badge>
+        )}
+        {!hasAnalysis && !isSkip && conviction >= 5 && (
+          <Badge tone="info" pill>ANALYZING...</Badge>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// ── Main page ──
 
 export default function Feed() {
   const { state, dispatch } = useStrategy()
+  const [log, setLog] = useState([])
   const [scanResults, setScanResults] = useState({})
+  const [analyses, setAnalyses] = useState({})
   const [deskNote, setDeskNote] = useState(null)
-  const [scanning, setScanning] = useState(false)
-  const [scanError, setScanError] = useState(null)
-
-  const stories = useMemo(
-    () => seedStories(state.watchlist, scanResults),
-    [state.watchlist, scanResults],
-  )
-
-  const [tightenFor, setTightenFor] = useState(null)
-  const [dismissed, setDismissed] = useState(new Set())
-  const [muted, setMuted] = useState({})
-  const [toast, setToast] = useState(null)
+  const [agentStates, setAgentStates] = useState({})
+  const [lastScanAt, setLastScanAt] = useState(null)
+  const [countdown, setCountdown] = useState(0)
   const [tokenCount, setTokenCount] = useState(0)
+  const [orderFor, setOrderFor] = useState(null)
+  const [toast, setToast] = useState(null)
+
+  const scanTimerRef = useRef(null)
+
+  const addLog = useCallback((agent, message, extra = {}) => {
+    setLog(prev => [...prev, logEntry(agent, message, extra)])
+  }, [])
 
   const showToast = useCallback((msg) => {
     setToast(msg)
     setTimeout(() => setToast(null), 3000)
   }, [])
-
-  const handleAction = useCallback((action, story) => {
-    switch (action) {
-      case 'tighten-sl':
-        setTightenFor(story)
-        break
-      case 'why':
-        showToast(story.reasoning || 'Thesis pending - agents not yet scanned.')
-        break
-      case 'dismiss':
-        setDismissed(prev => new Set([...prev, story.id]))
-        break
-      case 'mute':
-        setMuted(prev => ({ ...prev, [story.symbol]: Date.now() + 3600000 }))
-        showToast(`${story.symbol} muted for 1 hour.`)
-        break
-      case 'remove':
-        dispatch({ type: 'WATCHLIST_REMOVE', symbol: story.symbol })
-        showToast(`${story.symbol} removed from watchlist.`)
-        break
-      case 'approve':
-        showToast(`${story.symbol} approved - order placement coming in next phase.`)
-        break
-      case 'cancel':
-        showToast(`${story.symbol} cancelled.`)
-        break
-      case 'stop':
-        if (window.confirm(`Stop the ${story.symbol} position? This sends a close order.`)) {
-          showToast(`${story.symbol} stop order sent.`)
-        }
-        break
-      case 'timeline':
-        showToast('Timeline view coming in the vault phase.')
-        break
-      case 'save-vault':
-        showToast('Save to Vault coming in the vault phase.')
-        break
-      case 'post-mortem':
-        showToast('Post-mortem coming in the vault phase.')
-        break
-      default:
-        break
-    }
-  }, [dispatch, showToast])
-
-  const handleTightenConfirm = async (nextSL, story) => {
-    await amendPosition(story, nextSL)
-    showToast(`${story.symbol} SL tightened to ${nextSL}.`)
-    setTightenFor(null)
-  }
-
-  const handleAskReply = useCallback((_q, data) => {
-    if (data?.usage?.output_tokens) {
-      setTokenCount(prev => prev + data.usage.output_tokens)
-    }
-  }, [])
-
-  const editorialText = deskNote || state.news.latestRundown || null
-
-  // Auto-clean expired mutes so stories reappear.
-  useEffect(() => {
-    const expiries = Object.values(muted)
-    if (expiries.length === 0) return
-    const soonest = Math.min(...expiries)
-    const delay = Math.max(0, soonest - Date.now())
-    const timer = setTimeout(() => {
-      setMuted(prev => {
-        const next = {}
-        const now = Date.now()
-        for (const [sym, exp] of Object.entries(prev)) {
-          if (exp > now) next[sym] = exp
-        }
-        return next
-      })
-    }, delay)
-    return () => clearTimeout(timer)
-  }, [muted])
-
-  // Filter out dismissed and muted stories.
-  const visibleStories = useMemo(() => {
-    return stories.filter(s => {
-      if (dismissed.has(s.id)) return false
-      if (muted[s.symbol]) return false
-      return true
-    })
-  }, [stories, dismissed, muted])
-
-  const askContext = useMemo(
-    () => ({
-      watchlist: state.watchlist,
-      rundown: state.news.latestRundown,
-      stories: visibleStories.map((s) => ({ symbol: s.symbol, state: s.state, side: s.side })),
-    }),
-    [state.watchlist, state.news.latestRundown, visibleStories],
-  )
 
   const enabledSymbols = useMemo(
     () => state.watchlist.filter(w => w.enabled),
@@ -199,168 +177,308 @@ export default function Feed() {
   )
   const enabledCount = enabledSymbols.length
   const isArmed = state.risk.armed
-  const scannedCount = Object.keys(scanResults).length
 
-  // --- Scanner ---
-  const handleScan = useCallback(async () => {
+  // ── Telegram helper ──
+  const sendTelegramAlert = useCallback((body) => {
+    const tg = state.telegram
+    if (!tg.enabled || !tg.botToken || !tg.chatId) return
+    apiPost('/api/telegram', { ...body, botToken: tg.botToken, chatId: tg.chatId }).catch(() => {})
+  }, [state.telegram])
+
+  // ── Analyst deep dive (defined before runScout so it can be referenced) ──
+  const analystRef = useRef(null)
+
+  const runAnalyst = useCallback(async (symbol) => {
+    setAgentStates(prev => ({ ...prev, analyst: 'running' }))
+    const wItem = state.watchlist.find(w => w.symbol === symbol)
+    const threshold = wItem?.autoTradeThreshold || 8
+
+    addLog('analyst', `Dispatching minions...`, { symbol })
+
+    try {
+      const data = await apiPost('/api/analyze', { symbol, autoTradeThreshold: threshold })
+
+      setAnalyses(prev => ({ ...prev, [symbol]: data }))
+      if (data.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
+
+      for (const r of (data.reports || [])) {
+        addLog('analyst', `${r.bias?.toUpperCase()} ${r.conviction}/10 \u2014 ${r.report}`, {
+          symbol, minionName: r.name, icon: r.icon,
+        })
+      }
+
+      const syn = data.synthesis
+      if (syn) {
+        addLog('synthesis', `${syn.consensus_summary || ''} \u2014 Conviction ${syn.overall_conviction}/10. ${syn.auto_trade ? 'AUTO-TRADE ELIGIBLE.' : 'Manual approval needed.'}`, { symbol })
+
+        if (syn.dissent) {
+          addLog('synthesis', `Dissent: ${syn.dissent}`, { symbol })
+        }
+
+        if (syn.auto_trade && isArmed && syn.entry != null) {
+          addLog('trader', `Auto-trade triggered. Placing ${syn.consensus_bias?.toUpperCase()} order...`, { symbol })
+          try {
+            const orderBody = {
+              action: 'new-market-order',
+              accountId: state.ctrader.linkedAccountId,
+              symbolName: symbol,
+              orderType: 'MARKET',
+              tradeSide: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
+              volume: (wItem?.maxVolume || 0.01) * 100,
+              stopLoss: syn.sl || undefined,
+              takeProfit: syn.tp1 || undefined,
+            }
+            await apiPost('/api/ctrader', orderBody)
+            addLog('trader', `Order placed! ${syn.consensus_bias?.toUpperCase()} @ market`, { symbol })
+            sendTelegramAlert({
+              action: 'send-alert', alertType: 'trade',
+              trade: { symbol, side: syn.consensus_bias, entry: syn.entry, stopLoss: syn.sl, takeProfit: syn.tp1, action: 'AUTO-TRADE', message: syn.synthesis },
+            })
+            addLog('telegram', `Trade alert sent`, { symbol })
+          } catch (e) {
+            addLog('trader', `Order FAILED: ${e.message}`, { symbol })
+          }
+        }
+      }
+
+      setAgentStates(prev => ({ ...prev, analyst: 'done' }))
+    } catch (e) {
+      addLog('analyst', `FAILED: ${e.message}`, { symbol })
+      setAgentStates(prev => ({ ...prev, analyst: 'idle' }))
+    }
+  }, [state.watchlist, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert])
+
+  // Keep ref in sync so runScout can call it without circular deps
+  useEffect(() => { analystRef.current = runAnalyst }, [runAnalyst])
+
+  // ── Scout scan ──
+  const runScout = useCallback(async () => {
     if (enabledSymbols.length === 0) return
-    setScanning(true)
-    setScanError(null)
-    setDismissed(new Set())
-    setMuted({})
+    setAgentStates(prev => ({ ...prev, scout: 'running' }))
+    addLog('scout', `Scanning ${enabledSymbols.length} symbols...`)
 
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore'
 
     try {
-      const data = await runScan(enabledSymbols, tz)
-      // Map scan results by symbol
+      const data = await apiPost('/api/scan', { symbols: enabledSymbols, timezone: tz })
+
       const map = {}
       for (const s of (data.scans || [])) {
         if (s.symbol) map[s.symbol.toUpperCase()] = s
       }
       setScanResults(map)
+      setLastScanAt(Date.now())
       if (data.desk_note) setDeskNote(data.desk_note)
-      if (data.usage?.output_tokens) {
-        setTokenCount(prev => prev + data.usage.output_tokens)
-      }
-      const found = Object.values(map).filter(s => s.bias !== 'skip' && s.bias !== 'neutral').length
-      showToast(`Scan complete. ${found} setups found across ${data.scans?.length || 0} symbols.`)
+      if (data.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
 
-      // Fire Telegram alert if enabled
-      const tg = state.telegram
-      if (tg.enabled && tg.alertOnScan && tg.botToken && tg.chatId && data.scans?.length) {
-        const filtered = (data.scans || []).filter(
-          s => s.confidence == null || s.confidence >= tg.minConfidence
-        )
-        if (filtered.length > 0) {
-          fetch('/api/telegram', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              action: 'send-alert',
-              alertType: 'scan',
-              botToken: tg.botToken,
-              chatId: tg.chatId,
-              scans: filtered,
-              deskNote: data.desk_note || null,
-              session: data.session || null,
-            }),
-          }).catch(() => {})
+      const hotSymbols = data.hot || []
+      const warmSymbols = data.warm || []
+      addLog('scout', `Done. ${hotSymbols.length} hot, ${warmSymbols.length} warm.`)
+
+      for (const s of (data.scans || [])) {
+        addLog('scout', `${s.bias?.toUpperCase()} ${s.confidence}/10 \u2014 ${s.thesis || 'no thesis'}`, {
+          symbol: s.symbol,
+        })
+        if (hotSymbols.includes(s.symbol)) {
+          addLog('scout', `HOT \u2014 kicking to ANALYST`, { symbol: s.symbol })
         }
       }
-    } catch (e) {
-      setScanError(e.message)
-      showToast(`Scan failed: ${e.message}`)
-    } finally {
-      setScanning(false)
-    }
-  }, [enabledSymbols, showToast, state.telegram])
 
-  const handleStartAI = useCallback(() => {
+      setAgentStates(prev => ({ ...prev, scout: 'done' }))
+
+      // Fire Telegram scan alert
+      if (data.scans?.length) {
+        const tg = state.telegram
+        if (tg.enabled && tg.alertOnScan) {
+          const filtered = data.scans.filter(s => s.confidence == null || s.confidence >= tg.minConfidence)
+          if (filtered.length > 0) {
+            sendTelegramAlert({
+              action: 'send-alert', alertType: 'scan',
+              scans: filtered, deskNote: data.desk_note, session: data.session,
+            })
+            addLog('telegram', `Scan alert sent (${filtered.length} setups)`)
+          }
+        }
+      }
+
+      // Auto-dispatch analyst for hot symbols via ref
+      for (const sym of hotSymbols) {
+        analystRef.current?.(sym)
+      }
+
+      return { hot: hotSymbols, warm: warmSymbols }
+    } catch (e) {
+      addLog('scout', `FAILED: ${e.message}`)
+      setAgentStates(prev => ({ ...prev, scout: 'idle' }))
+      showToast(`Scout failed: ${e.message}`)
+      return null
+    }
+  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert])
+
+  // ── Arm / Disarm ──
+  const handleArm = useCallback(() => {
     dispatch({ type: 'RISK_TOGGLE_ARMED' })
     if (!isArmed) {
-      // Arm + scan
-      handleScan()
-      showToast('AI trader armed. Scanning enabled symbols...')
+      addLog('system', 'System ARMED. Scout starting...')
+      setCountdown(0)
+      // Immediate scan on arm
+      setTimeout(() => runScout().then(() => setCountdown(SCAN_INTERVAL)), 100)
     } else {
-      showToast('AI trader disarmed.')
+      addLog('system', 'System DISARMED. All agents idle.')
+      setAgentStates({ scout: 'idle', analyst: 'idle', trader: 'idle', monitor: 'idle' })
+      setCountdown(0)
     }
-  }, [isArmed, dispatch, showToast, handleScan])
+  }, [isArmed, dispatch, addLog, runScout])
+
+  // ── Manual scan ──
+  const handleManualScan = useCallback(() => {
+    setCountdown(0)
+    runScout().then(() => setCountdown(SCAN_INTERVAL))
+  }, [runScout])
+
+  // ── Auto-scan loop when armed ──
+  useEffect(() => {
+    if (!isArmed || enabledCount === 0) {
+      if (scanTimerRef.current) clearInterval(scanTimerRef.current)
+      return
+    }
+    scanTimerRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          runScout().then(() => setCountdown(SCAN_INTERVAL))
+          return SCAN_INTERVAL
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current) }
+  }, [isArmed, enabledCount, runScout])
+
+  // ── Order dialog ──
+  const handleOpenOrder = useCallback((symbol, synthesis) => {
+    setOrderFor({ symbol, synthesis })
+  }, [])
+
+  const handleConfirmOrder = useCallback(async (order) => {
+    addLog('trader', `Placing ${order.orderType} ${order.side} order...`, { symbol: order.symbol })
+    const body = {
+      action: order.orderType === 'market' ? 'new-market-order' : 'new-limit-order',
+      accountId: state.ctrader.linkedAccountId,
+      symbolName: order.symbol,
+      orderType: order.orderType === 'market' ? 'MARKET' : order.orderType === 'limit' ? 'LIMIT' : 'STOP',
+      tradeSide: order.side,
+      volume: (order.volume || 0.01) * 100,
+      stopLoss: order.stopLoss || undefined,
+      takeProfit: order.takeProfit || undefined,
+      limitPrice: order.limitPrice || undefined,
+    }
+    await apiPost('/api/ctrader', body)
+    addLog('trader', `Order placed!`, { symbol: order.symbol })
+    sendTelegramAlert({
+      action: 'send-alert', alertType: 'trade',
+      trade: { symbol: order.symbol, side: order.side, entry: order.limitPrice || 'market', stopLoss: order.stopLoss, takeProfit: order.takeProfit, action: order.orderType.toUpperCase() },
+    })
+    addLog('telegram', `Trade alert sent`, { symbol: order.symbol })
+    showToast(`Order placed for ${order.symbol}`)
+    setOrderFor(null)
+  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
+
+  // ── Ask dock context ──
+  const askContext = useMemo(() => ({
+    watchlist: state.watchlist,
+    rundown: state.news.latestRundown,
+    scanResults,
+    analyses,
+  }), [state.watchlist, state.news.latestRundown, scanResults, analyses])
+
+  const handleAskReply = useCallback((_q, data) => {
+    if (data?.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
+  }, [])
+
+  // ── Sorted symbols for display ──
+  const displaySymbols = useMemo(() => {
+    return enabledSymbols
+      .map(w => ({
+        symbol: w.symbol,
+        scan: scanResults[w.symbol] || null,
+        analysis: analyses[w.symbol] || null,
+        confidence: analyses[w.symbol]?.synthesis?.overall_conviction || scanResults[w.symbol]?.confidence || 0,
+      }))
+      .sort((a, b) => b.confidence - a.confidence)
+  }, [enabledSymbols, scanResults, analyses])
+
+  const scanning = agentStates.scout === 'running'
 
   return (
-    <section className="space-y-4">
-      <AgentBrief stories={visibleStories} />
+    <section className="space-y-3">
+      {/* Command strip */}
+      <TradingFloor
+        agentStates={agentStates}
+        countdown={countdown}
+        lastScanAt={lastScanAt}
+        liveCount={0}
+        pendingCount={Object.keys(analyses).length}
+        riskUsed={0}
+        onArm={handleArm}
+        onScan={handleManualScan}
+        enabledCount={enabledCount}
+        scanning={scanning}
+      />
 
-      {/* Desk note / editorial */}
-      {editorialText ? (
-        <Editorial text={editorialText} />
-      ) : (
-        <Editorial text="No desk notes yet. Hit scan to wake the agents up." />
-      )}
-
-      {/* Feed controls */}
-      <Card className="flex items-center gap-3 flex-wrap">
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={handleScan}
-          disabled={enabledCount === 0 || scanning}
-        >
-          {scanning ? 'Scanning...' : `\u21BB Scan Watchlist (${enabledCount})`}
-        </Button>
-        {scannedCount > 0 && (
-          <span className="t-meta text-[var(--color-text-sub)]">
-            {scannedCount} scanned
-          </span>
-        )}
-        <div className="flex-1" />
-        <Badge tone={isArmed ? 'up' : 'neutral'} pill>
-          {isArmed ? 'ARMED' : 'DISARMED'}
-        </Badge>
-        <Button
-          size="sm"
-          variant={isArmed ? 'danger' : 'primary'}
-          onClick={handleStartAI}
-          disabled={enabledCount === 0}
-        >
-          {isArmed ? '\u25A0 Stop AI' : '\u25B6 Start AI Trader'}
-        </Button>
-      </Card>
-
-      {/* Scan error */}
-      {scanError && (
-        <Card className="border-l-4 border-l-[var(--color-down)]">
-          <p className="t-sub text-[var(--color-down)]">{scanError}</p>
+      {/* Desk note */}
+      {deskNote && (
+        <Card>
+          <p className="t-label mb-1">Desk Notes</p>
+          <p className="t-sub text-[var(--color-text-sub)]">{deskNote}</p>
         </Card>
       )}
 
-      {/* Scanning indicator */}
-      {scanning && (
-        <Card className="text-center py-6">
-          <p className="t-body text-[var(--color-accent)] mb-1">Agents scanning...</p>
-          <p className="t-meta text-[var(--color-muted)]">
-            Analysing {enabledCount} symbols across active market sessions.
-          </p>
-        </Card>
-      )}
+      {/* Activity log */}
+      <ActivityLog entries={log} />
 
-      {/* Story cards */}
-      {!scanning && visibleStories.length === 0 ? (
-        <Card className="text-center py-8">
-          <p className="t-body text-[var(--color-text-sub)] mb-2">
-            No active stories yet.
-          </p>
-          <p className="t-meta text-[var(--color-muted)]">
-            Enable symbols in Settings, then hit Scan or Start AI to wake the agents.
-          </p>
-        </Card>
-      ) : !scanning && (
-        <ul className="space-y-3">
-          {visibleStories.map((story) => (
-            <li key={story.id}>
-              <TimelineStrip state={story.state} />
-              <StoryCard story={story} onAction={handleAction} />
-            </li>
+      {/* Symbol cards */}
+      {displaySymbols.length > 0 && (
+        <div className="space-y-2">
+          <p className="t-label">{displaySymbols.length} symbols active</p>
+          {displaySymbols.map(d => (
+            <SymbolCard
+              key={d.symbol}
+              symbol={d.symbol}
+              scan={d.scan}
+              analysis={d.analysis}
+              onOrder={handleOpenOrder}
+            />
           ))}
-        </ul>
-      )}
-      {!scanning && visibleStories.length > 0 && (
-        <div className="border-t border-[var(--color-border)] pt-2 t-meta text-[var(--color-muted-light)] text-center">
-          - earlier -
         </div>
       )}
+
+      {/* Empty state */}
+      {enabledCount === 0 && (
+        <Card className="text-center py-8">
+          <p className="t-body text-[var(--color-text-sub)] mb-2">No symbols enabled.</p>
+          <p className="t-meta text-[var(--color-muted)]">Enable symbols in Settings, then Arm the system.</p>
+        </Card>
+      )}
+
+      {/* Ask dock */}
       <AskDock context={askContext} onAsk={handleAskReply} />
       <BottomBar tokenCount={tokenCount} />
+
+      {/* Toast */}
       {toast && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-[8px] bg-[var(--color-text)] text-[var(--color-surface)] t-sub max-w-sm text-center">
           {toast}
         </div>
       )}
-      {tightenFor && (
-        <TightenSLDialog
-          story={tightenFor}
-          onCancel={() => setTightenFor(null)}
-          onConfirm={handleTightenConfirm}
+
+      {/* Order dialog */}
+      {orderFor && (
+        <OrderDialog
+          symbol={orderFor.symbol}
+          synthesis={orderFor.synthesis}
+          maxVolume={state.watchlist.find(w => w.symbol === orderFor.symbol)?.maxVolume || 0.01}
+          onConfirm={handleConfirmOrder}
+          onCancel={() => setOrderFor(null)}
         />
       )}
     </section>

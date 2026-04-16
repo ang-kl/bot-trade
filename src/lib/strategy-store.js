@@ -31,7 +31,7 @@ export const WATCHLIST_CATEGORIES = [
 // Default 39-entry watchlist ported from v1. Every row lands disabled so the
 // user (or the agent) explicitly picks which handful to trade each session.
 function seed(symbol, label, category) {
-  return { symbol, label, category, enabled: false, agents: { ...DEFAULT_AGENTS } }
+  return { symbol, label, category, enabled: false, agents: { ...DEFAULT_AGENTS }, autoTradeThreshold: 8, maxVolume: 0.01 }
 }
 
 export const DEFAULT_WATCHLIST = [
@@ -148,7 +148,7 @@ export function reducer(state, action) {
     case 'WATCHLIST_ADD': {
       const sym = normalizeSymbol(action.symbol)
       if (!sym || state.watchlist.some(w => w.symbol === sym)) return state
-      const row = { symbol: sym, enabled: true, agents: { ...DEFAULT_AGENTS } }
+      const row = { symbol: sym, enabled: true, agents: { ...DEFAULT_AGENTS }, autoTradeThreshold: 8, maxVolume: 0.01 }
       if (typeof action.label === 'string' && action.label) row.label = action.label
       if (typeof action.category === 'string' && action.category) row.category = action.category
       return { ...state, watchlist: [...state.watchlist, row] }
@@ -183,6 +183,23 @@ export function reducer(state, action) {
           if (w.symbol !== sym) return w
           return { ...w, agents: { ...w.agents, [action.agent]: !w.agents[action.agent] } }
         }),
+      }
+    }
+
+    case 'WATCHLIST_SET_THRESHOLD': {
+      const sym = normalizeSymbol(action.symbol)
+      const threshold = clampNum(action.threshold, 1, 11)
+      return {
+        ...state,
+        watchlist: state.watchlist.map(w => w.symbol === sym ? { ...w, autoTradeThreshold: threshold } : w),
+      }
+    }
+    case 'WATCHLIST_SET_VOLUME': {
+      const sym = normalizeSymbol(action.symbol)
+      const vol = clampNum(action.volume, 0.01, 100)
+      return {
+        ...state,
+        watchlist: state.watchlist.map(w => w.symbol === sym ? { ...w, maxVolume: vol } : w),
       }
     }
 
@@ -245,6 +262,8 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
             symbol: normalizeSymbol(w.symbol),
             enabled: !!w.enabled,
             agents: { ...DEFAULT_AGENTS, ...(w.agents && typeof w.agents === 'object' ? w.agents : {}) },
+            autoTradeThreshold: clampNum(w.autoTradeThreshold ?? 8, 1, 11),
+            maxVolume: clampNum(w.maxVolume ?? 0.01, 0.01, 100),
           }
           if (typeof w.label === 'string' && w.label) row.label = w.label
           if (typeof w.category === 'string' && WATCHLIST_CATEGORIES.includes(w.category)) row.category = w.category

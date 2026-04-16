@@ -114,7 +114,7 @@ describe('reducer: watchlist', () => {
 
   it('adds a symbol with default agents', () => {
     const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'eurusd' })
-    expect(s.watchlist).toEqual([{ symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS } }])
+    expect(s.watchlist).toEqual([{ symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS }, autoTradeThreshold: 8, maxVolume: 0.01 }])
   })
   it('stores optional label + category when provided', () => {
     const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'NATGAS', label: 'Natural Gas', category: 'Futures' })
@@ -220,7 +220,7 @@ describe('sanitize', () => {
     const raw = { watchlist: [{ symbol: 'eurusd', enabled: true, agents: { news: false } }, null, { symbol: 42 }] }
     const out = sanitize(raw)
     expect(out.watchlist).toEqual([
-      { symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS, news: false } },
+      { symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS, news: false }, autoTradeThreshold: 8, maxVolume: 0.01 },
     ])
   })
   it('coerces risk numerics and drops unknown sources', () => {
