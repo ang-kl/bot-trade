@@ -90,7 +90,9 @@ export function buildStory(position, execState) {
   const pnlPct = entryPrice && volume ? (pnl / (Math.abs(entryPrice) * volume)) * 100 : 0
   const progressToTP = computeProgressToTP(side, entryPrice, currentPrice, takeProfit)
 
-  const headline = `${SIDE_GLYPH[side]} ${SIDE_VERB[side]} ${formatVolume(volume)} ${symbol} at $${formatPrice(entryPrice)}`
+  const headline = execState === 'WATCHING'
+    ? `${symbol} - watching`
+    : `${SIDE_GLYPH[side]} ${SIDE_VERB[side]} ${formatVolume(volume)} ${symbol} at $${formatPrice(entryPrice)}`
   const reasoning = typeof position.reasoning === 'string'
     ? position.reasoning
     : (position.reasoning?.why || position.thesis || '')

@@ -264,7 +264,7 @@ export default function WatchlistTab() {
                           disabled={i === 0}
                           aria-label={`Move ${w.symbol} up`}
                         >
-                          &#8593;
+                          {'\u2191'}
                         </Button>
                         <Button
                           size="sm"
@@ -273,7 +273,7 @@ export default function WatchlistTab() {
                           disabled={i === filtered.length - 1}
                           aria-label={`Move ${w.symbol} down`}
                         >
-                          &#8595;
+                          {'\u2193'}
                         </Button>
                         <Button
                           size="sm"
@@ -281,7 +281,7 @@ export default function WatchlistTab() {
                           onClick={() => dispatch({ type: 'WATCHLIST_REMOVE', symbol: w.symbol })}
                           aria-label={`Remove ${w.symbol}`}
                         >
-                          &#215;
+                          {'\u00D7'}
                         </Button>
                       </div>
                     </td>

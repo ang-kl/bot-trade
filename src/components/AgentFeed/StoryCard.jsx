@@ -87,7 +87,9 @@ export default function StoryCard({ story, onAction }) {
     currentPrice, pnl, pnlPct, progressToTP, side, timestamp,
     entryPrice,
   } = story
-  const headlineColor = side === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'
+  const headlineColor = state === 'WATCHING'
+    ? 'text-[var(--color-text)]'
+    : side === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'
   const pnlColor = pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'
   const ts = timeAgo(timestamp)
 

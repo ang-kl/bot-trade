@@ -3,7 +3,7 @@
 // accounts list, and a collapsed disconnect footer.
 // When disconnected: shows the OAuth card prominently.
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import Card from '../common/Card.jsx'
 import Button from '../common/Button.jsx'
 import Input from '../common/Input.jsx'
@@ -29,12 +29,16 @@ async function callCtrader(action, params = {}) {
 
 function formatBalance(balance, currency) {
   if (balance == null) return '-'
-  const formatted = new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: currency || 'USD',
     minimumFractionDigits: 2,
   }).format(balance)
-  return formatted
+}
+
+function maskToken(token) {
+  if (!token || token.length < 8) return '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
+  return token.slice(0, 4) + '\u2022'.repeat(Math.min(20, token.length - 4))
 }
 
 export default function CTraderTab() {
@@ -60,39 +64,53 @@ export default function CTraderTab() {
     }
   }
 
-  const onFetchAccounts = async () => {
+  const onFetchAccounts = useCallback(async () => {
     if (!accessToken) return
     setBusy('accounts'); setError(null)
     try {
       const data = await callCtrader('accounts', { accessToken })
-      dispatch({ type: 'CTRADER_SET_ACCOUNTS', accounts: data.accounts || [] })
+      const list = data.accounts || []
+      dispatch({ type: 'CTRADER_SET_ACCOUNTS', accounts: list })
+      return list
     } catch (e) {
       setError(e.message)
+      return []
     } finally {
       setBusy(null)
     }
-  }
+  }, [accessToken, dispatch])
 
   const fetchBalance = useCallback(async (accountId, isLive) => {
     if (!accessToken) return
     try {
-      const data = await callCtrader('account-info', {
-        accessToken,
-        accountId,
-        isLive,
-      })
+      const data = await callCtrader('account-info', { accessToken, accountId, isLive })
       setBalances(prev => ({ ...prev, [accountId]: data }))
     } catch {
       // Silently skip - balance just won't show
     }
   }, [accessToken])
 
-  const onRefreshAccounts = async () => {
-    await onFetchAccounts()
-    // Fetch balances for all accounts after loading them
-    for (const a of state.ctrader.accounts) {
+  const fetchAllBalances = useCallback(async (accts) => {
+    const list = accts || accounts
+    for (const a of list) {
       fetchBalance(a.accountId, a.isLive)
     }
+  }, [accounts, fetchBalance])
+
+  // Auto-fetch accounts and balances when connected with no accounts loaded
+  useEffect(() => {
+    if (isConnected && accounts.length === 0) {
+      onFetchAccounts().then(list => {
+        if (list && list.length > 0) fetchAllBalances(list)
+      })
+    } else if (isConnected && accounts.length > 0 && Object.keys(balances).length === 0) {
+      fetchAllBalances()
+    }
+  }, [isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onRefreshAccounts = async () => {
+    const list = await onFetchAccounts()
+    if (list && list.length > 0) fetchAllBalances(list)
   }
 
   const onDisconnect = () => {
@@ -114,7 +132,7 @@ export default function CTraderTab() {
         <Card className="border-l-4 border-l-[var(--color-accent)]">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-[8px] bg-[var(--color-accent)] flex items-center justify-center text-white font-bold t-body">
-              &#9889;
+              {'\u26A1'}
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="t-label">cTrader (Spotware)</h2>
@@ -134,7 +152,7 @@ export default function CTraderTab() {
               <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
               <div className="flex-1 min-w-0">
                 <p className="t-label">
-                  Pepperstone #{linkedAccount.accountNumber ?? linkedAccount.accountId}
+                  {linkedAccount.brokerTitle || 'Pepperstone'} #{linkedAccount.accountNumber ?? linkedAccount.accountId}
                 </p>
                 <p className="t-meta text-[var(--color-text-sub)]">
                   ID: {linkedAccount.accountId} - {linkedAccount.isLive ? 'LIVE' : 'DEMO'}
@@ -145,11 +163,6 @@ export default function CTraderTab() {
                   </p>
                 )}
               </div>
-              <Button size="sm" onClick={() => {
-                // Navigate to Feed - placeholder for start bot flow
-              }}>
-                Test Bot &rarr;
-              </Button>
             </div>
           </Card>
         )}
@@ -164,7 +177,7 @@ export default function CTraderTab() {
               onClick={onRefreshAccounts}
               disabled={busy === 'accounts'}
             >
-              {busy === 'accounts' ? 'Loading...' : '&#8635; Refresh'}
+              {busy === 'accounts' ? 'Loading...' : '\u21BB Refresh'}
             </Button>
           </div>
           {error && (
@@ -201,14 +214,14 @@ export default function CTraderTab() {
                           ? 'bg-[color-mix(in_srgb,var(--color-down)_12%,var(--color-surface))] text-[var(--color-down)]'
                           : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
                     }`}>
-                      &#9889;
+                      {'\u26A1'}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="t-sub font-medium">
                           {a.brokerTitle || 'Pepperstone'} #{a.accountNumber ?? id}
                         </span>
-                        {linked && <span className="text-[var(--color-accent)]">&#10003;</span>}
+                        {linked && <span className="text-[var(--color-accent)]">{'\u2713'}</span>}
                       </div>
                       <span className="t-meta text-[var(--color-text-sub)]">
                         ID: {id} - {a.isLive ? 'LIVE' : 'DEMO'}
@@ -232,13 +245,25 @@ export default function CTraderTab() {
           )}
         </Card>
 
+        {/* Masked tokens (collapsed) */}
+        <Card>
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="t-meta text-[var(--color-muted)] flex-1">Access token</h2>
+          </div>
+          <p className="t-sub text-[var(--color-muted)] font-mono mb-3">{maskToken(accessToken)}</p>
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="t-meta text-[var(--color-muted)] flex-1">Refresh token</h2>
+          </div>
+          <p className="t-sub text-[var(--color-muted)] font-mono">{maskToken(refreshToken)}</p>
+        </Card>
+
         {/* Disconnect footer */}
         <div className="flex items-center justify-between pt-2 px-1">
           <p className="t-meta text-[var(--color-muted)]">
             Disconnect will clear the access token and require re-authentication.
           </p>
           <Button size="sm" variant="ghost" onClick={onDisconnect}>
-            &#8635; Disconnect
+            {'\u21BB'} Disconnect
           </Button>
         </div>
       </div>

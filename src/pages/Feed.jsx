@@ -174,10 +174,11 @@ export default function Feed() {
   }, [enabledCount, showToast])
 
   const handleStartAI = useCallback(() => {
-    if (!isArmed) {
-      dispatch({ type: 'RISK_TOGGLE_ARMED' })
-    }
-    showToast('AI algo trader started. Monitoring enabled watchlist symbols.')
+    dispatch({ type: 'RISK_TOGGLE_ARMED' })
+    showToast(isArmed
+      ? 'AI algo trader stopped.'
+      : 'AI algo trader started. Monitoring enabled watchlist symbols.',
+    )
   }, [isArmed, dispatch, showToast])
 
   return (
@@ -188,7 +189,7 @@ export default function Feed() {
       {/* Feed controls */}
       <Card className="flex items-center gap-3 flex-wrap">
         <Button size="sm" variant="ghost" onClick={handleFetchWatchlist} disabled={enabledCount === 0}>
-          &#8635; Fetch from Watchlist ({enabledCount})
+          {'\u21BB'} Fetch from Watchlist ({enabledCount})
         </Button>
         <div className="flex-1" />
         <Badge tone={isArmed ? 'up' : 'neutral'} pill>
@@ -200,7 +201,7 @@ export default function Feed() {
           onClick={handleStartAI}
           disabled={enabledCount === 0}
         >
-          {isArmed ? '&#9632; Stop AI' : '&#9654; Start AI Trader'}
+          {isArmed ? '\u25A0 Stop AI' : '\u25B6 Start AI Trader'}
         </Button>
       </Card>
 

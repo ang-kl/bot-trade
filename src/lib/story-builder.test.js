@@ -107,6 +107,7 @@ describe('story-builder: buildStory', () => {
   it('builds an empty-state WATCHING story from watchlist stub input', () => {
     const s = buildStory({ id: 'watch-EURUSD', symbol: 'EURUSD', entryPrice: 0, currentPrice: 0, volume: 0 }, 'WATCHING')
     expect(s.state).toBe('WATCHING')
+    expect(s.headline).toBe('EURUSD - watching')
     expect(s.actions).toEqual(['mute', 'remove'])
   })
   it('maps price precision by magnitude', () => {
