@@ -318,12 +318,8 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                     <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">HVN</th>
                     <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">LVN</th>
                     <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">VWAP</th>
-                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[90px]">Strategy</th>
-                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[80px]">Execution</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">Sharpe</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">VaR</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">DD</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[40px]">Beta</th>
+                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Trend</th>
+                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[110px]">EMA Stack</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -335,15 +331,12 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                     const grade = getTradeGrade(d)
                     const mm = massiveMetrics[d.symbol] || {}
                     const mmVp = mm.volume_profile || {}
-                    const mmRisk = mm.risk_metrics || {}
                     const mmVwap = mm.vwap || {}
                     const vp = { ...mmVp, ...mmVwap, ...(syn?.volume_profile || d.scan?.volume_profile || {}) }
-                    const risk = { ...mmRisk, ...(syn?.risk_metrics || d.scan?.risk_metrics || {}) }
-                    // Map massive risk_metrics field names
-                    if (risk.var_95 != null && risk.var == null) risk.var = risk.var_95
-                    if (risk.max_drawdown != null && risk.drawdown == null) risk.drawdown = risk.max_drawdown
-                    const exec = syn?.execution || d.scan?.execution || {}
-                    const strat = syn?.strategy || d.scan?.strategy || ''
+                    const trendBias = syn?.consensus_bias || d.scan?.bias || 'neutral'
+                    const trendLabel = trendBias === 'long' ? 'Bullish' : trendBias === 'short' ? 'Bearish' : 'Sideways'
+                    const trendColor = trendBias === 'long' ? 'text-[var(--color-up)]' : trendBias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
+                    const emaStack = syn?.ema_stack || d.scan?.ema_stack || null
 
                     return (
                       <tr
@@ -372,23 +365,11 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
                           {vp[`vwap_${vwapPeriod}`] || vp.vwap || '\u2014'}
                         </td>
-                        <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[120px]">
-                          {strat || '\u2014'}
+                        <td className={`px-2 py-1.5 text-left font-semibold ${trendColor}`}>
+                          {trendLabel}
                         </td>
-                        <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[100px]">
-                          {exec.type || exec.infra || '\u2014'}
-                        </td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {risk.sharpe != null ? risk.sharpe.toFixed(2) : '\u2014'}
-                        </td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {risk.var != null ? `${risk.var}%` : '\u2014'}
-                        </td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {risk.drawdown != null ? `${risk.drawdown}%` : '\u2014'}
-                        </td>
-                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {risk.beta != null ? risk.beta.toFixed(2) : '\u2014'}
+                        <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[140px]">
+                          {emaStack || '\u2014'}
                         </td>
                       </tr>
                     )

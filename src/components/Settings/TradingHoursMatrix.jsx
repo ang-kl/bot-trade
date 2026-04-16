@@ -72,21 +72,28 @@ function groupBy(arr, fn) {
   return groups
 }
 
-// Compute category stats from symbol data
-function computeCategoryStats(items, symbolStats = {}) {
-  const stats = { open: 0, trend: 0, high: 0, dip: 0, aboveHvn: 0, belowHvn: 0, insidePoc: 0 }
+// Compute category stats from Massive risk metrics
+function computeCategoryStats(items, massiveMetrics = {}) {
+  const metrics = { count: items.length, open: 0, hasData: 0, avgSharpe: null, avgMaxDD: null, avgBeta: null, avgVaR: null }
+  let sharpeSum = 0, ddSum = 0, betaSum = 0, varSum = 0, n = 0
   for (const w of items) {
-    if (isTradingNow(w.symbol)) stats.open++
-    const s = symbolStats[w.symbol]
-    if (!s) continue
-    if (s.trend) stats.trend++
-    if (s.high) stats.high++
-    if (s.dip) stats.dip++
-    if (s.aboveHvn) stats.aboveHvn++
-    if (s.belowHvn) stats.belowHvn++
-    if (s.insidePoc) stats.insidePoc++
+    if (isTradingNow(w.symbol)) metrics.open++
+    const mm = massiveMetrics[w.symbol]
+    if (!mm?.risk_metrics) continue
+    metrics.hasData++
+    const rm = mm.risk_metrics
+    if (rm.sharpe != null) { sharpeSum += rm.sharpe; n++ }
+    if (rm.max_drawdown != null) ddSum += rm.max_drawdown
+    if (rm.beta != null) betaSum += rm.beta
+    if (rm.var_95 != null) varSum += rm.var_95
   }
-  return stats
+  if (n > 0) {
+    metrics.avgSharpe = (sharpeSum / n).toFixed(2)
+    metrics.avgMaxDD = (ddSum / n).toFixed(1)
+    metrics.avgBeta = (betaSum / n).toFixed(2)
+    metrics.avgVaR = (varSum / n).toFixed(1)
+  }
+  return metrics
 }
 
 const CATEGORY_ORDER = ['Currencies', 'Crypto', 'Indices', 'Metals', 'Futures', 'Stocks']
@@ -94,7 +101,7 @@ const CATEGORY_ORDER = ['Currencies', 'Crypto', 'Indices', 'Metals', 'Futures', 
 // Shared font class for all three header rows
 const HEADER_FONT = 'text-[8px] sm:text-[9px]'
 
-export default function TradingHoursMatrix({ watchlist, groupMode = 'category', onToggle, symbolStats = {} }) {
+export default function TradingHoursMatrix({ watchlist, groupMode = 'category', onToggle, massiveMetrics = {} }) {
   const [collapsed, setCollapsed] = useState({})
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
@@ -201,7 +208,7 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
           {groupKeys.map(groupKey => {
             const items = groups[groupKey] || []
             const isCollapsed = collapsed[groupKey]
-            const stats = computeCategoryStats(items, symbolStats)
+            const stats = computeCategoryStats(items, massiveMetrics)
 
             return [
               // Group header
@@ -220,14 +227,20 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                     </span>
                     <span className="font-bold text-[var(--color-text)] text-[12px]">{groupKey}</span>
                     <span className="text-[var(--color-muted)]">({items.length})</span>
-                    <span className="text-[9px] sm:text-[10px] text-[var(--color-muted)] font-mono flex items-center gap-1 flex-wrap">
-                      <span className={stats.open > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.open}] open</span>
-                      <span className={stats.trend > 0 ? 'text-[var(--color-accent)] font-bold' : ''}>[{stats.trend}] trend</span>
-                      <span className={stats.high > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.high}] high</span>
-                      <span className={stats.dip > 0 ? 'text-[var(--color-down)] font-bold' : ''}>[{stats.dip}] dip</span>
-                      <span className={stats.aboveHvn > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.aboveHvn}] &gt; HVN</span>
-                      <span className={stats.belowHvn > 0 ? 'text-[var(--color-down)] font-bold' : ''}>[{stats.belowHvn}] &lt; HVN</span>
-                      <span className={stats.insidePoc > 0 ? 'text-[var(--color-accent)] font-bold' : ''}>[{stats.insidePoc}] inside POC</span>
+                    <span className="text-[9px] sm:text-[10px] text-[var(--color-muted)] font-mono flex items-center gap-1.5 flex-wrap">
+                      <span className={stats.open > 0 ? 'text-[var(--color-up)] font-bold' : ''}>{stats.open} open</span>
+                      {stats.avgSharpe != null && (
+                        <>
+                          <span className="text-[var(--color-border)]">|</span>
+                          <span>Sharpe <span className={Number(stats.avgSharpe) >= 1 ? 'text-[var(--color-up)] font-bold' : Number(stats.avgSharpe) >= 0.5 ? 'text-[var(--color-text)]' : 'text-[var(--color-down)]'}>{stats.avgSharpe}</span></span>
+                          <span>DD <span className="text-[var(--color-down)]">{stats.avgMaxDD}%</span></span>
+                          <span>Beta <span className={Math.abs(Number(stats.avgBeta) - 1) < 0.3 ? 'text-[var(--color-text)]' : 'text-[var(--color-accent)]'}>{stats.avgBeta}</span></span>
+                          <span>VaR <span className="text-[var(--color-down)]">{stats.avgVaR}%</span></span>
+                        </>
+                      )}
+                      {stats.hasData === 0 && stats.count > 0 && (
+                        <span className="text-[var(--color-muted)] italic">no metrics</span>
+                      )}
                     </span>
                   </div>
                 </td>

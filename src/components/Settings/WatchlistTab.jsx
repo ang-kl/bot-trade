@@ -2,7 +2,7 @@
 // expandable rows for sub-agent config, Pepperstone symbol search,
 // and Finviz-inspired filtering (category, session, asset class).
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import Card from '../common/Card.jsx'
 import Button from '../common/Button.jsx'
 import Input from '../common/Input.jsx'
@@ -349,6 +349,36 @@ export default function WatchlistTab() {
   const [showDropdown, setShowDropdown] = useState(false)
   const [viewMode, setViewMode] = useState('matrix') // 'matrix' | 'list'
   const [matrixGroup, setMatrixGroup] = useState('category') // 'category' | 'ticker' | 'status'
+  const [massiveMetrics, setMassiveMetrics] = useState({})
+  const [metricsLoading, setMetricsLoading] = useState(false)
+
+  // Fetch Massive metrics for stock symbols
+  useEffect(() => {
+    if (!state.massive.apiKey) return
+    const stockSymbols = state.watchlist
+      .filter(w => w.category === 'Stocks')
+      .map(w => w.symbol)
+    if (stockSymbols.length === 0) return
+
+    let cancelled = false
+    setMetricsLoading(true)
+    fetch('/api/massive-compute', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'batch-compute',
+        apiKey: state.massive.apiKey,
+        tickers: stockSymbols,
+      }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled && data.results) setMassiveMetrics(data.results)
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setMetricsLoading(false) })
+    return () => { cancelled = true }
+  }, [state.massive.apiKey, state.watchlist])
 
   const existingSymbols = useMemo(
     () => new Set(state.watchlist.map(w => w.symbol)),
@@ -552,6 +582,9 @@ export default function WatchlistTab() {
                 {opt.label}
               </button>
             ))}
+            {metricsLoading && (
+              <span className="t-meta text-[var(--color-muted)] animate-pulse">Computing metrics...</span>
+            )}
           </div>
           {/* AI Picks results — pinned above category groups */}
           <AiPicksResults state={state} dispatch={dispatch} existingSymbols={existingSymbols} />
@@ -565,7 +598,7 @@ export default function WatchlistTab() {
               watchlist={filtered}
               groupMode={matrixGroup}
               onToggle={(sym) => dispatch({ type: 'WATCHLIST_TOGGLE_ENABLED', symbol: sym })}
-              symbolStats={state.symbolStats}
+              massiveMetrics={massiveMetrics}
             />
           )}
         </Card>
