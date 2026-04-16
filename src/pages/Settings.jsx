@@ -8,8 +8,8 @@ import NewsTab from '../components/Settings/NewsTab.jsx'
 import RiskTab from '../components/Settings/RiskTab.jsx'
 
 const TABS = [
-  { id: 'ctrader', label: 'cTrader', Component: CTraderTab },
   { id: 'watchlist', label: 'Watchlist', Component: WatchlistTab },
+  { id: 'ctrader', label: 'Trading Platform', Component: CTraderTab },
   { id: 'news', label: 'News', Component: NewsTab },
   { id: 'risk', label: 'Risk', Component: RiskTab },
 ]
@@ -22,7 +22,7 @@ function tabClass(active) {
 }
 
 export default function Settings() {
-  const [active, setActive] = useState('ctrader')
+  const [active, setActive] = useState('watchlist')
   const current = TABS.find(t => t.id === active) || TABS[0]
   const Tab = current.Component
   return (

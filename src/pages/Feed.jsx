@@ -9,6 +9,9 @@ import TimelineStrip from '../components/AgentFeed/TimelineStrip.jsx'
 import AskDock from '../components/AgentFeed/AskDock.jsx'
 import TightenSLDialog from '../components/AgentFeed/TightenSLDialog.jsx'
 import BottomBar from '../components/AgentFeed/BottomBar.jsx'
+import Card from '../components/common/Card.jsx'
+import Button from '../components/common/Button.jsx'
+import Badge from '../components/common/Badge.jsx'
 import { buildStory } from '../lib/story-builder.js'
 import { useStrategy } from '../lib/strategy-store.js'
 
@@ -160,10 +163,47 @@ export default function Feed() {
     [state.watchlist, state.news.latestRundown, visibleStories],
   )
 
+  const enabledCount = state.watchlist.filter(w => w.enabled).length
+  const isArmed = state.risk.armed
+
+  const handleFetchWatchlist = useCallback(() => {
+    // Re-seed stories from current enabled watchlist entries
+    setDismissed(new Set())
+    setMuted({})
+    showToast(`Fetched ${enabledCount} symbols from watchlist.`)
+  }, [enabledCount, showToast])
+
+  const handleStartAI = useCallback(() => {
+    if (!isArmed) {
+      dispatch({ type: 'RISK_TOGGLE_ARMED' })
+    }
+    showToast('AI algo trader started. Monitoring enabled watchlist symbols.')
+  }, [isArmed, dispatch, showToast])
+
   return (
     <section className="space-y-4">
       <AgentBrief stories={visibleStories} />
       <Editorial text={editorialText} />
+
+      {/* Feed controls */}
+      <Card className="flex items-center gap-3 flex-wrap">
+        <Button size="sm" variant="ghost" onClick={handleFetchWatchlist} disabled={enabledCount === 0}>
+          &#8635; Fetch from Watchlist ({enabledCount})
+        </Button>
+        <div className="flex-1" />
+        <Badge tone={isArmed ? 'up' : 'neutral'} pill>
+          {isArmed ? 'ARMED' : 'DISARMED'}
+        </Badge>
+        <Button
+          size="sm"
+          variant={isArmed ? 'danger' : 'primary'}
+          onClick={handleStartAI}
+          disabled={enabledCount === 0}
+        >
+          {isArmed ? '&#9632; Stop AI' : '&#9654; Start AI Trader'}
+        </Button>
+      </Card>
+
       {visibleStories.length === 0 ? (
         <p className="t-sub text-[var(--color-muted)]">
           No active stories yet. Enable symbols in Settings to seed this feed.
