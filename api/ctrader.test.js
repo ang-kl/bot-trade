@@ -63,8 +63,9 @@ function makeRes() {
   }
 }
 
-function makeReq({ method = 'POST', body = {}, query = {}, origin } = {}) {
-  return { method, body, query, headers: origin ? { origin } : {} }
+function makeReq({ method = 'POST', body = {}, query = {}, origin, headers } = {}) {
+  const base = origin ? { origin } : {}
+  return { method, body, query, headers: { ...base, ...(headers || {}) } }
 }
 
 // Shorthand: queue one or more sequential FakeWebSocket responses.
@@ -95,12 +96,39 @@ describe('auth-url', () => {
     expect(res.body.url).toContain(encodeURIComponent('https://example.app/link-up'))
   })
 
-  it('rejects when no Origin header is supplied', async () => {
+  it('falls back to x-forwarded-host + proto when Origin is absent', async () => {
+    // Browsers frequently omit Origin on same-origin GETs, so the handler
+    // has to synthesise the redirect URI from the forwarded host headers
+    // Vercel injects.
+    const req = makeReq({
+      method: 'GET',
+      query: { action: 'auth-url' },
+      headers: { 'x-forwarded-host': 'preview.vercel.app', 'x-forwarded-proto': 'https' },
+    })
+    const res = makeRes()
+    await handler(req, res)
+    expect(res.statusCode).toBe(200)
+    expect(res.body.redirectUri).toBe('https://preview.vercel.app/link-up')
+  })
+
+  it('uses the bare Host header as a last resort', async () => {
+    const req = makeReq({
+      method: 'GET',
+      query: { action: 'auth-url' },
+      headers: { host: 'localhost:5173' },
+    })
+    const res = makeRes()
+    await handler(req, res)
+    expect(res.statusCode).toBe(200)
+    expect(res.body.redirectUri).toBe('http://localhost:5173/link-up')
+  })
+
+  it('returns 400 only when no origin/host headers are present at all', async () => {
     const req = makeReq({ method: 'GET', query: { action: 'auth-url' } })
     const res = makeRes()
     await handler(req, res)
     expect(res.statusCode).toBe(400)
-    expect(res.body.error).toMatch(/Origin/)
+    expect(res.body.error).toMatch(/origin/i)
   })
 
   it('returns 500 when CTRADER_CLIENT_ID is not configured', async () => {
