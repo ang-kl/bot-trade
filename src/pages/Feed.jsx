@@ -162,11 +162,22 @@ export default function Feed() {
   const [lastScanAt, setLastScanAt] = useState(null)
   const [countdown, setCountdown] = useState(0)
   const [tokenCount, setTokenCount] = useState(0)
+  const [agentTokens, setAgentTokens] = useState({})
+  const [agentCalls, setAgentCalls] = useState({})
   const [orderFor, setOrderFor] = useState(null)
   const [toast, setToast] = useState(null)
   const [monitoredTrades, setMonitoredTrades] = useState([])
+  const [sessionStart] = useState(() => Date.now())
 
   const scanTimerRef = useRef(null)
+
+  // Track per-agent token usage
+  const trackTokens = useCallback((agent, tokens) => {
+    if (!tokens || tokens <= 0) return
+    setTokenCount(prev => prev + tokens)
+    setAgentTokens(prev => ({ ...prev, [agent]: (prev[agent] || 0) + tokens }))
+    setAgentCalls(prev => ({ ...prev, [agent]: (prev[agent] || 0) + 1 }))
+  }, [])
 
   const addLog = useCallback((agent, message, extra = {}) => {
     setLog(prev => [...prev, logEntry(agent, message, extra)])
@@ -191,6 +202,63 @@ export default function Feed() {
     apiPost('/api/telegram', { ...body, botToken: tg.botToken, chatId: tg.chatId }).catch(() => {})
   }, [state.telegram])
 
+  // ── Trade monitor helpers (must be defined before runAnalyst) ──
+  const addMonitoredTrade = useCallback((trade) => {
+    setMonitoredTrades(prev => {
+      if (prev.some(t => t.symbol === trade.symbol)) return prev
+      return [...prev, trade]
+    })
+    setAgentStates(prev => ({ ...prev, monitor: 'running' }))
+    // Register server-side so it survives browser close
+    const tg = state.telegram
+    apiPost('/api/monitor-manage', {
+      action: 'register',
+      symbol: trade.symbol,
+      side: trade.side,
+      entry: trade.entry,
+      sl: trade.sl,
+      tp: trade.tp,
+      volume: trade.volume,
+      thesis: trade.thesis,
+      placedAt: trade.placedAt,
+      telegramBotToken: tg.enabled ? tg.botToken : null,
+      telegramChatId: tg.enabled ? tg.chatId : null,
+    }).then(res => {
+      if (res.id) addLog('monitor', `Registered server-side: ${trade.symbol} (${res.id})`, { symbol: trade.symbol })
+    }).catch(() => {
+      addLog('monitor', `Server registration failed for ${trade.symbol} — client-only monitoring`, { symbol: trade.symbol })
+    })
+  }, [state.telegram, addLog])
+
+  const stopTrade = useCallback(async (trade) => {
+    addLog('monitor', `Stopping ${trade.symbol} position...`, { symbol: trade.symbol })
+    try {
+      if (state.ctrader.linkedAccountId) {
+        await apiPost('/api/ctrader', {
+          action: 'close-position',
+          accountId: state.ctrader.linkedAccountId,
+          symbolName: trade.symbol,
+        })
+      }
+      setMonitoredTrades(prev => prev.filter(t => t.symbol !== trade.symbol))
+      addLog('monitor', `${trade.symbol} position STOPPED`, { symbol: trade.symbol })
+      sendTelegramAlert({
+        action: 'send-alert', alertType: 'trade',
+        trade: { symbol: trade.symbol, side: trade.side, action: 'CLOSED/STOPPED' },
+      })
+      showToast(`${trade.symbol} position stopped`)
+    } catch (e) {
+      addLog('monitor', `Failed to stop ${trade.symbol}: ${e.message}`, { symbol: trade.symbol })
+      showToast(`Failed to stop: ${e.message}`)
+    }
+  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
+
+  const updateMonitoredTrade = useCallback((symbol, updates) => {
+    setMonitoredTrades(prev =>
+      prev.map(t => t.symbol === symbol ? { ...t, ...updates } : t),
+    )
+  }, [])
+
   // ── Analyst deep dive (defined before runScout so it can be referenced) ──
   const analystRef = useRef(null)
 
@@ -205,7 +273,7 @@ export default function Feed() {
       const data = await apiPost('/api/analyze', { symbol, autoTradeThreshold: threshold })
 
       setAnalyses(prev => ({ ...prev, [symbol]: data }))
-      if (data.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
+      if (data.usage?.output_tokens) trackTokens('analyst', data.usage.output_tokens)
 
       for (const r of (data.reports || [])) {
         addLog('analyst', `${r.bias?.toUpperCase()} ${r.conviction}/10 \u2014 ${r.report}`, {
@@ -236,21 +304,18 @@ export default function Feed() {
             }
             await apiPost('/api/ctrader', orderBody)
             addLog('trader', `Order placed! ${syn.consensus_bias?.toUpperCase()} @ market`, { symbol })
+            setAgentCalls(prev => ({ ...prev, trader: (prev.trader || 0) + 1 })) // ctrader doesn't return tokens
             // Monitor the auto-trade
-            setMonitoredTrades(prev => {
-              if (prev.some(t => t.symbol === symbol)) return prev
-              return [...prev, {
-                symbol,
-                side: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
-                entry: syn.entry,
-                sl: syn.sl,
-                tp: syn.tp1,
-                volume: wItem?.maxVolume || 0.01,
-                thesis: syn.synthesis || '',
-                placedAt: Date.now(),
-              }]
+            addMonitoredTrade({
+              symbol,
+              side: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
+              entry: syn.entry,
+              sl: syn.sl,
+              tp: syn.tp1,
+              volume: wItem?.maxVolume || 0.01,
+              thesis: syn.synthesis || '',
+              placedAt: Date.now(),
             })
-            setAgentStates(prev => ({ ...prev, monitor: 'running' }))
             sendTelegramAlert({
               action: 'send-alert', alertType: 'trade',
               trade: { symbol, side: syn.consensus_bias, entry: syn.entry, stopLoss: syn.sl, takeProfit: syn.tp1, action: 'AUTO-TRADE', message: syn.synthesis },
@@ -267,7 +332,7 @@ export default function Feed() {
       addLog('analyst', `FAILED: ${e.message}`, { symbol })
       setAgentStates(prev => ({ ...prev, analyst: 'idle' }))
     }
-  }, [state.watchlist, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert])
+  }, [state.watchlist, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade])
 
   // Keep ref in sync so runScout can call it without circular deps
   useEffect(() => { analystRef.current = runAnalyst }, [runAnalyst])
@@ -305,7 +370,7 @@ export default function Feed() {
       setScanResults(map)
       setLastScanAt(Date.now())
       if (data.desk_note) setDeskNote(data.desk_note)
-      if (data.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
+      if (data.usage?.output_tokens) trackTokens('scout', data.usage.output_tokens)
 
       const hotSymbols = data.hot || []
       const warmSymbols = data.warm || []
@@ -349,7 +414,7 @@ export default function Feed() {
       showToast(`Scout failed: ${e.message}`)
       return null
     }
-  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert])
+  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens])
 
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {
@@ -389,44 +454,6 @@ export default function Feed() {
     }, 1000)
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current) }
   }, [isArmed, enabledCount, runScout])
-
-  // ── Trade monitor helpers ──
-  const addMonitoredTrade = useCallback((trade) => {
-    setMonitoredTrades(prev => {
-      if (prev.some(t => t.symbol === trade.symbol)) return prev
-      return [...prev, trade]
-    })
-    setAgentStates(prev => ({ ...prev, monitor: 'running' }))
-  }, [])
-
-  const stopTrade = useCallback(async (trade) => {
-    addLog('monitor', `Stopping ${trade.symbol} position...`, { symbol: trade.symbol })
-    try {
-      if (state.ctrader.linkedAccountId) {
-        await apiPost('/api/ctrader', {
-          action: 'close-position',
-          accountId: state.ctrader.linkedAccountId,
-          symbolName: trade.symbol,
-        })
-      }
-      setMonitoredTrades(prev => prev.filter(t => t.symbol !== trade.symbol))
-      addLog('monitor', `${trade.symbol} position STOPPED`, { symbol: trade.symbol })
-      sendTelegramAlert({
-        action: 'send-alert', alertType: 'trade',
-        trade: { symbol: trade.symbol, side: trade.side, action: 'CLOSED/STOPPED' },
-      })
-      showToast(`${trade.symbol} position stopped`)
-    } catch (e) {
-      addLog('monitor', `Failed to stop ${trade.symbol}: ${e.message}`, { symbol: trade.symbol })
-      showToast(`Failed to stop: ${e.message}`)
-    }
-  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
-
-  const updateMonitoredTrade = useCallback((symbol, updates) => {
-    setMonitoredTrades(prev =>
-      prev.map(t => t.symbol === symbol ? { ...t, ...updates } : t),
-    )
-  }, [])
 
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {
@@ -477,8 +504,8 @@ export default function Feed() {
   }), [state.watchlist, state.news.latestRundown, scanResults, analyses])
 
   const handleAskReply = useCallback((_q, data) => {
-    if (data?.usage?.output_tokens) setTokenCount(prev => prev + data.usage.output_tokens)
-  }, [])
+    if (data?.usage?.output_tokens) trackTokens('analyst', data.usage.output_tokens)
+  }, [trackTokens])
 
   // ── Sorted symbols for display ──
   const displaySymbols = useMemo(() => {
@@ -556,7 +583,14 @@ export default function Feed() {
         onLog={addLog}
       />
 
-      <BottomBar tokenCount={tokenCount} />
+      <BottomBar
+        tokenCount={tokenCount}
+        agentStates={agentStates}
+        agentTokens={agentTokens}
+        agentCalls={agentCalls}
+        monitoredCount={monitoredTrades.length}
+        sessionStart={sessionStart}
+      />
 
       {/* Toast */}
       {toast && (
