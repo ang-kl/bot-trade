@@ -341,6 +341,7 @@ export default function WatchlistTab() {
               watchlist={filtered}
               groupMode={matrixGroup}
               onToggle={(sym) => dispatch({ type: 'WATCHLIST_TOGGLE_ENABLED', symbol: sym })}
+              symbolStats={state.symbolStats}
             />
           )}
         </Card>

@@ -672,6 +672,26 @@ export default function Feed() {
 
       const syn = data.synthesis
       if (syn) {
+        // Enrich symbolStats with analysis-level data
+        const synBias = (syn.consensus_bias || '').toLowerCase()
+        const conv = syn.overall_conviction || 0
+        const synText = (syn.synthesis || '').toLowerCase()
+        const prevStats = state.symbolStats?.[symbol] || {}
+        dispatch({
+          type: 'SYMBOL_STATS_UPDATE',
+          statsMap: {
+            [symbol]: {
+              ...prevStats,
+              trend: (synBias === 'long' || synBias === 'short') && conv >= 5,
+              high: conv >= 7,
+              dip: synBias === 'long' && (synText.includes('dip') || synText.includes('pullback') || synText.includes('bounce') || synText.includes('revert')),
+              aboveHvn: synText.includes('above hvn') || synText.includes('> hvn'),
+              belowHvn: synText.includes('below hvn') || synText.includes('< hvn'),
+              insidePoc: synText.includes('inside poc') || synText.includes('near poc') || synText.includes('at poc'),
+            },
+          },
+        })
+
         addLog('synthesis', `${syn.consensus_summary || ''} \u2014 Conviction ${syn.overall_conviction}/10. ${syn.auto_trade ? 'AUTO-TRADE ELIGIBLE.' : 'Manual approval needed.'}`, { symbol })
 
         if (syn.dissent) {
@@ -721,7 +741,7 @@ export default function Feed() {
       addLog('analyst', `FAILED: ${e.message}`, { symbol })
       setAgentStates(prev => ({ ...prev, analyst: 'idle' }))
     }
-  }, [state.watchlist, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade])
+  }, [state.watchlist, state.symbolStats, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade, dispatch])
 
   // Keep ref in sync so runScout can call it without circular deps
   useEffect(() => { analystRef.current = runAnalyst }, [runAnalyst])
@@ -776,6 +796,25 @@ export default function Feed() {
 
       setAgentStates(prev => ({ ...prev, scout: 'done' }))
 
+      // Derive per-symbol stats from scan results for the category headers
+      const statsMap = {}
+      for (const s of (data.scans || [])) {
+        if (!s.symbol) continue
+        const sym = s.symbol.toUpperCase()
+        const c = s.confidence || 0
+        const bias = (s.bias || '').toLowerCase()
+        const thesis = (s.thesis || '').toLowerCase()
+        statsMap[sym] = {
+          trend: (bias === 'long' || bias === 'short') && c >= 5,
+          high: c >= 7,
+          dip: bias === 'long' && (thesis.includes('dip') || thesis.includes('pullback') || thesis.includes('revert') || thesis.includes('bounce')),
+          aboveHvn: false,
+          belowHvn: false,
+          insidePoc: false,
+        }
+      }
+      dispatch({ type: 'SYMBOL_STATS_UPDATE', statsMap })
+
       // Fire Telegram scan alert
       if (data.scans?.length) {
         const tg = state.telegram
@@ -803,7 +842,7 @@ export default function Feed() {
       showToast(`Scout failed: ${e.message}`)
       return null
     }
-  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens])
+  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch])
 
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {

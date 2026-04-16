@@ -31,17 +31,18 @@ function fmtHHMM(utcHour, offsetHours) {
   return String(h).padStart(2, '0') + ':00'
 }
 
-// Format dd/mm for a given UTC hour shifted to a timezone.
-// If the shifted hour wraps past midnight relative to "now", the date shifts.
-function fmtDDMM(utcHour, offsetHours, baseDate) {
-  const nowUtcH = baseDate.getUTCHours()
-  // How many hours ahead/behind is this column from current UTC hour?
-  let delta = utcHour - nowUtcH
-  // Build a Date representing this column's instant
+// Compute dd/mm for midnight (00:00) in a timezone.
+// Returns the date string only for the column where that tz hits midnight,
+// otherwise returns null.
+function midnightDateLabel(utcHour, offsetHours, baseDate) {
+  const tzHour = utcToTz(utcHour, offsetHours)
+  if (tzHour !== 0) return null // only show on midnight column
+  // Build a Date for this UTC hour, then shift to the timezone
   const d = new Date(baseDate)
   d.setUTCHours(utcHour, 0, 0, 0)
-  if (delta < -12) d.setUTCDate(d.getUTCDate() + 1)
-  // Shift to target timezone
+  // Handle column wrap: if UTC hour < current UTC hour by a lot, it's tomorrow
+  const nowUtcH = baseDate.getUTCHours()
+  if (utcHour - nowUtcH < -12) d.setUTCDate(d.getUTCDate() + 1)
   const shifted = new Date(d.getTime() + offsetHours * 3_600_000)
   const day = String(shifted.getUTCDate()).padStart(2, '0')
   const month = String(shifted.getUTCMonth() + 1).padStart(2, '0')
@@ -71,9 +72,29 @@ function groupBy(arr, fn) {
   return groups
 }
 
+// Compute category stats from symbol data
+function computeCategoryStats(items, symbolStats = {}) {
+  const stats = { open: 0, trend: 0, high: 0, dip: 0, aboveHvn: 0, belowHvn: 0, insidePoc: 0 }
+  for (const w of items) {
+    if (isTradingNow(w.symbol)) stats.open++
+    const s = symbolStats[w.symbol]
+    if (!s) continue
+    if (s.trend) stats.trend++
+    if (s.high) stats.high++
+    if (s.dip) stats.dip++
+    if (s.aboveHvn) stats.aboveHvn++
+    if (s.belowHvn) stats.belowHvn++
+    if (s.insidePoc) stats.insidePoc++
+  }
+  return stats
+}
+
 const CATEGORY_ORDER = ['Currencies', 'Crypto', 'Indices', 'Metals', 'Futures', 'Stocks']
 
-export default function TradingHoursMatrix({ watchlist, groupMode = 'category', onToggle }) {
+// Shared font class for all three header rows
+const HEADER_FONT = 'text-[8px] sm:text-[9px]'
+
+export default function TradingHoursMatrix({ watchlist, groupMode = 'category', onToggle, symbolStats = {} }) {
   const [collapsed, setCollapsed] = useState({})
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
@@ -96,11 +117,9 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
       return groupBy(watchlist, w => isTradingNow(w.symbol) ? 'Open Now' : 'Closed')
     }
     if (groupMode === 'ticker') {
-      // Sort alphabetically, no grouping — single group
       const sorted = [...watchlist].sort((a, b) => a.symbol.localeCompare(b.symbol))
       return { 'All Symbols': sorted }
     }
-    // Default: category
     return groupBy(watchlist, w => w.category || 'Other')
   }, [watchlist, groupMode])
 
@@ -120,27 +139,32 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
       <table className="border-collapse text-[11px] sm:text-[11px] text-[9px]">
         <thead>
           {/* NY time row */}
-          <tr className="text-[9px] sm:text-[9px] text-[7px]">
+          <tr className={HEADER_FONT}>
             <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-muted)] font-normal border-r border-[var(--color-border)]">
               NY
             </th>
-            {HOURS.map(h => (
-              <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)] w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] leading-tight">
-                <span className="block">{fmtHHMM(h, nyOffset)}</span>
-                <span className="block text-[6px] sm:text-[7px] opacity-70">{fmtDDMM(h, nyOffset, now)}</span>
-              </th>
-            ))}
+            {HOURS.map(h => {
+              const dateLabel = midnightDateLabel(h, nyOffset, now)
+              return (
+                <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)] w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] leading-tight">
+                  <span className="block">{fmtHHMM(h, nyOffset)}</span>
+                  {dateLabel && (
+                    <span className="block text-[7px] sm:text-[8px] text-[var(--color-accent)] font-semibold">{dateLabel}</span>
+                  )}
+                </th>
+              )
+            })}
             <th className="px-1 sm:px-2 py-0.5 border-l border-[var(--color-border)]" />
           </tr>
-          {/* UTC row (primary) */}
-          <tr>
-            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-1 text-left t-meta text-[var(--color-text-sub)] font-medium w-[72px] sm:w-[100px] min-w-[72px] sm:min-w-[100px] border-r border-[var(--color-border)]">
+          {/* UTC row — same font size as NY */}
+          <tr className={HEADER_FONT}>
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-text-sub)] font-medium w-[72px] sm:w-[100px] min-w-[72px] sm:min-w-[100px] border-r border-[var(--color-border)]">
               UTC
             </th>
             {HOURS.map(h => (
               <th
                 key={h}
-                className={`px-0 py-1 text-center font-mono font-medium w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] ${
+                className={`px-0 py-0.5 text-center font-mono font-medium w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] ${
                   h === nowUTC
                     ? 'bg-[var(--color-down)]/15 text-[var(--color-down)]'
                     : 'text-[var(--color-text-sub)]'
@@ -149,21 +173,24 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                 {fmtHHMM(h, 0)}
               </th>
             ))}
-            <th className="px-1 sm:px-2 py-1 text-center t-meta text-[var(--color-text-sub)] font-medium w-[40px] sm:w-[52px] min-w-[40px] sm:min-w-[52px] border-l border-[var(--color-border)]">
+            <th className="px-1 sm:px-2 py-0.5 text-center text-[var(--color-text-sub)] font-medium w-[40px] sm:w-[52px] min-w-[40px] sm:min-w-[52px] border-l border-[var(--color-border)]">
               Status
             </th>
           </tr>
-          {/* User locale row */}
-          <tr className="text-[9px] sm:text-[9px] text-[7px] border-b border-[var(--color-border)]">
+          {/* User locale row — same font size as UTC */}
+          <tr className={`${HEADER_FONT} border-b border-[var(--color-border)]`}>
             <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-accent)] font-normal border-r border-[var(--color-border)]">
               {userTzShort}
             </th>
             {HOURS.map(h => {
               const isNow = h === nowUTC
+              const dateLabel = midnightDateLabel(h, localeOffset, now)
               return (
                 <th key={h} className={`px-0 py-0.5 text-center font-mono font-normal leading-tight ${isNow ? 'text-[var(--color-down)] font-bold' : 'text-[var(--color-accent)]'}`}>
                   <span className="block">{fmtHHMM(h, localeOffset)}</span>
-                  <span className="block text-[6px] sm:text-[7px] opacity-70">{fmtDDMM(h, localeOffset, now)}</span>
+                  {dateLabel && (
+                    <span className="block text-[7px] sm:text-[8px] font-semibold">{dateLabel}</span>
+                  )}
                 </th>
               )
             })}
@@ -174,7 +201,7 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
           {groupKeys.map(groupKey => {
             const items = groups[groupKey] || []
             const isCollapsed = collapsed[groupKey]
-            const openCount = items.filter(w => isTradingNow(w.symbol)).length
+            const stats = computeCategoryStats(items, symbolStats)
 
             return [
               // Group header
@@ -194,13 +221,13 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                     <span className="font-bold text-[var(--color-text)] text-[12px]">{groupKey}</span>
                     <span className="text-[var(--color-muted)]">({items.length})</span>
                     <span className="text-[9px] sm:text-[10px] text-[var(--color-muted)] font-mono flex items-center gap-1 flex-wrap">
-                      <span className={openCount > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{openCount}] open</span>
-                      <span>[0] trend</span>
-                      <span>[0] high</span>
-                      <span>[0] dip</span>
-                      <span>[0] &gt; HVN</span>
-                      <span>[0] &lt; HVN</span>
-                      <span>[0] inside POC</span>
+                      <span className={stats.open > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.open}] open</span>
+                      <span className={stats.trend > 0 ? 'text-[var(--color-accent)] font-bold' : ''}>[{stats.trend}] trend</span>
+                      <span className={stats.high > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.high}] high</span>
+                      <span className={stats.dip > 0 ? 'text-[var(--color-down)] font-bold' : ''}>[{stats.dip}] dip</span>
+                      <span className={stats.aboveHvn > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{stats.aboveHvn}] &gt; HVN</span>
+                      <span className={stats.belowHvn > 0 ? 'text-[var(--color-down)] font-bold' : ''}>[{stats.belowHvn}] &lt; HVN</span>
+                      <span className={stats.insidePoc > 0 ? 'text-[var(--color-accent)] font-bold' : ''}>[{stats.insidePoc}] inside POC</span>
                     </span>
                   </div>
                 </td>

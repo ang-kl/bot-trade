@@ -114,6 +114,7 @@ export const INITIAL_STATE = {
     minConfidence: 5,
   },
   alertLog: [],
+  symbolStats: {},
 }
 
 // A variant of INITIAL_STATE with no seeded watchlist — used by tests that
@@ -297,6 +298,15 @@ export function reducer(state, action) {
     case 'ALERT_LOG_CLEAR':
       return { ...state, alertLog: [] }
 
+    case 'SYMBOL_STATS_UPDATE': {
+      // Merge per-symbol stats: { statsMap: { EURUSD: { trend: true, ... }, ... } }
+      const map = action.statsMap
+      if (!map || typeof map !== 'object') return state
+      return { ...state, symbolStats: { ...state.symbolStats, ...map } }
+    }
+    case 'SYMBOL_STATS_CLEAR':
+      return { ...state, symbolStats: {} }
+
     default:
       return state
   }
@@ -351,6 +361,7 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
       ...(raw.telegram && typeof raw.telegram === 'object' ? raw.telegram : {}),
     },
     alertLog: Array.isArray(raw.alertLog) ? raw.alertLog : [],
+    symbolStats: raw.symbolStats && typeof raw.symbolStats === 'object' ? raw.symbolStats : {},
   }
 }
 

@@ -267,6 +267,46 @@ describe('sanitize', () => {
   })
 })
 
+describe('symbolStats', () => {
+  it('SYMBOL_STATS_UPDATE merges per-symbol stats', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { EURUSD: { trend: true, high: false }, XAUUSD: { trend: false, high: true } },
+    })
+    expect(s1.symbolStats.EURUSD).toEqual({ trend: true, high: false })
+    expect(s1.symbolStats.XAUUSD).toEqual({ trend: false, high: true })
+    // Merge additional stats without losing existing
+    const s2 = reducer(s1, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { EURUSD: { trend: false, dip: true } },
+    })
+    expect(s2.symbolStats.EURUSD).toEqual({ trend: false, dip: true })
+    expect(s2.symbolStats.XAUUSD).toEqual({ trend: false, high: true })
+  })
+  it('SYMBOL_STATS_UPDATE ignores invalid payload', () => {
+    const s = reducer(INITIAL_STATE, { type: 'SYMBOL_STATS_UPDATE', statsMap: null })
+    expect(s.symbolStats).toEqual({})
+  })
+  it('SYMBOL_STATS_CLEAR resets to empty', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { BTCUSD: { trend: true } },
+    })
+    expect(Object.keys(s1.symbolStats).length).toBe(1)
+    const s2 = reducer(s1, { type: 'SYMBOL_STATS_CLEAR' })
+    expect(s2.symbolStats).toEqual({})
+  })
+  it('sanitize preserves symbolStats', () => {
+    const raw = { symbolStats: { EURUSD: { trend: true } } }
+    const out = sanitize(raw)
+    expect(out.symbolStats).toEqual({ EURUSD: { trend: true } })
+  })
+  it('sanitize defaults symbolStats to empty object', () => {
+    const out = sanitize({})
+    expect(out.symbolStats).toEqual({})
+  })
+})
+
 describe('readStored / writeStored', () => {
   it('writes and reads round-trip via storage double', () => {
     const storage = makeStorage()
