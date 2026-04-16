@@ -105,6 +105,14 @@ export const INITIAL_STATE = {
     dailyMaxLossPct: 3,
     maxTradesPerDay: 10,
   },
+  telegram: {
+    botToken: '',
+    chatId: '',
+    enabled: false,
+    alertOnScan: true,
+    alertOnTrade: true,
+    minConfidence: 5,
+  },
 }
 
 // A variant of INITIAL_STATE with no seeded watchlist — used by tests that
@@ -209,6 +217,17 @@ export function reducer(state, action) {
     case 'RISK_TOGGLE_ARMED':
       return { ...state, risk: { ...state.risk, armed: !state.risk.armed } }
 
+    case 'TELEGRAM_SET': {
+      const tg = { ...state.telegram }
+      if (typeof action.botToken === 'string') tg.botToken = action.botToken
+      if (typeof action.chatId === 'string') tg.chatId = action.chatId
+      if (action.enabled != null) tg.enabled = !!action.enabled
+      if (action.alertOnScan != null) tg.alertOnScan = !!action.alertOnScan
+      if (action.alertOnTrade != null) tg.alertOnTrade = !!action.alertOnTrade
+      if (action.minConfidence != null) tg.minConfidence = clampNum(action.minConfidence, 1, 10)
+      return { ...state, telegram: tg }
+    }
+
     default:
       return state
   }
@@ -254,6 +273,10 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
       dailyMaxLossPct: clampNum(raw.risk?.dailyMaxLossPct ?? fallback.risk.dailyMaxLossPct, 0, 100),
       maxTradesPerDay: clampNum(raw.risk?.maxTradesPerDay ?? fallback.risk.maxTradesPerDay, 0, 1000),
       armed: !!raw.risk?.armed,
+    },
+    telegram: {
+      ...fallback.telegram,
+      ...(raw.telegram && typeof raw.telegram === 'object' ? raw.telegram : {}),
     },
   }
 }

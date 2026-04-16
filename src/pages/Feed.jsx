@@ -225,13 +225,36 @@ export default function Feed() {
       }
       const found = Object.values(map).filter(s => s.bias !== 'skip' && s.bias !== 'neutral').length
       showToast(`Scan complete. ${found} setups found across ${data.scans?.length || 0} symbols.`)
+
+      // Fire Telegram alert if enabled
+      const tg = state.telegram
+      if (tg.enabled && tg.alertOnScan && tg.botToken && tg.chatId && data.scans?.length) {
+        const filtered = (data.scans || []).filter(
+          s => s.confidence == null || s.confidence >= tg.minConfidence
+        )
+        if (filtered.length > 0) {
+          fetch('/api/telegram', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              action: 'send-alert',
+              alertType: 'scan',
+              botToken: tg.botToken,
+              chatId: tg.chatId,
+              scans: filtered,
+              deskNote: data.desk_note || null,
+              session: data.session || null,
+            }),
+          }).catch(() => {})
+        }
+      }
     } catch (e) {
       setScanError(e.message)
       showToast(`Scan failed: ${e.message}`)
     } finally {
       setScanning(false)
     }
-  }, [enabledSymbols, showToast])
+  }, [enabledSymbols, showToast, state.telegram])
 
   const handleStartAI = useCallback(() => {
     dispatch({ type: 'RISK_TOGGLE_ARMED' })

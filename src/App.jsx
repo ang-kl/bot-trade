@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import Feed from './pages/Feed.jsx'
+import Alert from './pages/Alert.jsx'
 import Settings from './pages/Settings.jsx'
 import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
@@ -10,6 +11,7 @@ import LinkUp from './pages/LinkUp.jsx'
 
 const navLinks = [
   { to: '/feed', label: 'Feed' },
+  { to: '/alert', label: 'Alert' },
   { to: '/settings', label: 'Settings' },
   { to: '/vault', label: 'Vault' },
   { to: '/backtest', label: 'Backtest' },
@@ -41,6 +43,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
           <Route path="/feed" element={<Feed />} />
+          <Route path="/alert" element={<Alert />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/vault" element={<Vault />} />
           <Route path="/backtest" element={<Backtest />} />
