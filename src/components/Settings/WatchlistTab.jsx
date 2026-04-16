@@ -12,6 +12,207 @@ import TradingHoursMatrix from './TradingHoursMatrix.jsx'
 import { useStrategy, SUB_AGENTS, WATCHLIST_CATEGORIES } from '../../lib/strategy-store.js'
 import { isTradingNow, searchCatalog, lookupSymbol } from '../../lib/trading-hours.js'
 
+// ── AI Picks helpers ──
+
+async function callAiPicks(action, body = {}) {
+  const res = await fetch('/api/ai-picks', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action, ...body }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `ai-picks ${action} ${res.status}`)
+  return data
+}
+
+const BIAS_COLORS = {
+  long: 'var(--color-up)',
+  short: 'var(--color-down)',
+  neutral: 'var(--color-muted)',
+}
+
+function AiPicksCard({ state, dispatch, existingSymbols }) {
+  const [prompt, setPrompt] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const { picks, rationale, index, scanned, lastPickedAt } = state.aiPicks
+
+  const onPick = useCallback(async () => {
+    // Parse prompt like "5 stocks from US30" or "3 from SP500"
+    const countMatch = prompt.match(/(\d+)/)?.[1]
+    const indexMatch = prompt.match(/(?:from|in)\s+(\w+)/i)?.[1]
+    const count = countMatch ? Number(countMatch) : 5
+    const idx = indexMatch || 'US30'
+
+    setBusy(true)
+    setError(null)
+    try {
+      const data = await callAiPicks('pick', {
+        index: idx,
+        count,
+        prompt: prompt || `Pick ${count} best stock setups from ${idx}`,
+        massiveApiKey: state.massive.apiKey,
+      })
+      dispatch({
+        type: 'AI_PICKS_SET',
+        picks: data.picks || [],
+        rationale: data.rationale || '',
+        index: data.index || idx,
+        scanned: data.scanned || 0,
+      })
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }, [prompt, state.massive.apiKey, dispatch])
+
+  const addToWatchlist = useCallback((pick) => {
+    dispatch({
+      type: 'WATCHLIST_ADD',
+      symbol: pick.ticker,
+      label: pick.thesis || '',
+      category: pick.category || 'Stocks',
+    })
+  }, [dispatch])
+
+  const removePick = useCallback((ticker) => {
+    dispatch({ type: 'AI_PICKS_REMOVE', ticker })
+  }, [dispatch])
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <h2 className="t-label flex-1">AI Picks</h2>
+        {lastPickedAt && (
+          <span className="t-meta text-[var(--color-muted)]">
+            {new Date(lastPickedAt).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}
+          </span>
+        )}
+        {picks.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => dispatch({ type: 'AI_PICKS_CLEAR' })}>
+            Clear
+          </Button>
+        )}
+      </div>
+      <p className="t-sub text-[var(--color-text-sub)] mb-3">
+        Type a query like &quot;5 stocks from US30&quot; or &quot;3 from SP500&quot; — Massive fetches constituents, Claude picks the best setups.
+      </p>
+
+      {/* Prompt input */}
+      <div className="flex gap-2 mb-3">
+        <Input
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !busy && onPick()}
+          placeholder="e.g. 5 stocks from US30"
+          className="flex-1"
+        />
+        <Button size="sm" onClick={onPick} disabled={busy || !state.massive.apiKey}>
+          {busy ? 'Scanning...' : 'Scout'}
+        </Button>
+      </div>
+
+      {!state.massive.apiKey && (
+        <p className="t-meta text-[var(--color-down)] mb-2">
+          Massive API key required. Set it in Admin.
+        </p>
+      )}
+
+      {error && <p className="t-meta text-[var(--color-down)] mb-2">{error}</p>}
+
+      {/* Results */}
+      {picks.length > 0 && (
+        <div className="space-y-2">
+          {/* Summary */}
+          {rationale && (
+            <p className="t-meta text-[var(--color-text-sub)] mb-2 italic">
+              {rationale}
+              {scanned > 0 && (
+                <span className="text-[var(--color-muted)] ml-1">
+                  ({scanned} scanned from {index})
+                </span>
+              )}
+            </p>
+          )}
+
+          {/* Pick cards */}
+          <div className="grid gap-1.5">
+            {picks.map((p) => {
+              const alreadyInWatchlist = existingSymbols.has(p.ticker)
+              return (
+                <div
+                  key={p.ticker}
+                  className="flex items-center gap-3 px-3 py-2 rounded-[7px] bg-[var(--color-bg)] border border-[var(--color-border)]"
+                >
+                  {/* Ticker + bias */}
+                  <div className="flex items-center gap-2 min-w-[80px]">
+                    <span className="t-sub font-bold text-[var(--color-accent)]">{p.ticker}</span>
+                    <span
+                      className="text-[9px] font-bold uppercase px-1 py-0.5 rounded-[3px]"
+                      style={{
+                        color: BIAS_COLORS[p.bias] || BIAS_COLORS.neutral,
+                        backgroundColor: `color-mix(in srgb, ${BIAS_COLORS[p.bias] || BIAS_COLORS.neutral} 15%, transparent)`,
+                      }}
+                    >
+                      {p.bias || 'neutral'}
+                    </span>
+                  </div>
+
+                  {/* Confidence */}
+                  <div className="flex items-center gap-1 min-w-[50px]">
+                    <span className="t-meta text-[var(--color-muted)]">C:</span>
+                    <span className={`t-sub font-bold ${p.confidence >= 7 ? 'text-[var(--color-up)]' : p.confidence >= 4 ? 'text-[var(--color-text)]' : 'text-[var(--color-down)]'}`}>
+                      {p.confidence}/10
+                    </span>
+                  </div>
+
+                  {/* Price + change */}
+                  {p.price != null && (
+                    <div className="hidden sm:flex items-center gap-1.5 min-w-[90px]">
+                      <span className="t-meta text-[var(--color-text)]">${p.price}</span>
+                      {p.change != null && (
+                        <span className={`t-meta font-bold ${Number(p.change) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                          {Number(p.change) >= 0 ? '+' : ''}{p.change}%
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Thesis */}
+                  <span className="t-meta text-[var(--color-text-sub)] flex-1 truncate hidden md:block">
+                    {p.thesis}
+                  </span>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1 ml-auto shrink-0">
+                    {alreadyInWatchlist ? (
+                      <Badge tone="neutral" pill>Added</Badge>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={() => addToWatchlist(p)} title="Add to watchlist">
+                        +WL
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => removePick(p.ticker)}
+                      className="text-[var(--color-down)]"
+                      title="Remove pick"
+                    >
+                      {'\u00D7'}
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // ── Expandable row ──
 
 function ExpandedRow({ w, dispatch }) {
@@ -221,6 +422,9 @@ export default function WatchlistTab() {
 
   return (
     <div className="space-y-3">
+      {/* AI Picks — pinned above categories */}
+      <AiPicksCard state={state} dispatch={dispatch} existingSymbols={existingSymbols} />
+
       {/* Filter bar */}
       <Card>
         <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-end gap-2 sm:gap-3 mb-3">

@@ -65,6 +65,34 @@ export default async function handler(req, res) {
       return res.status(200).json({ channels })
     }
 
+    // Verify a channel by @username — uses getChat to check if bot can access it
+    if (action === 'verify') {
+      const { username } = body
+      if (!username) return res.status(400).json({ error: 'username required' })
+      const chatId = username.startsWith('@') ? username : `@${username}`
+      try {
+        const chat = await tgGet(botToken, 'getChat', { chat_id: chatId })
+        return res.status(200).json({
+          ok: true,
+          channel: {
+            chatId: chat.id,
+            title: chat.title || '',
+            username: chat.username || '',
+            type: chat.type,
+            memberCount: chat.member_count || null,
+            description: chat.description ? chat.description.slice(0, 200) : '',
+          },
+        })
+      } catch (e) {
+        // Bot might not be a member — check if channel exists publicly
+        return res.status(200).json({
+          ok: false,
+          error: e.message,
+          hint: 'Add your bot as a member/admin of this channel, then try again.',
+        })
+      }
+    }
+
     if (action === 'fetch') {
       const { channels = [] } = body
       if (!Array.isArray(channels) || channels.length === 0) {

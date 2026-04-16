@@ -126,6 +126,13 @@ export const INITIAL_STATE = {
   },
   alertLog: [],
   symbolStats: {},
+  aiPicks: {
+    picks: [],
+    rationale: '',
+    index: '',
+    scanned: 0,
+    lastPickedAt: null,
+  },
 }
 
 // A variant of INITIAL_STATE with no seeded watchlist — used by tests that
@@ -329,6 +336,32 @@ export function reducer(state, action) {
       return { ...state, adminLocks: { ...state.adminLocks, [svc]: false } }
     }
 
+    case 'AI_PICKS_SET': {
+      const picks = Array.isArray(action.picks) ? action.picks : []
+      return {
+        ...state,
+        aiPicks: {
+          picks,
+          rationale: action.rationale || '',
+          index: action.index || '',
+          scanned: action.scanned || 0,
+          lastPickedAt: action.at || new Date().toISOString(),
+        },
+      }
+    }
+    case 'AI_PICKS_CLEAR':
+      return { ...state, aiPicks: { ...INITIAL_STATE.aiPicks } }
+    case 'AI_PICKS_REMOVE': {
+      const ticker = normalizeSymbol(action.ticker)
+      return {
+        ...state,
+        aiPicks: {
+          ...state.aiPicks,
+          picks: state.aiPicks.picks.filter(p => normalizeSymbol(p.ticker) !== ticker),
+        },
+      }
+    }
+
     case 'SYMBOL_STATS_UPDATE': {
       // Merge per-symbol stats: { statsMap: { EURUSD: { trend: true, ... }, ... } }
       const map = action.statsMap
@@ -401,6 +434,15 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
     },
     alertLog: Array.isArray(raw.alertLog) ? raw.alertLog : [],
     symbolStats: raw.symbolStats && typeof raw.symbolStats === 'object' ? raw.symbolStats : {},
+    aiPicks: raw.aiPicks && typeof raw.aiPicks === 'object'
+      ? {
+          picks: Array.isArray(raw.aiPicks.picks) ? raw.aiPicks.picks : [],
+          rationale: raw.aiPicks.rationale || '',
+          index: raw.aiPicks.index || '',
+          scanned: raw.aiPicks.scanned || 0,
+          lastPickedAt: raw.aiPicks.lastPickedAt || null,
+        }
+      : { ...fallback.aiPicks },
   }
 }
 

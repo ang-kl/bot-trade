@@ -84,16 +84,39 @@ export default function NewsTab() {
     }
   }
 
-  const handleAddChannel = useCallback(() => {
+  const handleAddChannel = useCallback(async () => {
     const raw = channelDraft.trim().replace(/^@/, '')
     if (!raw) return
+    // Verify channel if bot token is available
+    if (state.telegram.botToken) {
+      try {
+        const data = await callTelegramFeed('verify', {
+          botToken: state.telegram.botToken,
+          username: raw,
+        })
+        if (data.ok && data.channel) {
+          dispatch({
+            type: 'NEWS_ADD_TELEGRAM_CHANNEL',
+            name: data.channel.title || raw,
+            username: data.channel.username || raw,
+          })
+          setChannelDraft('')
+          setDiscoverError(null)
+          return
+        }
+        // Channel not accessible by bot — still add but warn
+        setDiscoverError(`@${raw}: ${data.error || 'not accessible'}. ${data.hint || ''}`)
+      } catch {
+        // API call failed — still add manually
+      }
+    }
     dispatch({
       type: 'NEWS_ADD_TELEGRAM_CHANNEL',
       name: raw,
       username: raw,
     })
     setChannelDraft('')
-  }, [channelDraft, dispatch])
+  }, [channelDraft, dispatch, state.telegram.botToken])
 
   const handleDiscover = useCallback(async () => {
     setDiscovering(true)
@@ -191,6 +214,15 @@ export default function NewsTab() {
 
         {discoverError && (
           <p className="t-meta text-[var(--color-down)] mb-2">{discoverError}</p>
+        )}
+
+        {state.telegram.botToken && telegramChannels.length === 0 && (
+          <div className="mb-3 p-2 rounded-[7px] bg-[var(--color-accent-soft)] text-[11px] text-[var(--color-text-sub)]">
+            <span className="font-bold text-[var(--color-accent)]">Tip:</span>{' '}
+            Discover only finds channels where your bot has unread messages.
+            For public channels, type the @username above and click Add — the bot will verify access automatically.
+            Make sure your bot is a member of each channel (add via Telegram &gt; Channel Info &gt; Admins/Members).
+          </div>
         )}
 
         {/* Channel list */}

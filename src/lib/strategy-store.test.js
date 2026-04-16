@@ -347,6 +347,83 @@ describe('symbolStats', () => {
   })
 })
 
+describe('reducer: AI picks', () => {
+  it('AI_PICKS_SET stores picks with metadata', () => {
+    const picks = [
+      { ticker: 'AAPL', bias: 'long', confidence: 8, thesis: 'momentum play', category: 'Stocks', price: 195, change: '1.5', volume: 50000000 },
+      { ticker: 'MSFT', bias: 'short', confidence: 6, thesis: 'gap fill', category: 'Stocks', price: 420, change: '-0.8', volume: 30000000 },
+    ]
+    const s = reducer(INITIAL_STATE, { type: 'AI_PICKS_SET', picks, rationale: 'High momentum names', index: 'US30', scanned: 30 })
+    expect(s.aiPicks.picks).toHaveLength(2)
+    expect(s.aiPicks.picks[0].ticker).toBe('AAPL')
+    expect(s.aiPicks.rationale).toBe('High momentum names')
+    expect(s.aiPicks.index).toBe('US30')
+    expect(s.aiPicks.scanned).toBe(30)
+    expect(s.aiPicks.lastPickedAt).toBeTruthy()
+  })
+
+  it('AI_PICKS_CLEAR resets to initial state', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [{ ticker: 'NVDA', bias: 'long', confidence: 9 }],
+      rationale: 'test',
+      index: 'US30',
+      scanned: 5,
+    })
+    expect(s1.aiPicks.picks).toHaveLength(1)
+    const s2 = reducer(s1, { type: 'AI_PICKS_CLEAR' })
+    expect(s2.aiPicks.picks).toHaveLength(0)
+    expect(s2.aiPicks.rationale).toBe('')
+    expect(s2.aiPicks.lastPickedAt).toBeNull()
+  })
+
+  it('AI_PICKS_REMOVE removes a pick by ticker', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [
+        { ticker: 'AAPL', bias: 'long', confidence: 8 },
+        { ticker: 'MSFT', bias: 'short', confidence: 6 },
+        { ticker: 'NVDA', bias: 'long', confidence: 9 },
+      ],
+    })
+    const s2 = reducer(s1, { type: 'AI_PICKS_REMOVE', ticker: 'MSFT' })
+    expect(s2.aiPicks.picks).toHaveLength(2)
+    expect(s2.aiPicks.picks.map(p => p.ticker)).toEqual(['AAPL', 'NVDA'])
+  })
+
+  it('AI_PICKS_REMOVE is case-insensitive', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [{ ticker: 'AAPL', bias: 'long', confidence: 8 }],
+    })
+    const s2 = reducer(s1, { type: 'AI_PICKS_REMOVE', ticker: 'aapl' })
+    expect(s2.aiPicks.picks).toHaveLength(0)
+  })
+
+  it('sanitize preserves valid aiPicks', () => {
+    const raw = {
+      aiPicks: {
+        picks: [{ ticker: 'TSLA', bias: 'long', confidence: 7 }],
+        rationale: 'EV momentum',
+        index: 'US30',
+        scanned: 30,
+        lastPickedAt: '2026-01-01T00:00:00Z',
+      },
+    }
+    const out = sanitize(raw)
+    expect(out.aiPicks.picks).toHaveLength(1)
+    expect(out.aiPicks.rationale).toBe('EV momentum')
+    expect(out.aiPicks.lastPickedAt).toBe('2026-01-01T00:00:00Z')
+  })
+
+  it('sanitize defaults aiPicks when missing', () => {
+    const out = sanitize({})
+    expect(out.aiPicks.picks).toEqual([])
+    expect(out.aiPicks.rationale).toBe('')
+    expect(out.aiPicks.lastPickedAt).toBeNull()
+  })
+})
+
 describe('readStored / writeStored', () => {
   it('writes and reads round-trip via storage double', () => {
     const storage = makeStorage()
