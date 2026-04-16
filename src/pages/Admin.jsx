@@ -183,11 +183,9 @@ function TelegramAdmin({ locked }) {
     setBusy(true); setTestResult(null)
     try {
       await apiPost('/api/telegram', {
-        action: 'send-alert',
-        alertType: 'test',
+        action: 'send-test',
         botToken,
         chatId,
-        message: 'bot-trade Admin: connection test successful \u2705',
       })
       setTestResult({ ok: true, message: 'Test message sent to Telegram' })
       setTelegram({ enabled: true })
