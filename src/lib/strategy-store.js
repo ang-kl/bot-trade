@@ -115,6 +115,9 @@ export const INITIAL_STATE = {
   },
   massive: {
     apiKey: '',
+    s3AccessKeyId: '',
+    s3Endpoint: '',
+    s3Bucket: '',
   },
   adminLocks: {
     ctrader: false,
@@ -309,6 +312,9 @@ export function reducer(state, action) {
     case 'MASSIVE_SET': {
       const m = { ...state.massive }
       if (typeof action.apiKey === 'string') m.apiKey = action.apiKey
+      if (typeof action.s3AccessKeyId === 'string') m.s3AccessKeyId = action.s3AccessKeyId
+      if (typeof action.s3Endpoint === 'string') m.s3Endpoint = action.s3Endpoint
+      if (typeof action.s3Bucket === 'string') m.s3Bucket = action.s3Bucket
       return { ...state, massive: m }
     }
 

@@ -302,7 +302,7 @@ describe('massive + adminLocks', () => {
   })
   it('sanitize defaults massive and adminLocks', () => {
     const out = sanitize({})
-    expect(out.massive).toEqual({ apiKey: '' })
+    expect(out.massive).toEqual({ apiKey: '', s3AccessKeyId: '', s3Endpoint: '', s3Bucket: '' })
     expect(out.adminLocks).toEqual({ ctrader: false, telegram: false, massive: false })
   })
 })
