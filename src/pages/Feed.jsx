@@ -52,7 +52,7 @@ function SymbolCard({ symbol, scan, analysis, onOrder, eventLine, defaultCollaps
 
   const [cardOpen, setCardOpen] = useState(!defaultCollapsed)
   const [expanded, setExpanded] = useState(false)
-  const [showOriginal, setShowOriginal] = useState({})
+  const [showOriginal, setShowOriginal] = useState({}) // false = English, true = original language
 
   return (
     <Card id={`symbol-${symbol}`}>

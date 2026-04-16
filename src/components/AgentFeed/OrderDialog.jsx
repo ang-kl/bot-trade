@@ -16,7 +16,8 @@ function fmtPrice(p) {
 
 export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onConfirm, onCancel }) {
   const [volume, setVolume] = useState(String(maxVolume))
-  const [orderType, setOrderType] = useState('market')
+  // Default to Limit when AI provides a specific entry — the AI's entry is a target level, not market
+  const [orderType, setOrderType] = useState(synthesis?.entry ? 'limit' : 'market')
   const [limitPrice, setLimitPrice] = useState(synthesis?.entry ? String(synthesis.entry) : '')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
@@ -25,13 +26,14 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onCon
   const arrow = side === 'long' ? '\u25B2' : '\u25BC'
   const sideColor = side === 'long' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'
 
-  const entry = Number(synthesis?.entry) || 0
+  const aiEntry = Number(synthesis?.entry) || 0
+  const effectiveEntry = orderType !== 'market' ? (Number(limitPrice) || aiEntry) : aiEntry
   const sl = Number(synthesis?.sl) || 0
   const tp1 = Number(synthesis?.tp1) || 0
   const tp2 = Number(synthesis?.tp2) || null
 
-  const slPips = entry && sl ? Math.abs(entry - sl) : 0
-  const tp1Pips = entry && tp1 ? Math.abs(tp1 - entry) : 0
+  const slPips = effectiveEntry && sl ? Math.abs(effectiveEntry - sl) : 0
+  const tp1Pips = effectiveEntry && tp1 ? Math.abs(tp1 - effectiveEntry) : 0
   const rr = slPips > 0 ? (tp1Pips / slPips).toFixed(1) : '\u2014'
 
   const handleSubmit = async () => {
@@ -117,7 +119,11 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onCon
         <div className="rounded-[7px] bg-[var(--color-bg)] border border-[var(--color-border)] px-3 py-2 mb-3 space-y-1 text-[12px]">
           <div className="flex justify-between">
             <span className="text-[var(--color-muted)]">Entry</span>
-            <span className="font-mono">{fmtPrice(entry)}</span>
+            <span className="font-mono">
+              {orderType === 'market'
+                ? <><span className="text-[var(--color-muted)]">Market</span>{entry ? <span className="text-[var(--color-text-sub)] ml-1">(AI: {fmtPrice(entry)})</span> : null}</>
+                : fmtPrice(Number(limitPrice) || entry)}
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-[var(--color-down)]">Stop Loss</span>

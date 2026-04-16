@@ -8,7 +8,7 @@ import { MINIONS, dispatch, buildMinionPrompt, buildSynthesisPrompt } from './_l
 
 const MODEL = 'claude-sonnet-4-5'
 const MINION_MAX_TOKENS = 512
-const SYNTH_MAX_TOKENS = 1024
+const SYNTH_MAX_TOKENS = 1536
 
 function readBody(req) {
   if (req.body && typeof req.body === 'object') return req.body
@@ -37,7 +37,7 @@ async function runMinion(client, minionId, symbol, sessionContext) {
     })
     const text = (resp?.content || []).filter(p => p?.type === 'text').map(p => p.text).join('').trim()
     const parsed = parseJSON(text)
-    return {
+    const result = {
       minionId,
       name: m.name,
       role: m.role,
@@ -52,6 +52,13 @@ async function runMinion(client, minionId, symbol, sessionContext) {
       tokens: resp.usage?.output_tokens || 0,
       ms: Date.now() - startedAt,
     }
+    // Carry translation fields for non-English minions
+    if (parsed.translated_report) {
+      result.original_report = parsed.report
+      result.translated_report = parsed.translated_report
+      result.original_language = parsed.original_language || m.lang || null
+    }
+    return result
   } catch (e) {
     return {
       minionId, name: m.name, role: m.role, icon: m.icon,

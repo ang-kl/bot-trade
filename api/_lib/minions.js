@@ -251,8 +251,15 @@ export function buildMinionPrompt(minionId, symbol, sessionContext) {
   const m = MINIONS[minionId]
   if (!m) return null
 
+  const isNonEnglish = !!m.lang && m.lang !== 'en'
   const langHint = m.voice
     ? `\nThink from a ${m.lang || 'local'} perspective. ${m.voice}`
+    : ''
+
+  const translationFields = isNonEnglish
+    ? `,
+  "translated_report": "<English translation of your report, same length>",
+  "original_language": "${m.lang}"`
     : ''
 
   return `You are the ${m.name}. ${m.persona}
@@ -265,6 +272,7 @@ UTC: ${new Date().toISOString()}
 
 Analyse ${symbol} RIGHT NOW. Be specific, opinionated, and brief.
 ${m.role === 'trader' ? 'Include concrete entry, stop-loss, and take-profit levels.' : ''}
+${isNonEnglish ? `Write your "report" in ${m.lang} (your native language). Also provide an English translation in "translated_report".` : ''}
 
 Return ONLY valid JSON, no markdown:
 {
@@ -274,7 +282,7 @@ Return ONLY valid JSON, no markdown:
   "entry": <price or null>,
   "sl": <price or null>,
   "tp1": <price or null>,
-  "tp2": <price or null>` : ''}
+  "tp2": <price or null>` : ''}${translationFields}
 }`
 }
 
@@ -299,6 +307,10 @@ ${reportsText}
 - Auto-trade threshold for ${symbol} is ${threshold}/10.
 - If overall_conviction >= ${threshold}, set auto_trade: true.
 - Use the best entry/SL/TP from the trader minions. Prefer the most conservative SL.
+- For volume_profile: extract levels mentioned by chart_scanner or order_flow minions (POC, HVN, LVN, VWAP). If not explicitly mentioned, estimate from the S/R levels and entry zones discussed.
+- For risk_metrics: estimate Sharpe (risk-adjusted return quality 0-3), VaR (% downside risk), max drawdown (% worst case), beta (correlation to market 0-2). Base these on the trade setup quality and volatility discussed.
+- For strategy: name the dominant trading strategy (e.g. "Momentum breakout", "Mean reversion", "Carry trade", "Range fade", "Trend continuation").
+- For execution: describe the execution approach (e.g. "Limit at support", "Market on break", "Scale in", "Wait for pullback").
 
 Return ONLY valid JSON:
 {
@@ -313,6 +325,20 @@ Return ONLY valid JSON:
   "tp1": <price or null>,
   "tp2": <price or null>,
   "auto_trade": <true|false>,
-  "risk_note": "<any concerns, or null>"
+  "risk_note": "<any concerns, or null>",
+  "strategy": "<strategy name>",
+  "execution": { "type": "<execution method>", "infra": "<order infrastructure e.g. cTrader limit>" },
+  "volume_profile": {
+    "poc": <price or null>,
+    "hvn": <price or null>,
+    "lvn": <price or null>,
+    "vwap": <price or null>
+  },
+  "risk_metrics": {
+    "sharpe": <number 0-3 or null>,
+    "var": <percentage number or null>,
+    "drawdown": <percentage number or null>,
+    "beta": <number 0-2 or null>
+  }
 }`
 }
