@@ -109,10 +109,28 @@ export default function StoryCard({ story, onAction }) {
 
       {/* Reasoning / thesis */}
       {reasoning ? (
-        <p className="t-sub text-[var(--color-text-sub)] mb-3">{reasoning}</p>
+        <p className="t-sub text-[var(--color-text-sub)] mb-2">{reasoning}</p>
       ) : state === 'WATCHING' ? (
-        <p className="t-sub text-[var(--color-muted)] italic mb-3">Thesis pending - advisor not yet wired.</p>
+        <p className="t-sub text-[var(--color-muted)] italic mb-2">Waiting for scan - hit Scan or Start AI above.</p>
       ) : null}
+
+      {/* Scan metadata for WATCHING stories */}
+      {state === 'WATCHING' && story.scanBias && (
+        <div className="flex flex-wrap gap-2 mb-3 t-meta">
+          <Badge tone={story.scanBias === 'long' ? 'up' : story.scanBias === 'short' ? 'down' : 'neutral'} pill>
+            {story.scanBias === 'skip' ? 'SKIP' : story.scanBias?.toUpperCase()}
+          </Badge>
+          {story.scanTimeframe && (
+            <span className="text-[var(--color-text-sub)]">{story.scanTimeframe}</span>
+          )}
+          {story.scanSessionFit && (
+            <span className="text-[var(--color-muted)]">Session: {story.scanSessionFit}</span>
+          )}
+        </div>
+      )}
+      {state === 'WATCHING' && story.scanKeyLevels && story.scanKeyLevels !== 'watching' && (
+        <p className="t-meta text-[var(--color-muted)] mb-3">Levels: {story.scanKeyLevels}</p>
+      )}
 
       {/* PENDING: Entry / SL / TP line */}
       {state === 'PENDING' && entryPrice != null && (

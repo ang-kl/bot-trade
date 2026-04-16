@@ -1,4 +1,5 @@
 // Agent Feed - story cards driven by the strategy-store watchlist.
+// Scans enabled symbols through /api/scan for AI-generated theses.
 // Bottom bar shows token usage and a discrete logout link.
 
 import { useMemo, useState, useCallback, useEffect } from 'react'
@@ -17,22 +18,33 @@ import { useStrategy } from '../lib/strategy-store.js'
 
 // Seed: turn each enabled watchlist symbol into a WATCHING story
 // so the feed has content before the advisor runs.
-function seedStories(watchlist) {
+function seedStories(watchlist, scanResults) {
   return watchlist
     .filter((w) => w.enabled)
-    .map((w) =>
-      buildStory(
+    .map((w) => {
+      const scan = scanResults[w.symbol]
+      const story = buildStory(
         {
           id: `watch-${w.symbol}`,
           symbol: w.symbol,
-          side: 'long',
+          side: scan?.bias === 'short' ? 'short' : 'long',
           volume: 0,
           entryPrice: 0,
           currentPrice: 0,
+          reasoning: scan?.thesis || null,
+          confidence: scan?.confidence || null,
         },
         'WATCHING',
-      ),
-    )
+      )
+      // Attach scan metadata for richer card rendering
+      if (scan) {
+        story.scanBias = scan.bias
+        story.scanTimeframe = scan.timeframe
+        story.scanSessionFit = scan.session_fit
+        story.scanKeyLevels = scan.key_levels
+      }
+      return story
+    })
 }
 
 async function amendPosition(story, nextStopLoss) {
@@ -52,9 +64,29 @@ async function amendPosition(story, nextStopLoss) {
   return data
 }
 
+async function runScan(symbols, timezone) {
+  const res = await fetch('/api/scan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ symbols, timezone }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `scan ${res.status}`)
+  return data
+}
+
 export default function Feed() {
   const { state, dispatch } = useStrategy()
-  const stories = useMemo(() => seedStories(state.watchlist), [state.watchlist])
+  const [scanResults, setScanResults] = useState({})
+  const [deskNote, setDeskNote] = useState(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState(null)
+
+  const stories = useMemo(
+    () => seedStories(state.watchlist, scanResults),
+    [state.watchlist, scanResults],
+  )
+
   const [tightenFor, setTightenFor] = useState(null)
   const [dismissed, setDismissed] = useState(new Set())
   const [muted, setMuted] = useState({})
@@ -72,7 +104,7 @@ export default function Feed() {
         setTightenFor(story)
         break
       case 'why':
-        showToast(story.reasoning || 'Thesis pending - advisor not yet wired.')
+        showToast(story.reasoning || 'Thesis pending - agents not yet scanned.')
         break
       case 'dismiss':
         setDismissed(prev => new Set([...prev, story.id]))
@@ -122,11 +154,9 @@ export default function Feed() {
     }
   }, [])
 
-  const editorialText = state.news.latestRundown || null
+  const editorialText = deskNote || state.news.latestRundown || null
 
-  // Auto-clean expired mutes so stories reappear. setTimeout keeps setState
-  // out of the synchronous effect body (satisfies react-hooks/set-state-in-effect)
-  // and Date.now() stays in callbacks only (satisfies react-hooks/purity).
+  // Auto-clean expired mutes so stories reappear.
   useEffect(() => {
     const expiries = Object.values(muted)
     if (expiries.length === 0) return
@@ -145,7 +175,7 @@ export default function Feed() {
     return () => clearTimeout(timer)
   }, [muted])
 
-  // Filter out dismissed and muted stories (muted entries are cleaned by the effect above).
+  // Filter out dismissed and muted stories.
   const visibleStories = useMemo(() => {
     return stories.filter(s => {
       if (dismissed.has(s.id)) return false
@@ -163,34 +193,83 @@ export default function Feed() {
     [state.watchlist, state.news.latestRundown, visibleStories],
   )
 
-  const enabledCount = state.watchlist.filter(w => w.enabled).length
+  const enabledSymbols = useMemo(
+    () => state.watchlist.filter(w => w.enabled),
+    [state.watchlist],
+  )
+  const enabledCount = enabledSymbols.length
   const isArmed = state.risk.armed
+  const scannedCount = Object.keys(scanResults).length
 
-  const handleFetchWatchlist = useCallback(() => {
-    // Re-seed stories from current enabled watchlist entries
+  // --- Scanner ---
+  const handleScan = useCallback(async () => {
+    if (enabledSymbols.length === 0) return
+    setScanning(true)
+    setScanError(null)
     setDismissed(new Set())
     setMuted({})
-    showToast(`Fetched ${enabledCount} symbols from watchlist.`)
-  }, [enabledCount, showToast])
+
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore'
+
+    try {
+      const data = await runScan(enabledSymbols, tz)
+      // Map scan results by symbol
+      const map = {}
+      for (const s of (data.scans || [])) {
+        if (s.symbol) map[s.symbol.toUpperCase()] = s
+      }
+      setScanResults(map)
+      if (data.desk_note) setDeskNote(data.desk_note)
+      if (data.usage?.output_tokens) {
+        setTokenCount(prev => prev + data.usage.output_tokens)
+      }
+      const found = Object.values(map).filter(s => s.bias !== 'skip' && s.bias !== 'neutral').length
+      showToast(`Scan complete. ${found} setups found across ${data.scans?.length || 0} symbols.`)
+    } catch (e) {
+      setScanError(e.message)
+      showToast(`Scan failed: ${e.message}`)
+    } finally {
+      setScanning(false)
+    }
+  }, [enabledSymbols, showToast])
 
   const handleStartAI = useCallback(() => {
     dispatch({ type: 'RISK_TOGGLE_ARMED' })
-    showToast(isArmed
-      ? 'AI algo trader stopped.'
-      : 'AI algo trader started. Monitoring enabled watchlist symbols.',
-    )
-  }, [isArmed, dispatch, showToast])
+    if (!isArmed) {
+      // Arm + scan
+      handleScan()
+      showToast('AI trader armed. Scanning enabled symbols...')
+    } else {
+      showToast('AI trader disarmed.')
+    }
+  }, [isArmed, dispatch, showToast, handleScan])
 
   return (
     <section className="space-y-4">
       <AgentBrief stories={visibleStories} />
-      <Editorial text={editorialText} />
+
+      {/* Desk note / editorial */}
+      {editorialText ? (
+        <Editorial text={editorialText} />
+      ) : (
+        <Editorial text="No desk notes yet. Hit scan to wake the agents up." />
+      )}
 
       {/* Feed controls */}
       <Card className="flex items-center gap-3 flex-wrap">
-        <Button size="sm" variant="ghost" onClick={handleFetchWatchlist} disabled={enabledCount === 0}>
-          {'\u21BB'} Fetch from Watchlist ({enabledCount})
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={handleScan}
+          disabled={enabledCount === 0 || scanning}
+        >
+          {scanning ? 'Scanning...' : `\u21BB Scan Watchlist (${enabledCount})`}
         </Button>
+        {scannedCount > 0 && (
+          <span className="t-meta text-[var(--color-text-sub)]">
+            {scannedCount} scanned
+          </span>
+        )}
         <div className="flex-1" />
         <Badge tone={isArmed ? 'up' : 'neutral'} pill>
           {isArmed ? 'ARMED' : 'DISARMED'}
@@ -205,11 +284,34 @@ export default function Feed() {
         </Button>
       </Card>
 
-      {visibleStories.length === 0 ? (
-        <p className="t-sub text-[var(--color-muted)]">
-          No active stories yet. Enable symbols in Settings to seed this feed.
-        </p>
-      ) : (
+      {/* Scan error */}
+      {scanError && (
+        <Card className="border-l-4 border-l-[var(--color-down)]">
+          <p className="t-sub text-[var(--color-down)]">{scanError}</p>
+        </Card>
+      )}
+
+      {/* Scanning indicator */}
+      {scanning && (
+        <Card className="text-center py-6">
+          <p className="t-body text-[var(--color-accent)] mb-1">Agents scanning...</p>
+          <p className="t-meta text-[var(--color-muted)]">
+            Analysing {enabledCount} symbols across active market sessions.
+          </p>
+        </Card>
+      )}
+
+      {/* Story cards */}
+      {!scanning && visibleStories.length === 0 ? (
+        <Card className="text-center py-8">
+          <p className="t-body text-[var(--color-text-sub)] mb-2">
+            No active stories yet.
+          </p>
+          <p className="t-meta text-[var(--color-muted)]">
+            Enable symbols in Settings, then hit Scan or Start AI to wake the agents.
+          </p>
+        </Card>
+      ) : !scanning && (
         <ul className="space-y-3">
           {visibleStories.map((story) => (
             <li key={story.id}>
@@ -219,7 +321,7 @@ export default function Feed() {
           ))}
         </ul>
       )}
-      {visibleStories.length > 0 && (
+      {!scanning && visibleStories.length > 0 && (
         <div className="border-t border-[var(--color-border)] pt-2 t-meta text-[var(--color-muted-light)] text-center">
           - earlier -
         </div>
