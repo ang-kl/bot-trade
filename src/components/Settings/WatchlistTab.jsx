@@ -31,14 +31,15 @@ const BIAS_COLORS = {
   neutral: 'var(--color-muted)',
 }
 
-function AiPicksCard({ state, dispatch, existingSymbols }) {
+// ── AI Picks prompt card (top — always visible, no results here) ──
+
+function AiPicksPrompt({ state, dispatch }) {
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const { picks, rationale, index, scanned, lastPickedAt } = state.aiPicks
+  const { picks, lastPickedAt } = state.aiPicks
 
   const onPick = useCallback(async () => {
-    // Parse prompt like "5 stocks from US30" or "3 from SP500"
     const countMatch = prompt.match(/(\d+)/)?.[1]
     const indexMatch = prompt.match(/(?:from|in)\s+(\w+)/i)?.[1]
     const count = countMatch ? Number(countMatch) : 5
@@ -67,19 +68,6 @@ function AiPicksCard({ state, dispatch, existingSymbols }) {
     }
   }, [prompt, state.massive.apiKey, dispatch])
 
-  const addToWatchlist = useCallback((pick) => {
-    dispatch({
-      type: 'WATCHLIST_ADD',
-      symbol: pick.ticker,
-      label: pick.thesis || '',
-      category: pick.category || 'Stocks',
-    })
-  }, [dispatch])
-
-  const removePick = useCallback((ticker) => {
-    dispatch({ type: 'AI_PICKS_REMOVE', ticker })
-  }, [dispatch])
-
   return (
     <Card>
       <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -90,17 +78,16 @@ function AiPicksCard({ state, dispatch, existingSymbols }) {
           </span>
         )}
         {picks.length > 0 && (
+          <Badge tone="info" pill>{picks.length} picks</Badge>
+        )}
+        {picks.length > 0 && (
           <Button size="sm" variant="ghost" onClick={() => dispatch({ type: 'AI_PICKS_CLEAR' })}>
             Clear
           </Button>
         )}
       </div>
-      <p className="t-sub text-[var(--color-text-sub)] mb-3">
-        Type a query like &quot;5 stocks from US30&quot; or &quot;3 from SP500&quot; — Massive fetches constituents, Claude picks the best setups.
-      </p>
 
-      {/* Prompt input */}
-      <div className="flex gap-2 mb-3">
+      <div className="flex gap-2">
         <Input
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -114,42 +101,77 @@ function AiPicksCard({ state, dispatch, existingSymbols }) {
       </div>
 
       {!state.massive.apiKey && (
-        <p className="t-meta text-[var(--color-down)] mb-2">
+        <p className="t-meta text-[var(--color-down)] mt-2">
           Massive API key required. Set it in Admin.
         </p>
       )}
+      {error && <p className="t-meta text-[var(--color-down)] mt-2">{error}</p>}
+    </Card>
+  )
+}
 
-      {error && <p className="t-meta text-[var(--color-down)] mb-2">{error}</p>}
+// ── AI Picks results table (rendered inside matrix card) ──
 
-      {/* Results */}
-      {picks.length > 0 && (
-        <div className="space-y-2">
-          {/* Summary */}
-          {rationale && (
-            <p className="t-meta text-[var(--color-text-sub)] mb-2 italic">
-              {rationale}
-              {scanned > 0 && (
-                <span className="text-[var(--color-muted)] ml-1">
-                  ({scanned} scanned from {index})
-                </span>
-              )}
-            </p>
-          )}
+function AiPicksResults({ state, dispatch, existingSymbols }) {
+  const { picks, rationale, index, scanned } = state.aiPicks
+  if (picks.length === 0) return null
 
-          {/* Pick cards */}
-          <div className="grid gap-1.5">
+  const addToWatchlist = (pick) => {
+    dispatch({
+      type: 'WATCHLIST_ADD',
+      symbol: pick.ticker,
+      label: pick.thesis || '',
+      category: pick.category || 'Stocks',
+    })
+  }
+
+  const removePick = (ticker) => {
+    dispatch({ type: 'AI_PICKS_REMOVE', ticker })
+  }
+
+  return (
+    <div className="mb-3">
+      {/* Section header */}
+      <div className="flex items-center gap-2 px-1 mb-1.5">
+        <span className="t-meta font-bold text-[var(--color-accent)]">AI Picks</span>
+        <span className="t-meta text-[var(--color-muted)]">{picks.length} picks</span>
+        {scanned > 0 && (
+          <span className="t-meta text-[var(--color-muted)]">from {index} ({scanned} scanned)</span>
+        )}
+      </div>
+
+      {/* Rationale */}
+      {rationale && (
+        <p className="t-meta text-[var(--color-text-sub)] italic px-1 mb-1.5">{rationale}</p>
+      )}
+
+      {/* Picks table */}
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-[10px] sm:text-[11px]">
+          <thead>
+            <tr className="border-b border-[var(--color-border)]">
+              <th className="px-2 py-1 text-left t-meta font-semibold text-[var(--color-text-sub)] w-[70px]">Ticker</th>
+              <th className="px-2 py-1 text-center t-meta font-semibold text-[var(--color-text-sub)] w-[50px]">Bias</th>
+              <th className="px-2 py-1 text-center t-meta font-semibold text-[var(--color-text-sub)] w-[35px]">C</th>
+              <th className="px-2 py-1 text-right t-meta font-semibold text-[var(--color-text-sub)] w-[70px]">Price</th>
+              <th className="px-2 py-1 text-right t-meta font-semibold text-[var(--color-text-sub)] w-[55px]">Chg%</th>
+              <th className="px-2 py-1 text-left t-meta font-semibold text-[var(--color-text-sub)]">Thesis</th>
+              <th className="px-2 py-1 text-right t-meta font-semibold text-[var(--color-text-sub)] w-[70px]"></th>
+            </tr>
+          </thead>
+          <tbody>
             {picks.map((p) => {
               const alreadyInWatchlist = existingSymbols.has(p.ticker)
+              const biasColor = p.bias === 'long' ? 'text-[var(--color-up)]' : p.bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
+              const arrow = p.bias === 'long' ? '\u25B2' : p.bias === 'short' ? '\u25BC' : ''
               return (
-                <div
-                  key={p.ticker}
-                  className="flex items-center gap-3 px-3 py-2 rounded-[7px] bg-[var(--color-bg)] border border-[var(--color-border)]"
-                >
-                  {/* Ticker + bias */}
-                  <div className="flex items-center gap-2 min-w-[80px]">
-                    <span className="t-sub font-bold text-[var(--color-accent)]">{p.ticker}</span>
+                <tr key={p.ticker} className="border-b border-[var(--color-border)] hover:bg-[var(--color-accent-soft)]/30">
+                  <td className="px-2 py-1.5">
+                    <span className={`font-bold ${biasColor}`}>{arrow} {p.ticker}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-center">
                     <span
-                      className="text-[9px] font-bold uppercase px-1 py-0.5 rounded-[3px]"
+                      className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-[3px] inline-block"
                       style={{
                         color: BIAS_COLORS[p.bias] || BIAS_COLORS.neutral,
                         backgroundColor: `color-mix(in srgb, ${BIAS_COLORS[p.bias] || BIAS_COLORS.neutral} 15%, transparent)`,
@@ -157,59 +179,54 @@ function AiPicksCard({ state, dispatch, existingSymbols }) {
                     >
                       {p.bias || 'neutral'}
                     </span>
-                  </div>
-
-                  {/* Confidence */}
-                  <div className="flex items-center gap-1 min-w-[50px]">
-                    <span className="t-meta text-[var(--color-muted)]">C:</span>
-                    <span className={`t-sub font-bold ${p.confidence >= 7 ? 'text-[var(--color-up)]' : p.confidence >= 4 ? 'text-[var(--color-text)]' : 'text-[var(--color-down)]'}`}>
-                      {p.confidence}/10
+                  </td>
+                  <td className="px-2 py-1.5 text-center">
+                    <span className={`font-bold ${p.confidence >= 7 ? 'text-[var(--color-up)]' : p.confidence >= 4 ? 'text-[var(--color-text)]' : 'text-[var(--color-down)]'}`}>
+                      {p.confidence}
                     </span>
-                  </div>
-
-                  {/* Price + change */}
-                  {p.price != null && (
-                    <div className="hidden sm:flex items-center gap-1.5 min-w-[90px]">
-                      <span className="t-meta text-[var(--color-text)]">${p.price}</span>
-                      {p.change != null && (
-                        <span className={`t-meta font-bold ${Number(p.change) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                          {Number(p.change) >= 0 ? '+' : ''}{p.change}%
-                        </span>
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
+                    {p.price != null ? `$${p.price}` : '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono">
+                    {p.change != null ? (
+                      <span className={`font-bold ${Number(p.change) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {Number(p.change) >= 0 ? '+' : ''}{p.change}%
+                      </span>
+                    ) : '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-[var(--color-text-sub)] truncate max-w-[250px]">
+                    {p.thesis || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {alreadyInWatchlist ? (
+                        <span className="text-[9px] text-[var(--color-muted)]">Added</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => addToWatchlist(p)}
+                          className="text-[9px] font-bold text-[var(--color-accent)] hover:underline cursor-pointer"
+                        >
+                          +WL
+                        </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => removePick(p.ticker)}
+                        className="text-[var(--color-down)] text-[11px] cursor-pointer hover:opacity-70 ml-1"
+                      >
+                        {'\u00D7'}
+                      </button>
                     </div>
-                  )}
-
-                  {/* Thesis */}
-                  <span className="t-meta text-[var(--color-text-sub)] flex-1 truncate hidden md:block">
-                    {p.thesis}
-                  </span>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 ml-auto shrink-0">
-                    {alreadyInWatchlist ? (
-                      <Badge tone="neutral" pill>Added</Badge>
-                    ) : (
-                      <Button size="sm" variant="ghost" onClick={() => addToWatchlist(p)} title="Add to watchlist">
-                        +WL
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => removePick(p.ticker)}
-                      className="text-[var(--color-down)]"
-                      title="Remove pick"
-                    >
-                      {'\u00D7'}
-                    </Button>
-                  </div>
-                </div>
+                  </td>
+                </tr>
               )
             })}
-          </div>
-        </div>
-      )}
-    </Card>
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
@@ -422,8 +439,8 @@ export default function WatchlistTab() {
 
   return (
     <div className="space-y-3">
-      {/* AI Picks — pinned above categories */}
-      <AiPicksCard state={state} dispatch={dispatch} existingSymbols={existingSymbols} />
+      {/* AI Picks prompt — always visible at top */}
+      <AiPicksPrompt state={state} dispatch={dispatch} />
 
       {/* Filter bar */}
       <Card>
@@ -536,6 +553,9 @@ export default function WatchlistTab() {
               </button>
             ))}
           </div>
+          {/* AI Picks results — pinned above category groups */}
+          <AiPicksResults state={state} dispatch={dispatch} existingSymbols={existingSymbols} />
+
           {filtered.length === 0 ? (
             <p className="t-sub text-[var(--color-text-sub)] px-4 py-6 text-center">
               {state.watchlist.length === 0 ? 'Empty watchlist. Search and add instruments above.' : 'No symbols match current filters.'}

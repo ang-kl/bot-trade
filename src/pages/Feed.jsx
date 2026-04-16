@@ -239,7 +239,7 @@ const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
 
 // ── Summary matrix card ──
 
-function SummaryMatrix({ symbols, scanning, collapsed, onToggle }) {
+function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics = {} }) {
   const [vwapPeriod, setVwapPeriod] = useState('today')
 
   const hasAnyScan = symbols.some(d => d.scan)
@@ -333,8 +333,15 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle }) {
                     const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
                     const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
                     const grade = getTradeGrade(d)
-                    const vp = syn?.volume_profile || d.scan?.volume_profile || {}
-                    const risk = syn?.risk_metrics || d.scan?.risk_metrics || {}
+                    const mm = massiveMetrics[d.symbol] || {}
+                    const mmVp = mm.volume_profile || {}
+                    const mmRisk = mm.risk_metrics || {}
+                    const mmVwap = mm.vwap || {}
+                    const vp = { ...mmVp, ...mmVwap, ...(syn?.volume_profile || d.scan?.volume_profile || {}) }
+                    const risk = { ...mmRisk, ...(syn?.risk_metrics || d.scan?.risk_metrics || {}) }
+                    // Map massive risk_metrics field names
+                    if (risk.var_95 != null && risk.var == null) risk.var = risk.var_95
+                    if (risk.max_drawdown != null && risk.drawdown == null) risk.drawdown = risk.max_drawdown
                     const exec = syn?.execution || d.scan?.execution || {}
                     const strat = syn?.strategy || d.scan?.strategy || ''
 
@@ -351,7 +358,7 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle }) {
                           <Badge tone={GRADE_TONE[grade]} className="text-[8px] px-1">{GRADE_LABEL[grade]}</Badge>
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
-                          {syn?.entry || d.scan?.price || '\u2014'}
+                          {syn?.entry || d.scan?.price || mm.price || '\u2014'}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
                           {vp.poc || '\u2014'}
@@ -550,6 +557,7 @@ export default function Feed() {
   const [calendarEvents, setCalendarEvents] = useState([])
   const [calendarLoading, setCalendarLoading] = useState(false)
   const [symbolEventLines, setSymbolEventLines] = useState({})
+  const [massiveMetrics, setMassiveMetrics] = useState({}) // { AAPL: { volume_profile, vwap, risk_metrics, ... } }
 
   const scanTimerRef = useRef(null)
 
@@ -590,6 +598,35 @@ export default function Feed() {
     if (!tg.enabled || !tg.botToken || !tg.chatId) return
     apiPost('/api/telegram', { ...body, botToken: tg.botToken, chatId: tg.chatId }).catch(() => {})
   }, [state.telegram])
+
+  // ── Massive compute — fetch real metrics for stock symbols ──
+  const fetchMassiveMetrics = useCallback(async (symbols) => {
+    if (!state.massive.apiKey) return
+    // Only compute for stock symbols that Massive supports (US stocks)
+    const stockSymbols = symbols
+      .filter(s => {
+        const w = state.watchlist.find(w => w.symbol === s)
+        return w?.category === 'Stocks'
+      })
+      .filter(s => !massiveMetrics[s]) // skip already computed
+    if (stockSymbols.length === 0) return
+
+    addLog('massive', `Computing metrics for ${stockSymbols.length} stocks...`)
+    try {
+      const data = await apiPost('/api/massive-compute', {
+        action: 'batch-compute',
+        apiKey: state.massive.apiKey,
+        tickers: stockSymbols,
+      })
+      if (data.results) {
+        setMassiveMetrics(prev => ({ ...prev, ...data.results }))
+        const ok = Object.values(data.results).filter(r => !r.error).length
+        addLog('massive', `Computed: ${ok}/${stockSymbols.length} stocks`)
+      }
+    } catch (e) {
+      addLog('massive', `Compute failed: ${e.message}`)
+    }
+  }, [state.massive.apiKey, state.watchlist, massiveMetrics, addLog])
 
   // ── Trade monitor helpers (must be defined before runAnalyst) ──
   const addMonitoredTrade = useCallback((trade) => {
@@ -815,6 +852,10 @@ export default function Feed() {
       }
       dispatch({ type: 'SYMBOL_STATS_UPDATE', statsMap })
 
+      // Fetch Massive computed metrics for stock symbols (non-blocking)
+      const scannedSymbols = (data.scans || []).map(s => s.symbol).filter(Boolean)
+      fetchMassiveMetrics(scannedSymbols)
+
       // Fire Telegram scan alert
       if (data.scans?.length) {
         const tg = state.telegram
@@ -842,7 +883,7 @@ export default function Feed() {
       showToast(`Scout failed: ${e.message}`)
       return null
     }
-  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch])
+  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch, fetchMassiveMetrics])
 
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {
@@ -1070,6 +1111,7 @@ export default function Feed() {
           scanning={scanning}
           collapsed={matrixCollapsed}
           onToggle={() => setMatrixCollapsed(prev => !prev)}
+          massiveMetrics={massiveMetrics}
         />
       )}
 
