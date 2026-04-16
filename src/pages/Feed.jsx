@@ -6,12 +6,14 @@ import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import TradingFloor from '../components/AgentFeed/TradingFloor.jsx'
 import ActivityLog from '../components/AgentFeed/ActivityLog.jsx'
 import OrderDialog from '../components/AgentFeed/OrderDialog.jsx'
+import TradeMonitor from '../components/AgentFeed/TradeMonitor.jsx'
 import AskDock from '../components/AgentFeed/AskDock.jsx'
 import BottomBar from '../components/AgentFeed/BottomBar.jsx'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
+import { isTradingNow, getHoursForSymbol } from '../lib/trading-hours.js'
 
 const SCAN_INTERVAL = 5 * 60 // 5 minutes in seconds
 
@@ -64,6 +66,9 @@ function SymbolCard({ symbol, scan, analysis, onOrder }) {
         )}
         {scan?.session_fit && (
           <span className="t-meta text-[var(--color-muted)]">Session: {scan.session_fit}</span>
+        )}
+        {scan?.trade_at && scan.trade_at !== 'now' && (
+          <Badge tone="warning" pill>Trade at: {scan.trade_at}</Badge>
         )}
       </div>
 
@@ -159,6 +164,7 @@ export default function Feed() {
   const [tokenCount, setTokenCount] = useState(0)
   const [orderFor, setOrderFor] = useState(null)
   const [toast, setToast] = useState(null)
+  const [monitoredTrades, setMonitoredTrades] = useState([])
 
   const scanTimerRef = useRef(null)
 
@@ -230,6 +236,21 @@ export default function Feed() {
             }
             await apiPost('/api/ctrader', orderBody)
             addLog('trader', `Order placed! ${syn.consensus_bias?.toUpperCase()} @ market`, { symbol })
+            // Monitor the auto-trade
+            setMonitoredTrades(prev => {
+              if (prev.some(t => t.symbol === symbol)) return prev
+              return [...prev, {
+                symbol,
+                side: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
+                entry: syn.entry,
+                sl: syn.sl,
+                tp: syn.tp1,
+                volume: wItem?.maxVolume || 0.01,
+                thesis: syn.synthesis || '',
+                placedAt: Date.now(),
+              }]
+            })
+            setAgentStates(prev => ({ ...prev, monitor: 'running' }))
             sendTelegramAlert({
               action: 'send-alert', alertType: 'trade',
               trade: { symbol, side: syn.consensus_bias, entry: syn.entry, stopLoss: syn.sl, takeProfit: syn.tp1, action: 'AUTO-TRADE', message: syn.synthesis },
@@ -259,8 +280,23 @@ export default function Feed() {
 
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore'
 
+    // Enrich symbols with trading status for the scanner
+    const enriched = enabledSymbols.map(w => {
+      const trading = isTradingNow(w.symbol)
+      const hours = getHoursForSymbol(w.symbol)
+      let nextOpen = ''
+      if (!trading && hours.length > 0) {
+        const utcNow = new Date().getUTCHours()
+        // Find next open hour
+        const opens = hours.map(h => h.open).sort((a, b) => a - b)
+        const next = opens.find(h => h > utcNow) || opens[0]
+        nextOpen = `${String(next).padStart(2, '0')}:00 UTC`
+      }
+      return { ...w, tradingNow: trading, nextOpen }
+    })
+
     try {
-      const data = await apiPost('/api/scan', { symbols: enabledSymbols, timezone: tz })
+      const data = await apiPost('/api/scan', { symbols: enriched, timezone: tz })
 
       const map = {}
       for (const s of (data.scans || [])) {
@@ -354,6 +390,44 @@ export default function Feed() {
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current) }
   }, [isArmed, enabledCount, runScout])
 
+  // ── Trade monitor helpers ──
+  const addMonitoredTrade = useCallback((trade) => {
+    setMonitoredTrades(prev => {
+      if (prev.some(t => t.symbol === trade.symbol)) return prev
+      return [...prev, trade]
+    })
+    setAgentStates(prev => ({ ...prev, monitor: 'running' }))
+  }, [])
+
+  const stopTrade = useCallback(async (trade) => {
+    addLog('monitor', `Stopping ${trade.symbol} position...`, { symbol: trade.symbol })
+    try {
+      if (state.ctrader.linkedAccountId) {
+        await apiPost('/api/ctrader', {
+          action: 'close-position',
+          accountId: state.ctrader.linkedAccountId,
+          symbolName: trade.symbol,
+        })
+      }
+      setMonitoredTrades(prev => prev.filter(t => t.symbol !== trade.symbol))
+      addLog('monitor', `${trade.symbol} position STOPPED`, { symbol: trade.symbol })
+      sendTelegramAlert({
+        action: 'send-alert', alertType: 'trade',
+        trade: { symbol: trade.symbol, side: trade.side, action: 'CLOSED/STOPPED' },
+      })
+      showToast(`${trade.symbol} position stopped`)
+    } catch (e) {
+      addLog('monitor', `Failed to stop ${trade.symbol}: ${e.message}`, { symbol: trade.symbol })
+      showToast(`Failed to stop: ${e.message}`)
+    }
+  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
+
+  const updateMonitoredTrade = useCallback((symbol, updates) => {
+    setMonitoredTrades(prev =>
+      prev.map(t => t.symbol === symbol ? { ...t, ...updates } : t),
+    )
+  }, [])
+
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {
     setOrderFor({ symbol, synthesis })
@@ -379,9 +453,20 @@ export default function Feed() {
       trade: { symbol: order.symbol, side: order.side, entry: order.limitPrice || 'market', stopLoss: order.stopLoss, takeProfit: order.takeProfit, action: order.orderType.toUpperCase() },
     })
     addLog('telegram', `Trade alert sent`, { symbol: order.symbol })
+    // Add to monitor
+    addMonitoredTrade({
+      symbol: order.symbol,
+      side: order.side,
+      entry: order.limitPrice || 'market',
+      sl: order.stopLoss,
+      tp: order.takeProfit,
+      volume: order.volume,
+      thesis: orderFor?.synthesis?.synthesis || '',
+      placedAt: Date.now(),
+    })
     showToast(`Order placed for ${order.symbol}`)
     setOrderFor(null)
-  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
+  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast, addMonitoredTrade, orderFor])
 
   // ── Ask dock context ──
   const askContext = useMemo(() => ({
@@ -462,6 +547,15 @@ export default function Feed() {
 
       {/* Ask dock */}
       <AskDock context={askContext} onAsk={handleAskReply} />
+
+      {/* Trade monitor */}
+      <TradeMonitor
+        trades={monitoredTrades}
+        onStop={stopTrade}
+        onUpdate={updateMonitoredTrade}
+        onLog={addLog}
+      />
+
       <BottomBar tokenCount={tokenCount} />
 
       {/* Toast */}

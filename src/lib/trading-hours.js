@@ -215,34 +215,78 @@ export const PEPPERSTONE_CATALOG = [
 // Quick lookup by symbol
 const CATALOG_MAP = Object.fromEntries(PEPPERSTONE_CATALOG.map(c => [c.symbol, c]))
 
+// Alias map: common names → Pepperstone symbols
+const ALIASES = {
+  GAS: 'NATGAS', NATURALGAS: 'NATGAS',
+  OIL: 'SPOTCRUDE', CRUDE: 'SPOTCRUDE', WTI: 'SPOTCRUDE',
+  BRENT: 'SPOTBRENT', GOLD: 'XAUUSD', SILVER: 'XAGUSD',
+  PLATINUM: 'XPTUSD', PALLADIUM: 'XPDUSD', DOLLAR: 'USDX',
+  DAX: 'GER40', NIKKEI: 'JPN225', DOW: 'US30', SPX: 'US500', SPY: 'US500',
+  NASDAQ: 'NAS100', QQQ: 'NAS100', FTSE: 'UK100', CAC: 'FRA40',
+  BTC: 'BTCUSD', ETH: 'ETHUSD', XRP: 'XRPUSD', SOL: 'SOLUSD',
+  DOGE: 'DOGEUSD', ADA: 'ADAUSD', DOT: 'DOTUSD', LTC: 'LTCUSD',
+  FB: 'META', FACEBOOK: 'META', GOOGLE: 'GOOGL', AMAZON: 'AMZN',
+  APPLE: 'AAPL', MICROSOFT: 'MSFT', NVIDIA: 'NVDA', TESLA: 'TSLA',
+  BITCOIN: 'BTCUSD', ETHEREUM: 'ETHUSD',
+  RIPPLE: 'XRPUSD', SOLANA: 'SOLUSD', CARDANO: 'ADAUSD',
+  SP500: 'US500', SNP500: 'US500', SNP: 'US500',
+  DOWJONES: 'US30', DJ30: 'US30',
+  NSDQ: 'NAS100', NDX: 'NAS100',
+  COPPER: 'COPPER', WHEAT: 'WHEAT', CORN: 'CORN',
+  CACAO: 'COCOA', SOYBEAN: 'SOYBEANS', SOY: 'SOYBEANS',
+  BOEING: 'BA', DISNEY: 'DIS', NIKE: 'NKE',
+  WALMART: 'WMT', STARBUCKS: 'SBUX', COINBASE: 'COIN',
+  PALANTIR: 'PLTR', UBER: 'UBER', AIRBNB: 'ABNB',
+  SHOPIFY: 'SHOP', SPOTIFY: 'SPOT', RIVIAN: 'RIVN',
+  PAYPAL: 'PYPL', CROWDSTRIKE: 'CRWD',
+}
+
 export function lookupSymbol(query) {
   const q = query.toUpperCase().trim()
-  // Direct match
   if (CATALOG_MAP[q]) return CATALOG_MAP[q]
-  // Alias resolution (common misnames)
-  const aliases = {
-    GAS: 'NATGAS', OIL: 'SPOTCRUDE', CRUDE: 'SPOTCRUDE', WTI: 'SPOTCRUDE',
-    BRENT: 'SPOTBRENT', GOLD: 'XAUUSD', SILVER: 'XAGUSD',
-    PLATINUM: 'XPTUSD', PALLADIUM: 'XPDUSD', DOLLAR: 'USDX',
-    DAX: 'GER40', NIKKEI: 'JPN225', DOW: 'US30', SPX: 'US500', SPY: 'US500',
-    NASDAQ: 'NAS100', QQQ: 'NAS100', FTSE: 'UK100', CAC: 'FRA40',
-    BTC: 'BTCUSD', ETH: 'ETHUSD', XRP: 'XRPUSD', SOL: 'SOLUSD',
-    DOGE: 'DOGEUSD', ADA: 'ADAUSD', DOT: 'DOTUSD', LTC: 'LTCUSD',
-    FB: 'META', FACEBOOK: 'META', GOOGLE: 'GOOGL', AMAZON: 'AMZN',
-    APPLE: 'AAPL', MICROSOFT: 'MSFT', NVIDIA: 'NVDA', TESLA: 'TSLA',
-    BITCOIN: 'BTCUSD', ETHEREUM: 'ETHUSD',
-  }
-  if (aliases[q] && CATALOG_MAP[aliases[q]]) return CATALOG_MAP[aliases[q]]
+  if (ALIASES[q] && CATALOG_MAP[ALIASES[q]]) return CATALOG_MAP[ALIASES[q]]
   return null
 }
 
 export function searchCatalog(query, limit = 20) {
   const q = query.toUpperCase().trim()
   if (!q) return []
-  return PEPPERSTONE_CATALOG
-    .filter(c =>
-      c.symbol.includes(q) ||
-      c.label.toUpperCase().includes(q)
-    )
-    .slice(0, limit)
+
+  // Check for alias match first
+  const aliasTarget = ALIASES[q]
+  const aliasEntry = aliasTarget && CATALOG_MAP[aliasTarget]
+
+  // Score every catalog entry for relevance
+  const scored = []
+  for (const c of PEPPERSTONE_CATALOG) {
+    let score = 0
+    if (c.symbol === q) score = 100                        // exact symbol
+    else if (c.symbol.startsWith(q)) score = 80            // symbol prefix
+    else if (c.symbol.includes(q)) score = 60              // symbol contains
+    else {
+      // Check label words (split on space, slash, parens)
+      const words = c.label.toUpperCase().split(/[\s/()]+/)
+      if (words.some(w => w === q)) score = 50             // exact word in label
+      else if (words.some(w => w.startsWith(q))) score = 35 // word prefix in label
+      else if (c.label.toUpperCase().includes(q)) score = 15 // label substring
+    }
+    if (score > 0) scored.push({ ...c, _score: score })
+  }
+  scored.sort((a, b) => b._score - a._score)
+
+  // Build results — alias match goes to the very top with a tag
+  const results = []
+  if (aliasEntry) {
+    results.push({ ...aliasEntry, _score: 110, _aliasFrom: q })
+    // Remove duplicate from scored list
+    const idx = scored.findIndex(s => s.symbol === aliasEntry.symbol)
+    if (idx !== -1) scored.splice(idx, 1)
+  }
+
+  for (const s of scored) {
+    if (results.length >= limit) break
+    results.push(s)
+  }
+
+  return results.slice(0, limit)
 }

@@ -3,7 +3,7 @@
 // Hot candidates (confidence >= hotThreshold) get kicked to /api/analyze.
 
 import Anthropic from '@anthropic-ai/sdk'
-import { getSessionContext, categoriseSymbol } from './_lib/sessions.js'
+import { getSessionContext, categoriseSymbol, nextSessionOpening } from './_lib/sessions.js'
 
 const MODEL = 'claude-sonnet-4-5'
 const MAX_TOKENS = 4096
@@ -11,7 +11,9 @@ const MAX_TOKENS = 4096
 function buildScanPrompt(symbols, sessionContext, userTz) {
   const symbolList = symbols.map(w => {
     const cat = categoriseSymbol(w.symbol)
-    return `- ${w.symbol}${w.label ? ` (${w.label})` : ''} [${cat}]`
+    const status = w.tradingNow ? 'OPEN' : 'CLOSED'
+    const nextOpen = w.nextOpen || ''
+    return `- ${w.symbol}${w.label ? ` (${w.label})` : ''} [${cat}] [${status}]${!w.tradingNow && nextOpen ? ` opens ${nextOpen}` : ''}`
   }).join('\n')
 
   return `You are the Scout — the pit boss who does the first pass on every symbol. Quick-fire, no fluff, trading desk lingo. You scan fast and flag what's hot.
@@ -31,7 +33,9 @@ Quick-fire each symbol. 15-30 words max per thesis. Use real desk talk:
 - "liquidity grab", "vol expansion incoming", "riding the tape"
 - "skip it", "not touching this", "juicy setup", "textbook entry"
 
-Be honest. Not everything is a trade. Wrong session = skip.
+Be honest. Not everything is a trade.
+
+IMPORTANT: Even if a market is CLOSED, still analyse the setup. If the thesis is good, say so and include WHEN to trade it (e.g. "juicy setup, queue for London open 08:00 UTC"). Don't skip a symbol just because its market is closed — queue it for the next session.
 
 Return ONLY valid JSON:
 {
@@ -42,7 +46,8 @@ Return ONLY valid JSON:
       "confidence": <1-10>,
       "thesis": "<15-30 words, trading lingo>",
       "timeframe": "<e.g. '1-4h scalp', 'session play'>",
-      "session_fit": "<good|ok|poor> - <5-10 words>"
+      "session_fit": "<good|ok|poor> - <5-10 words>",
+      "trade_at": "<when to trade if closed, e.g. '14:00 UTC NYSE open', or 'now' if open>"
     }
   ],
   "desk_note": "<1-2 sentences, overall market vibe, 20-40 words>"
@@ -50,8 +55,9 @@ Return ONLY valid JSON:
 
 Rules:
 - confidence < 4 = bias "skip" or "neutral"
-- Asian hours: JPY pairs, AUD, JPN225, CN50. European: EUR, GBP, GER40. US stocks need NYSE.
+- Asian hours: JPY pairs, AUD, JPN225, CN50. European: EUR, GBP, GER40. US stocks: NYSE hours.
 - Crypto 24/7 but flag thin liquidity hours.
+- Closed markets: still score the setup, suggest trade_at time. confidence can be high even if closed.
 - JSON only, no markdown fences.`
 }
 
