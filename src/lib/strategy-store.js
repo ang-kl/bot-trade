@@ -77,10 +77,11 @@ export const DEFAULT_WATCHLIST = [
   seed('EURUSD', 'Euro / USD', 'Currencies'),
   seed('USDJPY', 'USD / JPY', 'Currencies'),
   seed('AUDJPY', 'AUD / JPY', 'Currencies'),
-  // Crypto (CN50 lives here in v1's grouping)
+  // Crypto
   seed('BTCUSD', 'Bitcoin / USD', 'Crypto'),
   seed('ETHUSD', 'Ethereum / USD', 'Crypto'),
-  seed('CN50', 'China 50 Index', 'Crypto'),
+  // Indices
+  seed('CN50', 'China 50 Index', 'Indices'),
 ]
 
 export const INITIAL_STATE = {

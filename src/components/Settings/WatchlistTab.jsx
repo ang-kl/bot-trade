@@ -304,7 +304,7 @@ export default function WatchlistTab() {
             )}
           </div>
           <span className="t-meta text-[var(--color-text-sub)] whitespace-nowrap">
-            {filtered.length} / {state.watchlist.length} shown \u00B7 {enabledCount} enabled
+            {filtered.length} / {state.watchlist.length} shown {'\u00B7'} {enabledCount} enabled
           </span>
         </div>
       </Card>

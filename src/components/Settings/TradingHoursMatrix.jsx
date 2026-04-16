@@ -1,11 +1,32 @@
 // 24-hour trading hours matrix — columns = hours (0-23), rows = symbols.
 // Grouped by category with expandable headers. Red column = current UTC hour.
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import Badge from '../common/Badge.jsx'
-import { getHoursForSymbol, isTradingNow } from '../../lib/trading-hours.js'
+import { getHoursForSymbol, isTradingNow, PEPPERSTONE_CATALOG } from '../../lib/trading-hours.js'
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
+
+// Get NY offset from UTC (handles DST)
+function getNYOffset() {
+  const now = new Date()
+  const utcStr = now.toLocaleString('en-US', { timeZone: 'UTC' })
+  const nyStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' })
+  return Math.round((new Date(nyStr) - new Date(utcStr)) / 3_600_000)
+}
+
+// Get user locale offset from UTC
+function getLocaleOffset() {
+  return -(new Date().getTimezoneOffset() / 60)
+}
+
+// Convert UTC hour to another timezone hour
+function utcToTz(utcHour, offsetHours) {
+  return ((utcHour + offsetHours) % 24 + 24) % 24
+}
+
+// Build exchange lookup from catalog
+const EXCHANGE_MAP = Object.fromEntries(PEPPERSTONE_CATALOG.map(c => [c.symbol, c.exchange || '']))
 
 // Check if a symbol trades during a specific hour
 function isActiveAt(symbol, hour) {
@@ -31,7 +52,16 @@ const CATEGORY_ORDER = ['Currencies', 'Crypto', 'Indices', 'Metals', 'Futures', 
 
 export default function TradingHoursMatrix({ watchlist, groupMode = 'category', onToggle }) {
   const [collapsed, setCollapsed] = useState({})
-  const nowUTC = new Date().getUTCHours()
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000)
+    return () => clearInterval(id)
+  }, [])
+  const nowUTC = now.getUTCHours()
+  const nyOffset = getNYOffset()
+  const localeOffset = getLocaleOffset()
+  const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  const userTzShort = userTz.split('/').pop().replace(/_/g, ' ')
 
   const toggleGroup = (key) => {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
@@ -66,25 +96,57 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-[11px]">
         <thead>
+          {/* NY time row */}
+          <tr className="text-[9px]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-0.5 text-left text-[var(--color-muted)] font-normal border-r border-[var(--color-border)]">
+              NY
+            </th>
+            {HOURS.map(h => {
+              const nyH = utcToTz(h, nyOffset)
+              return (
+                <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)]">
+                  {String(nyH).padStart(2, '0')}
+                </th>
+              )
+            })}
+            <th className="px-2 py-0.5 border-l border-[var(--color-border)]" />
+          </tr>
+          {/* UTC row (primary) */}
           <tr>
-            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5 text-left t-meta text-[var(--color-text-sub)] font-medium w-[100px] min-w-[100px] border-b border-r border-[var(--color-border)]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1 text-left t-meta text-[var(--color-text-sub)] font-medium w-[100px] min-w-[100px] border-r border-[var(--color-border)]">
               Symbol
             </th>
             {HOURS.map(h => (
               <th
                 key={h}
-                className={`px-0 py-1.5 text-center font-mono font-medium w-[28px] min-w-[28px] border-b border-[var(--color-border)] ${
+                className={`px-0 py-1 text-center font-mono font-medium w-[28px] min-w-[28px] ${
                   h === nowUTC
                     ? 'bg-[var(--color-down)]/15 text-[var(--color-down)]'
-                    : 'text-[var(--color-muted)]'
+                    : 'text-[var(--color-text-sub)]'
                 }`}
               >
                 {String(h).padStart(2, '0')}
               </th>
             ))}
-            <th className="px-2 py-1.5 text-center t-meta text-[var(--color-text-sub)] font-medium w-[52px] min-w-[52px] border-b border-l border-[var(--color-border)]">
+            <th className="px-2 py-1 text-center t-meta text-[var(--color-text-sub)] font-medium w-[52px] min-w-[52px] border-l border-[var(--color-border)]">
               Status
             </th>
+          </tr>
+          {/* User locale row */}
+          <tr className="text-[9px] border-b border-[var(--color-border)]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-0.5 text-left text-[var(--color-accent)] font-normal border-r border-[var(--color-border)]">
+              {userTzShort}
+            </th>
+            {HOURS.map(h => {
+              const locH = utcToTz(h, localeOffset)
+              const isNow = h === nowUTC
+              return (
+                <th key={h} className={`px-0 py-0.5 text-center font-mono font-normal ${isNow ? 'text-[var(--color-down)] font-bold' : 'text-[var(--color-accent)]'}`}>
+                  {String(locH).padStart(2, '0')}
+                </th>
+              )
+            })}
+            <th className="px-2 py-0.5 border-l border-[var(--color-border)]" />
           </tr>
         </thead>
         <tbody>
@@ -136,9 +198,16 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                           onChange={() => onToggle?.(w.symbol)}
                           className="shrink-0"
                         />
-                        <span className={`font-bold ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
-                          {w.symbol}
-                        </span>
+                        <div className="min-w-0">
+                          <span className={`font-bold ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
+                            {w.symbol}
+                          </span>
+                          {EXCHANGE_MAP[w.symbol] && (
+                            <span className="block text-[8px] text-[var(--color-muted)] leading-tight">
+                              {EXCHANGE_MAP[w.symbol]}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </td>
 

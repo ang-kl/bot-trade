@@ -5,6 +5,7 @@ import Settings from './pages/Settings.jsx'
 import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
 import LinkUp from './pages/LinkUp.jsx'
+import MarketSessionBar from './components/MarketSessionBar.jsx'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
 // No green anywhere - blue = up/long/positive, red = down/short/negative.
@@ -39,6 +40,7 @@ export default function App() {
           </nav>
         </div>
       </header>
+      <MarketSessionBar />
       <main style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />

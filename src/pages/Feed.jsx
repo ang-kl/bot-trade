@@ -168,8 +168,17 @@ export default function Feed() {
   const [toast, setToast] = useState(null)
   const [monitoredTrades, setMonitoredTrades] = useState([])
   const [sessionStart] = useState(() => Date.now())
+  const [symbolsCollapsed, setSymbolsCollapsed] = useState(false)
+  const [showScrollTop, setShowScrollTop] = useState(false)
 
   const scanTimerRef = useRef(null)
+
+  // Show scroll-to-top when scrolled past 400px
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 400)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   // Track per-agent token usage
   const trackTokens = useCallback((agent, tokens) => {
@@ -473,14 +482,19 @@ export default function Feed() {
       takeProfit: order.takeProfit || undefined,
       limitPrice: order.limitPrice || undefined,
     }
-    await apiPost('/api/ctrader', body)
-    addLog('trader', `Order placed!`, { symbol: order.symbol })
+    try {
+      await apiPost('/api/ctrader', body)
+      addLog('trader', `Order placed!`, { symbol: order.symbol })
+    } catch (e) {
+      addLog('trader', `Order failed: ${e.message}`, { symbol: order.symbol })
+      showToast(`Order failed: ${e.message}`)
+    }
+    // Always add to monitor and send alerts (even if ctrader API fails,
+    // we want to track the intent)
     sendTelegramAlert({
       action: 'send-alert', alertType: 'trade',
       trade: { symbol: order.symbol, side: order.side, entry: order.limitPrice || 'market', stopLoss: order.stopLoss, takeProfit: order.takeProfit, action: order.orderType.toUpperCase() },
     })
-    addLog('telegram', `Trade alert sent`, { symbol: order.symbol })
-    // Add to monitor
     addMonitoredTrade({
       symbol: order.symbol,
       side: order.side,
@@ -551,8 +565,17 @@ export default function Feed() {
       {/* Symbol cards */}
       {displaySymbols.length > 0 && (
         <div className="space-y-2">
-          <p className="t-label">{displaySymbols.length} symbols active</p>
-          {displaySymbols.map(d => (
+          <div className="flex items-center gap-2">
+            <p className="t-label">{displaySymbols.length} symbols active</p>
+            <button
+              type="button"
+              onClick={() => setSymbolsCollapsed(prev => !prev)}
+              className="t-meta text-[var(--color-accent)] cursor-pointer hover:underline underline-offset-2"
+            >
+              {symbolsCollapsed ? '\u25B6 Show' : '\u25BC Collapse'}
+            </button>
+          </div>
+          {!symbolsCollapsed && displaySymbols.map(d => (
             <SymbolCard
               key={d.symbol}
               symbol={d.symbol}
@@ -608,6 +631,18 @@ export default function Feed() {
           onConfirm={handleConfirmOrder}
           onCancel={() => setOrderFor(null)}
         />
+      )}
+
+      {/* Scroll to top */}
+      {showScrollTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="fixed right-4 bottom-14 z-40 w-10 h-10 rounded-full bg-[var(--color-accent)] text-white flex items-center justify-center shadow-lg hover:opacity-90 transition-opacity"
+          aria-label="Scroll to top"
+        >
+          {'\u2191'}
+        </button>
       )}
     </section>
   )
