@@ -1,4 +1,4 @@
-// OAuth return leg — Spotware redirects here after the user approves
+// OAuth return leg - Spotware redirects here after the user approves
 // the app. The URL carries a one-shot `code` query param that we trade
 // for access/refresh tokens via api/ctrader exchange-token, then stash
 // the result in the strategy store and bounce back to Settings.
@@ -62,20 +62,20 @@ export default function LinkUp() {
 
   return (
     <section className="max-w-md mx-auto">
-      <h1 className="text-xl font-semibold mb-4">cTrader link-up</h1>
+      <h1 className="text-xl t-label mb-4">cTrader link-up</h1>
       <Card>
         {status === 'exchanging' && (
-          <p className="text-sm">Exchanging authorization code for tokens…</p>
+          <p className="t-sub">Exchanging authorisation code for tokens...</p>
         )}
         {status === 'done' && (
           <>
-            <p className="text-sm mb-3">
+            <p className="t-sub mb-3">
               Tokens saved. You can now fetch your cTrader accounts from the
               Settings tab.
             </p>
             <Link
               to="/settings"
-              className="text-sm underline text-[var(--color-up)]"
+              className="t-sub underline text-[var(--color-up)]"
             >
               Back to Settings →
             </Link>
@@ -83,12 +83,12 @@ export default function LinkUp() {
         )}
         {status === 'error' && (
           <>
-            <p className="text-sm text-[var(--color-down)] mb-2">
+            <p className="t-sub text-[var(--color-down)] mb-2">
               Link-up failed: {error}
             </p>
             <Link
               to="/settings"
-              className="text-sm underline text-[var(--color-up)]"
+              className="t-sub underline text-[var(--color-up)]"
             >
               Back to Settings →
             </Link>

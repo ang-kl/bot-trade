@@ -4,11 +4,9 @@ import Settings from './pages/Settings.jsx'
 import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
 import LinkUp from './pages/LinkUp.jsx'
-import Button from './components/common/Button.jsx'
-import { useTheme, THEMES } from './lib/theme.js'
 
-// Top-level shell. Minimal nav + theme switcher.
-// Accessibility: blue = up/long/positive, red = down/short/negative, NO GREEN.
+// Top-level shell. Single-theme, playbook-canonical palette.
+// No green anywhere - blue = up/long/positive, red = down/short/negative.
 
 const navLinks = [
   { to: '/feed', label: 'Feed' },
@@ -18,48 +16,28 @@ const navLinks = [
 ]
 
 function linkClass({ isActive }) {
-  const base = 'px-3 py-2 text-sm font-medium rounded'
+  const base = 'px-3 py-2 text-[13px] font-bold rounded-[7px]'
   return isActive
-    ? `${base} bg-[var(--color-up)] text-white`
-    : `${base} text-[var(--color-fg-subtle)] hover:bg-[var(--color-surface)]`
-}
-
-function ThemeSwitcher() {
-  const { theme, setTheme } = useTheme()
-  return (
-    <div className="ml-auto flex gap-1" role="group" aria-label="Theme">
-      {THEMES.map(t => (
-        <Button
-          key={t}
-          variant={theme === t ? 'primary' : 'ghost'}
-          size="sm"
-          onClick={() => setTheme(t)}
-          aria-pressed={theme === t}
-        >
-          {t}
-        </Button>
-      ))}
-    </div>
-  )
+    ? `${base} border-b-[3px] border-[var(--color-accent)] text-[var(--color-accent)]`
+    : `${base} text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]`
 }
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-fg)]">
-      <header className="border-b border-[var(--color-border)]">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-2">
-          <span className="font-semibold text-base mr-4">bot-trade</span>
-          <nav className="flex gap-1">
+    <div className="min-h-[100svh] bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
+      <header className="border-b-2 border-[var(--color-accent)]">
+        <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
+          <span className="t-body font-bold mr-4">bot-trade</span>
+          <nav className="flex gap-1 overflow-x-auto">
             {navLinks.map(l => (
               <NavLink key={l.to} to={l.to} className={linkClass}>
                 {l.label}
               </NavLink>
             ))}
           </nav>
-          <ThemeSwitcher />
         </div>
       </header>
-      <main className="max-w-5xl mx-auto px-4 py-6">
+      <main style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
           <Route path="/feed" element={<Feed />} />

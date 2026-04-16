@@ -60,11 +60,11 @@ function pickNumber(...candidates) {
 
 export function actionsForState(state) {
   switch (state) {
-    case 'WATCHING': return ['why', 'dismiss']
-    case 'PENDING': return ['cancel', 'why']
+    case 'WATCHING': return ['mute', 'remove']
+    case 'PENDING': return ['approve', 'cancel', 'why']
     case 'LIVE': return ['stop', 'why', 'tighten-sl']
-    case 'WON':
-    case 'LOST':
+    case 'WON': return ['timeline', 'save-vault']
+    case 'LOST': return ['timeline', 'post-mortem']
     case 'CANCELLED': return ['why']
     default: return []
   }

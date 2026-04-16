@@ -1,19 +1,26 @@
-// Inline pill. `tone` follows the red/blue semantic pair — no green.
-// Use 'up' for long/positive/BUY, 'down' for short/negative/SELL,
-// and 'neutral' for everything else.
+// Status badge / pill - playbook 6.3.
+// Pills (20px radius) for nav/level indicators.
+// Flat labels (4px radius) for inline status.
+// 9-11px font, nowrap, flex-shrink 0. No green.
 
 const TONES = {
-  neutral: 'bg-[var(--color-surface)] text-[var(--color-fg)] border-[var(--color-border)]',
-  up:      'bg-[var(--color-up)]/10 text-[var(--color-up)] border-[var(--color-up)]/30',
-  down:    'bg-[var(--color-down)]/10 text-[var(--color-down)] border-[var(--color-down)]/30',
+  neutral:  'bg-[var(--color-bg)] text-[var(--color-text)] border-[var(--color-border)]',
+  up:       'bg-[var(--color-success-bg)] text-[var(--color-up)] border-[var(--color-success-border)]',
+  down:     'bg-[var(--color-error-bg)] text-[var(--color-down)] border-[var(--color-error-border)]',
+  info:     'bg-[var(--color-info-bg)] text-[var(--color-info-text)] border-[var(--color-info-border)]',
+  warning:  'bg-[var(--color-warning-bg)] text-[var(--color-warning-text)] border-[var(--color-warning-border)]',
+  special:  'bg-[var(--color-special-bg)] text-[var(--color-special-text)] border-[var(--color-special-border)]',
 }
 
-const SIZES = {
-  sm: 'px-1.5 py-0 text-[10px]',
-  md: 'px-2 py-0.5 text-xs',
-}
-
-export default function Badge({ children, tone = 'neutral', size = 'sm', className = '' }) {
-  const cls = `inline-flex items-center gap-1 rounded-full border font-medium ${TONES[tone] || TONES.neutral} ${SIZES[size] || SIZES.sm} ${className}`
-  return <span className={cls.trim()}>{children}</span>
+export default function Badge({ children, tone = 'neutral', pill = false, className = '' }) {
+  const radius = pill ? 'rounded-full' : 'rounded-[4px]'
+  const pad = pill ? 'px-2.5 py-0.5' : 'px-1.5 py-0.5'
+  const cls = [
+    'inline-flex items-center gap-1 border font-semibold',
+    'text-[10px] leading-none whitespace-nowrap shrink-0',
+    radius, pad,
+    TONES[tone] || TONES.neutral,
+    className,
+  ].filter(Boolean).join(' ')
+  return <span className={cls}>{children}</span>
 }

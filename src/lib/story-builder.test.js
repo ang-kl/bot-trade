@@ -41,10 +41,16 @@ describe('story-builder: helpers', () => {
   it('actionsForState returns LIVE actions for LIVE', () => {
     expect(actionsForState('LIVE')).toEqual(['stop', 'why', 'tighten-sl'])
   })
-  it('actionsForState returns [why] for terminal states', () => {
-    expect(actionsForState('WON')).toEqual(['why'])
-    expect(actionsForState('LOST')).toEqual(['why'])
+  it('actionsForState returns correct actions for terminal states', () => {
+    expect(actionsForState('WON')).toEqual(['timeline', 'save-vault'])
+    expect(actionsForState('LOST')).toEqual(['timeline', 'post-mortem'])
     expect(actionsForState('CANCELLED')).toEqual(['why'])
+  })
+  it('actionsForState returns WATCHING actions', () => {
+    expect(actionsForState('WATCHING')).toEqual(['mute', 'remove'])
+  })
+  it('actionsForState returns PENDING actions', () => {
+    expect(actionsForState('PENDING')).toEqual(['approve', 'cancel', 'why'])
   })
 })
 
@@ -75,7 +81,7 @@ describe('story-builder: buildStory', () => {
     expect(s.side).toBe('long')
     expect(s.symbol).toBe('BTCUSD')
     expect(s.headline).toBe('\u25B2 BOUGHT 0.01 BTCUSD at $67245.00')
-    expect(s.actions).toEqual(['stop', 'why', 'tighten-sl'])
+    expect(s.actions).toEqual(['stop', 'why', 'tighten-sl']) // LIVE actions
   })
   it('builds a short story with SOLD glyph + ▼', () => {
     const s = buildStory({ ...basePos, side: 'SELL' }, 'LIVE')
@@ -101,7 +107,7 @@ describe('story-builder: buildStory', () => {
   it('builds an empty-state WATCHING story from watchlist stub input', () => {
     const s = buildStory({ id: 'watch-EURUSD', symbol: 'EURUSD', entryPrice: 0, currentPrice: 0, volume: 0 }, 'WATCHING')
     expect(s.state).toBe('WATCHING')
-    expect(s.actions).toEqual(['why', 'dismiss'])
+    expect(s.actions).toEqual(['mute', 'remove'])
   })
   it('maps price precision by magnitude', () => {
     const hi = buildStory({ ...basePos, entryPrice: 123.456 }, 'LIVE')

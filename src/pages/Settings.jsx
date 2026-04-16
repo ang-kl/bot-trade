@@ -1,4 +1,4 @@
-// Settings — tab shell for Phase 4. Four tabs per HANDOVER-V2:
+// Settings - tab shell for Phase 4. Four tabs per HANDOVER-V2:
 // cTrader (OAuth + accounts), Watchlist, News (Market Rundown), Risk.
 
 import { useState } from 'react'
@@ -15,10 +15,10 @@ const TABS = [
 ]
 
 function tabClass(active) {
-  const base = 'px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors'
+  const base = 'px-3 py-2 t-sub font-medium border-b-2 -mb-px transition-colors'
   return active
-    ? `${base} border-[var(--color-up)] text-[var(--color-fg)]`
-    : `${base} border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]`
+    ? `${base} border-[var(--color-accent)] text-[var(--color-text)]`
+    : `${base} border-transparent text-[var(--color-text-sub)] hover:text-[var(--color-text)]`
 }
 
 export default function Settings() {
@@ -27,7 +27,7 @@ export default function Settings() {
   const Tab = current.Component
   return (
     <section>
-      <h1 className="text-xl font-semibold mb-4">Settings</h1>
+      <h1 className="text-xl t-label mb-4">Settings</h1>
       <div role="tablist" className="flex gap-1 mb-4 border-b border-[var(--color-border)]">
         {TABS.map(t => (
           <button

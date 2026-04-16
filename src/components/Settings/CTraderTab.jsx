@@ -65,16 +65,16 @@ export default function CTraderTab() {
   return (
     <div className="space-y-4">
       <Card>
-        <h2 className="font-semibold mb-2">OAuth connection</h2>
-        <p className="text-sm text-[var(--color-fg-subtle)] mb-3">
+        <h2 className="t-label mb-2">OAuth connection</h2>
+        <p className="t-sub text-[var(--color-text-sub)] mb-3">
           Connect your cTrader account via OAuth. If you already have a token from the callback, paste it below.
         </p>
         <div className="flex gap-2 mb-3">
           <Button onClick={onOpenOAuth} size="sm" disabled={busy === 'oauth'}>
-            {busy === 'oauth' ? 'Opening…' : 'Open cTrader OAuth'}
+            {busy === 'oauth' ? 'Opening...' : 'Open cTrader OAuth'}
           </Button>
         </div>
-        <label className="block text-xs mb-1" htmlFor="ctrader-access">Access token</label>
+        <label className="block t-meta mb-1" htmlFor="ctrader-access">Access token</label>
         <Input
           id="ctrader-access"
           value={accessToken}
@@ -82,7 +82,7 @@ export default function CTraderTab() {
           placeholder="eyJ..."
           className="mb-3"
         />
-        <label className="block text-xs mb-1" htmlFor="ctrader-refresh">Refresh token</label>
+        <label className="block t-meta mb-1" htmlFor="ctrader-refresh">Refresh token</label>
         <Input
           id="ctrader-refresh"
           value={refreshToken}
@@ -93,19 +93,19 @@ export default function CTraderTab() {
 
       <Card>
         <div className="flex items-center gap-2 mb-2">
-          <h2 className="font-semibold flex-1">Accounts</h2>
+          <h2 className="t-label flex-1">Accounts</h2>
           <Button
             size="sm"
             variant="ghost"
             onClick={onFetchAccounts}
             disabled={!accessToken || busy === 'accounts'}
           >
-            {busy === 'accounts' ? 'Fetching…' : 'Fetch'}
+            {busy === 'accounts' ? 'Fetching...' : 'Fetch'}
           </Button>
         </div>
-        {error && <p className="text-sm text-[var(--color-down)] mb-2">{error}</p>}
+        {error && <p className="t-sub text-[var(--color-down)] mb-2">{error}</p>}
         {accounts.length === 0 ? (
-          <p className="text-sm text-[var(--color-fg-subtle)]">No accounts loaded. Paste a token and click Fetch.</p>
+          <p className="t-sub text-[var(--color-text-sub)]">No accounts loaded. Paste a token and click Fetch.</p>
         ) : (
           <ul className="divide-y divide-[var(--color-border)]">
             {accounts.map((a) => {
@@ -115,8 +115,8 @@ export default function CTraderTab() {
               const linked = linkedAccountId === id
               return (
                 <li key={id} className="py-2 flex items-center gap-2">
-                  <span className="text-sm flex-1 truncate">
-                    #{a.accountNumber ?? id} · {a.brokerTitle || 'cTrader'} · {a.currency || '—'}
+                  <span className="t-sub flex-1 truncate">
+                    #{a.accountNumber ?? id} · {a.brokerTitle || 'cTrader'} · {a.currency || '-'}
                   </span>
                   {a.isLive ? <Badge tone="down">LIVE</Badge> : <Badge>demo</Badge>}
                   <Button

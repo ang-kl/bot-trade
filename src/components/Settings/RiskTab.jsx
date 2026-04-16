@@ -1,4 +1,4 @@
-// Risk / guardrails tab — arm switch + daily caps.
+// Risk / guardrails tab - arm switch + daily caps.
 // Clamping happens in the reducer so wild inputs never escape this form.
 
 import Card from '../common/Card.jsx'
@@ -9,8 +9,8 @@ import { useStrategy } from '../../lib/strategy-store.js'
 
 function NumberRow({ id, label, value, min, max, step, suffix, onChange }) {
   return (
-    <div className="flex items-center gap-2 text-sm mb-3">
-      <label htmlFor={id} className="w-40 text-[var(--color-fg-subtle)]">{label}</label>
+    <div className="flex items-center gap-2 t-sub mb-3">
+      <label htmlFor={id} className="w-40 text-[var(--color-text-sub)]">{label}</label>
       <Input
         id={id}
         type="number"
@@ -21,7 +21,7 @@ function NumberRow({ id, label, value, min, max, step, suffix, onChange }) {
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-28"
       />
-      <span className="text-[var(--color-fg-subtle)]">{suffix}</span>
+      <span className="text-[var(--color-text-sub)]">{suffix}</span>
     </div>
   )
 }
@@ -34,7 +34,7 @@ export default function RiskTab() {
   return (
     <Card>
       <div className="flex items-center gap-2 mb-4">
-        <h2 className="font-semibold flex-1">Risk &amp; guardrails</h2>
+        <h2 className="t-label flex-1">Risk &amp; guardrails</h2>
         <Badge tone={armed ? 'up' : 'neutral'}>{armed ? 'ARMED' : 'SAFE'}</Badge>
         <Button
           size="sm"
@@ -44,7 +44,7 @@ export default function RiskTab() {
           {armed ? 'Disarm' : 'Arm'}
         </Button>
       </div>
-      <p className="text-sm text-[var(--color-fg-subtle)] mb-4">
+      <p className="t-sub text-[var(--color-text-sub)] mb-4">
         The agent can only place live orders while <strong>ARMED</strong>. Disarming blocks all new entries but leaves open positions untouched.
       </p>
       <NumberRow

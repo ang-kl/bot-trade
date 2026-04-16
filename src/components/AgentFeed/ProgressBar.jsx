@@ -6,13 +6,13 @@ export default function ProgressBar({ side, stopLoss, takeProfit, currentPrice, 
   const trackColor = side === 'short' ? 'var(--color-down)' : 'var(--color-up)'
   return (
     <div>
-      <div className="flex justify-between text-[10px] text-[var(--color-fg-subtle)] mb-1">
+      <div className="flex justify-between t-meta text-[var(--color-muted)] mb-1">
         <span>SL {stopLoss ?? '—'}</span>
         <span aria-hidden>now {currentPrice ?? '—'}</span>
         <span>TP {takeProfit ?? '—'}</span>
       </div>
       <div
-        className="h-2 rounded bg-[var(--color-bg)] border border-[var(--color-border)] overflow-hidden"
+        className="h-2 rounded-[4px] bg-[var(--color-bg)] border border-[var(--color-border)] overflow-hidden"
         role="progressbar"
         aria-valuenow={pct}
         aria-valuemin={0}

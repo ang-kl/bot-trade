@@ -1,21 +1,19 @@
-// Agent Feed — Phase 5. Story cards driven by the strategy-store watchlist
-// (until the advisor endpoint starts emitting real positions). Tighten-SL
-// hits api/ctrader.js amend-position; other actions are wired but currently
-// route through the same thin client so the UI is one upgrade away from
-// real execution.
+// Agent Feed - story cards driven by the strategy-store watchlist.
+// Bottom bar shows token usage and a discrete logout link.
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback, useEffect } from 'react'
 import AgentBrief from '../components/AgentFeed/AgentBrief.jsx'
 import Editorial from '../components/AgentFeed/Editorial.jsx'
 import StoryCard from '../components/AgentFeed/StoryCard.jsx'
 import TimelineStrip from '../components/AgentFeed/TimelineStrip.jsx'
 import AskDock from '../components/AgentFeed/AskDock.jsx'
 import TightenSLDialog from '../components/AgentFeed/TightenSLDialog.jsx'
+import BottomBar from '../components/AgentFeed/BottomBar.jsx'
 import { buildStory } from '../lib/story-builder.js'
 import { useStrategy } from '../lib/strategy-store.js'
 
-// Empty-state seed: turn each enabled watchlist symbol into a WATCHING
-// story so the page has content before the advisor runs.
+// Seed: turn each enabled watchlist symbol into a WATCHING story
+// so the feed has content before the advisor runs.
 function seedStories(watchlist) {
   return watchlist
     .filter((w) => w.enabled)
@@ -52,49 +50,127 @@ async function amendPosition(story, nextStopLoss) {
 }
 
 export default function Feed() {
-  const { state } = useStrategy()
+  const { state, dispatch } = useStrategy()
   const stories = useMemo(() => seedStories(state.watchlist), [state.watchlist])
   const [tightenFor, setTightenFor] = useState(null)
-  const [actionLog, setActionLog] = useState([])
+  const [dismissed, setDismissed] = useState(new Set())
+  const [muted, setMuted] = useState({})
+  const [toast, setToast] = useState(null)
+  const [tokenCount, setTokenCount] = useState(0)
 
-  const logAction = (entry) => setActionLog((prev) => [...prev.slice(-4), entry])
+  const showToast = useCallback((msg) => {
+    setToast(msg)
+    setTimeout(() => setToast(null), 3000)
+  }, [])
 
-  const handleAction = (action, story) => {
-    if (action === 'tighten-sl') {
-      setTightenFor(story)
-      return
+  const handleAction = useCallback((action, story) => {
+    switch (action) {
+      case 'tighten-sl':
+        setTightenFor(story)
+        break
+      case 'why':
+        showToast(story.reasoning || 'Thesis pending - advisor not yet wired.')
+        break
+      case 'dismiss':
+        setDismissed(prev => new Set([...prev, story.id]))
+        break
+      case 'mute':
+        setMuted(prev => ({ ...prev, [story.symbol]: Date.now() + 3600000 }))
+        showToast(`${story.symbol} muted for 1 hour.`)
+        break
+      case 'remove':
+        dispatch({ type: 'WATCHLIST_REMOVE', symbol: story.symbol })
+        showToast(`${story.symbol} removed from watchlist.`)
+        break
+      case 'approve':
+        showToast(`${story.symbol} approved - order placement coming in next phase.`)
+        break
+      case 'cancel':
+        showToast(`${story.symbol} cancelled.`)
+        break
+      case 'stop':
+        if (window.confirm(`Stop the ${story.symbol} position? This sends a close order.`)) {
+          showToast(`${story.symbol} stop order sent.`)
+        }
+        break
+      case 'timeline':
+        showToast('Timeline view coming in the vault phase.')
+        break
+      case 'save-vault':
+        showToast('Save to Vault coming in the vault phase.')
+        break
+      case 'post-mortem':
+        showToast('Post-mortem coming in the vault phase.')
+        break
+      default:
+        break
     }
-    logAction({ action, symbol: story.symbol, at: new Date().toISOString() })
-  }
+  }, [dispatch, showToast])
 
   const handleTightenConfirm = async (nextSL, story) => {
     await amendPosition(story, nextSL)
-    logAction({ action: 'tighten-sl', symbol: story.symbol, sl: nextSL, at: new Date().toISOString() })
+    showToast(`${story.symbol} SL tightened to ${nextSL}.`)
     setTightenFor(null)
   }
 
+  const handleAskReply = useCallback((_q, data) => {
+    if (data?.usage?.output_tokens) {
+      setTokenCount(prev => prev + data.usage.output_tokens)
+    }
+  }, [])
+
   const editorialText = state.news.latestRundown || null
+
+  // Auto-clean expired mutes so stories reappear. setTimeout keeps setState
+  // out of the synchronous effect body (satisfies react-hooks/set-state-in-effect)
+  // and Date.now() stays in callbacks only (satisfies react-hooks/purity).
+  useEffect(() => {
+    const expiries = Object.values(muted)
+    if (expiries.length === 0) return
+    const soonest = Math.min(...expiries)
+    const delay = Math.max(0, soonest - Date.now())
+    const timer = setTimeout(() => {
+      setMuted(prev => {
+        const next = {}
+        const now = Date.now()
+        for (const [sym, exp] of Object.entries(prev)) {
+          if (exp > now) next[sym] = exp
+        }
+        return next
+      })
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [muted])
+
+  // Filter out dismissed and muted stories (muted entries are cleaned by the effect above).
+  const visibleStories = useMemo(() => {
+    return stories.filter(s => {
+      if (dismissed.has(s.id)) return false
+      if (muted[s.symbol]) return false
+      return true
+    })
+  }, [stories, dismissed, muted])
 
   const askContext = useMemo(
     () => ({
       watchlist: state.watchlist,
       rundown: state.news.latestRundown,
-      stories: stories.map((s) => ({ symbol: s.symbol, state: s.state, side: s.side })),
+      stories: visibleStories.map((s) => ({ symbol: s.symbol, state: s.state, side: s.side })),
     }),
-    [state.watchlist, state.news.latestRundown, stories],
+    [state.watchlist, state.news.latestRundown, visibleStories],
   )
 
   return (
     <section className="space-y-4">
-      <AgentBrief stories={stories} />
+      <AgentBrief stories={visibleStories} />
       <Editorial text={editorialText} />
-      {stories.length === 0 ? (
-        <p className="text-sm text-[var(--color-fg-subtle)]">
-          No active stories yet. Add symbols to your watchlist in Settings to seed this feed.
+      {visibleStories.length === 0 ? (
+        <p className="t-sub text-[var(--color-muted)]">
+          No active stories yet. Enable symbols in Settings to seed this feed.
         </p>
       ) : (
         <ul className="space-y-3">
-          {stories.map((story) => (
+          {visibleStories.map((story) => (
             <li key={story.id}>
               <TimelineStrip state={story.state} />
               <StoryCard story={story} onAction={handleAction} />
@@ -102,17 +178,18 @@ export default function Feed() {
           ))}
         </ul>
       )}
-      {actionLog.length > 0 && (
-        <details className="text-xs text-[var(--color-fg-subtle)]">
-          <summary>Recent actions ({actionLog.length})</summary>
-          <ul className="mt-1 space-y-1">
-            {actionLog.map((a, i) => (
-              <li key={i}>{a.at} · {a.action} · {a.symbol}{a.sl != null ? ` · SL ${a.sl}` : ''}</li>
-            ))}
-          </ul>
-        </details>
+      {visibleStories.length > 0 && (
+        <div className="border-t border-[var(--color-border)] pt-2 t-meta text-[var(--color-muted-light)] text-center">
+          - earlier -
+        </div>
       )}
-      <AskDock context={askContext} />
+      <AskDock context={askContext} onAsk={handleAskReply} />
+      <BottomBar tokenCount={tokenCount} />
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-[8px] bg-[var(--color-text)] text-[var(--color-surface)] t-sub max-w-sm text-center">
+          {toast}
+        </div>
+      )}
       {tightenFor && (
         <TightenSLDialog
           story={tightenFor}

@@ -1,4 +1,4 @@
-// News tab — Market Rundown configuration (replaces the X-API config).
+// News tab - Market Rundown configuration (replaces the X-API config).
 // Two-step prompt flow: (1) build a structure outline, (2) generate today's
 // briefing against that structure. The API lives at api/rundown.js.
 
@@ -55,16 +55,16 @@ export default function NewsTab() {
   return (
     <div className="space-y-4">
       <Card>
-        <h2 className="font-semibold mb-2">Market Rundown configuration</h2>
-        <p className="text-sm text-[var(--color-fg-subtle)] mb-3">
+        <h2 className="t-label mb-2">Market Rundown configuration</h2>
+        <p className="t-sub text-[var(--color-text-sub)] mb-3">
           Generates a daily trading briefing from reputable sources (OSINet + wires).
           Replaces the X / Twitter feed used in v1.
         </p>
         <fieldset className="mb-3">
-          <legend className="text-xs mb-1">Briefing window</legend>
+          <legend className="t-meta mb-1">Briefing window</legend>
           <div className="flex gap-4">
             {BRIEFING_WINDOWS.map((w) => (
-              <label key={w} className="text-sm flex items-center gap-1 capitalize">
+              <label key={w} className="t-sub flex items-center gap-1 capitalize">
                 <input
                   type="radio"
                   name="briefingWindow"
@@ -78,10 +78,10 @@ export default function NewsTab() {
           </div>
         </fieldset>
         <fieldset>
-          <legend className="text-xs mb-1">Sources</legend>
+          <legend className="t-meta mb-1">Sources</legend>
           <div className="flex gap-4 flex-wrap">
             {SOURCE_OPTIONS.map((s) => (
-              <label key={s} className="text-sm flex items-center gap-1 capitalize">
+              <label key={s} className="t-sub flex items-center gap-1 capitalize">
                 <input
                   type="checkbox"
                   checked={sources.includes(s)}
@@ -96,35 +96,35 @@ export default function NewsTab() {
 
       <Card>
         <div className="flex items-center gap-2 mb-2">
-          <h2 className="font-semibold flex-1">Structure (Prompt 1)</h2>
+          <h2 className="t-label flex-1">Structure (Prompt 1)</h2>
           <Button size="sm" variant="ghost" onClick={onBuildStructure} disabled={busy === 'structure'}>
-            {busy === 'structure' ? 'Building…' : 'Rebuild'}
+            {busy === 'structure' ? 'Building...' : 'Rebuild'}
           </Button>
         </div>
         {structure ? (
-          <pre className="text-xs whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--color-bg)] p-2 rounded border border-[var(--color-border)]">{structure}</pre>
+          <pre className="t-meta whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--color-bg)] p-2 rounded border border-[var(--color-border)]">{structure}</pre>
         ) : (
-          <p className="text-sm text-[var(--color-fg-subtle)]">No structure cached. Click Rebuild to generate the markdown outline that every daily rundown will follow.</p>
+          <p className="t-sub text-[var(--color-text-sub)]">No structure cached. Click Rebuild to generate the markdown outline that every daily rundown will follow.</p>
         )}
       </Card>
 
       <Card>
         <div className="flex items-center gap-2 mb-2">
-          <h2 className="font-semibold flex-1">Today's rundown (Prompt 2)</h2>
+          <h2 className="t-label flex-1">Today's rundown (Prompt 2)</h2>
           <Button size="sm" onClick={onGenerate} disabled={busy === 'generate'}>
-            {busy === 'generate' ? 'Generating…' : 'Generate'}
+            {busy === 'generate' ? 'Generating...' : 'Generate'}
           </Button>
         </div>
-        {error && <p className="text-sm text-[var(--color-down)] mb-2">{error}</p>}
+        {error && <p className="t-sub text-[var(--color-down)] mb-2">{error}</p>}
         {lastGeneratedAt && (
-          <p className="text-xs text-[var(--color-fg-subtle)] mb-2">
+          <p className="t-meta text-[var(--color-text-sub)] mb-2">
             Last generated {new Date(lastGeneratedAt).toLocaleString()}
           </p>
         )}
         {latestRundown ? (
-          <pre className="text-xs whitespace-pre-wrap max-h-96 overflow-auto bg-[var(--color-bg)] p-2 rounded border border-[var(--color-border)]">{latestRundown}</pre>
+          <pre className="t-meta whitespace-pre-wrap max-h-96 overflow-auto bg-[var(--color-bg)] p-2 rounded border border-[var(--color-border)]">{latestRundown}</pre>
         ) : (
-          <p className="text-sm text-[var(--color-fg-subtle)]">No rundown yet. Click Generate to produce today's briefing.</p>
+          <p className="t-sub text-[var(--color-text-sub)]">No rundown yet. Click Generate to produce today's briefing.</p>
         )}
       </Card>
     </div>

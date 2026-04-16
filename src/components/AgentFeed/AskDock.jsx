@@ -1,7 +1,5 @@
-// Ask Dock — small chat-bar at the bottom of the feed. Hits /api/chat
-// which forwards the question to Claude along with the current watchlist
-// and rundown so replies stay grounded in what the user is actually
-// watching. Non-streaming for now; upgrade to SSE when the API does.
+// Ask Dock - chat bar at the bottom of the feed. Hits /api/chat with
+// the current watchlist and rundown as grounding context.
 
 import { useState } from 'react'
 import Card from '../common/Card.jsx'
@@ -36,22 +34,25 @@ export default function AskDock({ context, onAsk }) {
   }
 
   return (
-    <Card>
-      <h2 className="font-semibold mb-2">Ask dock</h2>
+    <Card className="border-t-2 border-t-[var(--color-accent)]">
+      <p className="t-section-label mb-2">ASK DOCK</p>
       <div className="flex gap-2 mb-2">
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Why did we buy AAPL?"
-          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          placeholder="Ask the agent about any trade or the market..."
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit() }}
           aria-label="Question"
         />
         <Button size="sm" onClick={submit} disabled={busy || !q.trim()}>
-          {busy ? 'Asking…' : 'Ask'}
+          {busy ? 'Asking...' : 'Ask'}
         </Button>
       </div>
-      {error && <p className="text-sm text-[var(--color-down)]">{error}</p>}
-      {reply && <p className="text-sm whitespace-pre-wrap">{reply}</p>}
+      <p className="t-meta text-[var(--color-muted-light)] mb-2">
+        e.g. "why are you bullish BTC?" - "pause EURUSD for 2h"
+      </p>
+      {error && <p className="t-sub text-[var(--color-down)]">{error}</p>}
+      {reply && <p className="t-sub whitespace-pre-wrap text-[var(--color-text-sub)]">{reply}</p>}
     </Card>
   )
 }

@@ -1,4 +1,4 @@
-// Watchlist tab — add / remove / reorder symbols, per-row sub-agent toggles.
+// Watchlist tab - add / remove / reorder symbols, per-row sub-agent toggles.
 // Reorder uses up/down buttons (YAGNI: drag-drop lives behind a v2 upgrade).
 
 import { useState } from 'react'
@@ -20,9 +20,9 @@ export default function WatchlistTab() {
 
   return (
     <Card>
-      <h2 className="font-semibold mb-2">Watchlist</h2>
-      <p className="text-sm text-[var(--color-fg-subtle)] mb-3">
-        Ported from v1 as a default pool — every row starts disabled so you (or the agent) pick the handful
+      <h2 className="t-label mb-2">Watchlist</h2>
+      <p className="t-sub text-[var(--color-text-sub)] mb-3">
+        Ported from v1 as a default pool - every row starts disabled so you (or the agent) pick the handful
         worth trading today. Use arrows to reorder, and toggle which sub-agents run for each row.
       </p>
       <div className="flex gap-2 mb-4">
@@ -36,7 +36,7 @@ export default function WatchlistTab() {
         <Button size="sm" onClick={add} disabled={!draft.trim()}>Add</Button>
       </div>
       {state.watchlist.length === 0 ? (
-        <p className="text-sm text-[var(--color-fg-subtle)]">Empty — add a symbol above.</p>
+        <p className="t-sub text-[var(--color-text-sub)]">Empty - add a symbol above.</p>
       ) : (
         <ul className="divide-y divide-[var(--color-border)]">
           {state.watchlist.map((w, i) => (
@@ -50,15 +50,15 @@ export default function WatchlistTab() {
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-sm font-medium">{w.symbol}</span>
+                    <span className="t-sub font-medium">{w.symbol}</span>
                     {w.label && (
-                      <span className="text-xs text-[var(--color-fg-subtle)] truncate">
+                      <span className="t-meta text-[var(--color-text-sub)] truncate">
                         {w.label}
                       </span>
                     )}
                   </div>
                   {w.category && (
-                    <span className="inline-block mt-0.5 px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded border border-[var(--color-border)] text-[var(--color-fg-subtle)]">
+                    <span className="inline-block mt-0.5 px-1.5 py-0.5 text-[10px] uppercase tracking-wide rounded border border-[var(--color-border)] text-[var(--color-text-sub)]">
                       {w.category}
                     </span>
                   )}
@@ -90,7 +90,7 @@ export default function WatchlistTab() {
                   ×
                 </Button>
               </div>
-              <div className="flex flex-wrap gap-3 pl-6 text-xs text-[var(--color-fg-subtle)]">
+              <div className="flex flex-wrap gap-3 pl-6 t-meta text-[var(--color-text-sub)]">
                 {SUB_AGENTS.map((a) => (
                   <label key={a} className="flex items-center gap-1">
                     <input
