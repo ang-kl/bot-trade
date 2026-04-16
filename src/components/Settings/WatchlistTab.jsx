@@ -1,12 +1,114 @@
-// Watchlist tab - screener-style table with search/filter bar.
-// Inspired by Stock Market Guides table layout and Finviz-style filtering.
+// Watchlist tab — screener-style table with 24h trading hours matrix,
+// expandable rows for sub-agent config, Pepperstone symbol search,
+// and Finviz-inspired filtering (category, session, asset class).
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import Card from '../common/Card.jsx'
 import Button from '../common/Button.jsx'
 import Input from '../common/Input.jsx'
 import Badge from '../common/Badge.jsx'
+import TradingHoursBar from './TradingHoursBar.jsx'
 import { useStrategy, SUB_AGENTS, WATCHLIST_CATEGORIES } from '../../lib/strategy-store.js'
+import { isTradingNow, searchCatalog, lookupSymbol } from '../../lib/trading-hours.js'
+
+// ── Expandable row ──
+
+function ExpandedRow({ w, dispatch }) {
+  return (
+    <tr className="bg-[var(--color-bg)]">
+      <td colSpan={6} className="px-4 py-3">
+        <div className="space-y-3 max-w-2xl">
+          {/* Trading hours */}
+          <div>
+            <p className="t-meta text-[var(--color-muted)] mb-1">Trading Hours (UTC)</p>
+            <TradingHoursBar symbol={w.symbol} />
+          </div>
+
+          {/* Sub-agents */}
+          <div>
+            <p className="t-meta text-[var(--color-muted)] mb-1">Sub-Agents</p>
+            <div className="flex flex-wrap gap-1.5">
+              {SUB_AGENTS.map(a => (
+                <button
+                  key={a}
+                  onClick={() => dispatch({ type: 'WATCHLIST_TOGGLE_AGENT', symbol: w.symbol, agent: a })}
+                  className={`px-2 py-1 rounded-[5px] text-[11px] font-bold uppercase tracking-wide border transition-colors ${
+                    w.agents[a]
+                      ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-accent)]'
+                      : 'bg-transparent border-[var(--color-border)] text-[var(--color-muted)]'
+                  }`}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Trading gates */}
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="block t-meta text-[var(--color-muted)] mb-1">
+                Auto-trade threshold
+              </label>
+              <select
+                value={w.autoTradeThreshold || 8}
+                onChange={(e) => dispatch({ type: 'WATCHLIST_SET_THRESHOLD', symbol: w.symbol, threshold: Number(e.target.value) })}
+                className="block min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(n => (
+                  <option key={n} value={n}>{n === 11 ? 'Manual only' : `${n}/10`}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block t-meta text-[var(--color-muted)] mb-1">
+                Max volume (lots)
+              </label>
+              <input
+                type="number"
+                value={w.maxVolume || 0.01}
+                onChange={(e) => dispatch({ type: 'WATCHLIST_SET_VOLUME', symbol: w.symbol, volume: Number(e.target.value) })}
+                step="0.01"
+                min="0.01"
+                max="100"
+                className="block w-20 min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge tone={isTradingNow(w.symbol) ? 'up' : 'neutral'} pill>
+                {isTradingNow(w.symbol) ? 'OPEN NOW' : 'CLOSED'}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+// ── Search dropdown ──
+
+function SearchDropdown({ results, onSelect }) {
+  if (results.length === 0) return null
+  return (
+    <div className="absolute z-20 top-full left-0 right-0 mt-1 max-h-[240px] overflow-y-auto rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
+      {results.map(c => (
+        <button
+          key={c.symbol}
+          type="button"
+          onClick={() => onSelect(c)}
+          className="w-full text-left px-3 py-2 text-[13px] hover:bg-[var(--color-accent-soft)] flex items-center gap-2 border-b border-[var(--color-border)] last:border-b-0"
+        >
+          <span className="font-bold text-[var(--color-accent)] w-20">{c.symbol}</span>
+          <span className="text-[var(--color-text-sub)] flex-1 truncate">{c.label}</span>
+          <Badge tone="neutral">{c.category}</Badge>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ── Main component ──
 
 export default function WatchlistTab() {
   const { state, dispatch } = useStrategy()
@@ -14,23 +116,56 @@ export default function WatchlistTab() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('All')
   const [statusFilter, setStatusFilter] = useState('All')
+  const [sessionFilter, setSessionFilter] = useState('All')
   const [sortField, setSortField] = useState('symbol')
   const [sortAsc, setSortAsc] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+  const [showDropdown, setShowDropdown] = useState(false)
 
-  const add = () => {
+  const existingSymbols = useMemo(
+    () => new Set(state.watchlist.map(w => w.symbol)),
+    [state.watchlist],
+  )
+
+  // Search catalog as user types
+  const searchResults = useMemo(() => {
+    if (!draft || draft.length < 1) return []
+    return searchCatalog(draft, 15).filter(c => !existingSymbols.has(c.symbol))
+  }, [draft, existingSymbols])
+
+  const add = useCallback((symbolOrCatalog) => {
+    if (typeof symbolOrCatalog === 'object') {
+      dispatch({
+        type: 'WATCHLIST_ADD',
+        symbol: symbolOrCatalog.symbol,
+        label: symbolOrCatalog.label,
+        category: symbolOrCatalog.category,
+      })
+      setDraft('')
+      setShowDropdown(false)
+      return
+    }
     const sym = draft.trim()
     if (!sym) return
-    dispatch({ type: 'WATCHLIST_ADD', symbol: sym })
+    // Try to resolve from catalog
+    const resolved = lookupSymbol(sym)
+    if (resolved) {
+      dispatch({
+        type: 'WATCHLIST_ADD',
+        symbol: resolved.symbol,
+        label: resolved.label,
+        category: resolved.category,
+      })
+    } else {
+      dispatch({ type: 'WATCHLIST_ADD', symbol: sym })
+    }
     setDraft('')
-  }
+    setShowDropdown(false)
+  }, [draft, dispatch])
 
   const toggleSort = (field) => {
-    if (sortField === field) {
-      setSortAsc(prev => !prev)
-    } else {
-      setSortField(field)
-      setSortAsc(true)
-    }
+    if (sortField === field) setSortAsc(prev => !prev)
+    else { setSortField(field); setSortAsc(true) }
   }
 
   const sortIndicator = (field) => {
@@ -38,11 +173,10 @@ export default function WatchlistTab() {
     return sortAsc ? ' \u25B2' : ' \u25BC'
   }
 
-  // Filtered and sorted watchlist
+  // Filtered + sorted
   const filtered = useMemo(() => {
     let list = state.watchlist
 
-    // Text search
     if (search) {
       const q = search.toUpperCase()
       list = list.filter(w =>
@@ -52,114 +186,101 @@ export default function WatchlistTab() {
       )
     }
 
-    // Category filter
-    if (categoryFilter !== 'All') {
-      list = list.filter(w => w.category === categoryFilter)
-    }
+    if (categoryFilter !== 'All') list = list.filter(w => w.category === categoryFilter)
+    if (statusFilter === 'Enabled') list = list.filter(w => w.enabled)
+    else if (statusFilter === 'Disabled') list = list.filter(w => !w.enabled)
+    if (sessionFilter === 'Open') list = list.filter(w => isTradingNow(w.symbol))
+    else if (sessionFilter === 'Closed') list = list.filter(w => !isTradingNow(w.symbol))
 
-    // Status filter
-    if (statusFilter === 'Enabled') {
-      list = list.filter(w => w.enabled)
-    } else if (statusFilter === 'Disabled') {
-      list = list.filter(w => !w.enabled)
-    }
-
-    // Sort
-    const sorted = [...list].sort((a, b) => {
+    return [...list].sort((a, b) => {
       let cmp = 0
       switch (sortField) {
-        case 'symbol':
-          cmp = a.symbol.localeCompare(b.symbol)
-          break
-        case 'category':
-          cmp = (a.category || '').localeCompare(b.category || '')
-          break
-        case 'enabled':
-          cmp = (a.enabled ? 1 : 0) - (b.enabled ? 1 : 0)
-          break
-        default:
-          cmp = 0
+        case 'symbol': cmp = a.symbol.localeCompare(b.symbol); break
+        case 'category': cmp = (a.category || '').localeCompare(b.category || ''); break
+        case 'enabled': cmp = (a.enabled ? 1 : 0) - (b.enabled ? 1 : 0); break
+        default: cmp = 0
       }
       return sortAsc ? cmp : -cmp
     })
-
-    return sorted
-  }, [state.watchlist, search, categoryFilter, statusFilter, sortField, sortAsc])
+  }, [state.watchlist, search, categoryFilter, statusFilter, sessionFilter, sortField, sortAsc])
 
   const enabledCount = state.watchlist.filter(w => w.enabled).length
-  const categories = ['All', ...WATCHLIST_CATEGORIES]
+  const openCount = state.watchlist.filter(w => isTradingNow(w.symbol)).length
+
+  const selectCls = 'block w-full min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]'
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Filter bar */}
       <Card>
         <div className="flex flex-wrap items-end gap-3 mb-3">
           <div className="flex-1 min-w-[180px]">
-            <label className="block t-meta text-[var(--color-text-sub)] mb-1" htmlFor="wl-search">Search</label>
+            <label className="block t-meta text-[var(--color-text-sub)] mb-1">Search</label>
             <Input
-              id="wl-search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter by symbol or name..."
-              aria-label="Search watchlist"
             />
           </div>
           <div>
-            <label className="block t-meta text-[var(--color-text-sub)] mb-1" htmlFor="wl-category">Category</label>
-            <select
-              id="wl-category"
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="block w-full min-h-[36px] px-3 py-1.5 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] t-sub focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
-            >
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            <label className="block t-meta text-[var(--color-text-sub)] mb-1">Category</label>
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className={selectCls}>
+              <option value="All">All</option>
+              {WATCHLIST_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
-            <label className="block t-meta text-[var(--color-text-sub)] mb-1" htmlFor="wl-status">Status</label>
-            <select
-              id="wl-status"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="block w-full min-h-[36px] px-3 py-1.5 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] t-sub focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
-            >
+            <label className="block t-meta text-[var(--color-text-sub)] mb-1">Status</label>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
               <option value="All">All</option>
               <option value="Enabled">Enabled</option>
               <option value="Disabled">Disabled</option>
             </select>
           </div>
-          {(search || categoryFilter !== 'All' || statusFilter !== 'All') && (
+          <div>
+            <label className="block t-meta text-[var(--color-text-sub)] mb-1">Session</label>
+            <select value={sessionFilter} onChange={(e) => setSessionFilter(e.target.value)} className={selectCls}>
+              <option value="All">All ({openCount} open)</option>
+              <option value="Open">Trading Now</option>
+              <option value="Closed">Closed</option>
+            </select>
+          </div>
+          {(search || categoryFilter !== 'All' || statusFilter !== 'All' || sessionFilter !== 'All') && (
             <Button size="sm" variant="ghost" onClick={() => {
-              setSearch('')
-              setCategoryFilter('All')
-              setStatusFilter('All')
+              setSearch(''); setCategoryFilter('All'); setStatusFilter('All'); setSessionFilter('All')
             }}>
               Clear
             </Button>
           )}
         </div>
+
+        {/* Add symbol with autocomplete */}
         <div className="flex items-center gap-3">
-          <div className="flex gap-2 flex-1">
+          <div className="flex gap-2 flex-1 relative">
             <Input
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && add()}
-              placeholder="Add symbol (e.g. EURUSD)"
-              aria-label="New symbol"
+              onChange={(e) => { setDraft(e.target.value); setShowDropdown(true) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') add() }}
+              onFocus={() => setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
+              placeholder="Search Pepperstone instruments (e.g. GOLD, NASDAQ, TSLA...)"
             />
-            <Button size="sm" onClick={add} disabled={!draft.trim()}>Add</Button>
+            <Button size="sm" onClick={() => add()} disabled={!draft.trim()}>Add</Button>
+            {showDropdown && searchResults.length > 0 && (
+              <SearchDropdown results={searchResults} onSelect={add} />
+            )}
           </div>
           <span className="t-meta text-[var(--color-text-sub)] whitespace-nowrap">
-            {filtered.length} / {state.watchlist.length} shown - {enabledCount} enabled
+            {filtered.length} / {state.watchlist.length} shown \u00B7 {enabledCount} enabled
           </span>
         </div>
       </Card>
 
-      {/* Watchlist table */}
+      {/* Table */}
       <Card className="overflow-x-auto !px-0">
         {state.watchlist.length === 0 ? (
           <p className="t-sub text-[var(--color-text-sub)] px-4 py-6 text-center">
-            Empty watchlist. Add a symbol above to get started.
+            Empty watchlist. Search and add instruments above.
           </p>
         ) : filtered.length === 0 ? (
           <p className="t-sub text-[var(--color-text-sub)] px-4 py-6 text-center">
@@ -172,7 +293,7 @@ export default function WatchlistTab() {
                 <th className="px-4 py-2 t-meta text-[var(--color-text-sub)] font-medium w-8">
                   <input
                     type="checkbox"
-                    checked={filtered.every(w => w.enabled)}
+                    checked={filtered.length > 0 && filtered.every(w => w.enabled)}
                     onChange={() => {
                       const allEnabled = filtered.every(w => w.enabled)
                       for (const w of filtered) {
@@ -200,93 +321,68 @@ export default function WatchlistTab() {
                   Category{sortIndicator('category')}
                 </th>
                 <th className="px-4 py-2 t-meta text-[var(--color-text-sub)] font-medium hidden md:table-cell">
-                  Sub-agents
+                  Hours
                 </th>
-                <th className="px-4 py-2 t-meta text-[var(--color-text-sub)] font-medium w-24 text-right">
+                <th className="px-4 py-2 t-meta text-[var(--color-text-sub)] font-medium w-20 text-right">
                   Actions
                 </th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((w, i) => {
-                return (
+                const isExpanded = expanded === w.symbol
+                const trading = isTradingNow(w.symbol)
+                return [
                   <tr
                     key={w.symbol}
-                    className={`border-b border-[var(--color-border)] hover:bg-[var(--color-bg)] transition-colors ${
-                      w.enabled ? '' : 'opacity-50'
-                    }`}
+                    className={`border-b border-[var(--color-border)] cursor-pointer transition-colors ${
+                      isExpanded ? 'bg-[var(--color-accent-soft)]' : 'hover:bg-[var(--color-bg)]'
+                    } ${w.enabled ? '' : 'opacity-50'}`}
+                    onClick={() => setExpanded(isExpanded ? null : w.symbol)}
                   >
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5" onClick={e => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={w.enabled}
                         onChange={() => dispatch({ type: 'WATCHLIST_TOGGLE_ENABLED', symbol: w.symbol })}
-                        aria-label={`${w.symbol} enabled`}
                       />
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="t-sub font-medium text-[var(--color-accent)]">{w.symbol}</span>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] ${trading ? 'text-[var(--color-up)]' : 'text-[var(--color-muted)]'}`}>
+                          {trading ? '\u25CF' : '\u25CB'}
+                        </span>
+                        <span className="t-sub font-medium text-[var(--color-accent)]">{w.symbol}</span>
+                        <span className="text-[10px] text-[var(--color-muted)]">
+                          {isExpanded ? '\u25BC' : '\u25B6'}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-2.5 hidden sm:table-cell">
                       <span className="t-sub text-[var(--color-text-sub)] truncate max-w-[200px] block">{w.label || '-'}</span>
                     </td>
                     <td className="px-4 py-2.5 hidden sm:table-cell">
-                      {w.category ? (
-                        <Badge tone="neutral">{w.category}</Badge>
-                      ) : (
-                        <span className="t-meta text-[var(--color-muted)]">-</span>
-                      )}
+                      {w.category ? <Badge tone="neutral">{w.category}</Badge> : <span className="t-meta text-[var(--color-muted)]">-</span>}
                     </td>
                     <td className="px-4 py-2.5 hidden md:table-cell">
-                      <div className="flex flex-wrap gap-1">
-                        {SUB_AGENTS.map(a => (
-                          <button
-                            key={a}
-                            onClick={() => dispatch({ type: 'WATCHLIST_TOGGLE_AGENT', symbol: w.symbol, agent: a })}
-                            className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide border transition-colors ${
-                              w.agents[a]
-                                ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-accent)]'
-                                : 'bg-transparent border-[var(--color-border)] text-[var(--color-muted)]'
-                            }`}
-                            aria-label={`${a} agent for ${w.symbol}`}
-                          >
-                            {a}
-                          </button>
-                        ))}
-                      </div>
+                      <TradingHoursBar symbol={w.symbol} compact />
                     </td>
-                    <td className="px-4 py-2.5 text-right">
+                    <td className="px-4 py-2.5 text-right" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => dispatch({ type: 'WATCHLIST_MOVE', symbol: w.symbol, delta: -1 })}
-                          disabled={i === 0}
-                          aria-label={`Move ${w.symbol} up`}
-                        >
+                        <Button size="sm" variant="ghost" onClick={() => dispatch({ type: 'WATCHLIST_MOVE', symbol: w.symbol, delta: -1 })} disabled={i === 0}>
                           {'\u2191'}
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => dispatch({ type: 'WATCHLIST_MOVE', symbol: w.symbol, delta: 1 })}
-                          disabled={i === filtered.length - 1}
-                          aria-label={`Move ${w.symbol} down`}
-                        >
+                        <Button size="sm" variant="ghost" onClick={() => dispatch({ type: 'WATCHLIST_MOVE', symbol: w.symbol, delta: 1 })} disabled={i === filtered.length - 1}>
                           {'\u2193'}
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          onClick={() => dispatch({ type: 'WATCHLIST_REMOVE', symbol: w.symbol })}
-                          aria-label={`Remove ${w.symbol}`}
-                        >
+                        <Button size="sm" variant="danger" onClick={() => dispatch({ type: 'WATCHLIST_REMOVE', symbol: w.symbol })}>
                           {'\u00D7'}
                         </Button>
                       </div>
                     </td>
-                  </tr>
-                )
+                  </tr>,
+                  isExpanded && <ExpandedRow key={`${w.symbol}-exp`} w={w} dispatch={dispatch} />,
+                ]
               })}
             </tbody>
           </table>
