@@ -581,15 +581,17 @@ export default function Feed() {
   }, [state.telegram])
 
   // ── Massive compute — fetch real metrics for stock symbols ──
+  const massiveMetricsRef = useRef(massiveMetrics)
+  massiveMetricsRef.current = massiveMetrics
+
   const fetchMassiveMetrics = useCallback(async (symbols) => {
     if (!state.massive.apiKey) return
-    // Only compute for stock symbols that Massive supports (US stocks)
     const stockSymbols = symbols
       .filter(s => {
         const w = state.watchlist.find(w => w.symbol === s)
         return w?.category === 'Stocks'
       })
-      .filter(s => !massiveMetrics[s]) // skip already computed
+      .filter(s => !massiveMetricsRef.current[s])
     if (stockSymbols.length === 0) return
 
     addLog('massive', `Computing metrics for ${stockSymbols.length} stocks...`)
@@ -607,7 +609,7 @@ export default function Feed() {
     } catch (e) {
       addLog('massive', `Compute failed: ${e.message}`)
     }
-  }, [state.massive.apiKey, state.watchlist, massiveMetrics, addLog])
+  }, [state.massive.apiKey, state.watchlist, addLog])
 
   // ── Trade monitor helpers (must be defined before runAnalyst) ──
   const addMonitoredTrade = useCallback((trade) => {
