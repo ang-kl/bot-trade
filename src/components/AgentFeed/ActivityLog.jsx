@@ -39,8 +39,8 @@ function LogEntry({ entry }) {
   const nameLabel = entry.minionName || entry.agent?.toUpperCase() || 'SYSTEM'
 
   return (
-    <div className="flex gap-2 items-start py-0.5 text-[12px] leading-relaxed">
-      <span className="text-[var(--color-muted)] font-mono shrink-0 w-[60px]">
+    <div className="flex gap-1.5 sm:gap-2 items-start py-0.5 text-[11px] sm:text-[12px] leading-relaxed">
+      <span className="text-[var(--color-muted)] font-mono shrink-0 w-[48px] sm:w-[60px]">
         {formatTime(entry.ts)}
       </span>
       <span className="shrink-0">{icon}</span>
@@ -50,7 +50,7 @@ function LogEntry({ entry }) {
       {entry.symbol && (
         <span className="font-semibold text-[var(--color-text)]">{entry.symbol}</span>
       )}
-      <span className="text-[var(--color-text-sub)]">
+      <span className="text-[var(--color-text-sub)] break-words min-w-0">
         {entry.message}
       </span>
     </div>

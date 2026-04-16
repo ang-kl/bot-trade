@@ -146,12 +146,12 @@ export default function BottomBar({
           <table className="w-full text-[11px]">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-[var(--color-muted)]">
-                <th className="px-3 py-1.5 text-left font-medium">Agent</th>
-                <th className="px-3 py-1.5 text-left font-medium">Status</th>
-                <th className="px-3 py-1.5 text-right font-medium">Tokens</th>
-                <th className="px-3 py-1.5 text-right font-medium">Calls</th>
-                <th className="px-3 py-1.5 text-right font-medium">Cost</th>
-                <th className="px-3 py-1.5 text-left font-medium hidden sm:table-cell">Role</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-left font-medium">Agent</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-left font-medium">Status</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-right font-medium">Tokens</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-right font-medium">Calls</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-right font-medium">Cost</th>
+                <th className="px-1.5 sm:px-3 py-1.5 text-left font-medium hidden sm:table-cell">Role</th>
               </tr>
             </thead>
             <tbody>
@@ -164,28 +164,28 @@ export default function BottomBar({
 
                 return (
                   <tr key={id} className="border-b border-[var(--color-border)] last:border-b-0">
-                    <td className="px-3 py-1.5">
+                    <td className="px-1.5 sm:px-3 py-1.5">
                       <span className={`font-bold ${STATUS_COLOR[st]}`}>
                         {STATUS_ICON[st]} {meta.label}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="px-1.5 sm:px-3 py-1.5">
                       <Badge
                         tone={st === 'running' ? 'info' : st === 'done' ? 'up' : st === 'error' ? 'down' : 'neutral'}
                       >
                         {STATUS_LABEL[st] || st.toUpperCase()}
                       </Badge>
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
                       {tokens > 0 ? tokens.toLocaleString() : '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
                       {calls > 0 ? calls : '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
                       {tokens > 0 ? `$${agentCost.toFixed(3)}` : '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-[var(--color-muted)] hidden sm:table-cell">
+                    <td className="px-1.5 sm:px-3 py-1.5 text-[var(--color-muted)] hidden sm:table-cell">
                       {meta.role}
                     </td>
                   </tr>
@@ -193,18 +193,18 @@ export default function BottomBar({
               })}
               {/* Totals row */}
               <tr className="bg-[var(--color-bg)] font-bold">
-                <td className="px-3 py-1.5 text-[var(--color-text)]">Total</td>
-                <td className="px-3 py-1.5" />
-                <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
+                <td className="px-1.5 sm:px-3 py-1.5 text-[var(--color-text)]">Total</td>
+                <td className="px-1.5 sm:px-3 py-1.5" />
+                <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
                   {tokenCount.toLocaleString()}
                 </td>
-                <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
+                <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
                   {totalCalls}
                 </td>
-                <td className="px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
+                <td className="px-1.5 sm:px-3 py-1.5 text-right font-mono text-[var(--color-text)]">
                   ${cost.toFixed(3)}
                 </td>
-                <td className="px-3 py-1.5 hidden sm:table-cell" />
+                <td className="px-1.5 sm:px-3 py-1.5 hidden sm:table-cell" />
               </tr>
             </tbody>
           </table>

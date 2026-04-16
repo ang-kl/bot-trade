@@ -93,33 +93,33 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
   if (watchlist.length === 0) return null
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-[11px]">
+    <div className="overflow-x-auto -mx-2 px-0">
+      <table className="border-collapse text-[11px] sm:text-[11px] text-[9px]">
         <thead>
           {/* NY time row */}
-          <tr className="text-[9px]">
-            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-0.5 text-left text-[var(--color-muted)] font-normal border-r border-[var(--color-border)]">
+          <tr className="text-[9px] sm:text-[9px] text-[7px]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-muted)] font-normal border-r border-[var(--color-border)]">
               NY
             </th>
             {HOURS.map(h => {
               const nyH = utcToTz(h, nyOffset)
               return (
-                <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)]">
+                <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)] w-[18px] sm:w-[28px] min-w-[18px] sm:min-w-[28px]">
                   {String(nyH).padStart(2, '0')}
                 </th>
               )
             })}
-            <th className="px-2 py-0.5 border-l border-[var(--color-border)]" />
+            <th className="px-1 sm:px-2 py-0.5 border-l border-[var(--color-border)]" />
           </tr>
           {/* UTC row (primary) */}
           <tr>
-            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1 text-left t-meta text-[var(--color-text-sub)] font-medium w-[100px] min-w-[100px] border-r border-[var(--color-border)]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-1 text-left t-meta text-[var(--color-text-sub)] font-medium w-[72px] sm:w-[100px] min-w-[72px] sm:min-w-[100px] border-r border-[var(--color-border)]">
               Symbol
             </th>
             {HOURS.map(h => (
               <th
                 key={h}
-                className={`px-0 py-1 text-center font-mono font-medium w-[28px] min-w-[28px] ${
+                className={`px-0 py-1 text-center font-mono font-medium w-[18px] sm:w-[28px] min-w-[18px] sm:min-w-[28px] ${
                   h === nowUTC
                     ? 'bg-[var(--color-down)]/15 text-[var(--color-down)]'
                     : 'text-[var(--color-text-sub)]'
@@ -128,13 +128,13 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                 {String(h).padStart(2, '0')}
               </th>
             ))}
-            <th className="px-2 py-1 text-center t-meta text-[var(--color-text-sub)] font-medium w-[52px] min-w-[52px] border-l border-[var(--color-border)]">
+            <th className="px-1 sm:px-2 py-1 text-center t-meta text-[var(--color-text-sub)] font-medium w-[40px] sm:w-[52px] min-w-[40px] sm:min-w-[52px] border-l border-[var(--color-border)]">
               Status
             </th>
           </tr>
           {/* User locale row */}
-          <tr className="text-[9px] border-b border-[var(--color-border)]">
-            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-0.5 text-left text-[var(--color-accent)] font-normal border-r border-[var(--color-border)]">
+          <tr className="text-[9px] sm:text-[9px] text-[7px] border-b border-[var(--color-border)]">
+            <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-accent)] font-normal border-r border-[var(--color-border)]">
               {userTzShort}
             </th>
             {HOURS.map(h => {
@@ -146,7 +146,7 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                 </th>
               )
             })}
-            <th className="px-2 py-0.5 border-l border-[var(--color-border)]" />
+            <th className="px-1 sm:px-2 py-0.5 border-l border-[var(--color-border)]" />
           </tr>
         </thead>
         <tbody>
@@ -190,20 +190,20 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                     }`}
                   >
                     {/* Symbol cell */}
-                    <td className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1 border-r border-[var(--color-border)]">
-                      <div className="flex items-center gap-1.5">
+                    <td className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-1 border-r border-[var(--color-border)]">
+                      <div className="flex items-center gap-1 sm:gap-1.5">
                         <input
                           type="checkbox"
                           checked={w.enabled}
                           onChange={() => onToggle?.(w.symbol)}
-                          className="shrink-0"
+                          className="shrink-0 w-3 h-3 sm:w-4 sm:h-4"
                         />
                         <div className="min-w-0">
-                          <span className={`font-bold ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
+                          <span className={`font-bold text-[10px] sm:text-[11px] ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'}`}>
                             {w.symbol}
                           </span>
                           {EXCHANGE_MAP[w.symbol] && (
-                            <span className="block text-[8px] text-[var(--color-muted)] leading-tight">
+                            <span className="hidden sm:block text-[8px] text-[var(--color-muted)] leading-tight">
                               {EXCHANGE_MAP[w.symbol]}
                             </span>
                           )}
@@ -218,12 +218,12 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                       return (
                         <td
                           key={h}
-                          className={`px-0 py-1 border-[var(--color-border)] ${
+                          className={`px-0 py-0.5 sm:py-1 border-[var(--color-border)] ${
                             isNow ? 'border-l border-r border-[var(--color-down)]/40' : ''
                           }`}
                         >
                           <div
-                            className={`mx-auto w-[20px] h-[10px] rounded-[2px] ${
+                            className={`mx-auto w-[12px] sm:w-[20px] h-[8px] sm:h-[10px] rounded-[2px] ${
                               active
                                 ? isNow && trading
                                   ? 'bg-[var(--color-up)]'
@@ -238,8 +238,8 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                     })}
 
                     {/* Status cell */}
-                    <td className="px-2 py-1 text-center border-l border-[var(--color-border)]">
-                      <span className={`text-[9px] font-bold ${
+                    <td className="px-1 sm:px-2 py-1 text-center border-l border-[var(--color-border)]">
+                      <span className={`text-[8px] sm:text-[9px] font-bold ${
                         trading ? 'text-[var(--color-up)]' : 'text-[var(--color-muted)]'
                       }`}>
                         {trading ? '\u25CF OPEN' : '\u25CB'}

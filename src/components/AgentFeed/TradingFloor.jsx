@@ -34,7 +34,7 @@ function SessionClock() {
   }
 
   return (
-    <div className="flex gap-3 text-[10px] font-mono text-[var(--color-muted)]">
+    <div className="flex gap-2 sm:gap-3 text-[9px] sm:text-[10px] font-mono text-[var(--color-muted)] flex-wrap">
       <span>SGT {fmt('Asia/Singapore')}</span>
       <span>TYO {fmt('Asia/Tokyo')}</span>
       <span>LDN {fmt('Europe/London')}</span>
@@ -80,9 +80,10 @@ export default function TradingFloor({
             ? 'text-[var(--color-accent)]'
             : st === 'done' ? 'text-[var(--color-up)]' : 'text-[var(--color-muted)]'
           return (
-            <span key={a.id} className={`flex items-center gap-1 text-[11px] font-bold ${color} ${pulse}`}>
+            <span key={a.id} className={`flex items-center gap-1 text-[10px] sm:text-[11px] font-bold ${color} ${pulse}`}>
               <span className="text-[8px]">{st === 'running' ? '\u25CF' : st === 'done' ? '\u25CF' : '\u25CB'}</span>
-              {a.name}
+              <span className="hidden sm:inline">{a.name}</span>
+              <span className="sm:hidden">{a.name.slice(0, 3)}</span>
             </span>
           )
         })}

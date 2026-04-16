@@ -223,8 +223,8 @@ export default function WatchlistTab() {
     <div className="space-y-3">
       {/* Filter bar */}
       <Card>
-        <div className="flex flex-wrap items-end gap-3 mb-3">
-          <div className="flex-1 min-w-[180px]">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-end gap-2 sm:gap-3 mb-3">
+          <div className="col-span-2 sm:flex-1 sm:min-w-[180px]">
             <label className="block t-meta text-[var(--color-text-sub)] mb-1">Search</label>
             <Input
               value={search}
@@ -263,7 +263,7 @@ export default function WatchlistTab() {
             </Button>
           )}
           {/* View toggle */}
-          <div className="flex items-center gap-0.5 ml-auto">
+          <div className="flex items-center gap-0.5 col-span-2 sm:col-span-1 sm:ml-auto">
             <button
               onClick={() => setViewMode('matrix')}
               className={`px-2 py-1 text-[11px] font-bold rounded-l-[5px] border transition-colors ${
@@ -288,7 +288,7 @@ export default function WatchlistTab() {
         </div>
 
         {/* Add symbol with autocomplete */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
           <div className="flex gap-2 flex-1 relative">
             <Input
               value={draft}
@@ -296,15 +296,15 @@ export default function WatchlistTab() {
               onKeyDown={(e) => { if (e.key === 'Enter') add() }}
               onFocus={() => setShowDropdown(true)}
               onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-              placeholder="Search Pepperstone instruments (e.g. GOLD, NASDAQ, TSLA...)"
+              placeholder="Search instruments (GOLD, NASDAQ...)"
             />
             <Button size="sm" onClick={() => add()} disabled={!draft.trim()}>Add</Button>
             {showDropdown && searchResults.length > 0 && (
               <SearchDropdown results={searchResults} onSelect={add} />
             )}
           </div>
-          <span className="t-meta text-[var(--color-text-sub)] whitespace-nowrap">
-            {filtered.length} / {state.watchlist.length} shown {'\u00B7'} {enabledCount} enabled
+          <span className="t-meta text-[var(--color-text-sub)] whitespace-nowrap text-center sm:text-left">
+            {filtered.length}/{state.watchlist.length} shown {'\u00B7'} {enabledCount} enabled
           </span>
         </div>
       </Card>

@@ -64,80 +64,62 @@ function TradeRow({ trade, onStop, onCheck, checking }) {
   const actionLabel = lastCheck ? ACTION_LABELS[lastCheck.action] || lastCheck.action : null
 
   return (
-    <div className="flex items-start gap-3 py-2.5 border-b border-[var(--color-border)] last:border-b-0">
-      {/* Symbol + side */}
-      <div className="min-w-[70px]">
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[10px] ${trade.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-            {trade.side === 'BUY' ? '\u25B2' : '\u25BC'}
-          </span>
-          <span className="t-sub font-bold text-[var(--color-accent)]">{trade.symbol}</span>
-        </div>
-        <div className="flex items-center gap-1 mt-0.5">
-          <Badge tone={trade.side === 'BUY' ? 'up' : 'down'} pill>
-            {trade.side}
-          </Badge>
-          <span className="text-[9px] text-[var(--color-muted)]">{elapsedLabel}</span>
+    <div className="py-2.5 border-b border-[var(--color-border)] last:border-b-0">
+      {/* Top: Symbol + side + actions */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className={`text-[10px] ${trade.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+          {trade.side === 'BUY' ? '\u25B2' : '\u25BC'}
+        </span>
+        <span className="t-sub font-bold text-[var(--color-accent)]">{trade.symbol}</span>
+        <Badge tone={trade.side === 'BUY' ? 'up' : 'down'} pill>
+          {trade.side}
+        </Badge>
+        <span className="text-[9px] text-[var(--color-muted)]">{elapsedLabel}</span>
+        <div className="flex-1" />
+        <div className="flex gap-1 shrink-0">
+          <Button size="sm" variant="danger" onClick={() => onStop(trade)}>STOP</Button>
+          <Button size="sm" variant="ghost" onClick={() => onCheck(trade)} disabled={checking}>
+            {checking ? '...' : 'Check'}
+          </Button>
         </div>
       </div>
 
       {/* Levels */}
-      <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 t-meta text-[var(--color-text-sub)]">
-          {trade.entry != null && <span>Entry: <span className="font-mono">{trade.entry}</span></span>}
-          {trade.sl != null && <span className="text-[var(--color-down)]">SL: {trade.sl}</span>}
-          {trade.tp != null && <span className="text-[var(--color-up)]">TP: {trade.tp}</span>}
-          {trade.volume != null && <span>Vol: {trade.volume}</span>}
-        </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 t-meta text-[var(--color-text-sub)]">
+        {trade.entry != null && <span>Entry: <span className="font-mono">{trade.entry}</span></span>}
+        {trade.sl != null && <span className="text-[var(--color-down)]">SL: {trade.sl}</span>}
+        {trade.tp != null && <span className="text-[var(--color-up)]">TP: {trade.tp}</span>}
+        {trade.volume != null && <span>Vol: {trade.volume}</span>}
+      </div>
 
-        {/* Monitor result */}
-        {lastCheck && (
-          <div className="mt-1 space-y-0.5">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge tone={thesisTone}>
-                Thesis: {lastCheck.thesis_status?.toUpperCase()}
+      {/* Monitor result */}
+      {lastCheck && (
+        <div className="mt-1 space-y-0.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge tone={thesisTone}>
+              Thesis: {lastCheck.thesis_status?.toUpperCase()}
+            </Badge>
+            <Badge tone={urgencyTone}>
+              {lastCheck.urgency?.toUpperCase()}
+            </Badge>
+            {actionLabel && (
+              <Badge tone={lastCheck.action === 'EXIT' ? 'down' : lastCheck.action === 'HOLD' ? 'up' : 'warning'}>
+                {actionLabel}
               </Badge>
-              <Badge tone={urgencyTone}>
-                {lastCheck.urgency?.toUpperCase()}
-              </Badge>
-              {actionLabel && (
-                <Badge tone={lastCheck.action === 'EXIT' ? 'down' : lastCheck.action === 'HOLD' ? 'up' : 'warning'}>
-                  {actionLabel}
-                </Badge>
-              )}
-            </div>
-            {lastCheck.reasoning && (
-              <p className="text-[11px] text-[var(--color-text-sub)]">{lastCheck.reasoning}</p>
-            )}
-            {lastCheck.new_sl != null && (
-              <span className="text-[10px] text-[var(--color-warning-text)]">New SL: {lastCheck.new_sl}</span>
             )}
           </div>
-        )}
+          {lastCheck.reasoning && (
+            <p className="text-[11px] text-[var(--color-text-sub)]">{lastCheck.reasoning}</p>
+          )}
+          {lastCheck.new_sl != null && (
+            <span className="text-[10px] text-[var(--color-warning-text)]">New SL: {lastCheck.new_sl}</span>
+          )}
+        </div>
+      )}
 
-        {!lastCheck && (
-          <p className="text-[10px] text-[var(--color-muted)] mt-1">Monitoring... waiting for first check</p>
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="flex flex-col gap-1 shrink-0">
-        <Button
-          size="sm"
-          variant="danger"
-          onClick={() => onStop(trade)}
-        >
-          STOP
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onCheck(trade)}
-          disabled={checking}
-        >
-          {checking ? '...' : 'Check'}
-        </Button>
-      </div>
+      {!lastCheck && (
+        <p className="text-[10px] text-[var(--color-muted)] mt-1">Monitoring... waiting for first check</p>
+      )}
     </div>
   )
 }

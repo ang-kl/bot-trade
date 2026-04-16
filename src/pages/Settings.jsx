@@ -28,7 +28,7 @@ export default function Settings() {
   return (
     <section>
       <h1 className="text-xl t-label mb-4">Settings</h1>
-      <div role="tablist" className="flex gap-1 mb-4 border-b border-[var(--color-border)]">
+      <div role="tablist" className="flex gap-1 mb-4 border-b border-[var(--color-border)] overflow-x-auto scrollbar-none">
         {TABS.map(t => (
           <button
             key={t.id}
@@ -37,7 +37,7 @@ export default function Settings() {
             aria-selected={active === t.id}
             aria-controls={`settings-panel-${t.id}`}
             onClick={() => setActive(t.id)}
-            className={tabClass(active === t.id)}
+            className={`${tabClass(active === t.id)} whitespace-nowrap`}
           >
             {t.label}
           </button>

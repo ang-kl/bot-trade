@@ -19,7 +19,7 @@ const navLinks = [
 ]
 
 function linkClass({ isActive }) {
-  const base = 'px-3 py-2 text-[13px] font-bold rounded-[7px]'
+  const base = 'px-2 sm:px-3 py-2 text-[12px] sm:text-[13px] font-bold rounded-[7px] whitespace-nowrap'
   return isActive
     ? `${base} border-b-[3px] border-[var(--color-accent)] text-[var(--color-accent)]`
     : `${base} text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]`
@@ -30,8 +30,8 @@ export default function App() {
     <div className="min-h-[100svh] bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <header className="border-b-2 border-[var(--color-accent)]">
         <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
-          <span className="t-body font-bold mr-4">bot-trade</span>
-          <nav className="flex gap-1 overflow-x-auto">
+          <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
+          <nav className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
             {navLinks.map(l => (
               <NavLink key={l.to} to={l.to} className={linkClass}>
                 {l.label}

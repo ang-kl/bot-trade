@@ -98,6 +98,10 @@
   color: var(--color-muted);
 }
 
+/* Hide scrollbar for horizontal overflow areas (nav, tabs) */
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
 /* -- Root + body -- */
 html, body, #root {
   min-height: 100svh;

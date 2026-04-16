@@ -73,10 +73,10 @@ export default function MarketSessionBar() {
     <div className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
       <div
         style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }}
-        className="mx-auto flex items-center gap-2 py-1.5 overflow-x-auto"
+        className="mx-auto py-1.5"
       >
-        {/* Date + times */}
-        <div className="flex items-center gap-2 shrink-0 pr-3 border-r border-[var(--color-border)]">
+        {/* Top row: date + times — stacks on mobile */}
+        <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap pb-1 mb-1 border-b border-[var(--color-border)] sm:border-0 sm:pb-0 sm:mb-0 sm:float-none">
           <span className="text-[10px] font-mono text-[var(--color-muted)]">{dateStr}</span>
           <span className="text-[10px] font-mono text-[var(--color-text-sub)]">
             {userTime} <span className="text-[var(--color-muted)]">({userTz.split('/').pop()})</span>
@@ -89,32 +89,34 @@ export default function MarketSessionBar() {
           </span>
         </div>
 
-        {/* Market pills */}
-        {MARKETS.map(m => {
-          const open = isOpen(m, utcH)
-          const mins = !open ? minsUntilOpen(m, utcH, utcM) : 0
-          return (
-            <div
-              key={m.id}
-              className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 border ${
-                open
-                  ? 'bg-[var(--color-success-bg)] border-[var(--color-success-border)] text-[var(--color-up)]'
-                  : 'bg-[var(--color-bg)] border-[var(--color-border)] text-[var(--color-muted)]'
-              }`}
-              title={`${m.label}: ${formatLocalTime(m.tz)} local`}
-            >
-              <span>{m.flag}</span>
-              <span>{m.label}</span>
-              {open ? (
-                <span className="text-[8px]">{'\u25CF'}</span>
-              ) : (
-                <span className="text-[9px] font-normal opacity-70">
-                  {formatMinsUntil(mins)}
-                </span>
-              )}
-            </div>
-          )
-        })}
+        {/* Market pills — wraps on mobile */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {MARKETS.map(m => {
+            const open = isOpen(m, utcH)
+            const mins = !open ? minsUntilOpen(m, utcH, utcM) : 0
+            return (
+              <div
+                key={m.id}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                  open
+                    ? 'bg-[var(--color-success-bg)] border-[var(--color-success-border)] text-[var(--color-up)]'
+                    : 'bg-[var(--color-bg)] border-[var(--color-border)] text-[var(--color-muted)]'
+                }`}
+                title={`${m.label}: ${formatLocalTime(m.tz)} local`}
+              >
+                <span>{m.flag}</span>
+                <span>{m.label}</span>
+                {open ? (
+                  <span className="text-[8px]">{'\u25CF'}</span>
+                ) : (
+                  <span className="text-[9px] font-normal opacity-70">
+                    {formatMinsUntil(mins)}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
