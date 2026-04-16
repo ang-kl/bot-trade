@@ -30,7 +30,7 @@ export default function LinkUp() {
     }
     if (!code) {
       setStatus('error')
-      setError('Missing authorization code in callback URL')
+      setError('Missing authorisation code in callback URL')
       return
     }
 

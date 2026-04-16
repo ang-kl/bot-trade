@@ -54,7 +54,7 @@ function ExpandedRow({ w, dispatch }) {
               <select
                 value={w.autoTradeThreshold || 8}
                 onChange={(e) => dispatch({ type: 'WATCHLIST_SET_THRESHOLD', symbol: w.symbol, threshold: Number(e.target.value) })}
-                className="block min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
+                className="block min-h-[36px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
               >
                 {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(n => (
                   <option key={n} value={n}>{n === 11 ? 'Manual only' : `${n}/10`}</option>
@@ -72,7 +72,7 @@ function ExpandedRow({ w, dispatch }) {
                 step="0.01"
                 min="0.01"
                 max="100"
-                className="block w-20 min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
+                className="block w-20 min-h-[36px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px]"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -217,7 +217,7 @@ export default function WatchlistTab() {
   const enabledCount = state.watchlist.filter(w => w.enabled).length
   const openCount = state.watchlist.filter(w => isTradingNow(w.symbol)).length
 
-  const selectCls = 'block w-full min-h-[32px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]'
+  const selectCls = 'block w-full min-h-[36px] px-2 py-1 rounded-[7px] border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-[12px] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]'
 
   return (
     <div className="space-y-3">

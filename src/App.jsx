@@ -31,7 +31,7 @@ export default function App() {
       <header className="border-b-2 border-[var(--color-accent)]">
         <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
           <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
-          <nav className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
+          <nav aria-label="Main navigation" className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
             {navLinks.map(l => (
               <NavLink key={l.to} to={l.to} className={linkClass}>
                 {l.label}
@@ -41,7 +41,7 @@ export default function App() {
         </div>
       </header>
       <MarketSessionBar />
-      <main style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
+      <main id="main-content" style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
           <Route path="/feed" element={<Feed />} />

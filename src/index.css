@@ -82,8 +82,9 @@
 .t-sub     { font-size: 12px; font-weight: 400; line-height: 1.6; }
 .t-meta    { font-size: 11px; font-weight: 400; line-height: 1.65; }
 
-@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } }
+@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } .t-sub { font-size: 13px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-body { font-size: 16px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
+@media (min-width: 1153px) { html { zoom: 1.1; } }
 @media (min-width: 1280px) { .t-heading { font-size: 21px; } }
 @media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 18px; } .t-label { font-size: 15px; } .t-sub { font-size: 16px; } .t-meta { font-size: 14px; } }
 @media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 28px; } .t-body { font-size: 20px; } .t-label { font-size: 17px; } .t-sub { font-size: 17px; } .t-meta { font-size: 15px; } }
@@ -96,6 +97,32 @@
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--color-muted);
+}
+
+/* Skip nav link (Builder Standard 8 - Accessibility) */
+.skip-nav {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 100;
+  padding: 8px 16px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 7px 0;
+}
+.skip-nav:focus {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+  overflow: visible;
 }
 
 /* Hide scrollbar for horizontal overflow areas (nav, tabs) */
