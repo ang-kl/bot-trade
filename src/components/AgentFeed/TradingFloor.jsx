@@ -147,6 +147,20 @@ export default function TradingFloor({
           Risk: ${riskUsed.toFixed(0)} / {state.risk.dailyMaxLossPct}% daily
         </span>
       </div>
+
+      {/* Auto-Trade guide — shown when not armed */}
+      {!isArmed && enabledCount > 0 && (
+        <div className="border-t border-[var(--color-border)] pt-2 mt-1">
+          <p className="t-meta text-[var(--color-text-sub)] leading-relaxed">
+            <span className="font-bold text-[var(--color-accent)]">How algo trading works:</span>{' '}
+            <span className="font-bold">1.</span> Enable symbols in Settings and set per-symbol <span className="font-semibold">auto-trade threshold</span> (conviction score needed to auto-execute).{' '}
+            <span className="font-bold">2.</span> Set <span className="font-semibold">max volume</span> per symbol to cap position size.{' '}
+            <span className="font-bold">3.</span> Configure <span className="font-semibold">Risk</span> tab (daily loss limit, per-trade %).{' '}
+            <span className="font-bold">4.</span> Click <span className="font-semibold">Arm</span> to start scanning every 5 min.{' '}
+            <span className="font-bold">5.</span> Click <span className="font-semibold">Auto-Trade</span> for continuous cycles — the system scans, analyses hot setups with 30 minions, and auto-places orders when conviction meets your threshold.
+          </p>
+        </div>
+      )}
     </Card>
   )
 }

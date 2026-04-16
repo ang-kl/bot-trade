@@ -47,10 +47,12 @@ Return ONLY valid JSON:
       "thesis": "<15-30 words, trading lingo>",
       "timeframe": "<e.g. '1-4h scalp', 'session play'>",
       "session_fit": "<good|ok|poor> - <5-10 words>",
-      "trade_at": "<when to trade if closed, e.g. '14:00 UTC NYSE open', or 'now' if open>"
+      "trade_at": "<when to trade if closed, e.g. '14:00 UTC NYSE open', or 'now' if open>",
+      "price": <current approximate price as number or null if unknown>,
+      "trade_grade": "potential" | "weak" | "none"
     }
   ],
-  "desk_note": "<1-2 sentences, overall market vibe, 20-40 words>"
+  "desk_note": "<4-6 sentences covering: (1) overall risk appetite today, (2) which sessions are active and what to expect, (3) macro/geopolitical drivers in play, (4) hours until next Japan open and what to position for. 80-150 words, trading desk tone.>"
 }
 
 Rules:

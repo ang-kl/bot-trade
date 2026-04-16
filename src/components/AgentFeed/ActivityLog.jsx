@@ -57,48 +57,47 @@ function LogEntry({ entry }) {
   )
 }
 
-export default function ActivityLog({ entries = [], maxVisible = 50 }) {
+export default function ActivityLog({ entries = [], maxVisible = 50, collapsed = false, onToggle }) {
   const bottomRef = useRef(null)
   const containerRef = useRef(null)
 
   // Auto-scroll to bottom when new entries arrive
   useEffect(() => {
-    if (bottomRef.current) {
+    if (bottomRef.current && !collapsed) {
       bottomRef.current.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [entries.length])
+  }, [entries.length, collapsed])
 
   const visible = entries.slice(-maxVisible)
 
-  if (visible.length === 0) {
-    return (
-      <Card>
-        <div className="flex items-center gap-2 mb-2">
-          <span className="t-section-label">{'\u25CF'} ACTIVITY LOG</span>
-        </div>
-        <p className="t-meta text-[var(--color-muted)] text-center py-4">
-          Arm the system to start the agents. Activity will appear here.
-        </p>
-      </Card>
-    )
-  }
-
   return (
     <Card>
-      <div className="flex items-center gap-2 mb-2">
-        <span className="t-section-label">{'\u25CF'} ACTIVITY LOG</span>
+      <div
+        className="flex items-center gap-2 cursor-pointer"
+        onClick={onToggle}
+      >
+        <span className="text-[10px] text-[var(--color-muted)]">{collapsed ? '\u25B6' : '\u25BC'}</span>
+        <span className="t-label">Activity Log</span>
         <span className="t-meta text-[var(--color-muted)]">{entries.length} events</span>
       </div>
-      <div
-        ref={containerRef}
-        className="max-h-[400px] overflow-y-auto font-mono space-y-0"
-        style={{ scrollbarWidth: 'thin' }}
-      >
-        {visible.map((entry, i) => (
-          <LogEntry key={entry.id || i} entry={entry} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
+      {!collapsed && (
+        visible.length === 0 ? (
+          <p className="t-meta text-[var(--color-muted)] text-center py-4">
+            Arm the system to start the agents. Activity will appear here.
+          </p>
+        ) : (
+          <div
+            ref={containerRef}
+            className="max-h-[400px] overflow-y-auto font-mono space-y-0 mt-2"
+            style={{ scrollbarWidth: 'thin' }}
+          >
+            {visible.map((entry, i) => (
+              <LogEntry key={entry.id || i} entry={entry} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+        )
+      )}
     </Card>
   )
 }

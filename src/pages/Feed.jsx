@@ -39,7 +39,7 @@ function logEntry(agent, message, extra = {}) {
 
 // ── Symbol result card ──
 
-function SymbolCard({ symbol, scan, analysis, onOrder, eventLine }) {
+function SymbolCard({ symbol, scan, analysis, onOrder, eventLine, defaultCollapsed = false }) {
   const hasAnalysis = !!analysis
   const synthesis = analysis?.synthesis
   const reports = analysis?.reports || []
@@ -50,13 +50,18 @@ function SymbolCard({ symbol, scan, analysis, onOrder, eventLine }) {
   const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : '\u25CF'
   const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
 
+  const [cardOpen, setCardOpen] = useState(!defaultCollapsed)
   const [expanded, setExpanded] = useState(false)
   const [showOriginal, setShowOriginal] = useState({})
 
   return (
-    <Card>
-      {/* Header */}
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
+    <Card id={`symbol-${symbol}`}>
+      {/* Header — always visible, click to toggle */}
+      <div
+        className="flex items-center gap-2 cursor-pointer flex-wrap"
+        onClick={() => setCardOpen(prev => !prev)}
+      >
+        <span className="text-[10px] text-[var(--color-muted)]">{cardOpen ? '\u25BC' : '\u25B6'}</span>
         <span className={`t-body font-bold ${sideColor}`}>{arrow} {symbol}</span>
         <Badge tone={isSkip ? 'neutral' : bias === 'long' ? 'up' : 'down'} pill>
           {bias.toUpperCase()}
@@ -73,6 +78,7 @@ function SymbolCard({ symbol, scan, analysis, onOrder, eventLine }) {
         )}
       </div>
 
+      {cardOpen && <>
       {/* Calendar event one-liner */}
       {eventLine && (
         <p className="t-meta text-[var(--color-special-text)] bg-[var(--color-special-bg)] px-2 py-1 rounded-[4px] mb-1.5">
@@ -191,6 +197,7 @@ function SymbolCard({ symbol, scan, analysis, onOrder, eventLine }) {
           <Badge tone="info" pill>ANALYZING...</Badge>
         )}
       </div>
+      </>}
     </Card>
   )
 }
@@ -212,110 +219,179 @@ const VWAP_PERIODS = [
   { key: 'qtr', label: 'Qtr' },
 ]
 
+// ── Trade grade helpers ──
+
+function getTradeGrade(d) {
+  const scan = d.scan
+  const syn = d.analysis?.synthesis
+  const bias = syn?.consensus_bias || scan?.bias || 'neutral'
+  const confidence = syn?.overall_conviction || scan?.confidence || 0
+  const grade = scan?.trade_grade
+  if (grade) return grade
+  if (bias === 'skip' || bias === 'neutral' || confidence < 4) return 'none'
+  if (confidence >= 6) return 'potential'
+  return 'weak'
+}
+
+const GRADE_ORDER = { potential: 0, weak: 1, none: 2 }
+const GRADE_LABEL = { potential: 'Potential Trade', weak: 'Weak Trade', none: 'No Trade' }
+const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
+
 // ── Summary matrix card ──
 
-function SummaryMatrix({ symbols }) {
+function SummaryMatrix({ symbols, scanning, collapsed, onToggle }) {
   const [vwapPeriod, setVwapPeriod] = useState('today')
 
+  const hasAnyScan = symbols.some(d => d.scan)
+
+  // Sort by trade grade then confidence
+  const sorted = useMemo(() => {
+    return [...symbols].sort((a, b) => {
+      const ga = GRADE_ORDER[getTradeGrade(a)] ?? 2
+      const gb = GRADE_ORDER[getTradeGrade(b)] ?? 2
+      if (ga !== gb) return ga - gb
+      return b.confidence - a.confidence
+    })
+  }, [symbols])
+
   if (symbols.length === 0) return null
+
+  const scrollToSymbol = (sym) => {
+    const el = document.getElementById(`symbol-${sym}`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
     <Card>
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <p className="t-label">Summary Matrix</p>
-        <div className="flex items-center gap-1 flex-wrap">
-          <span className="t-meta text-[var(--color-muted)] mr-1">VWAP:</span>
-          {VWAP_PERIODS.map(p => (
-            <button
-              key={p.key}
-              type="button"
-              onClick={() => setVwapPeriod(p.key)}
-              className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
-                vwapPeriod === p.key
-                  ? 'bg-[var(--color-accent)] text-white'
-                  : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 cursor-pointer" onClick={onToggle}>
+          <span className="text-[10px] text-[var(--color-muted)]">{collapsed ? '\u25B6' : '\u25BC'}</span>
+          <p className="t-label">Summary Matrix</p>
+          <span className="t-meta text-[var(--color-muted)]">{symbols.length} symbols</span>
         </div>
+        {!collapsed && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <span className="t-meta text-[var(--color-muted)] mr-1">VWAP:</span>
+            {VWAP_PERIODS.map(p => (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() => setVwapPeriod(p.key)}
+                className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
+                  vwapPeriod === p.key
+                    ? 'bg-[var(--color-accent)] text-white'
+                    : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="overflow-x-auto -mx-2 px-0">
-        <table className="border-collapse w-full text-[10px] sm:text-[11px]">
-          <thead>
-            <tr className="border-b border-[var(--color-border)]">
-              <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Symbol</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">Price</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">POC</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">HVN</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">LVN</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">VWAP</th>
-              <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[90px]">Strategy</th>
-              <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[80px]">Execution</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">Sharpe</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">VaR</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">DD</th>
-              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[40px]">Beta</th>
-            </tr>
-          </thead>
-          <tbody>
-            {symbols.map(d => {
-              const syn = d.analysis?.synthesis
-              const bias = syn?.consensus_bias || d.scan?.bias || 'neutral'
-              const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
-              const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
-              // Extract volume-profile data from analysis if available
-              const vp = syn?.volume_profile || d.scan?.volume_profile || {}
-              const risk = syn?.risk_metrics || d.scan?.risk_metrics || {}
-              const exec = syn?.execution || d.scan?.execution || {}
-              const strat = syn?.strategy || d.scan?.strategy || ''
+      {!collapsed && (
+        <>
+          {/* Loading / awaiting state */}
+          {!hasAnyScan && (
+            <div className="flex items-center gap-2 py-4 justify-center">
+              {scanning ? (
+                <>
+                  <span className="animate-pulse text-[var(--color-accent)] text-[14px]">{'\u25CF'}</span>
+                  <span className="t-sub text-[var(--color-muted)]">Scanning symbols... data will populate shortly</span>
+                </>
+              ) : (
+                <span className="t-sub text-[var(--color-muted)]">Arm the system and run a scan to populate the matrix</span>
+              )}
+            </div>
+          )}
 
-              return (
-                <tr key={d.symbol} className="border-b border-[var(--color-border)] hover:bg-[var(--color-bg)]/50">
-                  <td className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5">
-                    <span className={`font-bold ${sideColor}`}>{arrow} {d.symbol}</span>
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
-                    {syn?.entry || d.scan?.price || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {vp.poc || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {vp.hvn || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {vp.lvn || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {vp[`vwap_${vwapPeriod}`] || vp.vwap || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[120px]">
-                    {strat || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[100px]">
-                    {exec.type || exec.infra || '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {risk.sharpe != null ? risk.sharpe.toFixed(2) : '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {risk.var != null ? `${risk.var}%` : '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {risk.drawdown != null ? `${risk.drawdown}%` : '\u2014'}
-                  </td>
-                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                    {risk.beta != null ? risk.beta.toFixed(2) : '\u2014'}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+          {hasAnyScan && (
+            <div className="overflow-x-auto -mx-2 px-0">
+              <table className="border-collapse w-full text-[10px] sm:text-[11px]">
+                <thead>
+                  <tr className="border-b border-[var(--color-border)]">
+                    <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Symbol</th>
+                    <th className="px-2 py-1.5 text-center t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">Grade</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">Price</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">POC</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">HVN</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">LVN</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">VWAP</th>
+                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[90px]">Strategy</th>
+                    <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[80px]">Execution</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">Sharpe</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">VaR</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">DD</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[40px]">Beta</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map(d => {
+                    const syn = d.analysis?.synthesis
+                    const bias = syn?.consensus_bias || d.scan?.bias || 'neutral'
+                    const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
+                    const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
+                    const grade = getTradeGrade(d)
+                    const vp = syn?.volume_profile || d.scan?.volume_profile || {}
+                    const risk = syn?.risk_metrics || d.scan?.risk_metrics || {}
+                    const exec = syn?.execution || d.scan?.execution || {}
+                    const strat = syn?.strategy || d.scan?.strategy || ''
+
+                    return (
+                      <tr
+                        key={d.symbol}
+                        className="border-b border-[var(--color-border)] hover:bg-[var(--color-accent-soft)]/30 cursor-pointer"
+                        onClick={() => scrollToSymbol(d.symbol)}
+                      >
+                        <td className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5">
+                          <span className={`font-bold ${sideColor} hover:underline`}>{arrow} {d.symbol}</span>
+                        </td>
+                        <td className="px-2 py-1.5 text-center">
+                          <Badge tone={GRADE_TONE[grade]} className="text-[8px] px-1">{GRADE_LABEL[grade]}</Badge>
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
+                          {syn?.entry || d.scan?.price || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {vp.poc || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {vp.hvn || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {vp.lvn || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {vp[`vwap_${vwapPeriod}`] || vp.vwap || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[120px]">
+                          {strat || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[100px]">
+                          {exec.type || exec.infra || '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {risk.sharpe != null ? risk.sharpe.toFixed(2) : '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {risk.var != null ? `${risk.var}%` : '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {risk.drawdown != null ? `${risk.drawdown}%` : '\u2014'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                          {risk.beta != null ? risk.beta.toFixed(2) : '\u2014'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </Card>
   )
 }
@@ -465,6 +541,8 @@ export default function Feed() {
   const [monitoredTrades, setMonitoredTrades] = useState([])
   const [sessionStart] = useState(() => Date.now())
   const [symbolsCollapsed, setSymbolsCollapsed] = useState(false)
+  const [activityCollapsed, setActivityCollapsed] = useState(false)
+  const [matrixCollapsed, setMatrixCollapsed] = useState(false)
   const [showScrollTop, setShowScrollTop] = useState(false)
   const [autoTradeActive, setAutoTradeActive] = useState(false)
   const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
@@ -928,12 +1006,16 @@ export default function Feed() {
       {deskNote && (
         <Card>
           <p className="t-label mb-1">Desk Notes</p>
-          <p className="t-sub text-[var(--color-text-sub)]">{deskNote}</p>
+          <p className="t-sub text-[var(--color-text-sub)] whitespace-pre-line">{deskNote}</p>
         </Card>
       )}
 
       {/* Activity log */}
-      <ActivityLog entries={log} />
+      <ActivityLog
+        entries={log}
+        collapsed={activityCollapsed}
+        onToggle={() => setActivityCollapsed(prev => !prev)}
+      />
 
       {/* Market calendar */}
       <CalendarCard
@@ -944,32 +1026,60 @@ export default function Feed() {
 
       {/* Summary matrix */}
       {displaySymbols.length > 0 && (
-        <SummaryMatrix symbols={displaySymbols} />
+        <SummaryMatrix
+          symbols={displaySymbols}
+          scanning={scanning}
+          collapsed={matrixCollapsed}
+          onToggle={() => setMatrixCollapsed(prev => !prev)}
+        />
       )}
 
       {/* Symbol cards */}
       {displaySymbols.length > 0 && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <p className="t-label">{displaySymbols.length} symbols active</p>
-            <button
-              type="button"
+          <div className="flex items-center gap-2 flex-wrap">
+            <div
+              className="flex items-center gap-2 cursor-pointer"
               onClick={() => setSymbolsCollapsed(prev => !prev)}
-              className="t-meta text-[var(--color-accent)] cursor-pointer hover:underline underline-offset-2"
             >
-              {symbolsCollapsed ? '\u25B6 Show' : '\u25BC Collapse'}
-            </button>
+              <span className="text-[10px] text-[var(--color-muted)]">{symbolsCollapsed ? '\u25B6' : '\u25BC'}</span>
+              <p className="t-label">{displaySymbols.length} Symbols Active</p>
+            </div>
+            {displaySymbols.some(d => d.scan) && (
+              <div className="flex gap-2 t-meta text-[var(--color-muted)]">
+                {(() => {
+                  const counts = { potential: 0, weak: 0, none: 0 }
+                  displaySymbols.forEach(d => { counts[getTradeGrade(d)]++ })
+                  return (
+                    <>
+                      {counts.potential > 0 && <Badge tone="up" pill>{counts.potential} potential</Badge>}
+                      {counts.weak > 0 && <Badge tone="warning" pill>{counts.weak} weak</Badge>}
+                      {counts.none > 0 && <Badge tone="neutral" pill>{counts.none} no trade</Badge>}
+                    </>
+                  )
+                })()}
+              </div>
+            )}
           </div>
-          {!symbolsCollapsed && displaySymbols.map(d => (
-            <SymbolCard
-              key={d.symbol}
-              symbol={d.symbol}
-              scan={d.scan}
-              analysis={d.analysis}
-              onOrder={handleOpenOrder}
-              eventLine={symbolEventLines[d.symbol] || null}
-            />
-          ))}
+          {!symbolsCollapsed && (() => {
+            // Sort by trade grade: potential first, then weak, then none
+            const sorted = [...displaySymbols].sort((a, b) => {
+              const ga = GRADE_ORDER[getTradeGrade(a)] ?? 2
+              const gb = GRADE_ORDER[getTradeGrade(b)] ?? 2
+              if (ga !== gb) return ga - gb
+              return b.confidence - a.confidence
+            })
+            return sorted.map(d => (
+              <SymbolCard
+                key={d.symbol}
+                symbol={d.symbol}
+                scan={d.scan}
+                analysis={d.analysis}
+                onOrder={handleOpenOrder}
+                eventLine={symbolEventLines[d.symbol] || null}
+              />
+            ))
+          })()}
         </div>
       )}
 
