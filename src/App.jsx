@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import Feed from './pages/Feed.jsx'
 import Alert from './pages/Alert.jsx'
 import Settings from './pages/Settings.jsx'
@@ -18,6 +19,13 @@ const navLinks = [
   { to: '/backtest', label: 'Backtest' },
 ]
 
+// Scroll to top on route change
+function ScrollToTop() {
+  const { pathname } = useLocation()
+  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  return null
+}
+
 function linkClass({ isActive }) {
   const base = 'px-2 sm:px-3 py-2 text-[12px] sm:text-[13px] font-bold rounded-[7px] whitespace-nowrap'
   return isActive
@@ -28,6 +36,7 @@ function linkClass({ isActive }) {
 export default function App() {
   return (
     <div className="min-h-[100svh] bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
+      <ScrollToTop />
       <header className="border-b-2 border-[var(--color-accent)]">
         <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
           <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>

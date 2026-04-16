@@ -25,6 +25,29 @@ function utcToTz(utcHour, offsetHours) {
   return ((utcHour + offsetHours) % 24 + 24) % 24
 }
 
+// Format hh:mm for a given UTC hour in a timezone
+function fmtHHMM(utcHour, offsetHours) {
+  const h = utcToTz(utcHour, offsetHours)
+  return String(h).padStart(2, '0') + ':00'
+}
+
+// Format dd/mm for a given UTC hour shifted to a timezone.
+// If the shifted hour wraps past midnight relative to "now", the date shifts.
+function fmtDDMM(utcHour, offsetHours, baseDate) {
+  const nowUtcH = baseDate.getUTCHours()
+  // How many hours ahead/behind is this column from current UTC hour?
+  let delta = utcHour - nowUtcH
+  // Build a Date representing this column's instant
+  const d = new Date(baseDate)
+  d.setUTCHours(utcHour, 0, 0, 0)
+  if (delta < -12) d.setUTCDate(d.getUTCDate() + 1)
+  // Shift to target timezone
+  const shifted = new Date(d.getTime() + offsetHours * 3_600_000)
+  const day = String(shifted.getUTCDate()).padStart(2, '0')
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0')
+  return day + '/' + month
+}
+
 // Build exchange lookup from catalog
 const EXCHANGE_MAP = Object.fromEntries(PEPPERSTONE_CATALOG.map(c => [c.symbol, c.exchange || '']))
 
@@ -101,31 +124,29 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
             <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-0.5 text-left text-[var(--color-muted)] font-normal border-r border-[var(--color-border)]">
               NY
             </th>
-            {HOURS.map(h => {
-              const nyH = utcToTz(h, nyOffset)
-              return (
-                <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)] w-[18px] sm:w-[28px] min-w-[18px] sm:min-w-[28px]">
-                  {String(nyH).padStart(2, '0')}
-                </th>
-              )
-            })}
+            {HOURS.map(h => (
+              <th key={h} className="px-0 py-0.5 text-center font-mono font-normal text-[var(--color-muted)] w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] leading-tight">
+                <span className="block">{fmtHHMM(h, nyOffset)}</span>
+                <span className="block text-[6px] sm:text-[7px] opacity-70">{fmtDDMM(h, nyOffset, now)}</span>
+              </th>
+            ))}
             <th className="px-1 sm:px-2 py-0.5 border-l border-[var(--color-border)]" />
           </tr>
           {/* UTC row (primary) */}
           <tr>
             <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-1 sm:px-2 py-1 text-left t-meta text-[var(--color-text-sub)] font-medium w-[72px] sm:w-[100px] min-w-[72px] sm:min-w-[100px] border-r border-[var(--color-border)]">
-              Symbol
+              UTC
             </th>
             {HOURS.map(h => (
               <th
                 key={h}
-                className={`px-0 py-1 text-center font-mono font-medium w-[18px] sm:w-[28px] min-w-[18px] sm:min-w-[28px] ${
+                className={`px-0 py-1 text-center font-mono font-medium w-[30px] sm:w-[40px] min-w-[30px] sm:min-w-[40px] ${
                   h === nowUTC
                     ? 'bg-[var(--color-down)]/15 text-[var(--color-down)]'
                     : 'text-[var(--color-text-sub)]'
                 }`}
               >
-                {String(h).padStart(2, '0')}
+                {fmtHHMM(h, 0)}
               </th>
             ))}
             <th className="px-1 sm:px-2 py-1 text-center t-meta text-[var(--color-text-sub)] font-medium w-[40px] sm:w-[52px] min-w-[40px] sm:min-w-[52px] border-l border-[var(--color-border)]">
@@ -138,11 +159,11 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
               {userTzShort}
             </th>
             {HOURS.map(h => {
-              const locH = utcToTz(h, localeOffset)
               const isNow = h === nowUTC
               return (
-                <th key={h} className={`px-0 py-0.5 text-center font-mono font-normal ${isNow ? 'text-[var(--color-down)] font-bold' : 'text-[var(--color-accent)]'}`}>
-                  {String(locH).padStart(2, '0')}
+                <th key={h} className={`px-0 py-0.5 text-center font-mono font-normal leading-tight ${isNow ? 'text-[var(--color-down)] font-bold' : 'text-[var(--color-accent)]'}`}>
+                  <span className="block">{fmtHHMM(h, localeOffset)}</span>
+                  <span className="block text-[6px] sm:text-[7px] opacity-70">{fmtDDMM(h, localeOffset, now)}</span>
                 </th>
               )
             })}
@@ -166,15 +187,21 @@ export default function TradingHoursMatrix({ watchlist, groupMode = 'category', 
                   colSpan={26}
                   className="px-2 py-1.5 border-b border-[var(--color-border)]"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-[10px] text-[var(--color-muted)]">
                       {isCollapsed ? '\u25B6' : '\u25BC'}
                     </span>
                     <span className="font-bold text-[var(--color-text)] text-[12px]">{groupKey}</span>
                     <span className="text-[var(--color-muted)]">({items.length})</span>
-                    {openCount > 0 && (
-                      <Badge tone="up" pill>{openCount} open</Badge>
-                    )}
+                    <span className="text-[9px] sm:text-[10px] text-[var(--color-muted)] font-mono flex items-center gap-1 flex-wrap">
+                      <span className={openCount > 0 ? 'text-[var(--color-up)] font-bold' : ''}>[{openCount}] open</span>
+                      <span>[0] trend</span>
+                      <span>[0] high</span>
+                      <span>[0] dip</span>
+                      <span>[0] &gt; HVN</span>
+                      <span>[0] &lt; HVN</span>
+                      <span>[0] inside POC</span>
+                    </span>
                   </div>
                 </td>
               </tr>,

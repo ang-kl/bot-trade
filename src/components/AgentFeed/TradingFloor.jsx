@@ -61,6 +61,9 @@ export default function TradingFloor({
   onScan,
   enabledCount = 0,
   scanning = false,
+  autoTradeCount = 0,
+  onAutoTrade,
+  autoTradeCountdown = 0,
 }) {
   const { state } = useStrategy()
   const isArmed = state.risk.armed
@@ -115,6 +118,21 @@ export default function TradingFloor({
         {!scanning && (
           <Button size="sm" variant="ghost" onClick={onScan} disabled={enabledCount === 0 || scanning}>
             {'\u21BB'} Scan
+          </Button>
+        )}
+        {onAutoTrade && (
+          <Button
+            size="sm"
+            variant={autoTradeCountdown > 0 ? 'danger' : 'primary'}
+            onClick={onAutoTrade}
+            disabled={enabledCount === 0 || !isArmed}
+          >
+            {autoTradeCountdown > 0
+              ? `\u25A0 Auto ${formatCountdown(autoTradeCountdown)}`
+              : '\u26A1 Auto-Trade'}
+            {autoTradeCount > 0 && (
+              <span className="ml-1 px-1 py-0 text-[9px] bg-white/20 rounded-[4px]">{autoTradeCount}</span>
+            )}
           </Button>
         )}
       </div>

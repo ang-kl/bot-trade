@@ -51,6 +51,7 @@ function SymbolCard({ symbol, scan, analysis, onOrder }) {
   const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
 
   const [expanded, setExpanded] = useState(false)
+  const [showOriginal, setShowOriginal] = useState({})
 
   return (
     <Card>
@@ -93,23 +94,60 @@ function SymbolCard({ symbol, scan, analysis, onOrder }) {
             {expanded ? '\u25BC' : '\u25B6'} {reports.length} minion reports
           </button>
           {expanded && (
-            <div className="space-y-1 mb-2 pl-2 border-l-2 border-[var(--color-border)]">
-              {reports.map((r, i) => (
-                <div key={i} className="text-[12px]">
-                  <span className="font-bold text-[var(--color-accent)]">
-                    {r.icon || '\u25CF'} {r.name}
-                  </span>
-                  <span className="text-[var(--color-muted)] ml-1">({r.role})</span>
-                  <Badge
-                    tone={r.bias === 'long' ? 'up' : r.bias === 'short' ? 'down' : 'neutral'}
-                    className="ml-1"
-                  >
-                    {r.bias?.toUpperCase()}
-                  </Badge>
-                  <span className="text-[var(--color-muted)] ml-1">{r.conviction}/10</span>
-                  <p className="text-[var(--color-text-sub)] ml-4">{r.report}</p>
-                </div>
-              ))}
+            <div className="space-y-2 mb-2 pl-2 border-l-2 border-[var(--color-border)]">
+              {reports.map((r, i) => {
+                const hasTranslation = r.translated_report && r.original_language
+                const useOriginal = showOriginal[i]
+                const displayText = hasTranslation && useOriginal ? r.original_report || r.report : (hasTranslation ? r.translated_report : r.report)
+
+                return (
+                  <div key={i} className="text-[12px]">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="font-bold text-[var(--color-accent)]">
+                        {r.icon || '\u25CF'} {r.name}
+                      </span>
+                      {r.organisation && (
+                        <span className="text-[var(--color-muted-light)] text-[10px]">{r.organisation}</span>
+                      )}
+                      <span className="text-[var(--color-muted)] text-[10px]">({r.role})</span>
+                      <Badge
+                        tone={r.bias === 'long' ? 'up' : r.bias === 'short' ? 'down' : 'neutral'}
+                        className="ml-0.5"
+                      >
+                        {r.bias?.toUpperCase()}
+                      </Badge>
+                      <span className="text-[var(--color-muted)] text-[10px]">{r.conviction}/10</span>
+                      {r.url && (
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--color-accent)] text-[9px] hover:underline"
+                        >
+                          source
+                        </a>
+                      )}
+                    </div>
+                    {/* Date/time */}
+                    {r.timestamp && (
+                      <span className="text-[9px] text-[var(--color-muted-light)] ml-4">
+                        {new Date(r.timestamp).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}
+                      </span>
+                    )}
+                    {/* Report text with translation toggle */}
+                    <p className="text-[var(--color-text-sub)] ml-4">{displayText}</p>
+                    {hasTranslation && (
+                      <button
+                        type="button"
+                        onClick={() => setShowOriginal(prev => ({ ...prev, [i]: !prev[i] }))}
+                        className="ml-4 text-[9px] text-[var(--color-accent)] cursor-pointer hover:underline"
+                      >
+                        {useOriginal ? `Show English` : `Show original (${r.original_language})`}
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
         </>
@@ -150,6 +188,131 @@ function SymbolCard({ symbol, scan, analysis, onOrder }) {
   )
 }
 
+// ── VWAP period options ──
+
+const VWAP_PERIODS = [
+  { key: 'today', label: 'Today' },
+  { key: '3d', label: '3D' },
+  { key: '5d', label: '5D' },
+  { key: '1w', label: '1W' },
+  { key: '14d', label: '14D' },
+  { key: '21d', label: '21D' },
+  { key: '1m', label: '1M' },
+  { key: '3m', label: '3M' },
+  { key: '6m', label: '6M' },
+  { key: '1y', label: '1Y' },
+  { key: '2jan', label: '2 Jan' },
+  { key: 'qtr', label: 'Qtr' },
+]
+
+// ── Summary matrix card ──
+
+function SummaryMatrix({ symbols }) {
+  const [vwapPeriod, setVwapPeriod] = useState('today')
+
+  if (symbols.length === 0) return null
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <p className="t-label">Summary Matrix</p>
+        <div className="flex items-center gap-1 flex-wrap">
+          <span className="t-meta text-[var(--color-muted)] mr-1">VWAP:</span>
+          {VWAP_PERIODS.map(p => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => setVwapPeriod(p.key)}
+              className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
+                vwapPeriod === p.key
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="overflow-x-auto -mx-2 px-0">
+        <table className="border-collapse w-full text-[10px] sm:text-[11px]">
+          <thead>
+            <tr className="border-b border-[var(--color-border)]">
+              <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Symbol</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">Price</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">POC</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">HVN</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">LVN</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">VWAP</th>
+              <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[90px]">Strategy</th>
+              <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[80px]">Execution</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">Sharpe</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">VaR</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">DD</th>
+              <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[40px]">Beta</th>
+            </tr>
+          </thead>
+          <tbody>
+            {symbols.map(d => {
+              const syn = d.analysis?.synthesis
+              const bias = syn?.consensus_bias || d.scan?.bias || 'neutral'
+              const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
+              const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
+              // Extract volume-profile data from analysis if available
+              const vp = syn?.volume_profile || d.scan?.volume_profile || {}
+              const risk = syn?.risk_metrics || d.scan?.risk_metrics || {}
+              const exec = syn?.execution || d.scan?.execution || {}
+              const strat = syn?.strategy || d.scan?.strategy || ''
+
+              return (
+                <tr key={d.symbol} className="border-b border-[var(--color-border)] hover:bg-[var(--color-bg)]/50">
+                  <td className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5">
+                    <span className={`font-bold ${sideColor}`}>{arrow} {d.symbol}</span>
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
+                    {syn?.entry || d.scan?.price || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {vp.poc || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {vp.hvn || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {vp.lvn || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {vp[`vwap_${vwapPeriod}`] || vp.vwap || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[120px]">
+                    {strat || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-left text-[var(--color-text-sub)] truncate max-w-[100px]">
+                    {exec.type || exec.infra || '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {risk.sharpe != null ? risk.sharpe.toFixed(2) : '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {risk.var != null ? `${risk.var}%` : '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {risk.drawdown != null ? `${risk.drawdown}%` : '\u2014'}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
+                    {risk.beta != null ? risk.beta.toFixed(2) : '\u2014'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
 // ── Main page ──
 
 export default function Feed() {
@@ -170,6 +333,9 @@ export default function Feed() {
   const [sessionStart] = useState(() => Date.now())
   const [symbolsCollapsed, setSymbolsCollapsed] = useState(false)
   const [showScrollTop, setShowScrollTop] = useState(false)
+  const [autoTradeActive, setAutoTradeActive] = useState(false)
+  const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
+  const [autoTradeCount, setAutoTradeCount] = useState(0)
 
   const scanTimerRef = useRef(null)
 
@@ -464,6 +630,41 @@ export default function Feed() {
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current) }
   }, [isArmed, enabledCount, runScout])
 
+  // ── Auto-trade toggle ──
+  const handleAutoTrade = useCallback(() => {
+    if (autoTradeActive) {
+      setAutoTradeActive(false)
+      setAutoTradeCountdown(0)
+      addLog('trader', 'Auto-trade STOPPED.')
+    } else {
+      setAutoTradeActive(true)
+      setAutoTradeCountdown(300) // 5 min countdown per cycle
+      addLog('trader', 'Auto-trade STARTED. Will execute eligible setups.')
+    }
+  }, [autoTradeActive, addLog])
+
+  // Auto-trade countdown tick
+  useEffect(() => {
+    if (!autoTradeActive) return
+    const id = setInterval(() => {
+      setAutoTradeCountdown(prev => {
+        if (prev <= 1) {
+          // Trigger scan + auto-trade cycle
+          runScout()
+          return 300
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => clearInterval(id)
+  }, [autoTradeActive, runScout])
+
+  // Track auto-trades (count placements from auto-trade)
+  useEffect(() => {
+    const count = monitoredTrades.filter(t => t.placedAt > sessionStart).length
+    setAutoTradeCount(count)
+  }, [monitoredTrades, sessionStart])
+
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {
     setOrderFor({ symbol, synthesis })
@@ -549,6 +750,9 @@ export default function Feed() {
         onScan={handleManualScan}
         enabledCount={enabledCount}
         scanning={scanning}
+        autoTradeCount={autoTradeCount}
+        onAutoTrade={handleAutoTrade}
+        autoTradeCountdown={autoTradeActive ? autoTradeCountdown : 0}
       />
 
       {/* Desk note */}
@@ -561,6 +765,11 @@ export default function Feed() {
 
       {/* Activity log */}
       <ActivityLog entries={log} />
+
+      {/* Summary matrix */}
+      {displaySymbols.length > 0 && (
+        <SummaryMatrix symbols={displaySymbols} />
+      )}
 
       {/* Symbol cards */}
       {displaySymbols.length > 0 && (

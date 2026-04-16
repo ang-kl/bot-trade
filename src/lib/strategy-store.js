@@ -114,6 +114,7 @@ export const INITIAL_STATE = {
     alertOnTrade: true,
     minConfidence: 5,
   },
+  alertLog: [],
 }
 
 // A variant of INITIAL_STATE with no seeded watchlist — used by tests that
@@ -246,6 +247,32 @@ export function reducer(state, action) {
       return { ...state, telegram: tg }
     }
 
+    case 'ALERT_LOG_ADD': {
+      const entry = {
+        id: action.id || `alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        symbol: normalizeSymbol(action.symbol),
+        type: action.alertType || 'info',
+        message: action.message || '',
+        details: action.details || '',
+        status: action.status || 'alive',
+        agent: action.agent || '',
+        tokens: action.tokens || 0,
+        timestamp: action.timestamp || Date.now(),
+      }
+      return { ...state, alertLog: [...(state.alertLog || []), entry] }
+    }
+    case 'ALERT_LOG_UPDATE_STATUS': {
+      if (!action.id || !action.status) return state
+      return {
+        ...state,
+        alertLog: (state.alertLog || []).map(a =>
+          a.id === action.id ? { ...a, status: action.status } : a,
+        ),
+      }
+    }
+    case 'ALERT_LOG_CLEAR':
+      return { ...state, alertLog: [] }
+
     default:
       return state
   }
@@ -298,6 +325,7 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
       ...fallback.telegram,
       ...(raw.telegram && typeof raw.telegram === 'object' ? raw.telegram : {}),
     },
+    alertLog: Array.isArray(raw.alertLog) ? raw.alertLog : [],
   }
 }
 
