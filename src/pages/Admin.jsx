@@ -275,13 +275,24 @@ function TelegramAdmin({ locked }) {
 // ── Massive data preview ──
 
 const PREVIEW_SYMBOLS = [
-  { ticker: 'AAPL', market: 'stocks', label: 'Apple (US Stock)' },
-  { ticker: 'C:EURUSD', market: 'forex', label: 'EUR/USD (Forex)' },
-  { ticker: 'X:BTCUSD', market: 'crypto', label: 'BTC/USD (Crypto)' },
-  { ticker: 'C:USDJPY', market: 'forex', label: 'USD/JPY (Forex)' },
-  { ticker: 'I:SPX', market: 'stocks', label: 'S&P 500 (Index)' },
-  { ticker: 'C:AUDJPY', market: 'forex', label: 'AUD/JPY (Forex)' },
-  { ticker: 'O:GC2412', market: 'stocks', label: 'Gold Futures (Commodity)' },
+  // Stocks (covered by Stocks plan)
+  { ticker: 'AAPL', market: 'stocks', label: 'Apple', plan: 'Stocks' },
+  { ticker: 'MSFT', market: 'stocks', label: 'Microsoft', plan: 'Stocks' },
+  { ticker: 'NVDA', market: 'stocks', label: 'NVIDIA', plan: 'Stocks' },
+  // Forex (requires Currencies plan)
+  { ticker: 'C:EURUSD', market: 'forex', label: 'EUR/USD', plan: 'Currencies' },
+  { ticker: 'C:USDJPY', market: 'forex', label: 'USD/JPY', plan: 'Currencies' },
+  { ticker: 'C:AUDJPY', market: 'forex', label: 'AUD/JPY', plan: 'Currencies' },
+  // Crypto (requires Currencies plan)
+  { ticker: 'X:BTCUSD', market: 'crypto', label: 'BTC/USD', plan: 'Currencies' },
+  { ticker: 'X:ETHUSD', market: 'crypto', label: 'ETH/USD', plan: 'Currencies' },
+  // Indices (requires Indices plan)
+  { ticker: 'I:SPX', market: 'stocks', label: 'S&P 500', plan: 'Indices' },
+  { ticker: 'I:VIX', market: 'stocks', label: 'VIX', plan: 'Indices' },
+  { ticker: 'I:NDX', market: 'stocks', label: 'NASDAQ 100', plan: 'Indices' },
+  // Commodities / Futures (coverage unclear)
+  { ticker: 'C:XAUUSD', market: 'forex', label: 'Gold spot', plan: 'Currencies?' },
+  { ticker: 'C:XAGUSD', market: 'forex', label: 'Silver spot', plan: 'Currencies?' },
 ]
 
 function DataPreview({ apiKey }) {
@@ -378,43 +389,75 @@ function DataPreview({ apiKey }) {
       )}
       {results.length > 0 && (
         <div className="space-y-1 mt-2">
-          {results.map((r, i) => (
-            <div key={i} className={`flex items-start gap-2 py-1.5 px-2 rounded-[5px] text-[11px] ${r.ok ? 'bg-[var(--color-bg)]' : 'bg-[color-mix(in_srgb,var(--color-down)_8%,var(--color-surface))]'}`}>
-              <span className={`shrink-0 ${r.ok ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                {r.ok ? '\u2713' : '\u2717'}
-              </span>
-              <div className="flex-1 min-w-0">
-                <span className="font-bold text-[var(--color-text)]">{r.ticker}</span>
-                <span className="text-[var(--color-muted)] ml-1">{r.label}</span>
-                {r.ok && r.close != null && (
-                  <span className="ml-2 font-mono text-[var(--color-text-sub)]">
-                    C:{r.close} O:{r.open} H:{r.high} L:{r.low}
-                    {r.volume != null && <> V:{Number(r.volume).toLocaleString()}</>}
-                    {r.vwap != null && <> VWAP:{r.vwap}</>}
+          {/* Summary */}
+          {(() => {
+            const ok = results.filter(r => r.ok && r.close != null)
+            const fail = results.filter(r => !r.ok)
+            const planNeeded = {}
+            for (const r of fail) {
+              if (r.plan && r.error?.includes('not entitled')) {
+                planNeeded[r.plan] = (planNeeded[r.plan] || 0) + 1
+              }
+            }
+            return (ok.length > 0 || fail.length > 0) && (
+              <div className="mb-2 p-2 rounded-[5px] bg-[var(--color-bg)] text-[11px]">
+                <span className="text-[var(--color-up)] font-bold">{ok.length} accessible</span>
+                {fail.length > 0 && <span className="text-[var(--color-down)] font-bold ml-2">{fail.length} need upgrade</span>}
+                {Object.keys(planNeeded).length > 0 && (
+                  <span className="text-[var(--color-muted)] ml-2">
+                    Plans needed: {Object.entries(planNeeded).map(([p, n]) => `${p} (${n})`).join(', ')}
                   </span>
                 )}
-                {r.ok && r.barCount != null && (
-                  <span className="ml-2 text-[var(--color-text-sub)]">{r.barCount} bars returned</span>
-                )}
-                {r.ok && r.articleCount != null && (
-                  <span className="ml-2 text-[var(--color-text-sub)]">{r.articleCount} articles</span>
-                )}
-                {r.ok && r.headlines && r.headlines.length > 0 && (
-                  <div className="mt-0.5 text-[var(--color-muted)] italic">
-                    {r.headlines.map((h, j) => <div key={j} className="truncate">{h}</div>)}
-                  </div>
-                )}
-                {r.ok && r.bars && r.bars.length > 0 && (
-                  <div className="mt-0.5 font-mono text-[var(--color-muted)]">
-                    {r.bars.map((b, j) => (
-                      <div key={j}>{new Date(b.t).toISOString().slice(0, 10)} O:{b.o} H:{b.h} L:{b.l} C:{b.c} V:{Number(b.v).toLocaleString()}</div>
-                    ))}
-                  </div>
-                )}
-                {!r.ok && <span className="ml-2 text-[var(--color-down)]">{r.error}</span>}
               </div>
-            </div>
-          ))}
+            )
+          })()}
+          {results.map((r, i) => {
+            const entitled = r.ok && (r.close != null || r.barCount != null || r.articleCount != null)
+            const needsPlan = !r.ok && r.error?.includes('not entitled')
+            return (
+              <div key={i} className={`flex items-start gap-2 py-1.5 px-2 rounded-[5px] text-[11px] ${entitled ? 'bg-[var(--color-bg)]' : needsPlan ? 'bg-[color-mix(in_srgb,var(--color-warning-text)_6%,var(--color-surface))]' : !r.ok ? 'bg-[color-mix(in_srgb,var(--color-down)_8%,var(--color-surface))]' : 'bg-[var(--color-bg)]'}`}>
+                <span className={`shrink-0 ${entitled ? 'text-[var(--color-up)]' : needsPlan ? 'text-[var(--color-warning-text)]' : !r.ok ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                  {entitled ? '\u2713' : needsPlan ? '\uD83D\uDD12' : !r.ok ? '\u2717' : '\u25CB'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-bold text-[var(--color-text)]">{r.ticker}</span>
+                  <span className="text-[var(--color-muted)] ml-1">{r.label}</span>
+                  {r.plan && (
+                    <span className={`ml-1 px-1 py-0 rounded-[3px] text-[9px] font-bold ${entitled ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]' : 'bg-[var(--color-border)] text-[var(--color-muted)]'}`}>
+                      {r.plan}
+                    </span>
+                  )}
+                  {entitled && r.close != null && (
+                    <span className="ml-2 font-mono text-[var(--color-text-sub)]">
+                      C:{r.close} O:{r.open} H:{r.high} L:{r.low}
+                      {r.volume != null && <> V:{Number(r.volume).toLocaleString()}</>}
+                      {r.vwap != null && <> VWAP:{r.vwap}</>}
+                    </span>
+                  )}
+                  {r.ok && r.barCount != null && (
+                    <span className="ml-2 text-[var(--color-text-sub)]">{r.barCount} bars returned</span>
+                  )}
+                  {r.ok && r.articleCount != null && (
+                    <span className="ml-2 text-[var(--color-text-sub)]">{r.articleCount} articles</span>
+                  )}
+                  {r.ok && r.headlines && r.headlines.length > 0 && (
+                    <div className="mt-0.5 text-[var(--color-muted)] italic">
+                      {r.headlines.map((h, j) => <div key={j} className="truncate">{h}</div>)}
+                    </div>
+                  )}
+                  {r.ok && r.bars && r.bars.length > 0 && (
+                    <div className="mt-0.5 font-mono text-[var(--color-muted)]">
+                      {r.bars.map((b, j) => (
+                        <div key={j}>{new Date(b.t).toISOString().slice(0, 10)} O:{b.o} H:{b.h} L:{b.l} C:{b.c} V:{Number(b.v).toLocaleString()}</div>
+                      ))}
+                    </div>
+                  )}
+                  {needsPlan && <span className="ml-2 text-[var(--color-warning-text)]">Needs {r.plan} plan</span>}
+                  {!r.ok && !needsPlan && <span className="ml-2 text-[var(--color-down)]">{r.error}</span>}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
