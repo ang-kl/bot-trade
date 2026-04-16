@@ -1,0 +1,71 @@
+┌───────────────────────────────────────────────────────────────────────────┐
+│  abot                                        [Feed] [Settings] [Vault]  ≡ │
+├───────────────────────────────────────────────────────────────────────────┤
+│ ◆ AGENT BRIEF                                              just now · ●  │
+│ Watching 6 symbols. 2 live trades, 1 pending. Risk used: 1.2% / 3% daily.│
+│ Macro: USD soft after CPI miss · BTC liquidity thin · No red news 4h.    │
+│                                                  [Arm ▸] [Pause all ⏸]  │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ▲ BOUGHT 0.01 BTCUSD at $67,245                     LIVE · 3 min ago  ●  │
+│ Agent · Confidence 8/10 · news-analyst + technical-analyst              │
+│                                                                           │
+│ Broke the 4H range high on rising CVD while RSI reset off oversold.      │
+│ X-feed sentiment +0.42 last 30m (BlackRock ETF cashflow uptick cited).   │
+│                                                                           │
+│ SL 66,745 ──────●──────────── TP 68,100                                  │
+│                 now 67,310       +$0.65       31% → TP                    │
+│                                                                           │
+│ [⏹ Stop]  [? Why]  [⇧ Tighten SL]  [⋯]                                  │
+│ ▸ Live updates (3)                                                       │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ▼ SHORT SETUP · EURUSD                            PENDING · 1 min ago   │
+│ Agent · Confidence 6/10 · technical-analyst                              │
+│                                                                           │
+│ Rejected 1.0920 resistance on the 1H, MACD crossing down. Waiting for    │
+│ 15m close below 1.0895 to trigger. No red-folder news until NY open.     │
+│                                                                           │
+│ Entry 1.0894   SL 1.0928   TP 1.0820                                     │
+│                                                                           │
+│ [✓ Approve]  [✗ Cancel]  [? Why]                                         │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ● WATCHING · XAUUSD                               WATCHING · 8 min ago  │
+│ Agent · macro-analyst flagged                                            │
+│                                                                           │
+│ Gold consolidating under 2,345 after CPI. Agent wants a 1H close above   │
+│ 2,348 with volume confirmation before proposing a long.                  │
+│                                                                           │
+│ [Mute 1h]  [Remove from watchlist]                                       │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ▲ CLOSED · GBPUSD  +$12.40                        WON · 42 min ago      │
+│ Held 1h 18m · Entry 1.2655 · Exit 1.2688 · R multiple +1.3R              │
+│                                                                           │
+│ Hit TP cleanly after the London open push. Thesis held: DXY weakness +   │
+│ gilt yields up. history-reviewer logged for similar setups.              │
+│                                                                           │
+│ [View timeline]  [Save to Vault]                                         │
+└───────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────────────────┐
+│ ▼ CLOSED · USDJPY  −$8.20                         LOST · 1h 5m ago      │
+│ Held 34m · Stopped at 151.22 (SL hit)                                    │
+│                                                                           │
+│ BOJ headline at 02:14 flipped the tape. Agent missed it: X-feed latency  │
+│ 90s. Adding @bankofjapan-official to priority list.                      │
+│                                                                           │
+│ [View timeline]  [Post-mortem]                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+
+─── (earlier) ───────────────────────────────────────────────────────────
+
+╭───────────────────────────────────────────────────────────── ASK DOCK ───╮
+│ > Ask the agent about any trade or the market…                           │
+│   e.g. "why are you bullish BTC?" · "pause EURUSD for 2h"               │
+╰──────────────────────────────────────────────────────────────────────────╯
