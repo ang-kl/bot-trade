@@ -1,28 +1,11 @@
-// News tab - Market Rundown configuration + Telegram channel curation.
-// Two-step prompt flow: (1) build a structure outline, (2) generate today's
-// briefing against that structure. Sources include wires, Telegram, X, RSS,
-// and ForexFactory. The API lives at api/rundown.js.
+// News tab — Polygon.io real-time news feed for watchlist symbols,
+// plus Structure (Prompt 1) for daily briefing outline.
 
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Card from '../common/Card.jsx'
 import Button from '../common/Button.jsx'
-import Input from '../common/Input.jsx'
 import Badge from '../common/Badge.jsx'
-import {
-  useStrategy,
-  SOURCE_OPTIONS,
-} from '../../lib/strategy-store.js'
-
-const SOURCE_LABELS = {
-  osinet: 'OSINet',
-  reuters: 'Reuters',
-  bloomberg: 'Bloomberg',
-  ft: 'FT',
-  telegram: 'Telegram',
-  x: 'X.com',
-  rss: 'RSS',
-  forexfactory: 'ForexFactory',
-}
+import { useStrategy } from '../../lib/strategy-store.js'
 
 async function callRundown(action, body = {}) {
   const res = await fetch('/api/rundown', {
@@ -35,29 +18,60 @@ async function callRundown(action, body = {}) {
   return data
 }
 
-async function callTelegramFeed(action, body = {}) {
-  const res = await fetch('/api/telegram-feed', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action, ...body }),
-  })
+async function fetchPolygonNews(apiKey, tickers = [], limit = 30) {
+  const params = new URLSearchParams({ apiKey, limit: String(limit), order: 'desc', sort: 'published_utc' })
+  if (tickers.length > 0) params.set('ticker.in', tickers.join(','))
+  const res = await fetch(`https://api.polygon.io/v2/reference/news?${params}`)
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `telegram-feed ${action} ${res.status}`)
-  return data
+  if (!res.ok) throw new Error(data.error || data.message || `News API ${res.status}`)
+  return data.results || []
 }
 
 export default function NewsTab() {
   const { state, dispatch } = useStrategy()
-  const { sources, telegramChannels, structure, latestRundown, lastGeneratedAt } = state.news
+  const { structure } = state.news
+
+  // Structure (Prompt 1)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
 
-  // Telegram channel management
-  const [channelDraft, setChannelDraft] = useState('')
-  const [discovering, setDiscovering] = useState(false)
-  const [discoverError, setDiscoverError] = useState(null)
-  const [feedPreview, setFeedPreview] = useState(null)
-  const [feedLoading, setFeedLoading] = useState(false)
+  // News feed
+  const [articles, setArticles] = useState([])
+  const [newsLoading, setNewsLoading] = useState(false)
+  const [newsError, setNewsError] = useState(null)
+  const [tickerFilter, setTickerFilter] = useState('all') // 'all' or specific ticker
+
+  const stockSymbols = state.watchlist
+    .filter(w => w.category === 'Stocks')
+    .map(w => w.symbol)
+
+  // Auto-fetch news on mount
+  useEffect(() => {
+    if (!state.massive.apiKey || stockSymbols.length === 0) return
+    let cancelled = false
+    setNewsLoading(true)
+    setNewsError(null)
+    fetchPolygonNews(state.massive.apiKey, stockSymbols, 50)
+      .then(results => { if (!cancelled) setArticles(results) })
+      .catch(e => { if (!cancelled) setNewsError(e.message) })
+      .finally(() => { if (!cancelled) setNewsLoading(false) })
+    return () => { cancelled = true }
+  }, [state.massive.apiKey, stockSymbols.join(',')])
+
+  const onRefreshNews = useCallback(async () => {
+    if (!state.massive.apiKey) return
+    setNewsLoading(true)
+    setNewsError(null)
+    try {
+      const tickers = tickerFilter === 'all' ? stockSymbols : [tickerFilter]
+      const results = await fetchPolygonNews(state.massive.apiKey, tickers, 50)
+      setArticles(results)
+    } catch (e) {
+      setNewsError(e.message)
+    } finally {
+      setNewsLoading(false)
+    }
+  }, [state.massive.apiKey, stockSymbols, tickerFilter])
 
   const onBuildStructure = async () => {
     setBusy('structure'); setError(null)
@@ -71,229 +85,130 @@ export default function NewsTab() {
     }
   }
 
-  const onGenerate = async () => {
-    setBusy('generate'); setError(null)
-    try {
-      const enabledChannels = telegramChannels.filter(c => c.enabled).map(c => c.username || c.name)
-      const data = await callRundown('generate', { sources, telegramChannels: enabledChannels, structure })
-      dispatch({ type: 'NEWS_SET_RUNDOWN', rundown: data.markdown ?? null })
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(null)
-    }
+  // Filter articles by ticker
+  const filtered = tickerFilter === 'all'
+    ? articles
+    : articles.filter(a => (a.tickers || []).includes(tickerFilter))
+
+  const fmtTime = (iso) => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    return d.toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
   }
-
-  const handleAddChannel = useCallback(async () => {
-    const raw = channelDraft.trim().replace(/^@/, '')
-    if (!raw) return
-    // Verify channel if bot token is available
-    if (state.telegram.botToken) {
-      try {
-        const data = await callTelegramFeed('verify', {
-          botToken: state.telegram.botToken,
-          username: raw,
-        })
-        if (data.ok && data.channel) {
-          dispatch({
-            type: 'NEWS_ADD_TELEGRAM_CHANNEL',
-            name: data.channel.title || raw,
-            username: data.channel.username || raw,
-          })
-          setChannelDraft('')
-          setDiscoverError(null)
-          return
-        }
-        // Channel not accessible by bot — still add but warn
-        setDiscoverError(`@${raw}: ${data.error || 'not accessible'}. ${data.hint || ''}`)
-      } catch {
-        // API call failed — still add manually
-      }
-    }
-    dispatch({
-      type: 'NEWS_ADD_TELEGRAM_CHANNEL',
-      name: raw,
-      username: raw,
-    })
-    setChannelDraft('')
-  }, [channelDraft, dispatch, state.telegram.botToken])
-
-  const handleDiscover = useCallback(async () => {
-    setDiscovering(true)
-    setDiscoverError(null)
-    try {
-      const data = await callTelegramFeed('discover', {
-        botToken: state.telegram.botToken,
-      })
-      // Auto-add discovered channels
-      for (const ch of (data.channels || [])) {
-        dispatch({
-          type: 'NEWS_ADD_TELEGRAM_CHANNEL',
-          name: ch.title || ch.username || '',
-          username: ch.username || '',
-        })
-      }
-    } catch (e) {
-      setDiscoverError(e.message)
-    } finally {
-      setDiscovering(false)
-    }
-  }, [state.telegram.botToken, dispatch])
-
-  const handlePreviewFeed = useCallback(async () => {
-    setFeedLoading(true)
-    setFeedPreview(null)
-    try {
-      const enabledChannels = telegramChannels.filter(c => c.enabled).map(c => c.username || c.name)
-      const data = await callTelegramFeed('fetch', {
-        botToken: state.telegram.botToken,
-        channels: enabledChannels,
-      })
-      setFeedPreview(data.messages || [])
-    } catch (e) {
-      setFeedPreview([])
-      setDiscoverError(e.message)
-    } finally {
-      setFeedLoading(false)
-    }
-  }, [telegramChannels, state.telegram.botToken])
 
   return (
     <div className="space-y-4">
-      {/* Sources */}
-      <Card>
-        <h2 className="t-label mb-2">News Sources</h2>
-        <p className="t-sub text-[var(--color-text-sub)] mb-3">
-          Select sources for the daily market rundown. The AI curates and
-          synthesises across all enabled sources.
-        </p>
-        <div className="flex gap-3 flex-wrap">
-          {SOURCE_OPTIONS.map((s) => (
-            <label key={s} className="t-sub flex items-center gap-1.5 cursor-pointer min-h-[36px]">
-              <input
-                type="checkbox"
-                checked={sources.includes(s)}
-                onChange={() => dispatch({ type: 'NEWS_TOGGLE_SOURCE', source: s })}
-                className="w-4 h-4 accent-[var(--color-accent)]"
-              />
-              <span className="font-medium">{SOURCE_LABELS[s] || s}</span>
-            </label>
-          ))}
-        </div>
-      </Card>
-
-      {/* Telegram Channels */}
+      {/* News Feed */}
       <Card>
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-          <h2 className="t-label">Telegram Channels</h2>
-          <Badge tone="info" pill>{telegramChannels.length} channels</Badge>
-        </div>
-        <p className="t-sub text-[var(--color-text-sub)] mb-3">
-          Add market news Telegram channels. Messages from enabled channels
-          are curated as part of the daily rundown when Telegram source is active.
-        </p>
-
-        {/* Add channel */}
-        <div className="flex gap-2 mb-3">
-          <Input
-            value={channelDraft}
-            onChange={(e) => setChannelDraft(e.target.value)}
-            placeholder="@channel_username"
-            onKeyDown={(e) => e.key === 'Enter' && handleAddChannel()}
-            className="flex-1"
-          />
-          <Button size="sm" onClick={handleAddChannel} disabled={!channelDraft.trim()}>
-            Add
-          </Button>
-          {state.telegram.botToken && (
-            <Button size="sm" variant="ghost" onClick={handleDiscover} disabled={discovering}>
-              {discovering ? 'Discovering...' : 'Discover'}
-            </Button>
-          )}
-        </div>
-
-        {discoverError && (
-          <p className="t-meta text-[var(--color-down)] mb-2">{discoverError}</p>
-        )}
-
-        {state.telegram.botToken && telegramChannels.length === 0 && (
-          <div className="mb-3 p-2 rounded-[7px] bg-[var(--color-accent-soft)] text-[11px] text-[var(--color-text-sub)]">
-            <span className="font-bold text-[var(--color-accent)]">Tip:</span>{' '}
-            Discover only finds channels where your bot has unread messages.
-            For public channels, type the @username above and click Add — the bot will verify access automatically.
-            Make sure your bot is a member of each channel (add via Telegram &gt; Channel Info &gt; Admins/Members).
+          <div className="flex items-center gap-2">
+            <h2 className="t-label">Market News</h2>
+            <Badge tone="info" pill>{filtered.length} articles</Badge>
           </div>
-        )}
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" variant="ghost" onClick={onRefreshNews} disabled={newsLoading}>
+              {newsLoading ? 'Loading...' : '\u21BB Refresh'}
+            </Button>
+          </div>
+        </div>
 
-        {/* Channel list */}
-        {telegramChannels.length > 0 ? (
-          <div className="space-y-1.5 mb-3">
-            {telegramChannels.map(ch => (
-              <div
-                key={ch.id}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-[7px] bg-[var(--color-bg)] border border-[var(--color-border)]"
+        {/* Ticker filter */}
+        {stockSymbols.length > 0 && (
+          <div className="flex gap-1 flex-wrap mb-3">
+            <button
+              type="button"
+              onClick={() => setTickerFilter('all')}
+              className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
+                tickerFilter === 'all'
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
+              }`}
+            >
+              All
+            </button>
+            {stockSymbols.map(sym => (
+              <button
+                key={sym}
+                type="button"
+                onClick={() => setTickerFilter(sym)}
+                className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
+                  tickerFilter === sym
+                    ? 'bg-[var(--color-accent)] text-white'
+                    : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
+                }`}
               >
-                <input
-                  type="checkbox"
-                  checked={ch.enabled}
-                  onChange={() => dispatch({ type: 'NEWS_TOGGLE_TELEGRAM_CHANNEL', id: ch.id })}
-                  className="w-4 h-4 accent-[var(--color-accent)]"
-                />
-                <span className="t-sub font-medium flex-1">
-                  {ch.name || ch.username}
-                  {ch.username && ch.username !== ch.name && (
-                    <span className="text-[var(--color-muted)] ml-1">@{ch.username}</span>
-                  )}
-                </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => dispatch({ type: 'NEWS_REMOVE_TELEGRAM_CHANNEL', id: ch.id })}
-                  className="text-[var(--color-down)] text-[10px]"
-                >
-                  Remove
-                </Button>
-              </div>
+                {sym}
+              </button>
             ))}
           </div>
-        ) : (
-          <p className="t-meta text-[var(--color-muted)] mb-3">
-            No channels added. Enter a channel username or use Discover to find channels your bot can access.
+        )}
+
+        {!state.massive.apiKey && (
+          <p className="t-meta text-[var(--color-down)] mb-2">
+            Massive API key required. Set it in Admin to fetch real market news.
           </p>
         )}
 
-        {/* Preview feed */}
-        {telegramChannels.some(c => c.enabled) && (
-          <div>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handlePreviewFeed}
-              disabled={feedLoading}
-            >
-              {feedLoading ? 'Loading...' : 'Preview Latest Messages'}
-            </Button>
-            {feedPreview && feedPreview.length > 0 && (
-              <div className="mt-2 max-h-48 overflow-auto bg-[var(--color-bg)] rounded-[7px] border border-[var(--color-border)] p-2 space-y-1">
-                {feedPreview.slice(0, 20).map((msg, i) => (
-                  <div key={i} className="text-[11px]">
-                    <span className="font-bold text-[var(--color-accent)]">{msg.channel}</span>
-                    <span className="text-[var(--color-muted)] ml-1">
-                      {msg.date ? new Date(msg.date).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
-                    </span>
-                    <p className="text-[var(--color-text-sub)] truncate">{msg.text}</p>
+        {newsError && <p className="t-meta text-[var(--color-down)] mb-2">{newsError}</p>}
+
+        {filtered.length === 0 && !newsLoading && (
+          <p className="t-sub text-[var(--color-muted)] py-4 text-center">
+            {stockSymbols.length === 0
+              ? 'Add stock symbols to your watchlist to see news.'
+              : 'No articles found. Click refresh to fetch latest news.'}
+          </p>
+        )}
+
+        {filtered.length > 0 && (
+          <div className="space-y-1 max-h-[500px] overflow-y-auto">
+            {filtered.map((a, i) => (
+              <a
+                key={a.id || i}
+                href={a.article_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block px-2 py-1.5 rounded-[5px] hover:bg-[var(--color-accent-soft)]/30 transition-colors group"
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] font-semibold text-[var(--color-text)] group-hover:text-[var(--color-accent)] leading-tight">
+                      {a.title}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] font-bold text-[var(--color-accent)]">
+                        {a.publisher?.name || 'Unknown'}
+                      </span>
+                      <span className="text-[10px] text-[var(--color-muted)]">
+                        {fmtTime(a.published_utc)}
+                      </span>
+                      {(a.tickers || []).slice(0, 4).map(t => (
+                        <span key={t} className="text-[9px] font-mono px-1 py-0 rounded bg-[var(--color-bg)] text-[var(--color-text-sub)] border border-[var(--color-border)]">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                    {a.description && (
+                      <p className="text-[10px] text-[var(--color-text-sub)] mt-0.5 line-clamp-2">
+                        {a.description}
+                      </p>
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
-            {feedPreview && feedPreview.length === 0 && (
-              <p className="mt-2 t-meta text-[var(--color-muted)]">No recent messages found.</p>
-            )}
+                  {a.image_url && (
+                    <img
+                      src={a.image_url}
+                      alt=""
+                      className="w-16 h-12 object-cover rounded-[4px] shrink-0 hidden sm:block"
+                      loading="lazy"
+                    />
+                  )}
+                </div>
+              </a>
+            ))}
           </div>
         )}
       </Card>
 
-      {/* Structure (Prompt 1) */}
+      {/* Structure (Prompt 1) — keep */}
       <Card>
         <div className="flex items-center gap-2 mb-2">
           <h2 className="t-label flex-1">Structure (Prompt 1)</h2>
@@ -301,31 +216,11 @@ export default function NewsTab() {
             {busy === 'structure' ? 'Building...' : 'Rebuild'}
           </Button>
         </div>
+        {error && <p className="t-sub text-[var(--color-down)] mb-2">{error}</p>}
         {structure ? (
           <pre className="t-meta whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--color-bg)] p-2 rounded-[7px] border border-[var(--color-border)]">{structure}</pre>
         ) : (
           <p className="t-sub text-[var(--color-text-sub)]">No structure cached. Click Rebuild to generate the markdown outline that every daily rundown will follow.</p>
-        )}
-      </Card>
-
-      {/* Today's rundown (Prompt 2) */}
-      <Card>
-        <div className="flex items-center gap-2 mb-2">
-          <h2 className="t-label flex-1">Today's Rundown (Prompt 2)</h2>
-          <Button size="sm" onClick={onGenerate} disabled={busy === 'generate'}>
-            {busy === 'generate' ? 'Generating...' : 'Generate'}
-          </Button>
-        </div>
-        {error && <p className="t-sub text-[var(--color-down)] mb-2">{error}</p>}
-        {lastGeneratedAt && (
-          <p className="t-meta text-[var(--color-text-sub)] mb-2">
-            Last generated {new Date(lastGeneratedAt).toLocaleString()}
-          </p>
-        )}
-        {latestRundown ? (
-          <pre className="t-meta whitespace-pre-wrap max-h-96 overflow-auto bg-[var(--color-bg)] p-2 rounded-[7px] border border-[var(--color-border)]">{latestRundown}</pre>
-        ) : (
-          <p className="t-sub text-[var(--color-text-sub)]">No rundown yet. Click Generate to produce today's briefing.</p>
         )}
       </Card>
     </div>
