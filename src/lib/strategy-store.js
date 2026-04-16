@@ -113,6 +113,14 @@ export const INITIAL_STATE = {
     alertOnTrade: true,
     minConfidence: 5,
   },
+  massive: {
+    apiKey: '',
+  },
+  adminLocks: {
+    ctrader: false,
+    telegram: false,
+    massive: false,
+  },
   alertLog: [],
   symbolStats: {},
 }
@@ -298,6 +306,23 @@ export function reducer(state, action) {
     case 'ALERT_LOG_CLEAR':
       return { ...state, alertLog: [] }
 
+    case 'MASSIVE_SET': {
+      const m = { ...state.massive }
+      if (typeof action.apiKey === 'string') m.apiKey = action.apiKey
+      return { ...state, massive: m }
+    }
+
+    case 'ADMIN_LOCK': {
+      const svc = action.service
+      if (!svc || !(svc in state.adminLocks)) return state
+      return { ...state, adminLocks: { ...state.adminLocks, [svc]: true } }
+    }
+    case 'ADMIN_UNLOCK': {
+      const svc = action.service
+      if (!svc || !(svc in state.adminLocks)) return state
+      return { ...state, adminLocks: { ...state.adminLocks, [svc]: false } }
+    }
+
     case 'SYMBOL_STATS_UPDATE': {
       // Merge per-symbol stats: { statsMap: { EURUSD: { trend: true, ... }, ... } }
       const map = action.statsMap
@@ -359,6 +384,14 @@ export function sanitize(raw, fallback = INITIAL_STATE) {
     telegram: {
       ...fallback.telegram,
       ...(raw.telegram && typeof raw.telegram === 'object' ? raw.telegram : {}),
+    },
+    massive: {
+      ...fallback.massive,
+      ...(raw.massive && typeof raw.massive === 'object' ? raw.massive : {}),
+    },
+    adminLocks: {
+      ...fallback.adminLocks,
+      ...(raw.adminLocks && typeof raw.adminLocks === 'object' ? raw.adminLocks : {}),
     },
     alertLog: Array.isArray(raw.alertLog) ? raw.alertLog : [],
     symbolStats: raw.symbolStats && typeof raw.symbolStats === 'object' ? raw.symbolStats : {},

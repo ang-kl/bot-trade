@@ -267,6 +267,46 @@ describe('sanitize', () => {
   })
 })
 
+describe('massive + adminLocks', () => {
+  it('MASSIVE_SET updates API key', () => {
+    const s = reducer(INITIAL_STATE, { type: 'MASSIVE_SET', apiKey: 'test-key-123' })
+    expect(s.massive.apiKey).toBe('test-key-123')
+  })
+  it('MASSIVE_SET ignores non-string', () => {
+    const s = reducer(INITIAL_STATE, { type: 'MASSIVE_SET', apiKey: 42 })
+    expect(s.massive.apiKey).toBe('')
+  })
+  it('ADMIN_LOCK locks a service', () => {
+    const s = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'ctrader' })
+    expect(s.adminLocks.ctrader).toBe(true)
+    expect(s.adminLocks.telegram).toBe(false)
+  })
+  it('ADMIN_UNLOCK unlocks a service', () => {
+    const s1 = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'massive' })
+    const s2 = reducer(s1, { type: 'ADMIN_UNLOCK', service: 'massive' })
+    expect(s2.adminLocks.massive).toBe(false)
+  })
+  it('ADMIN_LOCK ignores unknown service', () => {
+    const s = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'unknown' })
+    expect(s).toBe(INITIAL_STATE)
+  })
+  it('sanitize preserves massive and adminLocks', () => {
+    const raw = {
+      massive: { apiKey: 'abc' },
+      adminLocks: { ctrader: true, telegram: false, massive: true },
+    }
+    const out = sanitize(raw)
+    expect(out.massive.apiKey).toBe('abc')
+    expect(out.adminLocks.ctrader).toBe(true)
+    expect(out.adminLocks.massive).toBe(true)
+  })
+  it('sanitize defaults massive and adminLocks', () => {
+    const out = sanitize({})
+    expect(out.massive).toEqual({ apiKey: '' })
+    expect(out.adminLocks).toEqual({ ctrader: false, telegram: false, massive: false })
+  })
+})
+
 describe('symbolStats', () => {
   it('SYMBOL_STATS_UPDATE merges per-symbol stats', () => {
     const s1 = reducer(INITIAL_STATE, {

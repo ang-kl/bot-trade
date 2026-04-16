@@ -6,6 +6,7 @@ import Settings from './pages/Settings.jsx'
 import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
 import LinkUp from './pages/LinkUp.jsx'
+import Admin from './pages/Admin.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
@@ -17,6 +18,7 @@ const navLinks = [
   { to: '/settings', label: 'Settings' },
   { to: '/vault', label: 'Vault' },
   { to: '/backtest', label: 'Backtest' },
+  { to: '/admin', label: 'Admin' },
 ]
 
 // Scroll to top on route change
@@ -58,6 +60,7 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/vault" element={<Vault />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/admin" element={<Admin />} />
           <Route path="/link-up" element={<LinkUp />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>

@@ -245,26 +245,11 @@ export default function CTraderTab() {
           )}
         </Card>
 
-        {/* Masked tokens (collapsed) */}
-        <Card>
-          <div className="flex items-center gap-2 mb-1">
-            <h2 className="t-meta text-[var(--color-muted)] flex-1">Access token</h2>
-          </div>
-          <p className="t-sub text-[var(--color-muted)] font-mono mb-3">{maskToken(accessToken)}</p>
-          <div className="flex items-center gap-2 mb-1">
-            <h2 className="t-meta text-[var(--color-muted)] flex-1">Refresh token</h2>
-          </div>
-          <p className="t-sub text-[var(--color-muted)] font-mono">{maskToken(refreshToken)}</p>
-        </Card>
-
-        {/* Disconnect footer */}
+        {/* Manage credentials in Admin */}
         <div className="flex items-center justify-between pt-2 px-1">
           <p className="t-meta text-[var(--color-muted)]">
-            Disconnect will clear the access token and require re-authentication.
+            API credentials are managed in <a href="/admin" className="text-[var(--color-accent)] underline">Admin</a>.
           </p>
-          <Button size="sm" variant="ghost" onClick={onDisconnect}>
-            {'\u21BB'} Disconnect
-          </Button>
         </div>
       </div>
     )
@@ -273,32 +258,14 @@ export default function CTraderTab() {
   // --- Disconnected state ---
   return (
     <div className="space-y-4">
-      <Card>
-        <h2 className="t-label mb-2">Connect to cTrader</h2>
+      <Card className="border-l-4 border-l-[var(--color-warning-text)]">
+        <h2 className="t-label mb-2">Not connected</h2>
         <p className="t-sub text-[var(--color-text-sub)] mb-3">
-          Link your cTrader (Spotware) account to enable live data and trading. Use OAuth or paste tokens directly.
+          Configure your cTrader credentials in the <strong>Admin</strong> page, then return here to manage accounts and trading.
         </p>
-        <div className="flex gap-2 mb-4">
-          <Button onClick={onOpenOAuth} size="sm" disabled={busy === 'oauth'}>
-            {busy === 'oauth' ? 'Opening...' : 'Open cTrader OAuth'}
-          </Button>
-        </div>
-        <label className="block t-meta mb-1" htmlFor="ctrader-access">Access token</label>
-        <Input
-          id="ctrader-access"
-          value={accessToken}
-          onChange={(e) => setTokens({ accessToken: e.target.value })}
-          placeholder="eyJ..."
-          className="mb-3"
-        />
-        <label className="block t-meta mb-1" htmlFor="ctrader-refresh">Refresh token</label>
-        <Input
-          id="ctrader-refresh"
-          value={refreshToken}
-          onChange={(e) => setTokens({ refreshToken: e.target.value })}
-          placeholder="eyJ..."
-        />
-        {error && <p className="t-sub text-[var(--color-down)] mt-2">{error}</p>}
+        <a href="/admin" className="inline-block">
+          <Button size="sm">Go to Admin</Button>
+        </a>
       </Card>
     </div>
   )
