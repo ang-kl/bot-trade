@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk'
+import WebSocket from 'ws'
 import { runScan } from './services/scanner.js'
 import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
@@ -13,6 +14,130 @@ import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 let loopCount = 0
+let consecutiveErrors = 0
+
+// ---------------------------------------------------------------------------
+// cTrader auto-trade via WebSocket — places a market order when synthesis
+// says auto_trade = true. Reads credentials stored via POST /actions/ctrader-config
+// ---------------------------------------------------------------------------
+
+const PT_APP_AUTH_REQ = 2100
+const PT_APP_AUTH_RES = 2101
+const PT_ACCOUNT_AUTH_REQ = 2102
+const PT_ACCOUNT_AUTH_RES = 2103
+const PT_NEW_ORDER_REQ = 2106
+const PT_EXECUTION_EVENT = 2126
+const PT_ORDER_ERROR_EVENT = 2132
+const PT_HEARTBEAT = 51
+
+function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload, timeoutMs = 20_000) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`wss://${host}:5036`)
+    let hb, timer
+    const done = (fn) => { clearTimeout(timer); clearInterval(hb); if (ws.readyState === WebSocket.OPEN) ws.close(); fn() }
+
+    timer = setTimeout(() => done(() => reject(new Error('cTrader order timeout'))), timeoutMs)
+
+    const steps = [
+      { send: { payloadType: PT_APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT_APP_AUTH_RES },
+      { send: { payloadType: PT_ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT_ACCOUNT_AUTH_RES },
+      { send: { payloadType: PT_NEW_ORDER_REQ, payload: orderPayload }, expect: PT_EXECUTION_EVENT },
+    ]
+    let stepIdx = 0
+
+    ws.on('open', () => {
+      hb = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ payloadType: PT_HEARTBEAT })) }, 9000)
+      ws.send(JSON.stringify({ clientMsgId: `s0`, payloadType: steps[0].send.payloadType, payload: steps[0].send.payload }))
+    })
+
+    ws.on('message', (raw) => {
+      let msg; try { msg = JSON.parse(raw.toString()) } catch { return }
+      if (msg.payloadType === PT_HEARTBEAT) return
+      if (msg.payloadType === PT_ORDER_ERROR_EVENT) {
+        const e = msg.payload || {}
+        return done(() => reject(new Error(`cTrader order rejected: ${e.errorCode || 'unknown'} — ${e.description || ''}`)))
+      }
+      if (msg.payloadType === steps[stepIdx]?.expect) {
+        stepIdx++
+        if (stepIdx >= steps.length) {
+          return done(() => resolve(msg.payload || {}))
+        }
+        ws.send(JSON.stringify({ clientMsgId: `s${stepIdx}`, payloadType: steps[stepIdx].send.payloadType, payload: steps[stepIdx].send.payload }))
+      }
+    })
+
+    ws.on('error', (err) => done(() => reject(new Error(`WS error: ${err.message}`))))
+  })
+}
+
+async function autoTrade(db, symbol, synth, watchlistItem) {
+  const clientId = process.env.CTRADER_CLIENT_ID
+  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  const accessToken = getState(db, 'ctrader_access_token')
+  const accountId = getState(db, 'ctrader_account_id')
+  const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+  if (!clientId || !clientSecret || !accessToken || !accountId) {
+    log(`Auto-trade skipped — cTrader credentials not configured (push via /actions/ctrader-config)`)
+    return null
+  }
+
+  const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
+  const volLots = watchlistItem?.maxVolume || 0.01
+  const volume = Math.round(volLots * 10000) // cTrader units: 10000 = 1 lot
+
+  // We need symbolId — look it up from previously stored symbol map, or skip
+  const symbolMapJson = getState(db, 'symbol_id_map')
+  const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
+  const symbolId = symbolMap[symbol.toUpperCase()]
+  if (!symbolId) {
+    log(`Auto-trade ${symbol}: symbolId unknown — call POST /actions/symbol-map to register it`)
+    return null
+  }
+
+  const slDistance = synth.sl && synth.entry ? Math.abs(synth.entry - synth.sl) : null
+  const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
+  const POINTS = 100000
+
+  const orderPayload = {
+    ctidTraderAccountId: parseInt(accountId),
+    symbolId: parseInt(symbolId),
+    orderType: 'MARKET',
+    tradeSide: side,
+    volume,
+    comment: 'abot-auto',
+    label: 'abot-auto',
+    ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
+    ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+  }
+
+  const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+  log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
+
+  try {
+    const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+    const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+    const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+
+    // Record trade in DB
+    db.prepare(`
+      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, ctrader_position_id, analysis_id)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'open', ?, ?)
+    `).run(symbol, side, executionPrice, synth.sl ?? null, synth.tp1 ?? null, volLots, positionId, null)
+
+    // Register in monitored_positions for the monitor phase
+    db.prepare(`
+      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, status, opened_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))
+    `).run(symbol, side === 'BUY' ? 'long' : 'short', executionPrice, synth.sl ?? null, synth.tp1 ?? null, synth.synthesis || '')
+
+    log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId}`)
+    return { executionPrice, positionId, side, volume: volLots }
+  } catch (err) {
+    log(`Auto-trade FAILED for ${symbol}: ${err.message}`)
+    return null
+  }
+}
 
 function log(...args) {
   console.log('[loop]', ...args)
@@ -184,7 +309,18 @@ async function runLoop(db) {
 
           log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10)`)
 
-          // TODO: auto-trade if synthesis.auto_trade === true
+          // Auto-trade — only when armed and synthesis recommends it
+          if (armed && synth.auto_trade && synth.entry) {
+            const tradeResult = await autoTrade(db, sym, synth, wItem)
+            if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
+              try {
+                const { sendMessage } = await import('./services/telegram.js')
+                await sendMessage(
+                  `🤖 AUTO-TRADE: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
+                )
+              } catch {}
+            }
+          }
         } catch (err) {
           log(`Analysis failed for ${sym}:`, err.message)
         }
@@ -301,12 +437,22 @@ async function runLoop(db) {
     setState(db, 'last_loop_ms', String(Date.now() - start))
   } catch (err) {
     console.error('[loop] error:', err.message)
+    consecutiveErrors++
     const errCount = parseInt(getState(db, 'errors_today') || '0') + 1
     setState(db, 'errors_today', String(errCount))
+
+    // Self-healing: back off exponentially up to 15 min after 5 consecutive errors
+    if (consecutiveErrors >= 5) {
+      const backoff = Math.min(15 * 60_000, LOOP_INTERVAL * consecutiveErrors)
+      log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
+      setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
+      return
+    }
   }
 
+  consecutiveErrors = 0 // reset on any success or non-fatal error path
   const elapsed = Date.now() - start
-  const delay = Math.max(10_000, LOOP_INTERVAL - elapsed) // minimum 10s between loops
+  const delay = Math.max(10_000, LOOP_INTERVAL - elapsed)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }

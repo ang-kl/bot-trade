@@ -160,6 +160,26 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/ctrader-config — push cTrader credentials from frontend
+  // Frontend calls this after OAuth so the loop can auto-trade
+  // -----------------------------------------------------------------------
+  router.post('/ctrader-config', (req, res) => {
+    try {
+      const { accessToken, accountId, isLive = false } = req.body || {}
+      if (!accessToken || !accountId) {
+        return res.status(400).json({ error: 'accessToken and accountId are required' })
+      }
+      setState(db, 'ctrader_access_token', accessToken)
+      setState(db, 'ctrader_account_id', String(accountId))
+      setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
+      console.log('[actions] cTrader config updated — accountId:', accountId, 'live:', isLive)
+      res.json({ ok: true })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/watchlist — update watchlist
   // -----------------------------------------------------------------------
   router.post('/watchlist', (req, res) => {
@@ -192,6 +212,29 @@ export default function actionsRouter(db) {
       res.json({ ok: true, watchlist: normalized })
     } catch (err) {
       console.error('[actions/watchlist] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/symbol-map — store symbolName → cTrader symbolId mapping
+  // Required for auto-trade. Frontend fetches symbol list from cTrader and
+  // pushes { map: { EURUSD: 1, XAUUSD: 42, ... } }
+  // -----------------------------------------------------------------------
+  router.post('/symbol-map', (req, res) => {
+    try {
+      const { map } = req.body || {}
+      if (!map || typeof map !== 'object') {
+        return res.status(400).json({ error: 'map (object) is required' })
+      }
+      const upper = {}
+      for (const [k, v] of Object.entries(map)) {
+        upper[k.toUpperCase()] = v
+      }
+      setState(db, 'symbol_id_map', JSON.stringify(upper))
+      console.log('[actions] symbol-map updated:', Object.keys(upper).length, 'symbols')
+      res.json({ ok: true, count: Object.keys(upper).length })
+    } catch (err) {
       res.status(500).json({ error: err.message })
     }
   })

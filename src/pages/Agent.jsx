@@ -68,6 +68,10 @@ function fmtAgo(ts) {
   return `${Math.floor(ago / 3_600_000)}h ${Math.floor((ago % 3_600_000) / 60_000)}m ago`
 }
 
+function fmtMoney(v, digits = 2) {
+  return v != null ? v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'
+}
+
 async function fetchAccountInfo(accessToken, accountId, isLive) {
   const res = await fetch('/api/ctrader', {
     method: 'POST',
@@ -131,9 +135,6 @@ function AccountPanel({ ctrader }) {
       </Card>
     )
   }
-
-  const fmtMoney = (v, digits = 2) =>
-    v != null ? v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'
 
   const equityPct = info?.balance && info?.equity
     ? ((info.equity - info.balance) / info.balance) * 100
