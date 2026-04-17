@@ -1,7 +1,7 @@
 // Monitor service — extracted from api/monitor.js
 // Standalone business logic, no HTTP handler.
 
-import { getSessionContext } from '../../api/_lib/sessions.js'
+import { getSessionContext } from '../lib/sessions.js'
 
 const MODEL = 'claude-sonnet-4-5'
 const MAX_TOKENS = 768

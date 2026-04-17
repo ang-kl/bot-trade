@@ -1,7 +1,7 @@
 // Scanner service — extracted from api/scan.js
 // Standalone business logic, no HTTP handler.
 
-import { getSessionContext, categoriseSymbol } from '../../api/_lib/sessions.js'
+import { getSessionContext, categoriseSymbol } from '../lib/sessions.js'
 
 const MODEL = 'claude-sonnet-4-5'
 const MAX_TOKENS = 4096

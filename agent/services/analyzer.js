@@ -1,8 +1,8 @@
 // Analyzer service — extracted from api/analyze.js
 // Standalone business logic, no HTTP handler.
 
-import { getSessionContext } from '../../api/_lib/sessions.js'
-import { MINIONS, dispatch, buildMinionPrompt, buildSynthesisPrompt } from '../../api/_lib/minions.js'
+import { getSessionContext } from '../lib/sessions.js'
+import { MINIONS, dispatch, buildMinionPrompt, buildSynthesisPrompt } from '../lib/minions.js'
 
 const MODEL = 'claude-sonnet-4-5'
 const MINION_MAX_TOKENS = 512
