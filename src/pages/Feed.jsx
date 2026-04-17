@@ -193,10 +193,11 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
       {/* Levels */}
       {synthesis?.entry != null && (
         <div className="flex gap-4 t-meta mb-2 flex-wrap">
-          <span>Entry: <span className="font-mono font-semibold">{synthesis.entry}</span></span>
-          {synthesis.sl != null && <span className="text-[var(--color-down)]">SL: {synthesis.sl}</span>}
-          {synthesis.tp1 != null && <span className="text-[var(--color-up)]">TP1: {synthesis.tp1}</span>}
-          {synthesis.tp2 != null && <span className="text-[var(--color-up)]">TP2: {synthesis.tp2}</span>}
+          <span className="text-[8px] text-[var(--color-muted)]">{CCY_SIGN[getCcy(symbol)] || '$'}</span>
+          <span>Entry: <span className="font-mono font-semibold">{fmtP(synthesis.entry)}</span></span>
+          {synthesis.sl != null && <span className="text-[var(--color-down)]">SL: {fmtP(synthesis.sl)}</span>}
+          {synthesis.tp1 != null && <span className="text-[var(--color-up)]">TP1: {fmtP(synthesis.tp1)}</span>}
+          {synthesis.tp2 != null && <span className="text-[var(--color-up)]">TP2: {fmtP(synthesis.tp2)}</span>}
         </div>
       )}
 
@@ -262,6 +263,37 @@ function getTradeGrade(d) {
 const GRADE_ORDER = { potential: 0, weak: 1, none: 2 }
 const GRADE_LABEL = { potential: 'Potential Trade', weak: 'Weak Trade', none: 'No Trade' }
 const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
+
+// ── Currency helpers ──
+
+const SYMBOL_CCY = {
+  EURUSD: 'USD', GBPUSD: 'USD', AUDUSD: 'USD', NZDUSD: 'USD',
+  USDJPY: 'JPY', AUDJPY: 'JPY', GBPJPY: 'JPY', EURJPY: 'JPY', CADJPY: 'JPY',
+  USDCAD: 'CAD', USDCHF: 'CHF', EURGBP: 'GBP', EURCHF: 'CHF',
+  XAUUSD: 'USD', XAGUSD: 'USD',
+  BTCUSD: 'USD', ETHUSD: 'USD', SOLUSD: 'USD',
+  NAS100: 'USD', USTEC: 'USD', US30: 'USD', US500: 'USD',
+  GER40: 'EUR', JPN225: 'JPY', CN50: 'CNY', ASX200: 'AUD',
+  COPPER: 'USD', NATGAS: 'USD', SPOTCRUDE: 'USD', COCOA: 'USD',
+}
+
+const CCY_SIGN = {
+  USD: '$', EUR: '€', GBP: '£', JPY: '¥', AUD: 'A$', CAD: 'C$', CHF: 'Fr', NZD: 'NZ$', CNY: '¥',
+}
+
+function getCcy(symbol) {
+  if (SYMBOL_CCY[symbol]) return SYMBOL_CCY[symbol]
+  if (/USD$/.test(symbol)) return 'USD'
+  if (/JPY$/.test(symbol)) return 'JPY'
+  return 'USD'
+}
+
+function fmtP(v) {
+  if (v == null || v === '' || v === 0) return '\u2014'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '\u2014'
+  return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+}
 
 // ── Summary matrix card ──
 
@@ -345,11 +377,12 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                   <tr className="border-b border-[var(--color-border)]">
                     <th className="sticky left-0 z-10 bg-[var(--color-surface)] px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Symbol</th>
                     <th className="px-2 py-1.5 text-center t-meta font-semibold text-[var(--color-text-sub)] min-w-[55px]">Grade</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">Price</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">POC</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">HVN</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[50px]">LVN</th>
-                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">VWAP</th>
+                    <th className="px-1 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[22px]">Ccy</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Price</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">POC</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">HVN</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[60px]">LVN</th>
+                    <th className="px-2 py-1.5 text-right t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">VWAP</th>
                     <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[70px]">Trend</th>
                     <th className="px-2 py-1.5 text-left t-meta font-semibold text-[var(--color-text-sub)] min-w-[110px]">EMA Stack</th>
                   </tr>
@@ -369,6 +402,8 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                     const trendLabel = trendBias === 'long' ? 'Bullish' : trendBias === 'short' ? 'Bearish' : 'Sideways'
                     const trendColor = trendBias === 'long' ? 'text-[var(--color-up)]' : trendBias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
                     const emaStack = mm.ema_stack?.stack || syn?.ema_stack || d.scan?.ema_stack || null
+                    const ccy = getCcy(d.symbol)
+                    const ccySign = CCY_SIGN[ccy] || ccy
 
                     return (
                       <tr
@@ -382,20 +417,23 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
                         <td className="px-2 py-1.5 text-center">
                           <Badge tone={GRADE_TONE[grade]} className="text-[8px] px-1">{GRADE_LABEL[grade]}</Badge>
                         </td>
+                        <td className="px-1 py-1.5 text-right text-[8px] text-[var(--color-muted)]">
+                          {ccySign}
+                        </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text)]">
-                          {syn?.entry || d.scan?.price || mm.price || '\u2014'}
+                          {fmtP(syn?.entry || d.scan?.price || mm.price)}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {vp.poc || '\u2014'}
+                          {fmtP(vp.poc)}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {vp.hvn || '\u2014'}
+                          {fmtP(vp.hvn)}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {vp.lvn || '\u2014'}
+                          {fmtP(vp.lvn)}
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-[var(--color-text-sub)]">
-                          {vp[`vwap_${vwapPeriod}`] || vp.vwap || '\u2014'}
+                          {fmtP(vp[`vwap_${vwapPeriod}`] || vp.vwap)}
                         </td>
                         <td className={`px-2 py-1.5 text-left font-semibold ${trendColor}`}>
                           {trendLabel}

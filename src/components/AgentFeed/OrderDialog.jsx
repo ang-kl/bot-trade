@@ -11,7 +11,7 @@ function fmtPrice(p) {
   if (p == null) return '\u2014'
   const n = Number(p)
   if (!Number.isFinite(n)) return '\u2014'
-  return Math.abs(n) >= 100 ? n.toFixed(2) : n.toFixed(5)
+  return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 }
 
 export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onConfirm, onCancel }) {
