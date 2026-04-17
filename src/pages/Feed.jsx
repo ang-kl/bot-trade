@@ -950,8 +950,8 @@ export default function Feed() {
     runScout().then(() => setCountdown(SCAN_INTERVAL))
   }, [runScout])
 
-  // ── Fetch MASSIVE metrics — runs on mount and when page becomes visible again ──
-  const MASSIVE_TTL = 30 * 60 * 1000 // 30 min cache
+  // ── Fetch MASSIVE metrics — every 15 min, on mount, and on visibility ──
+  const MASSIVE_TTL = 15 * 60 * 1000 // 15 min cache
   useEffect(() => {
     if (enabledCount === 0 || !state.massive.apiKey) return
     const cache = readScanCache()
@@ -961,7 +961,20 @@ export default function Feed() {
     }
   }, [enabledCount]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-fetch MASSIVE when user returns to this page after 30+ min away
+  // 15-min interval timer for MASSIVE refresh (independent of scan timer)
+  useEffect(() => {
+    if (enabledCount === 0 || !state.massive.apiKey) return
+    const iv = setInterval(() => {
+      const cache = readScanCache()
+      const age = Date.now() - (cache?.massiveCachedAt || 0)
+      if (age > MASSIVE_TTL) {
+        fetchMassiveMetrics(enabledSymbols.map(w => w.symbol), true)
+      }
+    }, 60_000) // check every minute, fetch if stale
+    return () => clearInterval(iv)
+  }, [enabledCount, state.massive.apiKey, fetchMassiveMetrics, enabledSymbols]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch MASSIVE when user returns to this page
   useEffect(() => {
     if (!state.massive.apiKey) return
     const onVisible = () => {

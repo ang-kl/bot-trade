@@ -7,6 +7,28 @@ import Button from '../components/common/Button.jsx'
 import WatchlistTab from '../components/Settings/WatchlistTab.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 
+const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
+
+function readPriceCache() {
+  try {
+    const raw = localStorage.getItem(SCAN_CACHE_KEY)
+    if (!raw) return { metrics: {}, scanResults: {}, age: Infinity }
+    const cache = JSON.parse(raw)
+    return {
+      metrics: cache.massiveMetrics || {},
+      scanResults: cache.scanResults || {},
+      age: Date.now() - (cache.massiveCachedAt || 0),
+    }
+  } catch { return { metrics: {}, scanResults: {}, age: Infinity } }
+}
+
+function fmtPrice(v) {
+  if (v == null || v === 0) return '—'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: n < 10 ? 4 : 2 })
+}
+
 async function apiPost(url, body) {
   const res = await fetch(url, {
     method: 'POST',
@@ -214,10 +236,63 @@ export default function Watchlist() {
     return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
   }
 
+  // ── Price ticker from MASSIVE cache ──
+  const [priceCache, setPriceCache] = useState(readPriceCache)
+  useEffect(() => {
+    const iv = setInterval(() => setPriceCache(readPriceCache()), 10_000)
+    return () => clearInterval(iv)
+  }, [])
+
+  const enabledSymbols = state.watchlist.filter(w => w.enabled)
+  const cacheAgeMin = Math.floor(priceCache.age / 60_000)
+
   return (
     <div className="flex gap-3 items-start">
       {/* Main content */}
       <div className="flex-1 min-w-0">
+
+        {/* Live price ticker strip */}
+        {enabledSymbols.length > 0 && (
+          <Card className="mb-3 !py-2">
+            <div className="flex items-center gap-1 mb-1.5">
+              <p className="t-meta font-bold text-[var(--color-text)] text-[10px]">Prices</p>
+              <span className="text-[8px] text-[var(--color-muted)]">
+                MASSIVE {cacheAgeMin < 1 ? 'just now' : `${cacheAgeMin}m ago`}
+              </span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {enabledSymbols.map(w => {
+                const mm = priceCache.metrics[w.symbol] || {}
+                const scan = priceCache.scanResults[w.symbol] || {}
+                const price = mm.price || scan?.price || null
+                const changePct = mm.change_pct
+                const ema = mm.ema_stack?.stack
+                const isUp = changePct > 0
+                const isDown = changePct < 0
+                return (
+                  <div
+                    key={w.symbol}
+                    className="flex items-center gap-1 px-2 py-1 rounded-[5px] bg-[var(--color-bg)] text-[10px] min-w-[100px]"
+                  >
+                    <span className="font-bold text-[var(--color-text)] text-[9px]">{w.symbol}</span>
+                    <span className="font-mono font-semibold text-[var(--color-text)]">{fmtPrice(price)}</span>
+                    {changePct != null && (
+                      <span className={`text-[8px] font-bold ${isUp ? 'text-[var(--color-up)]' : isDown ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                        {isUp ? '+' : ''}{changePct.toFixed(2)}%
+                      </span>
+                    )}
+                    {ema && (
+                      <span className={`text-[7px] ${ema.startsWith('Bull') ? 'text-[var(--color-up)]' : ema.startsWith('Bear') ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                        {ema.startsWith('Bull') ? '▲' : ema.startsWith('Bear') ? '▼' : '—'}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        )}
+
         {/* Event day pill strip */}
         {pillDates.length > 0 && (
           <div className="flex gap-1.5 flex-wrap mb-3">

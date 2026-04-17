@@ -24,15 +24,24 @@ function readScanCache() {
 }
 
 const AGENT_ROLES = {
-  scout: { label: 'Scout', desc: 'Scans all symbols for bias + conviction' },
-  analyst: { label: 'Analyst', desc: 'Deep-dives hot symbols with sub-agents' },
-  trader: { label: 'Trader', desc: 'Executes orders on linked trading platform' },
-  monitor: { label: 'Monitor', desc: 'Tracks open positions for SL/TP/exit signals' },
-  massive: { label: 'Massive', desc: 'Computes real metrics from Polygon.io market data' },
+  scout: { label: 'Scout', desc: 'Scans all symbols — bias, conviction, session fit', icon: '🔍', minions: 0 },
+  analyst: { label: 'Analyst', desc: 'Deep-dives hot symbols with 4-6 parallel minions', icon: '🧠', minions: 6 },
+  trader: { label: 'Trader', desc: 'Executes orders on cTrader — market, limit, stop', icon: '⚡', minions: 0 },
+  monitor: { label: 'Monitor', desc: 'Probes open positions — hold, tighten SL, scale out, exit', icon: '📡', minions: 0 },
+  quant: { label: 'Quant', desc: 'Regime detection, risk metrics, performance snapshots', icon: '📊', minions: 0 },
 }
 
-const STATE_TONE = { running: 'accent', done: 'up', idle: 'neutral' }
-const STATE_ICON = { running: '\u25CF', done: '\u2713', idle: '\u2014' }
+const STATE_TONE = { running: 'accent', done: 'up', idle: 'neutral', sleeping: 'warning', error: 'down' }
+const STATE_ICON = { running: '\u25CF', done: '\u2713', idle: '\u2014', sleeping: '\u23F8', error: '\u2717' }
+
+const SCAN_CACHE_KEY_AGENT = 'bot-trade:scan-cache'
+function readPriceCache() {
+  try {
+    const raw = localStorage.getItem(SCAN_CACHE_KEY_AGENT)
+    if (!raw) return {}
+    return JSON.parse(raw).massiveMetrics || {}
+  } catch { return {} }
+}
 
 function fmtDuration(ms) {
   if (!ms || ms <= 0) return '0s'
@@ -297,41 +306,60 @@ export default function Agent() {
       {/* Pepperstone / cTrader account */}
       <AccountPanel ctrader={state.ctrader} />
 
-      {/* Agent states */}
+      {/* Agent states — 5 core agents */}
       <Card>
-        <p className="t-label mb-2">Agent Status</p>
-        <div className="space-y-1.5">
+        <div className="flex items-center justify-between mb-2">
+          <p className="t-label">Agent Fleet</p>
+          <span className="text-[9px] text-[var(--color-muted)]">
+            {Object.values(agentStates).filter(s => s === 'running').length} active
+          </span>
+        </div>
+        <div className="space-y-1">
           {Object.entries(AGENT_ROLES).map(([key, role]) => {
             const s = agentStates[key] || 'idle'
             const calls = agentCalls[key] || 0
             const tokens = agentTokens[key] || 0
             return (
               <div key={key} className="flex items-center gap-2 px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                <span className={`text-[12px] text-[var(--color-${STATE_TONE[s] || 'muted'})]`}>
+                <span className="text-[14px]">{role.icon}</span>
+                <span className={`text-[10px] w-[8px] ${s === 'running' ? 'animate-pulse' : ''} text-[var(--color-${STATE_TONE[s] || 'muted'})]`}>
                   {STATE_ICON[s] || '\u2014'}
                 </span>
-                <span className="text-[12px] font-bold text-[var(--color-text)] w-[70px]">{role.label}</span>
-                <span className="text-[11px] text-[var(--color-text-sub)] flex-1">{role.desc}</span>
-                <Badge tone={STATE_TONE[s] || 'neutral'} className="text-[8px] px-1.5">
-                  {s.toUpperCase()}
-                </Badge>
-                {calls > 0 && (
-                  <span className="text-[9px] text-[var(--color-muted)] min-w-[50px] text-right">
-                    {calls} calls
-                  </span>
-                )}
-                {tokens > 0 && (
-                  <span className="text-[9px] text-[var(--color-muted)] min-w-[50px] text-right">
-                    {tokens.toLocaleString()} tok
-                  </span>
-                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] font-bold text-[var(--color-text)]">{role.label}</span>
+                    <Badge tone={STATE_TONE[s] || 'neutral'} className="text-[7px] px-1">
+                      {s.toUpperCase()}
+                    </Badge>
+                    {role.minions > 0 && (
+                      <span className="text-[8px] text-[var(--color-accent)]">{role.minions} minions</span>
+                    )}
+                  </div>
+                  <span className="text-[9px] text-[var(--color-text-sub)]">{role.desc}</span>
+                </div>
+                <div className="text-right shrink-0">
+                  {calls > 0 && (
+                    <div className="text-[9px] text-[var(--color-muted)]">{calls} calls</div>
+                  )}
+                  {tokens > 0 && (
+                    <div className="text-[9px] text-[var(--color-muted)]">{tokens.toLocaleString()} tok</div>
+                  )}
+                </div>
               </div>
             )
           })}
         </div>
+        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
+          <span className="text-[9px] text-[var(--color-muted)]">
+            Total: {tokenCount.toLocaleString()} tokens · ${((tokenCount / 1000) * 0.015).toFixed(2)} est.
+          </span>
+          <span className="text-[9px] text-[var(--color-muted)]">
+            Refresh: 15 min cycle
+          </span>
+        </div>
       </Card>
 
-      {/* Monitoring symbols */}
+      {/* Monitoring symbols — with live prices from MASSIVE */}
       <Card>
         <div className="flex items-center gap-2 mb-2">
           <p className="t-label flex-1">Monitoring {enabledSymbols.length} Symbols</p>
@@ -346,29 +374,47 @@ export default function Agent() {
             No symbols enabled. Go to Watchlist to enable symbols for monitoring.
           </p>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
+          <div className="space-y-0.5">
             {enabledSymbols.map(w => {
               const scan = scans[w.symbol]
+              const prices = readPriceCache()
+              const mm = prices[w.symbol] || {}
               const bias = scan?.bias
               const conf = scan?.confidence
               const biasColor = bias === 'long' ? 'var(--color-up)' : bias === 'short' ? 'var(--color-down)' : 'var(--color-muted)'
               const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
+              const price = mm.price || scan?.price
+              const changePct = mm.change_pct
+              const ema = mm.ema_stack?.stack
               return (
                 <div
                   key={w.symbol}
-                  className="flex items-center gap-1.5 px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)] border border-[var(--color-border)]"
+                  className="flex items-center gap-2 px-2 py-1 rounded-[4px] bg-[var(--color-bg)] text-[11px]"
                 >
-                  <span className="text-[11px] font-bold" style={{ color: biasColor }}>
+                  <span className="font-bold w-[65px] shrink-0" style={{ color: biasColor }}>
                     {arrow} {w.symbol}
                   </span>
-                  <span className="text-[9px] text-[var(--color-muted)] truncate flex-1">
-                    {w.label || w.category || ''}
+                  <span className="font-mono font-semibold text-[var(--color-text)] w-[70px] text-right shrink-0">
+                    {price ? fmtMoney(price, price < 10 ? 4 : 2) : '—'}
                   </span>
+                  {changePct != null && (
+                    <span className={`text-[9px] font-bold w-[45px] shrink-0 ${changePct > 0 ? 'text-[var(--color-up)]' : changePct < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                      {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
+                    </span>
+                  )}
+                  {ema && (
+                    <span className={`text-[8px] w-[16px] shrink-0 ${ema.startsWith('Bull') ? 'text-[var(--color-up)]' : ema.startsWith('Bear') ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                      {ema.startsWith('Bull') ? '▲' : ema.startsWith('Bear') ? '▼' : '—'}
+                    </span>
+                  )}
                   {conf != null && (
-                    <span className="text-[9px] font-mono font-bold" style={{ color: biasColor }}>
+                    <span className="text-[9px] font-mono font-bold shrink-0" style={{ color: biasColor }}>
                       {conf}/10
                     </span>
                   )}
+                  <span className="text-[8px] text-[var(--color-muted)] truncate flex-1 text-right">
+                    {scan?.thesis ? scan.thesis.slice(0, 40) : w.label || ''}
+                  </span>
                 </div>
               )
             })}
