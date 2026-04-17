@@ -427,7 +427,7 @@ export default function Feed() {
   const [autoTradeActive, setAutoTradeActive] = useState(false)
   const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
   const [autoTradeCount, setAutoTradeCount] = useState(0)
-  const [massiveMetrics, setMassiveMetrics] = useState(() => cachedScan?.massiveMetrics || {})
+  const [massiveMetrics, setMassiveMetrics] = useState(() => readScanCache()?.massiveMetrics || {})
 
   const scanTimerRef = useRef(null)
 
