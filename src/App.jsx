@@ -41,35 +41,46 @@ function linkClass({ isActive }) {
 
 export default function App() {
   return (
-    <div className="min-h-[100svh] bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <ScrollToTop />
-      <header className="border-b-2 border-[var(--color-accent)]">
-        <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
-          <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
-          <nav aria-label="Main navigation" className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
-            {navLinks.map(l => (
-              <NavLink key={l.to} to={l.to} className={linkClass}>
-                {l.label}
-              </NavLink>
-            ))}
-          </nav>
+      {/* Sticky top chrome — header + session bar never scroll */}
+      <div className="shrink-0 z-30 bg-[var(--color-surface)]">
+        <header className="border-b-2 border-[var(--color-accent)]">
+          <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
+            <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
+            <nav aria-label="Main navigation" className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
+              {navLinks.map(l => (
+                <NavLink key={l.to} to={l.to} className={linkClass}>
+                  {l.label}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        </header>
+        <MarketSessionBar />
+      </div>
+
+      {/* Scrollable content — only this area scrolls */}
+      <main
+        id="main-content"
+        className="flex-1 overflow-y-auto"
+        style={{ overflowAnchor: 'none' }}
+      >
+        <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
+          <Routes>
+            <Route path="/" element={<Navigate to="/feed" replace />} />
+            <Route path="/agent" element={<AgentPage />} />
+            <Route path="/feed" element={<Feed />} />
+            <Route path="/watchlist" element={<Watchlist />} />
+            <Route path="/alert" element={<Alert />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/vault" element={<Vault />} />
+            <Route path="/backtest" element={<Backtest />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/link-up" element={<LinkUp />} />
+            <Route path="*" element={<Navigate to="/feed" replace />} />
+          </Routes>
         </div>
-      </header>
-      <MarketSessionBar />
-      <main id="main-content" style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
-        <Routes>
-          <Route path="/" element={<Navigate to="/feed" replace />} />
-          <Route path="/agent" element={<AgentPage />} />
-          <Route path="/feed" element={<Feed />} />
-          <Route path="/watchlist" element={<Watchlist />} />
-          <Route path="/alert" element={<Alert />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/vault" element={<Vault />} />
-          <Route path="/backtest" element={<Backtest />} />
-          <Route path="/admin" element={<Admin />} />
-          <Route path="/link-up" element={<LinkUp />} />
-          <Route path="*" element={<Navigate to="/feed" replace />} />
-        </Routes>
       </main>
     </div>
   )

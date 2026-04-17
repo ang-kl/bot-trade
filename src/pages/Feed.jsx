@@ -61,6 +61,37 @@ function logEntry(agent, message, extra = {}) {
   return { id: ++logId, ts: Date.now(), agent, message, ...extra }
 }
 
+// ── Currency helpers ──
+
+const SYMBOL_CCY = {
+  EURUSD: 'USD', GBPUSD: 'USD', AUDUSD: 'USD', NZDUSD: 'USD',
+  USDJPY: 'JPY', AUDJPY: 'JPY', GBPJPY: 'JPY', EURJPY: 'JPY', CADJPY: 'JPY',
+  USDCAD: 'CAD', USDCHF: 'CHF', EURGBP: 'GBP', EURCHF: 'CHF',
+  XAUUSD: 'USD', XAGUSD: 'USD',
+  BTCUSD: 'USD', ETHUSD: 'USD', SOLUSD: 'USD',
+  NAS100: 'USD', USTEC: 'USD', US30: 'USD', US500: 'USD',
+  GER40: 'EUR', JPN225: 'JPY', CN50: 'CNY', ASX200: 'AUD',
+  COPPER: 'USD', NATGAS: 'USD', SPOTCRUDE: 'USD', COCOA: 'USD',
+}
+
+const CCY_SIGN = {
+  USD: '$', EUR: '€', GBP: '£', JPY: '¥', AUD: 'A$', CAD: 'C$', CHF: 'Fr', NZD: 'NZ$', CNY: '¥',
+}
+
+function getCcy(symbol) {
+  if (SYMBOL_CCY[symbol]) return SYMBOL_CCY[symbol]
+  if (/USD$/.test(symbol)) return 'USD'
+  if (/JPY$/.test(symbol)) return 'JPY'
+  return 'USD'
+}
+
+function fmtP(v) {
+  if (v == null || v === '' || v === 0) return '\u2014'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '\u2014'
+  return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+}
+
 // ── Symbol result card ──
 
 function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, defaultCollapsed = false }) {
@@ -263,37 +294,6 @@ function getTradeGrade(d) {
 const GRADE_ORDER = { potential: 0, weak: 1, none: 2 }
 const GRADE_LABEL = { potential: 'Potential Trade', weak: 'Weak Trade', none: 'No Trade' }
 const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
-
-// ── Currency helpers ──
-
-const SYMBOL_CCY = {
-  EURUSD: 'USD', GBPUSD: 'USD', AUDUSD: 'USD', NZDUSD: 'USD',
-  USDJPY: 'JPY', AUDJPY: 'JPY', GBPJPY: 'JPY', EURJPY: 'JPY', CADJPY: 'JPY',
-  USDCAD: 'CAD', USDCHF: 'CHF', EURGBP: 'GBP', EURCHF: 'CHF',
-  XAUUSD: 'USD', XAGUSD: 'USD',
-  BTCUSD: 'USD', ETHUSD: 'USD', SOLUSD: 'USD',
-  NAS100: 'USD', USTEC: 'USD', US30: 'USD', US500: 'USD',
-  GER40: 'EUR', JPN225: 'JPY', CN50: 'CNY', ASX200: 'AUD',
-  COPPER: 'USD', NATGAS: 'USD', SPOTCRUDE: 'USD', COCOA: 'USD',
-}
-
-const CCY_SIGN = {
-  USD: '$', EUR: '€', GBP: '£', JPY: '¥', AUD: 'A$', CAD: 'C$', CHF: 'Fr', NZD: 'NZ$', CNY: '¥',
-}
-
-function getCcy(symbol) {
-  if (SYMBOL_CCY[symbol]) return SYMBOL_CCY[symbol]
-  if (/USD$/.test(symbol)) return 'USD'
-  if (/JPY$/.test(symbol)) return 'JPY'
-  return 'USD'
-}
-
-function fmtP(v) {
-  if (v == null || v === '' || v === 0) return '\u2014'
-  const n = Number(v)
-  if (!Number.isFinite(n)) return '\u2014'
-  return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
-}
 
 // ── Summary matrix card ──
 
