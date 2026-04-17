@@ -1,31 +1,30 @@
-// Minimal Context store. Phase 4+ expands shape (watchlist, risk caps,
-// per-symbol sub-agent toggles, news config). This stub just locks the
-// provider/hook surface so pages can import without breaking imports.
-import { createContext, useContext, useReducer } from 'react'
+// StrategyProvider — the React-tree wrapper for strategy-store.js.
+// Kept as a .jsx file with a single default export so it passes
+// react-refresh/only-export-components.
 
-const initialState = {
-  watchlist: [],
-  risk: { perTradePct: 1, dailyMaxLossPct: 3, armed: false },
+import { useEffect, useMemo, useReducer } from 'react'
+import {
+  StrategyContext,
+  INITIAL_STATE,
+  reducer,
+  readStored,
+  writeStored,
+} from './strategy-store.js'
+
+function lazyInit(initial) {
+  if (typeof window === 'undefined') return initial
+  return readStored(window.localStorage, initial)
 }
 
-function reducer(state, action) {
-  switch (action.type) {
-    default:
-      return state
-  }
-}
+export default function StrategyProvider({ children }) {
+  const [state, dispatch] = useReducer(reducer, INITIAL_STATE, lazyInit)
 
-const StrategyContext = createContext({ state: initialState, dispatch: () => {} })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    writeStored(window.localStorage, state)
+  }, [state])
 
-export function StrategyProvider({ children }) {
-  const [state, dispatch] = useReducer(reducer, initialState)
-  return (
-    <StrategyContext.Provider value={{ state, dispatch }}>
-      {children}
-    </StrategyContext.Provider>
-  )
-}
+  const value = useMemo(() => ({ state, dispatch }), [state])
 
-export function useStrategy() {
-  return useContext(StrategyContext)
+  return <StrategyContext.Provider value={value}>{children}</StrategyContext.Provider>
 }

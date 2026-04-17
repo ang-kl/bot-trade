@@ -1,55 +1,139 @@
 @import "tailwindcss";
 
 /*
- * Design tokens — driven by data-theme on <html>.
+ * Design tokens - Builder Playbook v1.0, single canonical palette.
  *
- * Accessibility invariant (user is red/green colour-blind):
+ * Accessibility invariant (red/green colourblind):
  *   Blue = up / long / positive / BUY
  *   Red  = down / short / negative / SELL
- * NO GREEN anywhere. CI gate: scripts/check-no-green.sh.
+ *   NO GREEN anywhere. Success maps to blue/accent.
  *
- * Four themes: light (default), dark, sepia, system (resolved at runtime).
+ * Token names mirror playbook section 3. Every colour in the app
+ * references a token - no raw hex in component code.
  */
 
-:root,
-[data-theme="light"] {
-  --color-up:         #2563eb;
-  --color-down:       #dc2626;
-  --color-bg:         #ffffff;
-  --color-surface:    #f7f7f7;
-  --color-fg:         #171717;
-  --color-fg-subtle:  #525252;
-  --color-border:     #e5e5e5;
-  --color-muted:      #737373;
+:root {
+  /* -- Core palette (playbook 3.1) -- */
+  --color-bg:           #f5f7fa;
+  --color-surface:      #ffffff;
+  --color-border:       #dde3ec;
+  --color-accent:       #1a56db;
+  --color-accent-soft:  #e8f0fe;
+  --color-text:         #1a202c;
+  --color-text-sub:     #4a5568;
+  --color-muted:        #6b7a8d;
+  --color-muted-light:  #9aa5b4;
+
+  /* -- Trading semantics -- */
+  --color-up:           #1a56db;  /* accent = long / positive / buy */
+  --color-down:         #dc2626;  /* red = short / negative / sell */
+
+  /* -- Semantic pairs (playbook 3.2, adapted: NO GREEN) -- */
+  --color-info-text:    #1e40af;
+  --color-info-bg:      #eff6ff;
+  --color-info-border:  #bfdbfe;
+
+  --color-warning-text:   #b45309;
+  --color-warning-bg:     #fffbeb;
+  --color-warning-border: #fcd9a0;
+
+  --color-error-text:   #dc2626;
+  --color-error-bg:     #fdecea;
+  --color-error-border: #f5c6c2;
+
+  /* Success maps to blue/accent (no green for colourblind safety) */
+  --color-success-text:   #1a56db;
+  --color-success-bg:     #e8f0fe;
+  --color-success-border: #c3d3f5;
+
+  --color-special-text:   #7c3aed;
+  --color-special-bg:     #f3e8ff;
+  --color-special-border: #ddd6fe;
+
+  --color-reflection-text:   #0e7490;
+  --color-reflection-bg:     #ecfeff;
+  --color-reflection-border: #a5f3fc;
+
+  /* -- Automation levels (playbook 3.3, green -> blue) -- */
+  --color-level-1-text: #dc2626;  --color-level-1-bg: #fef2f2;  --color-level-1-border: #fecaca;
+  --color-level-2-text: #d97706;  --color-level-2-bg: #fffbeb;  --color-level-2-border: #fcd9a0;
+  --color-level-3-text: #2563eb;  --color-level-3-bg: #eff6ff;  --color-level-3-border: #bfdbfe;
+  --color-level-4-text: #1a56db;  --color-level-4-bg: #e8f0fe;  --color-level-4-border: #c3d3f5;
+
+  /* -- Layout (playbook 5.3) -- */
+  --content-max: 820px;
+  --content-pad: 12px;
+
   color-scheme: light;
 }
 
-[data-theme="dark"] {
-  --color-up:         #3b82f6;
-  --color-down:       #ef4444;
-  --color-bg:         #0a0a0a;
-  --color-surface:    #171717;
-  --color-fg:         #fafafa;
-  --color-fg-subtle:  #a3a3a3;
-  --color-border:     #262626;
-  --color-muted:      #737373;
-  color-scheme: dark;
+/* -- Responsive layout tokens (playbook 5.2 / 5.3) -- */
+@media (min-width: 600px)  { :root { --content-pad: 20px; } }
+@media (min-width: 900px)  { :root { --content-pad: 32px; --content-max: 900px; } }
+@media (min-width: 1200px) { :root { --content-max: 1000px; } }
+@media (min-width: 1600px) { :root { --content-max: 1080px; } }
+@media (min-width: 2000px) { :root { --content-max: 1200px; } }
+@media (min-width: 2560px) { :root { --content-max: 1320px; } }
+
+/* -- Typography classes (playbook 2.2 / 2.3) -- */
+.t-heading { font-size: 17px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; }
+.t-body    { font-size: 14px; font-weight: 500; line-height: 1.5; }
+.t-label   { font-size: 13px; font-weight: 600; line-height: 1.5; }
+.t-sub     { font-size: 12px; font-weight: 400; line-height: 1.6; }
+.t-meta    { font-size: 11px; font-weight: 400; line-height: 1.65; }
+
+@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } .t-sub { font-size: 13px; } }
+@media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-body { font-size: 16px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
+@media (min-width: 1153px) { html { zoom: 1.1; } }
+@media (min-width: 1280px) { .t-heading { font-size: 21px; } }
+@media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 18px; } .t-label { font-size: 15px; } .t-sub { font-size: 16px; } .t-meta { font-size: 14px; } }
+@media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 28px; } .t-body { font-size: 20px; } .t-label { font-size: 17px; } .t-sub { font-size: 17px; } .t-meta { font-size: 15px; } }
+
+/* Uppercase section label helper */
+.t-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-muted);
 }
 
-[data-theme="sepia"] {
-  --color-up:         #1d4ed8;
-  --color-down:       #b91c1c;
-  --color-bg:         #f4ecd8;
-  --color-surface:    #ebe2c4;
-  --color-fg:         #44382a;
-  --color-fg-subtle:  #6b5a45;
-  --color-border:     #d4c4a0;
-  --color-muted:      #8a7860;
-  color-scheme: light;
+/* Skip nav link (Builder Standard 8 - Accessibility) */
+.skip-nav {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 100;
+  padding: 8px 16px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 7px 0;
+}
+.skip-nav:focus {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+  overflow: visible;
 }
 
+/* Hide scrollbar for horizontal overflow areas (nav, tabs) */
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+/* -- Root + body -- */
 html, body, #root {
-  height: 100%;
+  min-height: 100svh;
+  min-height: 100vh; /* fallback */
   background: var(--color-bg);
-  color: var(--color-fg);
+  color: var(--color-text);
+  font-family: system-ui, sans-serif;
 }

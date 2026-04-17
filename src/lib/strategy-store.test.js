@@ -1,0 +1,446 @@
+import { describe, it, expect } from 'vitest'
+import {
+  INITIAL_STATE,
+  EMPTY_STATE,
+  DEFAULT_WATCHLIST,
+  WATCHLIST_CATEGORIES,
+  SCHEMA_VERSION,
+  STORAGE_KEY,
+  SOURCE_OPTIONS,
+  SUB_AGENTS,
+  DEFAULT_AGENTS,
+  reducer,
+  sanitize,
+  readStored,
+  writeStored,
+} from './strategy-store.js'
+
+function makeStorage(initial = {}) {
+  const store = { ...initial }
+  return {
+    getItem: (k) => (k in store ? store[k] : null),
+    setItem: (k, v) => { store[k] = String(v) },
+    removeItem: (k) => { delete store[k] },
+    _raw: store,
+  }
+}
+
+describe('strategy-store constants', () => {
+  it('lists sub-agents matching DEFAULT_AGENTS keys', () => {
+    expect(SUB_AGENTS.sort()).toEqual(Object.keys(DEFAULT_AGENTS).sort())
+  })
+  it('has expanded source options including telegram, x, rss, forexfactory', () => {
+    expect(SOURCE_OPTIONS).toContain('osinet')
+    expect(SOURCE_OPTIONS).toContain('telegram')
+    expect(SOURCE_OPTIONS).toContain('x')
+    expect(SOURCE_OPTIONS).toContain('rss')
+    expect(SOURCE_OPTIONS).toContain('forexfactory')
+    expect(SOURCE_OPTIONS).not.toContain('twitter')
+  })
+})
+
+describe('reducer: hydrate + unknown', () => {
+  it('HYDRATE replaces state with payload', () => {
+    const next = reducer(INITIAL_STATE, { type: 'HYDRATE', payload: { ...INITIAL_STATE, risk: { ...INITIAL_STATE.risk, armed: true } } })
+    expect(next.risk.armed).toBe(true)
+  })
+  it('HYDRATE without payload is a no-op', () => {
+    expect(reducer(INITIAL_STATE, { type: 'HYDRATE' })).toBe(INITIAL_STATE)
+  })
+  it('unknown action returns the same state reference', () => {
+    expect(reducer(INITIAL_STATE, { type: 'NOPE' })).toBe(INITIAL_STATE)
+  })
+})
+
+describe('default watchlist seed', () => {
+  it('ships more than 30 rows', () => {
+    expect(DEFAULT_WATCHLIST.length).toBeGreaterThan(30)
+  })
+  it('seeds every row disabled so the user/agent picks what to trade', () => {
+    expect(DEFAULT_WATCHLIST.every(w => w.enabled === false)).toBe(true)
+  })
+  it('every seed row uses a known category', () => {
+    for (const w of DEFAULT_WATCHLIST) {
+      expect(WATCHLIST_CATEGORIES).toContain(w.category)
+    }
+  })
+  it('every seed row has a human-readable label', () => {
+    for (const w of DEFAULT_WATCHLIST) {
+      expect(typeof w.label).toBe('string')
+      expect(w.label.length).toBeGreaterThan(0)
+    }
+  })
+  it('INITIAL_STATE points at the default watchlist', () => {
+    expect(INITIAL_STATE.watchlist).toBe(DEFAULT_WATCHLIST)
+  })
+  it('EMPTY_STATE has an empty watchlist', () => {
+    expect(EMPTY_STATE.watchlist).toEqual([])
+  })
+  it('seed includes the canonical FX + crypto anchors', () => {
+    const symbols = DEFAULT_WATCHLIST.map(w => w.symbol)
+    expect(symbols).toEqual(expect.arrayContaining(['EURUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NAS100']))
+  })
+})
+
+describe('reducer: cTrader', () => {
+  it('sets access + refresh tokens', () => {
+    const s = reducer(INITIAL_STATE, { type: 'CTRADER_SET_TOKENS', accessToken: 'abc', refreshToken: 'def' })
+    expect(s.ctrader.accessToken).toBe('abc')
+    expect(s.ctrader.refreshToken).toBe('def')
+  })
+  it('ignores non-string token fields', () => {
+    const s = reducer(INITIAL_STATE, { type: 'CTRADER_SET_TOKENS', accessToken: 123 })
+    expect(s.ctrader.accessToken).toBe('')
+  })
+  it('replaces accounts list', () => {
+    const s = reducer(INITIAL_STATE, { type: 'CTRADER_SET_ACCOUNTS', accounts: [{ ctidTraderAccountId: 1 }] })
+    expect(s.ctrader.accounts).toHaveLength(1)
+  })
+  it('coerces non-array accounts to empty list', () => {
+    const s = reducer(INITIAL_STATE, { type: 'CTRADER_SET_ACCOUNTS', accounts: 'nope' })
+    expect(s.ctrader.accounts).toEqual([])
+  })
+  it('links and unlinks an account', () => {
+    const linked = reducer(INITIAL_STATE, { type: 'CTRADER_LINK_ACCOUNT', accountId: 42 })
+    expect(linked.ctrader.linkedAccountId).toBe(42)
+    const cleared = reducer(linked, { type: 'CTRADER_LINK_ACCOUNT' })
+    expect(cleared.ctrader.linkedAccountId).toBeNull()
+  })
+})
+
+describe('reducer: watchlist', () => {
+  const seed = (...symbols) => symbols.reduce((s, sym) => reducer(s, { type: 'WATCHLIST_ADD', symbol: sym }), EMPTY_STATE)
+
+  it('adds a symbol with default agents', () => {
+    const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'eurusd' })
+    expect(s.watchlist).toEqual([{ symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS }, autoTradeThreshold: 8, maxVolume: 0.01 }])
+  })
+  it('stores optional label + category when provided', () => {
+    const s = reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: 'NATGAS', label: 'Natural Gas', category: 'Futures' })
+    expect(s.watchlist[0]).toMatchObject({ symbol: 'NATGAS', label: 'Natural Gas', category: 'Futures' })
+  })
+  it('rejects duplicates case-insensitively', () => {
+    const s = seed('EURUSD')
+    const after = reducer(s, { type: 'WATCHLIST_ADD', symbol: 'eurusd' })
+    expect(after.watchlist).toHaveLength(1)
+  })
+  it('ignores blank symbols', () => {
+    expect(reducer(EMPTY_STATE, { type: 'WATCHLIST_ADD', symbol: '   ' }).watchlist).toHaveLength(0)
+  })
+  it('removes a symbol', () => {
+    const s = seed('EURUSD', 'GBPUSD')
+    const after = reducer(s, { type: 'WATCHLIST_REMOVE', symbol: 'eurusd' })
+    expect(after.watchlist.map(w => w.symbol)).toEqual(['GBPUSD'])
+  })
+  it('MOVE swaps neighbours within bounds', () => {
+    const s = seed('A', 'B', 'C')
+    const down = reducer(s, { type: 'WATCHLIST_MOVE', symbol: 'A', delta: 1 })
+    expect(down.watchlist.map(w => w.symbol)).toEqual(['B', 'A', 'C'])
+    const up = reducer(down, { type: 'WATCHLIST_MOVE', symbol: 'A', delta: -1 })
+    expect(up.watchlist.map(w => w.symbol)).toEqual(['A', 'B', 'C'])
+  })
+  it('MOVE out-of-bounds is a no-op (returns same reference)', () => {
+    const s = seed('A', 'B')
+    expect(reducer(s, { type: 'WATCHLIST_MOVE', symbol: 'A', delta: -1 })).toBe(s)
+    expect(reducer(s, { type: 'WATCHLIST_MOVE', symbol: 'B', delta: 1 })).toBe(s)
+  })
+  it('TOGGLE_ENABLED flips the enabled flag', () => {
+    const s = seed('EURUSD')
+    const off = reducer(s, { type: 'WATCHLIST_TOGGLE_ENABLED', symbol: 'EURUSD' })
+    expect(off.watchlist[0].enabled).toBe(false)
+    const on = reducer(off, { type: 'WATCHLIST_TOGGLE_ENABLED', symbol: 'EURUSD' })
+    expect(on.watchlist[0].enabled).toBe(true)
+  })
+  it('TOGGLE_AGENT flips one agent on a symbol', () => {
+    const s = seed('EURUSD')
+    const off = reducer(s, { type: 'WATCHLIST_TOGGLE_AGENT', symbol: 'EURUSD', agent: 'news' })
+    expect(off.watchlist[0].agents.news).toBe(false)
+    expect(off.watchlist[0].agents.technical).toBe(true)
+  })
+  it('TOGGLE_AGENT rejects unknown agent names', () => {
+    const s = seed('EURUSD')
+    expect(reducer(s, { type: 'WATCHLIST_TOGGLE_AGENT', symbol: 'EURUSD', agent: 'psychic' })).toBe(s)
+  })
+})
+
+describe('reducer: news (Market Rundown)', () => {
+  it('toggles a known source on and off', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_TOGGLE_SOURCE', source: 'bloomberg' })
+    expect(s.news.sources).toContain('bloomberg')
+    const s2 = reducer(s, { type: 'NEWS_TOGGLE_SOURCE', source: 'bloomberg' })
+    expect(s2.news.sources).not.toContain('bloomberg')
+  })
+  it('accepts new source types (telegram, x, rss, forexfactory)', () => {
+    let s = INITIAL_STATE
+    for (const src of ['telegram', 'x', 'rss', 'forexfactory']) {
+      s = reducer(s, { type: 'NEWS_TOGGLE_SOURCE', source: src })
+      expect(s.news.sources).toContain(src)
+    }
+  })
+  it('rejects unknown sources', () => {
+    expect(reducer(INITIAL_STATE, { type: 'NEWS_TOGGLE_SOURCE', source: 'twitter' })).toBe(INITIAL_STATE)
+  })
+  it('stores a rundown with a timestamp', () => {
+    const at = '2026-04-15T12:00:00.000Z'
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_SET_RUNDOWN', rundown: '# Rundown', at })
+    expect(s.news.latestRundown).toBe('# Rundown')
+    expect(s.news.lastGeneratedAt).toBe(at)
+  })
+  it('coerces non-string structure payload to null', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_SET_STRUCTURE', structure: 42 })
+    expect(s.news.structure).toBeNull()
+  })
+  it('adds and removes telegram channels', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX News', username: 'fxnews' })
+    expect(s.news.telegramChannels).toHaveLength(1)
+    expect(s.news.telegramChannels[0].username).toBe('fxnews')
+    const s2 = reducer(s, { type: 'NEWS_REMOVE_TELEGRAM_CHANNEL', id: s.news.telegramChannels[0].id })
+    expect(s2.news.telegramChannels).toHaveLength(0)
+  })
+  it('rejects duplicate telegram channels by username', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX', username: 'fxnews' })
+    const s2 = reducer(s, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX2', username: 'fxnews' })
+    expect(s2.news.telegramChannels).toHaveLength(1)
+  })
+  it('toggles telegram channel enabled state', () => {
+    const s = reducer(INITIAL_STATE, { type: 'NEWS_ADD_TELEGRAM_CHANNEL', name: 'FX', username: 'fxnews' })
+    const id = s.news.telegramChannels[0].id
+    const s2 = reducer(s, { type: 'NEWS_TOGGLE_TELEGRAM_CHANNEL', id })
+    expect(s2.news.telegramChannels[0].enabled).toBe(false)
+  })
+})
+
+describe('reducer: risk', () => {
+  it('clamps per-trade pct into [0,100]', () => {
+    expect(reducer(INITIAL_STATE, { type: 'RISK_SET', perTradePct: 500 }).risk.perTradePct).toBe(100)
+    expect(reducer(INITIAL_STATE, { type: 'RISK_SET', perTradePct: -3 }).risk.perTradePct).toBe(0)
+  })
+  it('clamps max trades/day into [0,1000]', () => {
+    expect(reducer(INITIAL_STATE, { type: 'RISK_SET', maxTradesPerDay: 9999 }).risk.maxTradesPerDay).toBe(1000)
+  })
+  it('non-finite values clamp to the floor', () => {
+    expect(reducer(INITIAL_STATE, { type: 'RISK_SET', perTradePct: 'hi' }).risk.perTradePct).toBe(0)
+  })
+  it('toggles armed', () => {
+    const armed = reducer(INITIAL_STATE, { type: 'RISK_TOGGLE_ARMED' })
+    expect(armed.risk.armed).toBe(true)
+    expect(reducer(armed, { type: 'RISK_TOGGLE_ARMED' }).risk.armed).toBe(false)
+  })
+})
+
+describe('sanitize', () => {
+  it('returns fallback when raw is not an object', () => {
+    expect(sanitize(null)).toBe(INITIAL_STATE)
+    expect(sanitize('foo')).toBe(INITIAL_STATE)
+  })
+  it('rebuilds watchlist from legacy shapes', () => {
+    const raw = { watchlist: [{ symbol: 'eurusd', enabled: true, agents: { news: false } }, null, { symbol: 42 }] }
+    const out = sanitize(raw)
+    expect(out.watchlist).toEqual([
+      { symbol: 'EURUSD', enabled: true, agents: { ...DEFAULT_AGENTS, news: false }, autoTradeThreshold: 8, maxVolume: 0.01 },
+    ])
+  })
+  it('coerces risk numerics and keeps valid expanded sources', () => {
+    const raw = { news: { sources: ['osinet', 'telegram', 'badone'] }, risk: { perTradePct: 999, dailyMaxLossPct: -5, maxTradesPerDay: 9999, armed: true } }
+    const out = sanitize(raw)
+    expect(out.news.sources).toEqual(['osinet', 'telegram'])
+    expect(out.news.briefingWindow).toBeUndefined()
+    expect(out.risk).toEqual({ perTradePct: 100, dailyMaxLossPct: 0, maxTradesPerDay: 1000, armed: true })
+  })
+  it('migrates pre-v2 empty watchlist to the default seed', () => {
+    // Simulates a returning visitor whose localStorage was persisted before
+    // the default pool shipped.
+    const raw = { watchlist: [], risk: { perTradePct: 2 } }
+    const out = sanitize(raw)
+    expect(out.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(out.watchlist).toBe(DEFAULT_WATCHLIST)
+  })
+  it('preserves an intentional v2 empty watchlist', () => {
+    // A user who already migrated and deliberately removed every row.
+    const raw = { schemaVersion: SCHEMA_VERSION, watchlist: [] }
+    const out = sanitize(raw)
+    expect(out.watchlist).toEqual([])
+  })
+  it('stamps schemaVersion onto sanitized output', () => {
+    const out = sanitize({ watchlist: [{ symbol: 'EURUSD', enabled: true }] })
+    expect(out.schemaVersion).toBe(SCHEMA_VERSION)
+  })
+})
+
+describe('massive + adminLocks', () => {
+  it('MASSIVE_SET updates API key', () => {
+    const s = reducer(INITIAL_STATE, { type: 'MASSIVE_SET', apiKey: 'test-key-123' })
+    expect(s.massive.apiKey).toBe('test-key-123')
+  })
+  it('MASSIVE_SET ignores non-string', () => {
+    const s = reducer(INITIAL_STATE, { type: 'MASSIVE_SET', apiKey: 42 })
+    expect(s.massive.apiKey).toBe('')
+  })
+  it('ADMIN_LOCK locks a service', () => {
+    const s = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'ctrader' })
+    expect(s.adminLocks.ctrader).toBe(true)
+    expect(s.adminLocks.telegram).toBe(false)
+  })
+  it('ADMIN_UNLOCK unlocks a service', () => {
+    const s1 = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'massive' })
+    const s2 = reducer(s1, { type: 'ADMIN_UNLOCK', service: 'massive' })
+    expect(s2.adminLocks.massive).toBe(false)
+  })
+  it('ADMIN_LOCK ignores unknown service', () => {
+    const s = reducer(INITIAL_STATE, { type: 'ADMIN_LOCK', service: 'unknown' })
+    expect(s).toBe(INITIAL_STATE)
+  })
+  it('sanitize preserves massive and adminLocks', () => {
+    const raw = {
+      massive: { apiKey: 'abc' },
+      adminLocks: { ctrader: true, telegram: false, massive: true },
+    }
+    const out = sanitize(raw)
+    expect(out.massive.apiKey).toBe('abc')
+    expect(out.adminLocks.ctrader).toBe(true)
+    expect(out.adminLocks.massive).toBe(true)
+  })
+  it('sanitize defaults massive and adminLocks', () => {
+    const out = sanitize({})
+    expect(out.massive).toEqual({ apiKey: '', s3AccessKeyId: '', s3Endpoint: '', s3Bucket: '' })
+    expect(out.adminLocks).toEqual({ ctrader: false, telegram: false, massive: false })
+  })
+})
+
+describe('symbolStats', () => {
+  it('SYMBOL_STATS_UPDATE merges per-symbol stats', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { EURUSD: { trend: true, high: false }, XAUUSD: { trend: false, high: true } },
+    })
+    expect(s1.symbolStats.EURUSD).toEqual({ trend: true, high: false })
+    expect(s1.symbolStats.XAUUSD).toEqual({ trend: false, high: true })
+    // Merge additional stats without losing existing
+    const s2 = reducer(s1, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { EURUSD: { trend: false, dip: true } },
+    })
+    expect(s2.symbolStats.EURUSD).toEqual({ trend: false, dip: true })
+    expect(s2.symbolStats.XAUUSD).toEqual({ trend: false, high: true })
+  })
+  it('SYMBOL_STATS_UPDATE ignores invalid payload', () => {
+    const s = reducer(INITIAL_STATE, { type: 'SYMBOL_STATS_UPDATE', statsMap: null })
+    expect(s.symbolStats).toEqual({})
+  })
+  it('SYMBOL_STATS_CLEAR resets to empty', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'SYMBOL_STATS_UPDATE',
+      statsMap: { BTCUSD: { trend: true } },
+    })
+    expect(Object.keys(s1.symbolStats).length).toBe(1)
+    const s2 = reducer(s1, { type: 'SYMBOL_STATS_CLEAR' })
+    expect(s2.symbolStats).toEqual({})
+  })
+  it('sanitize preserves symbolStats', () => {
+    const raw = { symbolStats: { EURUSD: { trend: true } } }
+    const out = sanitize(raw)
+    expect(out.symbolStats).toEqual({ EURUSD: { trend: true } })
+  })
+  it('sanitize defaults symbolStats to empty object', () => {
+    const out = sanitize({})
+    expect(out.symbolStats).toEqual({})
+  })
+})
+
+describe('reducer: AI picks', () => {
+  it('AI_PICKS_SET stores picks with metadata', () => {
+    const picks = [
+      { ticker: 'AAPL', bias: 'long', confidence: 8, thesis: 'momentum play', category: 'Stocks', price: 195, change: '1.5', volume: 50000000 },
+      { ticker: 'MSFT', bias: 'short', confidence: 6, thesis: 'gap fill', category: 'Stocks', price: 420, change: '-0.8', volume: 30000000 },
+    ]
+    const s = reducer(INITIAL_STATE, { type: 'AI_PICKS_SET', picks, rationale: 'High momentum names', index: 'US30', scanned: 30 })
+    expect(s.aiPicks.picks).toHaveLength(2)
+    expect(s.aiPicks.picks[0].ticker).toBe('AAPL')
+    expect(s.aiPicks.rationale).toBe('High momentum names')
+    expect(s.aiPicks.index).toBe('US30')
+    expect(s.aiPicks.scanned).toBe(30)
+    expect(s.aiPicks.lastPickedAt).toBeTruthy()
+  })
+
+  it('AI_PICKS_CLEAR resets to initial state', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [{ ticker: 'NVDA', bias: 'long', confidence: 9 }],
+      rationale: 'test',
+      index: 'US30',
+      scanned: 5,
+    })
+    expect(s1.aiPicks.picks).toHaveLength(1)
+    const s2 = reducer(s1, { type: 'AI_PICKS_CLEAR' })
+    expect(s2.aiPicks.picks).toHaveLength(0)
+    expect(s2.aiPicks.rationale).toBe('')
+    expect(s2.aiPicks.lastPickedAt).toBeNull()
+  })
+
+  it('AI_PICKS_REMOVE removes a pick by ticker', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [
+        { ticker: 'AAPL', bias: 'long', confidence: 8 },
+        { ticker: 'MSFT', bias: 'short', confidence: 6 },
+        { ticker: 'NVDA', bias: 'long', confidence: 9 },
+      ],
+    })
+    const s2 = reducer(s1, { type: 'AI_PICKS_REMOVE', ticker: 'MSFT' })
+    expect(s2.aiPicks.picks).toHaveLength(2)
+    expect(s2.aiPicks.picks.map(p => p.ticker)).toEqual(['AAPL', 'NVDA'])
+  })
+
+  it('AI_PICKS_REMOVE is case-insensitive', () => {
+    const s1 = reducer(INITIAL_STATE, {
+      type: 'AI_PICKS_SET',
+      picks: [{ ticker: 'AAPL', bias: 'long', confidence: 8 }],
+    })
+    const s2 = reducer(s1, { type: 'AI_PICKS_REMOVE', ticker: 'aapl' })
+    expect(s2.aiPicks.picks).toHaveLength(0)
+  })
+
+  it('sanitize preserves valid aiPicks', () => {
+    const raw = {
+      aiPicks: {
+        picks: [{ ticker: 'TSLA', bias: 'long', confidence: 7 }],
+        rationale: 'EV momentum',
+        index: 'US30',
+        scanned: 30,
+        lastPickedAt: '2026-01-01T00:00:00Z',
+      },
+    }
+    const out = sanitize(raw)
+    expect(out.aiPicks.picks).toHaveLength(1)
+    expect(out.aiPicks.rationale).toBe('EV momentum')
+    expect(out.aiPicks.lastPickedAt).toBe('2026-01-01T00:00:00Z')
+  })
+
+  it('sanitize defaults aiPicks when missing', () => {
+    const out = sanitize({})
+    expect(out.aiPicks.picks).toEqual([])
+    expect(out.aiPicks.rationale).toBe('')
+    expect(out.aiPicks.lastPickedAt).toBeNull()
+  })
+})
+
+describe('readStored / writeStored', () => {
+  it('writes and reads round-trip via storage double', () => {
+    const storage = makeStorage()
+    const s = reducer(INITIAL_STATE, { type: 'RISK_TOGGLE_ARMED' })
+    expect(writeStored(storage, s)).toBe(true)
+    expect(storage._raw[STORAGE_KEY]).toBeDefined()
+    expect(readStored(storage).risk.armed).toBe(true)
+  })
+  it('readStored returns fallback when storage is empty', () => {
+    expect(readStored(makeStorage())).toBe(INITIAL_STATE)
+  })
+  it('readStored returns fallback on malformed JSON', () => {
+    const storage = makeStorage({ [STORAGE_KEY]: '{not json' })
+    expect(readStored(storage)).toBe(INITIAL_STATE)
+  })
+  it('writeStored returns false when storage throws', () => {
+    const storage = { setItem: () => { throw new Error('quota') } }
+    expect(writeStored(storage, INITIAL_STATE)).toBe(false)
+  })
+})

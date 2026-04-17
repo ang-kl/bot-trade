@@ -1,0 +1,87 @@
+// Monitor service — extracted from api/monitor.js
+// Standalone business logic, no HTTP handler.
+
+import { getSessionContext } from '../../api/_lib/sessions.js'
+
+const MODEL = 'claude-sonnet-4-5'
+const MAX_TOKENS = 768
+
+function buildMonitorPrompt(position, sessionContext) {
+  return `You are the Monitor Agent on a prop trading desk. You manage open positions.
+Your job: decide if the original thesis still holds, and recommend action.
+
+## Open position
+Symbol: ${position.symbol}
+Side: ${position.side}
+Entry: ${position.entry}
+Current price: ${position.currentPrice || 'unknown'}
+Stop loss: ${position.sl}
+Take profit: ${position.tp1}
+P&L: ${position.pnl || 'unknown'}
+Original thesis: ${position.thesis || 'not recorded'}
+Time in trade: ${position.holdTime || 'unknown'}
+
+## Market context
+${sessionContext}
+UTC: ${new Date().toISOString()}
+
+## Your options
+1. HOLD — thesis intact, let it ride
+2. TIGHTEN_SL — move stop loss to lock in profit (specify new SL price)
+3. SCALE_OUT — take partial profit (specify %)
+4. EXIT — thesis broken or risk event, close at market
+5. ADD — thesis strengthened, scale in (specify price)
+
+Be honest. If the trade is working, say HOLD. Don't over-manage.
+If price is moving against the thesis, consider EXIT early rather than waiting for SL.
+
+Return ONLY valid JSON:
+{
+  "action": "HOLD" | "TIGHTEN_SL" | "SCALE_OUT" | "EXIT" | "ADD",
+  "new_sl": <price or null>,
+  "scale_pct": <percent to close or null>,
+  "add_price": <price or null>,
+  "reasoning": "<20-40 words, what you see and why this action>",
+  "thesis_status": "intact" | "weakening" | "broken",
+  "urgency": "low" | "medium" | "high"
+}`
+}
+
+/**
+ * Run a monitor check on an open position.
+ *
+ * @param {import('@anthropic-ai/sdk').default} client - Anthropic client instance
+ * @param {{ symbol: string, side: string, entry: number, currentPrice?: number, sl: number, tp1: number, pnl?: string, thesis?: string, holdTime?: string }} position
+ * @returns {Promise<{ action: string, new_sl: number|null, scale_pct: number|null, reasoning: string, thesis_status: string, urgency: string }>}
+ */
+export async function runMonitorCheck(client, position) {
+  const sessionContext = getSessionContext()
+  const prompt = buildMonitorPrompt(position, sessionContext)
+
+  const resp = await client.messages.create({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  const text = (resp?.content || [])
+    .filter(p => p?.type === 'text')
+    .map(p => p.text)
+    .join('')
+    .trim()
+
+  const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '')
+  const parsed = JSON.parse(clean)
+
+  return {
+    symbol: position.symbol,
+    action: parsed.action,
+    new_sl: parsed.new_sl ?? null,
+    scale_pct: parsed.scale_pct ?? null,
+    add_price: parsed.add_price ?? null,
+    reasoning: parsed.reasoning,
+    thesis_status: parsed.thesis_status,
+    urgency: parsed.urgency,
+    usage: resp.usage || null,
+  }
+}
