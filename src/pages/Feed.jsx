@@ -878,15 +878,6 @@ export default function Feed() {
     runAnalyst(symbol).finally(() => setAnalysing(false))
   }, [runAnalyst])
 
-  const handleAnalyseAll = useCallback(() => {
-    const hot = displaySymbols.filter(d =>
-      d.scan && !d.analysis && (d.scan.confidence || 0) >= 5 && d.scan.bias !== 'skip'
-    ).map(d => d.symbol).slice(0, 5)
-    if (hot.length === 0) return
-    setAnalysing(true)
-    Promise.all(hot.map(sym => runAnalyst(sym))).finally(() => setAnalysing(false))
-  }, [displaySymbols, runAnalyst])
-
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {
     dispatch({ type: 'RISK_TOGGLE_ARMED' })
@@ -1064,6 +1055,15 @@ export default function Feed() {
       })
   // scanResults change locks new order; analyses updates re-render without resorting
   }, [enabledSymbols, scanResults, analyses])
+
+  const handleAnalyseAll = useCallback(() => {
+    const hot = displaySymbols.filter(d =>
+      d.scan && !d.analysis && (d.scan.confidence || 0) >= 5 && d.scan.bias !== 'skip'
+    ).map(d => d.symbol).slice(0, 5)
+    if (hot.length === 0) return
+    setAnalysing(true)
+    Promise.all(hot.map(sym => runAnalyst(sym))).finally(() => setAnalysing(false))
+  }, [displaySymbols, runAnalyst])
 
   const scanning = agentStates.scout === 'running'
 
