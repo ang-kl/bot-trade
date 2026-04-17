@@ -37,7 +37,10 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'No watchlist configured' })
       }
 
-      const watchlist = JSON.parse(watchlistJson)
+      let watchlist
+      try { watchlist = JSON.parse(watchlistJson) } catch {
+        return res.status(500).json({ error: 'Watchlist data corrupted' })
+      }
       const symbols = (Array.isArray(watchlist) ? watchlist : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
@@ -48,8 +51,8 @@ export default function actionsRouter(db) {
 
       const client = getClient()
       const scanResult = await runScan(client, symbols, {
-        timezone: req.body?.timezone || 'Asia/Singapore',
-        hotThreshold: req.body?.hotThreshold || 6,
+        timezone: typeof req.body?.timezone === 'string' ? req.body.timezone : 'Asia/Singapore',
+        hotThreshold: Number(req.body?.hotThreshold) || 6,
       })
 
       // Persist latest results to state
