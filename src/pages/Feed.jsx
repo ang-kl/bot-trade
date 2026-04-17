@@ -406,13 +406,12 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
 
 export default function Feed() {
   const { state, dispatch } = useStrategy()
-  const cachedScan = useMemo(() => readScanCache(), [])
   const [log, setLog] = useState([])
-  const [scanResults, setScanResults] = useState(() => cachedScan?.scanResults || {})
+  const [scanResults, setScanResults] = useState(() => readScanCache()?.scanResults || {})
   const [analyses, setAnalyses] = useState({})
   const [deskNote, setDeskNote] = useState(null)
   const [agentStates, setAgentStates] = useState({})
-  const [lastScanAt, setLastScanAt] = useState(() => cachedScan?.lastScanAt || null)
+  const [lastScanAt, setLastScanAt] = useState(() => readScanCache()?.lastScanAt || null)
   const [countdown, setCountdown] = useState(0)
   const [tokenCount, setTokenCount] = useState(0)
   const [agentTokens, setAgentTokens] = useState({})
