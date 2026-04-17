@@ -1,0 +1,60 @@
+name: Daily Morning Scan
+
+# Redundant trigger — runs even if the Railway agent loop stalls.
+# Hits the agent's /actions/scan endpoint and posts results to Telegram.
+
+on:
+  schedule:
+    # 22:00 UTC = 06:00 SGT — before Asia close, catches overnight setups
+    - cron: '0 22 * * *'
+    # 06:00 UTC = 14:00 SGT — before London open, catches European setups
+    - cron: '0 6 * * 1-5'
+  workflow_dispatch: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf "${{ secrets.AGENT_URL }}/health" | jq -r '.status' 2>/dev/null || echo "unreachable")
+          echo "Agent status: $STATUS"
+          if [ "$STATUS" != "ok" ]; then
+            echo "::warning::Agent is not healthy ($STATUS) — scan may fail"
+          fi
+
+      - name: Trigger scan
+        id: scan
+        run: |
+          RESPONSE=$(curl -sf -X POST "${{ secrets.AGENT_URL }}/actions/scan" \
+            -H "Authorization: Bearer ${{ secrets.AGENT_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{"timezone":"Asia/Singapore","hotThreshold":6}')
+
+          echo "$RESPONSE" | jq '.' || echo "$RESPONSE"
+
+          HOT=$(echo "$RESPONSE" | jq -r '.result.hot | length' 2>/dev/null || echo "0")
+          WARM=$(echo "$RESPONSE" | jq -r '.result.warm | length' 2>/dev/null || echo "0")
+          TOTAL=$(echo "$RESPONSE" | jq -r '.result.scans | length' 2>/dev/null || echo "0")
+          DESK=$(echo "$RESPONSE" | jq -r '.result.desk_note // "N/A"' 2>/dev/null || echo "N/A")
+
+          echo "hot=$HOT" >> "$GITHUB_OUTPUT"
+          echo "warm=$WARM" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "desk=$DESK" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Telegram
+        if: steps.scan.outputs.hot != '0' || github.event_name == 'workflow_dispatch'
+        run: |
+          MSG="🤖 *GH Actions Daily Scan*
+          Scanned: ${{ steps.scan.outputs.total }} symbols
+          🔥 Hot: ${{ steps.scan.outputs.hot }}
+          🟡 Warm: ${{ steps.scan.outputs.warm }}
+
+          _${{ steps.scan.outputs.desk }}_"
+
+          curl -sf -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode "text=$MSG" || echo "Telegram send failed"

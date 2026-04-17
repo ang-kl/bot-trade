@@ -8,6 +8,7 @@ import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
+import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -90,10 +91,16 @@ async function runLoop(db) {
         log('No enabled symbols in watchlist')
       } else {
 
-    // Run scan
+    // Build context memory for this scan
+    const contextBrief = buildContextBrief(db)
+    const scanDelta = buildScanDelta(db, []) // pre-scan delta (will be computed post-scan on next loop)
+
+    // Run scan with accumulated context
     const scanResult = await runScan(client, symbols, {
       timezone: 'Asia/Singapore',
       hotThreshold: 6,
+      contextBrief,
+      scanDelta,
     })
 
     log(
@@ -126,6 +133,9 @@ async function runLoop(db) {
 
     setState(db, 'last_scan_at', now)
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
+
+    // Persist scan context for next loop's delta computation
+    persistScanContext(db, scanResult.scans)
 
     // Telegram alert for hot symbols
     if (scanResult.hot.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
@@ -220,7 +230,68 @@ async function runLoop(db) {
     // 4. QUANT PHASE — every 6th loop (~30 min)
     // -----------------------------------------------------------------------
     if (loopCount % 6 === 0) {
-      log('Quant phase (stub) — regime update + performance snapshot')
+      log('Quant phase — computing regime + performance snapshot')
+      try {
+        // Regime: summarise recent scan biases per symbol into regime state
+        const recentScans = db.prepare(
+          `SELECT symbol, bias, confidence, scanned_at FROM scans
+           WHERE scanned_at > datetime('now', '-6 hours') ORDER BY scanned_at DESC`
+        ).all()
+
+        const bySymbol = {}
+        for (const s of recentScans) {
+          if (!bySymbol[s.symbol]) bySymbol[s.symbol] = []
+          bySymbol[s.symbol].push(s)
+        }
+
+        for (const [symbol, rows] of Object.entries(bySymbol)) {
+          const biases = rows.map(r => r.bias)
+          const avgConf = rows.reduce((sum, r) => sum + (r.confidence || 0), 0) / rows.length
+          const uniqueBiases = [...new Set(biases.filter(b => b && b !== 'skip'))]
+
+          let regime = 'quiet'
+          let trendDir = null
+          if (uniqueBiases.length === 1 && avgConf >= 6) {
+            regime = 'trending'
+            trendDir = uniqueBiases[0]
+          } else if (uniqueBiases.length > 1 && avgConf >= 5) {
+            regime = 'volatile'
+          } else if (avgConf >= 3) {
+            regime = 'ranging'
+          }
+
+          db.prepare(
+            `INSERT INTO regimes (symbol, regime, trend_direction, atr_pct, computed_at)
+             VALUES (?, ?, ?, ?, datetime('now'))`
+          ).run(symbol, regime, trendDir, avgConf)
+        }
+
+        // Performance snapshot from closed trades
+        const stats = db.prepare(
+          `SELECT COUNT(*) as total,
+                  SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) as wins,
+                  SUM(CASE WHEN net_pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                  SUM(net_pnl) as total_pnl,
+                  AVG(CASE WHEN net_pnl > 0 THEN net_pnl END) as avg_win,
+                  AVG(CASE WHEN net_pnl <= 0 THEN net_pnl END) as avg_loss
+           FROM trades WHERE status = 'closed'`
+        ).get()
+
+        if (stats && stats.total > 0) {
+          const winRate = stats.wins / stats.total
+          const profitFactor = stats.avg_loss !== 0
+            ? Math.abs((stats.avg_win || 0) / (stats.avg_loss || -1))
+            : 0
+          db.prepare(
+            `INSERT INTO performance_snapshots (total_trades, winning_trades, losing_trades, win_rate, profit_factor, total_pnl, avg_win, avg_loss, computed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+          ).run(stats.total, stats.wins, stats.losses, winRate, profitFactor, stats.total_pnl, stats.avg_win, stats.avg_loss)
+        }
+
+        log(`Regime updated for ${Object.keys(bySymbol).length} symbols`)
+      } catch (err) {
+        log('Quant phase error:', err.message)
+      }
     }
 
     // -----------------------------------------------------------------------

@@ -6,13 +6,21 @@ import { getSessionContext, categoriseSymbol } from '../lib/sessions.js'
 const MODEL = 'claude-sonnet-4-5'
 const MAX_TOKENS = 4096
 
-function buildScanPrompt(symbols, sessionContext, userTz) {
+function buildScanPrompt(symbols, sessionContext, userTz, contextBrief, scanDelta) {
   const symbolList = symbols.map(w => {
     const cat = categoriseSymbol(w.symbol)
     const status = w.tradingNow ? 'OPEN' : 'CLOSED'
     const nextOpen = w.nextOpen || ''
     return `- ${w.symbol}${w.label ? ` (${w.label})` : ''} [${cat}] [${status}]${!w.tradingNow && nextOpen ? ` opens ${nextOpen}` : ''}`
   }).join('\n')
+
+  let memorySection = ''
+  if (contextBrief) {
+    memorySection += `\n## Agent memory (from previous loops)\n${contextBrief}\n`
+  }
+  if (scanDelta) {
+    memorySection += `\n## Changes since last scan\n${scanDelta}\n\nUse the above deltas to track momentum shifts. If a symbol flipped bias, note it. If confidence is rising across scans, that's a signal strengthening.\n`
+  }
 
   return `You are the Scout — the pit boss who does the first pass on every symbol. Quick-fire, no fluff, trading desk lingo. You scan fast and flag what's hot.
 
@@ -25,7 +33,7 @@ UTC: ${new Date().toISOString()}
 
 ## Symbols to scan
 ${symbolList}
-
+${memorySection}
 Quick-fire each symbol. 15-30 words max per thesis. Use real desk talk:
 - "catching a bid", "offered hard", "knife catch", "gap fill play"
 - "liquidity grab", "vol expansion incoming", "riding the tape"
@@ -75,7 +83,7 @@ export async function runScan(client, symbols, options = {}) {
   const userTz = options.timezone || 'Asia/Singapore'
   const hotThreshold = Number(options.hotThreshold) || 6
 
-  const prompt = buildScanPrompt(batch, sessionContext, userTz)
+  const prompt = buildScanPrompt(batch, sessionContext, userTz, options.contextBrief || '', options.scanDelta || '')
   const resp = await client.messages.create({
     model: MODEL,
     max_tokens: MAX_TOKENS,
