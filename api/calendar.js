@@ -157,6 +157,109 @@ function mapFFImpact(impact) {
   return 'low'
 }
 
+// ---------------------------------------------------------------------------
+// Recurring commodity/futures report schedule
+// EIA Natural Gas Storage: every Thursday 10:30 ET (15:30 UTC)
+// EIA Petroleum Status:    every Wednesday 10:30 ET (15:30 UTC)
+// USDA WASDE:              monthly ~10th at 12:00 ET (17:00 UTC)
+// ---------------------------------------------------------------------------
+
+function generateRecurringEvents(fromDate, toDate, symbols) {
+  const events = []
+  const from = new Date(fromDate)
+  const to = new Date(toDate)
+
+  const hasFutures = symbols.some(s =>
+    /^(NATGAS|NGAS|OIL|BRENT|WTI|USOIL|UKOIL)$/i.test(s)
+  )
+  const hasCocoa = symbols.some(s => /COCOA/i.test(s))
+  const hasCopper = symbols.some(s => /COPPER/i.test(s))
+  const hasAgri = symbols.some(s => /^(WHEAT|CORN|SOYBEAN|COFFEE|SUGAR|COTTON)$/i.test(s))
+
+  // EIA Natural Gas Storage (Thursday 15:30 UTC) — relevant for NATGAS
+  if (hasFutures) {
+    const d = new Date(from)
+    d.setUTCHours(15, 30, 0, 0)
+    // Advance to first Thursday
+    while (d.getDay() !== 4) d.setDate(d.getDate() + 1)
+    while (d <= to) {
+      const dateStr = d.toISOString().slice(0, 10)
+      events.push({
+        date: dateStr, time: '15:30',
+        event: 'EIA Natural Gas Storage',
+        category: 'economic', impact: 'high',
+        currency: 'USD', symbols: ['NATGAS'],
+        details: 'Weekly storage change vs forecast',
+        source: 'static',
+      })
+      d.setDate(d.getDate() + 7)
+    }
+  }
+
+  // EIA Petroleum Status (Wednesday 15:30 UTC) — relevant for OIL/WTI
+  if (hasFutures) {
+    const d = new Date(from)
+    d.setUTCHours(15, 30, 0, 0)
+    while (d.getDay() !== 3) d.setDate(d.getDate() + 1)
+    while (d <= to) {
+      const dateStr = d.toISOString().slice(0, 10)
+      events.push({
+        date: dateStr, time: '15:30',
+        event: 'EIA Weekly Petroleum Report',
+        category: 'economic', impact: 'medium',
+        currency: 'USD', symbols: ['OIL', 'NATGAS'],
+        details: 'Crude oil & product inventories',
+        source: 'static',
+      })
+      d.setDate(d.getDate() + 7)
+    }
+  }
+
+  // USDA WASDE (monthly, approx 10th at 17:00 UTC) — relevant for COCOA, agricultural
+  if (hasCocoa || hasAgri) {
+    const d = new Date(from)
+    d.setUTCDate(10)
+    d.setUTCHours(17, 0, 0, 0)
+    if (d < from) d.setUTCMonth(d.getUTCMonth() + 1)
+    while (d <= to) {
+      // Skip weekends — move to Friday if on weekend
+      if (d.getDay() === 0) d.setDate(d.getDate() - 2)
+      if (d.getDay() === 6) d.setDate(d.getDate() - 1)
+      const dateStr = d.toISOString().slice(0, 10)
+      events.push({
+        date: dateStr, time: '17:00',
+        event: 'USDA WASDE Report',
+        category: 'economic', impact: 'high',
+        currency: 'USD', symbols: ['COCOA', 'WHEAT', 'CORN'],
+        details: 'World Agricultural Supply & Demand Estimates',
+        source: 'static',
+      })
+      d.setUTCMonth(d.getUTCMonth() + 1)
+      d.setUTCDate(10)
+    }
+  }
+
+  // LME Copper warehouse stocks report (every weekday — but only show Mondays as weekly summary)
+  if (hasCopper) {
+    const d = new Date(from)
+    while (d.getDay() !== 1) d.setDate(d.getDate() + 1) // first Monday
+    while (d <= to) {
+      const dateStr = d.toISOString().slice(0, 10)
+      events.push({
+        date: dateStr, time: '08:00',
+        event: 'LME Copper Stocks Report',
+        category: 'economic', impact: 'medium',
+        currency: 'USD', symbols: ['COPPER'],
+        details: 'Weekly LME warehouse inventory levels',
+        source: 'static',
+      })
+      d.setDate(d.getDate() + 7)
+    }
+  }
+
+  return events
+}
+
 function parseFFEvents(ffData, fromDate, toDate) {
   const events = []
   for (const item of ffData) {
@@ -320,6 +423,10 @@ export default async function handler(req, res) {
       const ffAll = [...ffThis, ...ffNext]
       const ffParsed = parseFFEvents(ffAll, today, sixMonthsOut)
       events.push(...ffParsed)
+
+      // 6. Commodity/futures recurring reports (EIA, USDA, LME)
+      const recurringEvents = generateRecurringEvents(today, sixMonthsOut, symbols)
+      events.push(...recurringEvents)
 
       // Sort: date asc, then impact high → low
       const impactOrder = { high: 0, medium: 1, low: 2 }

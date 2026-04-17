@@ -1,6 +1,6 @@
 // Watchlist page — symbol management with scrollable economic calendar sidebar.
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -189,10 +189,62 @@ export default function Watchlist() {
     setSelectedDate(dateStr)
   }
 
+  // Build pill list: unique dates with events, today onward, next 14 days
+  const today = new Date().toISOString().slice(0, 10)
+  const pillDates = useMemo(() => {
+    const cutoff = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10)
+    const dateMap = {}
+    for (const e of calendarEvents) {
+      if (e.date >= today && e.date <= cutoff) {
+        if (!dateMap[e.date]) dateMap[e.date] = { total: 0, high: 0 }
+        dateMap[e.date].total++
+        if (e.impact === 'high') dateMap[e.date].high++
+      }
+    }
+    return Object.entries(dateMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, counts]) => ({ date, ...counts }))
+  }, [calendarEvents, today])
+
+  const fmtPillDate = (d) => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
+    if (d === today) return 'Today'
+    if (d === tomorrow) return 'Tomorrow'
+    const dt = new Date(d + 'T00:00:00')
+    return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+  }
+
   return (
     <div className="flex gap-3 items-start">
       {/* Main content */}
       <div className="flex-1 min-w-0">
+        {/* Event day pill strip */}
+        {pillDates.length > 0 && (
+          <div className="flex gap-1.5 flex-wrap mb-3">
+            {pillDates.map(({ date, total, high }) => (
+              <button
+                key={date}
+                type="button"
+                onClick={() => handleSelectDate(date)}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold cursor-pointer transition-colors border ${
+                  selectedDate === date
+                    ? 'bg-[var(--color-accent)] text-white border-[var(--color-accent)]'
+                    : high > 0
+                      ? 'bg-[var(--color-down)]/10 text-[var(--color-down)] border-[var(--color-down)]/30 hover:bg-[var(--color-down)]/20'
+                      : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)] hover:bg-[var(--color-accent-soft)]'
+                }`}
+              >
+                {fmtPillDate(date)}
+                <span className={`text-[9px] ${selectedDate === date ? 'text-white/70' : 'text-[var(--color-muted)]'}`}>
+                  {total}
+                </span>
+                {high > 0 && selectedDate !== date && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-down)]" />
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         <CalendarDetail events={calendarEvents} date={selectedDate} />
         <WatchlistTab />
       </div>

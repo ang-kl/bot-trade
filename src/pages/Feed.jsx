@@ -19,12 +19,18 @@ const SCAN_INTERVAL = 5 * 60 // 5 minutes in seconds
 const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
 const MONITOR_KEY = 'bot-trade:agent-monitor'
 
+const TRADES_KEY = 'bot-trade:monitored-trades'
+
 function readScanCache() {
   try {
     const raw = localStorage.getItem(SCAN_CACHE_KEY)
     if (!raw) return null
     return JSON.parse(raw)
   } catch { return null }
+}
+
+function readMonitoredTrades() {
+  try { return JSON.parse(localStorage.getItem(TRADES_KEY) || '[]') } catch { return [] }
 }
 
 function writeScanCache(data) {
@@ -424,7 +430,7 @@ export default function Feed() {
   const [agentCalls, setAgentCalls] = useState({})
   const [orderFor, setOrderFor] = useState(null)
   const [toast, setToast] = useState(null)
-  const [monitoredTrades, setMonitoredTrades] = useState([])
+  const [monitoredTrades, setMonitoredTrades] = useState(() => readMonitoredTrades())
   const [sessionStart] = useState(() => Date.now())
   const [symbolsCollapsed, setSymbolsCollapsed] = useState(false)
   const [activityCollapsed, setActivityCollapsed] = useState(false)
@@ -444,6 +450,11 @@ export default function Feed() {
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
+
+  // Persist monitored trades across page navigations
+  useEffect(() => {
+    try { localStorage.setItem(TRADES_KEY, JSON.stringify(monitoredTrades)) } catch {}
+  }, [monitoredTrades])
 
   // Track per-agent token usage
   const trackTokens = useCallback((agent, tokens) => {
