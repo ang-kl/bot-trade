@@ -75,25 +75,19 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     const watchlistJson = getState(db, 'watchlist_json')
     const armed = getState(db, 'armed') === 'true'
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
     if (!watchlistJson) {
-      log('No watchlist configured')
-      return
-    }
+      log('No watchlist configured — push one via POST /actions/watchlist')
+    } else {
+      const watchlist = JSON.parse(watchlistJson)
+      const symbols = (Array.isArray(watchlist) ? watchlist : [])
+        .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
+        .filter(w => w.enabled !== false)
 
-    const watchlist = JSON.parse(watchlistJson)
-    // Support both string[] and object[] watchlists
-    const symbols = (Array.isArray(watchlist) ? watchlist : [])
-      .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
-      .filter(w => w.enabled !== false)
-
-    if (symbols.length === 0) {
-      log('No enabled symbols')
-      return
-    }
-
-    // Create Anthropic client
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+      if (symbols.length === 0) {
+        log('No enabled symbols in watchlist')
+      } else {
 
     // Run scan
     const scanResult = await runScan(client, symbols, {
@@ -209,23 +203,22 @@ async function runLoop(db) {
           pos.id
         )
 
-        // If EXIT, close the position
         if (check.action === 'EXIT') {
           s.closePosition.run('closed', pos.id)
           log(`Position closed: ${pos.symbol} — ${check.reasoning}`)
-          // TODO: Send telegram alert for position exit
         }
       } catch (err) {
         log(`Monitor check failed for ${pos.symbol}:`, err.message)
       }
     }
 
+      } // end symbols.length > 0
+    } // end watchlistJson
+
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)
     // -----------------------------------------------------------------------
     if (loopCount % 6 === 0) {
-      // TODO: Fetch bars and update regimes for active symbols
-      // TODO: Compute portfolio performance snapshot
       log('Quant phase (stub) — regime update + performance snapshot')
     }
 
