@@ -4,9 +4,12 @@
 import { getSessionContext } from '../lib/sessions.js'
 import { MINIONS, dispatch, buildMinionPrompt, buildSynthesisPrompt } from '../lib/minions.js'
 
-const MODEL = 'claude-sonnet-4-5'
+// Minions: Sonnet 4.6 — fast parallel calls, each returning a short report
+const MINION_MODEL = 'claude-sonnet-4-6'
+// Synthesis: Opus 4.7 with adaptive thinking — final decision deserves best reasoning
+const SYNTH_MODEL = 'claude-opus-4-7'
 const MINION_MAX_TOKENS = 512
-const SYNTH_MAX_TOKENS = 1536
+const SYNTH_MAX_TOKENS = 2048
 
 function parseJSON(text) {
   const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '')
@@ -21,7 +24,7 @@ async function runMinion(client, minionId, symbol, sessionContext) {
 
   try {
     const resp = await client.messages.create({
-      model: MODEL,
+      model: MINION_MODEL,
       max_tokens: MINION_MAX_TOKENS,
       messages: [{ role: 'user', content: prompt }],
     })
@@ -63,11 +66,14 @@ async function runMinion(client, minionId, symbol, sessionContext) {
 async function runSynthesis(client, symbol, reports, threshold) {
   const prompt = buildSynthesisPrompt(symbol, reports, threshold)
   try {
-    const resp = await client.messages.create({
-      model: MODEL,
+    // Use streaming + finalMessage to avoid timeout on long Opus reasoning
+    const stream = await client.messages.stream({
+      model: SYNTH_MODEL,
       max_tokens: SYNTH_MAX_TOKENS,
+      thinking: { type: 'adaptive' },
       messages: [{ role: 'user', content: prompt }],
     })
+    const resp = await stream.finalMessage()
     const text = (resp?.content || []).filter(p => p?.type === 'text').map(p => p.text).join('').trim()
     const parsed = parseJSON(text)
     return {

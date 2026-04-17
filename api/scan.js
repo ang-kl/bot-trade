@@ -5,7 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSessionContext, categoriseSymbol, nextSessionOpening } from './_lib/sessions.js'
 
-const MODEL = 'claude-sonnet-4-5'
+const MODEL = 'claude-sonnet-4-6'
 const MAX_TOKENS = 4096
 
 function buildScanPrompt(symbols, sessionContext, userTz) {

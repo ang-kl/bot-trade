@@ -193,9 +193,12 @@ function AccountPanel({ ctrader }) {
                 <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                   {p.side === 'BUY' ? '▲' : '▼'}
                 </span>
-                <span className="font-bold text-[var(--color-text)] w-[80px] truncate">
-                  {p.label || `ID ${p.symbolId}`}
+                <span className="font-bold text-[var(--color-text)]">
+                  #{p.symbolId}
                 </span>
+                {p.label && (
+                  <span className="text-[9px] text-[var(--color-muted)] italic truncate max-w-[80px]">{p.label}</span>
+                )}
                 <span className="text-[var(--color-muted)] flex-1">
                   @ {p.openPrice?.toFixed(5) ?? '—'} · vol {p.volume != null ? (p.volume / 100).toFixed(2) : '—'}
                 </span>

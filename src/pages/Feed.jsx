@@ -15,7 +15,7 @@ import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 import { isTradingNow, getHoursForSymbol } from '../lib/trading-hours.js'
 
-const SCAN_INTERVAL = 5 * 60 // 5 minutes in seconds
+const SCAN_INTERVAL = 30 * 60 // 30 minutes in seconds
 const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
 const MONITOR_KEY = 'bot-trade:agent-monitor'
 
@@ -63,7 +63,7 @@ function logEntry(agent, message, extra = {}) {
 
 // ── Symbol result card ──
 
-function SymbolCard({ symbol, scan, analysis, onOrder, eventLine, defaultCollapsed = false }) {
+function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, defaultCollapsed = false }) {
   const hasAnalysis = !!analysis
   const synthesis = analysis?.synthesis
   const reports = analysis?.reports || []
@@ -217,8 +217,10 @@ function SymbolCard({ symbol, scan, analysis, onOrder, eventLine, defaultCollaps
         {hasAnalysis && synthesis?.auto_trade && (
           <Badge tone="up" pill>AUTO-TRADE ELIGIBLE</Badge>
         )}
-        {!hasAnalysis && !isSkip && conviction >= 5 && (
-          <Badge tone="info" pill>ANALYZING...</Badge>
+        {!hasAnalysis && scan && !isSkip && conviction >= 4 && (
+          <Button size="sm" variant="ghost" onClick={() => onAnalyse?.(symbol)} className="!py-0.5 !px-2 text-[10px]">
+            Analyse ↗
+          </Button>
         )}
       </div>
       </>}
@@ -442,7 +444,10 @@ export default function Feed() {
   const [massiveMetrics, setMassiveMetrics] = useState(() => readScanCache()?.massiveMetrics || {})
 
   const scanTimerRef = useRef(null)
-
+  // Locks the card order after a scan — prevents re-sort when analyses trickle in
+  const scanOrderRef = useRef([])
+  const analysisQueueRef = useRef([]) // symbols queued for analysis
+  const [analysing, setAnalysing] = useState(false)
 
   // Show scroll-to-top when scrolled past 400px
   useEffect(() => {
@@ -538,7 +543,7 @@ export default function Feed() {
         }
         setMassiveMetrics(prev => {
           const merged = { ...prev, ...remapped }
-          writeScanCache({ scanResults: scanResultsRef.current, massiveMetrics: merged, lastScanAt: lastScanAtRef.current })
+          writeScanCache({ scanResults: scanResultsRef.current, massiveMetrics: merged, massiveCachedAt: Date.now(), lastScanAt: lastScanAtRef.current })
           return merged
         })
         const ok = Object.values(remapped).filter(r => !r.error).length
@@ -651,6 +656,14 @@ export default function Feed() {
         })
 
         addLog('synthesis', `${syn.consensus_summary || ''} \u2014 Conviction ${syn.overall_conviction}/10. ${syn.auto_trade ? 'AUTO-TRADE ELIGIBLE.' : 'Manual approval needed.'}`, { symbol })
+        dispatch({
+          type: 'ALERT_LOG_ADD',
+          symbol,
+          message: `Analysis: ${syn.consensus_bias?.toUpperCase()} ${syn.overall_conviction}/10 — ${syn.synthesis || syn.consensus_summary || ''}`,
+          agent: 'analyst',
+          status: syn.auto_trade ? 'alive' : 'done',
+          tokens: data.usage?.output_tokens || 0,
+        })
 
         if (syn.dissent) {
           addLog('synthesis', `Dissent: ${syn.dissent}`, { symbol })
@@ -756,6 +769,9 @@ export default function Feed() {
 
       setAgentStates(prev => ({ ...prev, scout: 'done' }))
 
+      // Lock the card order to the scan order — prevents jerk when analyses trickle in
+      scanOrderRef.current = (data.scans || []).map(s => s.symbol).filter(Boolean)
+
       // Derive per-symbol stats from scan results for the category headers
       const statsMap = {}
       for (const s of (data.scans || [])) {
@@ -775,9 +791,23 @@ export default function Feed() {
       }
       dispatch({ type: 'SYMBOL_STATS_UPDATE', statsMap })
 
-      // Fetch Massive computed metrics for stock symbols (non-blocking)
+      // Fetch Massive computed metrics (non-blocking)
       const scannedSymbols = (data.scans || []).map(s => s.symbol).filter(Boolean)
       fetchMassiveMetrics(scannedSymbols)
+
+      // Log hot symbols to alert log
+      for (const sym of hotSymbols) {
+        const s = (data.scans || []).find(x => x.symbol === sym)
+        if (s) {
+          dispatch({
+            type: 'ALERT_LOG_ADD',
+            symbol: sym,
+            message: `Scout: ${s.bias?.toUpperCase()} ${s.confidence}/10 — ${s.thesis || ''}`,
+            agent: 'scout',
+            status: 'alive',
+          })
+        }
+      }
 
       // Fire Telegram scan alert
       if (data.scans?.length) {
@@ -794,13 +824,7 @@ export default function Feed() {
         }
       }
 
-      // Auto-dispatch analyst for hot symbols ONLY when armed
-      if (isArmed) {
-        for (const sym of hotSymbols) {
-          analystRef.current?.(sym)
-        }
-      }
-
+      // ── NO auto-analysis — user clicks "Analyse" per symbol or "Analyse All"
       return { hot: hotSymbols, warm: warmSymbols }
     } catch (e) {
       addLog('scout', `FAILED: ${e.message}`)
@@ -809,6 +833,21 @@ export default function Feed() {
       return null
     }
   }, [enabledSymbols, isArmed, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch, fetchMassiveMetrics])
+
+  // ── Manual analysis triggers ──
+  const handleAnalyseSymbol = useCallback((symbol) => {
+    setAnalysing(true)
+    runAnalyst(symbol).finally(() => setAnalysing(false))
+  }, [runAnalyst])
+
+  const handleAnalyseAll = useCallback(() => {
+    const hot = displaySymbols.filter(d =>
+      d.scan && !d.analysis && (d.scan.confidence || 0) >= 5 && d.scan.bias !== 'skip'
+    ).map(d => d.symbol).slice(0, 5)
+    if (hot.length === 0) return
+    setAnalysing(true)
+    Promise.all(hot.map(sym => runAnalyst(sym))).finally(() => setAnalysing(false))
+  }, [displaySymbols, runAnalyst])
 
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {
@@ -831,14 +870,31 @@ export default function Feed() {
     runScout().then(() => setCountdown(SCAN_INTERVAL))
   }, [runScout])
 
-  // ── Fetch MASSIVE metrics on mount (independent of AI scan) ──
-  const mountMetricsDone = useRef(false)
+  // ── Fetch MASSIVE metrics — runs on mount and when page becomes visible again ──
+  const MASSIVE_TTL = 30 * 60 * 1000 // 30 min cache
   useEffect(() => {
-    if (mountMetricsDone.current || enabledCount === 0) return
-    mountMetricsDone.current = true
-    const syms = enabledSymbols.map(w => w.symbol)
-    fetchMassiveMetrics(syms)
+    if (enabledCount === 0 || !state.massive.apiKey) return
+    const cache = readScanCache()
+    const age = Date.now() - (cache?.massiveCachedAt || 0)
+    if (age > MASSIVE_TTL) {
+      fetchMassiveMetrics(enabledSymbols.map(w => w.symbol))
+    }
   }, [enabledCount]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch MASSIVE when user returns to this page after 30+ min away
+  useEffect(() => {
+    if (!state.massive.apiKey) return
+    const onVisible = () => {
+      if (document.hidden || enabledCount === 0) return
+      const cache = readScanCache()
+      const age = Date.now() - (cache?.massiveCachedAt || 0)
+      if (age > MASSIVE_TTL) {
+        fetchMassiveMetrics(enabledSymbols.map(w => w.symbol), true)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [enabledCount, state.massive.apiKey, fetchMassiveMetrics, enabledSymbols]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Auto-scan loop when armed ──
   useEffect(() => {
@@ -950,8 +1006,9 @@ export default function Feed() {
     if (data?.usage?.output_tokens) trackTokens('analyst', data.usage.output_tokens)
   }, [trackTokens])
 
-  // ── Sorted symbols for display ──
+  // ── Stable symbol list — sort locked to scan order, analyses don't reshuffle cards ──
   const displaySymbols = useMemo(() => {
+    const order = scanOrderRef.current // only changes when a new scan completes
     return enabledSymbols
       .map(w => ({
         symbol: w.symbol,
@@ -959,7 +1016,15 @@ export default function Feed() {
         analysis: analyses[w.symbol] || null,
         confidence: analyses[w.symbol]?.synthesis?.overall_conviction || scanResults[w.symbol]?.confidence || 0,
       }))
-      .sort((a, b) => b.confidence - a.confidence)
+      .sort((a, b) => {
+        const ia = order.indexOf(a.symbol)
+        const ib = order.indexOf(b.symbol)
+        if (ia !== -1 && ib !== -1) return ia - ib // respect scan order
+        if (ia !== -1) return -1
+        if (ib !== -1) return 1
+        return a.symbol.localeCompare(b.symbol)
+      })
+  // scanResults change locks new order; analyses updates re-render without resorting
   }, [enabledSymbols, scanResults, analyses])
 
   const scanning = agentStates.scout === 'running'
@@ -1024,6 +1089,18 @@ export default function Feed() {
               <span className="text-[10px] text-[var(--color-muted)]">{symbolsCollapsed ? '\u25B6' : '\u25BC'}</span>
               <p className="t-label">{displaySymbols.length} Symbols Active</p>
             </div>
+            {/* Manual analyse controls */}
+            {displaySymbols.some(d => d.scan && !d.analysis) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleAnalyseAll}
+                disabled={analysing}
+                className="!py-0.5 !px-2 text-[10px]"
+              >
+                {analysing ? 'Analysing…' : `Analyse All ↗`}
+              </Button>
+            )}
             {displaySymbols.some(d => d.scan) && (
               <div className="flex gap-2 t-meta text-[var(--color-muted)]">
                 {(() => {
@@ -1055,6 +1132,7 @@ export default function Feed() {
                 scan={d.scan}
                 analysis={d.analysis}
                 onOrder={handleOpenOrder}
+                onAnalyse={handleAnalyseSymbol}
               />
             ))
           })()}

@@ -16,8 +16,8 @@ function fmtPrice(p) {
 
 export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onConfirm, onCancel }) {
   const [volume, setVolume] = useState(String(maxVolume))
-  // Default to Limit when AI provides a specific entry — the AI's entry is a target level, not market
-  const [orderType, setOrderType] = useState(synthesis?.entry ? 'limit' : 'market')
+  // Default to Market — trader clicks Limit if they want to queue at the AI entry level
+  const [orderType, setOrderType] = useState('market')
   const [limitPrice, setLimitPrice] = useState(synthesis?.entry ? String(synthesis.entry) : '')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
@@ -121,8 +121,8 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onCon
             <span className="text-[var(--color-muted)]">Entry</span>
             <span className="font-mono">
               {orderType === 'market'
-                ? <><span className="text-[var(--color-muted)]">Market</span>{entry ? <span className="text-[var(--color-text-sub)] ml-1">(AI: {fmtPrice(entry)})</span> : null}</>
-                : fmtPrice(Number(limitPrice) || entry)}
+                ? <><span className="text-[var(--color-muted)]">Market</span>{aiEntry ? <span className="text-[var(--color-text-sub)] ml-1">(AI: {fmtPrice(aiEntry)})</span> : null}</>
+                : fmtPrice(Number(limitPrice) || aiEntry)}
             </span>
           </div>
           <div className="flex justify-between">
