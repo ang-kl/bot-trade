@@ -431,21 +431,6 @@ export default function Feed() {
 
   const scanTimerRef = useRef(null)
 
-  // Sync monitoring state to localStorage for the Agent page
-  useEffect(() => {
-    writeMonitorState({
-      sessionStart,
-      agentStates,
-      lastScanAt,
-      tokenCount,
-      agentTokens,
-      agentCalls,
-      enabledSymbols: enabledSymbols.map(w => w.symbol),
-      monitoredTrades,
-      armed: state.risk.armed,
-      updatedAt: Date.now(),
-    })
-  }, [sessionStart, agentStates, lastScanAt, tokenCount, agentTokens, agentCalls, enabledSymbols, monitoredTrades, state.risk.armed])
 
   // Show scroll-to-top when scrolled past 400px
   useEffect(() => {
@@ -477,6 +462,22 @@ export default function Feed() {
   )
   const enabledCount = enabledSymbols.length
   const isArmed = state.risk.armed
+
+  // Sync monitoring state to localStorage for the Agent page
+  useEffect(() => {
+    writeMonitorState({
+      sessionStart,
+      agentStates,
+      lastScanAt,
+      tokenCount,
+      agentTokens,
+      agentCalls,
+      enabledSymbols: enabledSymbols.map(w => w.symbol),
+      monitoredTrades,
+      armed: state.risk.armed,
+      updatedAt: Date.now(),
+    })
+  }, [sessionStart, agentStates, lastScanAt, tokenCount, agentTokens, agentCalls, enabledSymbols, monitoredTrades, state.risk.armed])
 
   // ── Telegram helper ──
   const sendTelegramAlert = useCallback((body) => {
