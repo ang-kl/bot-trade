@@ -9,6 +9,7 @@ import LinkUp from './pages/LinkUp.jsx'
 import Admin from './pages/Admin.jsx'
 import Watchlist from './pages/Watchlist.jsx'
 import AgentPage from './pages/Agent.jsx'
+import Workshop from './pages/Workshop.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
@@ -16,6 +17,7 @@ import MarketSessionBar from './components/MarketSessionBar.jsx'
 
 const navLinks = [
   { to: '/agent', label: 'Agent' },
+  { to: '/workshop', label: 'Workshop' },
   { to: '/feed', label: 'Feed' },
   { to: '/watchlist', label: 'Watchlist' },
   { to: '/alert', label: 'Alert' },
@@ -70,6 +72,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/feed" replace />} />
             <Route path="/agent" element={<AgentPage />} />
+            <Route path="/workshop" element={<Workshop />} />
             <Route path="/feed" element={<Feed />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/alert" element={<Alert />} />

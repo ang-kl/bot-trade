@@ -99,6 +99,7 @@ const TABLES = `
     last_check_reasoning  TEXT,
     last_check_at         TEXT,
     thesis_status         TEXT,
+    paused                INTEGER DEFAULT 0,
     status                TEXT DEFAULT 'active' CHECK(status IN ('active','closed')),
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -172,6 +173,12 @@ export function initDB(dbPath) {
   // Create schema
   db.exec(TABLES);
   db.exec(INDEXES);
+
+  // In-place migrations for pre-existing DBs
+  const mpCols = db.prepare("PRAGMA table_info(monitored_positions)").all();
+  if (!mpCols.some(c => c.name === 'paused')) {
+    db.exec("ALTER TABLE monitored_positions ADD COLUMN paused INTEGER DEFAULT 0");
+  }
 
   // Seed agent_state defaults (skip keys that already exist)
   const upsert = db.prepare(

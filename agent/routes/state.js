@@ -151,6 +151,95 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/activity — unified live event stream for the Trade Window
+  // Merges scans, analyses, monitor checks, trades, regime snapshots, flips
+  // into one time-sorted feed. Cheap: single UNION ALL, LIMIT-capped.
+  // -----------------------------------------------------------------------
+  router.get('/activity', (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 50, 200)
+    const rows = db.prepare(`
+      SELECT * FROM (
+        SELECT 'scan'     AS kind, id, symbol, scanned_at  AS at,
+               bias       AS v1,  confidence AS v2,  thesis AS note,
+               trade_grade AS extra, NULL AS ref
+        FROM scans
+        UNION ALL
+        SELECT 'analysis' AS kind, id, symbol, analyzed_at AS at,
+               consensus_bias AS v1, overall_conviction AS v2, consensus_summary AS note,
+               strategy AS extra, scan_id AS ref
+        FROM analyses
+        UNION ALL
+        SELECT 'monitor'  AS kind, id, symbol, last_check_at AS at,
+               last_check_action AS v1, NULL AS v2, last_check_reasoning AS note,
+               thesis_status AS extra, trade_id AS ref
+        FROM monitored_positions
+        WHERE last_check_at IS NOT NULL
+        UNION ALL
+        SELECT 'trade'    AS kind, id, symbol, COALESCE(closed_at, opened_at) AS at,
+               side AS v1, conviction AS v2, thesis AS note,
+               status AS extra, analysis_id AS ref
+        FROM trades
+        UNION ALL
+        SELECT 'regime'   AS kind, id, symbol, computed_at AS at,
+               regime AS v1, atr_pct AS v2, trend_direction AS note,
+               NULL AS extra, NULL AS ref
+        FROM regimes
+        UNION ALL
+        SELECT 'flip'     AS kind, id, symbol, recorded_at AS at,
+               bias AS v1, confidence AS v2, flip_from AS note,
+               source AS extra, NULL AS ref
+        FROM signals
+        WHERE flipped = 1
+      )
+      WHERE at IS NOT NULL
+      ORDER BY at DESC
+      LIMIT ?
+    `).all(limit)
+
+    res.json({ activity: rows })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/analysis/:id — full analysis with parsed minion_reports
+  // -----------------------------------------------------------------------
+  router.get('/analysis/:id', (req, res) => {
+    const row = db.prepare('SELECT * FROM analyses WHERE id = ?').get(req.params.id)
+    if (!row) return res.status(404).json({ error: 'analysis not found' })
+
+    let reports = []
+    try { reports = JSON.parse(row.minion_reports || '[]') } catch {}
+    let synthesis = null
+    try { synthesis = JSON.parse(row.synthesis || 'null') } catch {}
+
+    res.json({
+      analysis: {
+        ...row,
+        minion_reports: reports,
+        synthesis_parsed: synthesis,
+      },
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/position/:id — one monitored position + recent check history
+  // -----------------------------------------------------------------------
+  router.get('/position/:id', (req, res) => {
+    const pos = db.prepare('SELECT * FROM monitored_positions WHERE id = ?').get(req.params.id)
+    if (!pos) return res.status(404).json({ error: 'position not found' })
+
+    // Monitor checks are stored only as last_check_* fields — return linked trade + last 20 scans of symbol for context
+    const recentScans = db.prepare(
+      'SELECT id, bias, confidence, thesis, trade_grade, scanned_at FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 20'
+    ).all(pos.symbol)
+
+    const trade = pos.trade_id
+      ? db.prepare('SELECT * FROM trades WHERE id = ?').get(pos.trade_id)
+      : null
+
+    res.json({ position: pos, trade, recentScans })
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/config — current watchlist + armed status
   // -----------------------------------------------------------------------
   router.get('/config', (_req, res) => {

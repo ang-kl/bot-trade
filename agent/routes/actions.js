@@ -160,6 +160,51 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/autopilot — toggle autopilot (alias for arm/disarm)
+  // Body: { on: boolean }. If omitted, returns current state.
+  // -----------------------------------------------------------------------
+  router.post('/autopilot', (req, res) => {
+    const next = req.body?.on
+    if (typeof next === 'boolean') {
+      setState(db, 'armed', next ? 'true' : 'false')
+      console.log(`[actions] Autopilot ${next ? 'ON' : 'OFF'}`)
+    }
+    res.json({ ok: true, on: getState(db, 'armed') === 'true' })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/pause-position/:id — pause Monitor checks for one position
+  // -----------------------------------------------------------------------
+  router.post('/pause-position/:id', (req, res) => {
+    const id = Number(req.params.id)
+    if (!id) return res.status(400).json({ error: 'invalid id' })
+    const result = db.prepare('UPDATE monitored_positions SET paused = 1 WHERE id = ?').run(id)
+    res.json({ ok: true, changes: result.changes })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/unpause-position/:id — resume Monitor checks
+  // -----------------------------------------------------------------------
+  router.post('/unpause-position/:id', (req, res) => {
+    const id = Number(req.params.id)
+    if (!id) return res.status(400).json({ error: 'invalid id' })
+    const result = db.prepare('UPDATE monitored_positions SET paused = 0 WHERE id = ?').run(id)
+    res.json({ ok: true, changes: result.changes })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/kill-all — emergency: disarm autopilot + pause every position
+  // Does NOT close cTrader positions — that's user-side via the cTrader UI
+  // or via Feed close flow. This just stops the bot from acting further.
+  // -----------------------------------------------------------------------
+  router.post('/kill-all', (_req, res) => {
+    setState(db, 'armed', 'false')
+    const r = db.prepare("UPDATE monitored_positions SET paused = 1 WHERE status = 'active'").run()
+    console.log(`[actions] KILL-ALL — autopilot off, ${r.changes} positions paused`)
+    res.json({ ok: true, paused: r.changes })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/ctrader-config — push cTrader credentials from frontend
   // Frontend calls this after OAuth so the loop can auto-trade
   // -----------------------------------------------------------------------

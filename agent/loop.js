@@ -164,7 +164,7 @@ function prepareStatements(db) {
     `),
 
     selectActivePositions: db.prepare(
-      `SELECT * FROM monitored_positions WHERE status = ?`
+      `SELECT * FROM monitored_positions WHERE status = ? AND COALESCE(paused, 0) = 0`
     ),
 
     updatePositionCheck: db.prepare(`
