@@ -257,18 +257,20 @@ const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
 
 // ── Summary matrix card ──
 
-function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics = {} }) {
+function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics = {}, onRefreshMetrics }) {
   const [vwapPeriod, setVwapPeriod] = useState('today')
 
   const hasAnyScan = symbols.some(d => d.scan)
+  const hasAnyMetrics = symbols.some(d => massiveMetrics[d.symbol])
 
-  // Sort by trade grade then confidence
+  // Sort: scanned symbols first (by grade/confidence), then unscanned (alphabetical)
   const sorted = useMemo(() => {
     return [...symbols].sort((a, b) => {
       const ga = GRADE_ORDER[getTradeGrade(a)] ?? 2
       const gb = GRADE_ORDER[getTradeGrade(b)] ?? 2
       if (ga !== gb) return ga - gb
-      return b.confidence - a.confidence
+      if (a.confidence !== b.confidence) return b.confidence - a.confidence
+      return a.symbol.localeCompare(b.symbol)
     })
   }, [symbols])
 
@@ -286,6 +288,7 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
           <span className="text-[10px] text-[var(--color-muted)]">{collapsed ? '\u25B6' : '\u25BC'}</span>
           <p className="t-label">Summary Matrix</p>
           <span className="t-meta text-[var(--color-muted)]">{symbols.length} symbols</span>
+          {scanning && <span className="animate-pulse text-[var(--color-accent)] text-[10px]">scanning...</span>}
         </div>
         {!collapsed && (
           <div className="flex items-center gap-1 flex-wrap">
@@ -294,7 +297,10 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
               <button
                 key={p.key}
                 type="button"
-                onClick={() => setVwapPeriod(p.key)}
+                onClick={() => {
+                  setVwapPeriod(p.key)
+                  if (onRefreshMetrics) onRefreshMetrics()
+                }}
                 className={`px-1.5 py-0.5 text-[9px] sm:text-[10px] rounded-[4px] font-bold cursor-pointer transition-colors ${
                   vwapPeriod === p.key
                     ? 'bg-[var(--color-accent)] text-white'
@@ -310,13 +316,13 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
 
       {!collapsed && (
         <>
-          {/* Loading / awaiting state */}
-          {!hasAnyScan && (
+          {/* Show table immediately — technical data first, scan data fills in later */}
+          {!hasAnyScan && !hasAnyMetrics && (
             <div className="flex items-center gap-2 py-4 justify-center">
               {scanning ? (
                 <>
                   <span className="animate-pulse text-[var(--color-accent)] text-[14px]">{'\u25CF'}</span>
-                  <span className="t-sub text-[var(--color-muted)]">Scanning symbols... data will populate shortly</span>
+                  <span className="t-sub text-[var(--color-muted)]">Loading technical data and scanning symbols...</span>
                 </>
               ) : (
                 <span className="t-sub text-[var(--color-muted)]">Arm the system and run a scan to populate the matrix</span>
@@ -324,7 +330,7 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
             </div>
           )}
 
-          {hasAnyScan && (
+          {(hasAnyScan || hasAnyMetrics) && (
             <div className="overflow-x-auto -mx-2 px-0">
               <table className="border-collapse w-full text-[10px] sm:text-[11px]">
                 <thead>
@@ -989,6 +995,10 @@ export default function Feed() {
           collapsed={matrixCollapsed}
           onToggle={() => setMatrixCollapsed(prev => !prev)}
           massiveMetrics={massiveMetrics}
+          onRefreshMetrics={() => {
+            const syms = enabledSymbols.map(w => w.symbol)
+            fetchMassiveMetrics(syms, true)
+          }}
         />
       )}
 
