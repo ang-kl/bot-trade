@@ -7,13 +7,17 @@ import Vault from './pages/Vault.jsx'
 import Backtest from './pages/Backtest.jsx'
 import LinkUp from './pages/LinkUp.jsx'
 import Admin from './pages/Admin.jsx'
+import Watchlist from './pages/Watchlist.jsx'
+import AgentPage from './pages/Agent.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
 // No green anywhere - blue = up/long/positive, red = down/short/negative.
 
 const navLinks = [
+  { to: '/agent', label: 'Agent' },
   { to: '/feed', label: 'Feed' },
+  { to: '/watchlist', label: 'Watchlist' },
   { to: '/alert', label: 'Alert' },
   { to: '/settings', label: 'Settings' },
   { to: '/vault', label: 'Vault' },
@@ -55,7 +59,9 @@ export default function App() {
       <main id="main-content" style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
+          <Route path="/agent" element={<AgentPage />} />
           <Route path="/feed" element={<Feed />} />
+          <Route path="/watchlist" element={<Watchlist />} />
           <Route path="/alert" element={<Alert />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/vault" element={<Vault />} />

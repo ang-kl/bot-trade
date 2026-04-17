@@ -16,6 +16,24 @@ import { useStrategy } from '../lib/strategy-store.js'
 import { isTradingNow, getHoursForSymbol } from '../lib/trading-hours.js'
 
 const SCAN_INTERVAL = 5 * 60 // 5 minutes in seconds
+const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
+const MONITOR_KEY = 'bot-trade:agent-monitor'
+
+function readScanCache() {
+  try {
+    const raw = localStorage.getItem(SCAN_CACHE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch { return null }
+}
+
+function writeScanCache(data) {
+  try { localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify(data)) } catch {}
+}
+
+function writeMonitorState(data) {
+  try { localStorage.setItem(MONITOR_KEY, JSON.stringify(data)) } catch {}
+}
 
 // ── API helpers ──
 
@@ -384,142 +402,17 @@ function SummaryMatrix({ symbols, scanning, collapsed, onToggle, massiveMetrics 
   )
 }
 
-// ── Impact colour helpers ──
-
-const IMPACT_TONE = { high: 'down', medium: 'warning', low: 'neutral' }
-const CATEGORY_ICON = {
-  economic: '\u{1F4CA}',
-  holiday: '\u{1F3D6}',
-  earnings: '\u{1F4B0}',
-  political: '\u{1F3DB}',
-  'central-bank': '\u{1F3E6}',
-  sector: '\u{1F3ED}',
-}
-
-// ── Calendar card ──
-
-function CalendarCard({ events, loading, onRefresh }) {
-  const [range, setRange] = useState('week') // today | week | month
-
-  const filtered = useMemo(() => {
-    if (!events || events.length === 0) return []
-    const now = new Date()
-    const today = now.toISOString().slice(0, 10)
-    const tomorrow = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10)
-    const weekEnd = new Date(now.getTime() + 7 * 86_400_000).toISOString().slice(0, 10)
-    const monthEnd = new Date(now.getTime() + 30 * 86_400_000).toISOString().slice(0, 10)
-
-    let cutoff = monthEnd
-    if (range === 'today') cutoff = tomorrow
-    else if (range === 'week') cutoff = weekEnd
-
-    return events.filter(e => e.date >= today && e.date < cutoff)
-  }, [events, range])
-
-  // Group by date
-  const grouped = useMemo(() => {
-    const groups = {}
-    for (const e of filtered) {
-      if (!groups[e.date]) groups[e.date] = []
-      groups[e.date].push(e)
-    }
-    return groups
-  }, [filtered])
-
-  const dateKeys = Object.keys(grouped).sort()
-
-  const fmtDate = (d) => {
-    const dt = new Date(d + 'T00:00:00')
-    const today = new Date().toISOString().slice(0, 10)
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)
-    if (d === today) return 'Today'
-    if (d === tomorrow) return 'Tomorrow'
-    return dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })
-  }
-
-  return (
-    <Card>
-      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-        <h2 className="t-label">Market Calendar</h2>
-        <div className="flex items-center gap-1">
-          {['today', 'week', 'month'].map(r => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRange(r)}
-              className={`px-2 py-0.5 text-[10px] rounded-[4px] font-bold cursor-pointer ${
-                range === r
-                  ? 'bg-[var(--color-accent)] text-white'
-                  : 'bg-[var(--color-bg)] text-[var(--color-muted)] hover:bg-[var(--color-accent-soft)]'
-              }`}
-            >
-              {r.charAt(0).toUpperCase() + r.slice(1)}
-            </button>
-          ))}
-          <Button size="sm" variant="ghost" onClick={onRefresh} disabled={loading} className="ml-1">
-            {loading ? 'Loading...' : '\u21BB'}
-          </Button>
-        </div>
-      </div>
-
-      {filtered.length === 0 && !loading && (
-        <p className="t-sub text-[var(--color-muted)] py-3 text-center">
-          No events loaded. Click refresh to generate the calendar.
-        </p>
-      )}
-
-      {dateKeys.length > 0 && (
-        <div className="space-y-2 max-h-[400px] overflow-y-auto">
-          {dateKeys.map(date => (
-            <div key={date}>
-              <p className="t-meta font-bold text-[var(--color-text)] sticky top-0 bg-[var(--color-surface)] py-0.5">
-                {fmtDate(date)}
-              </p>
-              <div className="space-y-0.5 pl-2 border-l-2 border-[var(--color-border)]">
-                {grouped[date].map((e, i) => (
-                  <div key={i} className="flex items-start gap-1.5 text-[11px]">
-                    <span className="shrink-0 w-[38px] font-mono text-[var(--color-muted)]">
-                      {e.time === 'all-day' ? 'all' : e.time || '--:--'}
-                    </span>
-                    <span className="shrink-0">{CATEGORY_ICON[e.category] || '\u25CF'}</span>
-                    <Badge
-                      tone={IMPACT_TONE[e.impact] || 'neutral'}
-                      className="shrink-0 text-[8px] px-1"
-                    >
-                      {e.impact?.toUpperCase()}
-                    </Badge>
-                    <span className="text-[var(--color-text)]">
-                      <span className="font-semibold">{e.event}</span>
-                      {e.currency && (
-                        <span className="text-[var(--color-accent)] ml-1">{e.currency}</span>
-                      )}
-                    </span>
-                    {e.details && (
-                      <span className="text-[var(--color-muted)] truncate hidden sm:inline">
-                        {e.details}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  )
-}
-
 // ── Main page ──
 
 export default function Feed() {
   const { state, dispatch } = useStrategy()
+  const cachedScan = useMemo(() => readScanCache(), [])
   const [log, setLog] = useState([])
-  const [scanResults, setScanResults] = useState({})
+  const [scanResults, setScanResults] = useState(() => cachedScan?.scanResults || {})
   const [analyses, setAnalyses] = useState({})
   const [deskNote, setDeskNote] = useState(null)
   const [agentStates, setAgentStates] = useState({})
-  const [lastScanAt, setLastScanAt] = useState(null)
+  const [lastScanAt, setLastScanAt] = useState(() => cachedScan?.lastScanAt || null)
   const [countdown, setCountdown] = useState(0)
   const [tokenCount, setTokenCount] = useState(0)
   const [agentTokens, setAgentTokens] = useState({})
@@ -535,12 +428,25 @@ export default function Feed() {
   const [autoTradeActive, setAutoTradeActive] = useState(false)
   const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
   const [autoTradeCount, setAutoTradeCount] = useState(0)
-  const [calendarEvents, setCalendarEvents] = useState([])
-  const [calendarLoading, setCalendarLoading] = useState(false)
-  const [symbolEventLines, setSymbolEventLines] = useState({})
-  const [massiveMetrics, setMassiveMetrics] = useState({}) // { AAPL: { volume_profile, vwap, risk_metrics, ... } }
+  const [massiveMetrics, setMassiveMetrics] = useState(() => cachedScan?.massiveMetrics || {})
 
   const scanTimerRef = useRef(null)
+
+  // Sync monitoring state to localStorage for the Agent page
+  useEffect(() => {
+    writeMonitorState({
+      sessionStart,
+      agentStates,
+      lastScanAt,
+      tokenCount,
+      agentTokens,
+      agentCalls,
+      enabledSymbols: enabledSymbols.map(w => w.symbol),
+      monitoredTrades,
+      armed: state.risk.armed,
+      updatedAt: Date.now(),
+    })
+  }, [sessionStart, agentStates, lastScanAt, tokenCount, agentTokens, agentCalls, enabledSymbols, monitoredTrades, state.risk.armed])
 
   // Show scroll-to-top when scrolled past 400px
   useEffect(() => {
@@ -580,9 +486,13 @@ export default function Feed() {
     apiPost('/api/telegram', { ...body, botToken: tg.botToken, chatId: tg.chatId }).catch(() => {})
   }, [state.telegram])
 
-  // ── Massive compute — fetch real metrics for stock symbols ──
+  // ── Refs for cache writes from inside callbacks ──
   const massiveMetricsRef = useRef(massiveMetrics)
   massiveMetricsRef.current = massiveMetrics
+  const scanResultsRef = useRef(scanResults)
+  scanResultsRef.current = scanResults
+  const lastScanAtRef = useRef(lastScanAt)
+  lastScanAtRef.current = lastScanAt
 
   const fetchMassiveMetrics = useCallback(async (symbols) => {
     if (!state.massive.apiKey) return
@@ -602,7 +512,11 @@ export default function Feed() {
         tickers: stockSymbols,
       })
       if (data.results) {
-        setMassiveMetrics(prev => ({ ...prev, ...data.results }))
+        setMassiveMetrics(prev => {
+          const merged = { ...prev, ...data.results }
+          writeScanCache({ scanResults: scanResultsRef.current, massiveMetrics: merged, lastScanAt: lastScanAtRef.current })
+          return merged
+        })
         const ok = Object.values(data.results).filter(r => !r.error).length
         addLog('massive', `Computed: ${ok}/${stockSymbols.length} stocks`)
       }
@@ -797,7 +711,9 @@ export default function Feed() {
         if (s.symbol) map[s.symbol.toUpperCase()] = s
       }
       setScanResults(map)
-      setLastScanAt(Date.now())
+      const scanTime = Date.now()
+      setLastScanAt(scanTime)
+      writeScanCache({ scanResults: map, massiveMetrics: massiveMetricsRef.current, lastScanAt: scanTime })
       if (data.desk_note) setDeskNote(data.desk_note)
       if (data.usage?.output_tokens) trackTokens('scout', data.usage.output_tokens)
 
@@ -889,6 +805,18 @@ export default function Feed() {
     runScout().then(() => setCountdown(SCAN_INTERVAL))
   }, [runScout])
 
+  // ── Auto-refresh on mount: trigger scan if cache is stale (>5 min) ──
+  const mountScanDone = useRef(false)
+  useEffect(() => {
+    if (mountScanDone.current || enabledCount === 0) return
+    mountScanDone.current = true
+    const cacheAge = lastScanAt ? Date.now() - lastScanAt : Infinity
+    if (cacheAge > SCAN_INTERVAL * 1000) {
+      addLog('system', 'Auto-refreshing scan data...')
+      runScout().then(() => setCountdown(SCAN_INTERVAL))
+    }
+  }, [enabledCount]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Auto-scan loop when armed ──
   useEffect(() => {
     if (!isArmed || enabledCount === 0) {
@@ -941,42 +869,6 @@ export default function Feed() {
     const count = monitoredTrades.filter(t => t.placedAt > sessionStart).length
     setAutoTradeCount(count)
   }, [monitoredTrades, sessionStart])
-
-  // ── Calendar ──
-  const fetchCalendar = useCallback(async () => {
-    if (!state.massive.apiKey) return
-    setCalendarLoading(true)
-    try {
-      const syms = enabledSymbols.map(w => w.symbol)
-      const data = await apiPost('/api/calendar', {
-        action: 'generate',
-        symbols: syms,
-        apiKey: state.massive.apiKey,
-      })
-      const events = data.events || []
-      setCalendarEvents(events)
-
-      // Build per-symbol event lines from real data
-      const lines = {}
-      for (const sym of syms) {
-        const relevant = events.filter(e =>
-          (e.symbols || []).some(s => s.toUpperCase() === sym.toUpperCase()),
-        )
-        if (relevant.length > 0) {
-          const ev = relevant[0]
-          const d = new Date(ev.date + 'T00:00:00')
-          const dd = String(d.getDate()).padStart(2, '0')
-          const mm = String(d.getMonth() + 1).padStart(2, '0')
-          lines[sym] = `${dd}/${mm} ${ev.event}${ev.details ? ' - ' + ev.details : ''}`
-        }
-      }
-      setSymbolEventLines(lines)
-    } catch (e) {
-      addLog('calendar', `Failed: ${e.message}`)
-    } finally {
-      setCalendarLoading(false)
-    }
-  }, [enabledSymbols, state.massive.apiKey, addLog])
 
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis) => {
@@ -1083,13 +975,6 @@ export default function Feed() {
         onToggle={() => setActivityCollapsed(prev => !prev)}
       />
 
-      {/* Market calendar */}
-      <CalendarCard
-        events={calendarEvents}
-        loading={calendarLoading}
-        onRefresh={fetchCalendar}
-      />
-
       {/* Summary matrix */}
       {displaySymbols.length > 0 && (
         <SummaryMatrix
@@ -1143,7 +1028,6 @@ export default function Feed() {
                 scan={d.scan}
                 analysis={d.analysis}
                 onOrder={handleOpenOrder}
-                eventLine={symbolEventLines[d.symbol] || null}
               />
             ))
           })()}

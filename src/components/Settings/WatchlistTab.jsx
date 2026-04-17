@@ -347,6 +347,7 @@ export default function WatchlistTab() {
   const [sortAsc, setSortAsc] = useState(true)
   const [expanded, setExpanded] = useState(null)
   const [showDropdown, setShowDropdown] = useState(false)
+  const [confirmAdd, setConfirmAdd] = useState(null) // { input, resolved, alternatives }
   const [viewMode, setViewMode] = useState('matrix') // 'matrix' | 'list'
   const [matrixGroup, setMatrixGroup] = useState('category') // 'category' | 'ticker' | 'status'
   const [massiveMetrics, setMassiveMetrics] = useState({})
@@ -401,11 +402,13 @@ export default function WatchlistTab() {
       })
       setDraft('')
       setShowDropdown(false)
+      setConfirmAdd(null)
       return
     }
     const sym = draft.trim()
     if (!sym) return
-    // Try to resolve from catalog
+
+    // Try exact resolution
     const resolved = lookupSymbol(sym)
     if (resolved) {
       dispatch({
@@ -414,12 +417,35 @@ export default function WatchlistTab() {
         label: resolved.label,
         category: resolved.category,
       })
+      setDraft('')
+      setShowDropdown(false)
+      return
+    }
+
+    // No exact match — search for alternatives
+    const alternatives = searchCatalog(sym, 5).filter(c => !existingSymbols.has(c.symbol))
+    setConfirmAdd({ input: sym, resolved: null, alternatives })
+  }, [draft, dispatch, existingSymbols])
+
+  const confirmAddSymbol = useCallback((choice) => {
+    if (!choice) {
+      setConfirmAdd(null)
+      return
+    }
+    if (typeof choice === 'object') {
+      dispatch({
+        type: 'WATCHLIST_ADD',
+        symbol: choice.symbol,
+        label: choice.label,
+        category: choice.category,
+      })
     } else {
-      dispatch({ type: 'WATCHLIST_ADD', symbol: sym })
+      dispatch({ type: 'WATCHLIST_ADD', symbol: choice })
     }
     setDraft('')
     setShowDropdown(false)
-  }, [draft, dispatch])
+    setConfirmAdd(null)
+  }, [dispatch])
 
   const toggleSort = (field) => {
     if (sortField === field) setSortAsc(prev => !prev)
@@ -558,6 +584,48 @@ export default function WatchlistTab() {
             {filtered.length}/{state.watchlist.length} shown {'\u00B7'} {enabledCount} enabled
           </span>
         </div>
+
+        {/* Symbol validation confirmation */}
+        {confirmAdd && (
+          <div className="mt-2 p-3 rounded-[7px] border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]">
+            <p className="t-sub text-[var(--color-warning-text)] mb-2">
+              <span className="font-bold">"{confirmAdd.input}"</span> not found in trading platform catalog.
+            </p>
+            {confirmAdd.alternatives.length > 0 && (
+              <div className="space-y-1 mb-2">
+                <p className="t-meta text-[var(--color-text-sub)]">Did you mean:</p>
+                {confirmAdd.alternatives.map(alt => (
+                  <button
+                    key={alt.symbol}
+                    type="button"
+                    onClick={() => confirmAddSymbol(alt)}
+                    className="flex items-center gap-2 w-full text-left px-2 py-1 rounded-[5px] hover:bg-[var(--color-accent-soft)] text-[12px] cursor-pointer"
+                  >
+                    <span className="font-bold text-[var(--color-accent)] w-20">{alt.symbol}</span>
+                    <span className="text-[var(--color-text-sub)] flex-1 truncate">{alt.label}</span>
+                    <span className="text-[var(--color-muted)] text-[10px]">{alt.category}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => confirmAddSymbol(confirmAdd.input)}
+                className="px-2 py-1 text-[11px] rounded-[5px] bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)] hover:bg-[var(--color-accent-soft)] cursor-pointer"
+              >
+                Add "{confirmAdd.input}" anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmAdd(null)}
+                className="px-2 py-1 text-[11px] rounded-[5px] text-[var(--color-muted)] hover:text-[var(--color-text)] cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Matrix view */}

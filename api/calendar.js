@@ -27,6 +27,55 @@ function formatDate(d) {
   return d.toISOString().slice(0, 10)
 }
 
+async function fetchForexFactory() {
+  try {
+    const res = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json')
+    if (!res.ok) return []
+    const data = await res.json()
+    if (!Array.isArray(data)) return []
+    return data
+  } catch {
+    return []
+  }
+}
+
+function mapFFImpact(impact) {
+  if (!impact) return 'low'
+  const l = impact.toLowerCase()
+  if (l === 'high' || l === 'holiday') return 'high'
+  if (l === 'medium') return 'medium'
+  return 'low'
+}
+
+function parseFFEvents(ffData) {
+  const events = []
+  for (const item of ffData) {
+    if (!item.date || !item.title) continue
+    const d = new Date(item.date)
+    if (isNaN(d.getTime())) continue
+    const dateStr = d.toISOString().slice(0, 10)
+    const hours = String(d.getUTCHours()).padStart(2, '0')
+    const mins = String(d.getUTCMinutes()).padStart(2, '0')
+    const time = hours === '00' && mins === '00' ? 'all-day' : `${hours}:${mins}`
+
+    events.push({
+      date: dateStr,
+      time,
+      event: item.title,
+      category: 'economic',
+      impact: mapFFImpact(item.impact),
+      currency: item.country || null,
+      symbols: [],
+      details: [
+        item.forecast ? `Forecast: ${item.forecast}` : null,
+        item.previous ? `Previous: ${item.previous}` : null,
+      ].filter(Boolean).join(' | ') || null,
+      source: 'forexfactory',
+    })
+  }
+  return events
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST')
@@ -62,6 +111,7 @@ export default async function handler(req, res) {
                 currency: null,
                 symbols: [],
                 details: h.exchange ? `${h.exchange}: ${h.status || 'closed'}` : (h.status || 'closed'),
+                source: 'polygon',
               })
             }
           }
@@ -89,6 +139,7 @@ export default async function handler(req, res) {
               currency: d.currency || 'USD',
               symbols: [d.ticker],
               details: d.cash_amount ? `$${d.cash_amount} ${d.frequency === 4 ? 'quarterly' : d.frequency === 12 ? 'monthly' : ''} dividend` : 'Dividend date',
+              source: 'polygon',
             })
           }
         } catch {}
@@ -114,10 +165,22 @@ export default async function handler(req, res) {
               currency: 'USD',
               symbols: [s.ticker],
               details: `${s.split_from}:${s.split_to} split`,
+              source: 'polygon',
             })
           }
         } catch {}
       }
+
+      // 4. ForexFactory economic calendar
+      try {
+        const ffData = await fetchForexFactory()
+        const ffEvents = parseFFEvents(ffData)
+        for (const e of ffEvents) {
+          if (e.date >= today && e.date <= monthOut) {
+            events.push(e)
+          }
+        }
+      } catch {}
 
       // Sort by date, then impact
       const impactOrder = { high: 0, medium: 1, low: 2 }
