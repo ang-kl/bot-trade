@@ -1,8 +1,9 @@
 // AI Agent — monitoring dashboard showing what the system is watching and when it started.
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
+import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 
 const MONITOR_KEY = 'bot-trade:agent-monitor'
@@ -56,6 +57,164 @@ function fmtAgo(ts) {
   if (ago < 60_000) return 'just now'
   if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}m ago`
   return `${Math.floor(ago / 3_600_000)}h ${Math.floor((ago % 3_600_000) / 60_000)}m ago`
+}
+
+async function fetchAccountInfo(accessToken, accountId, isLive) {
+  const res = await fetch('/api/ctrader', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'account-info', accessToken, accountId, isLive }),
+  })
+  return res.ok ? res.json() : null
+}
+
+async function fetchOpenPositions(accessToken, accountId, isLive) {
+  const res = await fetch('/api/ctrader', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'open-positions', accessToken, accountId, isLive }),
+  })
+  return res.ok ? res.json() : null
+}
+
+function AccountPanel({ ctrader }) {
+  const [info, setInfo] = useState(null)
+  const [positions, setPositions] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  const linked = ctrader.accounts.find(a => a.accountId === ctrader.linkedAccountId)
+  const isLive = linked?.isLive ?? false
+
+  const refresh = useCallback(async () => {
+    if (!ctrader.linkedAccountId || !ctrader.accessToken) return
+    setLoading(true)
+    setError(null)
+    try {
+      const [inf, pos] = await Promise.all([
+        fetchAccountInfo(ctrader.accessToken, ctrader.linkedAccountId, isLive),
+        fetchOpenPositions(ctrader.accessToken, ctrader.linkedAccountId, isLive),
+      ])
+      setInfo(inf)
+      setPositions(pos)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [ctrader.accessToken, ctrader.linkedAccountId, isLive])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  if (!ctrader.linkedAccountId) {
+    return (
+      <Card>
+        <p className="t-label mb-1">Trading Account</p>
+        <p className="t-sub text-[var(--color-muted)]">
+          No account linked. Go to Settings → cTrader to connect your Pepperstone account.
+        </p>
+      </Card>
+    )
+  }
+
+  const fmtMoney = (v, digits = 2) =>
+    v != null ? v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'
+
+  const equityPct = info?.balance && info?.equity
+    ? ((info.equity - info.balance) / info.balance) * 100
+    : null
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <p className="t-label">Trading Account</p>
+          <Badge tone={isLive ? 'down' : 'accent'} pill>{isLive ? 'LIVE' : 'DEMO'}</Badge>
+          {linked && (
+            <span className="text-[10px] text-[var(--color-muted)]">
+              #{linked.accountNumber || ctrader.linkedAccountId}
+            </span>
+          )}
+        </div>
+        <Button size="sm" variant="ghost" onClick={refresh} disabled={loading} className="!px-1.5 !py-0.5 text-[10px]">
+          {loading ? '…' : '↻'}
+        </Button>
+      </div>
+
+      {error && (
+        <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>
+      )}
+
+      {info && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          <div>
+            <p className="t-meta text-[var(--color-muted)]">Balance</p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">
+              {fmtMoney(info.balance)}
+            </p>
+          </div>
+          <div>
+            <p className="t-meta text-[var(--color-muted)]">Equity</p>
+            <p className={`text-[15px] font-bold ${
+              equityPct == null ? 'text-[var(--color-text)]'
+              : equityPct > 0 ? 'text-[var(--color-up)]'
+              : equityPct < 0 ? 'text-[var(--color-down)]'
+              : 'text-[var(--color-text)]'
+            }`}>
+              {fmtMoney(info.equity)}
+              {equityPct != null && (
+                <span className="text-[10px] font-normal ml-1">
+                  ({equityPct > 0 ? '+' : ''}{equityPct.toFixed(2)}%)
+                </span>
+              )}
+            </p>
+          </div>
+          <div>
+            <p className="t-meta text-[var(--color-muted)]">Leverage</p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">
+              {info.leverage ? `1:${info.leverage}` : '—'}
+            </p>
+          </div>
+          <div>
+            <p className="t-meta text-[var(--color-muted)]">Open Trades</p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">
+              {positions?.count ?? '—'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {positions?.positions?.length > 0 && (
+        <div>
+          <p className="t-meta text-[var(--color-muted)] mb-1">Open Positions</p>
+          <div className="space-y-1 max-h-[200px] overflow-y-auto">
+            {positions.positions.map((p, i) => (
+              <div key={p.positionId || i} className="flex items-center gap-2 px-2 py-1 rounded-[4px] bg-[var(--color-bg)] text-[11px]">
+                <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                  {p.side === 'BUY' ? '▲' : '▼'}
+                </span>
+                <span className="font-bold text-[var(--color-text)] w-[80px] truncate">
+                  {p.label || `ID ${p.symbolId}`}
+                </span>
+                <span className="text-[var(--color-muted)] flex-1">
+                  @ {p.openPrice?.toFixed(5) ?? '—'} · vol {p.volume != null ? (p.volume / 100).toFixed(2) : '—'}
+                </span>
+                {p.usedMargin != null && (
+                  <span className="text-[9px] text-[var(--color-muted)]">
+                    margin {fmtMoney(p.usedMargin)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && !info && !error && (
+        <p className="t-sub text-[var(--color-muted)]">Loading account data…</p>
+      )}
+    </Card>
+  )
 }
 
 export default function Agent() {
@@ -125,6 +284,9 @@ export default function Agent() {
           </div>
         </div>
       </Card>
+
+      {/* Pepperstone / cTrader account */}
+      <AccountPanel ctrader={state.ctrader} />
 
       {/* Agent states */}
       <Card>
