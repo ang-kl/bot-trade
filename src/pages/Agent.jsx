@@ -43,6 +43,30 @@ function readPriceCache() {
   } catch { return {} }
 }
 
+const PIP_SIZE = {
+  XAUUSD: 0.01, XAGUSD: 0.001,
+  USDJPY: 0.01, EURJPY: 0.01, GBPJPY: 0.01, AUDJPY: 0.01, CADJPY: 0.01, CHFJPY: 0.01, NZDJPY: 0.01,
+}
+function pipDist(from, to, symbol) {
+  if (from == null || to == null) return null
+  const size = PIP_SIZE[symbol] ?? (symbol?.match(/^(US|NAS|GER|UK|JPN|FRA|SPA|HK|AUS)/) ? 1 : 0.0001)
+  return (to - from) / size
+}
+
+function computePnl(position, priceCache) {
+  const mm = priceCache[position.symbolName] || {}
+  const currentPrice = mm.currentPrice ?? mm.price ?? mm.vwap ?? null
+  if (!currentPrice || !position.openPrice || !position.volume) return null
+  const volLots = position.volume / 10000
+  const direction = position.side === 'BUY' ? 1 : -1
+  const sym = position.symbolName || ''
+  const contractSize = sym.startsWith('XAU') ? 100
+    : sym.startsWith('XAG') ? 5000
+    : sym.match(/^(US|NAS|GER|UK|JPN|FRA|SPA|HK|AUS)/) ? 1
+    : 100000
+  return direction * (currentPrice - position.openPrice) * volLots * contractSize
+}
+
 function fmtDuration(ms) {
   if (!ms || ms <= 0) return '0s'
   const s = Math.floor(ms / 1000)
@@ -200,34 +224,70 @@ function AccountPanel({ ctrader }) {
         </div>
       )}
 
-      {positions?.positions?.length > 0 && (
-        <div>
-          <p className="t-meta text-[var(--color-muted)] mb-1">Open Positions</p>
-          <div className="space-y-1 max-h-[200px] overflow-y-auto">
-            {positions.positions.map((p, i) => (
-              <div key={p.positionId || i} className="flex items-center gap-2 px-2 py-1 rounded-[4px] bg-[var(--color-bg)] text-[11px]">
-                <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                  {p.side === 'BUY' ? '▲' : '▼'}
-                </span>
-                <span className="font-bold text-[var(--color-text)]">
-                  {p.symbolName || `#${p.symbolId}`}
-                </span>
-                {p.label && (
-                  <span className="text-[9px] text-[var(--color-muted)] italic truncate max-w-[80px]">{p.label}</span>
-                )}
-                <span className="text-[var(--color-muted)] flex-1">
-                  @ {p.openPrice?.toFixed(5) ?? '—'} · {p.volume != null ? (p.volume / 10000).toFixed(2) : '—'} lots
-                </span>
-                {p.usedMargin != null && (
-                  <span className="text-[9px] text-[var(--color-muted)]">
-                    margin {fmtMoney(p.usedMargin)}
-                  </span>
-                )}
-              </div>
-            ))}
+      {positions?.positions?.length > 0 && (() => {
+        const priceCache = readPriceCache()
+        return (
+          <div>
+            <p className="t-meta text-[var(--color-muted)] mb-1">Open Positions</p>
+            <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
+              {positions.positions.map((p, i) => {
+                const sym = p.symbolName || `#${p.symbolId}`
+                const volLots = p.volume != null ? p.volume / 10000 : null
+                const isGold = (p.symbolName || '').startsWith('XAU')
+                const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
+                const priceDigits = (p.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
+                const pnl = computePnl(p, priceCache)
+                const slPips = pipDist(p.openPrice, p.stopLoss, p.symbolName)
+                const tpPips = pipDist(p.openPrice, p.takeProfit, p.symbolName)
+                const fees = (p.swap || 0) + (p.commission || 0)
+                return (
+                  <div key={p.positionId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+                    {/* Line 1: primary */}
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {p.side === 'BUY' ? '▲' : '▼'}
+                      </span>
+                      <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                      <span className="text-[var(--color-muted)]">
+                        {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
+                      </span>
+                      <span className="text-[var(--color-muted)]">
+                        @ {p.openPrice != null ? p.openPrice.toFixed(priceDigits) : '—'}
+                      </span>
+                      <span className="flex-1" />
+                      {pnl != null && (
+                        <span className={`font-mono font-semibold ${pnl > 0 ? 'text-[var(--color-up)]' : pnl < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
+                          {pnl >= 0 ? '+' : ''}{fmtMoney(pnl)}
+                          <span className="text-[8px] text-[var(--color-muted)] ml-0.5">est</span>
+                        </span>
+                      )}
+                    </div>
+                    {/* Line 2: secondary */}
+                    <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                      {p.stopLoss != null && (
+                        <span>
+                          <span className="text-[var(--color-down)]">SL</span> {p.stopLoss.toFixed(priceDigits)}
+                          {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
+                        </span>
+                      )}
+                      {p.takeProfit != null && (
+                        <span>
+                          <span className="text-[var(--color-up)]">TP</span> {p.takeProfit.toFixed(priceDigits)}
+                          {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
+                        </span>
+                      )}
+                      {p.usedMargin != null && <span>margin {fmtMoney(p.usedMargin)}</span>}
+                      {p.openTimestamp && <span>opened {fmtAgo(p.openTimestamp)}</span>}
+                      {fees !== 0 && <span>fees {fmtMoney(fees)}</span>}
+                      {p.label && <span className="italic truncate max-w-[80px]">{p.label}</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {!loading && !info && !error && (
         <p className="t-sub text-[var(--color-muted)]">Loading account data…</p>
@@ -260,7 +320,6 @@ export default function Agent() {
   const tokenCount = monitor?.tokenCount || 0
   const agentTokens = monitor?.agentTokens || {}
   const agentCalls = monitor?.agentCalls || {}
-  const monitoredTrades = monitor?.monitoredTrades || []
   const scans = scanCache?.scanResults || {}
 
   const hasSession = !!sessionStart
@@ -449,31 +508,6 @@ export default function Agent() {
                   </div>
                 )
               })}
-          </div>
-        </Card>
-      )}
-
-      {/* Monitored trades — bot-tracked only, NOT synced with cTrader */}
-      {monitoredTrades.length > 0 && (
-        <Card>
-          <div className="flex items-center gap-2 mb-1">
-            <p className="t-label flex-1">Orders History ({monitoredTrades.length})</p>
-            <span className="text-[9px] text-[var(--color-muted)] italic">placed via bot — verify in Trading Account</span>
-          </div>
-          <div className="space-y-1">
-            {monitoredTrades.map((t, i) => (
-              <div key={t.symbol || i} className="flex items-center gap-2 px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                <span className={`text-[12px] font-bold ${t.side === 'SELL' ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'}`}>
-                  {t.side === 'SELL' ? '\u25BC' : '\u25B2'} {t.symbol}
-                </span>
-                <span className="text-[10px] text-[var(--color-muted)] flex-1">
-                  Entry {t.entry} | SL {t.sl} | TP {t.tp}
-                </span>
-                <span className="text-[9px] text-[var(--color-muted)]">
-                  {fmtAgo(t.placedAt)}
-                </span>
-              </div>
-            ))}
           </div>
         </Card>
       )}
