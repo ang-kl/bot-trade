@@ -106,6 +106,12 @@ function AccountPanel({ ctrader }) {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // Auto-refresh every 60s to keep equity + positions current
+  useEffect(() => {
+    const iv = setInterval(refresh, 60_000)
+    return () => clearInterval(iv)
+  }, [refresh])
+
   if (!ctrader.linkedAccountId) {
     return (
       <Card>
@@ -200,7 +206,7 @@ function AccountPanel({ ctrader }) {
                   <span className="text-[9px] text-[var(--color-muted)] italic truncate max-w-[80px]">{p.label}</span>
                 )}
                 <span className="text-[var(--color-muted)] flex-1">
-                  @ {p.openPrice?.toFixed(5) ?? '—'} · vol {p.volume != null ? (p.volume / 100).toFixed(2) : '—'}
+                  @ {p.openPrice?.toFixed(5) ?? '—'} · {p.volume != null ? (p.volume / 10000).toFixed(2) : '—'} lots
                 </span>
                 {p.usedMargin != null && (
                   <span className="text-[9px] text-[var(--color-muted)]">
@@ -400,10 +406,13 @@ export default function Agent() {
         </Card>
       )}
 
-      {/* Monitored trades */}
+      {/* Monitored trades — bot-tracked only, NOT synced with cTrader */}
       {monitoredTrades.length > 0 && (
         <Card>
-          <p className="t-label mb-2">Active Trades ({monitoredTrades.length})</p>
+          <div className="flex items-center gap-2 mb-1">
+            <p className="t-label flex-1">Bot-Tracked Orders ({monitoredTrades.length})</p>
+            <span className="text-[9px] text-[var(--color-muted)] italic">local only — see Trading Account for real positions</span>
+          </div>
           <div className="space-y-1">
             {monitoredTrades.map((t, i) => (
               <div key={t.symbol || i} className="flex items-center gap-2 px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">

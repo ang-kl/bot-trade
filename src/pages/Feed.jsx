@@ -92,6 +92,11 @@ function fmtP(v) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 }
 
+// ── Trade grade helpers (must be before SymbolCard) ──
+
+const GRADE_LABEL = { potential: 'Potential Trade', weak: 'Weak Trade', none: 'No Trade' }
+const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
+
 // ── Symbol result card ──
 
 function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, defaultCollapsed = false }) {
@@ -105,9 +110,24 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
   const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : '\u25CF'
   const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
 
+  // getTradeGrade is a function declaration — fully hoisted, no TDZ
+  const grade = (scan || analysis) ? getTradeGrade({ scan, analysis }) : null
+
   const [cardOpen, setCardOpen] = useState(!defaultCollapsed)
   const [expanded, setExpanded] = useState(false)
-  const [showOriginal, setShowOriginal] = useState({}) // false = English, true = original language
+  const [showOriginal, setShowOriginal] = useState({})
+
+  // Propose a trade from scan data alone (no synthesis yet)
+  const proposeScanTrade = (orderType) => {
+    onOrder?.(symbol, {
+      consensus_bias: bias,
+      entry: scan?.price || null,
+      sl: null,
+      tp1: null,
+      synthesis: scan?.thesis || '',
+      overall_conviction: conviction,
+    }, orderType)
+  }
 
   return (
     <Card id={`symbol-${symbol}`}>
@@ -122,6 +142,9 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
           {bias.toUpperCase()}
         </Badge>
         <Badge tone="info" pill>{conviction}/10</Badge>
+        {grade && (
+          <Badge tone={GRADE_TONE[grade]} pill className="text-[9px]">{GRADE_LABEL[grade]}</Badge>
+        )}
         {synthesis?.consensus_summary && (
           <span className="t-meta text-[var(--color-muted)]">{synthesis.consensus_summary}</span>
         )}
@@ -240,7 +263,8 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
       )}
 
       {/* Actions */}
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-2 flex-wrap mt-1">
+        {/* Confirmed analysis → Place Order */}
         {!isSkip && synthesis?.entry != null && (
           <Button size="sm" variant="primary" onClick={() => onOrder(symbol, synthesis)}>
             {arrow} Place Order
@@ -249,6 +273,35 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
         {hasAnalysis && synthesis?.auto_trade && (
           <Badge tone="up" pill>AUTO-TRADE ELIGIBLE</Badge>
         )}
+
+        {/* Scan-level propose buttons — no analysis yet but grade says tradeable */}
+        {!hasAnalysis && scan && !isSkip && grade && grade !== 'none' && (
+          <>
+            <Button
+              size="sm" variant="ghost"
+              onClick={(e) => { e.stopPropagation(); proposeScanTrade('market') }}
+              className="!py-0.5 !px-2 text-[10px]"
+            >
+              {arrow} Market
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              onClick={(e) => { e.stopPropagation(); proposeScanTrade('limit') }}
+              className="!py-0.5 !px-2 text-[10px]"
+            >
+              Limit
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              onClick={(e) => { e.stopPropagation(); proposeScanTrade('stop') }}
+              className="!py-0.5 !px-2 text-[10px]"
+            >
+              Stop
+            </Button>
+          </>
+        )}
+
+        {/* Analyse button */}
         {!hasAnalysis && scan && !isSkip && conviction >= 4 && (
           <Button size="sm" variant="ghost" onClick={() => onAnalyse?.(symbol)} className="!py-0.5 !px-2 text-[10px]">
             Analyse ↗
@@ -292,8 +345,6 @@ function getTradeGrade(d) {
 }
 
 const GRADE_ORDER = { potential: 0, weak: 1, none: 2 }
-const GRADE_LABEL = { potential: 'Potential Trade', weak: 'Weak Trade', none: 'No Trade' }
-const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
 
 // ── Summary matrix card ──
 
@@ -979,8 +1030,8 @@ export default function Feed() {
   }, [monitoredTrades, sessionStart])
 
   // ── Order dialog ──
-  const handleOpenOrder = useCallback((symbol, synthesis) => {
-    setOrderFor({ symbol, synthesis })
+  const handleOpenOrder = useCallback((symbol, synthesis, initialOrderType = 'market') => {
+    setOrderFor({ symbol, synthesis, initialOrderType })
   }, [])
 
   const handleConfirmOrder = useCallback(async (order) => {
@@ -1217,6 +1268,7 @@ export default function Feed() {
         <OrderDialog
           symbol={orderFor.symbol}
           synthesis={orderFor.synthesis}
+          initialOrderType={orderFor.initialOrderType || 'market'}
           maxVolume={state.watchlist.find(w => w.symbol === orderFor.symbol)?.maxVolume || 0.01}
           onConfirm={handleConfirmOrder}
           onCancel={() => setOrderFor(null)}

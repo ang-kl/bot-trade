@@ -14,10 +14,9 @@ function fmtPrice(p) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 }
 
-export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, onConfirm, onCancel }) {
+export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initialOrderType = 'market', onConfirm, onCancel }) {
   const [volume, setVolume] = useState(String(maxVolume))
-  // Default to Market — trader clicks Limit if they want to queue at the AI entry level
-  const [orderType, setOrderType] = useState('market')
+  const [orderType, setOrderType] = useState(initialOrderType)
   const [limitPrice, setLimitPrice] = useState(synthesis?.entry ? String(synthesis.entry) : '')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
