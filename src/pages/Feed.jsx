@@ -494,36 +494,43 @@ export default function Feed() {
   const lastScanAtRef = useRef(lastScanAt)
   lastScanAtRef.current = lastScanAt
 
-  const fetchMassiveMetrics = useCallback(async (symbols) => {
+  const fetchMassiveMetrics = useCallback(async (symbols, force = false) => {
     if (!state.massive.apiKey) return
-    const stockSymbols = symbols
-      .filter(s => {
-        const w = state.watchlist.find(w => w.symbol === s)
-        return w?.category === 'Stocks'
-      })
-      .filter(s => !massiveMetricsRef.current[s])
-    if (stockSymbols.length === 0) return
+    const toFetch = symbols.filter(s => force || !massiveMetricsRef.current[s])
+    if (toFetch.length === 0) return
 
-    addLog('massive', `Computing metrics for ${stockSymbols.length} stocks...`)
+    const mapTicker = (sym) => {
+      const s = sym.toUpperCase()
+      if (/^(EUR|GBP|AUD|NZD|USD|CAD|CHF|JPY|XAU|XAG)/.test(s) && s.length === 6) return `C:${s}`
+      if (/^(BTC|ETH|SOL|XRP|DOGE|ADA|DOT|LINK|AVAX|MATIC)/.test(s) && s.endsWith('USD')) return `X:${s}`
+      return s
+    }
+
+    addLog('massive', `Computing metrics for ${toFetch.length} symbols...`)
     try {
       const data = await apiPost('/api/massive-compute', {
         action: 'batch-compute',
         apiKey: state.massive.apiKey,
-        tickers: stockSymbols,
+        tickers: toFetch.map(mapTicker),
       })
       if (data.results) {
+        const remapped = {}
+        for (let i = 0; i < toFetch.length; i++) {
+          const mappedKey = mapTicker(toFetch[i]).toUpperCase()
+          if (data.results[mappedKey]) remapped[toFetch[i]] = data.results[mappedKey]
+        }
         setMassiveMetrics(prev => {
-          const merged = { ...prev, ...data.results }
+          const merged = { ...prev, ...remapped }
           writeScanCache({ scanResults: scanResultsRef.current, massiveMetrics: merged, lastScanAt: lastScanAtRef.current })
           return merged
         })
-        const ok = Object.values(data.results).filter(r => !r.error).length
-        addLog('massive', `Computed: ${ok}/${stockSymbols.length} stocks`)
+        const ok = Object.values(remapped).filter(r => !r.error).length
+        addLog('massive', `Computed: ${ok}/${toFetch.length} symbols`)
       }
     } catch (e) {
       addLog('massive', `Compute failed: ${e.message}`)
     }
-  }, [state.massive.apiKey, state.watchlist, addLog])
+  }, [state.massive.apiKey, addLog])
 
   // ── Trade monitor helpers (must be defined before runAnalyst) ──
   const addMonitoredTrade = useCallback((trade) => {
@@ -770,9 +777,11 @@ export default function Feed() {
         }
       }
 
-      // Auto-dispatch analyst for hot symbols via ref
-      for (const sym of hotSymbols) {
-        analystRef.current?.(sym)
+      // Auto-dispatch analyst for hot symbols ONLY when armed
+      if (isArmed) {
+        for (const sym of hotSymbols) {
+          analystRef.current?.(sym)
+        }
       }
 
       return { hot: hotSymbols, warm: warmSymbols }
@@ -782,7 +791,7 @@ export default function Feed() {
       showToast(`Scout failed: ${e.message}`)
       return null
     }
-  }, [enabledSymbols, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch, fetchMassiveMetrics])
+  }, [enabledSymbols, isArmed, addLog, showToast, state.telegram, sendTelegramAlert, trackTokens, dispatch, fetchMassiveMetrics])
 
   // ── Arm / Disarm ──
   const handleArm = useCallback(() => {
@@ -805,16 +814,13 @@ export default function Feed() {
     runScout().then(() => setCountdown(SCAN_INTERVAL))
   }, [runScout])
 
-  // ── Auto-refresh on mount: trigger scan if cache is stale (>5 min) ──
-  const mountScanDone = useRef(false)
+  // ── Fetch MASSIVE metrics on mount (independent of AI scan) ──
+  const mountMetricsDone = useRef(false)
   useEffect(() => {
-    if (mountScanDone.current || enabledCount === 0) return
-    mountScanDone.current = true
-    const cacheAge = lastScanAt ? Date.now() - lastScanAt : Infinity
-    if (cacheAge > SCAN_INTERVAL * 1000) {
-      addLog('system', 'Auto-refreshing scan data...')
-      runScout().then(() => setCountdown(SCAN_INTERVAL))
-    }
+    if (mountMetricsDone.current || enabledCount === 0) return
+    mountMetricsDone.current = true
+    const syms = enabledSymbols.map(w => w.symbol)
+    fetchMassiveMetrics(syms)
   }, [enabledCount]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Auto-scan loop when armed ──
