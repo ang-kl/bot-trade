@@ -80,7 +80,8 @@ async function runLoop(db) {
     if (!watchlistJson) {
       log('No watchlist configured — push one via POST /actions/watchlist')
     } else {
-      const watchlist = JSON.parse(watchlistJson)
+      let watchlist
+      try { watchlist = JSON.parse(watchlistJson) } catch { watchlist = [] }
       const symbols = (Array.isArray(watchlist) ? watchlist : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
@@ -236,7 +237,7 @@ async function runLoop(db) {
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, LOOP_INTERVAL - elapsed) // minimum 10s between loops
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
-  setTimeout(() => runLoop(db), delay)
+  setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }
 
 // ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ export default function stateRouter(db) {
 
     res.json({
       lastScanAt: getState(db, 'last_scan_at'),
-      lastResults: lastResults ? JSON.parse(lastResults) : null,
+      lastResults: lastResults ? (() => { try { return JSON.parse(lastResults) } catch { return null } })() : null,
       recentScans,
     })
   })
@@ -157,7 +157,7 @@ export default function stateRouter(db) {
     const watchlistJson = getState(db, 'watchlist_json')
     res.json({
       armed: getState(db, 'armed') === 'true',
-      watchlist: watchlistJson ? JSON.parse(watchlistJson) : [],
+      watchlist: watchlistJson ? (() => { try { return JSON.parse(watchlistJson) } catch { return [] } })() : [],
     })
   })
 

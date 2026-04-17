@@ -30,11 +30,16 @@ const {
   MASSIVE_API_KEY,
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
-  AGENT_SECRET = 'change-me',
+  AGENT_SECRET,
   FRONTEND_URL,
   PORT = '3001',
   DB_PATH,
 } = process.env;
+
+if (!AGENT_SECRET) {
+  console.error('[agent] FATAL: AGENT_SECRET env var is required')
+  process.exit(1)
+}
 
 // ---------------------------------------------------------------------------
 // Database
