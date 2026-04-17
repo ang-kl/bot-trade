@@ -1,6 +1,4 @@
-// Market Calendar API — fetches real market events from Polygon.io (Massive).
-// Dividends, stock splits, and market holidays for watchlist symbols.
-
+// Market Calendar API — multi-source: ForexFactory, Polygon, international holidays
 const BASE = 'https://api.polygon.io'
 
 function readBody(req) {
@@ -27,16 +25,128 @@ function formatDate(d) {
   return d.toISOString().slice(0, 10)
 }
 
-async function fetchForexFactory() {
+// ---------------------------------------------------------------------------
+// International market holidays (static, 2025–2026)
+// ---------------------------------------------------------------------------
+
+const INTL_HOLIDAYS = {
+  US: [
+    { date: '2025-01-01', name: "New Year's Day" },
+    { date: '2025-01-20', name: 'Martin Luther King Jr. Day' },
+    { date: '2025-02-17', name: "Presidents' Day" },
+    { date: '2025-04-18', name: 'Good Friday (US)' },
+    { date: '2025-05-26', name: 'Memorial Day' },
+    { date: '2025-06-19', name: 'Juneteenth' },
+    { date: '2025-07-04', name: 'Independence Day' },
+    { date: '2025-09-01', name: 'Labor Day' },
+    { date: '2025-11-27', name: 'Thanksgiving Day' },
+    { date: '2025-12-25', name: 'Christmas Day (US)' },
+    { date: '2026-01-01', name: "New Year's Day" },
+    { date: '2026-01-19', name: 'Martin Luther King Jr. Day' },
+    { date: '2026-02-16', name: "Presidents' Day" },
+    { date: '2026-04-03', name: 'Good Friday (US)' },
+    { date: '2026-05-25', name: 'Memorial Day' },
+    { date: '2026-06-19', name: 'Juneteenth' },
+    { date: '2026-07-03', name: 'Independence Day (observed)' },
+    { date: '2026-09-07', name: 'Labor Day' },
+    { date: '2026-11-26', name: 'Thanksgiving Day' },
+    { date: '2026-12-25', name: 'Christmas Day (US)' },
+  ],
+  JP: [
+    { date: '2025-01-01', name: "New Year's Day (Japan)" },
+    { date: '2025-01-02', name: 'New Year Holiday (Japan)' },
+    { date: '2025-01-03', name: 'New Year Holiday (Japan)' },
+    { date: '2025-01-13', name: 'Coming of Age Day' },
+    { date: '2025-02-11', name: 'National Foundation Day' },
+    { date: '2025-02-23', name: "Emperor's Birthday" },
+    { date: '2025-03-20', name: 'Vernal Equinox Day' },
+    { date: '2025-04-29', name: 'Showa Day' },
+    { date: '2025-05-03', name: 'Constitution Day' },
+    { date: '2025-05-04', name: 'Greenery Day' },
+    { date: '2025-05-05', name: "Children's Day" },
+    { date: '2025-07-21', name: 'Marine Day' },
+    { date: '2025-08-11', name: 'Mountain Day' },
+    { date: '2025-09-15', name: 'Respect for the Aged Day' },
+    { date: '2025-09-23', name: 'Autumnal Equinox Day' },
+    { date: '2025-10-13', name: 'Sports Day' },
+    { date: '2025-11-03', name: 'Culture Day' },
+    { date: '2025-11-23', name: 'Labour Thanksgiving Day' },
+    { date: '2026-01-01', name: "New Year's Day (Japan)" },
+    { date: '2026-01-02', name: 'New Year Holiday (Japan)' },
+    { date: '2026-01-12', name: 'Coming of Age Day' },
+    { date: '2026-02-11', name: 'National Foundation Day' },
+    { date: '2026-02-23', name: "Emperor's Birthday" },
+    { date: '2026-03-20', name: 'Vernal Equinox Day' },
+    { date: '2026-04-29', name: 'Showa Day' },
+    { date: '2026-05-03', name: 'Constitution Day' },
+    { date: '2026-05-04', name: 'Greenery Day' },
+    { date: '2026-05-05', name: "Children's Day" },
+    { date: '2026-07-20', name: 'Marine Day' },
+    { date: '2026-08-11', name: 'Mountain Day' },
+    { date: '2026-09-21', name: 'Respect for the Aged Day' },
+    { date: '2026-09-23', name: 'Autumnal Equinox Day' },
+    { date: '2026-10-12', name: 'Sports Day' },
+    { date: '2026-11-03', name: 'Culture Day' },
+    { date: '2026-11-23', name: 'Labour Thanksgiving Day' },
+  ],
+  DE: [
+    { date: '2025-01-01', name: "New Year's Day (Germany)" },
+    { date: '2025-04-18', name: 'Good Friday (Germany)' },
+    { date: '2025-04-21', name: 'Easter Monday (Germany)' },
+    { date: '2025-05-01', name: 'Labour Day (Germany)' },
+    { date: '2025-10-03', name: 'German Unity Day' },
+    { date: '2025-12-25', name: 'Christmas Day (Germany)' },
+    { date: '2025-12-26', name: 'Boxing Day (Germany)' },
+    { date: '2026-01-01', name: "New Year's Day (Germany)" },
+    { date: '2026-04-03', name: 'Good Friday (Germany)' },
+    { date: '2026-04-06', name: 'Easter Monday (Germany)' },
+    { date: '2026-05-01', name: 'Labour Day (Germany)' },
+    { date: '2026-10-03', name: 'German Unity Day' },
+    { date: '2026-12-25', name: 'Christmas Day (Germany)' },
+    { date: '2026-12-26', name: 'Boxing Day (Germany)' },
+  ],
+  AU: [
+    { date: '2025-01-01', name: "New Year's Day (Australia)" },
+    { date: '2025-01-27', name: 'Australia Day' },
+    { date: '2025-04-18', name: 'Good Friday (Australia)' },
+    { date: '2025-04-21', name: 'Easter Monday (Australia)' },
+    { date: '2025-04-25', name: 'Anzac Day' },
+    { date: '2025-06-09', name: "Queen's Birthday (Australia)" },
+    { date: '2025-12-25', name: 'Christmas Day (Australia)' },
+    { date: '2025-12-26', name: 'Boxing Day (Australia)' },
+    { date: '2026-01-01', name: "New Year's Day (Australia)" },
+    { date: '2026-01-26', name: 'Australia Day' },
+    { date: '2026-04-03', name: 'Good Friday (Australia)' },
+    { date: '2026-04-06', name: 'Easter Monday (Australia)' },
+    { date: '2026-04-25', name: 'Anzac Day' },
+    { date: '2026-12-25', name: 'Christmas Day (Australia)' },
+    { date: '2026-12-26', name: 'Boxing Day (Australia)' },
+  ],
+}
+
+// Map watchlist symbols to their relevant market(s)
+function getMarketsForSymbol(sym) {
+  const s = sym.toUpperCase()
+  if (s === 'JPN225' || s === 'NIKKEI') return ['JP', 'US']
+  if (s === 'GER40' || s === 'DAX') return ['DE', 'US']
+  if (s === 'NAS100' || s === 'SPX500' || s === 'US30') return ['US']
+  if (/^(NATGAS|COPPER|COCOA|COFFEE|SUGAR|WHEAT|CORN|SOYBEAN|WTI|BRENT|PLATINUM|SILVER)/.test(s)) return ['US']
+  if (/^AUD/.test(s)) return ['AU', 'US']
+  if (/^JPY$|JPY$/.test(s)) return ['JP', 'US']
+  if (/^EUR|^GBP|^CHF/.test(s)) return ['DE', 'US']
+  if (/^XAU|^XAG/.test(s)) return ['US']
+  if (/^(BTC|ETH|SOL|XRP|DOGE|ADA)/.test(s)) return [] // 24/7
+  // Default US stocks/assets
+  return ['US']
+}
+
+async function fetchFF(url) {
   try {
-    const res = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json')
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
     if (!res.ok) return []
     const data = await res.json()
-    if (!Array.isArray(data)) return []
-    return data
-  } catch {
-    return []
-  }
+    return Array.isArray(data) ? data : []
+  } catch { return [] }
 }
 
 function mapFFImpact(impact) {
@@ -47,22 +157,22 @@ function mapFFImpact(impact) {
   return 'low'
 }
 
-function parseFFEvents(ffData) {
+function parseFFEvents(ffData, fromDate, toDate) {
   const events = []
   for (const item of ffData) {
     if (!item.date || !item.title) continue
     const d = new Date(item.date)
     if (isNaN(d.getTime())) continue
     const dateStr = d.toISOString().slice(0, 10)
+    if (dateStr < fromDate || dateStr > toDate) continue
     const hours = String(d.getUTCHours()).padStart(2, '0')
     const mins = String(d.getUTCMinutes()).padStart(2, '0')
     const time = hours === '00' && mins === '00' ? 'all-day' : `${hours}:${mins}`
-
     events.push({
       date: dateStr,
       time,
       event: item.title,
-      category: 'economic',
+      category: item.impact === 'holiday' ? 'holiday' : 'economic',
       impact: mapFFImpact(item.impact),
       currency: item.country || null,
       symbols: [],
@@ -75,6 +185,10 @@ function parseFFEvents(ffData) {
   }
   return events
 }
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -93,22 +207,22 @@ export default async function handler(req, res) {
     if (action === 'generate') {
       const { symbols = [] } = body
       const today = formatDate(new Date())
-      const monthOut = formatDate(new Date(Date.now() + 30 * 86_400_000))
+      const sixMonthsOut = formatDate(new Date(Date.now() + 183 * 86_400_000))
       const events = []
 
-      // 1. Market holidays
+      // 1. US market holidays from Polygon (live, authoritative)
       try {
         const holidays = await polygonGet('/v1/marketstatus/upcoming', apiKey)
         if (Array.isArray(holidays)) {
           for (const h of holidays) {
-            if (h.date && h.date >= today && h.date <= monthOut) {
+            if (h.date && h.date >= today && h.date <= sixMonthsOut) {
               events.push({
                 date: h.date,
                 time: 'all-day',
                 event: h.name || 'Market Holiday',
                 category: 'holiday',
                 impact: h.status === 'closed' ? 'high' : 'medium',
-                currency: null,
+                currency: 'USD',
                 symbols: [],
                 details: h.exchange ? `${h.exchange}: ${h.status || 'closed'}` : (h.status || 'closed'),
                 source: 'polygon',
@@ -118,16 +232,43 @@ export default async function handler(req, res) {
         }
       } catch {}
 
-      // 2. Dividends for watchlist stocks
+      // 2. International holidays based on watchlist symbols
+      const seenHolidays = new Set(events.map(e => e.date + '|' + e.event))
+      const relevantMarkets = new Set()
+      for (const sym of symbols) {
+        for (const mkt of getMarketsForSymbol(sym)) relevantMarkets.add(mkt)
+      }
+      for (const market of relevantMarkets) {
+        const marketLabel = { US: 'USD', JP: 'JPY', DE: 'EUR', AU: 'AUD' }[market] || market
+        for (const h of (INTL_HOLIDAYS[market] || [])) {
+          if (h.date < today || h.date > sixMonthsOut) continue
+          const key = h.date + '|' + h.name
+          if (seenHolidays.has(key)) continue
+          seenHolidays.add(key)
+          events.push({
+            date: h.date,
+            time: 'all-day',
+            event: h.name,
+            category: 'holiday',
+            impact: 'high',
+            currency: marketLabel,
+            symbols: [],
+            details: `${market} market closed`,
+            source: 'static',
+          })
+        }
+      }
+
+      // 3. Dividends for watchlist stocks
       const stockTickers = symbols.filter(s => /^[A-Z]{1,5}$/.test(s))
       if (stockTickers.length > 0) {
         try {
           const divData = await polygonGet('/v3/reference/dividends', apiKey, {
             'ticker.in': stockTickers.join(','),
             'ex_dividend_date.gte': today,
-            'ex_dividend_date.lte': monthOut,
+            'ex_dividend_date.lte': sixMonthsOut,
             order: 'asc',
-            limit: 50,
+            limit: 100,
           })
           for (const d of (divData.results || [])) {
             events.push({
@@ -145,13 +286,13 @@ export default async function handler(req, res) {
         } catch {}
       }
 
-      // 3. Stock splits
+      // 4. Stock splits
       if (stockTickers.length > 0) {
         try {
           const splitData = await polygonGet('/v3/reference/stock-splits', apiKey, {
             'ticker.in': stockTickers.join(','),
             'execution_date.gte': today,
-            'execution_date.lte': monthOut,
+            'execution_date.lte': sixMonthsOut,
             order: 'asc',
             limit: 50,
           })
@@ -171,18 +312,16 @@ export default async function handler(req, res) {
         } catch {}
       }
 
-      // 4. ForexFactory economic calendar
-      try {
-        const ffData = await fetchForexFactory()
-        const ffEvents = parseFFEvents(ffData)
-        for (const e of ffEvents) {
-          if (e.date >= today && e.date <= monthOut) {
-            events.push(e)
-          }
-        }
-      } catch {}
+      // 5. ForexFactory this week + next week
+      const [ffThis, ffNext] = await Promise.all([
+        fetchFF('https://nfs.faireconomy.media/ff_calendar_thisweek.json'),
+        fetchFF('https://nfs.faireconomy.media/ff_calendar_nextweek.json'),
+      ])
+      const ffAll = [...ffThis, ...ffNext]
+      const ffParsed = parseFFEvents(ffAll, today, sixMonthsOut)
+      events.push(...ffParsed)
 
-      // Sort by date, then impact
+      // Sort: date asc, then impact high → low
       const impactOrder = { high: 0, medium: 1, low: 2 }
       events.sort((a, b) => {
         const dc = a.date.localeCompare(b.date)
@@ -190,10 +329,7 @@ export default async function handler(req, res) {
         return (impactOrder[a.impact] ?? 2) - (impactOrder[b.impact] ?? 2)
       })
 
-      return res.status(200).json({
-        events,
-        generatedAt: new Date().toISOString(),
-      })
+      return res.status(200).json({ events, generatedAt: new Date().toISOString() })
     }
 
     return res.status(400).json({ error: `unknown action: ${action}` })
