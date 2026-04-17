@@ -27,8 +27,11 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
 
   const aiEntry = Number(synthesis?.entry) || 0
   const effectiveEntry = orderType !== 'market' ? (Number(limitPrice) || aiEntry) : aiEntry
-  const sl = Number(synthesis?.sl) || 0
-  const tp1 = Number(synthesis?.tp1) || 0
+  const [slInput, setSlInput] = useState(synthesis?.sl != null ? String(synthesis.sl) : '')
+  const [tpInput, setTpInput] = useState(synthesis?.tp1 != null ? String(synthesis.tp1) : '')
+
+  const sl = Number(slInput) || 0
+  const tp1 = Number(tpInput) || 0
   const tp2 = Number(synthesis?.tp2) || null
 
   const slPips = effectiveEntry && sl ? Math.abs(effectiveEntry - sl) : 0
@@ -44,7 +47,8 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
         side: side === 'long' ? 'BUY' : 'SELL',
         volume: Number(volume) || maxVolume,
         orderType,
-        limitPrice: orderType === 'limit' ? Number(limitPrice) : null,
+        entry: effectiveEntry || null,
+        limitPrice: orderType !== 'market' ? (Number(limitPrice) || null) : null,
         stopLoss: sl || null,
         takeProfit: tp1 || null,
       })
@@ -112,6 +116,14 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
               <Input value={limitPrice} onChange={e => setLimitPrice(e.target.value)} className="flex-1" />
             </div>
           )}
+          <div className="flex items-center gap-2">
+            <label className="t-meta text-[var(--color-down)] w-16 shrink-0">SL</label>
+            <Input value={slInput} onChange={e => setSlInput(e.target.value)} placeholder="Stop Loss" className="flex-1" />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="t-meta text-[var(--color-up)] w-16 shrink-0">TP</label>
+            <Input value={tpInput} onChange={e => setTpInput(e.target.value)} placeholder="Take Profit" className="flex-1" />
+          </div>
         </div>
 
         {/* Levels summary */}
@@ -126,11 +138,11 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
           </div>
           <div className="flex justify-between">
             <span className="text-[var(--color-down)]">Stop Loss</span>
-            <span className="font-mono">{fmtPrice(sl)} <span className="text-[var(--color-muted)]">({fmtPrice(slPips)} pips)</span></span>
+            <span className="font-mono">{sl ? <>{fmtPrice(sl)} <span className="text-[var(--color-muted)]">({fmtPrice(slPips)} pips)</span></> : <span className="text-[var(--color-muted)]">Not set</span>}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-[var(--color-up)]">Take Profit</span>
-            <span className="font-mono">{fmtPrice(tp1)} <span className="text-[var(--color-muted)]">({fmtPrice(tp1Pips)} pips)</span></span>
+            <span className="font-mono">{tp1 ? <>{fmtPrice(tp1)} <span className="text-[var(--color-muted)]">({fmtPrice(tp1Pips)} pips)</span></> : <span className="text-[var(--color-muted)]">Not set</span>}</span>
           </div>
           {tp2 != null && (
             <div className="flex justify-between">

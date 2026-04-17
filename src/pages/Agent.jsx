@@ -210,7 +210,7 @@ function AccountPanel({ ctrader }) {
                   {p.side === 'BUY' ? '▲' : '▼'}
                 </span>
                 <span className="font-bold text-[var(--color-text)]">
-                  #{p.symbolId}
+                  {p.symbolName || `#${p.symbolId}`}
                 </span>
                 {p.label && (
                   <span className="text-[9px] text-[var(--color-muted)] italic truncate max-w-[80px]">{p.label}</span>
@@ -457,8 +457,8 @@ export default function Agent() {
       {monitoredTrades.length > 0 && (
         <Card>
           <div className="flex items-center gap-2 mb-1">
-            <p className="t-label flex-1">Bot-Tracked Orders ({monitoredTrades.length})</p>
-            <span className="text-[9px] text-[var(--color-muted)] italic">local only — see Trading Account for real positions</span>
+            <p className="t-label flex-1">Orders History ({monitoredTrades.length})</p>
+            <span className="text-[9px] text-[var(--color-muted)] italic">placed via bot — verify in Trading Account</span>
           </div>
           <div className="space-y-1">
             {monitoredTrades.map((t, i) => (

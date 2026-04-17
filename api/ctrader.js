@@ -582,6 +582,23 @@ export default async function handler(req, res) {
       ])
 
       const reconcile = results[2] || {}
+
+      // Resolve symbolId → symbolName via SYMBOL_BY_ID batch lookup
+      const positionSymbolIds = [...new Set((reconcile.position || []).map(p => p.tradeData?.symbolId).filter(Boolean))]
+      let symbolNameMap = {}
+      if (positionSymbolIds.length > 0) {
+        try {
+          const symResults = await wsQuery(host, [
+            { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
+            { send: { payloadType: PT.ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT.ACCOUNT_AUTH_RES },
+            { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: positionSymbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
+          ])
+          for (const s of (symResults[2]?.symbol || [])) {
+            symbolNameMap[s.symbolId] = s.symbolName
+          }
+        } catch {}
+      }
+
       // Each position has tradeData with symbolId, volume, tradeSide, etc.
       const positions = (reconcile.position || []).map(p => {
         const t = p.tradeData || {}
@@ -590,6 +607,7 @@ export default async function handler(req, res) {
         return {
           positionId: p.positionId,
           symbolId: t.symbolId,
+          symbolName: symbolNameMap[t.symbolId] || null,
           side: t.tradeSide,
           volume: t.volume,
           openPrice: p.price,

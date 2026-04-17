@@ -1049,16 +1049,20 @@ export default function Feed() {
 
   const handleConfirmOrder = useCallback(async (order) => {
     addLog('trader', `Placing ${order.orderType} ${order.side} order...`, { symbol: order.symbol })
+    const oType = order.orderType === 'market' ? 'MARKET' : order.orderType === 'limit' ? 'LIMIT' : 'STOP'
     const body = {
-      action: order.orderType === 'market' ? 'new-market-order' : 'new-limit-order',
+      action: oType === 'MARKET' ? 'new-market-order' : 'new-limit-order',
       accountId: state.ctrader.linkedAccountId,
       symbolName: order.symbol,
-      orderType: order.orderType === 'market' ? 'MARKET' : order.orderType === 'limit' ? 'LIMIT' : 'STOP',
+      orderType: oType,
       tradeSide: order.side,
-      volume: (order.volume || 0.01) * 100,
-      stopLoss: order.stopLoss || undefined,
-      takeProfit: order.takeProfit || undefined,
-      limitPrice: order.limitPrice || undefined,
+      volume: Math.round((order.volume || 0.01) * 10000),
+      ...(oType === 'MARKET' && order.stopLoss && order.entry ? { stopLossDistance: Math.abs(order.entry - order.stopLoss) } : {}),
+      ...(oType === 'MARKET' && order.takeProfit && order.entry ? { takeProfitDistance: Math.abs(order.takeProfit - order.entry) } : {}),
+      ...(oType !== 'MARKET' && order.stopLoss ? { stopLoss: order.stopLoss } : {}),
+      ...(oType !== 'MARKET' && order.takeProfit ? { takeProfit: order.takeProfit } : {}),
+      ...(oType === 'LIMIT' ? { limitPrice: order.limitPrice } : {}),
+      ...(oType === 'STOP' ? { stopPrice: order.limitPrice } : {}),
     }
     try {
       await apiPost('/api/ctrader', body)
