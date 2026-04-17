@@ -1,8 +1,25 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState } from './db.js';
+
+// Load .env file if present (no dotenv dependency needed)
+try {
+  const envPath = resolve(process.cwd(), '.env')
+  const lines = readFileSync(envPath, 'utf8').split('\n')
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const i = trimmed.indexOf('=')
+    if (i < 0) continue
+    const key = trimmed.slice(0, i).trim()
+    const val = trimmed.slice(i + 1).trim().replace(/^["']|["']$/g, '')
+    if (key && !(key in process.env)) process.env[key] = val
+  }
+} catch {}
 
 // ---------------------------------------------------------------------------
 // Environment
