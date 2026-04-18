@@ -70,7 +70,7 @@ export default function App() {
       >
         <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
           <Routes>
-            <Route path="/" element={<Navigate to="/feed" replace />} />
+            <Route path="/" element={<Navigate to="/agent" replace />} />
             <Route path="/agent" element={<AgentPage />} />
             <Route path="/workshop" element={<Workshop />} />
             <Route path="/feed" element={<Feed />} />
@@ -81,7 +81,7 @@ export default function App() {
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/admin" element={<Admin />} />
             <Route path="/link-up" element={<LinkUp />} />
-            <Route path="*" element={<Navigate to="/feed" replace />} />
+            <Route path="*" element={<Navigate to="/agent" replace />} />
           </Routes>
         </div>
       </main>
