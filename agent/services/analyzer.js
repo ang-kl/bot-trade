@@ -38,10 +38,12 @@ async function runMinion(client, minionId, symbol, sessionContext) {
       bias: parsed.bias || 'neutral',
       conviction: parsed.conviction || 0,
       report: parsed.report || '',
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
       entry: parsed.entry || null,
       sl: parsed.sl || null,
       tp1: parsed.tp1 || null,
       tp2: parsed.tp2 || null,
+      invalidation: parsed.invalidation || null,
       tokens: resp.usage?.output_tokens || 0,
       ms: Date.now() - startedAt,
     }

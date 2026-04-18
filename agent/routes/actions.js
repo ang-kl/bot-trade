@@ -114,8 +114,8 @@ export default function actionsRouter(db) {
       // Persist analysis
       const synth = result.synthesis || {}
       db.prepare(`
-        INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, analyzed_at, scan_id)
-        VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @analyzed_at, @scan_id)
+        INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, invalidation_trigger, time_cap_minutes, analyzed_at, scan_id)
+        VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
       `).run({
         symbol: result.symbol,
         consensus_bias: synth.consensus_bias || null,
@@ -130,6 +130,8 @@ export default function actionsRouter(db) {
         strategy: synth.strategy || null,
         risk_note: synth.risk_note || null,
         minion_reports: JSON.stringify(result.reports || []),
+        invalidation_trigger: synth.invalidation_trigger || null,
+        time_cap_minutes: synth.time_cap_minutes ?? null,
         analyzed_at: new Date().toISOString(),
         scan_id: scanId,
       })

@@ -120,17 +120,39 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
+    // Compute initial_risk = |entry - SL|; needed for R-unit math in position-manager
+    const entryP = executionPrice ?? synth.entry ?? null
+    const slP = synth.sl ?? null
+    const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
+
+    // Compute absolute time cap from Analyst's time_cap_minutes
+    let timeCap = null
+    if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
+      timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
+    }
+
     // Record trade in DB
     db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, ctrader_position_id, analysis_id)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'open', ?, ?)
-    `).run(symbol, side, executionPrice, synth.sl ?? null, synth.tp1 ?? null, volLots, positionId, null)
+    `).run(symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots, positionId, null)
 
-    // Register in monitored_positions for the monitor phase
+    // Register in monitored_positions — fully populated for position-manager
     db.prepare(`
-      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, status, opened_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-    `).run(symbol, side === 'BUY' ? 'long' : 'short', executionPrice, synth.sl ?? null, synth.tp1 ?? null, synth.synthesis || '')
+      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(
+      symbol,
+      side === 'BUY' ? 'long' : 'short',
+      executionPrice,
+      slP,
+      synth.tp1 ?? null,
+      synth.synthesis || '',
+      initialRisk,
+      synth.invalidation_trigger || null,
+      timeCap,
+      synth.strategy || null,
+    )
 
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId}`)
     return { executionPrice, positionId, side, volume: volLots }
@@ -160,8 +182,8 @@ function prepareStatements(db) {
     `),
 
     insertAnalysis: db.prepare(`
-      INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, analyzed_at, scan_id)
-      VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @analyzed_at, @scan_id)
+      INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, invalidation_trigger, time_cap_minutes, analyzed_at, scan_id)
+      VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
     `),
 
     selectActivePositions: db.prepare(
@@ -310,6 +332,8 @@ async function runLoop(db) {
             strategy: synth.strategy || null,
             risk_note: synth.risk_note || null,
             minion_reports: JSON.stringify(result.reports || []),
+            invalidation_trigger: synth.invalidation_trigger || null,
+            time_cap_minutes: synth.time_cap_minutes ?? null,
             analyzed_at: new Date().toISOString(),
             scan_id: scanId,
           })
