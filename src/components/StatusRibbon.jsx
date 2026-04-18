@@ -48,13 +48,17 @@ export default function StatusRibbon() {
     )
   }
 
-  const armed = config?.armed === true
+  const autotradeOn = config?.autotrade_enabled === true
+  const scanOn = config?.scan_enabled !== false
+  const analyzeOn = config?.analyze_enabled !== false
   const openCount = positions.length
   const dotClass = !reachable
     ? 'bg-[var(--color-down)]'
-    : armed
+    : autotradeOn
       ? 'bg-[var(--color-up)] animate-pulse'
-      : 'bg-[var(--color-muted)]'
+      : (scanOn || analyzeOn)
+        ? 'bg-[var(--color-accent)]'
+        : 'bg-[var(--color-muted)]'
 
   return (
     <div
@@ -65,7 +69,7 @@ export default function StatusRibbon() {
       <span className="flex items-center gap-1.5">
         <span className={`inline-block h-2 w-2 rounded-full ${dotClass}`} />
         <Link to="/agent" className="font-bold hover:underline">
-          {!reachable ? 'OFFLINE' : armed ? 'AUTOPILOT ON' : 'AUTOPILOT OFF'}
+          {!reachable ? 'OFFLINE' : autotradeOn ? 'AUTO-TRADE ON' : analyzeOn ? 'ANALYZING' : scanOn ? 'SCANNING' : 'ALL OFF'}
         </Link>
       </span>
       <span className="text-[var(--color-muted)]">·</span>

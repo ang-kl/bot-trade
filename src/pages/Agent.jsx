@@ -492,14 +492,14 @@ export default function Agent() {
     return () => clearInterval(iv)
   }, [refresh])
 
-  const on = config?.armed === true
-  // Only the autopilot service has an "arm" switch. Copilot runs standby-only
-  // (watches user trades) and has no autonomous trading mode, so the Engage
-  // button is hidden when role === 'copilot'.
-  const toggleAutopilot = async () => {
+  const scanOn = config?.scan_enabled !== false
+  const analyzeOn = config?.analyze_enabled !== false
+  const autotradeOn = config?.autotrade_enabled === true
+
+  const toggle = async (endpoint, on) => {
     setBusy(true)
     try {
-      await agentPost('/actions/autopilot', { on: !on }, role)
+      await agentPost(endpoint, { on }, role)
       await refresh()
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
@@ -519,7 +519,7 @@ export default function Agent() {
     if (bp.ctrader_position_id) botById[String(bp.ctrader_position_id)] = bp
   }
 
-  const enabledWatchlist = config?.watchlist?.filter(w => w.enabled !== false) || []
+  const enabledSymbols = (config?.symbols || config?.watchlist || []).filter(w => w.enabled !== false)
 
   if (!agentConfigured('autopilot') && !agentConfigured('copilot')) {
     return (
@@ -534,7 +534,13 @@ export default function Agent() {
 
   const statusBadge = role === 'copilot'
     ? { tone: 'special', text: 'COPILOT STANDBY' }
-    : { tone: on ? 'up' : 'neutral', text: on ? 'AUTOPILOT ON' : 'AUTOPILOT OFF' }
+    : autotradeOn
+      ? { tone: 'up', text: 'AUTO-TRADE ON' }
+      : analyzeOn
+        ? { tone: 'accent', text: 'ANALYZE ONLY' }
+        : scanOn
+          ? { tone: 'neutral', text: 'SCAN ONLY' }
+          : { tone: 'neutral', text: 'ALL OFF' }
 
   return (
     <section className="space-y-3">
@@ -571,31 +577,55 @@ export default function Agent() {
       <Card>
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <span className={`text-[18px] ${on && role !== 'copilot' ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
-              {on && role !== 'copilot' ? '●' : '○'}
+            <span className={`text-[18px] ${autotradeOn && role !== 'copilot' ? 'animate-pulse text-[var(--color-accent)]' : (scanOn || analyzeOn) && role !== 'copilot' ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
+              {autotradeOn && role !== 'copilot' ? '●' : (scanOn || analyzeOn) ? '◐' : '○'}
             </span>
             <h1 className="t-label text-lg">Trade Window</h1>
             <Badge tone={statusBadge.tone} pill>{statusBadge.text}</Badge>
           </div>
-          <div className="flex gap-2">
-            {role === 'autopilot' && (
-              <Button
-                size="sm"
-                variant={on ? 'ghost' : 'primary'}
-                onClick={toggleAutopilot}
-                disabled={busy}
-              >
-                {on ? 'Pause All' : 'Engage'}
-              </Button>
-            )}
+          <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={killAll} disabled={busy} className="text-[var(--color-down)]">
               Kill Switch
             </Button>
             <Link to="/workshop" className="t-meta text-[var(--color-accent)] underline self-center ml-1">
-              Open Workshop →
+              Workshop →
             </Link>
           </div>
         </div>
+
+        {/* Granular toggles — scan / analyze / auto-trade */}
+        {role === 'autopilot' && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <Button
+              size="sm"
+              variant={scanOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/scan-toggle', !scanOn)}
+              disabled={busy}
+              title="24/7 market scanning"
+            >
+              {scanOn ? '■' : '▶'} Scan
+            </Button>
+            <Button
+              size="sm"
+              variant={analyzeOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/analyze-toggle', !analyzeOn)}
+              disabled={busy}
+              title="Deep analysis on hot symbols + alerts"
+            >
+              {analyzeOn ? '■' : '▶'} Analyze
+            </Button>
+            <Button
+              size="sm"
+              variant={autotradeOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/autotrade-toggle', !autotradeOn)}
+              disabled={busy}
+              className={autotradeOn ? '!bg-[var(--color-up)] !border-[var(--color-up)] !text-white' : ''}
+              title="Auto-place orders when conviction passes threshold"
+            >
+              {autotradeOn ? '■' : '▶'} Trade
+            </Button>
+          </div>
+        )}
 
         {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
 
@@ -609,8 +639,8 @@ export default function Agent() {
             <p className="text-[13px] font-bold text-[var(--color-text)]">{fmtAgo(health?.lastScanAt) || '—'}</p>
           </div>
           <div>
-            <p className="t-meta text-[var(--color-muted)]">Watchlist</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">{enabledWatchlist.length} symbols</p>
+            <p className="t-meta text-[var(--color-muted)]">Symbols</p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{enabledSymbols.length} configured</p>
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Bot Positions</p>

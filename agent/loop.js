@@ -413,55 +413,40 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 1. SCAN PHASE — scan all enabled symbols
     // -----------------------------------------------------------------------
-    const watchlistJson = getState(db, 'watchlist_json')
-    const armed = getState(db, 'armed') === 'true'
+    // Granular toggles — scan + analyze default ON, autotrade defaults OFF
+    const scanEnabled = getState(db, 'scan_enabled') !== 'false'
+    const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
+    const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-    if (!watchlistJson) {
-      log('No watchlist configured — push one via POST /actions/watchlist')
+    // Autopilot's own symbol universe, falling back to legacy watchlist
+    const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+
+    if (!symbolsJson) {
+      log('No symbols configured — push via POST /actions/symbols')
     } else {
-      let watchlist
-      try { watchlist = JSON.parse(watchlistJson) } catch { watchlist = [] }
-      const allSymbols = (Array.isArray(watchlist) ? watchlist : [])
+      let parsed
+      try { parsed = JSON.parse(symbolsJson) } catch { parsed = [] }
+      const allSymbols = (Array.isArray(parsed) ? parsed : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
 
-      // Market-closed guardrail: when no FX/equity session is active, crypto
-      // (24/7) still scans normally. Non-crypto gets a weekend-watch pass on
-      // any held positions + a pre-open warm-up when the first session
-      // (Sydney, UTC 22:00 Sun) is within 30 minutes. Monitor phase is lifted
-      // out of this block so it always runs on every position regardless.
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
       const tradPositions = openPositions.filter(p => categoriseSymbol(p.symbol) !== 'crypto')
       const nextOpen = nextSessionOpening()
       const marketClosed = activeSessions.length === 0
-      const preOpenWindow = marketClosed && nextOpen && nextOpen.minsUntil <= 30
 
-      // Pre-open warm-up: scan the full watchlist so theses are fresh for the
-      // Sydney bell. Otherwise, when market is closed, scan only 24/7 crypto.
-      const symbols = marketClosed && !preOpenWindow
-        ? allSymbols.filter(w => categoriseSymbol(w.symbol) === 'crypto')
-        : allSymbols
+      // 24/7 scanning — all symbols always. No market-hours filter.
+      const symbols = allSymbols
 
-      if (preOpenWindow) {
-        log(`Pre-open warm-up — ${nextOpen.label} opens in ${nextOpen.minsUntil}m. Running full scan+analyze.`)
-        setState(db, 'last_preopen_at', new Date().toISOString())
-      }
-
-      if (marketClosed && symbols.length === 0 && openPositions.length === 0) {
-        log(`Market closed — no sessions active, no positions open. Next open: ${nextOpen?.label || '?'} in ~${Math.round((nextOpen?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
-        setState(db, 'last_skip_reason', 'market_closed')
-        setState(db, 'last_skip_at', new Date().toISOString())
-      } else if (symbols.length === 0) {
-        if (marketClosed) {
-          log(`Off-hours, no crypto in watchlist — weekend-watch on ${tradPositions.length} position(s)`)
-        } else {
-          log('No enabled symbols in watchlist')
-        }
+      if (allSymbols.length === 0) {
+        log('No enabled symbols configured')
+      } else if (!scanEnabled) {
+        log('Scan disabled — skipping')
       } else {
-        if (marketClosed && !preOpenWindow) {
-          log(`Off-hours — scanning ${symbols.length} crypto symbol(s) only`)
+        if (marketClosed) {
+          log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
 
     // Build context memory for this scan
@@ -522,7 +507,7 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (armed && scanResult.hot.length > 0) {
+    if (analyzeEnabled && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
       for (const sym of hotToAnalyze) {
         try {
@@ -562,7 +547,18 @@ async function runLoop(db) {
           // Auto-trade — only when armed and synthesis recommends it.
           // Iterate all autopilot-enabled accounts so the same signal
           // replicates across every assigned account with per-account sizing.
-          if (armed && synth.auto_trade && synth.entry) {
+          // Send Telegram alert for every analysis regardless of autotrade
+          if (synth.overall_conviction >= 6 && process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
+              await sendMessage(
+                `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
+              )
+            } catch {}
+          }
+
+          if (autotradeEnabled && synth.auto_trade && synth.entry) {
             const apAccounts = getAutopilotAccounts(db)
             for (const acct of apAccounts) {
               const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
@@ -582,7 +578,7 @@ async function runLoop(db) {
       }
     }
 
-      } // end symbols.length > 0 (scan+analyze branch)
+      } // end scanEnabled + symbols (scan+analyze branch)
 
       // ---------------------------------------------------------------------
       // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions
@@ -590,7 +586,7 @@ async function runLoop(db) {
       // which will run the full Analyst instead). Catches weekend catalysts
       // (Fed speak, OPEC, geopolitics) that break thesis before Monday gap.
       // ---------------------------------------------------------------------
-      if (marketClosed && !preOpenWindow && tradPositions.length > 0 && loopCount % 12 === 1) {
+      if (marketClosed && tradPositions.length > 0 && loopCount % 12 === 1) {
         log(`Weekend watch — reviewing ${tradPositions.length} non-crypto position(s)`)
         for (const pos of tradPositions) {
           try {
@@ -725,7 +721,7 @@ async function runLoop(db) {
           log(`Monitor check failed for ${pos.symbol}:`, err.message)
         }
       }
-    } // end watchlistJson
+    } // end symbolsJson
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)

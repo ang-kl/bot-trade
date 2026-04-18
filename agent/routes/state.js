@@ -250,10 +250,15 @@ export default function stateRouter(db) {
   // GET /state/config — current watchlist + armed status
   // -----------------------------------------------------------------------
   router.get('/config', (_req, res) => {
-    const watchlistJson = getState(db, 'watchlist_json')
+    const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
     res.json({
-      armed: getState(db, 'armed') === 'true',
-      watchlist: watchlistJson ? (() => { try { return JSON.parse(watchlistJson) } catch { return [] } })() : [],
+      scan_enabled: getState(db, 'scan_enabled') !== 'false',
+      analyze_enabled: getState(db, 'analyze_enabled') !== 'false',
+      autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',
+      // Backward compat: armed = autotrade_enabled
+      armed: getState(db, 'autotrade_enabled') === 'true',
+      symbols: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
+      watchlist: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
     })
   })
 
