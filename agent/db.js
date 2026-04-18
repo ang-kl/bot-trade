@@ -119,6 +119,10 @@ const TABLES = `
     thesis_status         TEXT,
     paused                INTEGER DEFAULT 0,
     status                TEXT DEFAULT 'active' CHECK(status IN ('active','closed')),
+    -- Provenance — mirrors the cTrader label so monitor can scope itself
+    -- strictly to autopilot-placed positions.
+    source                TEXT,
+    label_raw             TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -165,6 +169,7 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_trades_source_strategy   ON trades  (source, label_strategy, closed_at);
   CREATE INDEX IF NOT EXISTS idx_trades_label_regime      ON trades  (label_regime, closed_at);
   CREATE INDEX IF NOT EXISTS idx_monitored_symbol_at    ON monitored_positions(symbol, last_check_at);
+  CREATE INDEX IF NOT EXISTS idx_monitored_source       ON monitored_positions(source, status);
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
@@ -220,6 +225,8 @@ export function initDB(dbPath) {
     ['be_moved',             'INTEGER DEFAULT 0'],
     ['scaled_out',           'INTEGER DEFAULT 0'],
     ['strategy',             'TEXT'],
+    ['source',               'TEXT'],
+    ['label_raw',            'TEXT'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

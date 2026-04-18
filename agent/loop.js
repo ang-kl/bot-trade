@@ -205,10 +205,13 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
       parsedLabel.timeframe, parsedLabel.regime,
     )
 
-    // Register in monitored_positions — fully populated for position-manager
+    // Register in monitored_positions — fully populated for position-manager.
+    // Stamp source/label_raw so the monitor SELECT can scope itself to
+    // autopilot-only positions (copilot/manual trades must not be touched
+    // by the autonomous loop).
     db.prepare(`
-      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       symbol,
       side === 'BUY' ? 'long' : 'short',
@@ -220,6 +223,8 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
       synth.invalidation_trigger || null,
       timeCap,
       synth.strategy || null,
+      parsedLabel.source,
+      parsedLabel.raw,
     )
 
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId}`)
@@ -254,8 +259,15 @@ function prepareStatements(db) {
       VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
     `),
 
+    // Autopilot monitors only its own positions. Legacy rows (pre-migration)
+    // have NULL source and are treated as autopilot since autoTrade() was
+    // historically the only INSERT path. Copilot/manual trades — if ever
+    // ingested — must set source explicitly and will be excluded.
     selectActivePositions: db.prepare(
-      `SELECT * FROM monitored_positions WHERE status = ? AND COALESCE(paused, 0) = 0`
+      `SELECT * FROM monitored_positions
+       WHERE status = ?
+         AND COALESCE(paused, 0) = 0
+         AND (source IS NULL OR source = 'autopilot')`
     ),
 
     updatePositionCheck: db.prepare(`
