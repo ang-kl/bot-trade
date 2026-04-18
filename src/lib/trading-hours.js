@@ -85,6 +85,49 @@ export function tradingCoverage(symbol) {
   return Math.round((total / 24) * 100)
 }
 
+// Returns ms until this symbol's market next opens, or 0 if open now.
+// For weekend-closed symbols, skips ahead to Sunday 22:00 UTC.
+export function msUntilOpen(symbol) {
+  if (isTradingNow(symbol)) return 0
+  const hours = getHoursForSymbol(symbol)
+  const now = new Date()
+  const utcDay = now.getUTCDay()
+  const utcHour = now.getUTCHours()
+  const utcMin = now.getUTCMinutes()
+
+  // Weekend closure — jump to Sunday 22:00 UTC
+  if (utcDay === 6 || (utcDay === 0 && utcHour < 22) || (utcDay === 5 && utcHour >= 22)) {
+    const sunday = new Date(now)
+    const daysToSun = (7 - utcDay) % 7
+    sunday.setUTCDate(now.getUTCDate() + (daysToSun || (utcDay === 0 ? 0 : 7)))
+    sunday.setUTCHours(22, 0, 0, 0)
+    if (sunday.getTime() <= now.getTime()) sunday.setUTCDate(sunday.getUTCDate() + 7)
+    return sunday.getTime() - now.getTime()
+  }
+
+  // Intraday gap — find next open hour today
+  const nowMins = utcHour * 60 + utcMin
+  for (const h of hours) {
+    const openMins = h.open * 60
+    if (openMins > nowMins) return (openMins - nowMins) * 60_000
+  }
+  // No opens left today — tomorrow's first slot
+  const firstOpen = Math.min(...hours.map(h => h.open))
+  return ((24 - utcHour) + firstOpen) * 60 * 60_000 - utcMin * 60_000
+}
+
+export function fmtDuration(ms) {
+  if (ms <= 0) return 'open now'
+  const mins = Math.round(ms / 60_000)
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  const rem = mins % 60
+  if (hours < 24) return rem ? `${hours}h ${rem}m` : `${hours}h`
+  const days = Math.floor(hours / 24)
+  const remH = hours % 24
+  return remH ? `${days}d ${remH}h` : `${days}d`
+}
+
 // ── Pepperstone symbol catalog (top ~200 instruments) ──
 
 export const PEPPERSTONE_CATALOG = [

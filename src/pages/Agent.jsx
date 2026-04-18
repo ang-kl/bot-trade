@@ -12,6 +12,7 @@ import { useStrategy } from '../lib/strategy-store.js'
 import { agentGet, agentPost, agentConfigured, ROLES } from '../lib/agent-api.js'
 import { fmtAgo } from '../lib/time.js'
 import { parseLabel } from '../../agent/lib/trade-labels.js'
+import { isTradingNow, msUntilOpen, fmtDuration } from '../lib/trading-hours.js'
 
 // Map parsed label source → badge tone + display label. Unknown / null
 // source falls through and the row just shows the raw label string.
@@ -394,6 +395,99 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
 }
 
 // ---------------------------------------------------------------------------
+// Market Status — which watchlist markets are tradeable right now,
+// which are closed with next open time, and what the agent is doing
+// during closure (crypto continues, rest goes into analysis-only mode).
+// ---------------------------------------------------------------------------
+
+function MarketStatus({ symbols }) {
+  // Re-render every minute so countdowns tick
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 60_000)
+    return () => clearInterval(iv)
+  }, [])
+
+  if (!symbols || symbols.length === 0) return null
+
+  const open = []
+  const closed = []
+  for (const sym of symbols) {
+    if (isTradingNow(sym)) open.push(sym)
+    else closed.push({ symbol: sym, msUntil: msUntilOpen(sym) })
+  }
+  closed.sort((a, b) => a.msUntil - b.msUntil)
+
+  const nextOpen = closed[0]
+  const hasCrypto = open.some(s => /^(BTC|ETH|XRP|SOL|LTC|BCH|DOT|ADA|DOGE)USD$/.test(s))
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Market Status</p>
+        <Badge tone={open.length > 0 ? 'up' : 'neutral'} pill>
+          {open.length > 0 ? `${open.length} LIVE` : 'ALL CLOSED'}
+        </Badge>
+        {hasCrypto && <Badge tone="special" className="text-[8px] px-1">CRYPTO 24/7</Badge>}
+      </div>
+
+      {open.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">Trading now</p>
+          <div className="flex flex-wrap gap-1">
+            {open.map(s => (
+              <span key={s} className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono">
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {closed.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">
+            Closed — analysis-only ({closed.length})
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {closed.slice(0, 12).map(({ symbol, msUntil }) => (
+              <span
+                key={symbol}
+                className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono"
+                title={`Opens in ${fmtDuration(msUntil)}`}
+              >
+                {symbol} <span className="opacity-60">{fmtDuration(msUntil)}</span>
+              </span>
+            ))}
+            {closed.length > 12 && (
+              <span className="px-1.5 py-0.5 text-[10px] text-[var(--color-muted)]">
+                +{closed.length - 12} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {nextOpen && (
+        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+          Next open: <span className="text-[var(--color-text)] font-mono">{nextOpen.symbol}</span> in {fmtDuration(nextOpen.msUntil)}
+        </p>
+      )}
+      {open.length === 0 && !hasCrypto && (
+        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+          All watchlist markets closed. Agent runs analysis-only (no new orders). Monitor continues on open positions.
+        </p>
+      )}
+      {hasCrypto && closed.length > 0 && (
+        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+          Crypto trades 24/7 — autopilot remains armed on crypto symbols. Other markets resume at next open.
+        </p>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Activity row styling
 // ---------------------------------------------------------------------------
 
@@ -463,6 +557,18 @@ export default function Agent() {
   const [botPositions, setBotPositions] = useState([])
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  // Collapse-toggle for the activity log — persisted so operator preference
+  // survives page refreshes.
+  const [activityCollapsed, setActivityCollapsed] = useState(() => {
+    try { return localStorage.getItem('bot-trade:activity-collapsed') === 'true' } catch { return false }
+  })
+  const toggleActivity = () => {
+    setActivityCollapsed(prev => {
+      const next = !prev
+      try { localStorage.setItem('bot-trade:activity-collapsed', String(next)) } catch {}
+      return next
+    })
+  }
 
   const refresh = useCallback(async () => {
     if (!agentConfigured(role)) return
@@ -703,6 +809,9 @@ export default function Agent() {
         )}
       </Card>
 
+      {/* Market status — which watchlist markets are live vs closed */}
+      <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} />
+
       {/* cTrader account + positions with bot context */}
       <AccountPanel
         ctrader={state.ctrader}
@@ -713,31 +822,43 @@ export default function Agent() {
 
       {/* Live activity stream */}
       <Card>
-        <div className="flex items-center gap-2 mb-2">
+        <button
+          type="button"
+          onClick={toggleActivity}
+          className="w-full flex items-center gap-2 mb-2 text-left hover:opacity-80"
+          title={activityCollapsed ? 'Expand activity log' : 'Collapse activity log'}
+        >
+          <span className="text-[10px] text-[var(--color-muted)] w-3">
+            {activityCollapsed ? '▸' : '▾'}
+          </span>
           <p className="t-label flex-1">Live Activity</p>
           <span className="text-[9px] text-[var(--color-muted)]">
             {activity.length} events · auto-refresh 10s
           </span>
-        </div>
-        {activity.length === 0 ? (
-          <p className="t-sub text-[var(--color-muted)] py-4 text-center">
-            No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
-          </p>
-        ) : (
-          <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
-            {activity.map((row, i) => (
-              <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
-            ))}
-          </div>
+        </button>
+        {!activityCollapsed && (
+          <>
+            {activity.length === 0 ? (
+              <p className="t-sub text-[var(--color-muted)] py-4 text-center">
+                No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
+              </p>
+            ) : (
+              <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
+                {activity.map((row, i) => (
+                  <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
+                ))}
+              </div>
+            )}
+            <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
+              <span className="text-[9px] text-[var(--color-muted)]">
+                Drill into any analysis, trade, or monitor check in the Workshop.
+              </span>
+              <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
+                Workshop →
+              </Link>
+            </div>
+          </>
         )}
-        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
-          <span className="text-[9px] text-[var(--color-muted)]">
-            Drill into any analysis, trade, or monitor check in the Workshop.
-          </span>
-          <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
-            Workshop →
-          </Link>
-        </div>
       </Card>
     </section>
   )
