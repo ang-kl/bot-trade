@@ -88,12 +88,13 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
   const [error, setError] = useState(null)
   // Per-account tab — defaults to the primary linked account but the user can
   // flip between any connected account (autopilot / copilot / observer).
-  const [selectedAccountId, setSelectedAccountId] = useState(ctrader.linkedAccountId)
+  const fallbackId = ctrader.linkedAccountId || ctrader.accounts?.[0]?.accountId || null
+  const [selectedAccountId, setSelectedAccountId] = useState(fallbackId)
   useEffect(() => {
-    if (!selectedAccountId && ctrader.linkedAccountId) setSelectedAccountId(ctrader.linkedAccountId)
-  }, [ctrader.linkedAccountId, selectedAccountId])
+    if (!selectedAccountId && fallbackId) setSelectedAccountId(fallbackId)
+  }, [fallbackId, selectedAccountId])
 
-  const selected = ctrader.accounts.find(a => a.accountId === selectedAccountId)
+  const selected = ctrader.accounts?.find(a => a.accountId === selectedAccountId)
   const isLive = selected?.isLive ?? false
   const roles = ctrader.accountRoles || {}
   const selectedRole = roles[String(selectedAccountId)] || {}
@@ -116,7 +117,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
     return () => clearInterval(iv)
   }, [refresh])
 
-  if (!ctrader.linkedAccountId) {
+  if (!selectedAccountId || !ctrader.accounts?.length) {
     return (
       <Card>
         <p className="t-label mb-1">Trading Account</p>
@@ -449,7 +450,7 @@ export default function Agent() {
       const saved = localStorage.getItem(ROLE_STORAGE_KEY)
       if (ROLES.includes(saved)) return saved
     } catch {}
-    return agentConfigured('autopilot') ? 'autopilot' : (agentConfigured('copilot') ? 'copilot' : 'autopilot')
+    return ROLES.find(r => agentConfigured(r)) || 'autopilot'
   })
   const setRole = (r) => {
     setRoleState(r)

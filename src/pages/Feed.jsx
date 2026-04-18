@@ -735,7 +735,7 @@ export default function Feed() {
           try {
             const orderBody = {
               action: 'new-market-order',
-              accountId: state.ctrader.linkedAccountId,
+              accountId: state.ctrader.linkedAccountId || state.ctrader.accounts?.[0]?.accountId,
               symbolName: symbol,
               orderType: 'MARKET',
               tradeSide: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
@@ -773,7 +773,7 @@ export default function Feed() {
       addLog('analyst', `FAILED: ${e.message}`, { symbol })
       setAgentStates(prev => ({ ...prev, analyst: 'idle' }))
     }
-  }, [state.watchlist, state.symbolStats, state.ctrader.linkedAccountId, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade, dispatch])
+  }, [state.watchlist, state.symbolStats, state.ctrader.linkedAccountId, state.ctrader.accounts, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade, dispatch])
 
   // Keep ref in sync so runScout can call it without circular deps
   useEffect(() => { analystRef.current = runAnalyst }, [runAnalyst])
@@ -1020,9 +1020,13 @@ export default function Feed() {
   }, [])
 
   const handleConfirmOrder = useCallback(async (order) => {
-    const acctId = state.ctrader.linkedAccountId
+    const acctId = state.ctrader.linkedAccountId || state.ctrader.accounts?.[0]?.accountId
+    if (!acctId) {
+      showToast('No trading account available. Connect cTrader in Settings first.')
+      return
+    }
     const acctRoles = state.ctrader.accountRoles?.[String(acctId)]
-    if (acctId && acctRoles && !acctRoles.copilot) {
+    if (acctRoles && !acctRoles.copilot) {
       showToast('This account is not enabled for copilot trading. Enable it in Settings → cTrader.')
       return
     }
@@ -1067,7 +1071,7 @@ export default function Feed() {
     })
     showToast(`Order placed for ${order.symbol}`)
     setOrderFor(null)
-  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast, addMonitoredTrade, orderFor])
+  }, [state.ctrader.linkedAccountId, state.ctrader.accounts, addLog, sendTelegramAlert, showToast, addMonitoredTrade, orderFor])
 
   // ── Ask dock context ──
   const askContext = useMemo(() => ({
