@@ -14,6 +14,7 @@ import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -135,6 +136,22 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
   const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
   const POINTS = 100000
 
+  // Build the structured attribution label — visible in the native cTrader
+  // Orders/History columns and used for per-strategy / per-regime analytics.
+  const sessionNow = getActiveSessions()[0]?.label || 'Off'
+  const regimeRow = db
+    .prepare(`SELECT regime FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1`)
+    .get(symbol)
+  const structuredLabel = encodeLabel({
+    source: 'autopilot',
+    version: LABEL_VERSION,
+    strategy: synth.strategy || 'other',
+    conviction: convictionBucket(synth.overall_conviction),
+    session: sessionNow,
+    timeframe: synth.timeframe || null,
+    regime: regimeRow?.regime || null,
+  })
+
   const orderPayload = {
     ctidTraderAccountId: parseInt(accountId),
     symbolId: parseInt(symbolId),
@@ -142,7 +159,7 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
     tradeSide: side,
     volume,
     comment: 'abot-auto',
-    label: 'abot-auto',
+    label: structuredLabel,
     ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
     ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
   }
@@ -166,11 +183,27 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
       timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
     }
 
-    // Record trade in DB
+    // Record trade in DB with parsed label components — fast attribution
+    // queries without re-parsing the raw label string on every read.
+    const parsedLabel = parseLabel(structuredLabel)
     db.prepare(`
-      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, ctrader_position_id, analysis_id)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'open', ?, ?)
-    `).run(symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots, positionId, null)
+      INSERT INTO trades (
+        symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+        status, ctrader_position_id, analysis_id, strategy, conviction,
+        label_raw, source, label_version, label_strategy, label_conviction,
+        label_session, label_timeframe, label_regime
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, datetime('now'),
+        'open', ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?
+      )
+    `).run(
+      symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
+      positionId, null, synth.strategy || null, synth.overall_conviction ?? null,
+      parsedLabel.raw, parsedLabel.source, parsedLabel.version,
+      parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
+      parsedLabel.timeframe, parsedLabel.regime,
+    )
 
     // Register in monitored_positions — fully populated for position-manager
     db.prepare(`

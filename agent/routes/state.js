@@ -307,5 +307,65 @@ export default function stateRouter(db) {
     })
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/attribution — read-only performance attribution by label dimension
+  // Query params:
+  //   groupBy: one of 'source'|'strategy'|'conviction'|'regime'|'session'|
+  //            'timeframe'|'source_strategy'|'strategy_regime' (default: 'strategy')
+  //   days:    restrict to last N days of closed trades (default 90)
+  // -----------------------------------------------------------------------
+  router.get('/attribution', (req, res) => {
+    const allowed = {
+      source:           ['source'],
+      strategy:         ['label_strategy'],
+      conviction:       ['label_conviction'],
+      regime:           ['label_regime'],
+      session:          ['label_session'],
+      timeframe:        ['label_timeframe'],
+      source_strategy:  ['source', 'label_strategy'],
+      strategy_regime:  ['label_strategy', 'label_regime'],
+    }
+    const groupBy = String(req.query.groupBy || 'strategy')
+    const cols = allowed[groupBy]
+    if (!cols) {
+      return res.status(400).json({
+        error: `groupBy must be one of: ${Object.keys(allowed).join(', ')}`,
+      })
+    }
+    const days = Math.max(1, Math.min(365, parseInt(req.query.days || '90', 10)))
+    const sinceISO = new Date(Date.now() - days * 86400_000).toISOString()
+
+    const groupExpr = cols.join(', ')
+    const rows = db.prepare(`
+      SELECT
+        ${groupExpr},
+        COUNT(*)                              AS trades,
+        SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses,
+        ROUND(AVG(net_pnl), 2)                AS avg_pnl,
+        ROUND(SUM(net_pnl), 2)                AS total_pnl,
+        ROUND(AVG(CASE WHEN net_pnl > 0 THEN net_pnl END), 2) AS avg_win,
+        ROUND(AVG(CASE WHEN net_pnl < 0 THEN net_pnl END), 2) AS avg_loss,
+        ROUND(
+          SUM(CASE WHEN net_pnl > 0 THEN net_pnl ELSE 0 END) /
+          NULLIF(-SUM(CASE WHEN net_pnl < 0 THEN net_pnl ELSE 0 END), 0),
+          2
+        ) AS profit_factor
+      FROM trades
+      WHERE status = 'closed'
+        AND closed_at >= ?
+      GROUP BY ${groupExpr}
+      ORDER BY total_pnl DESC NULLS LAST
+    `).all(sinceISO)
+
+    // Enrich each row with win_rate for convenience.
+    for (const r of rows) {
+      const t = r.trades || 0
+      r.win_rate = t > 0 ? Number((r.wins / t).toFixed(3)) : null
+    }
+
+    res.json({ groupBy, days, since: sinceISO, rows })
+  })
+
   return router
 }

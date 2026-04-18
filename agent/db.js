@@ -83,7 +83,17 @@ const TABLES = `
     strategy              TEXT,
     conviction            REAL,
     ctrader_position_id   TEXT,
-    analysis_id           INTEGER REFERENCES analyses(id)
+    analysis_id           INTEGER REFERENCES analyses(id),
+    -- Trade provenance — parsed from the cTrader label so attribution
+    -- queries can GROUP BY without re-parsing on every read.
+    label_raw             TEXT,
+    source                TEXT,          -- 'autopilot' | 'copilot' | 'manual'
+    label_version         TEXT,
+    label_strategy        TEXT,
+    label_conviction      TEXT,          -- 'high' | 'medium' | 'low'
+    label_session         TEXT,
+    label_timeframe       TEXT,
+    label_regime          TEXT
   );
 
   CREATE TABLE IF NOT EXISTS monitored_positions (
@@ -152,6 +162,8 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_regimes_symbol_at      ON regimes (symbol, computed_at);
   CREATE INDEX IF NOT EXISTS idx_trades_symbol_opened    ON trades  (symbol, opened_at);
   CREATE INDEX IF NOT EXISTS idx_trades_symbol_closed    ON trades  (symbol, closed_at);
+  CREATE INDEX IF NOT EXISTS idx_trades_source_strategy   ON trades  (source, label_strategy, closed_at);
+  CREATE INDEX IF NOT EXISTS idx_trades_label_regime      ON trades  (label_regime, closed_at);
   CREATE INDEX IF NOT EXISTS idx_monitored_symbol_at    ON monitored_positions(symbol, last_check_at);
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
@@ -212,6 +224,25 @@ export function initDB(dbPath) {
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {
       db.exec(`ALTER TABLE monitored_positions ADD COLUMN ${col} ${type}`);
+    }
+  }
+
+  // Trades table migration — add label provenance columns for pre-existing DBs
+  const tCols = db.prepare("PRAGMA table_info(trades)").all();
+  const tColNames = new Set(tCols.map(c => c.name));
+  const tMigrations = [
+    ['label_raw',        'TEXT'],
+    ['source',           'TEXT'],
+    ['label_version',    'TEXT'],
+    ['label_strategy',   'TEXT'],
+    ['label_conviction', 'TEXT'],
+    ['label_session',    'TEXT'],
+    ['label_timeframe',  'TEXT'],
+    ['label_regime',     'TEXT'],
+  ];
+  for (const [col, type] of tMigrations) {
+    if (!tColNames.has(col)) {
+      db.exec(`ALTER TABLE trades ADD COLUMN ${col} ${type}`);
     }
   }
 
