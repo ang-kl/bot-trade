@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import express from 'express';
 import cors from 'cors';
-import { initDB, getState } from './db.js';
+import { initDB, getState, setState } from './db.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -34,10 +34,17 @@ const {
   FRONTEND_URL,
   PORT = '3001',
   DB_PATH,
+  // cTrader credentials from env — seeded into agent_state at boot so the
+  // loop can trade without waiting for the UI to push config.
+  CTRADER_ACCESS_TOKEN,
+  CTRADER_ACCOUNT_ID,
+  CTRADER_IS_LIVE,
 } = process.env;
 
 if (!AGENT_SECRET) {
-  console.error('[agent] FATAL: AGENT_SECRET env var is required')
+  console.error('[agent] FATAL: AGENT_SECRET env var is required — set it in Railway Variables')
+  console.error('[agent] Required env vars: AGENT_SECRET, ANTHROPIC_API_KEY')
+  console.error('[agent] Optional: CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID, CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID')
   process.exit(1)
 }
 
@@ -46,6 +53,19 @@ if (!AGENT_SECRET) {
 // ---------------------------------------------------------------------------
 
 const db = initDB(DB_PATH);
+
+// Seed cTrader credentials from env vars if present and not already stored.
+// This lets Railway hold the secrets so the agent starts trading immediately
+// after deploy — no UI push required.
+if (CTRADER_ACCESS_TOKEN && !getState(db, 'ctrader_access_token')) {
+  setState(db, 'ctrader_access_token', CTRADER_ACCESS_TOKEN)
+  console.log('[boot] cTrader access token seeded from env')
+}
+if (CTRADER_ACCOUNT_ID && !getState(db, 'ctrader_account_id')) {
+  setState(db, 'ctrader_account_id', CTRADER_ACCOUNT_ID)
+  setState(db, 'ctrader_is_live', CTRADER_IS_LIVE === 'true' ? 'true' : 'false')
+  console.log('[boot] cTrader account ID seeded from env')
+}
 
 // ---------------------------------------------------------------------------
 // Express app
@@ -156,10 +176,13 @@ async function start() {
   const server = createServer(app);
   const port = Number(PORT);
 
-  server.listen(port, () => {
-    console.log(`[agent] listening on :${port}`);
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
+    console.log(`[agent] ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY ? 'set' : 'MISSING'}`);
+    console.log(`[agent] CTRADER_ACCESS_TOKEN: ${CTRADER_ACCESS_TOKEN ? 'set' : 'not set'}`);
+    console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
 
   // Start the main scan loop (non-blocking import so server boots even if
