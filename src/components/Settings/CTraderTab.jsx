@@ -9,6 +9,7 @@ import Button from '../common/Button.jsx'
 import Input from '../common/Input.jsx'
 import Badge from '../common/Badge.jsx'
 import { useStrategy } from '../../lib/strategy-store.js'
+import { agentPost, agentConfigured } from '../../lib/agent-api.js'
 
 async function callCtrader(action, params = {}) {
   const init = action === 'auth-url'
@@ -43,10 +44,37 @@ function maskToken(token) {
 
 export default function CTraderTab() {
   const { state, dispatch } = useStrategy()
-  const { accessToken, refreshToken, accounts, linkedAccountId } = state.ctrader
+  const { accessToken, refreshToken, accounts, linkedAccountId, accountRoles } = state.ctrader
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
   const [balances, setBalances] = useState({})
+
+  const roleOf = (id) => accountRoles[String(id)] || { autopilot: false, copilot: false }
+
+  const syncRolesToBackend = useCallback(async (nextRoles) => {
+    if (!agentConfigured || !accessToken) return
+    const rolesArray = accounts.map(a => {
+      const r = nextRoles[String(a.accountId)] || { autopilot: false, copilot: false }
+      return { accountId: a.accountId, isLive: a.isLive, autopilot: r.autopilot, copilot: r.copilot }
+    })
+    try {
+      await agentPost('/actions/ctrader-config', { accessToken, accounts: rolesArray })
+    } catch (e) {
+      console.warn('[CTraderTab] backend sync failed:', e.message)
+    }
+  }, [accessToken, accounts])
+
+  const toggleRole = (accountId, field) => {
+    const id = String(accountId)
+    const prev = roleOf(id)
+    const next = { ...prev, [field]: !prev[field] }
+    dispatch({ type: 'CTRADER_SET_ACCOUNT_ROLE', accountId: id, [field]: next[field] })
+    const nextRoles = { ...accountRoles, [id]: next }
+    syncRolesToBackend(nextRoles)
+    if (field === 'copilot' && !next.copilot && linkedAccountId === accountId) {
+      dispatch({ type: 'CTRADER_LINK_ACCOUNT', accountId: null })
+    }
+  }
 
   const isConnected = !!accessToken
 
@@ -145,27 +173,32 @@ export default function CTraderTab() {
         </Card>
 
         {/* Active account summary */}
-        {linkedAccount && (
-          <Card className="bg-[var(--color-accent-soft)]">
-            <p className="t-meta text-[var(--color-text-sub)] mb-1">Active Account for Charts and Trading</p>
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
-              <div className="flex-1 min-w-0">
-                <p className="t-label">
-                  {linkedAccount.brokerTitle || 'Pepperstone'} #{linkedAccount.accountNumber ?? linkedAccount.accountId}
-                </p>
-                <p className="t-meta text-[var(--color-text-sub)]">
-                  ID: {linkedAccount.accountId} - {linkedAccount.isLive ? 'LIVE' : 'DEMO'}
-                </p>
-                {linkedBalance && (
-                  <p className="t-body font-medium mt-1">
-                    Balance: {formatBalance(linkedBalance.balance, linkedBalance.currency || linkedAccount.currency)}
+        {linkedAccount && (() => {
+          const lr = roleOf(linkedAccountId)
+          return (
+            <Card className="bg-[var(--color-accent-soft)]">
+              <p className="t-meta text-[var(--color-text-sub)] mb-1">Active Account for Charts and Trading</p>
+              <div className="flex items-center gap-3">
+                <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
+                <div className="flex-1 min-w-0">
+                  <p className="t-label">
+                    {linkedAccount.brokerTitle || 'Pepperstone'} #{linkedAccount.accountNumber ?? linkedAccount.accountId}
+                    {lr.autopilot && <Badge tone="info" className="text-[8px] px-1 ml-2">AUTOPILOT</Badge>}
+                    {lr.copilot && <Badge tone="special" className="text-[8px] px-1 ml-1">COPILOT</Badge>}
                   </p>
-                )}
+                  <p className="t-meta text-[var(--color-text-sub)]">
+                    ID: {linkedAccount.accountId} - {linkedAccount.isLive ? 'LIVE' : 'DEMO'}
+                  </p>
+                  {linkedBalance && (
+                    <p className="t-body font-medium mt-1">
+                      Balance: {formatBalance(linkedBalance.balance, linkedBalance.currency || linkedAccount.currency)}
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          </Card>
-        )}
+            </Card>
+          )
+        })()}
 
         {/* Accounts list */}
         <Card>
@@ -228,16 +261,42 @@ export default function CTraderTab() {
                         {info?.balance != null && ` - ${formatBalance(info.balance, info.currency || a.currency)}`}
                       </span>
                     </div>
-                    <Button
-                      size="sm"
-                      variant={linked ? 'subtle' : 'ghost'}
-                      onClick={() => {
-                        dispatch({ type: 'CTRADER_LINK_ACCOUNT', accountId: linked ? null : id })
-                        if (!linked && !balances[id]) fetchBalance(id, a.isLive)
-                      }}
-                    >
-                      {linked ? '-' : 'Link'}
-                    </Button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border transition-colors ${
+                          roleOf(id).autopilot
+                            ? 'bg-[var(--color-info-bg)] text-[var(--color-info-text)] border-[var(--color-info-border)]'
+                            : 'bg-transparent text-[var(--color-muted)] border-[var(--color-border)]'
+                        }`}
+                        onClick={() => toggleRole(id, 'autopilot')}
+                        title="Toggle autopilot (bot auto-trades this account)"
+                      >
+                        AUTO
+                      </button>
+                      <button
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border transition-colors ${
+                          roleOf(id).copilot
+                            ? 'bg-[var(--color-special-bg)] text-[var(--color-special-text)] border-[var(--color-special-border)]'
+                            : 'bg-transparent text-[var(--color-muted)] border-[var(--color-border)]'
+                        }`}
+                        onClick={() => toggleRole(id, 'copilot')}
+                        title="Toggle copilot (you trade this account via Feed)"
+                      >
+                        COPILOT
+                      </button>
+                      <Button
+                        size="sm"
+                        variant={linked ? 'subtle' : 'ghost'}
+                        disabled={!roleOf(id).copilot && !linked}
+                        onClick={() => {
+                          dispatch({ type: 'CTRADER_LINK_ACCOUNT', accountId: linked ? null : id })
+                          if (!linked && !balances[id]) fetchBalance(id, a.isLive)
+                        }}
+                        title={!roleOf(id).copilot && !linked ? 'Enable copilot first' : ''}
+                      >
+                        {linked ? '-' : 'View'}
+                      </Button>
+                    </div>
                   </li>
                 )
               })}

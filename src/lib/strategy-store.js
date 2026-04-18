@@ -90,6 +90,7 @@ export const INITIAL_STATE = {
     accessToken: '',
     refreshToken: '',
     accounts: [],
+    accountRoles: {},
   },
   watchlist: DEFAULT_WATCHLIST,
   news: {
@@ -164,6 +165,20 @@ export function reducer(state, action) {
       return { ...state, ctrader: { ...state.ctrader, accounts: Array.isArray(action.accounts) ? action.accounts : [] } }
     case 'CTRADER_LINK_ACCOUNT':
       return { ...state, ctrader: { ...state.ctrader, linkedAccountId: action.accountId ?? null } }
+    case 'CTRADER_SET_ACCOUNT_ROLE': {
+      const id = String(action.accountId)
+      const prev = state.ctrader.accountRoles[id] || { autopilot: false, copilot: false }
+      const next = { ...prev }
+      if (typeof action.autopilot === 'boolean') next.autopilot = action.autopilot
+      if (typeof action.copilot === 'boolean') next.copilot = action.copilot
+      return {
+        ...state,
+        ctrader: {
+          ...state.ctrader,
+          accountRoles: { ...state.ctrader.accountRoles, [id]: next },
+        },
+      }
+    }
 
     case 'WATCHLIST_ADD': {
       const sym = normalizeSymbol(action.symbol)

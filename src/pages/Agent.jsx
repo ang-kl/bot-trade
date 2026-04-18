@@ -1,43 +1,29 @@
-// AI Agent — monitoring dashboard showing what the system is watching and when it started.
+// Trade Window — live observation cockpit for the autonomous bot.
+// The Railway loop runs Scout → Analyst → Monitor autonomously; this page
+// surfaces what it's doing and gives you the kill switches.
+// Deep drill-down into minion reports lives on /workshop to keep this lean.
 
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { parseLabel } from '../../agent/lib/trade-labels.js'
 
-const MONITOR_KEY = 'bot-trade:agent-monitor'
+// Map parsed label source → badge tone + display label. Unknown / null
+// source falls through and the row just shows the raw label string.
+const SOURCE_BADGE = {
+  autopilot: { tone: 'info',    text: 'AUTOPILOT' },
+  copilot:   { tone: 'special', text: 'COPILOT'   },
+  manual:    { tone: 'neutral', text: 'MANUAL'    },
+}
+
 const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
-
-function readMonitor() {
-  try {
-    const raw = localStorage.getItem(MONITOR_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
-
-function readScanCache() {
-  try {
-    const raw = localStorage.getItem(SCAN_CACHE_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
-
-const AGENT_ROLES = {
-  scout: { label: 'Scout', desc: 'Scans all symbols — bias, conviction, session fit', icon: '🔍', minions: 0 },
-  analyst: { label: 'Analyst', desc: 'Deep-dives hot symbols with 4-6 parallel minions', icon: '🧠', minions: 6 },
-  trader: { label: 'Trader', desc: 'Executes orders on cTrader — market, limit, stop', icon: '⚡', minions: 0 },
-  monitor: { label: 'Monitor', desc: 'Probes open positions — hold, tighten SL, scale out, exit', icon: '📡', minions: 0 },
-  quant: { label: 'Quant', desc: 'Regime detection, risk metrics, performance snapshots', icon: '📊', minions: 0 },
-}
-
-const STATE_TONE = { running: 'accent', done: 'up', idle: 'neutral', sleeping: 'warning', error: 'down' }
-const STATE_ICON = { running: '\u25CF', done: '\u2713', idle: '\u2014', sleeping: '\u23F8', error: '\u2717' }
-
-const SCAN_CACHE_KEY_AGENT = 'bot-trade:scan-cache'
 function readPriceCache() {
   try {
-    const raw = localStorage.getItem(SCAN_CACHE_KEY_AGENT)
+    const raw = localStorage.getItem(SCAN_CACHE_KEY)
     if (!raw) return {}
     return JSON.parse(raw).massiveMetrics || {}
   } catch { return {} }
@@ -67,34 +53,25 @@ function computePnl(position, priceCache) {
   return direction * (currentPrice - position.openPrice) * volLots * contractSize
 }
 
-function fmtDuration(ms) {
-  if (!ms || ms <= 0) return '0s'
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  const h = Math.floor(m / 60)
-  if (h === 0) return `${m}m ${s % 60}s`
-  return `${h}h ${m % 60}m`
-}
-
-function fmtTime(ts) {
-  if (!ts) return '\u2014'
-  return new Date(ts).toLocaleString('en-GB', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
-}
-
 function fmtAgo(ts) {
   if (!ts) return ''
-  const ago = Date.now() - ts
+  const t = typeof ts === 'number' ? ts : new Date(ts).getTime()
+  if (!Number.isFinite(t)) return ''
+  const ago = Date.now() - t
   if (ago < 60_000) return 'just now'
   if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}m ago`
   return `${Math.floor(ago / 3_600_000)}h ${Math.floor((ago % 3_600_000) / 60_000)}m ago`
 }
 
 function fmtMoney(v, digits = 2) {
-  return v != null ? v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'
+  return v != null && Number.isFinite(v)
+    ? Number(v).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+    : '—'
 }
+
+// ---------------------------------------------------------------------------
+// Account panel — reads from cTrader directly (serverless /api/ctrader)
+// ---------------------------------------------------------------------------
 
 async function fetchAccountInfo(accessToken, accountId, isLive) {
   const res = await fetch('/api/ctrader', {
@@ -104,7 +81,6 @@ async function fetchAccountInfo(accessToken, accountId, isLive) {
   })
   return res.ok ? res.json() : null
 }
-
 async function fetchOpenPositions(accessToken, accountId, isLive) {
   const res = await fetch('/api/ctrader', {
     method: 'POST',
@@ -114,7 +90,7 @@ async function fetchOpenPositions(accessToken, accountId, isLive) {
   return res.ok ? res.json() : null
 }
 
-function AccountPanel({ ctrader }) {
+function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
   const [info, setInfo] = useState(null)
   const [positions, setPositions] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -122,28 +98,23 @@ function AccountPanel({ ctrader }) {
 
   const linked = ctrader.accounts.find(a => a.accountId === ctrader.linkedAccountId)
   const isLive = linked?.isLive ?? false
+  const roles = ctrader.accountRoles || {}
+  const apAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.autopilot)
+  const cpAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.copilot)
 
   const refresh = useCallback(async () => {
     if (!ctrader.linkedAccountId || !ctrader.accessToken) return
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     try {
       const [inf, pos] = await Promise.all([
         fetchAccountInfo(ctrader.accessToken, ctrader.linkedAccountId, isLive),
         fetchOpenPositions(ctrader.accessToken, ctrader.linkedAccountId, isLive),
       ])
-      setInfo(inf)
-      setPositions(pos)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
+      setInfo(inf); setPositions(pos)
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
   }, [ctrader.accessToken, ctrader.linkedAccountId, isLive])
 
   useEffect(() => { refresh() }, [refresh])
-
-  // Auto-refresh every 60s to keep equity + positions current
   useEffect(() => {
     const iv = setInterval(refresh, 60_000)
     return () => clearInterval(iv)
@@ -181,17 +152,30 @@ function AccountPanel({ ctrader }) {
         </Button>
       </div>
 
-      {error && (
-        <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>
+      {(apAccounts.length > 0 || cpAccounts.length > 0) && (
+        <div className="flex items-center gap-3 mb-2 text-[9.5px] text-[var(--color-muted)] flex-wrap">
+          {apAccounts.length > 0 && (
+            <span>
+              <Badge tone="info" className="text-[8px] px-1 mr-1">AUTO</Badge>
+              {apAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
+            </span>
+          )}
+          {cpAccounts.length > 0 && (
+            <span>
+              <Badge tone="special" className="text-[8px] px-1 mr-1">COPILOT</Badge>
+              {cpAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
+            </span>
+          )}
+        </div>
       )}
+
+      {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
 
       {info && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
           <div>
             <p className="t-meta text-[var(--color-muted)]">Balance</p>
-            <p className="text-[15px] font-bold text-[var(--color-text)]">
-              {fmtMoney(info.balance)}
-            </p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">{fmtMoney(info.balance)}</p>
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Equity</p>
@@ -211,15 +195,11 @@ function AccountPanel({ ctrader }) {
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Leverage</p>
-            <p className="text-[15px] font-bold text-[var(--color-text)]">
-              {info.leverage ? `1:${info.leverage}` : '—'}
-            </p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">{info.leverage ? `1:${info.leverage}` : '—'}</p>
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Open Trades</p>
-            <p className="text-[15px] font-bold text-[var(--color-text)]">
-              {positions?.count ?? '—'}
-            </p>
+            <p className="text-[15px] font-bold text-[var(--color-text)]">{positions?.count ?? '—'}</p>
           </div>
         </div>
       )}
@@ -229,7 +209,7 @@ function AccountPanel({ ctrader }) {
         return (
           <div>
             <p className="t-meta text-[var(--color-muted)] mb-1">Open Positions</p>
-            <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
+            <div className="space-y-1.5 max-h-[320px] overflow-y-auto">
               {positions.positions.map((p, i) => {
                 const sym = p.symbolName || `#${p.symbolId}`
                 const volLots = p.volume != null ? p.volume / 10000 : null
@@ -240,14 +220,28 @@ function AccountPanel({ ctrader }) {
                 const slPips = pipDist(p.openPrice, p.stopLoss, p.symbolName)
                 const tpPips = pipDist(p.openPrice, p.takeProfit, p.symbolName)
                 const fees = (p.swap || 0) + (p.commission || 0)
+                // Decode the structured cTrader label so we can show a
+                // provenance badge. Legacy / unstructured labels fall back
+                // to the raw string display.
+                const parsedLabel = p.label ? parseLabel(p.label) : null
+                const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
+                // Match this cTrader position to a bot-monitored position (by ctrader_position_id).
+                const botPos = botPositionsById[String(p.positionId)]
+                const paused = botPos?.paused === 1
+                const lastCheck = botPos?.last_check_action
+                const lastCheckAt = botPos?.last_check_at
                 return (
                   <div key={p.positionId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                    {/* Line 1: primary */}
                     <div className="flex items-center gap-2 text-[11px]">
                       <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                         {p.side === 'BUY' ? '▲' : '▼'}
                       </span>
                       <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                      {sourceBadge && (
+                        <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                          {sourceBadge.text}
+                        </Badge>
+                      )}
                       <span className="text-[var(--color-muted)]">
                         {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
                       </span>
@@ -261,8 +255,11 @@ function AccountPanel({ ctrader }) {
                           <span className="text-[8px] text-[var(--color-muted)] ml-0.5">est</span>
                         </span>
                       )}
+                      {botPos && (paused
+                        ? <Button size="sm" variant="ghost" onClick={() => onUnpause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">resume</Button>
+                        : <Button size="sm" variant="ghost" onClick={() => onPause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">pause</Button>
+                      )}
                     </div>
-                    {/* Line 2: secondary */}
                     <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
                       {p.stopLoss != null && (
                         <span>
@@ -279,8 +276,28 @@ function AccountPanel({ ctrader }) {
                       {p.usedMargin != null && <span>margin {fmtMoney(p.usedMargin)}</span>}
                       {p.openTimestamp && <span>opened {fmtAgo(p.openTimestamp)}</span>}
                       {fees !== 0 && <span>fees {fmtMoney(fees)}</span>}
-                      {p.label && <span className="italic truncate max-w-[80px]">{p.label}</span>}
+                      {parsedLabel?.strategy && (
+                        <span className="uppercase tracking-wide">
+                          {parsedLabel.strategy}
+                          {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
+                          {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
+                        </span>
+                      )}
+                      {p.label && !sourceBadge && (
+                        <span className="italic truncate max-w-[80px]" title={p.label}>{p.label}</span>
+                      )}
                     </div>
+                    {botPos && (
+                      <div className="flex items-center gap-2 text-[9.5px] mt-0.5">
+                        {paused && <Badge tone="warning" className="text-[8px] px-1">PAUSED</Badge>}
+                        {lastCheck && (
+                          <span className="text-[var(--color-text-sub)]">
+                            <span className="text-[var(--color-muted)]">Monitor:</span> {lastCheck}
+                            {lastCheckAt && <span className="text-[var(--color-muted)]"> · {fmtAgo(lastCheckAt)}</span>}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -296,233 +313,207 @@ function AccountPanel({ ctrader }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Activity row styling
+// ---------------------------------------------------------------------------
+
+const KIND_TONE = {
+  scan: 'neutral', analysis: 'accent', monitor: 'info',
+  trade: 'up', regime: 'neutral', flip: 'warning',
+}
+const KIND_LABEL = {
+  scan: 'SCAN', analysis: 'ANALYSIS', monitor: 'MONITOR',
+  trade: 'TRADE', regime: 'REGIME', flip: 'FLIP',
+}
+
+function ActivityRow({ row }) {
+  const biasColor = row.v1 === 'long' || row.v1 === 'BUY'
+    ? 'text-[var(--color-up)]'
+    : row.v1 === 'short' || row.v1 === 'SELL'
+    ? 'text-[var(--color-down)]'
+    : 'text-[var(--color-muted)]'
+  return (
+    <div className="flex items-start gap-2 px-2 py-1.5 rounded-[5px] hover:bg-[var(--color-bg)] text-[11px]">
+      <Badge tone={KIND_TONE[row.kind] || 'neutral'} className="text-[8px] px-1 shrink-0">
+        {KIND_LABEL[row.kind] || row.kind.toUpperCase()}
+      </Badge>
+      <span className="font-bold w-[65px] shrink-0 text-[var(--color-text)]">{row.symbol}</span>
+      {row.v1 && (
+        <span className={`font-bold w-[52px] shrink-0 ${biasColor}`}>{String(row.v1).slice(0, 8)}</span>
+      )}
+      {row.v2 != null && (
+        <span className="font-mono w-[32px] shrink-0 text-[var(--color-text-sub)]">
+          {typeof row.v2 === 'number' ? row.v2.toFixed(1) : row.v2}
+        </span>
+      )}
+      <span className="flex-1 min-w-0 text-[var(--color-text-sub)] truncate">
+        {row.note || row.extra || ''}
+      </span>
+      <span className="text-[9px] text-[var(--color-muted)] shrink-0">{fmtAgo(row.at)}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
 export default function Agent() {
   const { state } = useStrategy()
-  const [monitor, setMonitor] = useState(readMonitor)
-  const [scanCache, setScanCache] = useState(readScanCache)
-  const [now, setNow] = useState(Date.now())
+  const [health, setHealth] = useState(null)
+  const [config, setConfig] = useState(null)
+  const [activity, setActivity] = useState([])
+  const [botPositions, setBotPositions] = useState([])
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    const iv = setInterval(() => {
-      setMonitor(readMonitor())
-      setScanCache(readScanCache())
-      setNow(Date.now())
-    }, 2000)
-    return () => clearInterval(iv)
+  const refresh = useCallback(async () => {
+    if (!agentConfigured) return
+    try {
+      const [h, c, a, p] = await Promise.all([
+        agentGet('/health').catch(() => null),
+        agentGet('/state/config').catch(() => null),
+        agentGet('/state/activity?limit=40').catch(() => ({ activity: [] })),
+        agentGet('/state/positions').catch(() => ({ positions: [] })),
+      ])
+      setHealth(h); setConfig(c)
+      setActivity(a?.activity || [])
+      setBotPositions(p?.positions || [])
+      setError(null)
+    } catch (e) { setError(e.message) }
   }, [])
 
-  const enabledSymbols = state.watchlist.filter(w => w.enabled)
-  const armed = state.risk.armed
-  const sessionStart = monitor?.sessionStart
-  const uptime = sessionStart ? now - sessionStart : 0
-  const lastScanAt = monitor?.lastScanAt || scanCache?.lastScanAt
-  const agentStates = monitor?.agentStates || {}
-  const tokenCount = monitor?.tokenCount || 0
-  const agentTokens = monitor?.agentTokens || {}
-  const agentCalls = monitor?.agentCalls || {}
-  const scans = scanCache?.scanResults || {}
+  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    const iv = setInterval(refresh, 10_000)
+    return () => clearInterval(iv)
+  }, [refresh])
 
-  const hasSession = !!sessionStart
-  const isActive = hasSession && (armed || Object.values(agentStates).some(s => s === 'running'))
+  const on = config?.armed === true
+  const toggleAutopilot = async () => {
+    setBusy(true)
+    try {
+      await agentPost('/actions/autopilot', { on: !on })
+      await refresh()
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const killAll = async () => {
+    if (!window.confirm('Kill switch: disarm autopilot + pause every monitored position. Proceed?')) return
+    setBusy(true)
+    try { await agentPost('/actions/kill-all'); await refresh() }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const pausePos = async (id) => { try { await agentPost(`/actions/pause-position/${id}`); refresh() } catch (e) { setError(e.message) } }
+  const unpausePos = async (id) => { try { await agentPost(`/actions/unpause-position/${id}`); refresh() } catch (e) { setError(e.message) } }
+
+  // Index bot-monitored positions by their cTrader position id so the
+  // AccountPanel can correlate each cTrader row with its bot thesis.
+  const botById = {}
+  for (const bp of botPositions) {
+    if (bp.ctrader_position_id) botById[String(bp.ctrader_position_id)] = bp
+  }
+
+  const enabledWatchlist = config?.watchlist?.filter(w => w.enabled !== false) || []
+
+  if (!agentConfigured) {
+    return (
+      <Card>
+        <p className="t-label mb-1">Trade Window</p>
+        <p className="t-sub text-[var(--color-muted)]">
+          Agent backend not configured. Set <code>VITE_AGENT_URL</code> and <code>VITE_AGENT_SECRET</code> in Vercel, then redeploy.
+        </p>
+      </Card>
+    )
+  }
 
   return (
     <section className="space-y-3">
-      {/* Status overview */}
+      {/* Autopilot header */}
       <Card>
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <span className={`text-[18px] ${isActive ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
-              {isActive ? '\u25CF' : '\u25CB'}
+            <span className={`text-[18px] ${on ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
+              {on ? '●' : '○'}
             </span>
-            <h1 className="t-label text-lg">AI Agent Monitor</h1>
+            <h1 className="t-label text-lg">Trade Window</h1>
+            <Badge tone={on ? 'up' : 'neutral'} pill>{on ? 'AUTOPILOT ON' : 'AUTOPILOT OFF'}</Badge>
           </div>
-          <Badge tone={armed ? 'up' : 'neutral'} pill>
-            {armed ? 'ARMED' : 'DISARMED'}
-          </Badge>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant={on ? 'ghost' : 'primary'}
+              onClick={toggleAutopilot}
+              disabled={busy}
+            >
+              {on ? 'Pause All' : 'Engage'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={killAll} disabled={busy} className="text-[var(--color-down)]">
+              Kill Switch
+            </Button>
+            <Link to="/workshop" className="t-meta text-[var(--color-accent)] underline self-center ml-1">
+              Open Workshop →
+            </Link>
+          </div>
         </div>
+
+        {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div>
-            <p className="t-meta text-[var(--color-muted)]">Session Started</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">{fmtTime(sessionStart)}</p>
-          </div>
-          <div>
-            <p className="t-meta text-[var(--color-muted)]">Uptime</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">{hasSession ? fmtDuration(uptime) : '\u2014'}</p>
+            <p className="t-meta text-[var(--color-muted)]">Loops</p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{health?.loopCount ?? '—'}</p>
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Last Scan</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">
-              {lastScanAt ? fmtAgo(lastScanAt) : '\u2014'}
-            </p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{fmtAgo(health?.lastScanAt) || '—'}</p>
           </div>
           <div>
-            <p className="t-meta text-[var(--color-muted)]">Tokens Used</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">{tokenCount.toLocaleString()}</p>
+            <p className="t-meta text-[var(--color-muted)]">Watchlist</p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{enabledWatchlist.length} symbols</p>
+          </div>
+          <div>
+            <p className="t-meta text-[var(--color-muted)]">Bot Positions</p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{botPositions.length} open</p>
           </div>
         </div>
       </Card>
 
-      {/* Pepperstone / cTrader account */}
-      <AccountPanel ctrader={state.ctrader} />
+      {/* cTrader account + positions with bot context */}
+      <AccountPanel
+        ctrader={state.ctrader}
+        botPositionsById={botById}
+        onPause={pausePos}
+        onUnpause={unpausePos}
+      />
 
-      {/* Agent states — 5 core agents */}
-      <Card>
-        <div className="flex items-center justify-between mb-2">
-          <p className="t-label">Agent Fleet</p>
-          <span className="text-[9px] text-[var(--color-muted)]">
-            {Object.values(agentStates).filter(s => s === 'running').length} active
-          </span>
-        </div>
-        <div className="space-y-1">
-          {Object.entries(AGENT_ROLES).map(([key, role]) => {
-            const s = agentStates[key] || 'idle'
-            const calls = agentCalls[key] || 0
-            const tokens = agentTokens[key] || 0
-            return (
-              <div key={key} className="flex items-center gap-2 px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                <span className="text-[14px]">{role.icon}</span>
-                <span className={`text-[10px] w-[8px] ${s === 'running' ? 'animate-pulse' : ''} text-[var(--color-${STATE_TONE[s] || 'muted'})]`}>
-                  {STATE_ICON[s] || '\u2014'}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] font-bold text-[var(--color-text)]">{role.label}</span>
-                    <Badge tone={STATE_TONE[s] || 'neutral'} className="text-[7px] px-1">
-                      {s.toUpperCase()}
-                    </Badge>
-                    {role.minions > 0 && (
-                      <span className="text-[8px] text-[var(--color-accent)]">{role.minions} minions</span>
-                    )}
-                  </div>
-                  <span className="text-[9px] text-[var(--color-text-sub)]">{role.desc}</span>
-                </div>
-                <div className="text-right shrink-0">
-                  {calls > 0 && (
-                    <div className="text-[9px] text-[var(--color-muted)]">{calls} calls</div>
-                  )}
-                  {tokens > 0 && (
-                    <div className="text-[9px] text-[var(--color-muted)]">{tokens.toLocaleString()} tok</div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
-          <span className="text-[9px] text-[var(--color-muted)]">
-            Total: {tokenCount.toLocaleString()} tokens · ${((tokenCount / 1000) * 0.015).toFixed(2)} est.
-          </span>
-          <span className="text-[9px] text-[var(--color-muted)]">
-            Refresh: 15 min cycle
-          </span>
-        </div>
-      </Card>
-
-      {/* Monitoring symbols — with live prices from MASSIVE */}
+      {/* Live activity stream */}
       <Card>
         <div className="flex items-center gap-2 mb-2">
-          <p className="t-label flex-1">Monitoring {enabledSymbols.length} Symbols</p>
-          {lastScanAt && (
-            <span className="t-meta text-[var(--color-muted)]">
-              scanned {fmtAgo(lastScanAt)}
-            </span>
-          )}
+          <p className="t-label flex-1">Live Activity</p>
+          <span className="text-[9px] text-[var(--color-muted)]">
+            {activity.length} events · auto-refresh 10s
+          </span>
         </div>
-        {enabledSymbols.length === 0 ? (
+        {activity.length === 0 ? (
           <p className="t-sub text-[var(--color-muted)] py-4 text-center">
-            No symbols enabled. Go to Watchlist to enable symbols for monitoring.
+            No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
           </p>
         ) : (
-          <div className="space-y-0.5">
-            {enabledSymbols.map(w => {
-              const scan = scans[w.symbol]
-              const prices = readPriceCache()
-              const mm = prices[w.symbol] || {}
-              const bias = scan?.bias
-              const conf = scan?.confidence
-              const biasColor = bias === 'long' ? 'var(--color-up)' : bias === 'short' ? 'var(--color-down)' : 'var(--color-muted)'
-              const arrow = bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : ''
-              const price = mm.price || scan?.price
-              const changePct = mm.change_pct
-              const ema = mm.ema_stack?.stack
-              return (
-                <div
-                  key={w.symbol}
-                  className="flex items-center gap-2 px-2 py-1 rounded-[4px] bg-[var(--color-bg)] text-[11px]"
-                >
-                  <span className="font-bold w-[65px] shrink-0" style={{ color: biasColor }}>
-                    {arrow} {w.symbol}
-                  </span>
-                  <span className="font-mono font-semibold text-[var(--color-text)] w-[70px] text-right shrink-0">
-                    {price ? fmtMoney(price, price < 10 ? 4 : 2) : '—'}
-                  </span>
-                  {changePct != null && (
-                    <span className={`text-[9px] font-bold w-[45px] shrink-0 ${changePct > 0 ? 'text-[var(--color-up)]' : changePct < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
-                      {changePct > 0 ? '+' : ''}{changePct.toFixed(2)}%
-                    </span>
-                  )}
-                  {ema && (
-                    <span className={`text-[8px] w-[16px] shrink-0 ${ema.startsWith('Bull') ? 'text-[var(--color-up)]' : ema.startsWith('Bear') ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
-                      {ema.startsWith('Bull') ? '▲' : ema.startsWith('Bear') ? '▼' : '—'}
-                    </span>
-                  )}
-                  {conf != null && (
-                    <span className="text-[9px] font-mono font-bold shrink-0" style={{ color: biasColor }}>
-                      {conf}/10
-                    </span>
-                  )}
-                  <span className="text-[8px] text-[var(--color-muted)] truncate flex-1 text-right">
-                    {scan?.thesis ? scan.thesis.slice(0, 40) : w.label || ''}
-                  </span>
-                </div>
-              )
-            })}
+          <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
+            {activity.map((row, i) => (
+              <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
+            ))}
           </div>
         )}
+        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
+          <span className="text-[9px] text-[var(--color-muted)]">
+            Drill into any analysis, trade, or monitor check in the Workshop.
+          </span>
+          <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
+            Workshop →
+          </Link>
+        </div>
       </Card>
-
-      {/* Latest scan results */}
-      {Object.keys(scans).length > 0 && (
-        <Card>
-          <p className="t-label mb-2">Latest Scan Results</p>
-          <div className="space-y-1 max-h-[400px] overflow-y-auto">
-            {Object.entries(scans)
-              .sort((a, b) => (b[1].confidence || 0) - (a[1].confidence || 0))
-              .map(([sym, s]) => {
-                const bias = s.bias || 'neutral'
-                const sideColor = bias === 'long' ? 'text-[var(--color-up)]' : bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'
-                return (
-                  <div key={sym} className="flex items-start gap-2 px-2 py-1.5 rounded-[5px] hover:bg-[var(--color-bg)]">
-                    <span className={`text-[12px] font-bold w-[70px] shrink-0 ${sideColor}`}>
-                      {bias === 'long' ? '\u25B2' : bias === 'short' ? '\u25BC' : '\u25CF'} {sym}
-                    </span>
-                    <span className="text-[11px] font-mono font-bold w-[35px] shrink-0" style={{
-                      color: (s.confidence || 0) >= 7 ? 'var(--color-up)' : (s.confidence || 0) >= 4 ? 'var(--color-accent)' : 'var(--color-muted)'
-                    }}>
-                      {s.confidence || 0}/10
-                    </span>
-                    <span className="text-[11px] text-[var(--color-text-sub)] flex-1 line-clamp-2">
-                      {s.thesis || 'No thesis'}
-                    </span>
-                  </div>
-                )
-              })}
-          </div>
-        </Card>
-      )}
-
-      {/* No session fallback */}
-      {!hasSession && Object.keys(scans).length === 0 && (
-        <Card>
-          <div className="text-center py-8">
-            <p className="text-[14px] font-bold text-[var(--color-text)] mb-1">No Active Session</p>
-            <p className="t-sub text-[var(--color-muted)]">
-              Go to Feed and arm the system to start monitoring. The agent will scan your enabled symbols every 5 minutes.
-            </p>
-          </div>
-        </Card>
-      )}
     </section>
   )
 }

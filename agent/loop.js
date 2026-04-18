@@ -7,9 +7,14 @@ import WebSocket from 'ws'
 import { runScan } from './services/scanner.js'
 import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
+import { evaluatePosition } from './services/position-manager.js'
+import { runWeekendPositionCheck } from './services/weekend-watch.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
+import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -70,12 +75,24 @@ function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orde
   })
 }
 
-async function autoTrade(db, symbol, synth, watchlistItem) {
+function getAutopilotAccounts(db) {
+  const rolesJson = getState(db, 'ctrader_account_roles_json')
+  if (rolesJson) {
+    try {
+      return JSON.parse(rolesJson).filter(a => a.autopilot)
+    } catch { /* fall through to legacy */ }
+  }
+  const id = getState(db, 'ctrader_account_id')
+  if (!id) return []
+  return [{ accountId: id, isLive: getState(db, 'ctrader_is_live') === 'true' }]
+}
+
+async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   const clientId = process.env.CTRADER_CLIENT_ID
   const clientSecret = process.env.CTRADER_CLIENT_SECRET
   const accessToken = getState(db, 'ctrader_access_token')
-  const accountId = getState(db, 'ctrader_account_id')
-  const isLive = getState(db, 'ctrader_is_live') === 'true'
+  const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id')
+  const isLive = accountOverride ? !!accountOverride.isLive : getState(db, 'ctrader_is_live') === 'true'
 
   if (!clientId || !clientSecret || !accessToken || !accountId) {
     log(`Auto-trade skipped — cTrader credentials not configured (push via /actions/ctrader-config)`)
@@ -83,7 +100,39 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
   }
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-  const volLots = watchlistItem?.maxVolume || 0.01
+  const requestedVol = watchlistItem?.maxVolume || 0.01
+
+  // -------------------------------------------------------------------------
+  // Risk Manager pre-trade gate — deterministic veto + Kelly volume scaling.
+  // Runs before cTrader WS open. No LLM calls. Every evaluation is persisted
+  // to risk_events for Workshop audit.
+  // -------------------------------------------------------------------------
+  const proposal = {
+    symbol,
+    side,
+    entry: synth.entry ?? null,
+    sl: synth.sl ?? null,
+    tp1: synth.tp1 ?? null,
+    requestedVolume: requestedVol,
+    strategy: synth.strategy || null,
+    conviction: synth.overall_conviction ?? null,
+  }
+  const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+  persistRiskEvent(db, proposal, riskResult)
+  if (!riskResult.approved) {
+    log(`RISK VETO ${symbol} ${side}: ${riskResult.veto_reason}`)
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      try {
+        const { sendMessage } = await import('./services/telegram.js')
+        await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — ${riskResult.veto_reason}`)
+      } catch {}
+    }
+    return null
+  }
+  const volLots = riskResult.adjusted_volume
+  if (Math.abs(volLots - requestedVol) > 0.001) {
+    log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
+  }
   const volume = Math.round(volLots * 10000) // cTrader units: 10000 = 1 lot
 
   // We need symbolId — look it up from previously stored symbol map, or skip
@@ -99,6 +148,22 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
   const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
   const POINTS = 100000
 
+  // Build the structured attribution label — visible in the native cTrader
+  // Orders/History columns and used for per-strategy / per-regime analytics.
+  const sessionNow = getActiveSessions()[0]?.label || 'Off'
+  const regimeRow = db
+    .prepare(`SELECT regime FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1`)
+    .get(symbol)
+  const structuredLabel = encodeLabel({
+    source: 'autopilot',
+    version: LABEL_VERSION,
+    strategy: synth.strategy || 'other',
+    conviction: convictionBucket(synth.overall_conviction),
+    session: sessionNow,
+    timeframe: synth.timeframe || null,
+    regime: regimeRow?.regime || null,
+  })
+
   const orderPayload = {
     ctidTraderAccountId: parseInt(accountId),
     symbolId: parseInt(symbolId),
@@ -106,7 +171,7 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
     tradeSide: side,
     volume,
     comment: 'abot-auto',
-    label: 'abot-auto',
+    label: structuredLabel,
     ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
     ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
   }
@@ -119,17 +184,60 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
-    // Record trade in DB
-    db.prepare(`
-      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at, status, ctrader_position_id, analysis_id)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'open', ?, ?)
-    `).run(symbol, side, executionPrice, synth.sl ?? null, synth.tp1 ?? null, volLots, positionId, null)
+    // Compute initial_risk = |entry - SL|; needed for R-unit math in position-manager
+    const entryP = executionPrice ?? synth.entry ?? null
+    const slP = synth.sl ?? null
+    const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
-    // Register in monitored_positions for the monitor phase
+    // Compute absolute time cap from Analyst's time_cap_minutes
+    let timeCap = null
+    if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
+      timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
+    }
+
+    // Record trade in DB with parsed label components — fast attribution
+    // queries without re-parsing the raw label string on every read.
+    const parsedLabel = parseLabel(structuredLabel)
     db.prepare(`
-      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, status, opened_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))
-    `).run(symbol, side === 'BUY' ? 'long' : 'short', executionPrice, synth.sl ?? null, synth.tp1 ?? null, synth.synthesis || '')
+      INSERT INTO trades (
+        symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+        status, ctrader_position_id, analysis_id, strategy, conviction,
+        label_raw, source, label_version, label_strategy, label_conviction,
+        label_session, label_timeframe, label_regime
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, datetime('now'),
+        'open', ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?
+      )
+    `).run(
+      symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
+      positionId, null, synth.strategy || null, synth.overall_conviction ?? null,
+      parsedLabel.raw, parsedLabel.source, parsedLabel.version,
+      parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
+      parsedLabel.timeframe, parsedLabel.regime,
+    )
+
+    // Register in monitored_positions — fully populated for position-manager.
+    // Stamp source/label_raw so the monitor SELECT can scope itself to
+    // autopilot-only positions (copilot/manual trades must not be touched
+    // by the autonomous loop).
+    db.prepare(`
+      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    `).run(
+      symbol,
+      side === 'BUY' ? 'long' : 'short',
+      executionPrice,
+      slP,
+      synth.tp1 ?? null,
+      synth.synthesis || '',
+      initialRisk,
+      synth.invalidation_trigger || null,
+      timeCap,
+      synth.strategy || null,
+      parsedLabel.source,
+      parsedLabel.raw,
+    )
 
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId}`)
     return { executionPrice, positionId, side, volume: volLots }
@@ -159,17 +267,30 @@ function prepareStatements(db) {
     `),
 
     insertAnalysis: db.prepare(`
-      INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, analyzed_at, scan_id)
-      VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @analyzed_at, @scan_id)
+      INSERT INTO analyses (symbol, consensus_bias, overall_conviction, consensus_summary, synthesis, entry_price, sl_price, tp1_price, tp2_price, auto_trade, strategy, risk_note, minion_reports, invalidation_trigger, time_cap_minutes, analyzed_at, scan_id)
+      VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
     `),
 
+    // Autopilot monitors only its own positions. Legacy rows (pre-migration)
+    // have NULL source and are treated as autopilot since autoTrade() was
+    // historically the only INSERT path. Copilot/manual trades — if ever
+    // ingested — must set source explicitly and will be excluded.
     selectActivePositions: db.prepare(
-      `SELECT * FROM monitored_positions WHERE status = ?`
+      `SELECT * FROM monitored_positions
+       WHERE status = ?
+         AND COALESCE(paused, 0) = 0
+         AND (source IS NULL OR source = 'autopilot')`
     ),
 
     updatePositionCheck: db.prepare(`
       UPDATE monitored_positions
       SET last_check_action = ?, last_check_reasoning = ?, last_check_at = ?, thesis_status = ?
+      WHERE id = ?
+    `),
+
+    updatePositionMetrics: db.prepare(`
+      UPDATE monitored_positions
+      SET mfe_r = ?, mae_r = ?, be_moved = ?, scaled_out = ?
       WHERE id = ?
     `),
 
@@ -208,13 +329,47 @@ async function runLoop(db) {
     } else {
       let watchlist
       try { watchlist = JSON.parse(watchlistJson) } catch { watchlist = [] }
-      const symbols = (Array.isArray(watchlist) ? watchlist : [])
+      const allSymbols = (Array.isArray(watchlist) ? watchlist : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
 
-      if (symbols.length === 0) {
-        log('No enabled symbols in watchlist')
+      // Market-closed guardrail: when no FX/equity session is active, crypto
+      // (24/7) still scans normally. Non-crypto gets a weekend-watch pass on
+      // any held positions + a pre-open warm-up when the first session
+      // (Sydney, UTC 22:00 Sun) is within 30 minutes. Monitor phase is lifted
+      // out of this block so it always runs on every position regardless.
+      const activeSessions = getActiveSessions()
+      const openPositions = s.selectActivePositions.all('active')
+      const tradPositions = openPositions.filter(p => categoriseSymbol(p.symbol) !== 'crypto')
+      const nextOpen = nextSessionOpening()
+      const marketClosed = activeSessions.length === 0
+      const preOpenWindow = marketClosed && nextOpen && nextOpen.minsUntil <= 30
+
+      // Pre-open warm-up: scan the full watchlist so theses are fresh for the
+      // Sydney bell. Otherwise, when market is closed, scan only 24/7 crypto.
+      const symbols = marketClosed && !preOpenWindow
+        ? allSymbols.filter(w => categoriseSymbol(w.symbol) === 'crypto')
+        : allSymbols
+
+      if (preOpenWindow) {
+        log(`Pre-open warm-up — ${nextOpen.label} opens in ${nextOpen.minsUntil}m. Running full scan+analyze.`)
+        setState(db, 'last_preopen_at', new Date().toISOString())
+      }
+
+      if (marketClosed && symbols.length === 0 && openPositions.length === 0) {
+        log(`Market closed — no sessions active, no positions open. Next open: ${nextOpen?.label || '?'} in ~${Math.round((nextOpen?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
+        setState(db, 'last_skip_reason', 'market_closed')
+        setState(db, 'last_skip_at', new Date().toISOString())
+      } else if (symbols.length === 0) {
+        if (marketClosed) {
+          log(`Off-hours, no crypto in watchlist — weekend-watch on ${tradPositions.length} position(s)`)
+        } else {
+          log('No enabled symbols in watchlist')
+        }
       } else {
+        if (marketClosed && !preOpenWindow) {
+          log(`Off-hours — scanning ${symbols.length} crypto symbol(s) only`)
+        }
 
     // Build context memory for this scan
     const contextBrief = buildContextBrief(db)
@@ -303,22 +458,29 @@ async function runLoop(db) {
             strategy: synth.strategy || null,
             risk_note: synth.risk_note || null,
             minion_reports: JSON.stringify(result.reports || []),
+            invalidation_trigger: synth.invalidation_trigger || null,
+            time_cap_minutes: synth.time_cap_minutes ?? null,
             analyzed_at: new Date().toISOString(),
             scan_id: scanId,
           })
 
           log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10)`)
 
-          // Auto-trade — only when armed and synthesis recommends it
+          // Auto-trade — only when armed and synthesis recommends it.
+          // Iterate all autopilot-enabled accounts so the same signal
+          // replicates across every assigned account with per-account sizing.
           if (armed && synth.auto_trade && synth.entry) {
-            const tradeResult = await autoTrade(db, sym, synth, wItem)
-            if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
-              try {
-                const { sendMessage } = await import('./services/telegram.js')
-                await sendMessage(
-                  `🤖 AUTO-TRADE: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
-                )
-              } catch {}
+            const apAccounts = getAutopilotAccounts(db)
+            for (const acct of apAccounts) {
+              const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
+              if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
+                try {
+                  const { sendMessage } = await import('./services/telegram.js')
+                  await sendMessage(
+                    `🤖 AUTO-TRADE [${acct.accountId}]: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
+                  )
+                } catch {}
+              }
             }
           }
         } catch (err) {
@@ -327,39 +489,135 @@ async function runLoop(db) {
       }
     }
 
-    // -----------------------------------------------------------------------
-    // 3. MONITOR PHASE — check open positions
-    // -----------------------------------------------------------------------
-    const activePositions = s.selectActivePositions.all('active')
-    for (const pos of activePositions) {
-      try {
-        const check = await runMonitorCheck(client, {
-          symbol: pos.symbol,
-          side: pos.side,
-          entry: pos.entry_price,
-          sl: pos.current_sl,
-          tp1: pos.current_tp,
-          thesis: pos.thesis,
-        })
+      } // end symbols.length > 0 (scan+analyze branch)
 
-        s.updatePositionCheck.run(
-          check.action,
-          check.reasoning,
-          new Date().toISOString(),
-          check.thesis_status,
-          pos.id
-        )
+      // ---------------------------------------------------------------------
+      // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions
+      // when market is closed (and we're not already in pre-open warm-up,
+      // which will run the full Analyst instead). Catches weekend catalysts
+      // (Fed speak, OPEC, geopolitics) that break thesis before Monday gap.
+      // ---------------------------------------------------------------------
+      if (marketClosed && !preOpenWindow && tradPositions.length > 0 && loopCount % 12 === 1) {
+        log(`Weekend watch — reviewing ${tradPositions.length} non-crypto position(s)`)
+        for (const pos of tradPositions) {
+          try {
+            const check = await runWeekendPositionCheck(client, pos)
+            // Store the full payload (citations, searches_used, watch_events)
+            // in last_check_reasoning as JSON so Workshop can render the audit
+            // trail — user sees WHICH headlines triggered the call.
+            const reasoningPayload = JSON.stringify({
+              reasoning: check.reasoning,
+              gap_risk: check.gap_risk,
+              watch_events: check.watch_events,
+              citations: check.citations,
+              searches_used: check.searches_used,
+              suggested_sl: check.suggested_sl,
+              confidence: check.confidence,
+            })
+            s.updatePositionCheck.run(
+              `WEEKEND:${check.action}`,
+              reasoningPayload,
+              new Date().toISOString(),
+              check.thesis_status,
+              pos.id
+            )
+            log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action} (${check.searches_used} searches, ${check.citations.length} citations)`)
 
-        if (check.action === 'EXIT') {
-          s.closePosition.run('closed', pos.id)
-          log(`Position closed: ${pos.symbol} — ${check.reasoning}`)
+            // Alert user if thesis broke or gap risk is high — include top citation URL
+            if ((check.thesis_status === 'broken' || check.gap_risk === 'high') && process.env.TELEGRAM_BOT_TOKEN) {
+              try {
+                const { sendMessage } = await import('./services/telegram.js')
+                const emoji = check.thesis_status === 'broken' ? '⚠️' : '🌊'
+                const topCite = check.citations[0]
+                const citeLine = topCite?.url ? `\nSource: ${topCite.title || topCite.url}\n${topCite.url}` : ''
+                await sendMessage(
+                  `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}${citeLine}`
+                )
+              } catch {}
+            }
+          } catch (err) {
+            log(`Weekend check failed for ${pos.symbol}:`, err.message)
+          }
         }
-      } catch (err) {
-        log(`Monitor check failed for ${pos.symbol}:`, err.message)
       }
-    }
 
-      } // end symbols.length > 0
+      // ---------------------------------------------------------------------
+      // 4. MONITOR PHASE — always runs when positions are open, even when
+      // scan+analyze was skipped (market closed, etc). Crypto positions and
+      // stale FX positions still need tick checks.
+      // ---------------------------------------------------------------------
+      const activePositions = openPositions.length > 0
+        ? openPositions
+        : s.selectActivePositions.all('active')
+      const lastScanResultsJson = getState(db, 'last_scan_results')
+      let lastScanResults = null
+      try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch {}
+
+      for (const pos of activePositions) {
+        try {
+          // Resolve current price from the most recent scan for this symbol.
+          // When absent, position-manager returns HOLD + null metrics and we
+          // still hand off to the LLM so the position is never skipped silently.
+          const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
+          const currentPrice = scanRow?.price ?? null
+
+          const eval_ = evaluatePosition(pos, { currentPrice })
+
+          // Persist MFE/MAE and any flag flips every loop, regardless of action.
+          s.updatePositionMetrics.run(
+            eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+            eval_.updates.mae_r ?? pos.mae_r ?? 0,
+            eval_.updates.be_moved ?? pos.be_moved ?? 0,
+            eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+            pos.id
+          )
+
+          // Deterministic rule fired — record recommendation and skip the LLM.
+          // NOTE: cTrader modify / partial-close wiring lives in a follow-up
+          // commit; today we only log + persist the intent so the Workshop
+          // shows exactly what the bot *would* do.
+          if (eval_.action !== 'HOLD') {
+            s.updatePositionCheck.run(
+              `PM:${eval_.action}`,
+              eval_.reason,
+              new Date().toISOString(),
+              eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+              pos.id
+            )
+            log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason}`)
+            continue
+          }
+
+          // Fallback: free-text theses and ambiguous cases → LLM Monitor.
+          const check = await runMonitorCheck(client, {
+            symbol: pos.symbol,
+            side: pos.side,
+            entry: pos.entry_price,
+            currentPrice,
+            sl: pos.current_sl,
+            tp1: pos.current_tp,
+            thesis: pos.thesis,
+            holdTime: eval_.metrics.minutesInTrade
+              ? `${Math.round(eval_.metrics.minutesInTrade)}m`
+              : null,
+          })
+
+          s.updatePositionCheck.run(
+            check.action,
+            check.reasoning,
+            new Date().toISOString(),
+            check.thesis_status,
+            pos.id
+          )
+
+          if (check.action === 'EXIT') {
+            s.closePosition.run('closed', pos.id)
+            log(`Position closed (LLM): ${pos.symbol} — ${check.reasoning}`)
+          }
+        } catch (err) {
+          log(`Monitor check failed for ${pos.symbol}:`, err.message)
+        }
+      }
     } // end watchlistJson
 
     // -----------------------------------------------------------------------

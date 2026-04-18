@@ -13,6 +13,7 @@
 // 3. Add redirect URI from the deployment origin (/link-up route)
 
 import WebSocket from 'ws'
+import { encodeLabel, convictionBucket } from '../agent/lib/trade-labels.js'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
 
@@ -648,10 +649,33 @@ export default async function handler(req, res) {
       takeProfitDistance,
       limitPrice,             // absolute price — required for LIMIT / STOP_LIMIT
       stopPrice,              // absolute price — required for STOP / STOP_LIMIT
-      comment = 'abot test',
-      label = 'abot-ema9',
+      comment = 'abot-copilot',
+      label: rawLabel,          // caller can pass a fully-formed label string
+      labelMeta,                // or pass {source, strategy, conviction, session, timeframe, regime, version}
       isLive = false,
     } = req.body
+
+    // Build the cTrader label: explicit `label` wins, otherwise encode from
+    // `labelMeta` (source defaults to 'copilot'), otherwise fall back to a
+    // minimal copilot tag so reconcile can still identify our orders.
+    let label
+    if (typeof rawLabel === 'string' && rawLabel.length > 0) {
+      label = rawLabel
+    } else if (labelMeta && typeof labelMeta === 'object') {
+      label = encodeLabel({
+        source: labelMeta.source || 'copilot',
+        version: labelMeta.version,
+        strategy: labelMeta.strategy,
+        conviction: typeof labelMeta.conviction === 'number'
+          ? convictionBucket(labelMeta.conviction)
+          : labelMeta.conviction,
+        session: labelMeta.session,
+        timeframe: labelMeta.timeframe,
+        regime: labelMeta.regime,
+      })
+    } else {
+      label = encodeLabel({ source: 'copilot' })
+    }
 
     // ── Safety gates (server-enforced) ──
 

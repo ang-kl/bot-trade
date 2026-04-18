@@ -271,27 +271,32 @@ ${sessionContext}
 UTC: ${new Date().toISOString()}
 
 Analyse ${symbol} RIGHT NOW. Be specific, opinionated, and brief.
-${m.role === 'trader' ? 'Include concrete entry, stop-loss, and take-profit levels.' : ''}
+${m.role === 'trader' ? 'Include concrete entry, stop-loss, and take-profit levels.\nState a specific invalidation condition — what price level or event would break your thesis.' : ''}
 ${isNonEnglish ? `Write your "report" in ${m.lang} (your native language). Also provide an English translation in "translated_report".` : ''}
 
 Return ONLY valid JSON, no markdown:
 {
   "bias": "long" | "short" | "neutral" | "skip",
   "conviction": <1-10>,
-  "report": "<20-40 words, in character, specific to current conditions>"${m.role === 'trader' ? `,
+  "report": "<20-40 words, in character, specific to current conditions>",
+  "evidence": ["<fact or level supporting your bias>", "<another>"]${m.role === 'trader' ? `,
   "entry": <price or null>,
   "sl": <price or null>,
   "tp1": <price or null>,
-  "tp2": <price or null>` : ''}${translationFields}
+  "tp2": <price or null>,
+  "invalidation": "<concrete price condition, prefer format 'price<X' or 'price>X' for automation>"` : ''}${translationFields}
 }`
 }
 
 // ── Synthesis prompt ───────────────────────────────────────────
 
 export function buildSynthesisPrompt(symbol, minionReports, threshold) {
-  const reportsText = minionReports.map(r =>
-    `[${r.name} (${r.role})] bias=${r.bias}, conviction=${r.conviction}/10\n  ${r.report}`
-  ).join('\n\n')
+  const reportsText = minionReports.map(r => {
+    const lines = [`[${r.name} (${r.role})] bias=${r.bias}, conviction=${r.conviction}/10`, `  ${r.report}`]
+    if (r.evidence?.length) lines.push(`  evidence: ${r.evidence.join('; ')}`)
+    if (r.invalidation) lines.push(`  invalidation: ${r.invalidation}`)
+    return lines.join('\n')
+  }).join('\n\n')
 
   return `You are the Conviction Agent — the final decision-maker on the trading desk.
 You have received reports from ${minionReports.length} specialist minions about ${symbol}.
@@ -307,6 +312,8 @@ ${reportsText}
 - Auto-trade threshold for ${symbol} is ${threshold}/10.
 - If overall_conviction >= ${threshold}, set auto_trade: true.
 - Use the best entry/SL/TP from the trader minions. Prefer the most conservative SL.
+- For invalidation_trigger: state the single most important condition that would break the thesis. STRONGLY prefer a machine-parseable price predicate like "price<3428" or "price>1.1050" (our position-manager can automate these). Complex conditions ("close below X on 15m with volume spike") are OK but will be checked by the slower LLM monitor.
+- For time_cap_minutes: estimate how long this setup is valid. Breakout plays = 30-60, swings = 120-360, range fades = 60-90. If no time sensitivity, use 180 (3h default).
 - For volume_profile: extract levels mentioned by chart_scanner or order_flow minions (POC, HVN, LVN, VWAP). If not explicitly mentioned, estimate from the S/R levels and entry zones discussed.
 - For risk_metrics: estimate Sharpe (risk-adjusted return quality 0-3), VaR (% downside risk), max drawdown (% worst case), beta (correlation to market 0-2). Base these on the trade setup quality and volatility discussed.
 - For strategy: name the dominant trading strategy (e.g. "Momentum breakout", "Mean reversion", "Carry trade", "Range fade", "Trend continuation").
@@ -325,6 +332,8 @@ Return ONLY valid JSON:
   "tp1": <price or null>,
   "tp2": <price or null>,
   "auto_trade": <true|false>,
+  "invalidation_trigger": "<e.g. 'price<3428' or free-text condition>",
+  "time_cap_minutes": <number>,
   "risk_note": "<any concerns, or null>",
   "strategy": "<strategy name>",
   "execution": { "type": "<execution method>", "infra": "<order infrastructure e.g. cTrader limit>" },
