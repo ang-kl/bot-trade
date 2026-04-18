@@ -407,22 +407,36 @@ async function runLoop(db) {
         for (const pos of tradPositions) {
           try {
             const check = await runWeekendPositionCheck(client, pos)
+            // Store the full payload (citations, searches_used, watch_events)
+            // in last_check_reasoning as JSON so Workshop can render the audit
+            // trail — user sees WHICH headlines triggered the call.
+            const reasoningPayload = JSON.stringify({
+              reasoning: check.reasoning,
+              gap_risk: check.gap_risk,
+              watch_events: check.watch_events,
+              citations: check.citations,
+              searches_used: check.searches_used,
+              suggested_sl: check.suggested_sl,
+              confidence: check.confidence,
+            })
             s.updatePositionCheck.run(
               `WEEKEND:${check.action}`,
-              check.reasoning,
+              reasoningPayload,
               new Date().toISOString(),
               check.thesis_status,
               pos.id
             )
-            log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action}`)
+            log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action} (${check.searches_used} searches, ${check.citations.length} citations)`)
 
-            // Alert user if thesis broke or gap risk is high
+            // Alert user if thesis broke or gap risk is high — include top citation URL
             if ((check.thesis_status === 'broken' || check.gap_risk === 'high') && process.env.TELEGRAM_BOT_TOKEN) {
               try {
                 const { sendMessage } = await import('./services/telegram.js')
                 const emoji = check.thesis_status === 'broken' ? '⚠️' : '🌊'
+                const topCite = check.citations[0]
+                const citeLine = topCite?.url ? `\nSource: ${topCite.title || topCite.url}\n${topCite.url}` : ''
                 await sendMessage(
-                  `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}`
+                  `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}${citeLine}`
                 )
               } catch {}
             }
