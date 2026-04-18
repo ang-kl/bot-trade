@@ -95,6 +95,14 @@ const TABLES = `
     current_sl            REAL,
     current_tp            REAL,
     thesis                TEXT,
+    invalidation_trigger  TEXT,
+    time_cap_at           TEXT,
+    initial_risk          REAL,
+    mfe_r                 REAL DEFAULT 0,
+    mae_r                 REAL DEFAULT 0,
+    be_moved              INTEGER DEFAULT 0,
+    scaled_out            INTEGER DEFAULT 0,
+    strategy              TEXT,
     last_check_action     TEXT,
     last_check_reasoning  TEXT,
     last_check_at         TEXT,
@@ -176,8 +184,34 @@ export function initDB(dbPath) {
 
   // In-place migrations for pre-existing DBs
   const mpCols = db.prepare("PRAGMA table_info(monitored_positions)").all();
-  if (!mpCols.some(c => c.name === 'paused')) {
-    db.exec("ALTER TABLE monitored_positions ADD COLUMN paused INTEGER DEFAULT 0");
+  const mpColNames = new Set(mpCols.map(c => c.name));
+  const mpMigrations = [
+    ['paused',               'INTEGER DEFAULT 0'],
+    ['invalidation_trigger', 'TEXT'],
+    ['time_cap_at',          'TEXT'],
+    ['initial_risk',         'REAL'],
+    ['mfe_r',                'REAL DEFAULT 0'],
+    ['mae_r',                'REAL DEFAULT 0'],
+    ['be_moved',             'INTEGER DEFAULT 0'],
+    ['scaled_out',           'INTEGER DEFAULT 0'],
+    ['strategy',             'TEXT'],
+  ];
+  for (const [col, type] of mpMigrations) {
+    if (!mpColNames.has(col)) {
+      db.exec(`ALTER TABLE monitored_positions ADD COLUMN ${col} ${type}`);
+    }
+  }
+
+  const aCols = db.prepare("PRAGMA table_info(analyses)").all();
+  const aColNames = new Set(aCols.map(c => c.name));
+  const aMigrations = [
+    ['invalidation_trigger', 'TEXT'],
+    ['time_cap_minutes',     'INTEGER'],
+  ];
+  for (const [col, type] of aMigrations) {
+    if (!aColNames.has(col)) {
+      db.exec(`ALTER TABLE analyses ADD COLUMN ${col} ${type}`);
+    }
   }
 
   // Seed agent_state defaults (skip keys that already exist)

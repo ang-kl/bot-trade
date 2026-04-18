@@ -7,6 +7,7 @@ import WebSocket from 'ws'
 import { runScan } from './services/scanner.js'
 import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
+import { evaluatePosition } from './services/position-manager.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
@@ -173,6 +174,12 @@ function prepareStatements(db) {
       WHERE id = ?
     `),
 
+    updatePositionMetrics: db.prepare(`
+      UPDATE monitored_positions
+      SET mfe_r = ?, mae_r = ?, be_moved = ?, scaled_out = ?
+      WHERE id = ?
+    `),
+
     closePosition: db.prepare(
       `UPDATE monitored_positions SET status = ? WHERE id = ?`
     ),
@@ -328,18 +335,60 @@ async function runLoop(db) {
     }
 
     // -----------------------------------------------------------------------
-    // 3. MONITOR PHASE — check open positions
+    // 3. MONITOR PHASE — deterministic position manager first, LLM fallback
     // -----------------------------------------------------------------------
     const activePositions = s.selectActivePositions.all('active')
+    const lastScanResultsJson = getState(db, 'last_scan_results')
+    let lastScanResults = null
+    try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch {}
+
     for (const pos of activePositions) {
       try {
+        // Resolve current price from the most recent scan for this symbol.
+        // When absent, position-manager returns HOLD + null metrics and we
+        // still hand off to the LLM so the position is never skipped silently.
+        const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
+        const currentPrice = scanRow?.price ?? null
+
+        const eval_ = evaluatePosition(pos, { currentPrice })
+
+        // Persist MFE/MAE and any flag flips every loop, regardless of action.
+        s.updatePositionMetrics.run(
+          eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+          eval_.updates.mae_r ?? pos.mae_r ?? 0,
+          eval_.updates.be_moved ?? pos.be_moved ?? 0,
+          eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+          pos.id
+        )
+
+        // Deterministic rule fired — record recommendation and skip the LLM.
+        // NOTE: cTrader modify / partial-close wiring lives in a follow-up
+        // commit; today we only log + persist the intent so the Workshop
+        // shows exactly what the bot *would* do.
+        if (eval_.action !== 'HOLD') {
+          s.updatePositionCheck.run(
+            `PM:${eval_.action}`,
+            eval_.reason,
+            new Date().toISOString(),
+            eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+            pos.id
+          )
+          log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason}`)
+          continue
+        }
+
+        // Fallback: free-text theses and ambiguous cases → LLM Monitor.
         const check = await runMonitorCheck(client, {
           symbol: pos.symbol,
           side: pos.side,
           entry: pos.entry_price,
+          currentPrice,
           sl: pos.current_sl,
           tp1: pos.current_tp,
           thesis: pos.thesis,
+          holdTime: eval_.metrics.minutesInTrade
+            ? `${Math.round(eval_.metrics.minutesInTrade)}m`
+            : null,
         })
 
         s.updatePositionCheck.run(
@@ -352,7 +401,7 @@ async function runLoop(db) {
 
         if (check.action === 'EXIT') {
           s.closePosition.run('closed', pos.id)
-          log(`Position closed: ${pos.symbol} — ${check.reasoning}`)
+          log(`Position closed (LLM): ${pos.symbol} — ${check.reasoning}`)
         }
       } catch (err) {
         log(`Monitor check failed for ${pos.symbol}:`, err.message)
