@@ -8,22 +8,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
-
-function fmtAgo(ts) {
-  if (!ts) return ''
-  const t = typeof ts === 'number' ? ts : new Date(ts).getTime()
-  if (!Number.isFinite(t)) return ''
-  const ago = Date.now() - t
-  if (ago < 60_000) return 'just now'
-  if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}m ago`
-  return `${Math.floor(ago / 3_600_000)}h ${Math.floor((ago % 3_600_000) / 60_000)}m ago`
-}
-function fmtTime(ts) {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString('en-GB', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
-}
+import { fmtTime, fmtAgo } from '../lib/time.js'
 
 const KIND_TONE = {
   scan: 'neutral', analysis: 'accent', monitor: 'info',

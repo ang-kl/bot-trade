@@ -6,7 +6,6 @@ import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import TradingFloor from '../components/AgentFeed/TradingFloor.jsx'
 import ActivityLog from '../components/AgentFeed/ActivityLog.jsx'
 import OrderDialog from '../components/AgentFeed/OrderDialog.jsx'
-import TradeMonitor from '../components/AgentFeed/TradeMonitor.jsx'
 import AskDock from '../components/AgentFeed/AskDock.jsx'
 import BottomBar from '../components/AgentFeed/BottomBar.jsx'
 import Card from '../components/common/Card.jsx'
@@ -671,35 +670,6 @@ export default function Feed() {
     })
   }, [state.telegram, addLog])
 
-  const stopTrade = useCallback(async (trade) => {
-    addLog('monitor', `Stopping ${trade.symbol} position...`, { symbol: trade.symbol })
-    try {
-      if (state.ctrader.linkedAccountId) {
-        await apiPost('/api/ctrader', {
-          action: 'close-position',
-          accountId: state.ctrader.linkedAccountId,
-          symbolName: trade.symbol,
-        })
-      }
-      setMonitoredTrades(prev => prev.filter(t => t.symbol !== trade.symbol))
-      addLog('monitor', `${trade.symbol} position STOPPED`, { symbol: trade.symbol })
-      sendTelegramAlert({
-        action: 'send-alert', alertType: 'trade',
-        trade: { symbol: trade.symbol, side: trade.side, action: 'CLOSED/STOPPED' },
-      })
-      showToast(`${trade.symbol} position stopped`)
-    } catch (e) {
-      addLog('monitor', `Failed to stop ${trade.symbol}: ${e.message}`, { symbol: trade.symbol })
-      showToast(`Failed to stop: ${e.message}`)
-    }
-  }, [state.ctrader.linkedAccountId, addLog, sendTelegramAlert, showToast])
-
-  const updateMonitoredTrade = useCallback((symbol, updates) => {
-    setMonitoredTrades(prev =>
-      prev.map(t => t.symbol === symbol ? { ...t, ...updates } : t),
-    )
-  }, [])
-
   // ── Analyst deep dive (defined before runScout so it can be referenced) ──
   const analystRef = useRef(null)
 
@@ -1262,13 +1232,9 @@ export default function Feed() {
       {/* Ask dock */}
       <AskDock context={askContext} onAsk={handleAskReply} />
 
-      {/* Trade monitor */}
-      <TradeMonitor
-        trades={monitoredTrades}
-        onStop={stopTrade}
-        onUpdate={updateMonitoredTrade}
-        onLog={addLog}
-      />
+      {/* Trade monitoring lives on /agent — the Railway keeper runs 24/7
+          against monitored_positions. The old Feed-side Trade Monitor was a
+          browser-only duplicate that went stale whenever the tab closed. */}
 
       <BottomBar
         tokenCount={tokenCount}

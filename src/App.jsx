@@ -11,6 +11,7 @@ import Watchlist from './pages/Watchlist.jsx'
 import AgentPage from './pages/Agent.jsx'
 import Workshop from './pages/Workshop.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
+import StatusRibbon from './components/StatusRibbon.jsx'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
 // No green anywhere - blue = up/long/positive, red = down/short/negative.
@@ -62,10 +63,12 @@ export default function App() {
         <MarketSessionBar />
       </div>
 
-      {/* Scrollable content — only this area scrolls */}
+      {/* Scrollable content — only this area scrolls. `min-h-0` lets the
+          flex child honour its overflow on browsers that otherwise compute
+          min-height: auto and push the whole page to scroll. */}
       <main
         id="main-content"
-        className="flex-1 overflow-y-auto"
+        className="flex-1 min-h-0 overflow-y-auto"
         style={{ overflowAnchor: 'none' }}
       >
         <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
@@ -85,6 +88,9 @@ export default function App() {
           </Routes>
         </div>
       </main>
+
+      {/* Persistent status ribbon — autopilot + positions + last scan */}
+      <StatusRibbon />
     </div>
   )
 }

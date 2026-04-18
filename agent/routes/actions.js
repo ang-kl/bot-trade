@@ -163,19 +163,6 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/autopilot — toggle autopilot (alias for arm/disarm)
-  // Body: { on: boolean }. If omitted, returns current state.
-  // -----------------------------------------------------------------------
-  router.post('/autopilot', (req, res) => {
-    const next = req.body?.on
-    if (typeof next === 'boolean') {
-      setState(db, 'armed', next ? 'true' : 'false')
-      console.log(`[actions] Autopilot ${next ? 'ON' : 'OFF'}`)
-    }
-    res.json({ ok: true, on: getState(db, 'armed') === 'true' })
-  })
-
-  // -----------------------------------------------------------------------
   // POST /actions/pause-position/:id — pause Monitor checks for one position
   // -----------------------------------------------------------------------
   router.post('/pause-position/:id', (req, res) => {
