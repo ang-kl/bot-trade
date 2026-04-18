@@ -63,6 +63,332 @@ function fmtMoney(v, digits = 2) {
 }
 
 // ---------------------------------------------------------------------------
+// Risk Dashboard — Sharpe, drawdown, PF, daily P&L, risk limits
+// ---------------------------------------------------------------------------
+
+function RiskDashboard({ role }) {
+  const [metrics, setMetrics] = useState(null)
+  const [riskCfg, setRiskCfg] = useState(null)
+  const [exposure, setExposure] = useState(null)
+  const [riskEvents, setRiskEvents] = useState([])
+  const [showEvents, setShowEvents] = useState(false)
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    const load = () => {
+      agentGet('/state/metrics', role).then(r => setMetrics(r)).catch(() => {})
+      agentGet('/state/risk-config', role).then(r => setRiskCfg(r)).catch(() => {})
+      agentGet('/state/risk-exposure', role).then(r => setExposure(r?.exposure)).catch(() => {})
+      agentGet('/state/risk-events?limit=5', role).then(r => setRiskEvents(r?.events || [])).catch(() => {})
+    }
+    load()
+    const iv = setInterval(load, 30_000)
+    return () => clearInterval(iv)
+  }, [role])
+
+  if (!metrics && !riskCfg) return null
+
+  const m = metrics || {}
+  const cfg = riskCfg?.effective || riskCfg || {}
+  const derived = riskCfg?.derived || {}
+  const ex = exposure || {}
+
+  const dailyUsedPct = ex.daily_loss_used_pct ?? 0
+  const maxPositions = cfg.maxOpenPositions || 5
+  const openPositions = ex.total_positions || 0
+  const marginCapPct = cfg.maxMarginUsagePct || 0.5
+
+  function barColor(pct) {
+    if (pct > 0.9) return 'bg-[var(--color-down)]'
+    if (pct > 0.66) return 'bg-[var(--color-warning-text)]'
+    return 'bg-[var(--color-accent)]'
+  }
+
+  function ProgressBar({ value, max, label }) {
+    const pct = max > 0 ? Math.min(value / max, 1) : 0
+    return (
+      <div>
+        <div className="flex items-center justify-between text-[9.5px] mb-0.5">
+          <span className="text-[var(--color-muted)]">{label}</span>
+          <span className="font-mono text-[var(--color-text)]">{(pct * 100).toFixed(0)}%</span>
+        </div>
+        <div className="h-1.5 rounded-full bg-[var(--color-border)] overflow-hidden">
+          <div className={`h-full rounded-full ${barColor(pct)}`} style={{ width: `${pct * 100}%` }} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Risk Dashboard</p>
+        {ex.limit_breached && <Badge tone="down" pill>LIMIT BREACHED</Badge>}
+      </div>
+
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-3">
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Sharpe</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-text)]">{m.sharpe_ratio != null ? m.sharpe_ratio.toFixed(2) : '—'}</p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Max DD</p>
+          <p className={`text-[15px] font-bold font-mono ${m.max_drawdown_pct > 5 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
+            {m.max_drawdown_pct != null ? `${m.max_drawdown_pct.toFixed(1)}%` : '—'}
+          </p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Profit Factor</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-text)]">{m.profit_factor != null ? m.profit_factor.toFixed(2) : '—'}</p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Win Rate</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-text)]">{m.win_rate != null ? `${(m.win_rate * 100).toFixed(0)}%` : '—'}</p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Daily P&L</p>
+          <p className={`text-[15px] font-bold font-mono ${(ex.daily_pnl || 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+            {ex.daily_pnl != null ? `${ex.daily_pnl >= 0 ? '+' : ''}${fmtMoney(ex.daily_pnl)}` : '—'}
+          </p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Total P&L</p>
+          <p className={`text-[15px] font-bold font-mono ${(m.total_pnl || 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+            {m.total_pnl != null ? `${m.total_pnl >= 0 ? '+' : ''}${fmtMoney(m.total_pnl)}` : '—'}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-2">
+        <ProgressBar value={dailyUsedPct} max={1} label={`Daily loss (cap ${derived.daily_cap_usd ? '$' + fmtMoney(derived.daily_cap_usd) : (cfg.dailyLossPct * 100) + '%'})`} />
+        <ProgressBar value={openPositions} max={maxPositions} label={`Positions (${openPositions}/${maxPositions})`} />
+        <ProgressBar value={dailyUsedPct > 0 ? marginCapPct * dailyUsedPct : 0} max={marginCapPct} label={`Margin usage (cap ${(marginCapPct * 100).toFixed(0)}%)`} />
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[9.5px] text-[var(--color-muted)]">
+        <div>Avg Win: <span className="font-mono text-[var(--color-text)]">{m.avg_win != null ? fmtMoney(m.avg_win) : '—'}</span></div>
+        <div>Avg Loss: <span className="font-mono text-[var(--color-text)]">{m.avg_loss != null ? fmtMoney(m.avg_loss) : '—'}</span></div>
+        <div>Avg R:R: <span className="font-mono text-[var(--color-text)]">{m.avg_rr != null ? m.avg_rr.toFixed(2) : '—'}</span></div>
+        <div>Trades: <span className="font-mono text-[var(--color-text)]">{m.total_trades ?? '—'}</span></div>
+      </div>
+
+      {riskEvents.length > 0 && (
+        <>
+          <button type="button" onClick={() => setShowEvents(!showEvents)}
+            className="mt-2 text-[9px] text-[var(--color-accent)] hover:underline">
+            {showEvents ? '▾ Hide' : '▸ Show'} recent risk gate decisions ({riskEvents.length})
+          </button>
+          {showEvents && (
+            <div className="mt-1 space-y-0.5">
+              {riskEvents.map((e, i) => (
+                <div key={i} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded-[4px] bg-[var(--color-bg)]">
+                  <Badge tone={e.approved ? 'up' : 'down'} className="text-[8px] px-1">{e.approved ? 'OK' : 'VETO'}</Badge>
+                  <span className="font-mono text-[var(--color-text)]">{e.symbol}</span>
+                  <span className="text-[var(--color-muted)]">{e.side}</span>
+                  <span className="text-[var(--color-muted)] truncate flex-1">{e.veto_reason || '—'}</span>
+                  <span className="text-[9px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Market Data Strip — price, VWAP, regime, EMA stack per watchlist symbol
+// ---------------------------------------------------------------------------
+
+function MarketDataStrip({ symbols, role }) {
+  const [regimes, setRegimes] = useState({})
+  const priceCache = readPriceCache()
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/regime', role)
+      .then(r => {
+        const map = {}
+        for (const row of (r?.regimes || [])) map[row.symbol] = row
+        setRegimes(map)
+      })
+      .catch(() => {})
+  }, [role])
+
+  if (!symbols || symbols.length === 0) return null
+
+  const REGIME_TONE = { trending: 'accent', volatile: 'warning', ranging: 'neutral', quiet: 'neutral' }
+
+  return (
+    <Card>
+      <p className="t-label mb-2">Market Data</p>
+      <div className="flex flex-wrap gap-1.5">
+        {symbols.map(sym => {
+          const mm = priceCache[sym] || {}
+          const reg = regimes[sym] || {}
+          const price = mm.currentPrice ?? mm.price ?? mm.vwap ?? null
+          const vwap = mm.vwap_today ?? mm.vwap ?? null
+          const vwapDev = price && vwap ? ((price - vwap) / vwap * 100) : null
+          const emaStack = mm.ema_stack_label || mm.ema_stack || null
+
+          return (
+            <div key={sym} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)] min-w-[120px]">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-[11px] font-bold font-mono text-[var(--color-text)]">{sym}</span>
+                {reg.regime && (
+                  <Badge tone={REGIME_TONE[reg.regime] || 'neutral'} className="text-[7px] px-1">
+                    {reg.regime.toUpperCase()}
+                  </Badge>
+                )}
+              </div>
+              <div className="text-[12px] font-mono font-semibold text-[var(--color-text)]">
+                {price != null ? fmtMoney(price, price > 100 ? 2 : price > 10 ? 4 : 5) : '—'}
+              </div>
+              <div className="flex items-center gap-2 text-[9px] text-[var(--color-muted)] mt-0.5">
+                {vwapDev != null && (
+                  <span className={vwapDev > 0 ? 'text-[var(--color-up)]' : vwapDev < 0 ? 'text-[var(--color-down)]' : ''}>
+                    VWAP {vwapDev > 0 ? '+' : ''}{vwapDev.toFixed(2)}%
+                  </span>
+                )}
+                {emaStack && (
+                  <span>{emaStack.includes('Bull') ? '▲' : emaStack.includes('Bear') ? '▼' : '○'}</span>
+                )}
+                {reg.atr_pct != null && <span>ATR {reg.atr_pct.toFixed(1)}%</span>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Attribution Panel — strategy/source/session performance breakdown
+// ---------------------------------------------------------------------------
+
+const ATTRIBUTION_TABS = ['strategy', 'source', 'session', 'regime', 'conviction']
+
+function AttributionPanel({ role }) {
+  const [tab, setTab] = useState('strategy')
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    setLoading(true)
+    agentGet(`/state/attribution?groupBy=${tab}&days=90`, role)
+      .then(r => setData(r))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false))
+  }, [role, tab])
+
+  const rows = data?.rows || []
+
+  return (
+    <Card>
+      <p className="t-label mb-2">Attribution</p>
+      <div className="flex items-center gap-0.5 mb-2 overflow-x-auto scrollbar-none">
+        {ATTRIBUTION_TABS.map(t => (
+          <button key={t} type="button" onClick={() => setTab(t)}
+            className={`px-2 py-1 rounded-[5px] text-[10px] font-bold uppercase ${
+              t === tab
+                ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'
+            }`}>{t}</button>
+        ))}
+      </div>
+      {loading && <p className="t-meta text-[var(--color-muted)]">Loading…</p>}
+      {!loading && rows.length === 0 && <p className="t-meta text-[var(--color-muted)]">No trade data yet.</p>}
+      {!loading && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[10px]">
+            <thead>
+              <tr className="text-[var(--color-muted)] text-left">
+                <th className="pb-1 font-medium">{tab}</th>
+                <th className="pb-1 font-medium text-right">Trades</th>
+                <th className="pb-1 font-medium text-right">Win%</th>
+                <th className="pb-1 font-medium text-right">P&L</th>
+                <th className="pb-1 font-medium text-right">PF</th>
+                <th className="pb-1 font-medium text-right">Avg Win</th>
+                <th className="pb-1 font-medium text-right">Avg Loss</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--color-border)]">
+              {rows.map((r, i) => (
+                <tr key={i} className="text-[var(--color-text)]">
+                  <td className="py-1 font-mono font-medium truncate max-w-[100px]">{r.group_key || '—'}</td>
+                  <td className="py-1 text-right font-mono">{r.trades}</td>
+                  <td className="py-1 text-right font-mono">{r.win_rate != null ? `${(r.win_rate * 100).toFixed(0)}%` : '—'}</td>
+                  <td className={`py-1 text-right font-mono font-semibold ${(r.total_pnl || 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    {r.total_pnl != null ? fmtMoney(r.total_pnl) : '—'}
+                  </td>
+                  <td className="py-1 text-right font-mono">{r.profit_factor != null ? r.profit_factor.toFixed(2) : '—'}</td>
+                  <td className="py-1 text-right font-mono text-[var(--color-up)]">{r.avg_win != null ? fmtMoney(r.avg_win) : '—'}</td>
+                  <td className="py-1 text-right font-mono text-[var(--color-down)]">{r.avg_loss != null ? fmtMoney(r.avg_loss) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Equity Curve — simple SVG line chart from performance_snapshots
+// ---------------------------------------------------------------------------
+
+function EquityCurve({ role }) {
+  const [snapshots, setSnapshots] = useState([])
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/metrics/history?days=90', role)
+      .then(r => setSnapshots(r?.snapshots || []))
+      .catch(() => {})
+  }, [role])
+
+  if (snapshots.length < 2) return null
+
+  const pnls = snapshots.map(s => s.total_pnl || 0)
+  const minPnl = Math.min(...pnls)
+  const maxPnl = Math.max(...pnls)
+  const range = maxPnl - minPnl || 1
+  const w = 400
+  const h = 120
+  const pad = 4
+
+  const points = pnls.map((v, i) => {
+    const x = pad + (i / (pnls.length - 1)) * (w - 2 * pad)
+    const y = h - pad - ((v - minPnl) / range) * (h - 2 * pad)
+    return `${x},${y}`
+  }).join(' ')
+
+  const lastPnl = pnls[pnls.length - 1]
+  const areaPoints = `${pad},${h - pad} ${points} ${w - pad},${h - pad}`
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Equity Curve</p>
+        <span className={`text-[15px] font-bold font-mono ${lastPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+          {lastPnl >= 0 ? '+' : ''}{fmtMoney(lastPnl)}
+        </span>
+        <span className="text-[9px] text-[var(--color-muted)]">{snapshots.length} snapshots · 90d</span>
+      </div>
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto" style={{ maxHeight: '160px' }}>
+        <polygon points={areaPoints} fill="var(--color-accent-soft)" opacity="0.5" />
+        <polyline points={points} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
+        <line x1={pad} y1={h - pad - ((0 - minPnl) / range) * (h - 2 * pad)} x2={w - pad} y2={h - pad - ((0 - minPnl) / range) * (h - 2 * pad)} stroke="var(--color-border)" strokeWidth="0.5" strokeDasharray="4" />
+      </svg>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Account panel — reads from cTrader directly (serverless /api/ctrader)
 // ---------------------------------------------------------------------------
 
@@ -1087,25 +1413,40 @@ export default function Agent() {
         )}
       </Card>
 
+      {/* Risk dashboard — Sharpe, drawdown, daily P&L, risk limits */}
+      <RiskDashboard role={role} />
+
+      {/* Market data strip — prices, VWAP, regime, EMA per symbol */}
+      <MarketDataStrip symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} role={role} />
+
       {/* Market status — which watchlist markets are live vs closed */}
       <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} />
 
-      {/* Team roster desk — per-agent status + timing */}
-      <TeamRoster activity={activity} />
+      {/* Two-column grid for mid-section panels */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <AttributionPanel role={role} />
+        <EquityCurve role={role} />
+      </div>
 
-      {/* Scan feed — dedicated scan + analysis results with desk info */}
-      <ScanFeed activity={activity} />
+      {/* Two-column grid for operational panels */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {/* Team roster desk — per-agent status + timing */}
+        <TeamRoster activity={activity} />
+        {/* Scan feed — dedicated scan + analysis results with desk info */}
+        <ScanFeed activity={activity} />
+      </div>
 
-      {/* cTrader account + positions with bot context */}
-      <AccountPanel
-        ctrader={state.ctrader}
-        botPositionsById={botById}
-        onPause={pausePos}
-        onUnpause={unpausePos}
-      />
-
-      {/* Trade history — open/close/SL/TP lifecycle events */}
-      <TradeHistory activity={activity} role={role} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {/* cTrader account + positions with bot context */}
+        <AccountPanel
+          ctrader={state.ctrader}
+          botPositionsById={botById}
+          onPause={pausePos}
+          onUnpause={unpausePos}
+        />
+        {/* Trade history — open/close/SL/TP lifecycle events */}
+        <TradeHistory activity={activity} role={role} />
+      </div>
 
       {/* Live activity stream */}
       <Card>

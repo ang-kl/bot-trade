@@ -372,5 +372,35 @@ export default function stateRouter(db) {
     res.json({ groupBy, days, since: sinceISO, rows })
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/risk-exposure — latest risk exposure snapshot
+  // -----------------------------------------------------------------------
+  router.get('/risk-exposure', (_req, res) => {
+    try {
+      const row = db.prepare(
+        'SELECT * FROM risk_exposure ORDER BY snapshot_at DESC LIMIT 1'
+      ).get()
+      res.json({ exposure: row || null })
+    } catch {
+      res.json({ exposure: null })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/metrics/history?days=30 — performance snapshots for charting
+  // -----------------------------------------------------------------------
+  router.get('/metrics/history', (req, res) => {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)))
+    const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    try {
+      const rows = db.prepare(
+        'SELECT * FROM performance_snapshots WHERE computed_at >= ? ORDER BY computed_at ASC'
+      ).all(since)
+      res.json({ snapshots: rows })
+    } catch {
+      res.json({ snapshots: [] })
+    }
+  })
+
   return router
 }
