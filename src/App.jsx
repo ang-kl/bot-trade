@@ -11,6 +11,7 @@ import Admin from './pages/Admin.jsx'
 import Watchlist from './pages/Watchlist.jsx'
 import AgentPage from './pages/Agent.jsx'
 import Workshop from './pages/Workshop.jsx'
+import Mockup from './pages/Mockup.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 import StatusRibbon from './components/StatusRibbon.jsx'
 
@@ -86,6 +87,7 @@ export default function App() {
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/admin" element={<Admin />} />
             <Route path="/link-up" element={<LinkUp />} />
+            <Route path="/mockup" element={<Mockup />} />
             <Route path="*" element={<Navigate to="/agent" replace />} />
           </Routes>
         </div>
