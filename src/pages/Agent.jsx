@@ -553,7 +553,7 @@ function MarketStatus({ symbols }) {
 }
 
 // ---------------------------------------------------------------------------
-// Team Roster — which minions are dispatched per hot symbol this cycle
+// Team Roster Desk — per-symbol agent roster with status + timing
 // ---------------------------------------------------------------------------
 
 const ROLE_COLORS = {
@@ -564,8 +564,24 @@ const ROLE_COLORS = {
   political: 'text-[var(--color-down)]',
 }
 
+function agentStatus(minionId, symbol, activity) {
+  const analysisEvent = activity.find(r => r.kind === 'analysis' && r.symbol === symbol)
+  const scanEvent = activity.find(r => r.kind === 'scan' && r.symbol === symbol)
+  const latestEvent = analysisEvent || scanEvent
+  if (!latestEvent) return { status: 'idle' }
+
+  const ageMs = Date.now() - new Date(latestEvent.at).getTime()
+  const ageMins = Math.round(ageMs / 60000)
+  const m = MINIONS[minionId]
+
+  if (ageMins < 3) return { status: 'active', since: ageMins, label: `${ageMins}m ago` }
+  if (m?.role === 'trader' || m?.role === 'researcher') {
+    return { status: 'waiting', label: 'next cycle' }
+  }
+  return { status: 'done', label: `${ageMins}m ago` }
+}
+
 function TeamRoster({ activity }) {
-  // Find the most recent hot symbols from scan events (trade_grade = 'potential')
   const hotSymbols = []
   const seen = new Set()
   for (const row of activity) {
@@ -575,8 +591,6 @@ function TeamRoster({ activity }) {
     }
     if (hotSymbols.length >= 6) break
   }
-
-  // Also include symbols currently being analysed
   for (const row of activity) {
     if (row.kind === 'analysis' && !seen.has(row.symbol)) {
       seen.add(row.symbol)
@@ -589,25 +603,36 @@ function TeamRoster({ activity }) {
 
   return (
     <Card>
-      <p className="t-label mb-2">Desk Team</p>
+      <p className="t-label mb-2">Team Roster Desk</p>
       <div className="space-y-2">
         {hotSymbols.map(symbol => {
           const minionIds = dispatchMinions(symbol)
           return (
-            <div key={symbol} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-              <p className="text-[11px] font-bold text-[var(--color-text)] mb-1">{symbol}</p>
-              <div className="flex flex-wrap gap-1">
+            <div key={symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
+              <div className="px-2 py-1 flex items-center gap-2 border-b border-[var(--color-border)]">
+                <span className="text-[12px] font-bold font-mono text-[var(--color-text)]">{symbol}</span>
+                <span className="text-[9px] text-[var(--color-muted)]">{minionIds.length} agents</span>
+              </div>
+              <div className="divide-y divide-[var(--color-border)]">
                 {minionIds.map(id => {
                   const m = MINIONS[id]
                   if (!m) return null
+                  const st = agentStatus(id, symbol, activity)
                   return (
-                    <span
-                      key={id}
-                      className={`px-1.5 py-0.5 rounded-[4px] text-[9.5px] bg-[var(--color-surface)] ${ROLE_COLORS[m.role] || 'text-[var(--color-muted)]'}`}
-                      title={`${m.role} — ${m.focus}`}
-                    >
-                      {m.icon} {m.name}
-                    </span>
+                    <div key={id} className="px-2 py-1 flex items-center gap-2 text-[11px]">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                        st.status === 'active' ? 'bg-[var(--color-up)]'
+                        : st.status === 'waiting' ? 'bg-[var(--color-warning-text)]'
+                        : st.status === 'done' ? 'bg-[var(--color-muted)]'
+                        : 'bg-[var(--color-border)]'
+                      }`} />
+                      <span className="text-[13px] leading-none">{m.icon}</span>
+                      <span className={`font-medium w-28 truncate ${ROLE_COLORS[m.role] || ''}`}>{m.name}</span>
+                      <span className="text-[9px] text-[var(--color-muted)] uppercase w-16">{m.role}</span>
+                      <span className="ml-auto text-[10px] font-mono text-[var(--color-muted)]">
+                        {st.label || st.status}
+                      </span>
+                    </div>
                   )
                 })}
               </div>
@@ -618,6 +643,124 @@ function TeamRoster({ activity }) {
       <p className="text-[9px] text-[var(--color-muted)] mt-2">
         4-6 specialists dispatched per symbol. Hover for focus area.
       </p>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Scan Feed — dedicated panel showing scan + analysis results with desk info
+// ---------------------------------------------------------------------------
+
+function ScanFeed({ activity }) {
+  const scans = activity.filter(r => r.kind === 'scan' || r.kind === 'analysis')
+  if (scans.length === 0) return null
+
+  return (
+    <Card>
+      <p className="t-label mb-2">Scan Feed</p>
+      <div className="space-y-1.5 max-h-[360px] overflow-y-auto">
+        {scans.map((row, i) => {
+          const minionIds = dispatchMinions(row.symbol)
+          const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
+          const gradeColor = row.extra === 'potential' ? 'bg-[var(--color-accent)] text-white'
+            : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'
+          const biasColor = (row.v1 === 'long') ? 'text-[var(--color-up)]'
+            : (row.v1 === 'short') ? 'text-[var(--color-down)]'
+            : 'text-[var(--color-muted)]'
+          return (
+            <div key={`${row.kind}-${row.id}-${i}`} className="rounded-[5px] bg-[var(--color-bg)] p-2 space-y-1">
+              <div className="flex items-center gap-2 text-[11px]">
+                {row.kind === 'scan' && (
+                  <span className={`w-5 h-5 grid place-items-center rounded text-[9px] font-bold ${gradeColor}`}>
+                    {row.extra === 'potential' ? 'A' : row.extra === 'weak' ? 'B' : 'C'}
+                  </span>
+                )}
+                {row.kind === 'analysis' && (
+                  <Badge tone="accent" className="text-[8px] px-1">DEEP</Badge>
+                )}
+                <span className="font-mono font-bold text-[var(--color-text)]">{row.symbol}</span>
+                {row.v1 && <span className={`font-semibold ${biasColor}`}>{String(row.v1).toUpperCase()}</span>}
+                {row.v2 != null && <span className="text-[10px] text-[var(--color-muted)] font-mono">{row.v2}/10</span>}
+                {row.extra === 'potential' && row.kind === 'scan' && <Badge tone="up" className="text-[8px] px-1">TRADEABLE</Badge>}
+                <span className="ml-auto text-[9px] text-[var(--color-muted)]">{fmtAgo(row.at)}</span>
+              </div>
+              {row.note && <p className="text-[10px] text-[var(--color-muted)] truncate">{row.note}</p>}
+              <p className="text-[9px] text-[var(--color-muted)]">Desk: {deskNames}</p>
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// History — recent trade lifecycle events (open/close/SL/TP/cancel)
+// ---------------------------------------------------------------------------
+
+function TradeHistory({ activity, role }) {
+  const [trades, setTrades] = useState([])
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/trades', role).then(r => setTrades(r?.trades || [])).catch(() => {})
+  }, [role])
+
+  const tradeEvents = activity.filter(r => r.kind === 'trade' || r.kind === 'monitor')
+  const allRows = [
+    ...trades.map(t => ({
+      time: t.closed_at || t.opened_at,
+      action: t.status === 'closed' ? (t.close_reason === 'sl_hit' ? 'SL HIT' : t.close_reason === 'tp_hit' ? 'TP HIT' : 'CLOSE') : 'OPEN',
+      sym: t.symbol,
+      detail: `${t.side} ${t.volume ? (t.volume / 10000).toFixed(2) : '?'} @ ${t.entry_price || '—'}`,
+      pnl: t.realized_pnl,
+      desk: dispatchMinions(t.symbol).slice(0, 2).map(id => MINIONS[id]?.name).filter(Boolean).join(' + '),
+      strategy: t.strategy || null,
+    })),
+    ...tradeEvents.map(r => ({
+      time: r.at,
+      action: r.kind === 'trade' ? (r.v1 === 'BUY' || r.v1 === 'SELL' ? 'OPEN' : String(r.v1).toUpperCase()) : 'MONITOR',
+      sym: r.symbol,
+      detail: r.note || '',
+      pnl: null,
+      desk: dispatchMinions(r.symbol).slice(0, 2).map(id => MINIONS[id]?.name).filter(Boolean).join(' + '),
+      strategy: r.extra || null,
+    })),
+  ]
+  allRows.sort((a, b) => new Date(b.time) - new Date(a.time))
+  const unique = allRows.slice(0, 20)
+
+  if (unique.length === 0) return null
+
+  const actionColor = (a) => {
+    if (a === 'OPEN' || a === 'TP HIT') return 'text-[var(--color-up)]'
+    if (a === 'SL HIT' || a === 'CLOSE') return 'text-[var(--color-down)]'
+    return 'text-[var(--color-muted)]'
+  }
+
+  return (
+    <Card>
+      <p className="t-label mb-2">History</p>
+      <div className="space-y-1 max-h-[320px] overflow-y-auto">
+        {unique.map((r, i) => (
+          <div key={i} className="rounded-[5px] bg-[var(--color-bg)] px-2 py-1.5 space-y-0.5">
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="font-mono text-[9px] text-[var(--color-muted)] w-12 shrink-0">{r.time ? new Date(r.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+              <span className={`font-semibold text-[10px] w-14 ${actionColor(r.action)}`}>{r.action}</span>
+              <span className="font-mono font-bold text-[var(--color-text)]">{r.sym}</span>
+              <span className="text-[var(--color-muted)] text-[10px] truncate flex-1">{r.detail}</span>
+              {r.pnl != null && (
+                <span className={`font-mono font-semibold text-[11px] ${r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                  {r.pnl >= 0 ? '+' : ''}{fmtMoney(r.pnl)}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-[9px] text-[var(--color-muted)]">
+              {r.desk && <span>Desk: {r.desk}</span>}
+              {r.strategy && <span className="uppercase">{r.strategy}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </Card>
   )
 }
@@ -947,8 +1090,11 @@ export default function Agent() {
       {/* Market status — which watchlist markets are live vs closed */}
       <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} />
 
-      {/* Team roster — which minions dispatched per hot symbol */}
+      {/* Team roster desk — per-agent status + timing */}
       <TeamRoster activity={activity} />
+
+      {/* Scan feed — dedicated scan + analysis results with desk info */}
+      <ScanFeed activity={activity} />
 
       {/* cTrader account + positions with bot context */}
       <AccountPanel
@@ -957,6 +1103,9 @@ export default function Agent() {
         onPause={pausePos}
         onUnpause={unpausePos}
       />
+
+      {/* Trade history — open/close/SL/TP lifecycle events */}
+      <TradeHistory activity={activity} role={role} />
 
       {/* Live activity stream */}
       <Card>
