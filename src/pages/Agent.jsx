@@ -63,6 +63,64 @@ function fmtMoney(v, digits = 2) {
 }
 
 // ---------------------------------------------------------------------------
+// PanelFrame — S/M/L size toggle + collapse, persisted to localStorage
+// ---------------------------------------------------------------------------
+
+const PANEL_PREFS_KEY = 'bot-trade:panel-prefs'
+function readPanelPrefs() {
+  try { return JSON.parse(localStorage.getItem(PANEL_PREFS_KEY) || '{}') } catch { return {} }
+}
+function writePanelPref(id, prefs) {
+  try {
+    const all = readPanelPrefs()
+    all[id] = { ...all[id], ...prefs }
+    localStorage.setItem(PANEL_PREFS_KEY, JSON.stringify(all))
+  } catch {}
+}
+
+function PanelFrame({ id, title, defaultSize = 'L', defaultCollapsed = false, children, badge, onExpand }) {
+  const [prefs, setPrefs] = useState(() => {
+    const saved = readPanelPrefs()[id]
+    return { size: saved?.size || defaultSize, collapsed: saved?.collapsed ?? defaultCollapsed }
+  })
+
+  const updatePref = (patch) => {
+    setPrefs(prev => {
+      const next = { ...prev, ...patch }
+      writePanelPref(id, next)
+      if (patch.collapsed === false && onExpand) onExpand()
+      return next
+    })
+  }
+
+  const sizeClass = prefs.size === 'S' ? 'max-w-[320px]' : prefs.size === 'M' ? 'max-w-[600px]' : ''
+
+  return (
+    <div className={sizeClass}>
+      <Card className="!p-0 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => updatePref({ collapsed: !prefs.collapsed })}
+          className="w-full h-8 px-3 flex items-center gap-2 bg-[var(--color-bg)] border-b border-[var(--color-border)] hover:opacity-80 cursor-pointer select-none"
+        >
+          <span className="text-[10px] text-[var(--color-muted)] w-3">{prefs.collapsed ? '▸' : '▾'}</span>
+          <span className="text-[12px] font-semibold text-[var(--color-text)] flex-1 text-left truncate">{title}</span>
+          {badge}
+          <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+            {['S','M','L'].map(s => (
+              <button key={s} type="button" onClick={() => updatePref({ size: s })}
+                className={`w-4 h-4 rounded text-[9px] ${prefs.size === s ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
+              >{s}</button>
+            ))}
+          </div>
+        </button>
+        {!prefs.collapsed && <div className="p-3">{children}</div>}
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Risk Dashboard — Sharpe, drawdown, PF, daily P&L, risk limits
 // ---------------------------------------------------------------------------
 
@@ -414,8 +472,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
   const [positions, setPositions] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  // Per-account tab — defaults to the primary linked account but the user can
-  // flip between any connected account (autopilot / copilot / observer).
+  const [fetched, setFetched] = useState(false)
   const fallbackId = ctrader.linkedAccountId || ctrader.accounts?.[0]?.accountId || null
   const [selectedAccountId, setSelectedAccountId] = useState(fallbackId)
   useEffect(() => {
@@ -435,24 +492,17 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
         fetchAccountInfo(ctrader.accessToken, selectedAccountId, isLive),
         fetchOpenPositions(ctrader.accessToken, selectedAccountId, isLive),
       ])
-      setInfo(inf); setPositions(pos)
+      setInfo(inf); setPositions(pos); setFetched(true)
     } catch (e) { setError(e.message) } finally { setLoading(false) }
   }, [ctrader.accessToken, selectedAccountId, isLive])
 
-  useEffect(() => { refresh() }, [refresh])
-  useEffect(() => {
-    const iv = setInterval(refresh, 60_000)
-    return () => clearInterval(iv)
-  }, [refresh])
+  useEffect(() => { if (!fetched) refresh() }, [fetched, refresh])
 
   if (!selectedAccountId || !ctrader.accounts?.length) {
     return (
-      <Card>
-        <p className="t-label mb-1">Trading Account</p>
-        <p className="t-sub text-[var(--color-muted)]">
-          No account linked. Go to Settings → cTrader to connect your Pepperstone account.
-        </p>
-      </Card>
+      <p className="t-sub text-[var(--color-muted)]">
+        No account linked. Go to Settings → cTrader to connect your Pepperstone account.
+      </p>
     )
   }
 
@@ -461,7 +511,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
     : null
 
   return (
-    <Card>
+    <div>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <p className="t-label">Trading Account</p>
@@ -763,7 +813,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
       {!loading && !info && !error && (
         <p className="t-sub text-[var(--color-muted)]">Loading account data…</p>
       )}
-    </Card>
+    </div>
   )
 }
 
@@ -1146,6 +1196,249 @@ function MonitorAgent({ role }) {
 }
 
 // ---------------------------------------------------------------------------
+// Planned Orders — agent analysis revision trail for queued trades
+// ---------------------------------------------------------------------------
+
+function PlannedOrders({ activity, role }) {
+  const analysisEvents = activity.filter(r => r.kind === 'analysis')
+  const symbolMap = {}
+  for (const ev of analysisEvents) {
+    if (!symbolMap[ev.symbol]) symbolMap[ev.symbol] = []
+    symbolMap[ev.symbol].push(ev)
+  }
+  const analyses = Object.entries(symbolMap).map(([symbol, revisions]) => ({
+    symbol,
+    revisions: revisions.slice(0, 10),
+    latest: revisions[0],
+  }))
+
+  if (analyses.length === 0) return null
+
+  return (
+    <PanelFrame id="planned-orders" title="Planned Orders" defaultSize="L" badge={
+      <Badge tone="accent" className="text-[8px] px-1">{analyses.length}</Badge>
+    }>
+      <div className="space-y-2">
+        {analyses.map(({ symbol, revisions, latest }) => {
+          const minionIds = dispatchMinions(symbol)
+          const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
+          const tradeable = !isTradingNow(symbol)
+          const ms = tradeable ? msUntilOpen(symbol) : 0
+
+          return (
+            <div key={symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
+              <div className="px-2 py-1.5 flex items-center gap-2 border-b border-[var(--color-border)]">
+                <span className="font-mono font-bold text-[12px] text-[var(--color-text)]">{symbol}</span>
+                {latest.v1 && (
+                  <span className={`text-[11px] font-semibold ${latest.v1 === 'long' ? 'text-[var(--color-up)]' : latest.v1 === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                    {String(latest.v1).toUpperCase()}
+                  </span>
+                )}
+                {latest.v2 != null && <span className="text-[10px] font-mono text-[var(--color-muted)]">{latest.v2}/10</span>}
+                {tradeable && ms > 0 && (
+                  <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>
+                )}
+                {!tradeable && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
+                <span className="ml-auto text-[9px] text-[var(--color-muted)]">Desk: {deskNames}</span>
+              </div>
+              <div className="divide-y divide-[var(--color-border)]">
+                {revisions.map((rev, i) => (
+                  <div key={rev.id || i} className="px-2 py-1 flex items-center gap-2 text-[10px]">
+                    <span className="font-mono text-[var(--color-muted)] w-4">#{revisions.length - i}</span>
+                    <span className="text-[9px] text-[var(--color-muted)] w-12">{fmtAgo(rev.at)}</span>
+                    <span className={`font-semibold w-10 ${rev.v1 === 'long' ? 'text-[var(--color-up)]' : rev.v1 === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                      {String(rev.v1 || '—').toUpperCase()}
+                    </span>
+                    <span className="font-mono w-8 text-[var(--color-text)]">{rev.v2 != null ? `${rev.v2}/10` : '—'}</span>
+                    {rev.extra && <span className="text-[var(--color-muted)] uppercase text-[9px]">{rev.extra}</span>}
+                    <span className="text-[var(--color-muted)] truncate flex-1">{rev.note || ''}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Failed Trades — risk gate vetoes for system improvement
+// ---------------------------------------------------------------------------
+
+function FailedTrades({ role }) {
+  const [events, setEvents] = useState([])
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/risk-events?limit=20', role)
+      .then(r => setEvents((r?.events || []).filter(e => !e.approved)))
+      .catch(() => {})
+  }, [role])
+
+  if (events.length === 0) return null
+
+  return (
+    <PanelFrame id="failed-trades" title="Failed to Trade" defaultSize="M" badge={
+      <Badge tone="down" className="text-[8px] px-1">{events.length}</Badge>
+    }>
+      <p className="text-[9px] text-[var(--color-muted)] mb-2">Risk gate vetoes — review to improve strategy and sizing rules.</p>
+      <div className="space-y-1 max-h-[300px] overflow-y-auto">
+        {events.map((e, i) => {
+          let checks = null
+          try { checks = JSON.parse(e.checks_json) } catch {}
+          return (
+            <div key={i} className="rounded-[4px] bg-[var(--color-bg)] px-2 py-1.5 space-y-0.5">
+              <div className="flex items-center gap-2 text-[11px]">
+                <Badge tone="down" className="text-[8px] px-1">VETO</Badge>
+                <span className="font-mono font-bold text-[var(--color-text)]">{e.symbol}</span>
+                <span className="text-[var(--color-muted)]">{e.side}</span>
+                <span className="ml-auto text-[9px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
+              </div>
+              <p className="text-[10px] text-[var(--color-down)]">{e.veto_reason}</p>
+              {checks && (
+                <div className="text-[9px] text-[var(--color-muted)] flex flex-wrap gap-2">
+                  {checks.daily_pnl != null && <span>Daily P&L: ${fmtMoney(checks.daily_pnl)}</span>}
+                  {checks.open_positions != null && <span>Open pos: {checks.open_positions}</span>}
+                  {checks.rr != null && <span>R:R: {checks.rr.toFixed(2)}</span>}
+                  {checks.sl_pct != null && <span>SL dist: {checks.sl_pct}%</span>}
+                  {checks.risk_based_volume != null && <span>Sized vol: {checks.risk_based_volume}</span>}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Trade Results — wins/losses by source + 30d attribution
+// ---------------------------------------------------------------------------
+
+function TradeResults({ role }) {
+  const [data, setData] = useState(null)
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/attribution?groupBy=source&days=30', role)
+      .then(r => setData(r))
+      .catch(() => {})
+  }, [role])
+
+  const rows = data?.rows || []
+  if (rows.length === 0) return null
+
+  const totalPnl = rows.reduce((s, r) => s + (r.total_pnl || 0), 0)
+  const totalTrades = rows.reduce((s, r) => s + (r.trades || 0), 0)
+  const totalWins = rows.reduce((s, r) => s + (r.wins || 0), 0)
+
+  return (
+    <PanelFrame id="trade-results" title="Trade Results (30d)" defaultSize="M" badge={
+      <span className={`text-[10px] font-mono font-bold ${totalPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+        {totalPnl >= 0 ? '+' : ''}{fmtMoney(totalPnl)}
+      </span>
+    }>
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Total Trades</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-text)]">{totalTrades}</p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Wins</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-up)]">{totalWins}</p>
+        </div>
+        <div>
+          <p className="t-meta text-[var(--color-muted)]">Losses</p>
+          <p className="text-[15px] font-bold font-mono text-[var(--color-down)]">{totalTrades - totalWins}</p>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="text-[var(--color-muted)] text-left">
+              <th className="pb-1 font-medium">Source</th>
+              <th className="pb-1 font-medium text-right">Trades</th>
+              <th className="pb-1 font-medium text-right">Win%</th>
+              <th className="pb-1 font-medium text-right">P&L</th>
+              <th className="pb-1 font-medium text-right">PF</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--color-border)]">
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td className="py-1 font-medium text-[var(--color-text)] uppercase">{r.group_key || '—'}</td>
+                <td className="py-1 text-right font-mono text-[var(--color-text)]">{r.trades}</td>
+                <td className="py-1 text-right font-mono text-[var(--color-text)]">{r.win_rate != null ? `${(r.win_rate * 100).toFixed(0)}%` : '—'}</td>
+                <td className={`py-1 text-right font-mono font-semibold ${(r.total_pnl || 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                  {r.total_pnl != null ? fmtMoney(r.total_pnl) : '—'}
+                </td>
+                <td className="py-1 text-right font-mono text-[var(--color-text)]">{r.profit_factor != null ? r.profit_factor.toFixed(2) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// CSV Download helper
+// ---------------------------------------------------------------------------
+
+function downloadCSV(filename, headers, rows) {
+  const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
+}
+
+function DownloadButtons({ role }) {
+  const [busy, setBusy] = useState(false)
+
+  const exportTrades = async () => {
+    setBusy(true)
+    try {
+      const r = await agentGet('/state/trades', role)
+      const trades = r?.trades || []
+      if (trades.length === 0) return alert('No trades to export')
+      downloadCSV('trade-log.csv',
+        ['symbol','side','entry_price','exit_price','volume','opened_at','closed_at','gross_pnl','net_pnl','strategy','conviction','source','close_reason'],
+        trades.map(t => [t.symbol, t.side, t.entry_price, t.exit_price, t.volume, t.opened_at, t.closed_at, t.gross_pnl, t.net_pnl, t.label_strategy, t.label_conviction, t.source, t.close_reason])
+      )
+    } catch (e) { alert(e.message) } finally { setBusy(false) }
+  }
+
+  const exportRiskEvents = async () => {
+    setBusy(true)
+    try {
+      const r = await agentGet('/state/risk-events?limit=200', role)
+      const events = r?.events || []
+      if (events.length === 0) return alert('No risk events to export')
+      downloadCSV('risk-events.csv',
+        ['symbol','side','approved','veto_reason','created_at'],
+        events.map(e => [e.symbol, e.side, e.approved, e.veto_reason, e.created_at])
+      )
+    } catch (e) { alert(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <Card>
+      <p className="t-label mb-2">Downloads</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="ghost" onClick={exportTrades} disabled={busy}>Trade Log CSV</Button>
+        <Button size="sm" variant="ghost" onClick={exportRiskEvents} disabled={busy}>Risk Events CSV</Button>
+      </div>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // History — recent trade lifecycle events (open/close/SL/TP/cancel)
 // ---------------------------------------------------------------------------
 
@@ -1286,19 +1579,6 @@ export default function Agent() {
   const [botPositions, setBotPositions] = useState([])
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
-  // Collapse-toggle for the activity log — persisted so operator preference
-  // survives page refreshes.
-  const [activityCollapsed, setActivityCollapsed] = useState(() => {
-    try { return localStorage.getItem('bot-trade:activity-collapsed') === 'true' } catch { return false }
-  })
-  const toggleActivity = () => {
-    setActivityCollapsed(prev => {
-      const next = !prev
-      try { localStorage.setItem('bot-trade:activity-collapsed', String(next)) } catch {}
-      return next
-    })
-  }
-
   const refresh = useCallback(async () => {
     if (!agentConfigured(role)) return
     try {
@@ -1556,66 +1836,69 @@ export default function Agent() {
       {/* Monitor Agent — what's being watched, last checks, thesis status */}
       <MonitorAgent role={role} />
 
+      {/* Planned Orders — analysis revision trail per symbol */}
+      <PlannedOrders activity={activity} role={role} />
+
+      {/* Two-column grid: failed trades + trade results */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <FailedTrades role={role} />
+        <TradeResults role={role} />
+      </div>
+
       {/* Two-column grid for operational panels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {/* Team roster desk — per-agent status + timing */}
         <TeamRoster activity={activity} />
-        {/* Scan feed — dedicated scan + analysis results with desk info */}
         <ScanFeed activity={activity} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {/* cTrader account + positions with bot context */}
-        <AccountPanel
-          ctrader={state.ctrader}
-          botPositionsById={botById}
-          onPause={pausePos}
-          onUnpause={unpausePos}
-        />
-        {/* Trade history — open/close/SL/TP lifecycle events */}
+        {/* cTrader account — default collapsed, lazy fetch on expand */}
+        <PanelFrame id="ctrader-account" title="Trading Account" defaultCollapsed={true}
+          onExpand={() => {
+            const panel = document.querySelector('[data-panel="ctrader-account"]')
+            if (panel) panel.dispatchEvent(new Event('panel-expand'))
+          }}
+          badge={<Badge tone={state.ctrader?.accounts?.some(a => a.isLive) ? 'down' : 'accent'} className="text-[8px] px-1">
+            {state.ctrader?.accounts?.some(a => a.isLive) ? 'LIVE' : 'DEMO'}
+          </Badge>}
+        >
+          <AccountPanel
+            ctrader={state.ctrader}
+            botPositionsById={botById}
+            onPause={pausePos}
+            onUnpause={unpausePos}
+          />
+        </PanelFrame>
         <TradeHistory activity={activity} role={role} />
       </div>
 
+      {/* CSV Downloads */}
+      <DownloadButtons role={role} />
+
       {/* Live activity stream */}
-      <Card>
-        <button
-          type="button"
-          onClick={toggleActivity}
-          className="w-full flex items-center gap-2 mb-2 text-left hover:opacity-80"
-          title={activityCollapsed ? 'Expand activity log' : 'Collapse activity log'}
-        >
-          <span className="text-[10px] text-[var(--color-muted)] w-3">
-            {activityCollapsed ? '▸' : '▾'}
-          </span>
-          <p className="t-label flex-1">Live Activity</p>
-          <span className="text-[9px] text-[var(--color-muted)]">
-            {activity.length} events · auto-refresh 10s
-          </span>
-        </button>
-        {!activityCollapsed && (
-          <>
-            {activity.length === 0 ? (
-              <p className="t-sub text-[var(--color-muted)] py-4 text-center">
-                No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
-              </p>
-            ) : (
-              <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
-                {activity.map((row, i) => (
-                  <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
-                ))}
-              </div>
-            )}
-            <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
-              <span className="text-[9px] text-[var(--color-muted)]">
-                Drill into any analysis, trade, or monitor check in the Workshop.
-              </span>
-              <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
-                Workshop →
-              </Link>
-            </div>
-          </>
+      <PanelFrame id="live-activity" title="Live Activity" defaultCollapsed={true}
+        badge={<span className="text-[9px] text-[var(--color-muted)]">{activity.length} events · 10s</span>}
+      >
+        {activity.length === 0 ? (
+          <p className="t-sub text-[var(--color-muted)] py-4 text-center">
+            No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
+          </p>
+        ) : (
+          <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
+            {activity.map((row, i) => (
+              <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
+            ))}
+          </div>
         )}
-      </Card>
+        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
+          <span className="text-[9px] text-[var(--color-muted)]">
+            Drill into any analysis, trade, or monitor check in the Workshop.
+          </span>
+          <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
+            Workshop →
+          </Link>
+        </div>
+      </PanelFrame>
     </section>
   )
 }
