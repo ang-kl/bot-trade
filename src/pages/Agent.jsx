@@ -825,7 +825,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
 
 const CRYPTO_RE = /^(BTC|ETH|XRP|SOL|LTC|BCH|DOT|ADA|DOGE)USD$/
 
-function MarketStatus({ symbols }) {
+function MarketStatus({ symbols, activity }) {
   const [, setTick] = useState(0)
   useEffect(() => {
     const iv = setInterval(() => setTick(t => t + 1), 60_000)
@@ -834,11 +834,32 @@ function MarketStatus({ symbols }) {
 
   if (!symbols || symbols.length === 0) return null
 
-  const liveTrading = []   // open market → analyse + trade
-  const analyseOnly = []   // closed market → analyse, queue orders for next open
+  const latestAnalysis = {}
+  for (const ev of (activity || [])) {
+    if (ev.kind === 'analysis' && ev.symbol && !latestAnalysis[ev.symbol]) {
+      latestAnalysis[ev.symbol] = ev
+    }
+  }
+
+  const liveTrading = []
+  const analyseOnly = []
+  const skipped = []
   for (const sym of symbols) {
-    if (isTradingNow(sym)) liveTrading.push(sym)
-    else analyseOnly.push({ symbol: sym, msUntil: msUntilOpen(sym) })
+    const la = latestAnalysis[sym]
+    const bias = la?.v1
+    const conv = la?.v2
+    const isSkip = bias === 'skip' || bias === 'neutral' || (conv != null && conv < 4)
+
+    if (isTradingNow(sym)) {
+      if (isSkip) skipped.push(sym)
+      else liveTrading.push(sym)
+    } else {
+      if (isSkip) {
+        skipped.push(sym)
+      } else {
+        analyseOnly.push({ symbol: sym, msUntil: msUntilOpen(sym), bias, conv })
+      }
+    }
   }
   analyseOnly.sort((a, b) => a.msUntil - b.msUntil)
 
@@ -856,7 +877,6 @@ function MarketStatus({ symbols }) {
         {cryptoLive.length > 0 && <Badge tone="special" className="text-[8px] px-1">CRYPTO 24/7</Badge>}
       </div>
 
-      {/* Crypto — always analyse + trade */}
       {cryptoLive.length > 0 && (
         <div className="mb-2">
           <p className="t-meta text-[var(--color-muted)] mb-1">
@@ -872,7 +892,6 @@ function MarketStatus({ symbols }) {
         </div>
       )}
 
-      {/* Non-crypto live markets */}
       {nonCryptoLive.length > 0 && (
         <div className="mb-2">
           <p className="t-meta text-[var(--color-muted)] mb-1">
@@ -888,27 +907,39 @@ function MarketStatus({ symbols }) {
         </div>
       )}
 
-      {/* Closed markets */}
       {analyseOnly.length > 0 && (
         <div className="mb-2">
           <p className="t-meta text-[var(--color-muted)] mb-1">
-            Analyse only — orders queued for open ({analyseOnly.length})
+            Queued for open ({analyseOnly.length})
           </p>
           <div className="flex flex-wrap gap-1">
-            {analyseOnly.slice(0, 12).map(({ symbol, msUntil }) => (
+            {analyseOnly.map(({ symbol, msUntil, bias, conv }) => (
               <span
                 key={symbol}
-                className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono"
-                title={`Opens in ${fmtDuration(msUntil)}`}
+                className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono"
+                title={`${String(bias).toUpperCase()} ${conv}/10 — opens in ${fmtDuration(msUntil)}`}
               >
-                {symbol} <span className="opacity-60">{fmtDuration(msUntil)}</span>
+                {symbol} <span className="font-semibold">{String(bias).toUpperCase()}</span> <span className="opacity-60">{fmtDuration(msUntil)}</span>
               </span>
             ))}
-            {analyseOnly.length > 12 && (
-              <span className="px-1.5 py-0.5 text-[10px] text-[var(--color-muted)]">
-                +{analyseOnly.length - 12} more
-              </span>
-            )}
+          </div>
+        </div>
+      )}
+
+      {skipped.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">
+            Standing aside ({skipped.length})
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {skipped.map(sym => {
+              const la = latestAnalysis[sym]
+              return (
+                <span key={sym} className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono">
+                  {sym} <span className="opacity-60">{la ? `${la.v2 || 0}/10` : '—'}</span>
+                </span>
+              )
+            })}
           </div>
         </div>
       )}
@@ -919,9 +950,9 @@ function MarketStatus({ symbols }) {
           {cryptoLive.length > 0 && ' — crypto continues uninterrupted'}
         </p>
       )}
-      {liveTrading.length === 0 && (
+      {liveTrading.length === 0 && analyseOnly.length === 0 && (
         <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
-          All watchlist markets closed. Agent analyses setups and queues orders for next session open. Monitor continues on open positions.
+          All watchlist markets standing aside. Agent continues scanning — conviction must reach 4/10+ to queue for open.
         </p>
       )}
     </Card>
@@ -1200,65 +1231,114 @@ function MonitorAgent({ role }) {
 // ---------------------------------------------------------------------------
 
 function PlannedOrders({ activity, role }) {
-  const analysisEvents = activity.filter(r => r.kind === 'analysis')
-  const symbolMap = {}
-  for (const ev of analysisEvents) {
-    if (!symbolMap[ev.symbol]) symbolMap[ev.symbol] = []
-    symbolMap[ev.symbol].push(ev)
+  const [fullAnalyses, setFullAnalyses] = useState([])
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/analyses/latest', role)
+      .then(r => setFullAnalyses(r?.analyses || []))
+      .catch(() => {})
+    const iv = setInterval(() => {
+      agentGet('/state/analyses/latest', role)
+        .then(r => setFullAnalyses(r?.analyses || []))
+        .catch(() => {})
+    }, 30_000)
+    return () => clearInterval(iv)
+  }, [role])
+
+  const bySymbol = {}
+  for (const a of fullAnalyses) {
+    if (!bySymbol[a.symbol]) bySymbol[a.symbol] = []
+    bySymbol[a.symbol].push(a)
   }
-  const analyses = Object.entries(symbolMap).map(([symbol, revisions]) => ({
+  const symbols = Object.entries(bySymbol).map(([symbol, rows]) => ({
     symbol,
-    revisions: revisions.slice(0, 10),
-    latest: revisions[0],
+    rows: rows.slice(0, 15),
+    latest: rows[0],
   }))
 
-  if (analyses.length === 0) return null
+  if (symbols.length === 0) return null
+
+  const activeCount = symbols.filter(s => s.latest.consensus_bias !== 'skip' && s.latest.consensus_bias !== 'neutral').length
 
   return (
-    <PanelFrame id="planned-orders" title="Planned Orders" defaultSize="L" badge={
-      <Badge tone="accent" className="text-[8px] px-1">{analyses.length}</Badge>
+    <PanelFrame id="planned-orders" title="Agent Planned Orders" defaultSize="L" badge={
+      <span className="flex items-center gap-1">
+        <Badge tone="accent" className="text-[8px] px-1">{activeCount} active</Badge>
+        <Badge tone="neutral" className="text-[8px] px-1">{symbols.length} total</Badge>
+      </span>
     }>
-      <div className="space-y-2">
-        {analyses.map(({ symbol, revisions, latest }) => {
-          const minionIds = dispatchMinions(symbol)
-          const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
-          const tradeable = !isTradingNow(symbol)
-          const ms = tradeable ? msUntilOpen(symbol) : 0
+      {symbols.map(({ symbol, rows, latest }) => {
+        const minionIds = dispatchMinions(symbol)
+        const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
+        const tradeable = !isTradingNow(symbol)
+        const ms = tradeable ? msUntilOpen(symbol) : 0
+        const isActive = latest.consensus_bias !== 'skip' && latest.consensus_bias !== 'neutral'
 
-          return (
-            <div key={symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
-              <div className="px-2 py-1.5 flex items-center gap-2 border-b border-[var(--color-border)]">
-                <span className="font-mono font-bold text-[12px] text-[var(--color-text)]">{symbol}</span>
-                {latest.v1 && (
-                  <span className={`text-[11px] font-semibold ${latest.v1 === 'long' ? 'text-[var(--color-up)]' : latest.v1 === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
-                    {String(latest.v1).toUpperCase()}
-                  </span>
-                )}
-                {latest.v2 != null && <span className="text-[10px] font-mono text-[var(--color-muted)]">{latest.v2}/10</span>}
-                {tradeable && ms > 0 && (
-                  <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>
-                )}
-                {!tradeable && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
-                <span className="ml-auto text-[9px] text-[var(--color-muted)]">Desk: {deskNames}</span>
-              </div>
-              <div className="divide-y divide-[var(--color-border)]">
-                {revisions.map((rev, i) => (
-                  <div key={rev.id || i} className="px-2 py-1 flex items-center gap-2 text-[10px]">
-                    <span className="font-mono text-[var(--color-muted)] w-4">#{revisions.length - i}</span>
-                    <span className="text-[9px] text-[var(--color-muted)] w-12">{fmtAgo(rev.at)}</span>
-                    <span className={`font-semibold w-10 ${rev.v1 === 'long' ? 'text-[var(--color-up)]' : rev.v1 === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
-                      {String(rev.v1 || '—').toUpperCase()}
-                    </span>
-                    <span className="font-mono w-8 text-[var(--color-text)]">{rev.v2 != null ? `${rev.v2}/10` : '—'}</span>
-                    {rev.extra && <span className="text-[var(--color-muted)] uppercase text-[9px]">{rev.extra}</span>}
-                    <span className="text-[var(--color-muted)] truncate flex-1">{rev.note || ''}</span>
-                  </div>
-                ))}
-              </div>
+        return (
+          <div key={symbol} className="mb-3 last:mb-0 rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
+            <div className="px-2 py-1.5 flex items-center gap-2 border-b border-[var(--color-border)]">
+              <span className="font-mono font-bold text-[12px] text-[var(--color-text)]">{symbol}</span>
+              <Badge tone={isActive ? (latest.consensus_bias === 'long' ? 'up' : 'down') : 'neutral'} className="text-[8px] px-1">
+                {String(latest.consensus_bias || '—').toUpperCase()}
+              </Badge>
+              <span className="font-mono text-[10px] text-[var(--color-text)]">{latest.overall_conviction}/10</span>
+              {latest.auto_trade ? <Badge tone="up" className="text-[8px] px-1">AUTO</Badge> : null}
+              {tradeable && ms > 0 && <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>}
+              {!tradeable && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
+              <span className="ml-auto text-[9px] text-[var(--color-muted)] truncate max-w-[250px]">Desk: {deskNames}</span>
             </div>
-          )
-        })}
-      </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[9.5px]">
+                <thead>
+                  <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
+                    <th className="px-2 py-1 font-medium w-6">#</th>
+                    <th className="px-2 py-1 font-medium">Time</th>
+                    <th className="px-2 py-1 font-medium">Status</th>
+                    <th className="px-2 py-1 font-medium">Bias</th>
+                    <th className="px-2 py-1 font-medium text-right">Conv</th>
+                    <th className="px-2 py-1 font-medium text-right">Entry</th>
+                    <th className="px-2 py-1 font-medium text-right">SL</th>
+                    <th className="px-2 py-1 font-medium text-right">TP</th>
+                    <th className="px-2 py-1 font-medium">TTL</th>
+                    <th className="px-2 py-1 font-medium">Strategy</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-border)]">
+                  {rows.map((a, i) => {
+                    const serial = rows.length - i
+                    const prevBias = rows[i + 1]?.consensus_bias
+                    const biasChanged = prevBias && prevBias !== a.consensus_bias
+                    const status = i === 0 ? '1st' : biasChanged ? `Rev #${serial} (was ${prevBias})` : `#${serial}`
+
+                    return (
+                      <tr key={a.id} className={i === 0 ? 'bg-[var(--color-surface)]' : ''}>
+                        <td className="px-2 py-1 font-mono text-[var(--color-muted)]">{serial}</td>
+                        <td className="px-2 py-1 text-[var(--color-muted)] whitespace-nowrap">{fmtAgo(a.analyzed_at)}</td>
+                        <td className="px-2 py-1">
+                          {biasChanged ? (
+                            <span className="text-[var(--color-warning-text)] font-semibold">{status}</span>
+                          ) : (
+                            <span className="text-[var(--color-muted)]">{status}</span>
+                          )}
+                        </td>
+                        <td className={`px-2 py-1 font-semibold ${a.consensus_bias === 'long' ? 'text-[var(--color-up)]' : a.consensus_bias === 'short' ? 'text-[var(--color-down)]' : 'text-[var(--color-muted)]'}`}>
+                          {String(a.consensus_bias || '—').toUpperCase()}
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{a.overall_conviction}/10</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{a.entry_price ? fmtMoney(a.entry_price, a.entry_price > 100 ? 2 : 5) : '—'}</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-down)]">{a.sl_price ? fmtMoney(a.sl_price, a.sl_price > 100 ? 2 : 5) : '—'}</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-up)]">{a.tp1_price ? fmtMoney(a.tp1_price, a.tp1_price > 100 ? 2 : 5) : '—'}</td>
+                        <td className="px-2 py-1 font-mono text-[var(--color-muted)]">{a.time_cap_minutes ? `${a.time_cap_minutes}m` : '—'}</td>
+                        <td className="px-2 py-1 text-[var(--color-text)] truncate max-w-[140px]" title={a.strategy || ''}>{a.strategy || '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })}
     </PanelFrame>
   )
 }
@@ -1825,7 +1905,7 @@ export default function Agent() {
       <MarketDataStrip symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} role={role} />
 
       {/* Market status — which watchlist markets are live vs closed */}
-      <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} />
+      <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} activity={activity} />
 
       {/* Two-column grid for mid-section panels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

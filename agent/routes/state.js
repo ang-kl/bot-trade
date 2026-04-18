@@ -402,5 +402,20 @@ export default function stateRouter(db) {
     }
   })
 
+  router.get('/analyses/latest', (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT a.*, s.bias AS scan_bias, s.confidence AS scan_confidence
+        FROM analyses a
+        LEFT JOIN scans s ON s.id = a.scan_id
+        WHERE a.analyzed_at > datetime('now', '-24 hours')
+        ORDER BY a.analyzed_at DESC
+      `).all()
+      res.json({ analyses: rows })
+    } catch (e) {
+      res.json({ analyses: [], error: e.message })
+    }
+  })
+
   return router
 }
