@@ -13,17 +13,35 @@ const MARKETS = [
   { id: 'nyse',      label: 'NYC',  flag: '\uD83C\uDDFA\uD83C\uDDF8', tz: 'America/New_York',   open: 14, close: 21 },
 ]
 
-function isOpen(market, utcHour) {
-  if (market.open < market.close) return utcHour >= market.open && utcHour < market.close
-  return utcHour >= market.open || utcHour < market.close
+// Equity / FX sessions are closed on weekends (Sat UTC, Sun UTC until Sydney
+// re-opens at 22:00 UTC for the Monday AEDT session). Crypto / 24-7 pairs
+// would need a separate component — this bar is equity-focused.
+function isOpen(market, now) {
+  const day = now.getUTCDay()   // 0=Sun … 6=Sat
+  const hour = now.getUTCHours()
+
+  if (day === 6) return false                                    // Saturday
+  if (day === 0) return market.id === 'sydney' && hour >= market.open   // Sunday → only Sydney re-opens late
+  if (day === 5 && market.id === 'sydney' && hour >= 22) return false   // Fri 22:00+ UTC = Sat AEDT
+
+  if (market.open < market.close) return hour >= market.open && hour < market.close
+  return hour >= market.open || hour < market.close
 }
 
-function minsUntilOpen(market, utcHour, utcMin) {
-  const nowMins = utcHour * 60 + utcMin
-  const openMins = market.open * 60
-  let diff = openMins - nowMins
-  if (diff <= 0) diff += 1440
-  return diff
+function minsUntilOpen(market, now) {
+  // Walk forward up to 4 days to find the next time this market opens.
+  // Works for weekend skip (Sat → Mon) and Sydney's Sun-22-UTC edge case.
+  const nowMs = now.getTime()
+  for (let d = 0; d <= 4; d++) {
+    const candidate = new Date(nowMs)
+    candidate.setUTCDate(candidate.getUTCDate() + d)
+    candidate.setUTCHours(market.open, 0, 0, 0)
+    if (candidate.getTime() <= nowMs) continue
+    if (isOpen(market, candidate)) {
+      return Math.floor((candidate.getTime() - nowMs) / 60_000)
+    }
+  }
+  return 0
 }
 
 function formatMinsUntil(mins) {
@@ -53,9 +71,6 @@ export default function MarketSessionBar() {
     const t = setInterval(() => setNow(new Date()), 30_000)
     return () => clearInterval(t)
   }, [])
-
-  const utcH = now.getUTCHours()
-  const utcM = now.getUTCMinutes()
 
   const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const userTime = formatLocalTime(userTz)
@@ -92,8 +107,8 @@ export default function MarketSessionBar() {
         {/* Market pills — wraps on mobile */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {MARKETS.map(m => {
-            const open = isOpen(m, utcH)
-            const mins = !open ? minsUntilOpen(m, utcH, utcM) : 0
+            const open = isOpen(m, now)
+            const mins = !open ? minsUntilOpen(m, now) : 0
             return (
               <div
                 key={m.id}
