@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk'
-import WebSocket from 'ws'
 import { runScan } from './services/scanner.js'
 import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
@@ -15,65 +14,20 @@ import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
+import { wsPlaceOrder, wsAmendPosition, wsClosePosition } from './lib/ctrader-ws.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 let loopCount = 0
 let consecutiveErrors = 0
 
 // ---------------------------------------------------------------------------
 // cTrader auto-trade via WebSocket — places a market order when synthesis
-// says auto_trade = true. Reads credentials stored via POST /actions/ctrader-config
+// says auto_trade = true. Reads credentials stored via POST /actions/ctrader-config.
+// Low-level WS client lives in ./lib/ctrader-ws.js (unit-testable, reused
+// by wsAmendPosition / wsClosePosition on the monitor hot path).
 // ---------------------------------------------------------------------------
-
-const PT_APP_AUTH_REQ = 2100
-const PT_APP_AUTH_RES = 2101
-const PT_ACCOUNT_AUTH_REQ = 2102
-const PT_ACCOUNT_AUTH_RES = 2103
-const PT_NEW_ORDER_REQ = 2106
-const PT_EXECUTION_EVENT = 2126
-const PT_ORDER_ERROR_EVENT = 2132
-const PT_HEARTBEAT = 51
-
-function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload, timeoutMs = 20_000) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`wss://${host}:5036`)
-    let hb, timer
-    const done = (fn) => { clearTimeout(timer); clearInterval(hb); if (ws.readyState === WebSocket.OPEN) ws.close(); fn() }
-
-    timer = setTimeout(() => done(() => reject(new Error('cTrader order timeout'))), timeoutMs)
-
-    const steps = [
-      { send: { payloadType: PT_APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT_APP_AUTH_RES },
-      { send: { payloadType: PT_ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT_ACCOUNT_AUTH_RES },
-      { send: { payloadType: PT_NEW_ORDER_REQ, payload: orderPayload }, expect: PT_EXECUTION_EVENT },
-    ]
-    let stepIdx = 0
-
-    ws.on('open', () => {
-      hb = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ payloadType: PT_HEARTBEAT })) }, 9000)
-      ws.send(JSON.stringify({ clientMsgId: `s0`, payloadType: steps[0].send.payloadType, payload: steps[0].send.payload }))
-    })
-
-    ws.on('message', (raw) => {
-      let msg; try { msg = JSON.parse(raw.toString()) } catch { return }
-      if (msg.payloadType === PT_HEARTBEAT) return
-      if (msg.payloadType === PT_ORDER_ERROR_EVENT) {
-        const e = msg.payload || {}
-        return done(() => reject(new Error(`cTrader order rejected: ${e.errorCode || 'unknown'} — ${e.description || ''}`)))
-      }
-      if (msg.payloadType === steps[stepIdx]?.expect) {
-        stepIdx++
-        if (stepIdx >= steps.length) {
-          return done(() => resolve(msg.payload || {}))
-        }
-        ws.send(JSON.stringify({ clientMsgId: `s${stepIdx}`, payloadType: steps[stepIdx].send.payloadType, payload: steps[stepIdx].send.payload }))
-      }
-    })
-
-    ws.on('error', (err) => done(() => reject(new Error(`WS error: ${err.message}`))))
-  })
-}
 
 function getAutopilotAccounts(db) {
   const rolesJson = getState(db, 'ctrader_account_roles_json')
@@ -133,7 +87,7 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   if (Math.abs(volLots - requestedVol) > 0.001) {
     log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
   }
-  const volume = Math.round(volLots * 10000) // cTrader units: 10000 = 1 lot
+  const volume = Math.round(volLots * CTRADER_UNITS_PER_LOT)
 
   // We need symbolId — look it up from previously stored symbol map, or skip
   const symbolMapJson = getState(db, 'symbol_id_map')
@@ -198,7 +152,7 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
     // Record trade in DB with parsed label components — fast attribution
     // queries without re-parsing the raw label string on every read.
     const parsedLabel = parseLabel(structuredLabel)
-    db.prepare(`
+    const tradeInsert = db.prepare(`
       INSERT INTO trades (
         symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         status, ctrader_position_id, analysis_id, strategy, conviction,
@@ -216,16 +170,20 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
       parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
       parsedLabel.timeframe, parsedLabel.regime,
     )
+    const tradeId = tradeInsert.lastInsertRowid
 
     // Register in monitored_positions — fully populated for position-manager.
     // Stamp source/label_raw so the monitor SELECT can scope itself to
     // autopilot-only positions (copilot/manual trades must not be touched
-    // by the autonomous loop).
+    // by the autonomous loop). trade_id FKs back to the trades row so the
+    // monitor phase can resolve ctrader_position_id + current volume for
+    // broker AMEND / CLOSE calls.
     db.prepare(`
-      INSERT INTO monitored_positions (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       symbol,
+      tradeId,
       side === 'BUY' ? 'long' : 'short',
       executionPrice,
       slP,
@@ -249,6 +207,112 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
 
 function log(...args) {
   console.log('[loop]', ...args)
+}
+
+// ---------------------------------------------------------------------------
+// Broker-action executor — maps position-manager decisions onto cTrader.
+//
+//   MOVE_SL       → AMEND_POSITION_SLTP_REQ
+//   PARTIAL_EXIT  → CLOSE_POSITION_REQ (fraction of volume), then AMEND for trail SL
+//   FULL_EXIT     → CLOSE_POSITION_REQ (full volume)
+//
+// Returns a structured outcome used to compose last_check_reasoning so the
+// Workshop activity feed surfaces what actually happened at the broker, not
+// just the bot's intent.
+//
+// If credentials are absent (e.g. keeper running without cTrader config),
+// the executor returns { skipped: true } and the caller falls back to the
+// pre-existing log-only behaviour so local/offline runs still function.
+// ---------------------------------------------------------------------------
+
+async function executeBrokerAction(db, s, pos, eval_) {
+  const clientId = process.env.CTRADER_CLIENT_ID
+  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  const accessToken = getState(db, 'ctrader_access_token')
+  const accountId = getState(db, 'ctrader_account_id')
+  const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+  if (!clientId || !clientSecret || !accessToken || !accountId) {
+    return { skipped: true, reason: 'ctrader_not_configured' }
+  }
+
+  const ctx = s.selectBrokerContext.get(pos.id) || {}
+  if (!ctx.positionId) {
+    return { skipped: true, reason: 'no_ctrader_position_id' }
+  }
+
+  const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+  const action = eval_.action
+
+  try {
+    if (action === 'MOVE_SL') {
+      const res = await wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, {
+        positionId: ctx.positionId,
+        stopLoss: eval_.newSL,
+      })
+      if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
+      s.updatePositionSl.run(eval_.newSL, pos.id)
+      return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
+    }
+
+    if (action === 'FULL_EXIT') {
+      const volumeUnits = Math.round((ctx.volumeLots || 0) * CTRADER_UNITS_PER_LOT)
+      if (volumeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
+      const res = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
+        positionId: ctx.positionId,
+        volume: volumeUnits,
+      })
+      const closePrice = res.deal?.executionPrice || res.position?.price || null
+      const cpd = res.deal?.closePositionDetail || {}
+      const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
+      const netPnl = cpd.grossProfit != null
+        ? ((cpd.grossProfit || 0) - Math.abs(cpd.commission || 0) - Math.abs(cpd.swap || 0)) / 100
+        : null
+      if (pos.trade_id) {
+        s.markTradeClosed.run(closePrice, eval_.reason || 'position_manager', grossPnl, netPnl, pos.trade_id)
+      }
+      s.closePosition.run('closed', pos.id)
+      return { closedRemotely: true, summary: res.alreadyClosed ? 'already_closed' : `closed @ ${closePrice ?? '?'}` }
+    }
+
+    if (action === 'PARTIAL_EXIT') {
+      const totalUnits = Math.round((ctx.volumeLots || 0) * CTRADER_UNITS_PER_LOT)
+      const fraction = eval_.exitFraction ?? 0.5
+      const closeUnits = Math.round(totalUnits * fraction)
+      if (totalUnits <= 0 || closeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
+
+      const closeRes = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
+        positionId: ctx.positionId,
+        volume: closeUnits,
+      })
+      if (closeRes.alreadyClosed) {
+        if (pos.trade_id) s.markTradeClosed.run(null, 'already_closed', null, null, pos.trade_id)
+        s.closePosition.run('closed', pos.id)
+        return { closedRemotely: true, summary: 'already_closed' }
+      }
+
+      // Persist the reduced lot count so the next monitor tick knows the
+      // runner size. cTrader returns the remaining position but we track
+      // lots not cTrader units on our side.
+      const remainingUnits = totalUnits - closeUnits
+      const remainingLots = remainingUnits / CTRADER_UNITS_PER_LOT
+      if (pos.trade_id) s.reduceTradeVolume.run(remainingLots, pos.trade_id)
+
+      // Move SL for the runner leg (skip if newSL is null / same as current).
+      if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
+        const amendRes = await wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, {
+          positionId: ctx.positionId,
+          stopLoss: eval_.newSL,
+        })
+        if (!amendRes.alreadyClosed) s.updatePositionSl.run(eval_.newSL, pos.id)
+      }
+      return { summary: `closed ${(fraction * 100).toFixed(0)}% · runner ${remainingLots.toFixed(2)}L` }
+    }
+
+    return { skipped: true, reason: `unhandled_action:${action}` }
+  } catch (err) {
+    return { error: err.message }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,9 +358,38 @@ function prepareStatements(db) {
       WHERE id = ?
     `),
 
+    updatePositionSl: db.prepare(`
+      UPDATE monitored_positions SET current_sl = ? WHERE id = ?
+    `),
+
     closePosition: db.prepare(
       `UPDATE monitored_positions SET status = ? WHERE id = ?`
     ),
+
+    // Broker-side context for a monitored position: pulls the cTrader
+    // position id + current volume (lots) from the trades row linked via
+    // trade_id. Legacy monitored_positions (pre trade_id migration) return
+    // NULL fields and the executor skips the broker call.
+    selectBrokerContext: db.prepare(`
+      SELECT t.ctrader_position_id AS positionId, t.volume AS volumeLots
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.id = ?
+    `),
+
+    markTradeClosed: db.prepare(`
+      UPDATE trades
+      SET status = 'closed', closed_at = datetime('now'),
+          exit_price = COALESCE(?, exit_price),
+          close_reason = ?,
+          gross_pnl = COALESCE(?, gross_pnl),
+          net_pnl = COALESCE(?, net_pnl)
+      WHERE id = ?
+    `),
+
+    reduceTradeVolume: db.prepare(`
+      UPDATE trades SET volume = ? WHERE id = ?
+    `),
 
     latestScanForSymbol: db.prepare(`
       SELECT id FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 1
@@ -572,19 +665,33 @@ async function runLoop(db) {
             pos.id
           )
 
-          // Deterministic rule fired — record recommendation and skip the LLM.
-          // NOTE: cTrader modify / partial-close wiring lives in a follow-up
-          // commit; today we only log + persist the intent so the Workshop
-          // shows exactly what the bot *would* do.
+          // Deterministic rule fired — execute it at the broker (MOVE_SL /
+          // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor
+          // handles "position already closed" races gracefully and returns a
+          // summary string that rides along inside last_check_reasoning so the
+          // Workshop feed shows intent *and* broker outcome on one row.
           if (eval_.action !== 'HOLD') {
+            const outcome = await executeBrokerAction(db, s, pos, eval_)
+            let reasoning = eval_.reason
+            let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
+            if (outcome.error) {
+              reasoning = `${reasoning} | broker_error: ${outcome.error}`
+              log(`PM ${pos.symbol}: ${eval_.action} FAILED — ${outcome.error}`)
+            } else if (outcome.skipped) {
+              reasoning = `${reasoning} | intent_only: ${outcome.reason}`
+              log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
+            } else {
+              reasoning = `${reasoning} | broker: ${outcome.summary}`
+              log(`PM ${pos.symbol}: ${eval_.action} — ${outcome.summary}`)
+              if (outcome.closedRemotely) thesisStatus = 'broken'
+            }
             s.updatePositionCheck.run(
               `PM:${eval_.action}`,
-              eval_.reason,
+              reasoning,
               new Date().toISOString(),
-              eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+              thesisStatus,
               pos.id
             )
-            log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason}`)
             continue
           }
 
