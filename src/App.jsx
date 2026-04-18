@@ -13,6 +13,7 @@ import AgentPage from './pages/Agent.jsx'
 import Workshop from './pages/Workshop.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 import StatusRibbon from './components/StatusRibbon.jsx'
+import { useTheme } from './lib/theme.js'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
 // No green anywhere - blue = up/long/positive, red = down/short/negative.
@@ -43,8 +44,14 @@ function linkClass({ isActive }) {
     : `${base} text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]`
 }
 
+const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'sepia', sepia: 'system' }
+const THEME_ICON = { system: '◐', light: '☀', dark: '☾', sepia: '☕' }
+
 export default function App() {
   useTokenRefresh()
+  const { theme, setTheme } = useTheme()
+  const { pathname } = useLocation()
+  const isWide = pathname === '/agent'
   return (
     <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <ScrollToTop />
@@ -53,6 +60,12 @@ export default function App() {
         <header className="border-b-2 border-[var(--color-accent)]">
           <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
             <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
+            <button
+              type="button"
+              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+              className="w-7 h-7 rounded-[5px] text-[14px] text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)] shrink-0"
+              title={`Theme: ${theme}`}
+            >{THEME_ICON[theme] || '◐'}</button>
             <nav aria-label="Main navigation" className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
               {navLinks.map(l => (
                 <NavLink key={l.to} to={l.to} className={linkClass}>
@@ -73,7 +86,7 @@ export default function App() {
         className="flex-1 min-h-0 overflow-y-auto"
         style={{ overflowAnchor: 'none' }}
       >
-        <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
+        <div style={{ maxWidth: isWide ? 'none' : 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
           <Routes>
             <Route path="/" element={<Navigate to="/agent" replace />} />
             <Route path="/agent" element={<AgentPage />} />
