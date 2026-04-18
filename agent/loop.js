@@ -19,8 +19,11 @@ import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
+const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
+const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 let loopCount = 0
 let consecutiveErrors = 0
+let loopRunning = false               // mutex — prevents concurrent iterations
 
 // ---------------------------------------------------------------------------
 // cTrader auto-trade via WebSocket — places a market order when synthesis
@@ -138,66 +141,63 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
-    // Compute initial_risk = |entry - SL|; needed for R-unit math in position-manager
     const entryP = executionPrice ?? synth.entry ?? null
     const slP = synth.sl ?? null
     const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
-    // Compute absolute time cap from Analyst's time_cap_minutes
     let timeCap = null
     if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
       timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
     }
 
-    // Record trade in DB with parsed label components — fast attribution
-    // queries without re-parsing the raw label string on every read.
+    // Atomic DB write: trade + monitored_position in a single transaction.
+    // If either INSERT fails, neither persists — no orphan rows.
     const parsedLabel = parseLabel(structuredLabel)
-    const tradeInsert = db.prepare(`
-      INSERT INTO trades (
-        symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-        status, ctrader_position_id, analysis_id, strategy, conviction,
-        label_raw, source, label_version, label_strategy, label_conviction,
-        label_session, label_timeframe, label_regime
-      ) VALUES (
-        ?, ?, ?, ?, ?, ?, datetime('now'),
-        'open', ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?
+    const persistTrade = db.transaction(() => {
+      const tradeInsert = db.prepare(`
+        INSERT INTO trades (
+          symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+          status, ctrader_position_id, analysis_id, strategy, conviction,
+          label_raw, source, label_version, label_strategy, label_conviction,
+          label_session, label_timeframe, label_regime
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, datetime('now'),
+          'open', ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?
+        )
+      `).run(
+        symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
+        positionId, null, synth.strategy || null, synth.overall_conviction ?? null,
+        parsedLabel.raw, parsedLabel.source, parsedLabel.version,
+        parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
+        parsedLabel.timeframe, parsedLabel.regime,
       )
-    `).run(
-      symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
-      positionId, null, synth.strategy || null, synth.overall_conviction ?? null,
-      parsedLabel.raw, parsedLabel.source, parsedLabel.version,
-      parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
-      parsedLabel.timeframe, parsedLabel.regime,
-    )
-    const tradeId = tradeInsert.lastInsertRowid
+      const tradeId = tradeInsert.lastInsertRowid
 
-    // Register in monitored_positions — fully populated for position-manager.
-    // Stamp source/label_raw so the monitor SELECT can scope itself to
-    // autopilot-only positions (copilot/manual trades must not be touched
-    // by the autonomous loop). trade_id FKs back to the trades row so the
-    // monitor phase can resolve ctrader_position_id + current volume for
-    // broker AMEND / CLOSE calls.
-    db.prepare(`
-      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(
-      symbol,
-      tradeId,
-      side === 'BUY' ? 'long' : 'short',
-      executionPrice,
-      slP,
-      synth.tp1 ?? null,
-      synth.synthesis || '',
-      initialRisk,
-      synth.invalidation_trigger || null,
-      timeCap,
-      synth.strategy || null,
-      parsedLabel.source,
-      parsedLabel.raw,
-    )
+      db.prepare(`
+        INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      `).run(
+        symbol,
+        tradeId,
+        side === 'BUY' ? 'long' : 'short',
+        executionPrice,
+        slP,
+        synth.tp1 ?? null,
+        synth.synthesis || '',
+        initialRisk,
+        synth.invalidation_trigger || null,
+        timeCap,
+        synth.strategy || null,
+        parsedLabel.source,
+        parsedLabel.raw,
+      )
 
-    log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId}`)
+      return tradeId
+    })
+
+    const tradeId = persistTrade()
+    log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}`)
     return { executionPrice, positionId, side, volume: volLots }
   } catch (err) {
     log(`Auto-trade FAILED for ${symbol}: ${err.message}`)
@@ -404,8 +404,41 @@ function prepareStatements(db) {
 // ---------------------------------------------------------------------------
 
 async function runLoop(db) {
+  // ---- Mutex: prevent overlapping iterations ----
+  if (loopRunning) {
+    log('Loop still running — skipping this tick')
+    setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), LOOP_INTERVAL)
+    return
+  }
+
+  // ---- Circuit breaker: hard stop after too many consecutive failures ----
+  if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+    const tripped = getState(db, 'circuit_breaker_tripped_at')
+    if (!tripped) {
+      setState(db, 'circuit_breaker_tripped_at', new Date().toISOString())
+      log(`CIRCUIT BREAKER TRIPPED — ${consecutiveErrors} consecutive errors. Loop halted.`)
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        try {
+          const { sendMessage } = await import('./services/telegram.js')
+          await sendMessage(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
+        } catch {}
+      }
+    }
+    setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS)
+    return
+  }
+
+  loopRunning = true
   loopCount++
   const start = Date.now()
+
+  // Reset daily error counter at midnight UTC
+  const lastReset = getState(db, 'errors_reset_date')
+  const todayUTC = new Date().toISOString().slice(0, 10)
+  if (lastReset !== todayUTC) {
+    setState(db, 'errors_today', '0')
+    setState(db, 'errors_reset_date', todayUTC)
+  }
 
   try {
     const s = prepareStatements(db)
@@ -413,55 +446,39 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 1. SCAN PHASE — scan all enabled symbols
     // -----------------------------------------------------------------------
-    const watchlistJson = getState(db, 'watchlist_json')
-    const armed = getState(db, 'armed') === 'true'
+    const scanEnabled = getState(db, 'scan_enabled') !== 'false'
+    const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
+    const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-    if (!watchlistJson) {
-      log('No watchlist configured — push one via POST /actions/watchlist')
+    // Autopilot's own symbol universe, falling back to legacy watchlist
+    const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+
+    if (!symbolsJson) {
+      log('No symbols configured — push via POST /actions/symbols')
     } else {
-      let watchlist
-      try { watchlist = JSON.parse(watchlistJson) } catch { watchlist = [] }
-      const allSymbols = (Array.isArray(watchlist) ? watchlist : [])
+      let parsed
+      try { parsed = JSON.parse(symbolsJson) } catch { parsed = [] }
+      const allSymbols = (Array.isArray(parsed) ? parsed : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
 
-      // Market-closed guardrail: when no FX/equity session is active, crypto
-      // (24/7) still scans normally. Non-crypto gets a weekend-watch pass on
-      // any held positions + a pre-open warm-up when the first session
-      // (Sydney, UTC 22:00 Sun) is within 30 minutes. Monitor phase is lifted
-      // out of this block so it always runs on every position regardless.
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
       const tradPositions = openPositions.filter(p => categoriseSymbol(p.symbol) !== 'crypto')
       const nextOpen = nextSessionOpening()
       const marketClosed = activeSessions.length === 0
-      const preOpenWindow = marketClosed && nextOpen && nextOpen.minsUntil <= 30
 
-      // Pre-open warm-up: scan the full watchlist so theses are fresh for the
-      // Sydney bell. Otherwise, when market is closed, scan only 24/7 crypto.
-      const symbols = marketClosed && !preOpenWindow
-        ? allSymbols.filter(w => categoriseSymbol(w.symbol) === 'crypto')
-        : allSymbols
+      // 24/7 scanning — all symbols always. No market-hours filter.
+      const symbols = allSymbols
 
-      if (preOpenWindow) {
-        log(`Pre-open warm-up — ${nextOpen.label} opens in ${nextOpen.minsUntil}m. Running full scan+analyze.`)
-        setState(db, 'last_preopen_at', new Date().toISOString())
-      }
-
-      if (marketClosed && symbols.length === 0 && openPositions.length === 0) {
-        log(`Market closed — no sessions active, no positions open. Next open: ${nextOpen?.label || '?'} in ~${Math.round((nextOpen?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
-        setState(db, 'last_skip_reason', 'market_closed')
-        setState(db, 'last_skip_at', new Date().toISOString())
-      } else if (symbols.length === 0) {
-        if (marketClosed) {
-          log(`Off-hours, no crypto in watchlist — weekend-watch on ${tradPositions.length} position(s)`)
-        } else {
-          log('No enabled symbols in watchlist')
-        }
+      if (allSymbols.length === 0) {
+        log('No enabled symbols configured')
+      } else if (!scanEnabled) {
+        log('Scan disabled — skipping')
       } else {
-        if (marketClosed && !preOpenWindow) {
-          log(`Off-hours — scanning ${symbols.length} crypto symbol(s) only`)
+        if (marketClosed) {
+          log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
 
     // Build context memory for this scan
@@ -522,7 +539,7 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (armed && scanResult.hot.length > 0) {
+    if (analyzeEnabled && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
       for (const sym of hotToAnalyze) {
         try {
@@ -562,7 +579,18 @@ async function runLoop(db) {
           // Auto-trade — only when armed and synthesis recommends it.
           // Iterate all autopilot-enabled accounts so the same signal
           // replicates across every assigned account with per-account sizing.
-          if (armed && synth.auto_trade && synth.entry) {
+          // Send Telegram alert for every analysis regardless of autotrade
+          if (synth.overall_conviction >= 6 && process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
+              await sendMessage(
+                `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
+              )
+            } catch {}
+          }
+
+          if (autotradeEnabled && synth.auto_trade && synth.entry) {
             const apAccounts = getAutopilotAccounts(db)
             for (const acct of apAccounts) {
               const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
@@ -582,7 +610,7 @@ async function runLoop(db) {
       }
     }
 
-      } // end symbols.length > 0 (scan+analyze branch)
+      } // end scanEnabled + symbols (scan+analyze branch)
 
       // ---------------------------------------------------------------------
       // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions
@@ -590,7 +618,7 @@ async function runLoop(db) {
       // which will run the full Analyst instead). Catches weekend catalysts
       // (Fed speak, OPEC, geopolitics) that break thesis before Monday gap.
       // ---------------------------------------------------------------------
-      if (marketClosed && !preOpenWindow && tradPositions.length > 0 && loopCount % 12 === 1) {
+      if (marketClosed && tradPositions.length > 0 && loopCount % 12 === 1) {
         log(`Weekend watch — reviewing ${tradPositions.length} non-crypto position(s)`)
         for (const pos of tradPositions) {
           try {
@@ -725,7 +753,7 @@ async function runLoop(db) {
           log(`Monitor check failed for ${pos.symbol}:`, err.message)
         }
       }
-    } // end watchlistJson
+    } // end symbolsJson
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)
@@ -805,17 +833,36 @@ async function runLoop(db) {
     consecutiveErrors++
     const errCount = parseInt(getState(db, 'errors_today') || '0') + 1
     setState(db, 'errors_today', String(errCount))
+    setState(db, 'last_error', `${new Date().toISOString()} ${err.message}`)
 
-    // Self-healing: back off exponentially up to 15 min after 5 consecutive errors
     if (consecutiveErrors >= 5) {
       const backoff = Math.min(15 * 60_000, LOOP_INTERVAL * consecutiveErrors)
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
+      loopRunning = false
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
       return
     }
   }
 
-  consecutiveErrors = 0 // reset on any success or non-fatal error path
+  consecutiveErrors = 0
+  setState(db, 'circuit_breaker_tripped_at', null)
+
+  // ---- Housekeeping: data retention (once per 100 loops ≈ 8 hours) ----
+  if (loopCount % 100 === 0) {
+    try {
+      const cutoff30d = new Date(Date.now() - 30 * 86400_000).toISOString()
+      const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
+      const d1 = db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d)
+      const d2 = db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d)
+      const d3 = db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d)
+      const d4 = db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events`)
+    } catch (err) {
+      log('Housekeeping error:', err.message)
+    }
+  }
+
+  loopRunning = false
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, LOOP_INTERVAL - elapsed)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)

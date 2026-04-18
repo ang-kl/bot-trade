@@ -34,8 +34,9 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
   const tp1 = Number(tpInput) || 0
   const tp2 = Number(synthesis?.tp2) || null
 
-  const slPips = effectiveEntry && sl ? Math.abs(effectiveEntry - sl) : 0
-  const tp1Pips = effectiveEntry && tp1 ? Math.abs(tp1 - effectiveEntry) : 0
+  const pipSize = symbol?.endsWith('JPY') ? 0.01 : symbol?.startsWith('XAU') ? 0.01 : symbol?.startsWith('XAG') ? 0.001 : symbol?.match(/^(US|NAS|GER|UK|JPN|FRA|SPA|HK|AUS)/) ? 1 : 0.0001
+  const slPips = effectiveEntry && sl ? Math.abs(effectiveEntry - sl) / pipSize : 0
+  const tp1Pips = effectiveEntry && tp1 ? Math.abs(tp1 - effectiveEntry) / pipSize : 0
   const rr = slPips > 0 ? (tp1Pips / slPips).toFixed(1) : '\u2014'
 
   const handleSubmit = async () => {

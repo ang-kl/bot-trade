@@ -183,6 +183,9 @@ const SEED_STATE = {
   last_scan_at: null,
   loop_count: '0',
   armed: 'false',
+  scan_enabled: 'true',
+  analyze_enabled: 'true',
+  autotrade_enabled: 'false',
   watchlist_json: '["EURUSD","GBPUSD","USDJPY","XAUUSD","USTEC","US30"]',
   errors_today: '0',
 };

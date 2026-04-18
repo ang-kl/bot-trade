@@ -224,7 +224,7 @@ export default function Workshop() {
       const saved = localStorage.getItem(ROLE_STORAGE_KEY)
       if (ROLES.includes(saved)) return saved
     } catch {}
-    return agentConfigured('autopilot') ? 'autopilot' : (agentConfigured('copilot') ? 'copilot' : 'autopilot')
+    return ROLES.find(r => agentConfigured(r)) || 'autopilot'
   })
   const setRole = (r) => {
     setRoleState(r)

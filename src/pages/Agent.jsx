@@ -88,12 +88,13 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
   const [error, setError] = useState(null)
   // Per-account tab — defaults to the primary linked account but the user can
   // flip between any connected account (autopilot / copilot / observer).
-  const [selectedAccountId, setSelectedAccountId] = useState(ctrader.linkedAccountId)
+  const fallbackId = ctrader.linkedAccountId || ctrader.accounts?.[0]?.accountId || null
+  const [selectedAccountId, setSelectedAccountId] = useState(fallbackId)
   useEffect(() => {
-    if (!selectedAccountId && ctrader.linkedAccountId) setSelectedAccountId(ctrader.linkedAccountId)
-  }, [ctrader.linkedAccountId, selectedAccountId])
+    if (!selectedAccountId && fallbackId) setSelectedAccountId(fallbackId)
+  }, [fallbackId, selectedAccountId])
 
-  const selected = ctrader.accounts.find(a => a.accountId === selectedAccountId)
+  const selected = ctrader.accounts?.find(a => a.accountId === selectedAccountId)
   const isLive = selected?.isLive ?? false
   const roles = ctrader.accountRoles || {}
   const selectedRole = roles[String(selectedAccountId)] || {}
@@ -116,7 +117,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
     return () => clearInterval(iv)
   }, [refresh])
 
-  if (!ctrader.linkedAccountId) {
+  if (!selectedAccountId || !ctrader.accounts?.length) {
     return (
       <Card>
         <p className="t-label mb-1">Trading Account</p>
@@ -449,7 +450,7 @@ export default function Agent() {
       const saved = localStorage.getItem(ROLE_STORAGE_KEY)
       if (ROLES.includes(saved)) return saved
     } catch {}
-    return agentConfigured('autopilot') ? 'autopilot' : (agentConfigured('copilot') ? 'copilot' : 'autopilot')
+    return ROLES.find(r => agentConfigured(r)) || 'autopilot'
   })
   const setRole = (r) => {
     setRoleState(r)
@@ -491,14 +492,14 @@ export default function Agent() {
     return () => clearInterval(iv)
   }, [refresh])
 
-  const on = config?.armed === true
-  // Only the autopilot service has an "arm" switch. Copilot runs standby-only
-  // (watches user trades) and has no autonomous trading mode, so the Engage
-  // button is hidden when role === 'copilot'.
-  const toggleAutopilot = async () => {
+  const scanOn = config?.scan_enabled !== false
+  const analyzeOn = config?.analyze_enabled !== false
+  const autotradeOn = config?.autotrade_enabled === true
+
+  const toggle = async (endpoint, on) => {
     setBusy(true)
     try {
-      await agentPost('/actions/autopilot', { on: !on }, role)
+      await agentPost(endpoint, { on }, role)
       await refresh()
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
@@ -518,7 +519,7 @@ export default function Agent() {
     if (bp.ctrader_position_id) botById[String(bp.ctrader_position_id)] = bp
   }
 
-  const enabledWatchlist = config?.watchlist?.filter(w => w.enabled !== false) || []
+  const enabledSymbols = (config?.symbols || config?.watchlist || []).filter(w => w.enabled !== false)
 
   if (!agentConfigured('autopilot') && !agentConfigured('copilot')) {
     return (
@@ -531,9 +532,24 @@ export default function Agent() {
     )
   }
 
+  const circuitBreaker = health?.circuitBreaker
+  const resetBreaker = async () => {
+    setBusy(true)
+    try { await agentPost('/actions/reset-breaker', undefined, role); await refresh() }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
   const statusBadge = role === 'copilot'
     ? { tone: 'special', text: 'COPILOT STANDBY' }
-    : { tone: on ? 'up' : 'neutral', text: on ? 'AUTOPILOT ON' : 'AUTOPILOT OFF' }
+    : circuitBreaker
+      ? { tone: 'down', text: 'CIRCUIT BREAKER' }
+      : autotradeOn
+        ? { tone: 'up', text: 'AUTO-TRADE ON' }
+        : analyzeOn
+          ? { tone: 'accent', text: 'ANALYZE ONLY' }
+          : scanOn
+            ? { tone: 'neutral', text: 'SCAN ONLY' }
+            : { tone: 'neutral', text: 'ALL OFF' }
 
   return (
     <section className="space-y-3">
@@ -570,33 +586,74 @@ export default function Agent() {
       <Card>
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <span className={`text-[18px] ${on && role !== 'copilot' ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
-              {on && role !== 'copilot' ? '●' : '○'}
+            <span className={`text-[18px] ${autotradeOn && role !== 'copilot' ? 'animate-pulse text-[var(--color-accent)]' : (scanOn || analyzeOn) && role !== 'copilot' ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
+              {autotradeOn && role !== 'copilot' ? '●' : (scanOn || analyzeOn) ? '◐' : '○'}
             </span>
             <h1 className="t-label text-lg">Trade Window</h1>
             <Badge tone={statusBadge.tone} pill>{statusBadge.text}</Badge>
           </div>
-          <div className="flex gap-2">
-            {role === 'autopilot' && (
-              <Button
-                size="sm"
-                variant={on ? 'ghost' : 'primary'}
-                onClick={toggleAutopilot}
-                disabled={busy}
-              >
-                {on ? 'Pause All' : 'Engage'}
-              </Button>
-            )}
+          <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={killAll} disabled={busy} className="text-[var(--color-down)]">
               Kill Switch
             </Button>
             <Link to="/workshop" className="t-meta text-[var(--color-accent)] underline self-center ml-1">
-              Open Workshop →
+              Workshop →
             </Link>
           </div>
         </div>
 
+        {/* Granular toggles — scan / analyze / auto-trade */}
+        {role === 'autopilot' && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <Button
+              size="sm"
+              variant={scanOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/scan-toggle', !scanOn)}
+              disabled={busy}
+              title="24/7 market scanning"
+            >
+              {scanOn ? '■' : '▶'} Scan
+            </Button>
+            <Button
+              size="sm"
+              variant={analyzeOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/analyze-toggle', !analyzeOn)}
+              disabled={busy}
+              title="Deep analysis on hot symbols + alerts"
+            >
+              {analyzeOn ? '■' : '▶'} Analyze
+            </Button>
+            <Button
+              size="sm"
+              variant={autotradeOn ? 'primary' : 'ghost'}
+              onClick={() => toggle('/actions/autotrade-toggle', !autotradeOn)}
+              disabled={busy}
+              className={autotradeOn ? '!bg-[var(--color-up)] !border-[var(--color-up)] !text-white' : ''}
+              title="Auto-place orders when conviction passes threshold"
+            >
+              {autotradeOn ? '■' : '▶'} Trade
+            </Button>
+          </div>
+        )}
+
         {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
+
+        {circuitBreaker && (
+          <div className="mb-3 px-3 py-2 rounded-[5px] bg-[color-mix(in_srgb,var(--color-down)_15%,transparent)] border border-[var(--color-down)]">
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--color-down)] font-bold">CIRCUIT BREAKER TRIPPED</span>
+              <span className="text-[var(--color-muted)]">·</span>
+              <span className="text-[var(--color-text-sub)]">{fmtAgo(circuitBreaker)}</span>
+              <span className="flex-1" />
+              <Button size="sm" variant="ghost" onClick={resetBreaker} disabled={busy} className="text-[var(--color-accent)]">
+                Reset
+              </Button>
+            </div>
+            {health?.lastError && (
+              <p className="text-[9.5px] text-[var(--color-text-sub)] mt-1 truncate">{health.lastError}</p>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div>
@@ -608,14 +665,42 @@ export default function Agent() {
             <p className="text-[13px] font-bold text-[var(--color-text)]">{fmtAgo(health?.lastScanAt) || '—'}</p>
           </div>
           <div>
-            <p className="t-meta text-[var(--color-muted)]">Watchlist</p>
-            <p className="text-[13px] font-bold text-[var(--color-text)]">{enabledWatchlist.length} symbols</p>
+            <p className="t-meta text-[var(--color-muted)]">Symbols</p>
+            <p className="text-[13px] font-bold text-[var(--color-text)]">{enabledSymbols.length} configured</p>
           </div>
           <div>
             <p className="t-meta text-[var(--color-muted)]">Bot Positions</p>
             <p className="text-[13px] font-bold text-[var(--color-text)]">{botPositions.length} open</p>
           </div>
         </div>
+        {health && (
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-2 text-[9.5px]">
+            <div>
+              <p className="text-[var(--color-muted)]">Loop Time</p>
+              <p className="font-mono text-[var(--color-text)]">{health.lastLoopMs ? `${(health.lastLoopMs / 1000).toFixed(1)}s` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Uptime</p>
+              <p className="font-mono text-[var(--color-text)]">{health.uptime ? `${(health.uptime / 3600).toFixed(1)}h` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Memory</p>
+              <p className="font-mono text-[var(--color-text)]">{health.memoryMB ? `${health.memoryMB}MB` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">DB Size</p>
+              <p className="font-mono text-[var(--color-text)]">{health.dbSizeMB ? `${health.dbSizeMB}MB` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Errors Today</p>
+              <p className={`font-mono ${health.errorsToday > 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>{health.errorsToday ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Open Trades</p>
+              <p className="font-mono text-[var(--color-text)]">{health.openTrades ?? 0}</p>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* cTrader account + positions with bot context */}

@@ -89,6 +89,7 @@ export const INITIAL_STATE = {
     linkedAccountId: null,
     accessToken: '',
     refreshToken: '',
+    tokenExpiresAt: null,
     accounts: [],
     accountRoles: {},
   },
@@ -159,6 +160,7 @@ export function reducer(state, action) {
       const next = { ...state.ctrader }
       if (typeof action.accessToken === 'string') next.accessToken = action.accessToken
       if (typeof action.refreshToken === 'string') next.refreshToken = action.refreshToken
+      if (action.expiresIn != null) next.tokenExpiresAt = Date.now() + Number(action.expiresIn) * 1000
       return { ...state, ctrader: next }
     }
     case 'CTRADER_SET_ACCOUNTS':

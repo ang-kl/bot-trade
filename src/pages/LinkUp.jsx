@@ -51,6 +51,7 @@ export default function LinkUp() {
           type: 'CTRADER_SET_TOKENS',
           accessToken: data.accessToken || '',
           refreshToken: data.refreshToken || '',
+          expiresIn: data.expiresIn || 2592000,
         })
         setStatus('done')
       } catch (e) {

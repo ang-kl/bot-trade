@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
+import useTokenRefresh from './lib/use-token-refresh.js'
 import Feed from './pages/Feed.jsx'
 import Alert from './pages/Alert.jsx'
 import Settings from './pages/Settings.jsx'
@@ -43,6 +44,7 @@ function linkClass({ isActive }) {
 }
 
 export default function App() {
+  useTokenRefresh()
   return (
     <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <ScrollToTop />

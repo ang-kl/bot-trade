@@ -33,14 +33,14 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/scan', async (req, res) => {
     try {
-      const watchlistJson = getState(db, 'watchlist_json')
-      if (!watchlistJson) {
-        return res.status(400).json({ error: 'No watchlist configured' })
+      const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+      if (!symbolsJson) {
+        return res.status(400).json({ error: 'No symbols configured — push via POST /actions/symbols' })
       }
 
       let watchlist
-      try { watchlist = JSON.parse(watchlistJson) } catch {
-        return res.status(500).json({ error: 'Watchlist data corrupted' })
+      try { watchlist = JSON.parse(symbolsJson) } catch {
+        return res.status(500).json({ error: 'Symbol data corrupted' })
       }
       const symbols = (Array.isArray(watchlist) ? watchlist : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
@@ -145,21 +145,56 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/arm — enable auto-trading
+  // Granular autopilot toggles — scan / analyze / autotrade
+  // Each is independent. Scan + analyze default ON, autotrade defaults OFF.
   // -----------------------------------------------------------------------
-  router.post('/arm', (_req, res) => {
-    setState(db, 'armed', 'true')
-    console.log('[actions] Armed — auto-analysis enabled')
-    res.json({ ok: true, armed: true })
+  router.post('/scan-toggle', (req, res) => {
+    const on = req.body?.on !== false
+    setState(db, 'scan_enabled', on ? 'true' : 'false')
+    console.log(`[actions] Scan ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, scan_enabled: on })
+  })
+
+  router.post('/analyze-toggle', (req, res) => {
+    const on = req.body?.on !== false
+    setState(db, 'analyze_enabled', on ? 'true' : 'false')
+    console.log(`[actions] Analyze ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, analyze_enabled: on })
+  })
+
+  router.post('/autotrade-toggle', (req, res) => {
+    const on = req.body?.on === true
+    setState(db, 'autotrade_enabled', on ? 'true' : 'false')
+    console.log(`[actions] Auto-trade ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, autotrade_enabled: on })
+  })
+
+  // Backward compat: /actions/autopilot toggles autotrade only
+  router.post('/autopilot', (req, res) => {
+    const on = req.body?.on === true
+    setState(db, 'autotrade_enabled', on ? 'true' : 'false')
+    console.log(`[actions] Auto-trade (via /autopilot) ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, autotrade_enabled: on })
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/disarm — disable auto-trading
+  // POST /actions/arm — legacy: enable all three toggles
+  // -----------------------------------------------------------------------
+  router.post('/arm', (_req, res) => {
+    setState(db, 'scan_enabled', 'true')
+    setState(db, 'analyze_enabled', 'true')
+    setState(db, 'autotrade_enabled', 'true')
+    console.log('[actions] Armed — all toggles enabled')
+    res.json({ ok: true, scan_enabled: true, analyze_enabled: true, autotrade_enabled: true })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/disarm — legacy: disable autotrade only (scan+analyze stay on)
   // -----------------------------------------------------------------------
   router.post('/disarm', (_req, res) => {
-    setState(db, 'armed', 'false')
-    console.log('[actions] Disarmed — auto-analysis disabled')
-    res.json({ ok: true, armed: false })
+    setState(db, 'autotrade_enabled', 'false')
+    console.log('[actions] Disarmed — auto-trade disabled (scan+analyze still on)')
+    res.json({ ok: true, autotrade_enabled: false })
   })
 
   // -----------------------------------------------------------------------
@@ -188,9 +223,11 @@ export default function actionsRouter(db) {
   // or via Feed close flow. This just stops the bot from acting further.
   // -----------------------------------------------------------------------
   router.post('/kill-all', (_req, res) => {
-    setState(db, 'armed', 'false')
+    setState(db, 'scan_enabled', 'false')
+    setState(db, 'analyze_enabled', 'false')
+    setState(db, 'autotrade_enabled', 'false')
     const r = db.prepare("UPDATE monitored_positions SET paused = 1 WHERE status = 'active'").run()
-    console.log(`[actions] KILL-ALL — autopilot off, ${r.changes} positions paused`)
+    console.log(`[actions] KILL-ALL — all toggles off, ${r.changes} positions paused`)
     res.json({ ok: true, paused: r.changes })
   })
 
@@ -265,6 +302,36 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/symbols — autopilot's own symbol universe
+  // Separate from copilot watchlist. These are the symbols the bot scans
+  // and trades autonomously. Each can have maxVolume + autoTradeThreshold.
+  // -----------------------------------------------------------------------
+  router.post('/symbols', (req, res) => {
+    try {
+      const { symbols } = req.body || {}
+      if (!symbols || !Array.isArray(symbols)) {
+        return res.status(400).json({ error: 'Missing required field: symbols (array)' })
+      }
+      const normalized = symbols.map(s => {
+        if (typeof s === 'string') {
+          return { symbol: s.toUpperCase().trim(), enabled: true }
+        }
+        return {
+          ...s,
+          symbol: (s.symbol || '').toUpperCase().trim(),
+          enabled: s.enabled !== false,
+        }
+      })
+      setState(db, 'autopilot_symbols_json', JSON.stringify(normalized))
+      console.log('[actions] Autopilot symbols updated:', normalized.map(w => w.symbol).join(', '))
+      res.json({ ok: true, symbols: normalized })
+    } catch (err) {
+      console.error('[actions/symbols] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/risk-config — update Risk Manager limits
   // Body: partial risk config, merged over current. Unknown keys are dropped
   // to prevent pollution. Pass empty {} to reset to defaults.
@@ -329,6 +396,16 @@ export default function actionsRouter(db) {
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/reset-breaker — reset the circuit breaker after manual review
+  // -----------------------------------------------------------------------
+  router.post('/reset-breaker', (_req, res) => {
+    setState(db, 'circuit_breaker_tripped_at', null)
+    setState(db, 'errors_today', '0')
+    console.log('[actions] Circuit breaker reset')
+    res.json({ ok: true, message: 'Circuit breaker reset — loop will resume on next tick' })
   })
 
   // -----------------------------------------------------------------------
