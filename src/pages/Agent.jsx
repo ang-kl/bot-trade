@@ -1245,6 +1245,8 @@ function PlannedOrders({ activity, role }) {
     return () => clearInterval(iv)
   }, [role])
 
+  const priceCache = readPriceCache()
+
   const bySymbol = {}
   for (const a of fullAnalyses) {
     if (!bySymbol[a.symbol]) bySymbol[a.symbol] = []
@@ -1258,21 +1260,24 @@ function PlannedOrders({ activity, role }) {
 
   if (symbols.length === 0) return null
 
+  const roleLabel = role === 'copilot' ? 'Copilot' : 'Autopilot'
   const activeCount = symbols.filter(s => s.latest.consensus_bias !== 'skip' && s.latest.consensus_bias !== 'neutral').length
 
   return (
-    <PanelFrame id="planned-orders" title="Agent Planned Orders" defaultSize="L" badge={
+    <PanelFrame id={`planned-orders-${role}`} title={`${roleLabel} Planned Orders`} defaultSize="L" badge={
       <span className="flex items-center gap-1">
-        <Badge tone="accent" className="text-[8px] px-1">{activeCount} active</Badge>
+        <Badge tone={role === 'copilot' ? 'special' : 'accent'} className="text-[8px] px-1">{activeCount} active</Badge>
         <Badge tone="neutral" className="text-[8px] px-1">{symbols.length} total</Badge>
       </span>
     }>
       {symbols.map(({ symbol, rows, latest }) => {
         const minionIds = dispatchMinions(symbol)
         const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
-        const tradeable = !isTradingNow(symbol)
-        const ms = tradeable ? msUntilOpen(symbol) : 0
+        const marketOpen = isTradingNow(symbol)
+        const ms = !marketOpen ? msUntilOpen(symbol) : 0
         const isActive = latest.consensus_bias !== 'skip' && latest.consensus_bias !== 'neutral'
+        const mm = priceCache[symbol] || {}
+        const currentPrice = mm.currentPrice ?? mm.price ?? mm.vwap ?? null
 
         return (
           <div key={symbol} className="mb-3 last:mb-0 rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
@@ -1283,8 +1288,13 @@ function PlannedOrders({ activity, role }) {
               </Badge>
               <span className="font-mono text-[10px] text-[var(--color-text)]">{latest.overall_conviction}/10</span>
               {latest.auto_trade ? <Badge tone="up" className="text-[8px] px-1">AUTO</Badge> : null}
-              {tradeable && ms > 0 && <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>}
-              {!tradeable && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
+              {!marketOpen && ms > 0 && <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>}
+              {marketOpen && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
+              {currentPrice != null && (
+                <span className="font-mono text-[10px] text-[var(--color-text)]">
+                  @ {fmtMoney(currentPrice, currentPrice > 100 ? 2 : currentPrice > 10 ? 4 : 5)}
+                </span>
+              )}
               <span className="ml-auto text-[9px] text-[var(--color-muted)] truncate max-w-[250px]">Desk: {deskNames}</span>
             </div>
             <div className="overflow-x-auto">
@@ -1297,6 +1307,7 @@ function PlannedOrders({ activity, role }) {
                     <th className="px-2 py-1 font-medium">Bias</th>
                     <th className="px-2 py-1 font-medium text-right">Conv</th>
                     <th className="px-2 py-1 font-medium text-right">Entry</th>
+                    <th className="px-2 py-1 font-medium text-right">Current</th>
                     <th className="px-2 py-1 font-medium text-right">SL</th>
                     <th className="px-2 py-1 font-medium text-right">TP</th>
                     <th className="px-2 py-1 font-medium">TTL</th>
@@ -1308,7 +1319,10 @@ function PlannedOrders({ activity, role }) {
                     const serial = rows.length - i
                     const prevBias = rows[i + 1]?.consensus_bias
                     const biasChanged = prevBias && prevBias !== a.consensus_bias
-                    const status = i === 0 ? '1st' : biasChanged ? `Rev #${serial} (was ${prevBias})` : `#${serial}`
+                    const status = i === rows.length - 1 ? '1st' : biasChanged ? `Rev #${serial} (was ${prevBias})` : `#${serial}`
+                    const priceFmt = (p) => p ? fmtMoney(p, p > 100 ? 2 : 5) : '—'
+                    const slPips = pipDist(a.entry_price, a.sl_price, symbol)
+                    const tpPips = pipDist(a.entry_price, a.tp1_price, symbol)
 
                     return (
                       <tr key={a.id} className={i === 0 ? 'bg-[var(--color-surface)]' : ''}>
@@ -1325,9 +1339,16 @@ function PlannedOrders({ activity, role }) {
                           {String(a.consensus_bias || '—').toUpperCase()}
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{a.overall_conviction}/10</td>
-                        <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{a.entry_price ? fmtMoney(a.entry_price, a.entry_price > 100 ? 2 : 5) : '—'}</td>
-                        <td className="px-2 py-1 text-right font-mono text-[var(--color-down)]">{a.sl_price ? fmtMoney(a.sl_price, a.sl_price > 100 ? 2 : 5) : '—'}</td>
-                        <td className="px-2 py-1 text-right font-mono text-[var(--color-up)]">{a.tp1_price ? fmtMoney(a.tp1_price, a.tp1_price > 100 ? 2 : 5) : '—'}</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{priceFmt(a.entry_price)}</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{priceFmt(currentPrice)}</td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-down)]">
+                          {priceFmt(a.sl_price)}
+                          {slPips != null && <span className="opacity-60 ml-0.5">({Math.abs(slPips).toFixed(0)}p)</span>}
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-[var(--color-up)]">
+                          {priceFmt(a.tp1_price)}
+                          {tpPips != null && <span className="opacity-60 ml-0.5">({Math.abs(tpPips).toFixed(0)}p)</span>}
+                        </td>
                         <td className="px-2 py-1 font-mono text-[var(--color-muted)]">{a.time_cap_minutes ? `${a.time_cap_minutes}m` : '—'}</td>
                         <td className="px-2 py-1 text-[var(--color-text)] truncate max-w-[140px]" title={a.strategy || ''}>{a.strategy || '—'}</td>
                       </tr>
@@ -1458,6 +1479,127 @@ function TradeResults({ role }) {
                 <td className="py-1 text-right font-mono text-[var(--color-text)]">{r.profit_factor != null ? r.profit_factor.toFixed(2) : '—'}</td>
               </tr>
             ))}
+          </tbody>
+        </table>
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pending Orders at cTrader — dedicated card for limit/stop orders
+// ---------------------------------------------------------------------------
+
+function PendingOrders({ ctrader }) {
+  const [orders, setOrders] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [fetched, setFetched] = useState(false)
+
+  const accountId = ctrader.linkedAccountId || ctrader.accounts?.[0]?.accountId || null
+  const selected = ctrader.accounts?.find(a => a.accountId === accountId)
+  const isLive = selected?.isLive ?? false
+
+  const load = useCallback(async () => {
+    if (!accountId || !ctrader.accessToken) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/ctrader', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'open-positions', accessToken: ctrader.accessToken, accountId, isLive }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setOrders(data?.orders || [])
+      }
+    } catch {}
+    setLoading(false)
+    setFetched(true)
+  }, [ctrader.accessToken, accountId, isLive])
+
+  useEffect(() => { if (!fetched) load() }, [fetched, load])
+
+  if (!accountId || !ctrader.accounts?.length) return null
+  if (!orders || orders.length === 0) {
+    if (fetched) return (
+      <PanelFrame id="pending-orders" title="cTrader Pending Orders" defaultSize="M" badge={
+        <Badge tone="neutral" className="text-[8px] px-1">0</Badge>
+      }>
+        <p className="t-sub text-[var(--color-muted)] py-2 text-center">No pending orders at cTrader.</p>
+      </PanelFrame>
+    )
+    return null
+  }
+
+  return (
+    <PanelFrame id="pending-orders" title="cTrader Pending Orders" defaultSize="L" badge={
+      <span className="flex items-center gap-1">
+        <Badge tone="accent" className="text-[8px] px-1">{orders.length} order{orders.length !== 1 ? 's' : ''}</Badge>
+        <Badge tone={isLive ? 'down' : 'accent'} className="text-[8px] px-1">{isLive ? 'LIVE' : 'DEMO'}</Badge>
+        <button type="button" onClick={load} disabled={loading} className="text-[9px] text-[var(--color-accent)] hover:underline ml-1">
+          {loading ? '…' : '↻'}
+        </button>
+      </span>
+    }>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[9.5px]">
+          <thead>
+            <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
+              <th className="px-2 py-1 font-medium">Symbol</th>
+              <th className="px-2 py-1 font-medium">Side</th>
+              <th className="px-2 py-1 font-medium">Type</th>
+              <th className="px-2 py-1 font-medium text-right">Lots</th>
+              <th className="px-2 py-1 font-medium text-right">Trigger</th>
+              <th className="px-2 py-1 font-medium text-right">SL</th>
+              <th className="px-2 py-1 font-medium text-right">TP</th>
+              <th className="px-2 py-1 font-medium">Source</th>
+              <th className="px-2 py-1 font-medium">Expires</th>
+              <th className="px-2 py-1 font-medium">Created</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--color-border)]">
+            {orders.map((o, i) => {
+              const sym = o.symbolName || `#${o.symbolId}`
+              const volLots = o.volume != null ? o.volume / 10000 : null
+              const priceDigits = sym.endsWith('JPY') ? 3 : sym.startsWith('XAU') ? 2 : 5
+              const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
+              const typeRaw = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
+              const parsedLabel = o.label ? parseLabel(o.label) : null
+              const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
+              const slPips = pipDist(triggerPrice, o.stopLoss, sym)
+              const tpPips = pipDist(triggerPrice, o.takeProfit, sym)
+
+              return (
+                <tr key={o.orderId || i}>
+                  <td className="px-2 py-1 font-mono font-bold text-[var(--color-text)]">{sym}</td>
+                  <td className={`px-2 py-1 font-semibold ${o.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    {o.side === 'BUY' ? '▲ BUY' : '▼ SELL'}
+                  </td>
+                  <td className="px-2 py-1">
+                    <Badge tone={typeRaw.includes('STOP') ? 'warning' : 'accent'} className="text-[8px] px-1">{typeRaw}</Badge>
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{volLots != null ? volLots.toFixed(2) : '—'}</td>
+                  <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}</td>
+                  <td className="px-2 py-1 text-right font-mono text-[var(--color-down)]">
+                    {o.stopLoss != null ? o.stopLoss.toFixed(priceDigits) : '—'}
+                    {slPips != null && <span className="opacity-60 ml-0.5">({Math.abs(slPips).toFixed(0)}p)</span>}
+                  </td>
+                  <td className="px-2 py-1 text-right font-mono text-[var(--color-up)]">
+                    {o.takeProfit != null ? o.takeProfit.toFixed(priceDigits) : '—'}
+                    {tpPips != null && <span className="opacity-60 ml-0.5">({Math.abs(tpPips).toFixed(0)}p)</span>}
+                  </td>
+                  <td className="px-2 py-1">
+                    {sourceBadge ? (
+                      <Badge tone={sourceBadge.tone} className="text-[8px] px-1">{sourceBadge.text}</Badge>
+                    ) : (
+                      <span className="text-[var(--color-muted)]">{parsedLabel?.source || '—'}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1 text-[var(--color-muted)] whitespace-nowrap">{o.expirationTimestamp ? fmtAgo(o.expirationTimestamp) : '—'}</td>
+                  <td className="px-2 py-1 text-[var(--color-muted)] whitespace-nowrap">{o.utcLastUpdateTimestamp ? fmtAgo(o.utcLastUpdateTimestamp) : '—'}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -1917,7 +2059,11 @@ export default function Agent() {
       <MonitorAgent role={role} />
 
       {/* Planned Orders — analysis revision trail per symbol */}
-      <PlannedOrders activity={activity} role={role} />
+      <PlannedOrders activity={activity} role="autopilot" />
+      {agentConfigured('copilot') && <PlannedOrders activity={activity} role="copilot" />}
+
+      {/* cTrader Pending Orders — limit/stop orders at broker */}
+      <PendingOrders ctrader={state.ctrader} />
 
       {/* Two-column grid: failed trades + trade results */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
