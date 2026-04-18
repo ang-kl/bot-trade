@@ -8,6 +8,7 @@ import { runScan } from './services/scanner.js'
 import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
+import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
@@ -242,29 +243,41 @@ async function runLoop(db) {
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
 
-      // Market-closed guardrail: when no FX/equity session is active, scan only
-      // 24/7 instruments (crypto). Skip Scan+Analyze entirely if nothing to scan
-      // and no positions are open. Monitor phase still runs so crypto positions
-      // keep getting tick checks.
+      // Market-closed guardrail: when no FX/equity session is active, crypto
+      // (24/7) still scans normally. Non-crypto gets a weekend-watch pass on
+      // any held positions + a pre-open warm-up when the first session
+      // (Sydney, UTC 22:00 Sun) is within 30 minutes. Monitor phase is lifted
+      // out of this block so it always runs on every position regardless.
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
-      const symbols = activeSessions.length === 0
+      const tradPositions = openPositions.filter(p => categoriseSymbol(p.symbol) !== 'crypto')
+      const nextOpen = nextSessionOpening()
+      const marketClosed = activeSessions.length === 0
+      const preOpenWindow = marketClosed && nextOpen && nextOpen.minsUntil <= 30
+
+      // Pre-open warm-up: scan the full watchlist so theses are fresh for the
+      // Sydney bell. Otherwise, when market is closed, scan only 24/7 crypto.
+      const symbols = marketClosed && !preOpenWindow
         ? allSymbols.filter(w => categoriseSymbol(w.symbol) === 'crypto')
         : allSymbols
 
-      if (activeSessions.length === 0 && symbols.length === 0 && openPositions.length === 0) {
-        const next = nextSessionOpening()
-        log(`Market closed — no sessions active, no positions open. Next open: ${next?.label || '?'} in ~${Math.round((next?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
+      if (preOpenWindow) {
+        log(`Pre-open warm-up — ${nextOpen.label} opens in ${nextOpen.minsUntil}m. Running full scan+analyze.`)
+        setState(db, 'last_preopen_at', new Date().toISOString())
+      }
+
+      if (marketClosed && symbols.length === 0 && openPositions.length === 0) {
+        log(`Market closed — no sessions active, no positions open. Next open: ${nextOpen?.label || '?'} in ~${Math.round((nextOpen?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
         setState(db, 'last_skip_reason', 'market_closed')
         setState(db, 'last_skip_at', new Date().toISOString())
       } else if (symbols.length === 0) {
-        if (activeSessions.length === 0) {
-          log(`Off-hours, no crypto in watchlist — monitoring ${openPositions.length} open position(s) only`)
+        if (marketClosed) {
+          log(`Off-hours, no crypto in watchlist — weekend-watch on ${tradPositions.length} position(s)`)
         } else {
           log('No enabled symbols in watchlist')
         }
       } else {
-        if (activeSessions.length === 0) {
+        if (marketClosed && !preOpenWindow) {
           log(`Off-hours — scanning ${symbols.length} crypto symbol(s) only`)
         }
 
@@ -384,7 +397,43 @@ async function runLoop(db) {
       } // end symbols.length > 0 (scan+analyze branch)
 
       // ---------------------------------------------------------------------
-      // 3. MONITOR PHASE — always runs when positions are open, even when
+      // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions
+      // when market is closed (and we're not already in pre-open warm-up,
+      // which will run the full Analyst instead). Catches weekend catalysts
+      // (Fed speak, OPEC, geopolitics) that break thesis before Monday gap.
+      // ---------------------------------------------------------------------
+      if (marketClosed && !preOpenWindow && tradPositions.length > 0 && loopCount % 12 === 1) {
+        log(`Weekend watch — reviewing ${tradPositions.length} non-crypto position(s)`)
+        for (const pos of tradPositions) {
+          try {
+            const check = await runWeekendPositionCheck(client, pos)
+            s.updatePositionCheck.run(
+              `WEEKEND:${check.action}`,
+              check.reasoning,
+              new Date().toISOString(),
+              check.thesis_status,
+              pos.id
+            )
+            log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action}`)
+
+            // Alert user if thesis broke or gap risk is high
+            if ((check.thesis_status === 'broken' || check.gap_risk === 'high') && process.env.TELEGRAM_BOT_TOKEN) {
+              try {
+                const { sendMessage } = await import('./services/telegram.js')
+                const emoji = check.thesis_status === 'broken' ? '⚠️' : '🌊'
+                await sendMessage(
+                  `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}`
+                )
+              } catch {}
+            }
+          } catch (err) {
+            log(`Weekend check failed for ${pos.symbol}:`, err.message)
+          }
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // 4. MONITOR PHASE — always runs when positions are open, even when
       // scan+analyze was skipped (market closed, etc). Crypto positions and
       // stale FX positions still need tick checks.
       // ---------------------------------------------------------------------
