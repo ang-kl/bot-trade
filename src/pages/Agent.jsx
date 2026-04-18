@@ -12,6 +12,8 @@ import { useStrategy } from '../lib/strategy-store.js'
 import { agentGet, agentPost, agentConfigured, ROLES } from '../lib/agent-api.js'
 import { fmtAgo } from '../lib/time.js'
 import { parseLabel } from '../../agent/lib/trade-labels.js'
+import { dispatch as dispatchMinions, MINIONS } from '../../agent/lib/minions.js'
+import { isTradingNow, msUntilOpen, fmtDuration } from '../lib/trading-hours.js'
 
 // Map parsed label source → badge tone + display label. Unknown / null
 // source falls through and the row just shows the raw label string.
@@ -212,176 +214,222 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
         </div>
       )}
 
-      {positions?.orders?.length > 0 && (
-        <div className="mb-3">
-          <p className="t-meta text-[var(--color-muted)] mb-1">Pending Orders</p>
-          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
-            {positions.orders.map((o, i) => {
-              const sym = o.symbolName || `#${o.symbolId}`
-              const volLots = o.volume != null ? o.volume / 10000 : null
-              const isGold = (o.symbolName || '').startsWith('XAU')
-              const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
-              const priceDigits = (o.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
-              const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
-              const typeLabel = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
-              const parsedLabel = o.label ? parseLabel(o.label) : null
-              const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
-              const slPips = pipDist(triggerPrice, o.stopLoss, o.symbolName)
-              const tpPips = pipDist(triggerPrice, o.takeProfit, o.symbolName)
+      {positions?.orders?.length > 0 && (() => {
+        const oGroups = { autopilot: [], copilot: [], manual: [] }
+        for (const o of positions.orders) {
+          const parsed = o.label ? parseLabel(o.label) : null
+          const src = parsed?.source || 'manual'
+          ;(oGroups[src] || oGroups.manual).push(o)
+        }
+        const ORDER_GROUP_META = {
+          autopilot: { label: 'Orders (Auto-Trade)', tone: 'info' },
+          copilot:   { label: 'Orders (Copilot)',    tone: 'special' },
+          manual:    { label: 'Orders (Manual)',      tone: 'neutral' },
+        }
+        return (
+          <div className="space-y-3 mb-3">
+            {['autopilot', 'copilot', 'manual'].map(src => {
+              const items = oGroups[src]
+              if (!items || items.length === 0) return null
+              const meta = ORDER_GROUP_META[src]
               return (
-                <div key={o.orderId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <span className={`font-bold w-[12px] ${o.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                      {o.side === 'BUY' ? '▲' : '▼'}
-                    </span>
-                    <span className="font-bold text-[var(--color-text)]">{sym}</span>
-                    <Badge tone="neutral" className="text-[8px] px-1">{typeLabel}</Badge>
-                    {sourceBadge && (
-                      <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
-                        {sourceBadge.text}
-                      </Badge>
-                    )}
-                    <span className="text-[var(--color-muted)]">
-                      {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
-                    </span>
-                    <span className="text-[var(--color-muted)]">
-                      @ {triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}
-                    </span>
-                    <span className="flex-1" />
-                    <span className="text-[9.5px] text-[var(--color-muted)]">
-                      {o.utcLastUpdateTimestamp ? fmtAgo(o.utcLastUpdateTimestamp) : ''}
-                    </span>
+                <div key={src}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <p className="t-meta text-[var(--color-muted)]">{meta.label}</p>
+                    <Badge tone={meta.tone} className="text-[8px] px-1">{items.length}</Badge>
                   </div>
-                  <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
-                    {o.stopLoss != null && (
-                      <span>
-                        <span className="text-[var(--color-down)]">SL</span> {o.stopLoss.toFixed(priceDigits)}
-                        {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
-                      </span>
-                    )}
-                    {o.takeProfit != null && (
-                      <span>
-                        <span className="text-[var(--color-up)]">TP</span> {o.takeProfit.toFixed(priceDigits)}
-                        {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
-                      </span>
-                    )}
-                    {o.expirationTimestamp && <span>expires {fmtAgo(o.expirationTimestamp)}</span>}
-                    {parsedLabel?.strategy && (
-                      <span className="uppercase tracking-wide">
-                        {parsedLabel.strategy}
-                        {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
-                        {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
-                      </span>
-                    )}
-                    {o.label && !sourceBadge && (
-                      <span className="italic truncate max-w-[80px]" title={o.label}>{o.label}</span>
-                    )}
+                  <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                    {items.map((o, i) => {
+                      const sym = o.symbolName || `#${o.symbolId}`
+                      const volLots = o.volume != null ? o.volume / 10000 : null
+                      const isGold = (o.symbolName || '').startsWith('XAU')
+                      const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
+                      const priceDigits = (o.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
+                      const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
+                      const typeLabel = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
+                      const parsedLabel = o.label ? parseLabel(o.label) : null
+                      const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
+                      const slPips = pipDist(triggerPrice, o.stopLoss, o.symbolName)
+                      const tpPips = pipDist(triggerPrice, o.takeProfit, o.symbolName)
+                      return (
+                        <div key={o.orderId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className={`font-bold w-[12px] ${o.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                              {o.side === 'BUY' ? '▲' : '▼'}
+                            </span>
+                            <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                            <Badge tone="neutral" className="text-[8px] px-1">{typeLabel}</Badge>
+                            {sourceBadge && (
+                              <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                                {sourceBadge.text}
+                              </Badge>
+                            )}
+                            <span className="text-[var(--color-muted)]">
+                              {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
+                            </span>
+                            <span className="text-[var(--color-muted)]">
+                              @ {triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}
+                            </span>
+                            <span className="flex-1" />
+                            <span className="text-[9.5px] text-[var(--color-muted)]">
+                              {o.utcLastUpdateTimestamp ? fmtAgo(o.utcLastUpdateTimestamp) : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                            {o.stopLoss != null && (
+                              <span>
+                                <span className="text-[var(--color-down)]">SL</span> {o.stopLoss.toFixed(priceDigits)}
+                                {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
+                              </span>
+                            )}
+                            {o.takeProfit != null && (
+                              <span>
+                                <span className="text-[var(--color-up)]">TP</span> {o.takeProfit.toFixed(priceDigits)}
+                                {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
+                              </span>
+                            )}
+                            {o.expirationTimestamp && <span>expires {fmtAgo(o.expirationTimestamp)}</span>}
+                            {parsedLabel?.strategy && (
+                              <span className="uppercase tracking-wide">
+                                {parsedLabel.strategy}
+                                {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
+                                {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
+                              </span>
+                            )}
+                            {o.label && !sourceBadge && (
+                              <span className="italic truncate max-w-[80px]" title={o.label}>{o.label}</span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )
             })}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {positions?.positions?.length > 0 && (() => {
         const priceCache = readPriceCache()
+        // Group positions by source from label parsing
+        const groups = { autopilot: [], copilot: [], manual: [] }
+        for (const p of positions.positions) {
+          const parsed = p.label ? parseLabel(p.label) : null
+          const src = parsed?.source || 'manual'
+          ;(groups[src] || groups.manual).push(p)
+        }
+        const GROUP_META = {
+          autopilot: { label: 'Autopilot Positions', tone: 'info', icon: '●' },
+          copilot:   { label: 'Copilot Positions',   tone: 'special', icon: '◐' },
+          manual:    { label: 'Manual / External',    tone: 'neutral', icon: '○' },
+        }
         return (
-          <div>
-            <p className="t-meta text-[var(--color-muted)] mb-1">Open Positions</p>
-            <div className="space-y-1.5 max-h-[320px] overflow-y-auto">
-              {positions.positions.map((p, i) => {
-                const sym = p.symbolName || `#${p.symbolId}`
-                const volLots = p.volume != null ? p.volume / 10000 : null
-                const isGold = (p.symbolName || '').startsWith('XAU')
-                const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
-                const priceDigits = (p.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
-                const pnl = computePnl(p, priceCache)
-                const slPips = pipDist(p.openPrice, p.stopLoss, p.symbolName)
-                const tpPips = pipDist(p.openPrice, p.takeProfit, p.symbolName)
-                const fees = (p.swap || 0) + (p.commission || 0)
-                // Decode the structured cTrader label so we can show a
-                // provenance badge. Legacy / unstructured labels fall back
-                // to the raw string display.
-                const parsedLabel = p.label ? parseLabel(p.label) : null
-                const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
-                // Match this cTrader position to a bot-monitored position (by ctrader_position_id).
-                const botPos = botPositionsById[String(p.positionId)]
-                const paused = botPos?.paused === 1
-                const lastCheck = botPos?.last_check_action
-                const lastCheckAt = botPos?.last_check_at
-                return (
-                  <div key={p.positionId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
-                    <div className="flex items-center gap-2 text-[11px]">
-                      <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                        {p.side === 'BUY' ? '▲' : '▼'}
-                      </span>
-                      <span className="font-bold text-[var(--color-text)]">{sym}</span>
-                      {sourceBadge && (
-                        <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
-                          {sourceBadge.text}
-                        </Badge>
-                      )}
-                      <span className="text-[var(--color-muted)]">
-                        {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
-                      </span>
-                      <span className="text-[var(--color-muted)]">
-                        @ {p.openPrice != null ? p.openPrice.toFixed(priceDigits) : '—'}
-                      </span>
-                      <span className="flex-1" />
-                      {pnl != null && (
-                        <span className={`font-mono font-semibold ${pnl > 0 ? 'text-[var(--color-up)]' : pnl < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
-                          {pnl >= 0 ? '+' : ''}{fmtMoney(pnl)}
-                          <span className="text-[8px] text-[var(--color-muted)] ml-0.5">est</span>
-                        </span>
-                      )}
-                      {botPos && (paused
-                        ? <Button size="sm" variant="ghost" onClick={() => onUnpause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">resume</Button>
-                        : <Button size="sm" variant="ghost" onClick={() => onPause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">pause</Button>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
-                      {p.stopLoss != null && (
-                        <span>
-                          <span className="text-[var(--color-down)]">SL</span> {p.stopLoss.toFixed(priceDigits)}
-                          {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
-                        </span>
-                      )}
-                      {p.takeProfit != null && (
-                        <span>
-                          <span className="text-[var(--color-up)]">TP</span> {p.takeProfit.toFixed(priceDigits)}
-                          {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
-                        </span>
-                      )}
-                      {p.usedMargin != null && <span>margin {fmtMoney(p.usedMargin)}</span>}
-                      {p.openTimestamp && <span>opened {fmtAgo(p.openTimestamp)}</span>}
-                      {fees !== 0 && <span>fees {fmtMoney(fees)}</span>}
-                      {parsedLabel?.strategy && (
-                        <span className="uppercase tracking-wide">
-                          {parsedLabel.strategy}
-                          {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
-                          {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
-                        </span>
-                      )}
-                      {p.label && !sourceBadge && (
-                        <span className="italic truncate max-w-[80px]" title={p.label}>{p.label}</span>
-                      )}
-                    </div>
-                    {botPos && (
-                      <div className="flex items-center gap-2 text-[9.5px] mt-0.5">
-                        {paused && <Badge tone="warning" className="text-[8px] px-1">PAUSED</Badge>}
-                        {lastCheck && (
-                          <span className="text-[var(--color-text-sub)]">
-                            <span className="text-[var(--color-muted)]">Monitor:</span> {lastCheck}
-                            {lastCheckAt && <span className="text-[var(--color-muted)]"> · {fmtAgo(lastCheckAt)}</span>}
-                          </span>
-                        )}
-                      </div>
-                    )}
+          <div className="space-y-3">
+            {['autopilot', 'copilot', 'manual'].map(src => {
+              const items = groups[src]
+              if (!items || items.length === 0) return null
+              const meta = GROUP_META[src]
+              return (
+                <div key={src}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-[10px]">{meta.icon}</span>
+                    <p className="t-meta text-[var(--color-muted)]">{meta.label}</p>
+                    <Badge tone={meta.tone} className="text-[8px] px-1">{items.length}</Badge>
                   </div>
-                )
-              })}
-            </div>
+                  <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
+                    {items.map((p, i) => {
+                      const sym = p.symbolName || `#${p.symbolId}`
+                      const volLots = p.volume != null ? p.volume / 10000 : null
+                      const isGold = (p.symbolName || '').startsWith('XAU')
+                      const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
+                      const priceDigits = (p.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
+                      const pnl = computePnl(p, priceCache)
+                      const slPips = pipDist(p.openPrice, p.stopLoss, p.symbolName)
+                      const tpPips = pipDist(p.openPrice, p.takeProfit, p.symbolName)
+                      const fees = (p.swap || 0) + (p.commission || 0)
+                      const parsedLabel = p.label ? parseLabel(p.label) : null
+                      const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
+                      const botPos = botPositionsById[String(p.positionId)]
+                      const paused = botPos?.paused === 1
+                      const lastCheck = botPos?.last_check_action
+                      const lastCheckAt = botPos?.last_check_at
+                      return (
+                        <div key={p.positionId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className={`font-bold w-[12px] ${p.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                              {p.side === 'BUY' ? '▲' : '▼'}
+                            </span>
+                            <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                            {sourceBadge && (
+                              <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                                {sourceBadge.text}
+                              </Badge>
+                            )}
+                            <span className="text-[var(--color-muted)]">
+                              {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
+                            </span>
+                            <span className="text-[var(--color-muted)]">
+                              @ {p.openPrice != null ? p.openPrice.toFixed(priceDigits) : '—'}
+                            </span>
+                            <span className="flex-1" />
+                            {pnl != null && (
+                              <span className={`font-mono font-semibold ${pnl > 0 ? 'text-[var(--color-up)]' : pnl < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
+                                {pnl >= 0 ? '+' : ''}{fmtMoney(pnl)}
+                                <span className="text-[8px] text-[var(--color-muted)] ml-0.5">est</span>
+                              </span>
+                            )}
+                            {botPos && (paused
+                              ? <Button size="sm" variant="ghost" onClick={() => onUnpause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">resume</Button>
+                              : <Button size="sm" variant="ghost" onClick={() => onPause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">pause</Button>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                            {p.stopLoss != null && (
+                              <span>
+                                <span className="text-[var(--color-down)]">SL</span> {p.stopLoss.toFixed(priceDigits)}
+                                {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
+                              </span>
+                            )}
+                            {p.takeProfit != null && (
+                              <span>
+                                <span className="text-[var(--color-up)]">TP</span> {p.takeProfit.toFixed(priceDigits)}
+                                {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
+                              </span>
+                            )}
+                            {p.usedMargin != null && <span>margin {fmtMoney(p.usedMargin)}</span>}
+                            {p.openTimestamp && <span>opened {fmtAgo(p.openTimestamp)}</span>}
+                            {fees !== 0 && <span>fees {fmtMoney(fees)}</span>}
+                            {parsedLabel?.strategy && (
+                              <span className="uppercase tracking-wide">
+                                {parsedLabel.strategy}
+                                {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
+                                {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
+                              </span>
+                            )}
+                            {p.label && !sourceBadge && (
+                              <span className="italic truncate max-w-[80px]" title={p.label}>{p.label}</span>
+                            )}
+                          </div>
+                          {botPos && (
+                            <div className="flex items-center gap-2 text-[9.5px] mt-0.5">
+                              {paused && <Badge tone="warning" className="text-[8px] px-1">PAUSED</Badge>}
+                              {lastCheck && (
+                                <span className="text-[var(--color-text-sub)]">
+                                  <span className="text-[var(--color-muted)]">Monitor:</span> {lastCheck}
+                                  {lastCheckAt && <span className="text-[var(--color-muted)]"> · {fmtAgo(lastCheckAt)}</span>}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )
       })()}
@@ -389,6 +437,187 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
       {!loading && !info && !error && (
         <p className="t-sub text-[var(--color-muted)]">Loading account data…</p>
       )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Market Status — which watchlist markets are tradeable right now,
+// which are closed with next open time, and what the agent is doing
+// during closure (crypto continues, rest goes into analysis-only mode).
+// ---------------------------------------------------------------------------
+
+const CRYPTO_RE = /^(BTC|ETH|XRP|SOL|LTC|BCH|DOT|ADA|DOGE)USD$/
+
+function MarketStatus({ symbols }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 60_000)
+    return () => clearInterval(iv)
+  }, [])
+
+  if (!symbols || symbols.length === 0) return null
+
+  const liveTrading = []   // open market → analyse + trade
+  const analyseOnly = []   // closed market → analyse, queue orders for next open
+  for (const sym of symbols) {
+    if (isTradingNow(sym)) liveTrading.push(sym)
+    else analyseOnly.push({ symbol: sym, msUntil: msUntilOpen(sym) })
+  }
+  analyseOnly.sort((a, b) => a.msUntil - b.msUntil)
+
+  const nextOpen = analyseOnly[0]
+  const cryptoLive = liveTrading.filter(s => CRYPTO_RE.test(s))
+  const nonCryptoLive = liveTrading.filter(s => !CRYPTO_RE.test(s))
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Market Status</p>
+        <Badge tone={liveTrading.length > 0 ? 'up' : 'neutral'} pill>
+          {liveTrading.length > 0 ? `${liveTrading.length} LIVE` : 'ALL CLOSED'}
+        </Badge>
+        {cryptoLive.length > 0 && <Badge tone="special" className="text-[8px] px-1">CRYPTO 24/7</Badge>}
+      </div>
+
+      {/* Crypto — always analyse + trade */}
+      {cryptoLive.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">
+            Analyse + Trade <span className="opacity-60">(crypto — OTC, 24/7)</span>
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {cryptoLive.map(s => (
+              <span key={s} className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono">
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Non-crypto live markets */}
+      {nonCryptoLive.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">
+            Analyse + Trade <span className="opacity-60">(session open)</span>
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {nonCryptoLive.map(s => (
+              <span key={s} className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono">
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Closed markets */}
+      {analyseOnly.length > 0 && (
+        <div className="mb-2">
+          <p className="t-meta text-[var(--color-muted)] mb-1">
+            Analyse only — orders queued for open ({analyseOnly.length})
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {analyseOnly.slice(0, 12).map(({ symbol, msUntil }) => (
+              <span
+                key={symbol}
+                className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono"
+                title={`Opens in ${fmtDuration(msUntil)}`}
+              >
+                {symbol} <span className="opacity-60">{fmtDuration(msUntil)}</span>
+              </span>
+            ))}
+            {analyseOnly.length > 12 && (
+              <span className="px-1.5 py-0.5 text-[10px] text-[var(--color-muted)]">
+                +{analyseOnly.length - 12} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {nextOpen && (
+        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+          Next market open: <span className="text-[var(--color-text)] font-mono">{nextOpen.symbol}</span> in {fmtDuration(nextOpen.msUntil)}
+          {cryptoLive.length > 0 && ' — crypto continues uninterrupted'}
+        </p>
+      )}
+      {liveTrading.length === 0 && (
+        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+          All watchlist markets closed. Agent analyses setups and queues orders for next session open. Monitor continues on open positions.
+        </p>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Team Roster — which minions are dispatched per hot symbol this cycle
+// ---------------------------------------------------------------------------
+
+const ROLE_COLORS = {
+  trader:    'text-[var(--color-up)]',
+  journalist:'text-[var(--color-info)]',
+  researcher:'text-[var(--color-accent)]',
+  economist: 'text-[var(--color-warning)]',
+  political: 'text-[var(--color-down)]',
+}
+
+function TeamRoster({ activity }) {
+  // Find the most recent hot symbols from scan events (trade_grade = 'potential')
+  const hotSymbols = []
+  const seen = new Set()
+  for (const row of activity) {
+    if (row.kind === 'scan' && row.extra === 'potential' && !seen.has(row.symbol)) {
+      seen.add(row.symbol)
+      hotSymbols.push(row.symbol)
+    }
+    if (hotSymbols.length >= 6) break
+  }
+
+  // Also include symbols currently being analysed
+  for (const row of activity) {
+    if (row.kind === 'analysis' && !seen.has(row.symbol)) {
+      seen.add(row.symbol)
+      hotSymbols.push(row.symbol)
+    }
+    if (hotSymbols.length >= 6) break
+  }
+
+  if (hotSymbols.length === 0) return null
+
+  return (
+    <Card>
+      <p className="t-label mb-2">Desk Team</p>
+      <div className="space-y-2">
+        {hotSymbols.map(symbol => {
+          const minionIds = dispatchMinions(symbol)
+          return (
+            <div key={symbol} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+              <p className="text-[11px] font-bold text-[var(--color-text)] mb-1">{symbol}</p>
+              <div className="flex flex-wrap gap-1">
+                {minionIds.map(id => {
+                  const m = MINIONS[id]
+                  if (!m) return null
+                  return (
+                    <span
+                      key={id}
+                      className={`px-1.5 py-0.5 rounded-[4px] text-[9.5px] bg-[var(--color-surface)] ${ROLE_COLORS[m.role] || 'text-[var(--color-muted)]'}`}
+                      title={`${m.role} — ${m.focus}`}
+                    >
+                      {m.icon} {m.name}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-[9px] text-[var(--color-muted)] mt-2">
+        4-6 specialists dispatched per symbol. Hover for focus area.
+      </p>
     </Card>
   )
 }
@@ -463,6 +692,18 @@ export default function Agent() {
   const [botPositions, setBotPositions] = useState([])
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  // Collapse-toggle for the activity log — persisted so operator preference
+  // survives page refreshes.
+  const [activityCollapsed, setActivityCollapsed] = useState(() => {
+    try { return localStorage.getItem('bot-trade:activity-collapsed') === 'true' } catch { return false }
+  })
+  const toggleActivity = () => {
+    setActivityCollapsed(prev => {
+      const next = !prev
+      try { localStorage.setItem('bot-trade:activity-collapsed', String(next)) } catch {}
+      return next
+    })
+  }
 
   const refresh = useCallback(async () => {
     if (!agentConfigured(role)) return
@@ -703,6 +944,12 @@ export default function Agent() {
         )}
       </Card>
 
+      {/* Market status — which watchlist markets are live vs closed */}
+      <MarketStatus symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} />
+
+      {/* Team roster — which minions dispatched per hot symbol */}
+      <TeamRoster activity={activity} />
+
       {/* cTrader account + positions with bot context */}
       <AccountPanel
         ctrader={state.ctrader}
@@ -713,31 +960,43 @@ export default function Agent() {
 
       {/* Live activity stream */}
       <Card>
-        <div className="flex items-center gap-2 mb-2">
+        <button
+          type="button"
+          onClick={toggleActivity}
+          className="w-full flex items-center gap-2 mb-2 text-left hover:opacity-80"
+          title={activityCollapsed ? 'Expand activity log' : 'Collapse activity log'}
+        >
+          <span className="text-[10px] text-[var(--color-muted)] w-3">
+            {activityCollapsed ? '▸' : '▾'}
+          </span>
           <p className="t-label flex-1">Live Activity</p>
           <span className="text-[9px] text-[var(--color-muted)]">
             {activity.length} events · auto-refresh 10s
           </span>
-        </div>
-        {activity.length === 0 ? (
-          <p className="t-sub text-[var(--color-muted)] py-4 text-center">
-            No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
-          </p>
-        ) : (
-          <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
-            {activity.map((row, i) => (
-              <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
-            ))}
-          </div>
+        </button>
+        {!activityCollapsed && (
+          <>
+            {activity.length === 0 ? (
+              <p className="t-sub text-[var(--color-muted)] py-4 text-center">
+                No events yet. The loop scans every 5 min — first activity should appear shortly after autopilot is engaged.
+              </p>
+            ) : (
+              <div className="space-y-0.5 max-h-[520px] overflow-y-auto">
+                {activity.map((row, i) => (
+                  <ActivityRow key={`${row.kind}-${row.id}-${i}`} row={row} />
+                ))}
+              </div>
+            )}
+            <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
+              <span className="text-[9px] text-[var(--color-muted)]">
+                Drill into any analysis, trade, or monitor check in the Workshop.
+              </span>
+              <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
+                Workshop →
+              </Link>
+            </div>
+          </>
         )}
-        <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
-          <span className="text-[9px] text-[var(--color-muted)]">
-            Drill into any analysis, trade, or monitor check in the Workshop.
-          </span>
-          <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
-            Workshop →
-          </Link>
-        </div>
       </Card>
     </section>
   )
