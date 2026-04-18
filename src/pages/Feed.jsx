@@ -99,7 +99,7 @@ const GRADE_TONE = { potential: 'up', weak: 'warning', none: 'neutral' }
 
 // ── Symbol result card ──
 
-function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, defaultCollapsed = false }) {
+function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, defaultCollapsed = false, marketOpen = true }) {
   const hasAnalysis = !!analysis
   const synthesis = analysis?.synthesis
   const reports = analysis?.reports || []
@@ -279,10 +279,12 @@ function SymbolCard({ symbol, scan, analysis, onOrder, onAnalyse, eventLine, def
           <>
             <Button
               size="sm" variant="ghost"
-              onClick={(e) => { e.stopPropagation(); proposeScanTrade('market') }}
+              onClick={(e) => { e.stopPropagation(); proposeScanTrade(marketOpen ? 'market' : 'limit') }}
+              disabled={!marketOpen}
+              title={marketOpen ? '' : 'Market closed'}
               className="!py-0.5 !px-2 text-[10px]"
             >
-              {arrow} Market
+              {arrow} Market{!marketOpen && <span className="ml-1 opacity-50 text-[8px]">closed</span>}
             </Button>
             <Button
               size="sm" variant="ghost"
@@ -1245,6 +1247,7 @@ export default function Feed() {
                 analysis={d.analysis}
                 onOrder={handleOpenOrder}
                 onAnalyse={handleAnalyseSymbol}
+                marketOpen={isTradingNow(d.symbol)}
               />
             ))
           })()}
@@ -1292,6 +1295,7 @@ export default function Feed() {
           symbol={orderFor.symbol}
           synthesis={orderFor.synthesis}
           initialOrderType={orderFor.initialOrderType || 'market'}
+          marketOpen={isTradingNow(orderFor.symbol)}
           maxVolume={state.watchlist.find(w => w.symbol === orderFor.symbol)?.maxVolume || 0.01}
           onConfirm={handleConfirmOrder}
           onCancel={() => setOrderFor(null)}

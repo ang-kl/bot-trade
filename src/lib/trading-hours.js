@@ -56,7 +56,18 @@ export function getHoursForSymbol(symbol) {
 
 export function isTradingNow(symbol) {
   const hours = getHoursForSymbol(symbol)
-  const utcHour = new Date().getUTCHours()
+  const now = new Date()
+  const utcDay = now.getUTCDay()   // 0=Sun, 6=Sat
+  const utcHour = now.getUTCHours()
+
+  const is247 = hours === H24 || (hours.length === 1 && hours[0].open === 0 && hours[0].close === 24)
+  if (is247) return true
+
+  // FX / metals / indices / stocks — weekly closure from Fri 22:00 UTC to Sun ~22:00 UTC.
+  if (utcDay === 6) return false
+  if (utcDay === 0) return utcHour >= 22
+  if (utcDay === 5 && utcHour >= 22) return false
+
   return hours.some(h => {
     if (h.open < h.close) return utcHour >= h.open && utcHour < h.close
     return utcHour >= h.open || utcHour < h.close
