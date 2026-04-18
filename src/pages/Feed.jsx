@@ -1048,11 +1048,17 @@ export default function Feed() {
   }, [])
 
   const handleConfirmOrder = useCallback(async (order) => {
+    const acctId = state.ctrader.linkedAccountId
+    const acctRoles = state.ctrader.accountRoles?.[String(acctId)]
+    if (acctId && acctRoles && !acctRoles.copilot) {
+      showToast('This account is not enabled for copilot trading. Enable it in Settings → cTrader.')
+      return
+    }
     addLog('trader', `Placing ${order.orderType} ${order.side} order...`, { symbol: order.symbol })
     const oType = order.orderType === 'market' ? 'MARKET' : order.orderType === 'limit' ? 'LIMIT' : 'STOP'
     const body = {
       action: oType === 'MARKET' ? 'new-market-order' : 'new-limit-order',
-      accountId: state.ctrader.linkedAccountId,
+      accountId: acctId,
       symbolName: order.symbol,
       orderType: oType,
       tradeSide: order.side,

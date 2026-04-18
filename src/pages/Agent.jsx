@@ -98,6 +98,9 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
 
   const linked = ctrader.accounts.find(a => a.accountId === ctrader.linkedAccountId)
   const isLive = linked?.isLive ?? false
+  const roles = ctrader.accountRoles || {}
+  const apAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.autopilot)
+  const cpAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.copilot)
 
   const refresh = useCallback(async () => {
     if (!ctrader.linkedAccountId || !ctrader.accessToken) return
@@ -148,6 +151,23 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
           {loading ? '…' : '↻'}
         </Button>
       </div>
+
+      {(apAccounts.length > 0 || cpAccounts.length > 0) && (
+        <div className="flex items-center gap-3 mb-2 text-[9.5px] text-[var(--color-muted)] flex-wrap">
+          {apAccounts.length > 0 && (
+            <span>
+              <Badge tone="info" className="text-[8px] px-1 mr-1">AUTO</Badge>
+              {apAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
+            </span>
+          )}
+          {cpAccounts.length > 0 && (
+            <span>
+              <Badge tone="special" className="text-[8px] px-1 mr-1">COPILOT</Badge>
+              {cpAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
+            </span>
+          )}
+        </div>
+      )}
 
       {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
 

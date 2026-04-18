@@ -208,19 +208,32 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/ctrader-config — push cTrader credentials from frontend
-  // Frontend calls this after OAuth so the loop can auto-trade
+  // POST /actions/ctrader-config — push cTrader credentials + account roles
+  // Body: { accessToken, accounts: [{ accountId, isLive, autopilot, copilot }] }
+  // The loop reads autopilot-enabled accounts and trades each one.
   // -----------------------------------------------------------------------
   router.post('/ctrader-config', (req, res) => {
     try {
-      const { accessToken, accountId, isLive = false } = req.body || {}
-      if (!accessToken || !accountId) {
-        return res.status(400).json({ error: 'accessToken and accountId are required' })
+      const { accessToken, accounts } = req.body || {}
+      if (!accessToken) {
+        return res.status(400).json({ error: 'accessToken is required' })
       }
       setState(db, 'ctrader_access_token', accessToken)
-      setState(db, 'ctrader_account_id', String(accountId))
-      setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
-      console.log('[actions] cTrader config updated — accountId:', accountId, 'live:', isLive)
+
+      if (Array.isArray(accounts)) {
+        setState(db, 'ctrader_account_roles_json', JSON.stringify(accounts))
+        const ap = accounts.filter(a => a.autopilot)
+        const cp = accounts.filter(a => a.copilot)
+        console.log(`[actions] cTrader config updated — ${ap.length} autopilot, ${cp.length} copilot accounts`)
+
+        // Backward compat: keep legacy single-account keys in sync with
+        // the first autopilot account so old code paths don't break.
+        if (ap.length > 0) {
+          setState(db, 'ctrader_account_id', String(ap[0].accountId))
+          setState(db, 'ctrader_is_live', ap[0].isLive ? 'true' : 'false')
+        }
+      }
+
       res.json({ ok: true })
     } catch (err) {
       res.status(500).json({ error: err.message })

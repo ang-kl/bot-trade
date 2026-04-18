@@ -75,12 +75,24 @@ function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orde
   })
 }
 
-async function autoTrade(db, symbol, synth, watchlistItem) {
+function getAutopilotAccounts(db) {
+  const rolesJson = getState(db, 'ctrader_account_roles_json')
+  if (rolesJson) {
+    try {
+      return JSON.parse(rolesJson).filter(a => a.autopilot)
+    } catch { /* fall through to legacy */ }
+  }
+  const id = getState(db, 'ctrader_account_id')
+  if (!id) return []
+  return [{ accountId: id, isLive: getState(db, 'ctrader_is_live') === 'true' }]
+}
+
+async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   const clientId = process.env.CTRADER_CLIENT_ID
   const clientSecret = process.env.CTRADER_CLIENT_SECRET
   const accessToken = getState(db, 'ctrader_access_token')
-  const accountId = getState(db, 'ctrader_account_id')
-  const isLive = getState(db, 'ctrader_is_live') === 'true'
+  const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id')
+  const isLive = accountOverride ? !!accountOverride.isLive : getState(db, 'ctrader_is_live') === 'true'
 
   if (!clientId || !clientSecret || !accessToken || !accountId) {
     log(`Auto-trade skipped — cTrader credentials not configured (push via /actions/ctrader-config)`)
@@ -454,16 +466,21 @@ async function runLoop(db) {
 
           log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10)`)
 
-          // Auto-trade — only when armed and synthesis recommends it
+          // Auto-trade — only when armed and synthesis recommends it.
+          // Iterate all autopilot-enabled accounts so the same signal
+          // replicates across every assigned account with per-account sizing.
           if (armed && synth.auto_trade && synth.entry) {
-            const tradeResult = await autoTrade(db, sym, synth, wItem)
-            if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
-              try {
-                const { sendMessage } = await import('./services/telegram.js')
-                await sendMessage(
-                  `🤖 AUTO-TRADE: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
-                )
-              } catch {}
+            const apAccounts = getAutopilotAccounts(db)
+            for (const acct of apAccounts) {
+              const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
+              if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
+                try {
+                  const { sendMessage } = await import('./services/telegram.js')
+                  await sendMessage(
+                    `🤖 AUTO-TRADE [${acct.accountId}]: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
+                  )
+                } catch {}
+              }
             }
           }
         } catch (err) {
