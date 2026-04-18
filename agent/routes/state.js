@@ -4,6 +4,7 @@
 
 import { Router } from 'express'
 import { getState } from '../db.js'
+import { loadRiskConfig, DEFAULT_RISK_CONFIG } from '../services/risk.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -190,6 +191,11 @@ export default function stateRouter(db) {
                source AS extra, NULL AS ref
         FROM signals
         WHERE flipped = 1
+        UNION ALL
+        SELECT 'risk'     AS kind, id, symbol, created_at AS at,
+               side AS v1, approved AS v2, veto_reason AS note,
+               checks_json AS extra, NULL AS ref
+        FROM risk_events
       )
       WHERE at IS NOT NULL
       ORDER BY at DESC
@@ -247,6 +253,32 @@ export default function stateRouter(db) {
     res.json({
       armed: getState(db, 'armed') === 'true',
       watchlist: watchlistJson ? (() => { try { return JSON.parse(watchlistJson) } catch { return [] } })() : [],
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/risk-events — recent Risk Manager decisions (audit trail)
+  // Query param `limit` (default 100), `symbol` optional filter
+  // -----------------------------------------------------------------------
+  router.get('/risk-events', (req, res) => {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)))
+    const rows = req.query.symbol
+      ? db.prepare(
+          `SELECT * FROM risk_events WHERE symbol = ? ORDER BY created_at DESC LIMIT ?`
+        ).all(String(req.query.symbol).toUpperCase(), limit)
+      : db.prepare(
+          `SELECT * FROM risk_events ORDER BY created_at DESC LIMIT ?`
+        ).all(limit)
+    res.json({ rows })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/risk-config — effective risk config (defaults merged with overrides)
+  // -----------------------------------------------------------------------
+  router.get('/risk-config', (_req, res) => {
+    res.json({
+      defaults: DEFAULT_RISK_CONFIG,
+      effective: loadRiskConfig(db),
     })
   })
 

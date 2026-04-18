@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getState, setState } from '../db.js'
 import { runScan } from '../services/scanner.js'
 import { runAnalysis } from '../services/analyzer.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig } from '../services/risk.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -259,6 +260,32 @@ export default function actionsRouter(db) {
       res.json({ ok: true, watchlist: normalized })
     } catch (err) {
       console.error('[actions/watchlist] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/risk-config — update Risk Manager limits
+  // Body: partial risk config, merged over current. Unknown keys are dropped
+  // to prevent pollution. Pass empty {} to reset to defaults.
+  // -----------------------------------------------------------------------
+  router.post('/risk-config', (req, res) => {
+    try {
+      const body = req.body || {}
+      if (body.reset === true) {
+        setState(db, 'risk_config_json', null)
+        return res.json({ ok: true, effective: DEFAULT_RISK_CONFIG })
+      }
+      const current = loadRiskConfig(db)
+      const allowed = Object.keys(DEFAULT_RISK_CONFIG)
+      const next = { ...current }
+      for (const k of allowed) {
+        if (k in body) next[k] = body[k]
+      }
+      setState(db, 'risk_config_json', JSON.stringify(next))
+      console.log('[actions] Risk config updated:', next)
+      res.json({ ok: true, effective: next })
+    } catch (err) {
       res.status(500).json({ error: err.message })
     }
   })

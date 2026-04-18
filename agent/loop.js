@@ -9,6 +9,7 @@ import { runAnalysis } from './services/analyzer.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
@@ -86,7 +87,39 @@ async function autoTrade(db, symbol, synth, watchlistItem) {
   }
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-  const volLots = watchlistItem?.maxVolume || 0.01
+  const requestedVol = watchlistItem?.maxVolume || 0.01
+
+  // -------------------------------------------------------------------------
+  // Risk Manager pre-trade gate — deterministic veto + Kelly volume scaling.
+  // Runs before cTrader WS open. No LLM calls. Every evaluation is persisted
+  // to risk_events for Workshop audit.
+  // -------------------------------------------------------------------------
+  const proposal = {
+    symbol,
+    side,
+    entry: synth.entry ?? null,
+    sl: synth.sl ?? null,
+    tp1: synth.tp1 ?? null,
+    requestedVolume: requestedVol,
+    strategy: synth.strategy || null,
+    conviction: synth.overall_conviction ?? null,
+  }
+  const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+  persistRiskEvent(db, proposal, riskResult)
+  if (!riskResult.approved) {
+    log(`RISK VETO ${symbol} ${side}: ${riskResult.veto_reason}`)
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      try {
+        const { sendMessage } = await import('./services/telegram.js')
+        await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — ${riskResult.veto_reason}`)
+      } catch {}
+    }
+    return null
+  }
+  const volLots = riskResult.adjusted_volume
+  if (Math.abs(volLots - requestedVol) > 0.001) {
+    log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
+  }
   const volume = Math.round(volLots * 10000) // cTrader units: 10000 = 1 lot
 
   // We need symbolId — look it up from previously stored symbol map, or skip

@@ -132,6 +132,17 @@ const TABLES = `
     key   TEXT PRIMARY KEY,
     value TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS risk_events (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol         TEXT,
+    side           TEXT,
+    approved       INTEGER,
+    veto_reason    TEXT,
+    checks_json    TEXT,
+    proposal_json  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 const INDEXES = `
@@ -143,6 +154,8 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_trades_symbol_closed    ON trades  (symbol, closed_at);
   CREATE INDEX IF NOT EXISTS idx_monitored_symbol_at    ON monitored_positions(symbol, last_check_at);
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
+  CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
 `;
 
 // ---------------------------------------------------------------------------
