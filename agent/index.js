@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
@@ -49,10 +49,22 @@ if (!AGENT_SECRET) {
 }
 
 // ---------------------------------------------------------------------------
-// Database
+// Database — ensure parent directory exists before opening SQLite
 // ---------------------------------------------------------------------------
 
-const db = initDB(DB_PATH);
+const resolvedDbPath = DB_PATH || './agent.db';
+try {
+  const dir = dirname(resolve(resolvedDbPath));
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`[boot] Created DB directory: ${dir}`);
+  }
+} catch (err) {
+  console.error(`[boot] Cannot create DB directory for ${resolvedDbPath}:`, err.message);
+}
+
+console.log(`[boot] Opening database at: ${resolvedDbPath}`);
+const db = initDB(resolvedDbPath);
 
 // Seed cTrader credentials from env vars if present and not already stored.
 // This lets Railway hold the secrets so the agent starts trading immediately
@@ -214,6 +226,14 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+process.on('uncaughtException', (err) => {
+  console.error('[agent] UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[agent] UNHANDLED REJECTION:', err);
+});
+
+console.log('[boot] Starting agent...');
 start().catch((err) => {
   console.error('[agent] fatal:', err);
   process.exit(1);
