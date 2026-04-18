@@ -11,6 +11,7 @@ import { evaluatePosition } from './services/position-manager.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
+import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -237,13 +238,35 @@ async function runLoop(db) {
     } else {
       let watchlist
       try { watchlist = JSON.parse(watchlistJson) } catch { watchlist = [] }
-      const symbols = (Array.isArray(watchlist) ? watchlist : [])
+      const allSymbols = (Array.isArray(watchlist) ? watchlist : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
 
-      if (symbols.length === 0) {
-        log('No enabled symbols in watchlist')
+      // Market-closed guardrail: when no FX/equity session is active, scan only
+      // 24/7 instruments (crypto). Skip Scan+Analyze entirely if nothing to scan
+      // and no positions are open. Monitor phase still runs so crypto positions
+      // keep getting tick checks.
+      const activeSessions = getActiveSessions()
+      const openPositions = s.selectActivePositions.all('active')
+      const symbols = activeSessions.length === 0
+        ? allSymbols.filter(w => categoriseSymbol(w.symbol) === 'crypto')
+        : allSymbols
+
+      if (activeSessions.length === 0 && symbols.length === 0 && openPositions.length === 0) {
+        const next = nextSessionOpening()
+        log(`Market closed — no sessions active, no positions open. Next open: ${next?.label || '?'} in ~${Math.round((next?.minsUntil || 0) / 60)}h. Skipping scan+analyze.`)
+        setState(db, 'last_skip_reason', 'market_closed')
+        setState(db, 'last_skip_at', new Date().toISOString())
+      } else if (symbols.length === 0) {
+        if (activeSessions.length === 0) {
+          log(`Off-hours, no crypto in watchlist — monitoring ${openPositions.length} open position(s) only`)
+        } else {
+          log('No enabled symbols in watchlist')
+        }
       } else {
+        if (activeSessions.length === 0) {
+          log(`Off-hours — scanning ${symbols.length} crypto symbol(s) only`)
+        }
 
     // Build context memory for this scan
     const contextBrief = buildContextBrief(db)
@@ -358,81 +381,85 @@ async function runLoop(db) {
       }
     }
 
-    // -----------------------------------------------------------------------
-    // 3. MONITOR PHASE — deterministic position manager first, LLM fallback
-    // -----------------------------------------------------------------------
-    const activePositions = s.selectActivePositions.all('active')
-    const lastScanResultsJson = getState(db, 'last_scan_results')
-    let lastScanResults = null
-    try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch {}
+      } // end symbols.length > 0 (scan+analyze branch)
 
-    for (const pos of activePositions) {
-      try {
-        // Resolve current price from the most recent scan for this symbol.
-        // When absent, position-manager returns HOLD + null metrics and we
-        // still hand off to the LLM so the position is never skipped silently.
-        const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
-        const currentPrice = scanRow?.price ?? null
+      // ---------------------------------------------------------------------
+      // 3. MONITOR PHASE — always runs when positions are open, even when
+      // scan+analyze was skipped (market closed, etc). Crypto positions and
+      // stale FX positions still need tick checks.
+      // ---------------------------------------------------------------------
+      const activePositions = openPositions.length > 0
+        ? openPositions
+        : s.selectActivePositions.all('active')
+      const lastScanResultsJson = getState(db, 'last_scan_results')
+      let lastScanResults = null
+      try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch {}
 
-        const eval_ = evaluatePosition(pos, { currentPrice })
+      for (const pos of activePositions) {
+        try {
+          // Resolve current price from the most recent scan for this symbol.
+          // When absent, position-manager returns HOLD + null metrics and we
+          // still hand off to the LLM so the position is never skipped silently.
+          const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
+          const currentPrice = scanRow?.price ?? null
 
-        // Persist MFE/MAE and any flag flips every loop, regardless of action.
-        s.updatePositionMetrics.run(
-          eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-          eval_.updates.mae_r ?? pos.mae_r ?? 0,
-          eval_.updates.be_moved ?? pos.be_moved ?? 0,
-          eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-          pos.id
-        )
+          const eval_ = evaluatePosition(pos, { currentPrice })
 
-        // Deterministic rule fired — record recommendation and skip the LLM.
-        // NOTE: cTrader modify / partial-close wiring lives in a follow-up
-        // commit; today we only log + persist the intent so the Workshop
-        // shows exactly what the bot *would* do.
-        if (eval_.action !== 'HOLD') {
-          s.updatePositionCheck.run(
-            `PM:${eval_.action}`,
-            eval_.reason,
-            new Date().toISOString(),
-            eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+          // Persist MFE/MAE and any flag flips every loop, regardless of action.
+          s.updatePositionMetrics.run(
+            eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+            eval_.updates.mae_r ?? pos.mae_r ?? 0,
+            eval_.updates.be_moved ?? pos.be_moved ?? 0,
+            eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
             pos.id
           )
-          log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason}`)
-          continue
+
+          // Deterministic rule fired — record recommendation and skip the LLM.
+          // NOTE: cTrader modify / partial-close wiring lives in a follow-up
+          // commit; today we only log + persist the intent so the Workshop
+          // shows exactly what the bot *would* do.
+          if (eval_.action !== 'HOLD') {
+            s.updatePositionCheck.run(
+              `PM:${eval_.action}`,
+              eval_.reason,
+              new Date().toISOString(),
+              eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+              pos.id
+            )
+            log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason}`)
+            continue
+          }
+
+          // Fallback: free-text theses and ambiguous cases → LLM Monitor.
+          const check = await runMonitorCheck(client, {
+            symbol: pos.symbol,
+            side: pos.side,
+            entry: pos.entry_price,
+            currentPrice,
+            sl: pos.current_sl,
+            tp1: pos.current_tp,
+            thesis: pos.thesis,
+            holdTime: eval_.metrics.minutesInTrade
+              ? `${Math.round(eval_.metrics.minutesInTrade)}m`
+              : null,
+          })
+
+          s.updatePositionCheck.run(
+            check.action,
+            check.reasoning,
+            new Date().toISOString(),
+            check.thesis_status,
+            pos.id
+          )
+
+          if (check.action === 'EXIT') {
+            s.closePosition.run('closed', pos.id)
+            log(`Position closed (LLM): ${pos.symbol} — ${check.reasoning}`)
+          }
+        } catch (err) {
+          log(`Monitor check failed for ${pos.symbol}:`, err.message)
         }
-
-        // Fallback: free-text theses and ambiguous cases → LLM Monitor.
-        const check = await runMonitorCheck(client, {
-          symbol: pos.symbol,
-          side: pos.side,
-          entry: pos.entry_price,
-          currentPrice,
-          sl: pos.current_sl,
-          tp1: pos.current_tp,
-          thesis: pos.thesis,
-          holdTime: eval_.metrics.minutesInTrade
-            ? `${Math.round(eval_.metrics.minutesInTrade)}m`
-            : null,
-        })
-
-        s.updatePositionCheck.run(
-          check.action,
-          check.reasoning,
-          new Date().toISOString(),
-          check.thesis_status,
-          pos.id
-        )
-
-        if (check.action === 'EXIT') {
-          s.closePosition.run('closed', pos.id)
-          log(`Position closed (LLM): ${pos.symbol} — ${check.reasoning}`)
-        }
-      } catch (err) {
-        log(`Monitor check failed for ${pos.symbol}:`, err.message)
       }
-    }
-
-      } // end symbols.length > 0
     } // end watchlistJson
 
     // -----------------------------------------------------------------------
