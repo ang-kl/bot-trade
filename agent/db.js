@@ -211,9 +211,9 @@ export function initDB(dbPath) {
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
 
-  // Create schema
+  // Create schema (indexes created after migrations to avoid referencing
+  // columns that don't exist yet on pre-existing DBs)
   db.exec(TABLES);
-  db.exec(INDEXES);
 
   // In-place migrations for pre-existing DBs
   const mpCols = db.prepare("PRAGMA table_info(monitored_positions)").all();
@@ -256,6 +256,13 @@ export function initDB(dbPath) {
     }
   }
 
+  // Signals table migration
+  const sCols = db.prepare("PRAGMA table_info(signals)").all();
+  const sColNames = new Set(sCols.map(c => c.name));
+  if (!sColNames.has('source')) {
+    db.exec("ALTER TABLE signals ADD COLUMN source TEXT");
+  }
+
   const aCols = db.prepare("PRAGMA table_info(analyses)").all();
   const aColNames = new Set(aCols.map(c => c.name));
   const aMigrations = [
@@ -267,6 +274,9 @@ export function initDB(dbPath) {
       db.exec(`ALTER TABLE analyses ADD COLUMN ${col} ${type}`);
     }
   }
+
+  // Now that all columns exist, create indexes
+  db.exec(INDEXES);
 
   // Seed agent_state defaults (skip keys that already exist)
   const upsert = db.prepare(
