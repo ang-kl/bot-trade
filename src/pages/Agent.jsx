@@ -10,6 +10,15 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { parseLabel } from '../../agent/lib/trade-labels.js'
+
+// Map parsed label source → badge tone + display label. Unknown / null
+// source falls through and the row just shows the raw label string.
+const SOURCE_BADGE = {
+  autopilot: { tone: 'info',    text: 'AUTOPILOT' },
+  copilot:   { tone: 'special', text: 'COPILOT'   },
+  manual:    { tone: 'neutral', text: 'MANUAL'    },
+}
 
 const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
 function readPriceCache() {
@@ -191,6 +200,11 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                 const slPips = pipDist(p.openPrice, p.stopLoss, p.symbolName)
                 const tpPips = pipDist(p.openPrice, p.takeProfit, p.symbolName)
                 const fees = (p.swap || 0) + (p.commission || 0)
+                // Decode the structured cTrader label so we can show a
+                // provenance badge. Legacy / unstructured labels fall back
+                // to the raw string display.
+                const parsedLabel = p.label ? parseLabel(p.label) : null
+                const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
                 // Match this cTrader position to a bot-monitored position (by ctrader_position_id).
                 const botPos = botPositionsById[String(p.positionId)]
                 const paused = botPos?.paused === 1
@@ -203,6 +217,11 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                         {p.side === 'BUY' ? '▲' : '▼'}
                       </span>
                       <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                      {sourceBadge && (
+                        <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                          {sourceBadge.text}
+                        </Badge>
+                      )}
                       <span className="text-[var(--color-muted)]">
                         {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
                       </span>
@@ -237,7 +256,16 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                       {p.usedMargin != null && <span>margin {fmtMoney(p.usedMargin)}</span>}
                       {p.openTimestamp && <span>opened {fmtAgo(p.openTimestamp)}</span>}
                       {fees !== 0 && <span>fees {fmtMoney(fees)}</span>}
-                      {p.label && <span className="italic truncate max-w-[80px]">{p.label}</span>}
+                      {parsedLabel?.strategy && (
+                        <span className="uppercase tracking-wide">
+                          {parsedLabel.strategy}
+                          {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
+                          {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
+                        </span>
+                      )}
+                      {p.label && !sourceBadge && (
+                        <span className="italic truncate max-w-[80px]" title={p.label}>{p.label}</span>
+                      )}
                     </div>
                     {botPos && (
                       <div className="flex items-center gap-2 text-[9.5px] mt-0.5">
