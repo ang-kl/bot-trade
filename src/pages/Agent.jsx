@@ -10,6 +10,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
 import { agentGet, agentPost, agentConfigured, ROLES } from '../lib/agent-api.js'
+import { fmtAgo } from '../lib/time.js'
 import { parseLabel } from '../../agent/lib/trade-labels.js'
 
 // Map parsed label source → badge tone + display label. Unknown / null
@@ -51,16 +52,6 @@ function computePnl(position, priceCache) {
     : sym.match(/^(US|NAS|GER|UK|JPN|FRA|SPA|HK|AUS)/) ? 1
     : 100000
   return direction * (currentPrice - position.openPrice) * volLots * contractSize
-}
-
-function fmtAgo(ts) {
-  if (!ts) return ''
-  const t = typeof ts === 'number' ? ts : new Date(ts).getTime()
-  if (!Number.isFinite(t)) return ''
-  const ago = Date.now() - t
-  if (ago < 60_000) return 'just now'
-  if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}m ago`
-  return `${Math.floor(ago / 3_600_000)}h ${Math.floor((ago % 3_600_000) / 60_000)}m ago`
 }
 
 function fmtMoney(v, digits = 2) {
