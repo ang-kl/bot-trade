@@ -9,7 +9,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
-import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, ROLES } from '../lib/agent-api.js'
 import { parseLabel } from '../../agent/lib/trade-labels.js'
 
 // Map parsed label source → badge tone + display label. Unknown / null
@@ -446,8 +446,25 @@ function ActivityRow({ row }) {
 // Main page
 // ---------------------------------------------------------------------------
 
+const ROLE_STORAGE_KEY = 'bot-trade:agent-role'
+
 export default function Agent() {
   const { state } = useStrategy()
+  // Which Railway backend to talk to. Autopilot = trades autonomously;
+  // copilot = monitors user-entered trades only. Persisted so a reload keeps
+  // the operator on the same cockpit.
+  const [role, setRoleState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ROLE_STORAGE_KEY)
+      if (ROLES.includes(saved)) return saved
+    } catch {}
+    return agentConfigured('autopilot') ? 'autopilot' : (agentConfigured('copilot') ? 'copilot' : 'autopilot')
+  })
+  const setRole = (r) => {
+    setRoleState(r)
+    try { localStorage.setItem(ROLE_STORAGE_KEY, r) } catch {}
+  }
+
   const [health, setHealth] = useState(null)
   const [config, setConfig] = useState(null)
   const [activity, setActivity] = useState([])
@@ -456,20 +473,26 @@ export default function Agent() {
   const [busy, setBusy] = useState(false)
 
   const refresh = useCallback(async () => {
-    if (!agentConfigured) return
+    if (!agentConfigured(role)) return
     try {
       const [h, c, a, p] = await Promise.all([
-        agentGet('/health').catch(() => null),
-        agentGet('/state/config').catch(() => null),
-        agentGet('/state/activity?limit=40').catch(() => ({ activity: [] })),
-        agentGet('/state/positions').catch(() => ({ positions: [] })),
+        agentGet('/health', role).catch(() => null),
+        agentGet('/state/config', role).catch(() => null),
+        agentGet('/state/activity?limit=40', role).catch(() => ({ activity: [] })),
+        agentGet('/state/positions', role).catch(() => ({ positions: [] })),
       ])
       setHealth(h); setConfig(c)
       setActivity(a?.activity || [])
       setBotPositions(p?.positions || [])
       setError(null)
     } catch (e) { setError(e.message) }
-  }, [])
+  }, [role])
+
+  // Reset visible state the moment the operator flips roles so they never
+  // see stale autopilot data bleeding into the copilot view.
+  useEffect(() => {
+    setHealth(null); setConfig(null); setActivity([]); setBotPositions([]); setError(null)
+  }, [role])
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
@@ -478,21 +501,24 @@ export default function Agent() {
   }, [refresh])
 
   const on = config?.armed === true
+  // Only the autopilot service has an "arm" switch. Copilot runs standby-only
+  // (watches user trades) and has no autonomous trading mode, so the Engage
+  // button is hidden when role === 'copilot'.
   const toggleAutopilot = async () => {
     setBusy(true)
     try {
-      await agentPost('/actions/autopilot', { on: !on })
+      await agentPost('/actions/autopilot', { on: !on }, role)
       await refresh()
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
   const killAll = async () => {
-    if (!window.confirm('Kill switch: disarm autopilot + pause every monitored position. Proceed?')) return
+    if (!window.confirm(`Kill switch: disarm ${role} + pause every monitored position. Proceed?`)) return
     setBusy(true)
-    try { await agentPost('/actions/kill-all'); await refresh() }
+    try { await agentPost('/actions/kill-all', undefined, role); await refresh() }
     catch (e) { setError(e.message) } finally { setBusy(false) }
   }
-  const pausePos = async (id) => { try { await agentPost(`/actions/pause-position/${id}`); refresh() } catch (e) { setError(e.message) } }
-  const unpausePos = async (id) => { try { await agentPost(`/actions/unpause-position/${id}`); refresh() } catch (e) { setError(e.message) } }
+  const pausePos = async (id) => { try { await agentPost(`/actions/pause-position/${id}`, undefined, role); refresh() } catch (e) { setError(e.message) } }
+  const unpausePos = async (id) => { try { await agentPost(`/actions/unpause-position/${id}`, undefined, role); refresh() } catch (e) { setError(e.message) } }
 
   // Index bot-monitored positions by their cTrader position id so the
   // AccountPanel can correlate each cTrader row with its bot thesis.
@@ -503,38 +529,73 @@ export default function Agent() {
 
   const enabledWatchlist = config?.watchlist?.filter(w => w.enabled !== false) || []
 
-  if (!agentConfigured) {
+  if (!agentConfigured('autopilot') && !agentConfigured('copilot')) {
     return (
       <Card>
         <p className="t-label mb-1">Trade Window</p>
         <p className="t-sub text-[var(--color-muted)]">
-          Agent backend not configured. Set <code>VITE_AGENT_URL</code> and <code>VITE_AGENT_SECRET</code> in Vercel, then redeploy.
+          Agent backend not configured. Set <code>VITE_AGENT_URL_AUTOPILOT</code> + <code>VITE_AGENT_SECRET_AUTOPILOT</code> (and optionally the matching <code>_COPILOT</code> pair) in Vercel, then redeploy.
         </p>
       </Card>
     )
   }
 
+  const statusBadge = role === 'copilot'
+    ? { tone: 'special', text: 'COPILOT STANDBY' }
+    : { tone: on ? 'up' : 'neutral', text: on ? 'AUTOPILOT ON' : 'AUTOPILOT OFF' }
+
   return (
     <section className="space-y-3">
+      {/* Role switcher — one cockpit per Railway backend. */}
+      {(agentConfigured('autopilot') || agentConfigured('copilot')) && (
+        <div className="flex items-center gap-1 text-[10px]">
+          {ROLES.map(r => {
+            const wired = agentConfigured(r)
+            const active = r === role
+            return (
+              <button
+                key={r}
+                type="button"
+                onClick={() => wired && setRole(r)}
+                disabled={!wired}
+                className={`px-2.5 py-1 rounded-[5px] uppercase font-bold tracking-wider ${
+                  active
+                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                    : wired
+                    ? 'text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)]'
+                    : 'text-[var(--color-muted)] opacity-40 cursor-not-allowed'
+                }`}
+                title={wired ? '' : `VITE_AGENT_URL_${r.toUpperCase()} not set`}
+              >
+                {r}
+                {!wired && <span className="ml-1 opacity-60">(off)</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* Autopilot header */}
       <Card>
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
           <div className="flex items-center gap-2">
-            <span className={`text-[18px] ${on ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
-              {on ? '●' : '○'}
+            <span className={`text-[18px] ${on && role !== 'copilot' ? 'animate-pulse text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}>
+              {on && role !== 'copilot' ? '●' : '○'}
             </span>
             <h1 className="t-label text-lg">Trade Window</h1>
-            <Badge tone={on ? 'up' : 'neutral'} pill>{on ? 'AUTOPILOT ON' : 'AUTOPILOT OFF'}</Badge>
+            <Badge tone={statusBadge.tone} pill>{statusBadge.text}</Badge>
           </div>
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant={on ? 'ghost' : 'primary'}
-              onClick={toggleAutopilot}
-              disabled={busy}
-            >
-              {on ? 'Pause All' : 'Engage'}
-            </Button>
+            {role === 'autopilot' && (
+              <Button
+                size="sm"
+                variant={on ? 'ghost' : 'primary'}
+                onClick={toggleAutopilot}
+                disabled={busy}
+              >
+                {on ? 'Pause All' : 'Engage'}
+              </Button>
+            )}
             <Button size="sm" variant="ghost" onClick={killAll} disabled={busy} className="text-[var(--color-down)]">
               Kill Switch
             </Button>

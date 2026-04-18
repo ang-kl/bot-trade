@@ -9,7 +9,7 @@ import Button from '../common/Button.jsx'
 import Input from '../common/Input.jsx'
 import Badge from '../common/Badge.jsx'
 import { useStrategy } from '../../lib/strategy-store.js'
-import { agentPost, agentConfigured } from '../../lib/agent-api.js'
+import { agentPost, agentConfigured, ROLES } from '../../lib/agent-api.js'
 
 async function callCtrader(action, params = {}) {
   const init = action === 'auth-url'
@@ -52,16 +52,23 @@ export default function CTraderTab() {
   const roleOf = (id) => accountRoles[String(id)] || { autopilot: false, copilot: false }
 
   const syncRolesToBackend = useCallback(async (nextRoles) => {
-    if (!agentConfigured || !accessToken) return
+    if (!accessToken) return
     const rolesArray = accounts.map(a => {
       const r = nextRoles[String(a.accountId)] || { autopilot: false, copilot: false }
       return { accountId: a.accountId, isLive: a.isLive, autopilot: r.autopilot, copilot: r.copilot }
     })
-    try {
-      await agentPost('/actions/ctrader-config', { accessToken, accounts: rolesArray })
-    } catch (e) {
-      console.warn('[CTraderTab] backend sync failed:', e.message)
-    }
+    // Fan out to every wired Railway service so autopilot + copilot both
+    // hold the current access token and account roles. If either one is
+    // down, the other still gets updated.
+    const targets = ROLES.filter(r => agentConfigured(r))
+    if (targets.length === 0) return
+    await Promise.all(targets.map(async (r) => {
+      try {
+        await agentPost('/actions/ctrader-config', { accessToken, accounts: rolesArray }, r)
+      } catch (e) {
+        console.warn(`[CTraderTab] ${r} backend sync failed:`, e.message)
+      }
+    }))
   }, [accessToken, accounts])
 
   const toggleRole = (accountId, field) => {
