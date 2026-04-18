@@ -4,7 +4,8 @@
 
 import { Router } from 'express'
 import { getState } from '../db.js'
-import { loadRiskConfig, DEFAULT_RISK_CONFIG } from '../services/risk.js'
+import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
+import { tierForBalance } from '../lib/contracts.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -276,9 +277,33 @@ export default function stateRouter(db) {
   // GET /state/risk-config — effective risk config (defaults merged with overrides)
   // -----------------------------------------------------------------------
   router.get('/risk-config', (_req, res) => {
+    const effective = loadRiskConfig(db)
+    const balance = getAccountBalance(db)
+    const leverage = getAccountLeverage(db, effective)
+    const tier = balance != null ? tierForBalance(balance) : null
+    const derived = balance != null
+      ? {
+          balance,
+          leverage,
+          tier,
+          daily_cap_usd: Number((balance * effective.dailyLossPct).toFixed(2)),
+          per_trade_budget_usd: Number((balance * effective.perTradeRiskPct).toFixed(2)),
+          margin_cap_usd: Number((balance * effective.maxMarginUsagePct).toFixed(2)),
+          mode: 'equity_aware',
+        }
+      : {
+          balance: null,
+          leverage,
+          tier: null,
+          daily_cap_usd: effective.dailyLossLimit,
+          per_trade_budget_usd: null,
+          margin_cap_usd: null,
+          mode: 'absolute_fallback',
+        }
     res.json({
       defaults: DEFAULT_RISK_CONFIG,
-      effective: loadRiskConfig(db),
+      effective,
+      derived,
     })
   })
 

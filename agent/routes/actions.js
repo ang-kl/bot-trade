@@ -291,6 +291,47 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/balance — set account balance (USD) and optionally leverage.
+  // Body: { balance?: number, leverage?: number } or { clear: true }.
+  // Leverage is e.g. 200 for 1:200, 1000 for 1:1000.
+  // -----------------------------------------------------------------------
+  router.post('/balance', (req, res) => {
+    try {
+      const body = req.body || {}
+      if (body.clear === true) {
+        setState(db, 'account_balance_usd', null)
+        setState(db, 'account_leverage', null)
+        console.log('[actions] account balance + leverage cleared')
+        return res.json({ ok: true, balance: null, leverage: null })
+      }
+      const updates = {}
+      if (body.balance !== undefined) {
+        const n = Number(body.balance)
+        if (!Number.isFinite(n) || n <= 0) {
+          return res.status(400).json({ error: 'balance must be a positive number' })
+        }
+        setState(db, 'account_balance_usd', String(n))
+        updates.balance = n
+      }
+      if (body.leverage !== undefined) {
+        const n = Number(body.leverage)
+        if (!Number.isFinite(n) || n <= 0) {
+          return res.status(400).json({ error: 'leverage must be a positive number (e.g. 200)' })
+        }
+        setState(db, 'account_leverage', String(n))
+        updates.leverage = n
+      }
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'nothing to update — provide balance or leverage' })
+      }
+      console.log('[actions] balance/leverage updated:', updates)
+      res.json({ ok: true, ...updates })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/symbol-map — store symbolName → cTrader symbolId mapping
   // Required for auto-trade. Frontend fetches symbol list from cTrader and
   // pushes { map: { EURUSD: 1, XAUUSD: 42, ... } }

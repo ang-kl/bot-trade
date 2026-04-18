@@ -9,6 +9,10 @@ import {
   currencyLegs,
   netExposure,
   kellyVolume,
+  computeRiskBasedVolume,
+  getAccountBalance,
+  getAccountLeverage,
+  requiredMargin,
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -77,6 +81,20 @@ function insertOpenPosition(db, symbol, side) {
   db.prepare(
     `INSERT INTO monitored_positions (symbol, side, status) VALUES (?, ?, 'active')`
   ).run(symbol, side)
+}
+
+function setBalance(db, balance) {
+  db.prepare(
+    `INSERT INTO agent_state (key, value) VALUES ('account_balance_usd', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(String(balance))
+}
+
+function setLeverage(db, leverage) {
+  db.prepare(
+    `INSERT INTO agent_state (key, value) VALUES ('account_leverage', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(String(leverage))
 }
 
 // Currency legs -----------------------------------------------------------
@@ -320,4 +338,297 @@ test('happy path — clean proposal on empty state approves', () => {
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.adjusted_volume, 0.01)
   assert.ok(res.checks)
+})
+
+// Balance helpers --------------------------------------------------------
+
+test('getAccountBalance returns null when unset', () => {
+  const db = freshDB()
+  assert.equal(getAccountBalance(db), null)
+})
+
+test('getAccountBalance returns numeric balance when set', () => {
+  const db = freshDB()
+  setBalance(db, 5000)
+  assert.equal(getAccountBalance(db), 5000)
+})
+
+test('getAccountBalance ignores malformed / non-positive values', () => {
+  const db = freshDB()
+  setBalance(db, 'not-a-number')
+  assert.equal(getAccountBalance(db), null)
+  setBalance(db, -50)
+  assert.equal(getAccountBalance(db), null)
+  setBalance(db, 0)
+  assert.equal(getAccountBalance(db), null)
+})
+
+// Equity-aware sizing ----------------------------------------------------
+
+test('computeRiskBasedVolume — EURUSD at $10k, 30 pip SL, 1% risk = 0.33 lot', () => {
+  // budget = $100, usd_per_lot = 0.003 × 100000 = $300 → 0.33 lot
+  const out = computeRiskBasedVolume(10000, 'EURUSD', 0.003, 0.01)
+  assert.equal(out.volume, 0.33)
+  // usdRisk = 0.33 × 300 = $99 (floored from 0.3333...)
+  assert.ok(Math.abs(out.usdRisk - 99) < 0.01, `got ${out.usdRisk}`)
+})
+
+test('computeRiskBasedVolume — XAUUSD at $500, $3 SL, 1% risk = 0.01 lot', () => {
+  // budget = $5, usd_per_lot = 3 × 100 = $300 → 0.0166.. → floor to 0.01
+  const out = computeRiskBasedVolume(500, 'XAUUSD', 3, 0.01)
+  assert.equal(out.volume, 0.01)
+})
+
+test('computeRiskBasedVolume — tiny balance rounds to 0', () => {
+  // $50 balance × 1% = $0.50 budget; EURUSD 30 pip = $300/lot → 0.00166 → 0
+  const out = computeRiskBasedVolume(50, 'EURUSD', 0.003, 0.01)
+  assert.equal(out.volume, 0)
+})
+
+// Equity-aware mode integration -----------------------------------------
+
+test('equity-aware — $200 balance: EURUSD 30 pip SL insufficient → veto', () => {
+  const db = freshDB()
+  setBalance(db, 200)
+  // budget = $2, usd_per_lot = 0.003 × 100000 = $300 → 0.006 → floor 0
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /insufficient_equity/)
+})
+
+test('equity-aware — $10k balance, EURUSD: risk-based volume computed', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  // budget = $100, usd_per_lot = $300 → 0.33 lot, capped by requestedVolume 0.01
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.risk_based_volume, 0.33)
+  // Final volume is min(0.33, 0.01 requested) = 0.01
+  assert.equal(res.adjusted_volume, 0.01)
+})
+
+test('equity-aware — daily cap scales with balance (%)', () => {
+  const db = freshDB()
+  setBalance(db, 10000) // 3% = $300 daily cap
+  insertClosedTrade(db, -350)
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /daily_loss_limit_hit/)
+})
+
+test('equity-aware — small loss under % cap approves', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  insertClosedTrade(db, -100) // well under $300 cap
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+})
+
+test('equity-aware — check.balance and check.daily_cap_usd are populated', () => {
+  const db = freshDB()
+  setBalance(db, 5000)
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.checks.balance, 5000)
+  assert.equal(res.checks.daily_cap_usd, 150) // 5000 × 3%
+  assert.equal(res.checks.risk_budget, 50)    // 5000 × 1%
+})
+
+// Tier label + blocked-symbol gate ---------------------------------------
+// Tiers are informational only — the real equity gate is `insufficient_equity`,
+// which vetoes when the risk budget can't support 0.01 lot on this SL distance.
+
+test('tier label — micro attached to checks when balance set', () => {
+  const db = freshDB()
+  setBalance(db, 300)
+  const res = evaluateTrade(db, goodProposal())
+  // May or may not approve depending on equity; tier label should be present.
+  assert.equal(res.checks.tier, 'micro')
+})
+
+test('tier label — full attached when balance > $10k', () => {
+  const db = freshDB()
+  setBalance(db, 20000)
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+  }))
+  assert.equal(res.checks.tier, 'full')
+})
+
+test('crypto allowed at any tier when budget supports it', () => {
+  // $5k × 1% = $50 budget. BTCUSD $1000 SL × 1 contract = $1000/lot → 0.05 lot.
+  const db = freshDB()
+  setBalance(db, 5000)
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+    requestedVolume: 0.01,
+  }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.tier, 'standard')
+})
+
+test('XAUUSD allowed on small account when SL distance affordable', () => {
+  // $1500 × 1% = $15 budget. XAU $5 SL × 100oz = $500/lot → 0.03 lot → passes.
+  const db = freshDB()
+  setBalance(db, 1500)
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    requestedVolume: 0.01,
+  }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+})
+
+test('blockedSymbols config vetoes listed symbols', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  const config = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['BTCUSD', 'XRPUSD'] }
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+  }), config)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /symbol_blocked/)
+})
+
+test('blockedSymbols is case-insensitive', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  const config = { ...DEFAULT_RISK_CONFIG, blockedSymbols: ['btcusd'] }
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+  }), config)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /symbol_blocked/)
+})
+
+// Leverage / margin headroom ---------------------------------------------
+
+test('getAccountLeverage returns config default when unset', () => {
+  const db = freshDB()
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_RISK_CONFIG.leverage)
+})
+
+test('getAccountLeverage returns stored value when set', () => {
+  const db = freshDB()
+  setLeverage(db, 500)
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), 500)
+})
+
+test('getAccountLeverage falls back when non-positive', () => {
+  const db = freshDB()
+  setLeverage(db, -5)
+  assert.equal(getAccountLeverage(db, DEFAULT_RISK_CONFIG), DEFAULT_RISK_CONFIG.leverage)
+})
+
+test('requiredMargin — EURUSD 0.01 lot at 1.10, 1:100 lev = $11 margin', () => {
+  const { notional, marginRequired } = requiredMargin('EURUSD', 0.01, 1.10, 100)
+  assert.equal(notional, 1100)
+  assert.equal(marginRequired, 11)
+})
+
+test('requiredMargin — XAUUSD 0.01 lot at $2400, 1:200 lev = $12 margin', () => {
+  const { notional, marginRequired } = requiredMargin('XAUUSD', 0.01, 2400, 200)
+  assert.equal(notional, 2400)
+  assert.equal(marginRequired, 12)
+})
+
+test('requiredMargin — 1:1000 leverage shrinks margin 10x vs 1:100', () => {
+  const hi = requiredMargin('EURUSD', 0.01, 1.10, 1000)
+  const lo = requiredMargin('EURUSD', 0.01, 1.10, 100)
+  assert.equal(hi.marginRequired, 1.1)
+  assert.equal(lo.marginRequired, 11)
+})
+
+test('margin gate — $500 @ 1:5 leverage vetoes XAUUSD 0.01 lot', () => {
+  // $500 × 1% = $5 budget; XAU SL $5 × 100 = $500/lot → 0.01 lot (just affordable)
+  // notional = 0.01 × 100 × 2400 = $2400; margin @ 1:5 = $480
+  // cap = $500 × 0.5 = $250 → veto on margin
+  const db = freshDB()
+  setBalance(db, 500)
+  setLeverage(db, 5)
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    requestedVolume: 0.01,
+  }))
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /insufficient_margin/)
+  assert.equal(res.checks.leverage, 5)
+})
+
+test('margin gate — $500 @ 1:500 leverage approves XAUUSD 0.01 lot', () => {
+  // Same setup, margin @ 1:500 = $4.80 < $250 cap → approves
+  const db = freshDB()
+  setBalance(db, 500)
+  setLeverage(db, 500)
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    requestedVolume: 0.01,
+  }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.margin_required_usd, 4.80)
+  assert.equal(res.checks.leverage, 500)
+})
+
+test('margin gate — higher leverage reduces required margin', () => {
+  const { marginRequired: mLow } = requiredMargin('XAUUSD', 0.01, 2400, 20)
+  const { marginRequired: mHigh } = requiredMargin('XAUUSD', 0.01, 2400, 1000)
+  assert.ok(mHigh < mLow)
+  assert.equal(mLow, 120)
+  assert.equal(mHigh, 2.4)
+})
+
+test('margin gate — not enforced when balance unset', () => {
+  // Absolute fallback mode skips the margin check entirely.
+  const db = freshDB()
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+  }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.notional_usd, undefined)
+})
+
+test('maxMarginUsagePct config is honoured', () => {
+  const db = freshDB()
+  setBalance(db, 1000)
+  setLeverage(db, 100)
+  // Margin = 2400/100 = $24; cap default = $500; custom cap 2% = $20 → veto
+  const config = { ...DEFAULT_RISK_CONFIG, maxMarginUsagePct: 0.02 }
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'XAUUSD', entry: 2400, sl: 2395, tp1: 2410,
+    requestedVolume: 0.01,
+  }), config)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /insufficient_margin/)
+})
+
+test('empty blockedSymbols allows everything budget supports', () => {
+  const db = freshDB()
+  setBalance(db, 20000)
+  // Default config has blockedSymbols = []
+  for (const sym of ['BTCUSD', 'XAUUSD', 'US30', 'EURUSD']) {
+    const res = evaluateTrade(db, goodProposal({
+      symbol: sym,
+      entry: sym === 'BTCUSD' ? 50000 : sym === 'XAUUSD' ? 2400 : sym === 'US30' ? 40000 : 1.1,
+      sl:    sym === 'BTCUSD' ? 49000 : sym === 'XAUUSD' ? 2395 : sym === 'US30' ? 39800 : 1.097,
+      tp1:   sym === 'BTCUSD' ? 52000 : sym === 'XAUUSD' ? 2410 : sym === 'US30' ? 40400 : 1.106,
+      requestedVolume: 0.01,
+    }))
+    assert.equal(res.approved, true, `${sym} rejected: ${res.veto_reason}`)
+  }
+})
+
+// Back-compat: absolute-USD fallback -------------------------------------
+
+test('no balance → uses absolute dailyLossLimit', () => {
+  const db = freshDB()
+  insertClosedTrade(db, -DEFAULT_RISK_CONFIG.dailyLossLimit)
+  const res = evaluateTrade(db, goodProposal())
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /daily_loss_limit_hit/)
+})
+
+test('no balance → no tier gate, crypto approves', () => {
+  const db = freshDB()
+  const res = evaluateTrade(db, goodProposal({
+    symbol: 'BTCUSD', entry: 50000, sl: 49000, tp1: 52000,
+  }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })

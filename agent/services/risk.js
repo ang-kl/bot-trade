@@ -3,14 +3,24 @@
 // ---------------------------------------------------------------------------
 // Pure deterministic gate that runs between Analyst `auto_trade: true` and
 // cTrader. Enforces daily loss limit, consecutive-loss cooldown, open-position
-// cap, R:R floor, SL distance floor, currency-exposure cap, and Kelly sizing.
+// cap, R:R floor, SL distance floor, currency-exposure cap, instrument-tier
+// gating, equity-aware per-trade sizing, and Kelly scaling.
 // NO LLM calls — this is auditable and must never depend on model output.
+// ---------------------------------------------------------------------------
+// Equity-aware mode: when `account_balance_usd` is set in agent_state, the
+// daily loss limit is derived from `dailyLossPct` and position size is derived
+// from `perTradeRiskPct` × balance ÷ USD-per-lot. When balance is unset we
+// fall back to the absolute `dailyLossLimit` and honour `requestedVolume`.
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 
 export const DEFAULT_RISK_CONFIG = {
-  dailyLossLimit: 300,             // USD. Absolute realised loss today triggers kill.
+  dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
+  dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
+  perTradeRiskPct: 0.01,           // 1% of balance per trade.
+  minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
   cooldownMinutes: 60,             // Cool-off window after hitting the streak.
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
@@ -21,6 +31,17 @@ export const DEFAULT_RISK_CONFIG = {
   minTradesForKelly: 30,           // Below this → use default volume.
   kellyFraction: 0.25,             // Quarter-Kelly for drawdown control.
   allowNegativeExpectancyOverride: false, // If false, negative expectancy vetoes.
+  // Account leverage (e.g. 200 = 1:200). Used to check margin headroom so the
+  // risk manager doesn't approve a position that eats your available margin.
+  // Override via POST /actions/balance { leverage: 500 }.
+  leverage: 100,
+  maxMarginUsagePct: 0.5,          // Max % of balance locked in margin.
+  // Instrument universe: empty = everything allowed. Put symbols here to veto
+  // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
+  // Tier is just a label for the dashboard — the real equity gate is
+  // `insufficient_equity` below, which vetoes when the risk budget cannot
+  // support 0.01 lot on the proposed SL distance.
+  blockedSymbols: [],
 }
 
 /**
@@ -34,6 +55,40 @@ export function loadRiskConfig(db) {
   } catch {
     return { ...DEFAULT_RISK_CONFIG }
   }
+}
+
+/**
+ * Read the configured account balance (USD) from agent_state, or null when
+ * unset. Any non-positive or malformed value is treated as unset.
+ */
+export function getAccountBalance(db) {
+  const raw = getState(db, 'account_balance_usd')
+  if (raw == null) return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n
+}
+
+/**
+ * Read the configured account leverage (e.g. 200 → 1:200). Falls back to the
+ * config default when unset or malformed. Leverage ≤0 is ignored.
+ */
+export function getAccountLeverage(db, config) {
+  const raw = getState(db, 'account_leverage')
+  if (raw == null) return config.leverage
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return config.leverage
+  return n
+}
+
+/**
+ * Compute margin required for a proposed position (in the account's deposit
+ * currency, approximated as USD). Returns { notional, marginRequired }.
+ */
+export function requiredMargin(symbol, volumeLots, price, leverage) {
+  const notional = notionalUsd(symbol, volumeLots, price)
+  const marginRequired = notional / Math.max(1, leverage)
+  return { notional, marginRequired }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +127,36 @@ export function netExposure(positions, proposal) {
   for (const p of positions) add(currencyLegs(p.symbol, p.side))
   if (proposal) add(currencyLegs(proposal.symbol, proposal.side))
   return exposure
+}
+
+// ---------------------------------------------------------------------------
+// Equity-aware sizing
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the lot size that risks `perTradeRiskPct` of the account balance
+ * given the SL distance for this symbol.
+ *
+ * volume = (balance × riskPct) ÷ (slDistance × contractSize)
+ *
+ * Returns { volume, usdRisk, note }. `volume` is rounded down to 2dp; callers
+ * should veto if it falls below the minimum lot size.
+ */
+export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct) {
+  const budget = balance * riskPct
+  const usdPerLot = usdLossPerLot(symbol, slDistance)
+  if (!Number.isFinite(usdPerLot) || usdPerLot <= 0) {
+    return { volume: 0, usdRisk: 0, note: 'usd_per_lot_unknown' }
+  }
+  const raw = budget / usdPerLot
+  // Round down to 2dp so we never exceed the risk budget.
+  const volume = Math.floor(raw * 100) / 100
+  const usdRisk = volume * usdPerLot
+  return {
+    volume,
+    usdRisk: Number(usdRisk.toFixed(2)),
+    note: `risk_budget=$${budget.toFixed(2)} usd_per_lot=$${usdPerLot.toFixed(2)}`,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,9 +203,12 @@ export function kellyVolume(stats, defaultVolume, config) {
  */
 export function evaluateTrade(db, proposal, configOverride) {
   const config = configOverride || loadRiskConfig(db)
-  const checks = {}
+  const balance = getAccountBalance(db)
+  const leverage = getAccountLeverage(db, config)
+  const checks = { balance, leverage }
 
   // ---- 1. Daily loss limit ------------------------------------------------
+  // Prefer % of balance when set; fall back to absolute USD cap.
   const dayStart = new Date()
   dayStart.setUTCHours(0, 0, 0, 0)
   const dayStartISO = dayStart.toISOString()
@@ -132,8 +220,15 @@ export function evaluateTrade(db, proposal, configOverride) {
     .get(dayStartISO)
   const todayPnl = todayRow?.pnl || 0
   checks.daily_pnl = todayPnl
-  if (todayPnl <= -Math.abs(config.dailyLossLimit)) {
-    return veto(`daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${config.dailyLossLimit}`, checks, proposal)
+  const effectiveDailyCap = balance != null
+    ? balance * config.dailyLossPct
+    : config.dailyLossLimit
+  checks.daily_cap_usd = Number(effectiveDailyCap.toFixed(2))
+  if (todayPnl <= -Math.abs(effectiveDailyCap)) {
+    return veto(
+      `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}`,
+      checks, proposal,
+    )
   }
 
   // ---- 2. Consecutive-loss cooldown --------------------------------------
@@ -176,7 +271,19 @@ export function evaluateTrade(db, proposal, configOverride) {
     return veto(`duplicate_symbol existing_side=${existingSameSymbol.side}`, checks, proposal)
   }
 
-  // ---- 5. R:R floor -------------------------------------------------------
+  // ---- 5. Blocked-symbol gate (opt-in per-config) -------------------------
+  // No hardcoded instrument universe — you get whatever your balance supports
+  // on 0.01 lot (enforced by the `insufficient_equity` check below). The tier
+  // label is still attached for dashboard context.
+  if (balance != null) {
+    checks.tier = tierForBalance(balance).name
+  }
+  const blocked = Array.isArray(config.blockedSymbols) ? config.blockedSymbols : []
+  if (blocked.some(s => String(s).toUpperCase() === proposal.symbol.toUpperCase())) {
+    return veto(`symbol_blocked ${proposal.symbol}`, checks, proposal)
+  }
+
+  // ---- 6. R:R floor -------------------------------------------------------
   if (proposal.entry == null || proposal.sl == null) {
     return veto('missing_entry_or_sl', checks, proposal)
   }
@@ -204,14 +311,14 @@ export function evaluateTrade(db, proposal, configOverride) {
     }
   }
 
-  // ---- 6. SL distance floor (as % of entry) -------------------------------
+  // ---- 7. SL distance floor (as % of entry) -------------------------------
   const slPct = (slDistance / Math.abs(entry)) * 100
   checks.sl_pct = Number(slPct.toFixed(3))
   if (slPct < config.minSLDistancePct) {
     return veto(`sl_too_tight ${slPct.toFixed(3)}%<${config.minSLDistancePct}%`, checks, proposal)
   }
 
-  // ---- 7. Currency-exposure cap ------------------------------------------
+  // ---- 8. Currency-exposure cap ------------------------------------------
   const exposure = netExposure(openPositions, proposal)
   checks.exposure = exposure
   for (const [ccy, v] of Object.entries(exposure)) {
@@ -220,24 +327,67 @@ export function evaluateTrade(db, proposal, configOverride) {
     }
   }
 
-  // ---- 8. Kelly sizing ----------------------------------------------------
+  // ---- 9. Equity-aware position sizing -----------------------------------
+  // When balance is known, derive the lot size from the per-trade risk
+  // budget; veto when even the minimum lot size would exceed that budget.
+  let sizingFloor = proposal.requestedVolume
+  let sizingNote = null
+  if (balance != null) {
+    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct)
+    checks.risk_budget = Number((balance * config.perTradeRiskPct).toFixed(2))
+    checks.risk_based_volume = risked.volume
+    checks.risk_based_usd = risked.usdRisk
+    if (risked.volume < config.minLotSize) {
+      return veto(
+        `insufficient_equity min_lot=${config.minLotSize} computed=${risked.volume} ${risked.note}`,
+        checks, proposal,
+      )
+    }
+    // Use the smaller of the risk-based volume and the requested (watchlist) cap.
+    sizingFloor = Math.min(risked.volume, proposal.requestedVolume)
+    sizingNote = risked.note
+  }
+
+  // ---- 10. Kelly sizing --------------------------------------------------
   const latestStats = db
     .prepare(`SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1`)
     .get()
-  const { volume: kellyVol, note: sizingNote } = kellyVolume(
+  const { volume: kellyVol, note: kellyNote } = kellyVolume(
     latestStats,
-    proposal.requestedVolume,
+    sizingFloor,
     config
   )
   checks.kelly_volume = kellyVol
   if (kellyVol === 0 && !config.allowNegativeExpectancyOverride) {
-    return veto(`negative_expectancy ${sizingNote}`, checks, proposal)
+    return veto(`negative_expectancy ${kellyNote}`, checks, proposal)
+  }
+  // Never ship below broker minimum.
+  const finalVolume = Math.max(config.minLotSize, kellyVol || sizingFloor)
+
+  // ---- 11. Margin-headroom gate ------------------------------------------
+  // Ensure the position (plus existing open positions' margin) doesn't exceed
+  // `maxMarginUsagePct` of balance. Only enforced when balance is set.
+  if (balance != null) {
+    const { notional, marginRequired } = requiredMargin(
+      proposal.symbol, finalVolume, entry, leverage,
+    )
+    checks.notional_usd = Number(notional.toFixed(2))
+    checks.margin_required_usd = Number(marginRequired.toFixed(2))
+    const marginCap = balance * config.maxMarginUsagePct
+    checks.margin_cap_usd = Number(marginCap.toFixed(2))
+    if (marginRequired > marginCap) {
+      return veto(
+        `insufficient_margin required=${marginRequired.toFixed(2)} cap=${marginCap.toFixed(2)} leverage=${leverage}`,
+        checks, proposal,
+      )
+    }
   }
 
+  const combinedNote = sizingNote ? `${sizingNote} · ${kellyNote}` : kellyNote
   return {
     approved: true,
-    adjusted_volume: kellyVol || proposal.requestedVolume,
-    sizing_note: sizingNote,
+    adjusted_volume: finalVolume,
+    sizing_note: combinedNote,
     checks,
   }
 }
