@@ -95,24 +95,29 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
   const [positions, setPositions] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Per-account tab — defaults to the primary linked account but the user can
+  // flip between any connected account (autopilot / copilot / observer).
+  const [selectedAccountId, setSelectedAccountId] = useState(ctrader.linkedAccountId)
+  useEffect(() => {
+    if (!selectedAccountId && ctrader.linkedAccountId) setSelectedAccountId(ctrader.linkedAccountId)
+  }, [ctrader.linkedAccountId, selectedAccountId])
 
-  const linked = ctrader.accounts.find(a => a.accountId === ctrader.linkedAccountId)
-  const isLive = linked?.isLive ?? false
+  const selected = ctrader.accounts.find(a => a.accountId === selectedAccountId)
+  const isLive = selected?.isLive ?? false
   const roles = ctrader.accountRoles || {}
-  const apAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.autopilot)
-  const cpAccounts = ctrader.accounts.filter(a => roles[String(a.accountId)]?.copilot)
+  const selectedRole = roles[String(selectedAccountId)] || {}
 
   const refresh = useCallback(async () => {
-    if (!ctrader.linkedAccountId || !ctrader.accessToken) return
+    if (!selectedAccountId || !ctrader.accessToken) return
     setLoading(true); setError(null)
     try {
       const [inf, pos] = await Promise.all([
-        fetchAccountInfo(ctrader.accessToken, ctrader.linkedAccountId, isLive),
-        fetchOpenPositions(ctrader.accessToken, ctrader.linkedAccountId, isLive),
+        fetchAccountInfo(ctrader.accessToken, selectedAccountId, isLive),
+        fetchOpenPositions(ctrader.accessToken, selectedAccountId, isLive),
       ])
       setInfo(inf); setPositions(pos)
     } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }, [ctrader.accessToken, ctrader.linkedAccountId, isLive])
+  }, [ctrader.accessToken, selectedAccountId, isLive])
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
@@ -141,31 +146,42 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
         <div className="flex items-center gap-2">
           <p className="t-label">Trading Account</p>
           <Badge tone={isLive ? 'down' : 'accent'} pill>{isLive ? 'LIVE' : 'DEMO'}</Badge>
-          {linked && (
+          {selected && (
             <span className="text-[10px] text-[var(--color-muted)]">
-              #{linked.accountNumber || ctrader.linkedAccountId}
+              #{selected.accountNumber || selectedAccountId}
             </span>
           )}
+          {selectedRole.autopilot && <Badge tone="info" className="text-[8px] px-1">AUTO</Badge>}
+          {selectedRole.copilot && <Badge tone="special" className="text-[8px] px-1">COPILOT</Badge>}
         </div>
         <Button size="sm" variant="ghost" onClick={refresh} disabled={loading} className="!px-1.5 !py-0.5 text-[10px]">
           {loading ? '…' : '↻'}
         </Button>
       </div>
 
-      {(apAccounts.length > 0 || cpAccounts.length > 0) && (
-        <div className="flex items-center gap-3 mb-2 text-[9.5px] text-[var(--color-muted)] flex-wrap">
-          {apAccounts.length > 0 && (
-            <span>
-              <Badge tone="info" className="text-[8px] px-1 mr-1">AUTO</Badge>
-              {apAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
-            </span>
-          )}
-          {cpAccounts.length > 0 && (
-            <span>
-              <Badge tone="special" className="text-[8px] px-1 mr-1">COPILOT</Badge>
-              {cpAccounts.map(a => `#${a.accountNumber || a.accountId}`).join(', ')}
-            </span>
-          )}
+      {ctrader.accounts.length > 1 && (
+        <div className="flex items-center gap-1 mb-2 overflow-x-auto scrollbar-none">
+          {ctrader.accounts.map(a => {
+            const r = roles[String(a.accountId)] || {}
+            const active = a.accountId === selectedAccountId
+            return (
+              <button
+                key={a.accountId}
+                type="button"
+                onClick={() => setSelectedAccountId(a.accountId)}
+                className={`px-2 py-1 rounded-[5px] text-[10px] whitespace-nowrap flex items-center gap-1 ${
+                  active
+                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold'
+                    : 'text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)]'
+                }`}
+              >
+                <span>#{a.accountNumber || a.accountId}</span>
+                <span className="opacity-70">{a.isLive ? 'LIVE' : 'DEMO'}</span>
+                {r.autopilot && <span className="text-[8px] text-[var(--color-info)]">A</span>}
+                {r.copilot && <span className="text-[8px] text-[var(--color-special)]">C</span>}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -200,6 +216,78 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
           <div>
             <p className="t-meta text-[var(--color-muted)]">Open Trades</p>
             <p className="text-[15px] font-bold text-[var(--color-text)]">{positions?.count ?? '—'}</p>
+          </div>
+        </div>
+      )}
+
+      {positions?.orders?.length > 0 && (
+        <div className="mb-3">
+          <p className="t-meta text-[var(--color-muted)] mb-1">Pending Orders</p>
+          <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+            {positions.orders.map((o, i) => {
+              const sym = o.symbolName || `#${o.symbolId}`
+              const volLots = o.volume != null ? o.volume / 10000 : null
+              const isGold = (o.symbolName || '').startsWith('XAU')
+              const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
+              const priceDigits = (o.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
+              const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
+              const typeLabel = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
+              const parsedLabel = o.label ? parseLabel(o.label) : null
+              const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
+              const slPips = pipDist(triggerPrice, o.stopLoss, o.symbolName)
+              const tpPips = pipDist(triggerPrice, o.takeProfit, o.symbolName)
+              return (
+                <div key={o.orderId || i} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className={`font-bold w-[12px] ${o.side === 'BUY' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {o.side === 'BUY' ? '▲' : '▼'}
+                    </span>
+                    <span className="font-bold text-[var(--color-text)]">{sym}</span>
+                    <Badge tone="neutral" className="text-[8px] px-1">{typeLabel}</Badge>
+                    {sourceBadge && (
+                      <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                        {sourceBadge.text}
+                      </Badge>
+                    )}
+                    <span className="text-[var(--color-muted)]">
+                      {volLots != null ? `${volLots.toFixed(2)} lots${ozDisplay}` : '—'}
+                    </span>
+                    <span className="text-[var(--color-muted)]">
+                      @ {triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}
+                    </span>
+                    <span className="flex-1" />
+                    <span className="text-[9.5px] text-[var(--color-muted)]">
+                      {o.utcLastUpdateTimestamp ? fmtAgo(o.utcLastUpdateTimestamp) : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                    {o.stopLoss != null && (
+                      <span>
+                        <span className="text-[var(--color-down)]">SL</span> {o.stopLoss.toFixed(priceDigits)}
+                        {slPips != null && <span className="opacity-70"> ({slPips > 0 ? '+' : ''}{slPips.toFixed(1)}p)</span>}
+                      </span>
+                    )}
+                    {o.takeProfit != null && (
+                      <span>
+                        <span className="text-[var(--color-up)]">TP</span> {o.takeProfit.toFixed(priceDigits)}
+                        {tpPips != null && <span className="opacity-70"> ({tpPips > 0 ? '+' : ''}{tpPips.toFixed(1)}p)</span>}
+                      </span>
+                    )}
+                    {o.expirationTimestamp && <span>expires {fmtAgo(o.expirationTimestamp)}</span>}
+                    {parsedLabel?.strategy && (
+                      <span className="uppercase tracking-wide">
+                        {parsedLabel.strategy}
+                        {parsedLabel.conviction && <span className="opacity-70"> · {parsedLabel.conviction}</span>}
+                        {parsedLabel.session && <span className="opacity-70"> · {parsedLabel.session}</span>}
+                      </span>
+                    )}
+                    {o.label && !sourceBadge && (
+                      <span className="italic truncate max-w-[80px]" title={o.label}>{o.label}</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
