@@ -584,15 +584,20 @@ export default async function handler(req, res) {
 
       const reconcile = results[2] || {}
 
-      // Resolve symbolId → symbolName via SYMBOL_BY_ID batch lookup
-      const positionSymbolIds = [...new Set((reconcile.position || []).map(p => p.tradeData?.symbolId).filter(Boolean))]
+      // Resolve symbolId → symbolName via SYMBOL_BY_ID batch lookup. Merge
+      // position and resting-order symbol IDs into a single call so we only
+      // pay one round-trip even if the account has a mix of both.
+      const allSymbolIds = [...new Set([
+        ...(reconcile.position || []).map(p => p.tradeData?.symbolId),
+        ...(reconcile.order || []).map(o => o.tradeData?.symbolId),
+      ].filter(Boolean))]
       let symbolNameMap = {}
-      if (positionSymbolIds.length > 0) {
+      if (allSymbolIds.length > 0) {
         try {
           const symResults = await wsQuery(host, [
             { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
             { send: { payloadType: PT.ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT.ACCOUNT_AUTH_RES },
-            { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: positionSymbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
+            { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: allSymbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
           ])
           for (const s of (symResults[2]?.symbol || [])) {
             symbolNameMap[s.symbolId] = s.symbolName
@@ -623,10 +628,35 @@ export default async function handler(req, res) {
         }
       })
 
+      // Pending orders — LIMIT/STOP/STOP_LIMIT that haven't filled yet.
+      // cTrader returns them in `reconcile.order` as a sibling to positions.
+      // Shape mirrors `positions` with order-specific fields layered on top.
+      const orders = (reconcile.order || []).map(o => {
+        const t = o.tradeData || {}
+        return {
+          orderId: o.orderId,
+          symbolId: t.symbolId,
+          symbolName: symbolNameMap[t.symbolId] || null,
+          side: t.tradeSide,
+          volume: t.volume,
+          orderType: o.orderType,         // 'LIMIT' | 'STOP' | 'STOP_LIMIT'
+          orderStatus: o.orderStatus,     // 'ORDER_STATUS_ACCEPTED' etc.
+          limitPrice: o.limitPrice || null,
+          stopPrice: o.stopPrice || null,
+          stopLoss: o.stopLoss || null,
+          takeProfit: o.takeProfit || null,
+          expirationTimestamp: o.expirationTimestamp || null,
+          utcLastUpdateTimestamp: o.utcLastUpdateTimestamp || t.openTimestamp || null,
+          label: t.label || '',
+          comment: t.comment || '',
+        }
+      })
+
       return res.status(200).json({
         positions,
         count: positions.length,
-        pendingOrders: (reconcile.order || []).length,
+        orders,
+        pendingOrders: orders.length,
       })
     } catch (err) {
       return res.status(500).json({ error: err.message })

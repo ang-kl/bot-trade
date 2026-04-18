@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
-import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentConfigured, ROLES } from '../lib/agent-api.js'
 import { fmtTime, fmtAgo } from '../lib/time.js'
 
 const KIND_TONE = {
@@ -19,7 +19,7 @@ const KIND_TONE = {
 // Drill-down modal — fetches full detail for the selected row
 // ---------------------------------------------------------------------------
 
-function DetailModal({ row, onClose }) {
+function DetailModal({ row, role, onClose }) {
   const [detail, setDetail] = useState(null)
   const [error, setError] = useState(null)
 
@@ -29,11 +29,11 @@ function DetailModal({ row, onClose }) {
       try {
         let d = null
         if (row.kind === 'analysis') {
-          d = await agentGet(`/state/analysis/${row.id}`)
+          d = await agentGet(`/state/analysis/${row.id}`, role)
         } else if (row.kind === 'monitor') {
-          d = await agentGet(`/state/position/${row.id}`)
+          d = await agentGet(`/state/position/${row.id}`, role)
         } else if (row.kind === 'scan') {
-          const all = await agentGet(`/state/scans/${encodeURIComponent(row.symbol)}`)
+          const all = await agentGet(`/state/scans/${encodeURIComponent(row.symbol)}`, role)
           d = { scan: (all?.scans || []).find(s => s.id === row.id) || null }
         } else {
           d = { raw: row }
@@ -43,7 +43,7 @@ function DetailModal({ row, onClose }) {
     }
     load()
     return () => { live = false }
-  }, [row])
+  }, [row, role])
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 overflow-y-auto" onClick={onClose}>
@@ -216,7 +216,21 @@ function ScanDetail({ scan }) {
 // Main page
 // ---------------------------------------------------------------------------
 
+const ROLE_STORAGE_KEY = 'bot-trade:agent-role'
+
 export default function Workshop() {
+  const [role, setRoleState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ROLE_STORAGE_KEY)
+      if (ROLES.includes(saved)) return saved
+    } catch {}
+    return agentConfigured('autopilot') ? 'autopilot' : (agentConfigured('copilot') ? 'copilot' : 'autopilot')
+  })
+  const setRole = (r) => {
+    setRoleState(r)
+    try { localStorage.setItem(ROLE_STORAGE_KEY, r) } catch {}
+  }
+
   const [activity, setActivity] = useState([])
   const [filter, setFilter] = useState('all')
   const [selected, setSelected] = useState(null)
@@ -224,23 +238,29 @@ export default function Workshop() {
   const [loading, setLoading] = useState(false)
 
   const refresh = useCallback(async () => {
-    if (!agentConfigured) return
+    if (!agentConfigured(role)) return
     setLoading(true)
     try {
-      const a = await agentGet('/state/activity?limit=200')
+      const a = await agentGet('/state/activity?limit=200', role)
       setActivity(a?.activity || [])
       setError(null)
     } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }, [])
+  }, [role])
+
+  // Discard stale autopilot rows the instant the operator flips roles so the
+  // drill-down never tries to resolve an autopilot id against copilot's DB.
+  useEffect(() => {
+    setActivity([]); setSelected(null); setError(null)
+  }, [role])
 
   useEffect(() => { refresh() }, [refresh])
 
-  if (!agentConfigured) {
+  if (!agentConfigured('autopilot') && !agentConfigured('copilot')) {
     return (
       <Card>
         <p className="t-label mb-1">Workshop</p>
         <p className="t-sub text-[var(--color-muted)]">
-          Agent backend not configured. Set <code>VITE_AGENT_URL</code> and <code>VITE_AGENT_SECRET</code> in Vercel, then redeploy.
+          Agent backend not configured. Set <code>VITE_AGENT_URL_AUTOPILOT</code> + <code>VITE_AGENT_SECRET_AUTOPILOT</code> (and optionally the matching <code>_COPILOT</code> pair) in Vercel, then redeploy.
         </p>
       </Card>
     )
@@ -251,6 +271,33 @@ export default function Workshop() {
 
   return (
     <section className="space-y-3">
+      {/* Role switcher — mirrors the Trade Window toggle. */}
+      <div className="flex items-center gap-1 text-[10px]">
+        {ROLES.map(r => {
+          const wired = agentConfigured(r)
+          const active = r === role
+          return (
+            <button
+              key={r}
+              type="button"
+              onClick={() => wired && setRole(r)}
+              disabled={!wired}
+              className={`px-2.5 py-1 rounded-[5px] uppercase font-bold tracking-wider ${
+                active
+                  ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                  : wired
+                  ? 'text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)]'
+                  : 'text-[var(--color-muted)] opacity-40 cursor-not-allowed'
+              }`}
+              title={wired ? '' : `VITE_AGENT_URL_${r.toUpperCase()} not set`}
+            >
+              {r}
+              {!wired && <span className="ml-1 opacity-60">(off)</span>}
+            </button>
+          )
+        })}
+      </div>
+
       <Card>
         <div className="flex items-center justify-between mb-2">
           <div>
@@ -307,7 +354,7 @@ export default function Workshop() {
         </div>
       </Card>
 
-      {selected && <DetailModal row={selected} onClose={() => setSelected(null)} />}
+      {selected && <DetailModal row={selected} role={role} onClose={() => setSelected(null)} />}
     </section>
   )
 }

@@ -14,9 +14,9 @@ function fmtPrice(p) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 }
 
-export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initialOrderType = 'market', onConfirm, onCancel }) {
+export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initialOrderType = 'market', marketOpen = true, onConfirm, onCancel }) {
   const [volume, setVolume] = useState(String(maxVolume))
-  const [orderType, setOrderType] = useState(initialOrderType)
+  const [orderType, setOrderType] = useState(!marketOpen && initialOrderType === 'market' ? 'limit' : initialOrderType)
   const [limitPrice, setLimitPrice] = useState(synthesis?.entry ? String(synthesis.entry) : '')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
@@ -83,9 +83,11 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
           <Button
             size="sm"
             variant={orderType === 'market' ? 'primary' : 'ghost'}
-            onClick={() => setOrderType('market')}
+            onClick={() => marketOpen && setOrderType('market')}
+            disabled={!marketOpen}
+            title={marketOpen ? '' : 'Market closed — use Limit or Stop Entry'}
           >
-            Market
+            Market{!marketOpen && <span className="ml-1 opacity-50 text-[8px]">closed</span>}
           </Button>
           <Button
             size="sm"
@@ -102,6 +104,11 @@ export default function OrderDialog({ symbol, synthesis, maxVolume = 0.01, initi
             Stop Entry
           </Button>
         </div>
+        {!marketOpen && (
+          <p className="text-[10px] text-[var(--color-warning-text)] bg-[var(--color-warning-bg)] border border-[var(--color-warning-border)] rounded-[5px] px-2 py-1 mb-3">
+            Market is currently closed. Limit and Stop Entry orders will queue until the market reopens.
+          </p>
+        )}
 
         {/* Fields */}
         <div className="space-y-2 mb-3">
