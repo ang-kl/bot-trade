@@ -30,19 +30,34 @@ async function runMinion(client, minionId, symbol, sessionContext) {
     })
     const text = (resp?.content || []).filter(p => p?.type === 'text').map(p => p.text).join('').trim()
     const parsed = parseJSON(text)
+    const validBiases = ['long', 'short', 'neutral', 'skip']
+    const bias = validBiases.includes(parsed.bias) ? parsed.bias : 'skip'
+    const conviction = Math.max(0, Math.min(10, Number(parsed.conviction) || 0))
+    const entry = Number(parsed.entry) || null
+    const sl = Number(parsed.sl) || null
+    const tp1 = Number(parsed.tp1) || null
+    if (entry && sl && ((bias === 'long' && sl >= entry) || (bias === 'short' && sl <= entry))) {
+      return {
+        minionId, name: m.name, role: m.role, icon: m.icon,
+        bias: 'skip', conviction: 0,
+        report: `Rejected: SL on wrong side of entry (${bias} entry=${entry} sl=${sl})`,
+        entry: null, sl: null, tp1: null, tp2: null,
+        tokens: resp.usage?.output_tokens || 0, ms: Date.now() - startedAt,
+      }
+    }
     const result = {
       minionId,
       name: m.name,
       role: m.role,
       icon: m.icon,
-      bias: parsed.bias || 'neutral',
-      conviction: parsed.conviction || 0,
+      bias,
+      conviction,
       report: parsed.report || '',
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
-      entry: parsed.entry || null,
-      sl: parsed.sl || null,
-      tp1: parsed.tp1 || null,
-      tp2: parsed.tp2 || null,
+      entry,
+      sl,
+      tp1,
+      tp2: Number(parsed.tp2) || null,
       invalidation: parsed.invalidation || null,
       tokens: resp.usage?.output_tokens || 0,
       ms: Date.now() - startedAt,
@@ -111,9 +126,19 @@ export async function runAnalysis(client, symbol, options = {}) {
   const minionIds = dispatch(symbol)
   const startedAt = Date.now()
 
-  // 2. Run all minions in parallel
+  // 2. Run all minions in parallel with per-minion timeout (30s)
+  const MINION_TIMEOUT_MS = 30_000
   const minionResults = await Promise.all(
-    minionIds.map(id => runMinion(client, id, symbol, sessionContext))
+    minionIds.map(id =>
+      Promise.race([
+        runMinion(client, id, symbol, sessionContext),
+        new Promise(resolve => setTimeout(() => resolve({
+          minionId: id, name: MINIONS[id]?.name, role: MINIONS[id]?.role, icon: MINIONS[id]?.icon,
+          bias: 'skip', conviction: 0, report: `Timeout after ${MINION_TIMEOUT_MS / 1000}s`,
+          entry: null, sl: null, tp1: null, tp2: null, tokens: 0, ms: MINION_TIMEOUT_MS,
+        }), MINION_TIMEOUT_MS))
+      ])
+    )
   )
   const reports = minionResults.filter(Boolean)
 

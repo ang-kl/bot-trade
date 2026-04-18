@@ -1021,6 +1021,131 @@ function ScanFeed({ activity }) {
 }
 
 // ---------------------------------------------------------------------------
+// Monitor Agent — shows what the position manager + LLM monitor are doing
+// ---------------------------------------------------------------------------
+
+const CHECK_ACTION_TONE = {
+  HOLD: 'neutral', 'PM:HOLD': 'neutral',
+  EXIT: 'down', 'PM:FULL_EXIT': 'down', FULL_EXIT: 'down',
+  TIGHTEN_SL: 'warning', 'PM:MOVE_SL': 'warning', MOVE_SL: 'warning',
+  SCALE_OUT: 'info', 'PM:PARTIAL_EXIT': 'info', PARTIAL_EXIT: 'info',
+  ADD: 'up',
+}
+
+function MonitorAgent({ role }) {
+  const [positions, setPositions] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    const load = () => {
+      agentGet('/state/positions', role)
+        .then(r => setPositions(r?.positions || []))
+        .catch(() => {})
+        .finally(() => setLoading(false))
+    }
+    load()
+    const iv = setInterval(load, 15_000)
+    return () => clearInterval(iv)
+  }, [role])
+
+  if (loading && positions.length === 0) return null
+
+  const now = Date.now()
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Monitor Agent</p>
+        <Badge tone={positions.length > 0 ? 'info' : 'neutral'} pill>
+          {positions.length} position{positions.length !== 1 ? 's' : ''}
+        </Badge>
+        <span className="text-[9px] text-[var(--color-muted)]">checks every 5 min</span>
+      </div>
+
+      {positions.length === 0 ? (
+        <p className="t-sub text-[var(--color-muted)] py-2 text-center">
+          No open positions to monitor. The monitor activates when trades are placed.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {positions.map(pos => {
+            const action = pos.last_check_action || 'HOLD'
+            const actionLabel = action.replace('PM:', '')
+            const tone = CHECK_ACTION_TONE[action] || 'neutral'
+            const lastCheckMs = pos.last_check_at ? now - new Date(pos.last_check_at).getTime() : null
+            const stale = lastCheckMs && lastCheckMs > 10 * 60 * 1000
+            const mfeR = pos.mfe_r != null ? pos.mfe_r.toFixed(2) : null
+            const maeR = pos.mae_r != null ? pos.mae_r.toFixed(2) : null
+            const minutesOpen = pos.created_at
+              ? Math.round((now - new Date(pos.created_at).getTime()) / 60_000)
+              : null
+
+            return (
+              <div key={pos.id} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-[11px] font-bold font-mono text-[var(--color-text)]">{pos.symbol}</span>
+                  <Badge tone={pos.side === 'BUY' ? 'up' : 'down'} className="text-[8px] px-1">{pos.side}</Badge>
+                  <Badge tone={tone} className="text-[8px] px-1">{actionLabel}</Badge>
+                  {pos.thesis_status && pos.thesis_status !== 'intact' && (
+                    <Badge tone={pos.thesis_status === 'broken' ? 'down' : 'warning'} className="text-[8px] px-1">
+                      {pos.thesis_status.toUpperCase()}
+                    </Badge>
+                  )}
+                  {stale && <Badge tone="warning" className="text-[8px] px-1">STALE</Badge>}
+                  <span className="flex-1" />
+                  {pos.last_check_at && (
+                    <span className="text-[9px] text-[var(--color-muted)]">{fmtAgo(pos.last_check_at)}</span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 text-[9.5px]">
+                  <span className="text-[var(--color-muted)]">
+                    Entry <span className="font-mono text-[var(--color-text)]">{pos.entry_price || '—'}</span>
+                  </span>
+                  <span className="text-[var(--color-muted)]">
+                    SL <span className="font-mono text-[var(--color-text)]">{pos.current_sl || '—'}</span>
+                  </span>
+                  <span className="text-[var(--color-muted)]">
+                    TP <span className="font-mono text-[var(--color-text)]">{pos.current_tp || '—'}</span>
+                  </span>
+                  {minutesOpen != null && (
+                    <span className="text-[var(--color-muted)]">
+                      {minutesOpen < 60 ? `${minutesOpen}m` : `${(minutesOpen / 60).toFixed(1)}h`} open
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3 text-[9.5px] mt-0.5">
+                  {mfeR != null && (
+                    <span className="text-[var(--color-muted)]">
+                      MFE <span className="font-mono text-[var(--color-up)]">+{mfeR}R</span>
+                    </span>
+                  )}
+                  {maeR != null && (
+                    <span className="text-[var(--color-muted)]">
+                      MAE <span className="font-mono text-[var(--color-down)]">-{maeR}R</span>
+                    </span>
+                  )}
+                  {pos.be_moved ? <span className="text-[8px] text-[var(--color-accent)]">BE ✓</span> : null}
+                  {pos.scaled_out ? <span className="text-[8px] text-[var(--color-accent)]">SCALED ✓</span> : null}
+                </div>
+
+                {pos.last_check_reasoning && (
+                  <p className="text-[9px] text-[var(--color-text-sub)] mt-1 truncate">
+                    {pos.last_check_reasoning}
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // History — recent trade lifecycle events (open/close/SL/TP/cancel)
 // ---------------------------------------------------------------------------
 
@@ -1427,6 +1552,9 @@ export default function Agent() {
         <AttributionPanel role={role} />
         <EquityCurve role={role} />
       </div>
+
+      {/* Monitor Agent — what's being watched, last checks, thesis status */}
+      <MonitorAgent role={role} />
 
       {/* Two-column grid for operational panels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
