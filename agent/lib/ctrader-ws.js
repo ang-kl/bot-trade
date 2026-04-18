@@ -144,16 +144,35 @@ function authSteps(clientId, clientSecret, accessToken, accountId) {
   ]
 }
 
+async function withRetry(fn, maxRetries = 2, label = 'ws') {
+  let lastErr
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      const msg = err.message || ''
+      if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
+      if (attempt < maxRetries) {
+        const delay = (attempt + 1) * 2000
+        console.log(`[${label}] retry ${attempt + 1}/${maxRetries} in ${delay}ms — ${msg}`)
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+  }
+  throw lastErr
+}
+
 /**
  * Place a new order. `orderPayload` must already contain the full NEW_ORDER_REQ
  * shape (ctidTraderAccountId, symbolId, tradeSide, volume, orderType, SL/TP,
  * label, …). Returns the EXECUTION_EVENT payload.
  */
 export function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload, timeoutMs = 20_000) {
-  return wsRun(host, [
+  return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.NEW_ORDER_REQ, payload: orderPayload }, expect: PT.EXECUTION_EVENT },
-  ], timeoutMs)
+  ], timeoutMs), 2, 'wsPlaceOrder')
 }
 
 /**

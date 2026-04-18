@@ -532,15 +532,24 @@ export default function Agent() {
     )
   }
 
+  const circuitBreaker = health?.circuitBreaker
+  const resetBreaker = async () => {
+    setBusy(true)
+    try { await agentPost('/actions/reset-breaker', undefined, role); await refresh() }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
   const statusBadge = role === 'copilot'
     ? { tone: 'special', text: 'COPILOT STANDBY' }
-    : autotradeOn
-      ? { tone: 'up', text: 'AUTO-TRADE ON' }
-      : analyzeOn
-        ? { tone: 'accent', text: 'ANALYZE ONLY' }
-        : scanOn
-          ? { tone: 'neutral', text: 'SCAN ONLY' }
-          : { tone: 'neutral', text: 'ALL OFF' }
+    : circuitBreaker
+      ? { tone: 'down', text: 'CIRCUIT BREAKER' }
+      : autotradeOn
+        ? { tone: 'up', text: 'AUTO-TRADE ON' }
+        : analyzeOn
+          ? { tone: 'accent', text: 'ANALYZE ONLY' }
+          : scanOn
+            ? { tone: 'neutral', text: 'SCAN ONLY' }
+            : { tone: 'neutral', text: 'ALL OFF' }
 
   return (
     <section className="space-y-3">
@@ -629,6 +638,23 @@ export default function Agent() {
 
         {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
 
+        {circuitBreaker && (
+          <div className="mb-3 px-3 py-2 rounded-[5px] bg-[color-mix(in_srgb,var(--color-down)_15%,transparent)] border border-[var(--color-down)]">
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--color-down)] font-bold">CIRCUIT BREAKER TRIPPED</span>
+              <span className="text-[var(--color-muted)]">·</span>
+              <span className="text-[var(--color-text-sub)]">{fmtAgo(circuitBreaker)}</span>
+              <span className="flex-1" />
+              <Button size="sm" variant="ghost" onClick={resetBreaker} disabled={busy} className="text-[var(--color-accent)]">
+                Reset
+              </Button>
+            </div>
+            {health?.lastError && (
+              <p className="text-[9.5px] text-[var(--color-text-sub)] mt-1 truncate">{health.lastError}</p>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div>
             <p className="t-meta text-[var(--color-muted)]">Loops</p>
@@ -647,6 +673,34 @@ export default function Agent() {
             <p className="text-[13px] font-bold text-[var(--color-text)]">{botPositions.length} open</p>
           </div>
         </div>
+        {health && (
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-2 text-[9.5px]">
+            <div>
+              <p className="text-[var(--color-muted)]">Loop Time</p>
+              <p className="font-mono text-[var(--color-text)]">{health.lastLoopMs ? `${(health.lastLoopMs / 1000).toFixed(1)}s` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Uptime</p>
+              <p className="font-mono text-[var(--color-text)]">{health.uptime ? `${(health.uptime / 3600).toFixed(1)}h` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Memory</p>
+              <p className="font-mono text-[var(--color-text)]">{health.memoryMB ? `${health.memoryMB}MB` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">DB Size</p>
+              <p className="font-mono text-[var(--color-text)]">{health.dbSizeMB ? `${health.dbSizeMB}MB` : '—'}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Errors Today</p>
+              <p className={`font-mono ${health.errorsToday > 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>{health.errorsToday ?? 0}</p>
+            </div>
+            <div>
+              <p className="text-[var(--color-muted)]">Open Trades</p>
+              <p className="font-mono text-[var(--color-text)]">{health.openTrades ?? 0}</p>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* cTrader account + positions with bot context */}

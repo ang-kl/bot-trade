@@ -91,16 +91,38 @@ app.get('/health', (_req, res) => {
     const resolvedPath = DB_PATH || './agent.db';
     const stat = fs.statSync(resolvedPath);
     dbSize = stat.size;
-  } catch {
-    // DB file may not exist yet
-  }
+  } catch {}
+
+  const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
+  const lastError = getState(db, 'last_error')
+  const errorsToday = Number(getState(db, 'errors_today') || 0)
+
+  let openPositions = 0
+  let openTrades = 0
+  try {
+    openPositions = db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get().c
+    openTrades = db.prepare("SELECT COUNT(*) as c FROM trades WHERE status = 'open'").get().c
+  } catch {}
+
+  const status = circuitBreaker ? 'circuit_breaker_tripped' : 'ok'
 
   res.json({
-    status: 'ok',
+    status,
     uptime: process.uptime(),
     loopCount: Number(getState(db, 'loop_count') || 0),
     lastScanAt: getState(db, 'last_scan_at'),
+    lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
     dbSize,
+    dbSizeMB: Number((dbSize / 1048576).toFixed(2)),
+    errorsToday,
+    lastError: lastError || null,
+    circuitBreaker: circuitBreaker || null,
+    openPositions,
+    openTrades,
+    scanEnabled: getState(db, 'scan_enabled') !== 'false',
+    analyzeEnabled: getState(db, 'analyze_enabled') !== 'false',
+    autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
+    memoryMB: Number((process.memoryUsage().heapUsed / 1048576).toFixed(1)),
   });
 });
 

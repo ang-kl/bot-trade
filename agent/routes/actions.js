@@ -399,6 +399,16 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/reset-breaker — reset the circuit breaker after manual review
+  // -----------------------------------------------------------------------
+  router.post('/reset-breaker', (_req, res) => {
+    setState(db, 'circuit_breaker_tripped_at', null)
+    setState(db, 'errors_today', '0')
+    console.log('[actions] Circuit breaker reset')
+    res.json({ ok: true, message: 'Circuit breaker reset — loop will resume on next tick' })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/symbol-map — store symbolName → cTrader symbolId mapping
   // Required for auto-trade. Frontend fetches symbol list from cTrader and
   // pushes { map: { EURUSD: 1, XAUUSD: 42, ... } }
