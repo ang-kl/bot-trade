@@ -5,9 +5,11 @@ const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export default function useTokenRefresh() {
   const { state, dispatch } = useStrategy()
-  const { accessToken, refreshToken, tokenExpiresAt } = state.ctrader
+  const { accessToken, refreshToken, tokenExpiresAt, accounts } = state.ctrader
   const refreshing = useRef(false)
+  const fetchedAccounts = useRef(false)
 
+  // Auto-refresh token before expiry
   useEffect(() => {
     if (!accessToken || !refreshToken) return
 
@@ -47,4 +49,25 @@ export default function useTokenRefresh() {
     const timer = setTimeout(doRefresh, msUntilRefresh)
     return () => clearTimeout(timer)
   }, [accessToken, refreshToken, tokenExpiresAt, dispatch])
+
+  // Auto-fetch accounts on app load if connected but accounts empty
+  useEffect(() => {
+    if (!accessToken || fetchedAccounts.current) return
+    if (accounts && accounts.length > 0) return
+    fetchedAccounts.current = true
+
+    ;(async () => {
+      try {
+        const res = await fetch('/api/ctrader', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'accounts', accessToken }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (res.ok && Array.isArray(data.accounts) && data.accounts.length > 0) {
+          dispatch({ type: 'CTRADER_SET_ACCOUNTS', accounts: data.accounts })
+        }
+      } catch {}
+    })()
+  }, [accessToken, accounts, dispatch])
 }
