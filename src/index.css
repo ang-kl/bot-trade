@@ -21,8 +21,8 @@
   --color-accent-soft:  #e8f0fe;
   --color-text:         #1a202c;
   --color-text-sub:     #4a5568;
-  --color-muted:        #6b7a8d;
-  --color-muted-light:  #9aa5b4;
+  --color-muted:        #4f5d6e;
+  --color-muted-light:  #7a8899;
 
   /* -- Trading semantics -- */
   --color-up:           #1a56db;  /* accent = long / positive / buy */
@@ -63,6 +63,100 @@
   /* -- Layout (playbook 5.3) -- */
   --content-max: 820px;
   --content-pad: 12px;
+
+  color-scheme: light;
+}
+
+/* -- Dark theme -- */
+[data-theme="dark"] {
+  --color-bg:           #0f1117;
+  --color-surface:      #1a1d27;
+  --color-border:       #2d3348;
+  --color-accent:       #5b8af5;
+  --color-accent-soft:  #1e2a4a;
+  --color-text:         #e2e8f0;
+  --color-text-sub:     #a0aec0;
+  --color-muted:        #64748b;
+  --color-muted-light:  #475569;
+
+  --color-up:           #5b8af5;
+  --color-down:         #ef4444;
+
+  --color-info-text:    #93b4f5;
+  --color-info-bg:      #1a2440;
+  --color-info-border:  #2a3a5c;
+
+  --color-warning-text:   #e0a858;
+  --color-warning-bg:     #2a2010;
+  --color-warning-border: #4a3820;
+
+  --color-error-text:   #ef4444;
+  --color-error-bg:     #2a1010;
+  --color-error-border: #4a2020;
+
+  --color-success-text:   #5b8af5;
+  --color-success-bg:     #1a2440;
+  --color-success-border: #2a3a5c;
+
+  --color-special-text:   #a78bfa;
+  --color-special-bg:     #1e1640;
+  --color-special-border: #332860;
+
+  --color-reflection-text:   #22d3ee;
+  --color-reflection-bg:     #0c2a30;
+  --color-reflection-border: #164e50;
+
+  --color-level-1-text: #ef4444;  --color-level-1-bg: #2a1010;  --color-level-1-border: #4a2020;
+  --color-level-2-text: #e0a858;  --color-level-2-bg: #2a2010;  --color-level-2-border: #4a3820;
+  --color-level-3-text: #5b8af5;  --color-level-3-bg: #1a2440;  --color-level-3-border: #2a3a5c;
+  --color-level-4-text: #5b8af5;  --color-level-4-bg: #1a2440;  --color-level-4-border: #2a3a5c;
+
+  color-scheme: dark;
+}
+
+/* -- Sepia theme -- */
+[data-theme="sepia"] {
+  --color-bg:           #f5f0e6;
+  --color-surface:      #faf6ed;
+  --color-border:       #d9c89a;
+  --color-accent:       #8c5a1c;
+  --color-accent-soft:  #ecdbb6;
+  --color-text:         #3a2f1b;
+  --color-text-sub:     #5a4a30;
+  --color-muted:        #8a7548;
+  --color-muted-light:  #b89a5a;
+
+  --color-up:           #8c5a1c;
+  --color-down:         #a33a1e;
+
+  --color-info-text:    #6b4a0a;
+  --color-info-bg:      #f5e8c8;
+  --color-info-border:  #d4bc80;
+
+  --color-warning-text:   #8a6010;
+  --color-warning-bg:     #f8ecd0;
+  --color-warning-border: #d4b870;
+
+  --color-error-text:   #a33a1e;
+  --color-error-bg:     #f8e0d8;
+  --color-error-border: #d4a090;
+
+  --color-success-text:   #8c5a1c;
+  --color-success-bg:     #ecdbb6;
+  --color-success-border: #d4bc80;
+
+  --color-special-text:   #6b4b8a;
+  --color-special-bg:     #e8d9f0;
+  --color-special-border: #c8b0d8;
+
+  --color-reflection-text:   #2a6a70;
+  --color-reflection-bg:     #daf0f0;
+  --color-reflection-border: #a0d0d0;
+
+  --color-level-1-text: #a33a1e;  --color-level-1-bg: #f8e0d8;  --color-level-1-border: #d4a090;
+  --color-level-2-text: #8a6010;  --color-level-2-bg: #f8ecd0;  --color-level-2-border: #d4b870;
+  --color-level-3-text: #8c5a1c;  --color-level-3-bg: #ecdbb6;  --color-level-3-border: #d4bc80;
+  --color-level-4-text: #8c5a1c;  --color-level-4-bg: #ecdbb6;  --color-level-4-border: #d4bc80;
 
   color-scheme: light;
 }

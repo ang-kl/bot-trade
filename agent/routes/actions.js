@@ -7,7 +7,10 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getState, setState } from '../db.js'
 import { runScan } from '../services/scanner.js'
 import { runAnalysis } from '../services/analyzer.js'
-import { DEFAULT_RISK_CONFIG, loadRiskConfig } from '../services/risk.js'
+import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
+import { wsPlaceOrder } from '../lib/ctrader-ws.js'
+import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
+import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -409,6 +412,44 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/reset-data — wipe all trading data but preserve config
+  // Clears: scans, analyses, trades, monitored_positions, regimes, signals,
+  //         performance_snapshots, risk_events.
+  // Resets: loop_count, errors_today, last_scan_at, last_error,
+  //         circuit_breaker_tripped_at.
+  // Preserves: autopilot_symbols_json, scan_enabled, analyze_enabled,
+  //            autotrade_enabled (and everything else in agent_state).
+  // -----------------------------------------------------------------------
+  router.post('/reset-data', (_req, res) => {
+    try {
+      db.transaction(() => {
+        // 1. Clear all trading data tables
+        db.exec('DELETE FROM scans')
+        db.exec('DELETE FROM analyses')
+        db.exec('DELETE FROM trades')
+        db.exec('DELETE FROM monitored_positions')
+        db.exec('DELETE FROM regimes')
+        db.exec('DELETE FROM signals')
+        db.exec('DELETE FROM performance_snapshots')
+        db.exec('DELETE FROM risk_events')
+
+        // 2. Reset agent_state counters (preserve config / toggles)
+        setState(db, 'loop_count', '0')
+        setState(db, 'errors_today', '0')
+        setState(db, 'last_scan_at', null)
+        setState(db, 'last_error', null)
+        setState(db, 'circuit_breaker_tripped_at', null)
+      })()
+
+      console.log('[actions] reset-data — all trading data cleared, counters reset')
+      res.json({ ok: true, message: 'All trading data cleared and counters reset. Config and toggles preserved.' })
+    } catch (err) {
+      console.error('[actions/reset-data] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/symbol-map — store symbolName → cTrader symbolId mapping
   // Required for auto-trade. Frontend fetches symbol list from cTrader and
   // pushes { map: { EURUSD: 1, XAUUSD: 42, ... } }
@@ -426,6 +467,183 @@ export default function actionsRouter(db) {
       setState(db, 'symbol_id_map', JSON.stringify(upper))
       console.log('[actions] symbol-map updated:', Object.keys(upper).length, 'symbols')
       res.json({ ok: true, count: Object.keys(upper).length })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/symbol-config — update per-symbol overrides + style toggles
+  // Body: { symbol: "EURUSD", ...overrides }
+  // Merges into existing watchlist/symbols config stored in autopilot_symbols_json
+  // -----------------------------------------------------------------------
+  router.post('/symbol-config', (req, res) => {
+    try {
+      const { symbol, ...updates } = req.body || {}
+      if (!symbol) return res.status(400).json({ error: 'Missing required field: symbol' })
+
+      const key = 'autopilot_symbols_json'
+      const raw = getState(db, key) || getState(db, 'watchlist_json') || '[]'
+      let symbols
+      try { symbols = JSON.parse(raw) } catch { symbols = [] }
+      symbols = symbols.map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
+
+      const idx = symbols.findIndex(s => s.symbol === symbol.toUpperCase())
+      if (idx === -1) return res.status(404).json({ error: `Symbol ${symbol} not in watchlist` })
+
+      const ALLOWED = ['enabled', 'maxVolume', 'autoTradeThreshold', 'force_skip', 'override_bias', 'block_next_trade', 'allowed_styles']
+      for (const k of ALLOWED) {
+        if (k in updates) symbols[idx][k] = updates[k]
+      }
+
+      setState(db, key, JSON.stringify(symbols))
+      console.log(`[actions] symbol-config updated for ${symbol}:`, JSON.stringify(updates))
+      res.json({ ok: true, symbol: symbols[idx] })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/execute-trade — manually push a planned analysis to cTrader
+  // Body: { analysisId: number }
+  // Goes through the full risk gate before placing the order.
+  // -----------------------------------------------------------------------
+  router.post('/execute-trade', async (req, res) => {
+    try {
+      const { analysisId } = req.body || {}
+      if (!analysisId) return res.status(400).json({ error: 'Missing analysisId' })
+
+      const analysis = db.prepare('SELECT * FROM analyses WHERE id = ?').get(analysisId)
+      if (!analysis) return res.status(404).json({ error: 'Analysis not found' })
+
+      const synth = JSON.parse(analysis.synthesis || '{}')
+      if (!synth.entry && !analysis.entry_price) {
+        return res.status(400).json({ error: 'No entry price in analysis — cannot execute' })
+      }
+      const entry = synth.entry ?? synth.entry_price ?? analysis.entry_price
+      const sl = synth.sl ?? synth.sl_price ?? analysis.sl_price
+      const tp1 = synth.tp1 ?? synth.tp1_price ?? analysis.tp1_price
+      const bias = analysis.consensus_bias
+      if (!bias || bias === 'skip' || bias === 'neutral') {
+        return res.status(400).json({ error: `Cannot execute trade with bias "${bias}"` })
+      }
+
+      const clientId = process.env.CTRADER_CLIENT_ID
+      const clientSecret = process.env.CTRADER_CLIENT_SECRET
+      const accessToken = getState(db, 'ctrader_access_token')
+      const accountId = getState(db, 'ctrader_account_id')
+      const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+      if (!clientId || !clientSecret || !accessToken || !accountId) {
+        return res.status(400).json({ error: 'cTrader credentials not configured' })
+      }
+
+      const symbolMapJson = getState(db, 'symbol_id_map')
+      const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
+      const symbolId = symbolMap[analysis.symbol.toUpperCase()]
+      if (!symbolId) {
+        return res.status(400).json({ error: `Symbol ID unknown for ${analysis.symbol} — push symbol map first` })
+      }
+
+      const side = bias === 'short' ? 'SELL' : 'BUY'
+      const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
+      let symbols = []
+      try { symbols = JSON.parse(symbolsJson) } catch {}
+      const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
+      const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
+
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction }
+      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+      persistRiskEvent(db, proposal, riskResult)
+
+      if (!riskResult.approved) {
+        return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
+      }
+
+      const volLots = riskResult.adjusted_volume
+      const volume = Math.round(volLots * 10000)
+      const slDistance = sl && entry ? Math.abs(entry - sl) : null
+      const tpDistance = tp1 && entry ? Math.abs(tp1 - entry) : null
+      const POINTS = 100000
+
+      const sessionNow = getActiveSessions()[0]?.label || 'Off'
+      const regimeRow = db.prepare('SELECT regime FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1').get(analysis.symbol)
+      const structuredLabel = encodeLabel({
+        source: 'autopilot',
+        version: LABEL_VERSION,
+        strategy: analysis.strategy || 'other',
+        conviction: convictionBucket(analysis.overall_conviction),
+        session: sessionNow,
+        regime: regimeRow?.regime || null,
+      })
+
+      const orderPayload = {
+        ctidTraderAccountId: parseInt(accountId),
+        symbolId: parseInt(symbolId),
+        orderType: 'MARKET',
+        tradeSide: side,
+        volume,
+        comment: 'abot-manual',
+        label: structuredLabel,
+        ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
+        ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+      }
+
+      const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+
+      const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+      const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+
+      const entryP = executionPrice ?? entry
+      const initialRisk = (entryP && sl) ? Math.abs(entryP - sl) : null
+      let timeCap = null
+      if (synth.time_cap_minutes && Number.isFinite(synth.time_cap_minutes)) {
+        timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
+      }
+
+      const parsedLabel = parseLabel(structuredLabel)
+      db.transaction(() => {
+        const tradeInsert = db.prepare(`
+          INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open')
+        `).run(analysis.symbol, side, entryP, sl, tp1, volLots, positionId, structuredLabel,
+          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
+        const tradeId = tradeInsert.lastInsertRowid
+
+        db.prepare(`
+          INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+            thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, 'active')
+        `).run(analysis.symbol, tradeId, side, entryP, sl, tp1,
+          analysis.consensus_summary || '', initialRisk,
+          synth.invalidation_trigger || analysis.invalidation_trigger || null,
+          timeCap, analysis.strategy, structuredLabel)
+      })()
+
+      console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
+      res.json({ ok: true, side, symbol: analysis.symbol, volume: volLots, executionPrice, positionId })
+    } catch (err) {
+      console.error('[actions/execute-trade] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/dismiss-analysis — remove a planned analysis
+  // Body: { analysisId: number }
+  // -----------------------------------------------------------------------
+  router.post('/dismiss-analysis', (req, res) => {
+    try {
+      const { analysisId } = req.body || {}
+      if (!analysisId) return res.status(400).json({ error: 'Missing analysisId' })
+      const result = db.prepare('DELETE FROM analyses WHERE id = ?').run(analysisId)
+      if (result.changes === 0) return res.status(404).json({ error: 'Analysis not found' })
+      console.log(`[actions] Analysis ${analysisId} dismissed`)
+      res.json({ ok: true })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

@@ -21,12 +21,59 @@ export default function stateRouter(db) {
   // GET /state/health
   // -----------------------------------------------------------------------
   router.get('/health', (_req, res) => {
+    const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
+    let symbols = []
+    try { symbols = JSON.parse(symbolsJson) } catch {}
+    symbols = (Array.isArray(symbols) ? symbols : []).map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
+    const enabledCount = symbols.filter(s => s.enabled !== false).length
+    const skippedCount = symbols.filter(s => s.force_skip).length
+
+    const lastLoopMs = getState(db, 'last_loop_ms')
+    const lastError = getState(db, 'last_error')
+    const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
+    const memUsage = process.memoryUsage()
+
+    const apiHealth = {}
+    try {
+      apiHealth.polygon = {
+        lastCall: getState(db, 'api_polygon_last_ok'),
+        lastError: getState(db, 'api_polygon_last_error'),
+        status: getState(db, 'api_polygon_last_ok') ? 'ok' : 'unknown',
+      }
+      apiHealth.anthropic = {
+        lastCall: getState(db, 'api_anthropic_last_ok'),
+        lastError: getState(db, 'api_anthropic_last_error'),
+        status: getState(db, 'api_anthropic_last_ok') ? 'ok' : 'unknown',
+      }
+      apiHealth.ctrader = {
+        lastCall: getState(db, 'api_ctrader_last_ok'),
+        lastError: getState(db, 'api_ctrader_last_error'),
+        status: getState(db, 'api_ctrader_last_ok') ? 'ok' : 'unknown',
+      }
+    } catch {}
+
     res.json({
-      status: 'ok',
+      status: circuitBreaker ? 'breaker_tripped' : 'ok',
       uptime: process.uptime(),
       loopCount: Number(getState(db, 'loop_count') || 0),
+      loopPhase: getState(db, 'loop_phase') || 'idle',
+      loopStartedAt: getState(db, 'loop_started_at') || null,
       lastScanAt: getState(db, 'last_scan_at'),
+      lastLoopMs: lastLoopMs ? Number(lastLoopMs) : null,
       errorsToday: Number(getState(db, 'errors_today') || 0),
+      dailyTokensUsed: Number(getState(db, 'daily_tokens_used') || 0),
+      dailyTokenBudget: 500000,
+      lastError: lastError || null,
+      circuitBreaker: circuitBreaker || null,
+      memoryMB: Math.round(memUsage.rss / 1048576),
+      dbSizeMB: (() => { try { const { size } = require('fs').statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
+      openTrades: (() => { try { return db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get()?.c || 0 } catch { return 0 } })(),
+      symbols: {
+        total: symbols.length,
+        enabled: enabledCount,
+        skipped: skippedCount,
+      },
+      apis: apiHealth,
     })
   })
 
@@ -370,6 +417,91 @@ export default function stateRouter(db) {
     }
 
     res.json({ groupBy, days, since: sinceISO, rows })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/risk-exposure — latest risk exposure snapshot
+  // -----------------------------------------------------------------------
+  router.get('/risk-exposure', (_req, res) => {
+    try {
+      const row = db.prepare(
+        'SELECT * FROM risk_exposure ORDER BY snapshot_at DESC LIMIT 1'
+      ).get()
+      res.json({ exposure: row || null })
+    } catch {
+      res.json({ exposure: null })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/metrics/history?days=30 — performance snapshots for charting
+  // -----------------------------------------------------------------------
+  router.get('/metrics/history', (req, res) => {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)))
+    const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    try {
+      const rows = db.prepare(
+        'SELECT * FROM performance_snapshots WHERE computed_at >= ? ORDER BY computed_at ASC'
+      ).all(since)
+      res.json({ snapshots: rows })
+    } catch {
+      res.json({ snapshots: [] })
+    }
+  })
+
+  router.get('/analyses/latest', (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT a.*, s.bias AS scan_bias, s.confidence AS scan_confidence
+        FROM analyses a
+        LEFT JOIN scans s ON s.id = a.scan_id
+        WHERE a.analyzed_at > datetime('now', '-24 hours')
+        ORDER BY a.analyzed_at DESC
+      `).all()
+      res.json({ analyses: rows })
+    } catch (e) {
+      res.json({ analyses: [], error: e.message })
+    }
+  })
+
+  router.get('/prices', (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT symbol, price, bias, confidence, scanned_at
+        FROM scans
+        WHERE id IN (SELECT MAX(id) FROM scans WHERE price IS NOT NULL GROUP BY symbol)
+        ORDER BY symbol
+      `).all()
+      const prices = {}
+      for (const r of rows) {
+        prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
+      }
+      res.json({ prices })
+    } catch (e) {
+      res.json({ prices: {}, error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/broker-orders — external positions + pending orders from last reconciliation
+  // -----------------------------------------------------------------------
+  router.get('/broker-orders', (_req, res) => {
+    try {
+      const pendingJson = getState(db, 'broker_pending_orders_json')
+      const lastReconcileAt = getState(db, 'last_reconcile_at')
+      const externalPositions = db.prepare(
+        `SELECT mp.*, t.ctrader_position_id
+         FROM monitored_positions mp
+         LEFT JOIN trades t ON t.id = mp.trade_id
+         WHERE mp.status = 'active' AND mp.source = 'external'
+         ORDER BY mp.created_at DESC`
+      ).all()
+      let pendingOrders = []
+      try { pendingOrders = JSON.parse(pendingJson || '[]') } catch {}
+      res.json({ externalPositions, pendingOrders, lastReconcileAt })
+    } catch (e) {
+      res.json({ externalPositions: [], pendingOrders: [], lastReconcileAt: null, error: e.message })
+    }
   })
 
   return router

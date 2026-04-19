@@ -35,6 +35,10 @@ export const PT = Object.freeze({
   NEW_ORDER_REQ:           2106,
   AMEND_POSITION_SLTP_REQ: 2110,
   CLOSE_POSITION_REQ:      2111,
+  SYMBOL_BY_ID_REQ:        2116,
+  SYMBOL_BY_ID_RES:        2117,
+  RECONCILE_REQ:           2124,
+  RECONCILE_RES:           2125,
   EXECUTION_EVENT:         2126,
   ORDER_ERROR_EVENT:       2132,
   ERROR_RES:               2142,
@@ -249,6 +253,28 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
     }
     throw err
   }
+}
+
+/**
+ * Fetch all open positions and pending orders for an account via RECONCILE_REQ.
+ * Returns the raw RECONCILE_RES payload: `{ position: [...], order: [...] }`.
+ */
+export function wsReconcile(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 25_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.RECONCILE_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.RECONCILE_RES },
+  ], timeoutMs), 2, 'wsReconcile')
+}
+
+/**
+ * Resolve an array of numeric symbolIds to their metadata (symbolName, etc.)
+ * via SYMBOL_BY_ID_REQ. Returns `{ symbol: [{ symbolId, symbolName, ... }] }`.
+ */
+export function wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 20_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
+  ], timeoutMs), 2, 'wsSymbolsByIds')
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

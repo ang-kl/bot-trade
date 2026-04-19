@@ -14,13 +14,15 @@ import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsPlaceOrder, wsAmendPosition, wsClosePosition } from './lib/ctrader-ws.js'
+import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
+import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
+const DAILY_TOKEN_BUDGET = 500_000    // stop API calls if daily output tokens exceed this
 let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
@@ -138,6 +140,7 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
 
   try {
     const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+    setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
@@ -250,6 +253,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         stopLoss: eval_.newSL,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
       s.updatePositionSl.run(eval_.newSL, pos.id)
       return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
@@ -262,6 +266,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         volume: volumeUnits,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const closePrice = res.deal?.executionPrice || res.position?.price || null
       const cpd = res.deal?.closePositionDetail || {}
       const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
@@ -285,6 +290,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         volume: closeUnits,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (closeRes.alreadyClosed) {
         if (pos.trade_id) s.markTradeClosed.run(null, 'already_closed', null, null, pos.trade_id)
         s.closePosition.run('closed', pos.id)
@@ -304,6 +310,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
           positionId: ctx.positionId,
           stopLoss: eval_.newSL,
         })
+        setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) s.updatePositionSl.run(eval_.newSL, pos.id)
       }
       return { summary: `closed ${(fraction * 100).toFixed(0)}% · runner ${remainingLots.toFixed(2)}L` }
@@ -335,15 +342,14 @@ function prepareStatements(db) {
       VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
     `),
 
-    // Autopilot monitors only its own positions. Legacy rows (pre-migration)
-    // have NULL source and are treated as autopilot since autoTrade() was
-    // historically the only INSERT path. Copilot/manual trades — if ever
-    // ingested — must set source explicitly and will be excluded.
+    // Autopilot monitors its own positions + external positions (observe-only).
+    // Legacy rows (pre-migration) have NULL source and are treated as autopilot.
+    // Copilot/manual trades are excluded — the human owns those decisions.
     selectActivePositions: db.prepare(
       `SELECT * FROM monitored_positions
        WHERE status = ?
          AND COALESCE(paused, 0) = 0
-         AND (source IS NULL OR source = 'autopilot')`
+         AND (source IS NULL OR source IN ('autopilot', 'external'))`
     ),
 
     updatePositionCheck: db.prepare(`
@@ -431,12 +437,15 @@ async function runLoop(db) {
   loopRunning = true
   loopCount++
   const start = Date.now()
+  setState(db, 'loop_phase', 'starting')
+  setState(db, 'loop_started_at', new Date().toISOString())
 
   // Reset daily error counter at midnight UTC
   const lastReset = getState(db, 'errors_reset_date')
   const todayUTC = new Date().toISOString().slice(0, 10)
   if (lastReset !== todayUTC) {
     setState(db, 'errors_today', '0')
+    setState(db, 'daily_tokens_used', '0')
     setState(db, 'errors_reset_date', todayUTC)
   }
 
@@ -451,6 +460,14 @@ async function runLoop(db) {
     const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+    // Daily token budget check — pause API calls if exceeded
+    const dailyTokensUsed = parseInt(getState(db, 'daily_tokens_used') || '0')
+    const budgetExceeded = dailyTokensUsed >= DAILY_TOKEN_BUDGET
+    if (budgetExceeded) {
+      log(`Daily token budget exceeded (${dailyTokensUsed.toLocaleString()} / ${DAILY_TOKEN_BUDGET.toLocaleString()}) — skipping scan+analyze. Monitor-only mode.`)
+      setState(db, 'loop_phase', `budget exceeded — monitor only`)
+    }
+
     // Autopilot's own symbol universe, falling back to legacy watchlist
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
 
@@ -462,6 +479,7 @@ async function runLoop(db) {
       const allSymbols = (Array.isArray(parsed) ? parsed : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
+        .filter(w => !w.force_skip)
 
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
@@ -474,6 +492,8 @@ async function runLoop(db) {
 
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
+      } else if (budgetExceeded) {
+        log('Token budget exceeded — scan skipped')
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else {
@@ -481,7 +501,7 @@ async function runLoop(db) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
 
-    // Build context memory for this scan
+    setState(db, 'loop_phase', `scanning ${symbols.length} symbols`)
     const contextBrief = buildContextBrief(db)
     const scanDelta = buildScanDelta(db, []) // pre-scan delta (will be computed post-scan on next loop)
 
@@ -522,6 +542,12 @@ async function runLoop(db) {
     }
 
     setState(db, 'last_scan_at', now)
+    setState(db, 'api_anthropic_last_ok', now)
+
+    // Track daily token usage
+    const scanTokens = scanResult.usage?.output_tokens || 0
+    const prevTokens = parseInt(getState(db, 'daily_tokens_used') || '0')
+    setState(db, 'daily_tokens_used', String(prevTokens + scanTokens))
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
 
     // Persist scan context for next loop's delta computation
@@ -539,12 +565,22 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (analyzeEnabled && scanResult.hot.length > 0) {
+    if (analyzeEnabled && !budgetExceeded && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
+      setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
         try {
           const wItem =
             symbols.find(w => w.symbol === sym) || { autoTradeThreshold: 8 }
+
+          // Pre-flight: skip analysis if ALL trade styles are disabled for this symbol
+          if (wItem.allowed_styles) {
+            const st = wItem.allowed_styles
+            if (st.scalp === false && st.day === false && st.swing === false && st.mid_term === false) {
+              log(`Style filter: ${sym} — all styles disabled, skipping analysis`)
+              continue
+            }
+          }
           const result = await runAnalysis(client, sym, {
             autoTradeThreshold: wItem.autoTradeThreshold || 8,
           })
@@ -574,7 +610,10 @@ async function runLoop(db) {
             scan_id: scanId,
           })
 
-          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10)`)
+          const analyzeTokens = result.usage?.output_tokens || 0
+          const cumTokens = parseInt(getState(db, 'daily_tokens_used') || '0') + analyzeTokens
+          setState(db, 'daily_tokens_used', String(cumTokens))
+          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) [${analyzeTokens} tokens, daily total: ${cumTokens}]`)
 
           // Auto-trade — only when armed and synthesis recommends it.
           // Iterate all autopilot-enabled accounts so the same signal
@@ -587,6 +626,57 @@ async function runLoop(db) {
               await sendMessage(
                 `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
               )
+            } catch {}
+          }
+
+          // Human override: if override_bias is set, use it instead of AI's
+          if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
+            if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
+              synth.auto_trade = false
+            } else {
+              synth.consensus_bias = wItem.override_bias
+            }
+          }
+
+          // Style filter: check if time_cap_minutes matches allowed trade types
+          if (wItem.allowed_styles && synth.auto_trade) {
+            const ttl = synth.time_cap_minutes || 180
+            const styles = wItem.allowed_styles
+            const isScalp = ttl <= 30
+            const isDay = ttl > 30 && ttl <= 480
+            const isSwing = ttl > 480 && ttl <= 10080
+            const isMidTerm = ttl > 10080
+
+            if (isScalp && styles.scalp === false) {
+              log(`Style filter: ${sym} blocked — scalp trading disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isDay && styles.day === false) {
+              log(`Style filter: ${sym} blocked — day trading disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isSwing && styles.swing === false) {
+              log(`Style filter: ${sym} blocked — swing trading disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isMidTerm && styles.mid_term === false) {
+              log(`Style filter: ${sym} blocked — mid-term trading disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+          }
+
+          // Human override: block_next_trade — one-time veto then auto-clear
+          if (wItem.block_next_trade && synth.auto_trade) {
+            log(`Block next trade: ${sym} — human veto, clearing flag`)
+            synth.auto_trade = false
+            // Clear the flag after use
+            const symbolsJsonCurrent = getState(db, 'autopilot_symbols_json') || '[]'
+            try {
+              const syms = JSON.parse(symbolsJsonCurrent)
+              const s2 = syms.map(s => typeof s === 'string' ? { symbol: s } : s)
+              const target = s2.find(s => s.symbol === sym)
+              if (target) target.block_next_trade = false
+              setState(db, 'autopilot_symbols_json', JSON.stringify(s2))
             } catch {}
           }
 
@@ -667,6 +757,7 @@ async function runLoop(db) {
       // scan+analyze was skipped (market closed, etc). Crypto positions and
       // stale FX positions still need tick checks.
       // ---------------------------------------------------------------------
+      if (openPositions.length > 0) setState(db, 'loop_phase', `monitoring ${openPositions.length} positions`)
       const activePositions = openPositions.length > 0
         ? openPositions
         : s.selectActivePositions.all('active')
@@ -699,6 +790,18 @@ async function runLoop(db) {
           // summary string that rides along inside last_check_reasoning so the
           // Workshop feed shows intent *and* broker outcome on one row.
           if (eval_.action !== 'HOLD') {
+            // External positions: observe only — log what we'd do but don't touch the broker
+            if (pos.source === 'external') {
+              s.updatePositionCheck.run(
+                `EXT:${eval_.action}`,
+                `${eval_.reason} | external: observe_only`,
+                new Date().toISOString(),
+                eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+                pos.id
+              )
+              log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
+              continue
+            }
             const outcome = await executeBrokerAction(db, s, pos, eval_)
             let reasoning = eval_.reason
             let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
@@ -722,6 +825,9 @@ async function runLoop(db) {
             )
             continue
           }
+
+          // External positions: skip LLM monitor — just update metrics, no token spend
+          if (pos.source === 'external') continue
 
           // Fallback: free-text theses and ambiguous cases → LLM Monitor.
           const check = await runMonitorCheck(client, {
@@ -754,6 +860,62 @@ async function runLoop(db) {
         }
       }
     } // end symbolsJson
+
+    // -----------------------------------------------------------------------
+    // 3.5. RECONCILE PHASE — every 6th loop (~30 min)
+    // -----------------------------------------------------------------------
+    if (loopCount % 6 === 0) {
+      try {
+        const clientId = process.env.CTRADER_CLIENT_ID
+        const clientSecret = process.env.CTRADER_CLIENT_SECRET
+        const accessToken = getState(db, 'ctrader_access_token')
+        const accountId = getState(db, 'ctrader_account_id')
+        const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+        if (clientId && clientSecret && accessToken && accountId) {
+          setState(db, 'loop_phase', 'reconciling broker positions')
+          const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          const reconcileData = await wsReconcile(host, clientId, clientSecret, accessToken, accountId)
+
+          const allSymbolIds = [...new Set([
+            ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
+            ...(reconcileData.order || []).map(o => o.tradeData?.symbolId),
+          ].filter(Boolean))]
+
+          let symbolNameMap = {}
+          if (allSymbolIds.length > 0) {
+            const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, allSymbolIds)
+            for (const s2 of (symData.symbol || [])) {
+              symbolNameMap[s2.symbolId] = s2.symbolName
+            }
+          }
+
+          const positions = (reconcileData.position || []).map(p => ({
+            ...p,
+            symbolName: symbolNameMap[p.tradeData?.symbolId] || null,
+          }))
+          const orders = (reconcileData.order || []).map(o => ({
+            ...o,
+            symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
+          }))
+
+          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
+          setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${result.pendingOrders.length} pending orders`)
+
+          if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              for (const ext of result.newExternal) {
+                await sendMessage(`External position detected: ${ext.side} ${ext.symbol} @ ${ext.entry}`)
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        log('Reconcile phase error:', err.message)
+      }
+    }
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)
@@ -865,6 +1027,7 @@ async function runLoop(db) {
   loopRunning = false
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, LOOP_INTERVAL - elapsed)
+  setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }
