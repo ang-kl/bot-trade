@@ -201,7 +201,7 @@ export default function StatusRibbon() {
               {accountCount > 0 && (
                 <span className="text-[var(--color-muted)]">{accountCount} account{accountCount !== 1 ? 's' : ''}</span>
               )}
-              <Link to="/settings" className="text-[var(--color-accent)] hover:underline">
+              <Link to="/admin" className="text-[var(--color-accent)] hover:underline">
                 Manage →
               </Link>
               <button

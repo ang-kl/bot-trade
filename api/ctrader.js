@@ -600,11 +600,12 @@ export default async function handler(req, res) {
             { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: allSymbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
           ])
           for (const s of (symResults[2]?.symbol || [])) {
-            symbolNameMap[s.symbolId] = s.symbolName
+            symbolNameMap[String(s.symbolId)] = s.symbolName
           }
         } catch {}
       }
 
+      const normSide = (s) => s === 'BUY' || s === 1 ? 'BUY' : 'SELL'
       // Each position has tradeData with symbolId, volume, tradeSide, etc.
       const positions = (reconcile.position || []).map(p => {
         const t = p.tradeData || {}
@@ -613,8 +614,8 @@ export default async function handler(req, res) {
         return {
           positionId: p.positionId,
           symbolId: t.symbolId,
-          symbolName: symbolNameMap[t.symbolId] || null,
-          side: t.tradeSide,
+          symbolName: symbolNameMap[String(t.symbolId)] || null,
+          side: normSide(t.tradeSide),
           volume: t.volume,
           openPrice: p.price,
           openTimestamp: t.openTimestamp,
@@ -631,15 +632,17 @@ export default async function handler(req, res) {
       // Pending orders — LIMIT/STOP/STOP_LIMIT that haven't filled yet.
       // cTrader returns them in `reconcile.order` as a sibling to positions.
       // Shape mirrors `positions` with order-specific fields layered on top.
+      const ORDER_TYPE_MAP = { 1: 'MARKET', 2: 'LIMIT', 3: 'STOP', 4: 'STOP_LIMIT' }
       const orders = (reconcile.order || []).map(o => {
         const t = o.tradeData || {}
+        const rawType = o.orderType
         return {
           orderId: o.orderId,
           symbolId: t.symbolId,
-          symbolName: symbolNameMap[t.symbolId] || null,
-          side: t.tradeSide,
+          symbolName: symbolNameMap[String(t.symbolId)] || null,
+          side: normSide(t.tradeSide),
           volume: t.volume,
-          orderType: o.orderType,         // 'LIMIT' | 'STOP' | 'STOP_LIMIT'
+          orderType: typeof rawType === 'number' ? (ORDER_TYPE_MAP[rawType] || String(rawType)) : String(rawType ?? '').replace(/^ORDER_TYPE_/, ''),
           orderStatus: o.orderStatus,     // 'ORDER_STATUS_ACCEPTED' etc.
           limitPrice: o.limitPrice || null,
           stopPrice: o.stopPrice || null,

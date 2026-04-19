@@ -71,14 +71,14 @@ export default function LinkUp() {
         {status === 'done' && (
           <>
             <p className="t-sub mb-3">
-              Tokens saved. You can now fetch your cTrader accounts from the
-              Settings tab.
+              Tokens saved. Accounts will load automatically. You can test
+              the connection from Admin.
             </p>
             <Link
-              to="/settings"
+              to="/admin"
               className="t-sub underline text-[var(--color-up)]"
             >
-              Back to Settings →
+              Back to Admin →
             </Link>
           </>
         )}
@@ -88,10 +88,10 @@ export default function LinkUp() {
               Link-up failed: {error}
             </p>
             <Link
-              to="/settings"
+              to="/admin"
               className="t-sub underline text-[var(--color-up)]"
             >
-              Back to Settings →
+              Back to Admin →
             </Link>
           </>
         )}

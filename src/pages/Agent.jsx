@@ -1772,7 +1772,7 @@ function BrokerOrders({ role }) {
   const total = ext.length + pend.length
 
   return (
-    <PanelFrame id="broker-orders" title="Broker Positions (External)" defaultSize="M" badge={
+    <PanelFrame id="broker-orders" title="Bot Reconcile (Railway)" defaultSize="M" badge={
       <span className="flex items-center gap-1">
         {total > 0 && <Badge tone="warning" className="text-[10px] px-1">{total}</Badge>}
         {data?.lastReconcileAt && <span className="text-[10px] text-[var(--color-muted)]">synced {fmtAgo(data.lastReconcileAt)}</span>}
@@ -1860,9 +1860,11 @@ function PendingOrders({ ctrader }) {
   const [orders, setOrders] = useState(null)
   const [loading, setLoading] = useState(false)
   const [fetched, setFetched] = useState(false)
+  const [selectedIdx, setSelectedIdx] = useState(0)
 
-  const accountId = ctrader.linkedAccountId || ctrader.accounts?.[0]?.accountId || null
-  const selected = ctrader.accounts?.find(a => a.accountId === accountId)
+  const accts = ctrader.accounts || []
+  const selected = accts[selectedIdx] || accts[0] || null
+  const accountId = selected?.accountId || null
   const isLive = selected?.isLive ?? false
 
   const load = useCallback(async () => {
@@ -1883,6 +1885,7 @@ function PendingOrders({ ctrader }) {
     setFetched(true)
   }, [ctrader.accessToken, accountId, isLive])
 
+  useEffect(() => { setFetched(false); setOrders(null) }, [selectedIdx])
   useEffect(() => { if (!fetched) load() }, [fetched, load])
 
   if (!accountId || !ctrader.accounts?.length) return null
@@ -1905,6 +1908,12 @@ function PendingOrders({ ctrader }) {
         <button type="button" onClick={load} disabled={loading} className="text-[10px] text-[var(--color-accent)] hover:underline ml-1">
           {loading ? '…' : '↻'}
         </button>
+        {accts.length > 1 && accts.map((a, i) => (
+          <button key={a.accountId} type="button" onClick={() => setSelectedIdx(i)}
+            className={`text-[10px] px-1 rounded ${i === selectedIdx ? 'bg-[var(--color-accent)] text-white font-bold' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}>
+            {a.isLive ? 'L' : 'D'}
+          </button>
+        ))}
       </span>
     }>
       <div className="overflow-x-auto">

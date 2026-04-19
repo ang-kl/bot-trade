@@ -65,31 +65,41 @@ function CTraderAdmin({ locked }) {
   const { accessToken, refreshToken, linkedAccountId, accounts } = state.ctrader
   const [busy, setBusy] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  // Local drafts so typing doesn't dispatch on every keystroke (which
+  // triggers the auto-push to Railway and can race with token refresh).
+  const [draftAccess, setDraftAccess] = useState(accessToken)
+  const [draftRefresh, setDraftRefresh] = useState(refreshToken)
+  // Sync drafts when store changes from outside (OAuth callback, cross-tab)
+  useEffect(() => { setDraftAccess(accessToken) }, [accessToken])
+  useEffect(() => { setDraftRefresh(refreshToken) }, [refreshToken])
 
-  const setTokens = (patch) => dispatch({ type: 'CTRADER_SET_TOKENS', ...patch })
+  const applyTokens = () => {
+    dispatch({ type: 'CTRADER_SET_TOKENS', accessToken: draftAccess, refreshToken: draftRefresh })
+  }
 
   const testConnection = useCallback(async () => {
-    if (!accessToken) return
+    // Commit drafts to store before testing
+    dispatch({ type: 'CTRADER_SET_TOKENS', accessToken: draftAccess, refreshToken: draftRefresh })
+    if (!draftAccess) return
     setBusy(true); setTestResult(null)
     try {
       const res = await fetch('/api/ctrader', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'accounts', accessToken }),
+        body: JSON.stringify({ action: 'accounts', accessToken: draftAccess }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `${res.status}`)
       const list = data.accounts || []
       dispatch({ type: 'CTRADER_SET_ACCOUNTS', accounts: list })
       setTestResult({ ok: true, message: `Connected \u2014 ${list.length} account(s) found` })
-      // Auto-lock on success
       dispatch({ type: 'ADMIN_LOCK', service: 'ctrader' })
     } catch (e) {
       setTestResult({ ok: false, message: e.message })
     } finally {
       setBusy(false)
     }
-  }, [accessToken, dispatch])
+  }, [draftAccess, draftRefresh, dispatch])
 
   const onOpenOAuth = async () => {
     try {
@@ -137,23 +147,25 @@ function CTraderAdmin({ locked }) {
             <label className="block t-meta text-[var(--color-text-sub)] mb-1" htmlFor="admin-ct-access">Access token</label>
             <Input
               id="admin-ct-access"
-              value={accessToken}
-              onChange={(e) => setTokens({ accessToken: e.target.value })}
-              placeholder="eyJ..."
+              value={draftAccess}
+              onChange={(e) => setDraftAccess(e.target.value)}
+              onBlur={applyTokens}
+              placeholder="Filled by OAuth — or paste manually"
             />
           </div>
           <div>
             <label className="block t-meta text-[var(--color-text-sub)] mb-1" htmlFor="admin-ct-refresh">Refresh token</label>
             <Input
               id="admin-ct-refresh"
-              value={refreshToken}
-              onChange={(e) => setTokens({ refreshToken: e.target.value })}
-              placeholder="eyJ..."
+              value={draftRefresh}
+              onChange={(e) => setDraftRefresh(e.target.value)}
+              onBlur={applyTokens}
+              placeholder="Filled by OAuth — or paste manually"
             />
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={onOpenOAuth}>Open cTrader OAuth</Button>
-            <Button size="sm" variant="primary" onClick={testConnection} disabled={!accessToken || busy}>
+            <Button size="sm" variant="primary" onClick={testConnection} disabled={!draftAccess || busy}>
               {busy ? 'Testing...' : '\u25B6 Test Connection'}
             </Button>
           </div>
