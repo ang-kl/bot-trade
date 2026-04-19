@@ -462,5 +462,23 @@ export default function stateRouter(db) {
     }
   })
 
+  router.get('/prices', (_req, res) => {
+    try {
+      const rows = db.prepare(`
+        SELECT symbol, price, bias, confidence, scanned_at
+        FROM scans
+        WHERE id IN (SELECT MAX(id) FROM scans WHERE price IS NOT NULL GROUP BY symbol)
+        ORDER BY symbol
+      `).all()
+      const prices = {}
+      for (const r of rows) {
+        prices[r.symbol] = { price: r.price, bias: r.bias, confidence: r.confidence, at: r.scanned_at }
+      }
+      res.json({ prices })
+    } catch (e) {
+      res.json({ prices: {}, error: e.message })
+    }
+  })
+
   return router
 }

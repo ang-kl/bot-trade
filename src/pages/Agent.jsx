@@ -262,8 +262,8 @@ function RiskDashboard({ role }) {
 
 function MarketDataStrip({ symbols, role }) {
   const [regimes, setRegimes] = useState({})
+  const [prices, setPrices] = useState({})
   const [regimeError, setRegimeError] = useState(null)
-  const priceCache = readPriceCache()
 
   useEffect(() => {
     if (!agentConfigured(role)) return
@@ -275,11 +275,15 @@ function MarketDataStrip({ symbols, role }) {
         setRegimeError(null)
       })
       .catch(e => setRegimeError(e.message))
+    agentGet('/state/prices', role)
+      .then(r => setPrices(r?.prices || {}))
+      .catch(() => {})
   }, [role])
 
   if (!symbols || symbols.length === 0) return null
 
   const REGIME_TONE = { trending: 'accent', volatile: 'warning', ranging: 'neutral', quiet: 'neutral' }
+  const localCache = readPriceCache()
 
   return (
     <Card>
@@ -287,9 +291,10 @@ function MarketDataStrip({ symbols, role }) {
       {regimeError && <div className="px-3 py-2 mb-2 rounded-[5px] bg-[var(--color-error-bg)] border border-[var(--color-error-border)] text-[11px] text-[var(--color-error-text)]">Regime data: {regimeError}</div>}
       <div className="flex flex-wrap gap-1.5">
         {symbols.map(sym => {
-          const mm = priceCache[sym] || {}
+          const mm = localCache[sym] || {}
+          const sp = prices[sym] || {}
           const reg = regimes[sym] || {}
-          const price = mm.currentPrice ?? mm.price ?? mm.vwap ?? null
+          const price = sp.price ?? mm.currentPrice ?? mm.price ?? mm.vwap ?? null
           const vwap = mm.vwap_today ?? mm.vwap ?? null
           const vwapDev = price && vwap ? ((price - vwap) / vwap * 100) : null
           const emaStack = mm.ema_stack_label || mm.ema_stack || null
