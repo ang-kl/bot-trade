@@ -1275,18 +1275,45 @@ function MonitorAgent({ role }) {
 
 function PlannedOrders({ activity, role }) {
   const [fullAnalyses, setFullAnalyses] = useState([])
-  useEffect(() => {
+  const [actionBusy, setActionBusy] = useState({})
+
+  const loadAnalyses = useCallback(() => {
     if (!agentConfigured(role)) return
     agentGet('/state/analyses/latest', role)
       .then(r => setFullAnalyses(r?.analyses || []))
       .catch(() => {})
-    const iv = setInterval(() => {
-      agentGet('/state/analyses/latest', role)
-        .then(r => setFullAnalyses(r?.analyses || []))
-        .catch(() => {})
-    }, 30_000)
-    return () => clearInterval(iv)
   }, [role])
+
+  useEffect(() => {
+    loadAnalyses()
+    const iv = setInterval(loadAnalyses, 30_000)
+    return () => clearInterval(iv)
+  }, [loadAnalyses])
+
+  const executeTrade = async (analysisId, symbol) => {
+    if (!window.confirm(`Execute trade for ${symbol} from this analysis? This will place a MARKET order at cTrader through the risk gate.`)) return
+    setActionBusy(prev => ({ ...prev, [analysisId]: 'executing' }))
+    try {
+      const result = await agentPost('/actions/execute-trade', { analysisId }, role)
+      if (result.vetoed) {
+        alert(`Risk gate VETOED: ${result.reason}`)
+      } else if (result.ok) {
+        alert(`Trade executed: ${result.side} ${result.symbol} ${result.volume} lots @ ${result.executionPrice || 'market'}`)
+        loadAnalyses()
+      }
+    } catch (e) { alert(`Execute failed: ${e.message}`) }
+    setActionBusy(prev => ({ ...prev, [analysisId]: null }))
+  }
+
+  const dismissAnalysis = async (analysisId) => {
+    if (!window.confirm('Dismiss this analysis? It will be removed from the planned orders.')) return
+    setActionBusy(prev => ({ ...prev, [analysisId]: 'dismissing' }))
+    try {
+      await agentPost('/actions/dismiss-analysis', { analysisId }, role)
+      loadAnalyses()
+    } catch (e) { alert(`Dismiss failed: ${e.message}`) }
+    setActionBusy(prev => ({ ...prev, [analysisId]: null }))
+  }
 
   const priceCache = readPriceCache()
 
@@ -1338,7 +1365,21 @@ function PlannedOrders({ activity, role }) {
                   @ {fmtMoney(currentPrice, currentPrice > 100 ? 2 : currentPrice > 10 ? 4 : 5)}
                 </span>
               )}
-              <span className="ml-auto text-[10px] text-[var(--color-muted)] truncate max-w-[250px]">Desk: {deskNames}</span>
+              <span className="ml-auto flex items-center gap-1.5">
+                <span className="text-[10px] text-[var(--color-muted)] truncate max-w-[160px]">Desk: {deskNames}</span>
+                {isActive && (
+                  <>
+                    <button type="button" disabled={!!actionBusy[latest.id]}
+                      onClick={() => executeTrade(latest.id, symbol)}
+                      className="px-2 py-0.5 rounded text-[10px] font-bold bg-[var(--color-up)] text-white hover:opacity-80 disabled:opacity-50"
+                    >{actionBusy[latest.id] === 'executing' ? '…' : '▶ Execute'}</button>
+                    <button type="button" disabled={!!actionBusy[latest.id]}
+                      onClick={() => dismissAnalysis(latest.id)}
+                      className="px-2 py-0.5 rounded text-[10px] font-bold text-[var(--color-down)] border border-[var(--color-down)] hover:opacity-80 disabled:opacity-50"
+                    >{actionBusy[latest.id] === 'dismissing' ? '…' : '✕'}</button>
+                  </>
+                )}
+              </span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
