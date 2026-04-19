@@ -1075,7 +1075,7 @@ function TeamRoster({ activity, role }) {
                 className="w-full px-2 py-1.5 flex items-center gap-2 text-[11px] hover:opacity-80 cursor-pointer">
                 <span className={`inline-block w-1.5 h-1.5 rounded-full ${analysisEvent ? 'bg-[var(--color-up)]' : scanEvent ? 'bg-[var(--color-warning-text)]' : 'bg-[var(--color-muted)]'}`} />
                 <span className="text-[12px] font-bold font-mono text-[var(--color-text)]">{symbol}</span>
-                <span className="text-[10px] text-[var(--color-muted)]">{minionIds.length} agents</span>
+                <span className="text-[10px] text-[var(--color-muted)]">{minionIds.length} minions</span>
                 {analysis && <Badge tone={analysis.consensus_bias === 'long' ? 'up' : analysis.consensus_bias === 'short' ? 'down' : 'muted'} className="text-[10px] px-1">
                   {analysis.consensus_bias?.toUpperCase()} {analysis.overall_conviction}/10
                 </Badge>}
@@ -1416,6 +1416,16 @@ function PlannedOrders({ activity, role }) {
     setActionBusy(prev => ({ ...prev, [analysisId]: false }))
   }
 
+  const executeAnalysis = async (analysisId) => {
+    if (!window.confirm('Execute this trade? This will place a real order.')) return
+    setActionBusy(prev => ({ ...prev, [analysisId]: true }))
+    try {
+      await agentPost('/actions/execute-trade', { analysisId }, role)
+      loadAnalyses()
+    } catch (e) { console.error(e) }
+    setActionBusy(prev => ({ ...prev, [analysisId]: false }))
+  }
+
   const priceCache = readPriceCache()
 
   const bySymbol = {}
@@ -1498,6 +1508,13 @@ function PlannedOrders({ activity, role }) {
                   className="px-1.5 py-0.5 rounded text-[10px] text-[var(--color-muted)] hover:text-[var(--color-down)] border border-[var(--color-border)] hover:border-[var(--color-down)]"
                   title="Dismiss this analysis"
                 >✕</button>
+                {allPass && (
+                  <button type="button" disabled={actionBusy[latest.id]}
+                    onClick={() => executeAnalysis(latest.id)}
+                    className="px-1.5 py-0.5 rounded text-[10px] text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 border border-blue-600"
+                    title="Execute this trade"
+                  >Execute</button>
+                )}
               </span>
             </div>
 
@@ -2163,12 +2180,24 @@ function DownloadButtons({ role }) {
     } catch (e) { alert(e.message) } finally { setBusy(false) }
   }
 
+  const resetAllData = async () => {
+    if (!window.confirm('Reset all trading data? This cannot be undone.')) return
+    setBusy(true)
+    try {
+      await agentPost('/actions/reset-data', {}, role)
+      window.location.reload()
+    } catch (e) { alert(e.message) } finally { setBusy(false) }
+  }
+
   return (
     <Card>
       <p className="t-label mb-2">Downloads</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="ghost" onClick={exportTrades} disabled={busy}>Trade Log CSV</Button>
         <Button size="sm" variant="ghost" onClick={exportRiskEvents} disabled={busy}>Risk Events CSV</Button>
+        <Button size="sm" variant="ghost" onClick={resetAllData} disabled={busy}
+          className="text-red-500 border-red-500 hover:bg-red-500 hover:text-white"
+        >Reset All Data</Button>
       </div>
     </Card>
   )
