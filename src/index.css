@@ -21,8 +21,8 @@
   --color-accent-soft:  #e8f0fe;
   --color-text:         #1a202c;
   --color-text-sub:     #4a5568;
-  --color-muted:        #6b7a8d;
-  --color-muted-light:  #9aa5b4;
+  --color-muted:        #4f5d6e;
+  --color-muted-light:  #7a8899;
 
   /* -- Trading semantics -- */
   --color-up:           #1a56db;  /* accent = long / positive / buy */

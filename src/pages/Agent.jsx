@@ -101,15 +101,15 @@ function PanelFrame({ id, title, defaultSize = 'L', defaultCollapsed = false, ch
         <button
           type="button"
           onClick={() => updatePref({ collapsed: !prefs.collapsed })}
-          className="w-full h-8 px-3 flex items-center gap-2 bg-[var(--color-bg)] border-b border-[var(--color-border)] hover:opacity-80 cursor-pointer select-none"
+          className="w-full h-9 px-3 flex items-center gap-2 bg-[var(--color-bg)] border-b border-[var(--color-border)] hover:opacity-80 cursor-pointer select-none"
         >
-          <span className="text-[10px] text-[var(--color-muted)] w-3">{prefs.collapsed ? '▸' : '▾'}</span>
-          <span className="text-[12px] font-semibold text-[var(--color-text)] flex-1 text-left truncate">{title}</span>
+          <span className="text-[11px] text-[var(--color-muted)] w-3">{prefs.collapsed ? '▸' : '▾'}</span>
+          <span className="text-[13px] font-semibold text-[var(--color-text)] flex-1 text-left truncate">{title}</span>
           {badge}
-          <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
             {['S','M','L'].map(s => (
               <button key={s} type="button" onClick={() => updatePref({ size: s })}
-                className={`w-4 h-4 rounded text-[9px] ${prefs.size === s ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
+                className={`w-5 h-5 rounded text-[11px] ${prefs.size === s ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
               >{s}</button>
             ))}
           </div>
@@ -166,7 +166,7 @@ function RiskDashboard({ role }) {
     const pct = max > 0 ? Math.min(value / max, 1) : 0
     return (
       <div>
-        <div className="flex items-center justify-between text-[9.5px] mb-0.5">
+        <div className="flex items-center justify-between text-[11px] mb-0.5">
           <span className="text-[var(--color-muted)]">{label}</span>
           <span className="font-mono text-[var(--color-text)]">{(pct * 100).toFixed(0)}%</span>
         </div>
@@ -223,7 +223,7 @@ function RiskDashboard({ role }) {
         <ProgressBar value={dailyUsedPct > 0 ? marginCapPct * dailyUsedPct : 0} max={marginCapPct} label={`Margin usage (cap ${(marginCapPct * 100).toFixed(0)}%)`} />
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[9.5px] text-[var(--color-muted)]">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] text-[var(--color-muted)]">
         <div>Avg Win: <span className="font-mono text-[var(--color-text)]">{m.avg_win != null ? fmtMoney(m.avg_win) : '—'}</span></div>
         <div>Avg Loss: <span className="font-mono text-[var(--color-text)]">{m.avg_loss != null ? fmtMoney(m.avg_loss) : '—'}</span></div>
         <div>Avg R:R: <span className="font-mono text-[var(--color-text)]">{m.avg_rr != null ? m.avg_rr.toFixed(2) : '—'}</span></div>
@@ -233,18 +233,18 @@ function RiskDashboard({ role }) {
       {riskEvents.length > 0 && (
         <>
           <button type="button" onClick={() => setShowEvents(!showEvents)}
-            className="mt-2 text-[9px] text-[var(--color-accent)] hover:underline">
+            className="mt-2 text-[10px] text-[var(--color-accent)] hover:underline">
             {showEvents ? '▾ Hide' : '▸ Show'} recent risk gate decisions ({riskEvents.length})
           </button>
           {showEvents && (
             <div className="mt-1 space-y-0.5">
               {riskEvents.map((e, i) => (
                 <div key={i} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded-[4px] bg-[var(--color-bg)]">
-                  <Badge tone={e.approved ? 'up' : 'down'} className="text-[8px] px-1">{e.approved ? 'OK' : 'VETO'}</Badge>
+                  <Badge tone={e.approved ? 'up' : 'down'} className="text-[10px] px-1">{e.approved ? 'OK' : 'VETO'}</Badge>
                   <span className="font-mono text-[var(--color-text)]">{e.symbol}</span>
                   <span className="text-[var(--color-muted)]">{e.side}</span>
                   <span className="text-[var(--color-muted)] truncate flex-1">{e.veto_reason || '—'}</span>
-                  <span className="text-[9px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
+                  <span className="text-[10px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
                 </div>
               ))}
             </div>
@@ -295,7 +295,7 @@ function MarketDataStrip({ symbols, role }) {
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span className="text-[11px] font-bold font-mono text-[var(--color-text)]">{sym}</span>
                 {reg.regime && (
-                  <Badge tone={REGIME_TONE[reg.regime] || 'neutral'} className="text-[7px] px-1">
+                  <Badge tone={REGIME_TONE[reg.regime] || 'neutral'} className="text-[10px] px-1">
                     {reg.regime.toUpperCase()}
                   </Badge>
                 )}
@@ -303,7 +303,7 @@ function MarketDataStrip({ symbols, role }) {
               <div className="text-[12px] font-mono font-semibold text-[var(--color-text)]">
                 {price != null ? fmtMoney(price, price > 100 ? 2 : price > 10 ? 4 : 5) : '—'}
               </div>
-              <div className="flex items-center gap-2 text-[9px] text-[var(--color-muted)] mt-0.5">
+              <div className="flex items-center gap-2 text-[10px] text-[var(--color-muted)] mt-0.5">
                 {vwapDev != null && (
                   <span className={vwapDev > 0 ? 'text-[var(--color-up)]' : vwapDev < 0 ? 'text-[var(--color-down)]' : ''}>
                     VWAP {vwapDev > 0 ? '+' : ''}{vwapDev.toFixed(2)}%
@@ -353,7 +353,7 @@ function AttributionPanel({ role }) {
         <div className="flex items-center gap-0.5 ml-auto">
           {[30, 90, 365].map(d => (
             <button key={d} type="button" onClick={() => setDays(d)}
-              className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${d === days ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${d === days ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
             >{d}d</button>
           ))}
         </div>
@@ -372,9 +372,9 @@ function AttributionPanel({ role }) {
       {!loading && rows.length === 0 && (
         <div className="py-3 text-center">
           <p className="t-meta text-[var(--color-muted)]">No closed trades in {days}-day window.</p>
-          <p className="text-[9px] text-[var(--color-muted)] mt-1">Attribution populates after the first round-trip trade. Try widening the window or wait for trades to close.</p>
+          <p className="text-[10px] text-[var(--color-muted)] mt-1">Attribution populates after the first round-trip trade. Try widening the window or wait for trades to close.</p>
           {days < 365 && (
-            <button type="button" onClick={() => setDays(365)} className="text-[9px] text-[var(--color-accent)] hover:underline mt-1">
+            <button type="button" onClick={() => setDays(365)} className="text-[10px] text-[var(--color-accent)] hover:underline mt-1">
               Try 365 days →
             </button>
           )}
@@ -456,7 +456,7 @@ function EquityCurve({ role }) {
         <span className={`text-[15px] font-bold font-mono ${lastPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
           {lastPnl >= 0 ? '+' : ''}{fmtMoney(lastPnl)}
         </span>
-        <span className="text-[9px] text-[var(--color-muted)]">{snapshots.length} snapshots · 90d</span>
+        <span className="text-[10px] text-[var(--color-muted)]">{snapshots.length} snapshots · 90d</span>
       </div>
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto" style={{ maxHeight: '160px' }}>
         <polygon points={areaPoints} fill="var(--color-accent-soft)" opacity="0.5" />
@@ -542,8 +542,8 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
               #{selected.accountNumber || selectedAccountId}
             </span>
           )}
-          {selectedRole.autopilot && <Badge tone="info" className="text-[8px] px-1">AUTO</Badge>}
-          {selectedRole.copilot && <Badge tone="special" className="text-[8px] px-1">COPILOT</Badge>}
+          {selectedRole.autopilot && <Badge tone="info" className="text-[10px] px-1">AUTO</Badge>}
+          {selectedRole.copilot && <Badge tone="special" className="text-[10px] px-1">COPILOT</Badge>}
         </div>
         <Button size="sm" variant="ghost" onClick={refresh} disabled={loading} className="!px-1.5 !py-0.5 text-[10px]">
           {loading ? '…' : '↻'}
@@ -568,8 +568,8 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
               >
                 <span>#{a.accountNumber || a.accountId}</span>
                 <span className="opacity-70">{a.isLive ? 'LIVE' : 'DEMO'}</span>
-                {r.autopilot && <span className="text-[8px] text-[var(--color-info)]">A</span>}
-                {r.copilot && <span className="text-[8px] text-[var(--color-special)]">C</span>}
+                {r.autopilot && <span className="text-[10px] text-[var(--color-info)]">A</span>}
+                {r.copilot && <span className="text-[10px] text-[var(--color-special)]">C</span>}
               </button>
             )
           })}
@@ -633,7 +633,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                 <div key={src}>
                   <div className="flex items-center gap-1.5 mb-1">
                     <p className="t-meta text-[var(--color-muted)]">{meta.label}</p>
-                    <Badge tone={meta.tone} className="text-[8px] px-1">{items.length}</Badge>
+                    <Badge tone={meta.tone} className="text-[10px] px-1">{items.length}</Badge>
                   </div>
                   <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
                     {items.map((o, i) => {
@@ -655,9 +655,9 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                               {o.side === 'BUY' ? '▲' : '▼'}
                             </span>
                             <span className="font-bold text-[var(--color-text)]">{sym}</span>
-                            <Badge tone="neutral" className="text-[8px] px-1">{typeLabel}</Badge>
+                            <Badge tone="neutral" className="text-[10px] px-1">{typeLabel}</Badge>
                             {sourceBadge && (
-                              <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                              <Badge tone={sourceBadge.tone} className="text-[10px] px-1" title={parsedLabel.raw}>
                                 {sourceBadge.text}
                               </Badge>
                             )}
@@ -668,11 +668,11 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                               @ {triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}
                             </span>
                             <span className="flex-1" />
-                            <span className="text-[9.5px] text-[var(--color-muted)]">
+                            <span className="text-[11px] text-[var(--color-muted)]">
                               {o.utcLastUpdateTimestamp ? fmtAgo(o.utcLastUpdateTimestamp) : ''}
                             </span>
                           </div>
-                          <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                          <div className="flex items-center gap-2 text-[11px] text-[var(--color-muted)] mt-0.5 flex-wrap">
                             {o.stopLoss != null && (
                               <span>
                                 <span className="text-[var(--color-down)]">SL</span> {o.stopLoss.toFixed(priceDigits)}
@@ -733,7 +733,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                   <div className="flex items-center gap-1.5 mb-1">
                     <span className="text-[10px]">{meta.icon}</span>
                     <p className="t-meta text-[var(--color-muted)]">{meta.label}</p>
-                    <Badge tone={meta.tone} className="text-[8px] px-1">{items.length}</Badge>
+                    <Badge tone={meta.tone} className="text-[10px] px-1">{items.length}</Badge>
                   </div>
                   <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
                     {items.map((p, i) => {
@@ -760,7 +760,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                             </span>
                             <span className="font-bold text-[var(--color-text)]">{sym}</span>
                             {sourceBadge && (
-                              <Badge tone={sourceBadge.tone} className="text-[8px] px-1" title={parsedLabel.raw}>
+                              <Badge tone={sourceBadge.tone} className="text-[10px] px-1" title={parsedLabel.raw}>
                                 {sourceBadge.text}
                               </Badge>
                             )}
@@ -774,15 +774,15 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                             {pnl != null && (
                               <span className={`font-mono font-semibold ${pnl > 0 ? 'text-[var(--color-up)]' : pnl < 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
                                 {pnl >= 0 ? '+' : ''}{fmtMoney(pnl)}
-                                <span className="text-[8px] text-[var(--color-muted)] ml-0.5">est</span>
+                                <span className="text-[10px] text-[var(--color-muted)] ml-0.5">est</span>
                               </span>
                             )}
                             {botPos && (paused
-                              ? <Button size="sm" variant="ghost" onClick={() => onUnpause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">resume</Button>
-                              : <Button size="sm" variant="ghost" onClick={() => onPause(botPos.id)} className="!px-1.5 !py-0.5 text-[9px]">pause</Button>
+                              ? <Button size="sm" variant="ghost" onClick={() => onUnpause(botPos.id)} className="!px-1.5 !py-0.5 text-[10px]">resume</Button>
+                              : <Button size="sm" variant="ghost" onClick={() => onPause(botPos.id)} className="!px-1.5 !py-0.5 text-[10px]">pause</Button>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 text-[9.5px] text-[var(--color-muted)] mt-0.5 flex-wrap">
+                          <div className="flex items-center gap-2 text-[11px] text-[var(--color-muted)] mt-0.5 flex-wrap">
                             {p.stopLoss != null && (
                               <span>
                                 <span className="text-[var(--color-down)]">SL</span> {p.stopLoss.toFixed(priceDigits)}
@@ -810,8 +810,8 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                             )}
                           </div>
                           {botPos && (
-                            <div className="flex items-center gap-2 text-[9.5px] mt-0.5">
-                              {paused && <Badge tone="warning" className="text-[8px] px-1">PAUSED</Badge>}
+                            <div className="flex items-center gap-2 text-[11px] mt-0.5">
+                              {paused && <Badge tone="warning" className="text-[10px] px-1">PAUSED</Badge>}
                               {lastCheck && (
                                 <span className="text-[var(--color-text-sub)]">
                                   <span className="text-[var(--color-muted)]">Monitor:</span> {lastCheck}
@@ -865,13 +865,17 @@ function MarketStatus({ symbols, activity }) {
   const liveTrading = []
   const analyseOnly = []
   const skipped = []
+  const awaiting = []
   for (const sym of symbols) {
     const la = latestAnalysis[sym]
     const bias = la?.v1
     const conv = la?.v2
+    const hasAnalysis = la != null && bias != null
     const isSkip = bias === 'skip' || bias === 'neutral' || (conv != null && conv < 4)
 
-    if (isTradingNow(sym)) {
+    if (!hasAnalysis) {
+      awaiting.push({ symbol: sym, msUntil: isTradingNow(sym) ? 0 : msUntilOpen(sym) })
+    } else if (isTradingNow(sym)) {
       if (isSkip) skipped.push(sym)
       else liveTrading.push(sym)
     } else {
@@ -884,7 +888,7 @@ function MarketStatus({ symbols, activity }) {
   }
   analyseOnly.sort((a, b) => a.msUntil - b.msUntil)
 
-  const nextOpen = analyseOnly[0]
+  const nextOpen = analyseOnly[0] || (awaiting.length > 0 ? awaiting[0] : null)
   const cryptoLive = liveTrading.filter(s => CRYPTO_RE.test(s))
   const nonCryptoLive = liveTrading.filter(s => !CRYPTO_RE.test(s))
 
@@ -895,7 +899,7 @@ function MarketStatus({ symbols, activity }) {
         <Badge tone={liveTrading.length > 0 ? 'up' : 'neutral'} pill>
           {liveTrading.length > 0 ? `${liveTrading.length} LIVE` : 'ALL CLOSED'}
         </Badge>
-        {cryptoLive.length > 0 && <Badge tone="special" className="text-[8px] px-1">CRYPTO 24/7</Badge>}
+        {cryptoLive.length > 0 && <Badge tone="special" className="text-[10px] px-1">CRYPTO 24/7</Badge>}
       </div>
 
       {cryptoLive.length > 0 && (
@@ -930,33 +934,51 @@ function MarketStatus({ symbols, activity }) {
 
       {analyseOnly.length > 0 && (
         <div className="mb-2">
-          <p className="t-meta text-[var(--color-muted)] mb-1">
+          <p className="t-body text-[var(--color-muted)] mb-1">
             Queued for open ({analyseOnly.length})
           </p>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {analyseOnly.map(({ symbol, msUntil, bias, conv }) => (
               <span
                 key={symbol}
-                className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono"
-                title={`${String(bias).toUpperCase()} ${conv}/10 — opens in ${fmtDuration(msUntil)}`}
+                className="px-2 py-1 rounded-[4px] text-[11px] bg-[color-mix(in_srgb,var(--color-up)_15%,transparent)] text-[var(--color-up)] font-mono"
+                title={`${bias?.toUpperCase() || '?'} ${conv}/10 — opens in ${fmtDuration(msUntil)}`}
               >
-                {symbol} <span className="font-semibold">{String(bias).toUpperCase()}</span> <span className="opacity-60">{fmtDuration(msUntil)}</span>
+                {symbol} <span className="font-semibold">{bias?.toUpperCase() || '?'}</span> <span className="text-[10px]">{conv}/10</span> <span className="opacity-60">{fmtDuration(msUntil)}</span>
               </span>
             ))}
           </div>
         </div>
       )}
 
+      {awaiting.length > 0 && (
+        <div className="mb-2">
+          <p className="t-body text-[var(--color-muted)] mb-1">
+            Awaiting analysis ({awaiting.length})
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {awaiting.map(({ symbol, msUntil }) => (
+              <span key={symbol} className="px-2 py-1 rounded-[4px] text-[11px] bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-mono">
+                {symbol} <span className="opacity-60 text-[10px]">{msUntil > 0 ? fmtDuration(msUntil) : 'open'}</span>
+              </span>
+            ))}
+          </div>
+          <p className="text-[10px] text-[var(--color-muted)] mt-1">
+            These symbols have not been analyzed yet. The agent will scan and assign a bias on the next loop cycle.
+          </p>
+        </div>
+      )}
+
       {skipped.length > 0 && (
         <div className="mb-2">
-          <p className="t-meta text-[var(--color-muted)] mb-1">
+          <p className="t-body text-[var(--color-muted)] mb-1">
             Standing aside ({skipped.length})
           </p>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             {skipped.map(sym => {
               const la = latestAnalysis[sym]
               return (
-                <span key={sym} className="px-1.5 py-0.5 rounded-[4px] text-[10px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono">
+                <span key={sym} className="px-2 py-1 rounded-[4px] text-[11px] bg-[var(--color-bg)] text-[var(--color-muted)] font-mono">
                   {sym} <span className="opacity-60">{la ? `${la.v2 || 0}/10` : '—'}</span>
                 </span>
               )
@@ -966,13 +988,13 @@ function MarketStatus({ symbols, activity }) {
       )}
 
       {nextOpen && (
-        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+        <p className="text-[11px] text-[var(--color-muted)] mt-1">
           Next market open: <span className="text-[var(--color-text)] font-mono">{nextOpen.symbol}</span> in {fmtDuration(nextOpen.msUntil)}
           {cryptoLive.length > 0 && ' — crypto continues uninterrupted'}
         </p>
       )}
-      {liveTrading.length === 0 && analyseOnly.length === 0 && (
-        <p className="text-[9.5px] text-[var(--color-muted)] mt-1">
+      {liveTrading.length === 0 && analyseOnly.length === 0 && awaiting.length === 0 && (
+        <p className="text-[11px] text-[var(--color-muted)] mt-1">
           All watchlist markets standing aside. Agent continues scanning — conviction must reach 4/10+ to queue for open.
         </p>
       )}
@@ -1039,7 +1061,7 @@ function TeamRoster({ activity }) {
             <div key={symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
               <div className="px-2 py-1 flex items-center gap-2 border-b border-[var(--color-border)]">
                 <span className="text-[12px] font-bold font-mono text-[var(--color-text)]">{symbol}</span>
-                <span className="text-[9px] text-[var(--color-muted)]">{minionIds.length} agents</span>
+                <span className="text-[10px] text-[var(--color-muted)]">{minionIds.length} agents</span>
               </div>
               <div className="divide-y divide-[var(--color-border)]">
                 {minionIds.map(id => {
@@ -1056,7 +1078,7 @@ function TeamRoster({ activity }) {
                       }`} />
                       <span className="text-[13px] leading-none">{m.icon}</span>
                       <span className={`font-medium w-28 truncate ${ROLE_COLORS[m.role] || ''}`}>{m.name}</span>
-                      <span className="text-[9px] text-[var(--color-muted)] uppercase w-16">{m.role}</span>
+                      <span className="text-[10px] text-[var(--color-muted)] uppercase w-16">{m.role}</span>
                       <span className="ml-auto text-[10px] font-mono text-[var(--color-muted)]">
                         {st.label || st.status}
                       </span>
@@ -1068,7 +1090,7 @@ function TeamRoster({ activity }) {
           )
         })}
       </div>
-      <p className="text-[9px] text-[var(--color-muted)] mt-2">
+      <p className="text-[10px] text-[var(--color-muted)] mt-2">
         4-6 specialists dispatched per symbol. Hover for focus area.
       </p>
     </Card>
@@ -1099,21 +1121,21 @@ function ScanFeed({ activity }) {
             <div key={`${row.kind}-${row.id}-${i}`} className="rounded-[5px] bg-[var(--color-bg)] p-2 space-y-1">
               <div className="flex items-center gap-2 text-[11px]">
                 {row.kind === 'scan' && (
-                  <span className={`w-5 h-5 grid place-items-center rounded text-[9px] font-bold ${gradeColor}`}>
+                  <span className={`w-5 h-5 grid place-items-center rounded text-[10px] font-bold ${gradeColor}`}>
                     {row.extra === 'potential' ? 'A' : row.extra === 'weak' ? 'B' : 'C'}
                   </span>
                 )}
                 {row.kind === 'analysis' && (
-                  <Badge tone="accent" className="text-[8px] px-1">DEEP</Badge>
+                  <Badge tone="accent" className="text-[10px] px-1">DEEP</Badge>
                 )}
                 <span className="font-mono font-bold text-[var(--color-text)]">{row.symbol}</span>
                 {row.v1 && <span className={`font-semibold ${biasColor}`}>{String(row.v1).toUpperCase()}</span>}
                 {row.v2 != null && <span className="text-[10px] text-[var(--color-muted)] font-mono">{row.v2}/10</span>}
-                {row.extra === 'potential' && row.kind === 'scan' && <Badge tone="up" className="text-[8px] px-1">TRADEABLE</Badge>}
-                <span className="ml-auto text-[9px] text-[var(--color-muted)]">{fmtAgo(row.at)}</span>
+                {row.extra === 'potential' && row.kind === 'scan' && <Badge tone="up" className="text-[10px] px-1">TRADEABLE</Badge>}
+                <span className="ml-auto text-[10px] text-[var(--color-muted)]">{fmtAgo(row.at)}</span>
               </div>
               {row.note && <p className="text-[10px] text-[var(--color-muted)] truncate">{row.note}</p>}
-              <p className="text-[9px] text-[var(--color-muted)]">Desk: {deskNames}</p>
+              <p className="text-[10px] text-[var(--color-muted)]">Desk: {deskNames}</p>
             </div>
           )
         })}
@@ -1162,7 +1184,7 @@ function MonitorAgent({ role }) {
         <Badge tone={positions.length > 0 ? 'info' : 'neutral'} pill>
           {positions.length} position{positions.length !== 1 ? 's' : ''}
         </Badge>
-        <span className="text-[9px] text-[var(--color-muted)]">checks every 5 min</span>
+        <span className="text-[10px] text-[var(--color-muted)]">checks every 5 min</span>
       </div>
 
       {positions.length === 0 ? (
@@ -1187,21 +1209,21 @@ function MonitorAgent({ role }) {
               <div key={pos.id} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)]">
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="text-[11px] font-bold font-mono text-[var(--color-text)]">{pos.symbol}</span>
-                  <Badge tone={pos.side === 'BUY' ? 'up' : 'down'} className="text-[8px] px-1">{pos.side}</Badge>
-                  <Badge tone={tone} className="text-[8px] px-1">{actionLabel}</Badge>
+                  <Badge tone={pos.side === 'BUY' ? 'up' : 'down'} className="text-[10px] px-1">{pos.side}</Badge>
+                  <Badge tone={tone} className="text-[10px] px-1">{actionLabel}</Badge>
                   {pos.thesis_status && pos.thesis_status !== 'intact' && (
-                    <Badge tone={pos.thesis_status === 'broken' ? 'down' : 'warning'} className="text-[8px] px-1">
+                    <Badge tone={pos.thesis_status === 'broken' ? 'down' : 'warning'} className="text-[10px] px-1">
                       {pos.thesis_status.toUpperCase()}
                     </Badge>
                   )}
-                  {stale && <Badge tone="warning" className="text-[8px] px-1">STALE</Badge>}
+                  {stale && <Badge tone="warning" className="text-[10px] px-1">STALE</Badge>}
                   <span className="flex-1" />
                   {pos.last_check_at && (
-                    <span className="text-[9px] text-[var(--color-muted)]">{fmtAgo(pos.last_check_at)}</span>
+                    <span className="text-[10px] text-[var(--color-muted)]">{fmtAgo(pos.last_check_at)}</span>
                   )}
                 </div>
 
-                <div className="flex items-center gap-3 text-[9.5px]">
+                <div className="flex items-center gap-3 text-[11px]">
                   <span className="text-[var(--color-muted)]">
                     Entry <span className="font-mono text-[var(--color-text)]">{pos.entry_price || '—'}</span>
                   </span>
@@ -1218,7 +1240,7 @@ function MonitorAgent({ role }) {
                   )}
                 </div>
 
-                <div className="flex items-center gap-3 text-[9.5px] mt-0.5">
+                <div className="flex items-center gap-3 text-[11px] mt-0.5">
                   {mfeR != null && (
                     <span className="text-[var(--color-muted)]">
                       MFE <span className="font-mono text-[var(--color-up)]">+{mfeR}R</span>
@@ -1229,12 +1251,12 @@ function MonitorAgent({ role }) {
                       MAE <span className="font-mono text-[var(--color-down)]">-{maeR}R</span>
                     </span>
                   )}
-                  {pos.be_moved ? <span className="text-[8px] text-[var(--color-accent)]">BE ✓</span> : null}
-                  {pos.scaled_out ? <span className="text-[8px] text-[var(--color-accent)]">SCALED ✓</span> : null}
+                  {pos.be_moved ? <span className="text-[10px] text-[var(--color-accent)]">BE ✓</span> : null}
+                  {pos.scaled_out ? <span className="text-[10px] text-[var(--color-accent)]">SCALED ✓</span> : null}
                 </div>
 
                 {pos.last_check_reasoning && (
-                  <p className="text-[9px] text-[var(--color-text-sub)] mt-1 truncate">
+                  <p className="text-[10px] text-[var(--color-text-sub)] mt-1 truncate">
                     {pos.last_check_reasoning}
                   </p>
                 )}
@@ -1287,8 +1309,8 @@ function PlannedOrders({ activity, role }) {
   return (
     <PanelFrame id={`planned-orders-${role}`} title={`${roleLabel} Planned Orders`} defaultSize="L" badge={
       <span className="flex items-center gap-1">
-        <Badge tone={role === 'copilot' ? 'special' : 'accent'} className="text-[8px] px-1">{activeCount} active</Badge>
-        <Badge tone="neutral" className="text-[8px] px-1">{symbols.length} total</Badge>
+        <Badge tone={role === 'copilot' ? 'special' : 'accent'} className="text-[10px] px-1">{activeCount} active</Badge>
+        <Badge tone="neutral" className="text-[10px] px-1">{symbols.length} total</Badge>
       </span>
     }>
       {symbols.map(({ symbol, rows, latest }) => {
@@ -1304,22 +1326,22 @@ function PlannedOrders({ activity, role }) {
           <div key={symbol} className="mb-3 last:mb-0 rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
             <div className="px-2 py-1.5 flex items-center gap-2 border-b border-[var(--color-border)]">
               <span className="font-mono font-bold text-[12px] text-[var(--color-text)]">{symbol}</span>
-              <Badge tone={isActive ? (latest.consensus_bias === 'long' ? 'up' : 'down') : 'neutral'} className="text-[8px] px-1">
+              <Badge tone={isActive ? (latest.consensus_bias === 'long' ? 'up' : 'down') : 'neutral'} className="text-[10px] px-1">
                 {String(latest.consensus_bias || '—').toUpperCase()}
               </Badge>
               <span className="font-mono text-[10px] text-[var(--color-text)]">{latest.overall_conviction}/10</span>
-              {latest.auto_trade ? <Badge tone="up" className="text-[8px] px-1">AUTO</Badge> : null}
-              {!marketOpen && ms > 0 && <Badge tone="warning" className="text-[8px] px-1">opens {fmtDuration(ms)}</Badge>}
-              {marketOpen && <Badge tone="up" className="text-[8px] px-1">MARKET OPEN</Badge>}
+              {latest.auto_trade ? <Badge tone="up" className="text-[10px] px-1">AUTO</Badge> : null}
+              {!marketOpen && ms > 0 && <Badge tone="warning" className="text-[10px] px-1">opens {fmtDuration(ms)}</Badge>}
+              {marketOpen && <Badge tone="up" className="text-[10px] px-1">MARKET OPEN</Badge>}
               {currentPrice != null && (
                 <span className="font-mono text-[10px] text-[var(--color-text)]">
                   @ {fmtMoney(currentPrice, currentPrice > 100 ? 2 : currentPrice > 10 ? 4 : 5)}
                 </span>
               )}
-              <span className="ml-auto text-[9px] text-[var(--color-muted)] truncate max-w-[250px]">Desk: {deskNames}</span>
+              <span className="ml-auto text-[10px] text-[var(--color-muted)] truncate max-w-[250px]">Desk: {deskNames}</span>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-[9.5px]">
+              <table className="w-full text-[11px]">
                 <thead>
                   <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
                     <th className="px-2 py-1 font-medium w-6">#</th>
@@ -1403,9 +1425,9 @@ function FailedTrades({ role }) {
 
   return (
     <PanelFrame id="failed-trades" title="Failed to Trade" defaultSize="M" badge={
-      <Badge tone="down" className="text-[8px] px-1">{events.length}</Badge>
+      <Badge tone="down" className="text-[10px] px-1">{events.length}</Badge>
     }>
-      <p className="text-[9px] text-[var(--color-muted)] mb-2">Risk gate vetoes — review to improve strategy and sizing rules.</p>
+      <p className="text-[10px] text-[var(--color-muted)] mb-2">Risk gate vetoes — review to improve strategy and sizing rules.</p>
       <div className="space-y-1 max-h-[300px] overflow-y-auto">
         {events.map((e, i) => {
           let checks = null
@@ -1413,14 +1435,14 @@ function FailedTrades({ role }) {
           return (
             <div key={i} className="rounded-[4px] bg-[var(--color-bg)] px-2 py-1.5 space-y-0.5">
               <div className="flex items-center gap-2 text-[11px]">
-                <Badge tone="down" className="text-[8px] px-1">VETO</Badge>
+                <Badge tone="down" className="text-[10px] px-1">VETO</Badge>
                 <span className="font-mono font-bold text-[var(--color-text)]">{e.symbol}</span>
                 <span className="text-[var(--color-muted)]">{e.side}</span>
-                <span className="ml-auto text-[9px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
+                <span className="ml-auto text-[10px] text-[var(--color-muted)]">{fmtAgo(e.created_at)}</span>
               </div>
               <p className="text-[10px] text-[var(--color-down)]">{e.veto_reason}</p>
               {checks && (
-                <div className="text-[9px] text-[var(--color-muted)] flex flex-wrap gap-2">
+                <div className="text-[10px] text-[var(--color-muted)] flex flex-wrap gap-2">
                   {checks.daily_pnl != null && <span>Daily P&L: ${fmtMoney(checks.daily_pnl)}</span>}
                   {checks.open_positions != null && <span>Open pos: {checks.open_positions}</span>}
                   {checks.rr != null && <span>R:R: {checks.rr.toFixed(2)}</span>}
@@ -1544,7 +1566,7 @@ function PendingOrders({ ctrader }) {
   if (!orders || orders.length === 0) {
     if (fetched) return (
       <PanelFrame id="pending-orders" title="cTrader Pending Orders" defaultSize="M" badge={
-        <Badge tone="neutral" className="text-[8px] px-1">0</Badge>
+        <Badge tone="neutral" className="text-[10px] px-1">0</Badge>
       }>
         <p className="t-sub text-[var(--color-muted)] py-2 text-center">No pending orders at cTrader.</p>
       </PanelFrame>
@@ -1555,15 +1577,15 @@ function PendingOrders({ ctrader }) {
   return (
     <PanelFrame id="pending-orders" title="cTrader Pending Orders" defaultSize="L" badge={
       <span className="flex items-center gap-1">
-        <Badge tone="accent" className="text-[8px] px-1">{orders.length} order{orders.length !== 1 ? 's' : ''}</Badge>
-        <Badge tone={isLive ? 'down' : 'accent'} className="text-[8px] px-1">{isLive ? 'LIVE' : 'DEMO'}</Badge>
-        <button type="button" onClick={load} disabled={loading} className="text-[9px] text-[var(--color-accent)] hover:underline ml-1">
+        <Badge tone="accent" className="text-[10px] px-1">{orders.length} order{orders.length !== 1 ? 's' : ''}</Badge>
+        <Badge tone={isLive ? 'down' : 'accent'} className="text-[10px] px-1">{isLive ? 'LIVE' : 'DEMO'}</Badge>
+        <button type="button" onClick={load} disabled={loading} className="text-[10px] text-[var(--color-accent)] hover:underline ml-1">
           {loading ? '…' : '↻'}
         </button>
       </span>
     }>
       <div className="overflow-x-auto">
-        <table className="w-full text-[9.5px]">
+        <table className="w-full text-[11px]">
           <thead>
             <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
               <th className="px-2 py-1 font-medium">Symbol</th>
@@ -1597,7 +1619,7 @@ function PendingOrders({ ctrader }) {
                     {o.side === 'BUY' ? '▲ BUY' : '▼ SELL'}
                   </td>
                   <td className="px-2 py-1">
-                    <Badge tone={typeRaw.includes('STOP') ? 'warning' : 'accent'} className="text-[8px] px-1">{typeRaw}</Badge>
+                    <Badge tone={typeRaw.includes('STOP') ? 'warning' : 'accent'} className="text-[10px] px-1">{typeRaw}</Badge>
                   </td>
                   <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{volLots != null ? volLots.toFixed(2) : '—'}</td>
                   <td className="px-2 py-1 text-right font-mono text-[var(--color-text)]">{triggerPrice != null ? triggerPrice.toFixed(priceDigits) : '—'}</td>
@@ -1611,7 +1633,7 @@ function PendingOrders({ ctrader }) {
                   </td>
                   <td className="px-2 py-1">
                     {sourceBadge ? (
-                      <Badge tone={sourceBadge.tone} className="text-[8px] px-1">{sourceBadge.text}</Badge>
+                      <Badge tone={sourceBadge.tone} className="text-[10px] px-1">{sourceBadge.text}</Badge>
                     ) : (
                       <span className="text-[var(--color-muted)]">{parsedLabel?.source || '—'}</span>
                     )}
@@ -1652,7 +1674,7 @@ function ApiHealth({ health }) {
               title={`${a.label}: ${ok ? 'OK' : 'unknown'}`} />
           )
         })}
-        <span className="text-[9px] text-[var(--color-muted)] ml-0.5">{health.symbols?.enabled || 0} symbols</span>
+        <span className="text-[10px] text-[var(--color-muted)] ml-0.5">{health.symbols?.enabled || 0} symbols</span>
       </span>
     }>
       <div className="space-y-2">
@@ -1667,18 +1689,18 @@ function ApiHealth({ health }) {
                   <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-[var(--color-up)]' : 'bg-[var(--color-muted)]'}`} />
                   <span className="text-[10px] font-semibold text-[var(--color-text)]">{a.label}</span>
                 </div>
-                <p className="text-[9px] text-[var(--color-muted)]">
+                <p className="text-[10px] text-[var(--color-muted)]">
                   {info.lastCall ? `OK · ${fmtAgo(info.lastCall)}` : 'No calls yet'}
                 </p>
                 {lastErr && (
-                  <p className="text-[9px] text-[var(--color-down)] truncate mt-0.5" title={lastErr}>{lastErr}</p>
+                  <p className="text-[10px] text-[var(--color-down)] truncate mt-0.5" title={lastErr}>{lastErr}</p>
                 )}
               </div>
             )
           })}
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[9.5px]">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
           <div>
             <p className="text-[var(--color-muted)]">Symbols</p>
             <p className="font-mono text-[var(--color-text)]">{health.symbols?.enabled || 0} / {health.symbols?.total || 0}</p>
@@ -1740,12 +1762,12 @@ function SymbolControls({ symbols, role, onRefresh }) {
   return (
     <PanelFrame id="symbol-controls" title="Symbol Controls" defaultSize="L" badge={
       <span className="flex items-center gap-1">
-        <Badge tone="accent" className="text-[8px] px-1">{symbols.filter(s => s.enabled !== false && !s.force_skip).length} active</Badge>
-        {symbols.some(s => s.force_skip) && <Badge tone="warning" className="text-[8px] px-1">{symbols.filter(s => s.force_skip).length} skipped</Badge>}
-        {symbols.some(s => s.override_bias) && <Badge tone="special" className="text-[8px] px-1">{symbols.filter(s => s.override_bias).length} overridden</Badge>}
+        <Badge tone="accent" className="text-[10px] px-1">{symbols.filter(s => s.enabled !== false && !s.force_skip).length} active</Badge>
+        {symbols.some(s => s.force_skip) && <Badge tone="warning" className="text-[10px] px-1">{symbols.filter(s => s.force_skip).length} skipped</Badge>}
+        {symbols.some(s => s.override_bias) && <Badge tone="special" className="text-[10px] px-1">{symbols.filter(s => s.override_bias).length} overridden</Badge>}
       </span>
     }>
-      <p className="text-[9px] text-[var(--color-muted)] mb-2">
+      <p className="text-[10px] text-[var(--color-muted)] mb-2">
         Override agent decisions per symbol. Style toggles control which trade durations are allowed — disabling a style blocks auto-trades of that duration.
       </p>
       <div className="space-y-1">
@@ -1762,49 +1784,49 @@ function SymbolControls({ symbols, role, onRefresh }) {
               >
                 <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.force_skip ? 'bg-[var(--color-warning-text)]' : s.enabled !== false ? 'bg-[var(--color-up)]' : 'bg-[var(--color-muted)]'}`} />
                 <span className="font-mono font-bold text-[var(--color-text)]">{s.symbol}</span>
-                {s.force_skip && <Badge tone="warning" className="text-[7px] px-1">SKIP</Badge>}
-                {s.override_bias && <Badge tone="special" className="text-[7px] px-1">BIAS: {s.override_bias.toUpperCase()}</Badge>}
-                {s.block_next_trade && <Badge tone="down" className="text-[7px] px-1">BLOCKED</Badge>}
+                {s.force_skip && <Badge tone="warning" className="text-[10px] px-1">SKIP</Badge>}
+                {s.override_bias && <Badge tone="special" className="text-[10px] px-1">BIAS: {s.override_bias.toUpperCase()}</Badge>}
+                {s.block_next_trade && <Badge tone="down" className="text-[10px] px-1">BLOCKED</Badge>}
                 <span className="flex-1" />
                 <span className="flex items-center gap-0.5">
                   {Object.entries(styles).map(([k, v]) => (
-                    <span key={k} className={`text-[8px] ${v ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)] opacity-40'}`}
+                    <span key={k} className={`text-[10px] ${v ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)] opacity-40'}`}
                       title={`${STYLE_META[k]?.label}: ${v ? 'ON' : 'OFF'}`}>
                       {STYLE_META[k]?.icon || k[0]}
                     </span>
                   ))}
                 </span>
-                <span className="text-[9px] text-[var(--color-muted)]">{isExpanded ? '▾' : '▸'}</span>
+                <span className="text-[10px] text-[var(--color-muted)]">{isExpanded ? '▾' : '▸'}</span>
               </button>
 
               {isExpanded && (
                 <div className="px-2 pb-2 space-y-2 border-t border-[var(--color-border)]">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Force Skip</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Force Skip</p>
                       <button type="button" disabled={isBusy}
                         onClick={() => updateSymbol(s.symbol, { force_skip: !s.force_skip })}
-                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.force_skip ? 'bg-[var(--color-warning-text)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
+                        className={`px-2 py-1 rounded text-[10px] font-bold w-full ${s.force_skip ? 'bg-[var(--color-warning-text)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
                       >{s.force_skip ? 'SKIPPING' : 'Active'}</button>
                     </div>
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Block Next Trade</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Block Next Trade</p>
                       <button type="button" disabled={isBusy}
                         onClick={() => updateSymbol(s.symbol, { block_next_trade: !s.block_next_trade })}
-                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.block_next_trade ? 'bg-[var(--color-down)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
+                        className={`px-2 py-1 rounded text-[10px] font-bold w-full ${s.block_next_trade ? 'bg-[var(--color-down)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
                       >{s.block_next_trade ? 'BLOCKED' : 'Allow'}</button>
                     </div>
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Override Bias</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Override Bias</p>
                       <select value={s.override_bias || ''} disabled={isBusy}
                         onChange={e => updateSymbol(s.symbol, { override_bias: e.target.value || null })}
-                        className="w-full px-1.5 py-1 rounded text-[9px] bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
+                        className="w-full px-1.5 py-1 rounded text-[10px] bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
                       >
                         {BIAS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                     </div>
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Auto-Trade Threshold</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Auto-Trade Threshold</p>
                       <div className="flex items-center gap-1">
                         <input type="range" min="4" max="10" value={s.autoTradeThreshold || 8} disabled={isBusy}
                           onChange={e => updateSymbol(s.symbol, { autoTradeThreshold: Number(e.target.value) })}
@@ -1816,21 +1838,21 @@ function SymbolControls({ symbols, role, onRefresh }) {
                   </div>
 
                   <div>
-                    <p className="text-[9px] text-[var(--color-muted)] mb-1">Allowed Trading Styles</p>
+                    <p className="text-[10px] text-[var(--color-muted)] mb-1">Allowed Trading Styles</p>
                     <div className="flex flex-wrap gap-1">
                       {Object.entries(STYLE_META).map(([key, meta]) => {
                         const on = styles[key] !== false
                         return (
                           <button key={key} type="button" disabled={isBusy}
                             onClick={() => updateSymbol(s.symbol, { allowed_styles: { ...styles, [key]: !on } })}
-                            className={`px-2 py-1 rounded text-[9px] flex items-center gap-1 ${on
+                            className={`px-2 py-1 rounded text-[10px] flex items-center gap-1 ${on
                               ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold'
                               : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)] line-through'
                             }`}
                           >
                             <span>{meta.icon}</span>
                             <span>{meta.label}</span>
-                            <span className="opacity-60 text-[8px]">{meta.desc}</span>
+                            <span className="opacity-60 text-[10px]">{meta.desc}</span>
                           </button>
                         )
                       })}
@@ -1839,17 +1861,17 @@ function SymbolControls({ symbols, role, onRefresh }) {
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Max Volume (lots)</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Max Volume (lots)</p>
                       <input type="number" step="0.01" min="0.01" max="10" value={s.maxVolume || 0.01} disabled={isBusy}
                         onChange={e => updateSymbol(s.symbol, { maxVolume: Number(e.target.value) || 0.01 })}
-                        className="w-full px-1.5 py-1 rounded text-[9px] font-mono bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
+                        className="w-full px-1.5 py-1 rounded text-[10px] font-mono bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
                       />
                     </div>
                     <div>
-                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Status</p>
+                      <p className="text-[10px] text-[var(--color-muted)] mb-1">Status</p>
                       <button type="button" disabled={isBusy}
                         onClick={() => updateSymbol(s.symbol, { enabled: s.enabled === false })}
-                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.enabled !== false ? 'bg-[var(--color-up)] text-white' : 'bg-[var(--color-muted)] text-white'}`}
+                        className={`px-2 py-1 rounded text-[10px] font-bold w-full ${s.enabled !== false ? 'bg-[var(--color-up)] text-white' : 'bg-[var(--color-muted)] text-white'}`}
                       >{s.enabled !== false ? 'ENABLED' : 'DISABLED'}</button>
                     </div>
                   </div>
@@ -1966,7 +1988,7 @@ function TradeHistory({ activity, role }) {
         {unique.map((r, i) => (
           <div key={i} className="rounded-[5px] bg-[var(--color-bg)] px-2 py-1.5 space-y-0.5">
             <div className="flex items-center gap-2 text-[11px]">
-              <span className="font-mono text-[9px] text-[var(--color-muted)] w-12 shrink-0">{r.time ? new Date(r.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+              <span className="font-mono text-[10px] text-[var(--color-muted)] w-12 shrink-0">{r.time ? new Date(r.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
               <span className={`font-semibold text-[10px] w-14 ${actionColor(r.action)}`}>{r.action}</span>
               <span className="font-mono font-bold text-[var(--color-text)]">{r.sym}</span>
               <span className="text-[var(--color-muted)] text-[10px] truncate flex-1">{r.detail}</span>
@@ -1976,7 +1998,7 @@ function TradeHistory({ activity, role }) {
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 text-[9px] text-[var(--color-muted)]">
+            <div className="flex items-center gap-2 text-[10px] text-[var(--color-muted)]">
               {r.desk && <span>Desk: {r.desk}</span>}
               {r.strategy && <span className="uppercase">{r.strategy}</span>}
             </div>
@@ -2008,7 +2030,7 @@ function ActivityRow({ row }) {
     : 'text-[var(--color-muted)]'
   return (
     <div className="flex items-start gap-2 px-2 py-1.5 rounded-[5px] hover:bg-[var(--color-bg)] text-[11px]">
-      <Badge tone={KIND_TONE[row.kind] || 'neutral'} className="text-[8px] px-1 shrink-0">
+      <Badge tone={KIND_TONE[row.kind] || 'neutral'} className="text-[10px] px-1 shrink-0">
         {KIND_LABEL[row.kind] || row.kind.toUpperCase()}
       </Badge>
       <span className="font-bold w-[65px] shrink-0 text-[var(--color-text)]">{row.symbol}</span>
@@ -2023,7 +2045,7 @@ function ActivityRow({ row }) {
       <span className="flex-1 min-w-0 text-[var(--color-text-sub)] truncate">
         {row.note || row.extra || ''}
       </span>
-      <span className="text-[9px] text-[var(--color-muted)] shrink-0">{fmtAgo(row.at)}</span>
+      <span className="text-[10px] text-[var(--color-muted)] shrink-0">{fmtAgo(row.at)}</span>
     </div>
   )
 }
@@ -2243,7 +2265,7 @@ export default function Agent() {
               </Button>
             </div>
             {health?.lastError && (
-              <p className="text-[9.5px] text-[var(--color-text-sub)] mt-1 truncate">{health.lastError}</p>
+              <p className="text-[11px] text-[var(--color-text-sub)] mt-1 truncate">{health.lastError}</p>
             )}
           </div>
         )}
@@ -2267,7 +2289,7 @@ export default function Agent() {
           </div>
         </div>
         {health && (
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-2 text-[9.5px]">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mt-2 text-[11px]">
             <div>
               <p className="text-[var(--color-muted)]">Loop Time</p>
               <p className="font-mono text-[var(--color-text)]">{health.lastLoopMs ? `${(health.lastLoopMs / 1000).toFixed(1)}s` : '—'}</p>
@@ -2350,7 +2372,7 @@ export default function Agent() {
             const panel = document.querySelector('[data-panel="ctrader-account"]')
             if (panel) panel.dispatchEvent(new Event('panel-expand'))
           }}
-          badge={<Badge tone={state.ctrader?.accounts?.some(a => a.isLive) ? 'down' : 'accent'} className="text-[8px] px-1">
+          badge={<Badge tone={state.ctrader?.accounts?.some(a => a.isLive) ? 'down' : 'accent'} className="text-[10px] px-1">
             {state.ctrader?.accounts?.some(a => a.isLive) ? 'LIVE' : 'DEMO'}
           </Badge>}
         >
@@ -2369,7 +2391,7 @@ export default function Agent() {
 
       {/* Live activity stream */}
       <PanelFrame id="live-activity" title="Live Activity" defaultCollapsed={true}
-        badge={<span className="text-[9px] text-[var(--color-muted)]">{activity.length} events · 10s</span>}
+        badge={<span className="text-[10px] text-[var(--color-muted)]">{activity.length} events · 10s</span>}
       >
         {activity.length === 0 ? (
           <p className="t-sub text-[var(--color-muted)] py-4 text-center">
@@ -2383,7 +2405,7 @@ export default function Agent() {
           </div>
         )}
         <div className="mt-2 pt-2 border-t border-[var(--color-border)] flex items-center justify-between">
-          <span className="text-[9px] text-[var(--color-muted)]">
+          <span className="text-[10px] text-[var(--color-muted)]">
             Drill into any analysis, trade, or monitor check in the Workshop.
           </span>
           <Link to="/workshop" className="text-[10px] text-[var(--color-accent)] underline">
