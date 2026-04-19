@@ -9,6 +9,7 @@ import { runScan } from '../services/scanner.js'
 import { runAnalysis } from '../services/analyzer.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder } from '../lib/ctrader-ws.js'
+import { getFreshAccessToken } from '../lib/ctrader-token.js'
 import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 
@@ -236,16 +237,23 @@ export default function actionsRouter(db) {
 
   // -----------------------------------------------------------------------
   // POST /actions/ctrader-config — push cTrader credentials + account roles
-  // Body: { accessToken, accounts: [{ accountId, isLive, autopilot, copilot }] }
+  // Body: { accessToken, refreshToken?, expiresIn?, accounts: [...] }
   // The loop reads autopilot-enabled accounts and trades each one.
+  // refreshToken + expiresIn let the Railway agent refresh itself when the
+  // browser isn't open, so the bot keeps running past the 30-day access
+  // token lifetime without any operator action.
   // -----------------------------------------------------------------------
   router.post('/ctrader-config', (req, res) => {
     try {
-      const { accessToken, accounts } = req.body || {}
+      const { accessToken, refreshToken, expiresIn, accounts } = req.body || {}
       if (!accessToken) {
         return res.status(400).json({ error: 'accessToken is required' })
       }
       setState(db, 'ctrader_access_token', accessToken)
+      if (refreshToken) setState(db, 'ctrader_refresh_token', refreshToken)
+      if (expiresIn && Number.isFinite(Number(expiresIn))) {
+        setState(db, 'ctrader_token_expires_at', String(Date.now() + Number(expiresIn) * 1000))
+      }
 
       if (Array.isArray(accounts)) {
         setState(db, 'ctrader_account_roles_json', JSON.stringify(accounts))
@@ -531,7 +539,7 @@ export default function actionsRouter(db) {
 
       const clientId = process.env.CTRADER_CLIENT_ID
       const clientSecret = process.env.CTRADER_CLIENT_SECRET
-      const accessToken = getState(db, 'ctrader_access_token')
+      const accessToken = await getFreshAccessToken(db, getState, setState)
       const accountId = getState(db, 'ctrader_account_id')
       const isLive = getState(db, 'ctrader_is_live') === 'true'
 

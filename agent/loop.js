@@ -17,6 +17,7 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/
 import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
+import { getFreshAccessToken } from './lib/ctrader-token.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
@@ -49,7 +50,7 @@ function getAutopilotAccounts(db) {
 async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   const clientId = process.env.CTRADER_CLIENT_ID
   const clientSecret = process.env.CTRADER_CLIENT_SECRET
-  const accessToken = getState(db, 'ctrader_access_token')
+  const accessToken = await getFreshAccessToken(db, getState, setState)
   const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id')
   const isLive = accountOverride ? !!accountOverride.isLive : getState(db, 'ctrader_is_live') === 'true'
 
@@ -231,7 +232,7 @@ function log(...args) {
 async function executeBrokerAction(db, s, pos, eval_) {
   const clientId = process.env.CTRADER_CLIENT_ID
   const clientSecret = process.env.CTRADER_CLIENT_SECRET
-  const accessToken = getState(db, 'ctrader_access_token')
+  const accessToken = await getFreshAccessToken(db, getState, setState)
   const accountId = getState(db, 'ctrader_account_id')
   const isLive = getState(db, 'ctrader_is_live') === 'true'
 
@@ -868,7 +869,7 @@ async function runLoop(db) {
       try {
         const clientId = process.env.CTRADER_CLIENT_ID
         const clientSecret = process.env.CTRADER_CLIENT_SECRET
-        const accessToken = getState(db, 'ctrader_access_token')
+        const accessToken = await getFreshAccessToken(db, getState, setState)
         const accountId = getState(db, 'ctrader_account_id')
         const isLive = getState(db, 'ctrader_is_live') === 'true'
 

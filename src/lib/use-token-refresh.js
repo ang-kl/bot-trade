@@ -86,7 +86,13 @@ export default function useTokenRefresh() {
       const r = (accountRoles || {})[String(a.accountId)] || { autopilot: false, copilot: false }
       return { accountId: a.accountId, isLive: a.isLive, autopilot: r.autopilot, copilot: r.copilot }
     })
-    const payload = { accessToken, accounts: rolesArray }
+    // Include refreshToken + remaining TTL so Railway can refresh itself
+    // when the browser is closed. Without this the backend silently expires
+    // after 30 days and the bot stops trading.
+    const expiresIn = tokenExpiresAt
+      ? Math.max(0, Math.round((tokenExpiresAt - Date.now()) / 1000))
+      : undefined
+    const payload = { accessToken, refreshToken, expiresIn, accounts: rolesArray }
     const signature = JSON.stringify(payload)
     if (signature === lastPushed.current) return
     lastPushed.current = signature
@@ -100,5 +106,5 @@ export default function useTokenRefresh() {
         } catch {}
       }
     })()
-  }, [accessToken, accounts, accountRoles])
+  }, [accessToken, refreshToken, tokenExpiresAt, accounts, accountRoles])
 }

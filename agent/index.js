@@ -37,6 +37,8 @@ const {
   // cTrader credentials from env — seeded into agent_state at boot so the
   // loop can trade without waiting for the UI to push config.
   CTRADER_ACCESS_TOKEN,
+  CTRADER_REFRESH_TOKEN,
+  CTRADER_TOKEN_EXPIRES_IN,
   CTRADER_ACCOUNT_ID,
   CTRADER_IS_LIVE,
 } = process.env;
@@ -72,6 +74,19 @@ const db = initDB(resolvedDbPath);
 if (CTRADER_ACCESS_TOKEN && !getState(db, 'ctrader_access_token')) {
   setState(db, 'ctrader_access_token', CTRADER_ACCESS_TOKEN)
   console.log('[boot] cTrader access token seeded from env')
+}
+// Seed refresh token + expiry so server-side refresh can run even before the
+// UI pushes /actions/ctrader-config. Without these the bot dies at 30 days.
+if (CTRADER_REFRESH_TOKEN && !getState(db, 'ctrader_refresh_token')) {
+  setState(db, 'ctrader_refresh_token', CTRADER_REFRESH_TOKEN)
+  console.log('[boot] cTrader refresh token seeded from env')
+}
+if (CTRADER_TOKEN_EXPIRES_IN && !getState(db, 'ctrader_token_expires_at')) {
+  const secs = parseInt(CTRADER_TOKEN_EXPIRES_IN, 10)
+  if (Number.isFinite(secs) && secs > 0) {
+    setState(db, 'ctrader_token_expires_at', String(Date.now() + secs * 1000))
+    console.log(`[boot] cTrader token expiry seeded (+${Math.round(secs / 86400)}d)`)
+  }
 }
 if (CTRADER_ACCOUNT_ID && !getState(db, 'ctrader_account_id')) {
   setState(db, 'ctrader_account_id', CTRADER_ACCOUNT_ID)
