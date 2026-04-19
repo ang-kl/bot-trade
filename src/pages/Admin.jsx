@@ -2,7 +2,7 @@
 // Each service: cTrader, Telegram, Massive.
 // Test button per service, auto-lock on success, explicit unlock to edit.
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import Card from '../components/common/Card.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
