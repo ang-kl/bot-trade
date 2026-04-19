@@ -1270,8 +1270,36 @@ function MonitorAgent({ role }) {
 }
 
 // ---------------------------------------------------------------------------
-// Planned Orders — agent analysis revision trail for queued trades
+// Planned Orders — analysis board with pre-flight checklist + staleness
+// These are ANALYSES (not real orders). Real orders live at cTrader.
+// The agent auto-executes when conditions pass; this card shows governance.
 // ---------------------------------------------------------------------------
+
+function preFlightChecks(latest, currentPrice, marketOpen) {
+  const checks = []
+  const bias = latest.consensus_bias
+  const conv = latest.overall_conviction || 0
+  const entry = latest.entry_price
+  const sl = latest.sl_price
+  const tp = latest.tp1_price
+
+  checks.push({ label: 'Bias', ok: bias === 'long' || bias === 'short', detail: bias?.toUpperCase() || 'NONE' })
+  checks.push({ label: 'Conviction ≥ 8', ok: conv >= 8, detail: `${conv}/10` })
+  checks.push({ label: 'Entry price', ok: !!entry, detail: entry ? fmtMoney(entry, entry > 100 ? 2 : 5) : 'missing' })
+  checks.push({ label: 'SL set', ok: !!sl, detail: sl ? fmtMoney(sl, sl > 100 ? 2 : 5) : 'missing' })
+  checks.push({ label: 'TP set', ok: !!tp, detail: tp ? fmtMoney(tp, tp > 100 ? 2 : 5) : 'missing' })
+  checks.push({ label: 'Market open', ok: marketOpen, detail: marketOpen ? 'YES' : 'CLOSED' })
+
+  if (currentPrice && entry && sl) {
+    const entryDist = Math.abs(currentPrice - entry)
+    const slDist = Math.abs(entry - sl)
+    const driftPct = slDist > 0 ? (entryDist / slDist) * 100 : 0
+    const stale = driftPct > 50
+    checks.push({ label: 'Price drift < 50% of SL', ok: !stale, detail: `${driftPct.toFixed(0)}%`, warn: stale })
+  }
+
+  return checks
+}
 
 function PlannedOrders({ activity, role }) {
   const [fullAnalyses, setFullAnalyses] = useState([])
@@ -1290,29 +1318,13 @@ function PlannedOrders({ activity, role }) {
     return () => clearInterval(iv)
   }, [loadAnalyses])
 
-  const executeTrade = async (analysisId, symbol) => {
-    if (!window.confirm(`Execute trade for ${symbol} from this analysis? This will place a MARKET order at cTrader through the risk gate.`)) return
-    setActionBusy(prev => ({ ...prev, [analysisId]: 'executing' }))
-    try {
-      const result = await agentPost('/actions/execute-trade', { analysisId }, role)
-      if (result.vetoed) {
-        alert(`Risk gate VETOED: ${result.reason}`)
-      } else if (result.ok) {
-        alert(`Trade executed: ${result.side} ${result.symbol} ${result.volume} lots @ ${result.executionPrice || 'market'}`)
-        loadAnalyses()
-      }
-    } catch (e) { alert(`Execute failed: ${e.message}`) }
-    setActionBusy(prev => ({ ...prev, [analysisId]: null }))
-  }
-
   const dismissAnalysis = async (analysisId) => {
-    if (!window.confirm('Dismiss this analysis? It will be removed from the planned orders.')) return
-    setActionBusy(prev => ({ ...prev, [analysisId]: 'dismissing' }))
+    setActionBusy(prev => ({ ...prev, [analysisId]: true }))
     try {
       await agentPost('/actions/dismiss-analysis', { analysisId }, role)
       loadAnalyses()
-    } catch (e) { alert(`Dismiss failed: ${e.message}`) }
-    setActionBusy(prev => ({ ...prev, [analysisId]: null }))
+    } catch (e) { console.error(e) }
+    setActionBusy(prev => ({ ...prev, [analysisId]: false }))
   }
 
   const priceCache = readPriceCache()
@@ -1332,14 +1344,33 @@ function PlannedOrders({ activity, role }) {
 
   const roleLabel = role === 'copilot' ? 'Copilot' : 'Autopilot'
   const activeCount = symbols.filter(s => s.latest.consensus_bias !== 'skip' && s.latest.consensus_bias !== 'neutral').length
+  const totalToday = fullAnalyses.length
+  const staleCount = symbols.filter(({ symbol, latest }) => {
+    const mm = priceCache[symbol] || {}
+    const cp = mm.currentPrice ?? mm.price ?? null
+    if (!cp || !latest.entry_price || !latest.sl_price) return false
+    const drift = Math.abs(cp - latest.entry_price) / Math.abs(latest.entry_price - latest.sl_price)
+    return drift > 0.5
+  }).length
 
   return (
-    <PanelFrame id={`planned-orders-${role}`} title={`${roleLabel} Planned Orders`} defaultSize="L" badge={
-      <span className="flex items-center gap-1">
+    <PanelFrame id={`planned-orders-${role}`} title={`${roleLabel} Planned Orders (Analysis Only — NOT real orders)`} defaultSize="L" badge={
+      <span className="flex items-center gap-1.5">
         <Badge tone={role === 'copilot' ? 'special' : 'accent'} className="text-[10px] px-1">{activeCount} active</Badge>
-        <Badge tone="neutral" className="text-[10px] px-1">{symbols.length} total</Badge>
+        <Badge tone="neutral" className="text-[10px] px-1">{totalToday} today</Badge>
+        {staleCount > 0 && <Badge tone="warning" className="text-[10px] px-1">{staleCount} stale</Badge>}
       </span>
     }>
+      <div className="flex items-center gap-3 text-[11px] text-[var(--color-muted)] mb-2 px-1">
+        <span>{symbols.length} symbols analyzed</span>
+        <span>·</span>
+        <span>{totalToday} analyses in 24h</span>
+        <span>·</span>
+        <span>Max 3 per scan cycle (5 min)</span>
+        <span>·</span>
+        <span>Auto-executes when all checks pass + autotrade ON</span>
+      </div>
+
       {symbols.map(({ symbol, rows, latest }) => {
         const minionIds = dispatchMinions(symbol)
         const deskNames = minionIds.slice(0, 3).map(id => MINIONS[id]?.name).filter(Boolean).join(', ')
@@ -1348,39 +1379,56 @@ function PlannedOrders({ activity, role }) {
         const isActive = latest.consensus_bias !== 'skip' && latest.consensus_bias !== 'neutral'
         const mm = priceCache[symbol] || {}
         const currentPrice = mm.currentPrice ?? mm.price ?? mm.vwap ?? null
+        const checks = preFlightChecks(latest, currentPrice, marketOpen)
+        const allPass = checks.every(c => c.ok)
+        const ttlStyle = latest.time_cap_minutes
+          ? latest.time_cap_minutes <= 30 ? 'Scalper' : latest.time_cap_minutes <= 480 ? 'Swing' : 'Short-Term'
+          : '—'
+
+        const ageMs = latest.analyzed_at ? Date.now() - new Date(latest.analyzed_at).getTime() : 0
+        const ageHours = ageMs / 3_600_000
+        const isOld = ageHours > 4
 
         return (
           <div key={symbol} className="mb-3 last:mb-0 rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
             <div className="px-2 py-1.5 flex items-center gap-2 border-b border-[var(--color-border)]">
-              <span className="font-mono font-bold text-[12px] text-[var(--color-text)]">{symbol}</span>
+              <span className="font-mono font-bold text-[13px] text-[var(--color-text)]">{symbol}</span>
               <Badge tone={isActive ? (latest.consensus_bias === 'long' ? 'up' : 'down') : 'neutral'} className="text-[10px] px-1">
                 {String(latest.consensus_bias || '—').toUpperCase()}
               </Badge>
-              <span className="font-mono text-[10px] text-[var(--color-text)]">{latest.overall_conviction}/10</span>
-              {latest.auto_trade ? <Badge tone="up" className="text-[10px] px-1">AUTO</Badge> : null}
+              <span className="font-mono text-[11px] text-[var(--color-text)]">{latest.overall_conviction}/10</span>
+              <Badge tone="neutral" className="text-[10px] px-1">{ttlStyle}</Badge>
+              {latest.auto_trade ? <Badge tone="up" className="text-[10px] px-1">AUTO-READY</Badge> : null}
               {!marketOpen && ms > 0 && <Badge tone="warning" className="text-[10px] px-1">opens {fmtDuration(ms)}</Badge>}
-              {marketOpen && <Badge tone="up" className="text-[10px] px-1">MARKET OPEN</Badge>}
-              {currentPrice != null && (
-                <span className="font-mono text-[10px] text-[var(--color-text)]">
-                  @ {fmtMoney(currentPrice, currentPrice > 100 ? 2 : currentPrice > 10 ? 4 : 5)}
-                </span>
-              )}
+              {marketOpen && isActive && allPass && <Badge tone="up" className="text-[10px] px-1">READY</Badge>}
+              {isOld && <Badge tone="warning" className="text-[10px] px-1">STALE ({ageHours.toFixed(0)}h)</Badge>}
               <span className="ml-auto flex items-center gap-1.5">
-                <span className="text-[10px] text-[var(--color-muted)] truncate max-w-[160px]">Desk: {deskNames}</span>
-                {isActive && (
-                  <>
-                    <button type="button" disabled={!!actionBusy[latest.id]}
-                      onClick={() => executeTrade(latest.id, symbol)}
-                      className="px-2 py-0.5 rounded text-[10px] font-bold bg-[var(--color-up)] text-white hover:opacity-80 disabled:opacity-50"
-                    >{actionBusy[latest.id] === 'executing' ? '…' : '▶ Execute'}</button>
-                    <button type="button" disabled={!!actionBusy[latest.id]}
-                      onClick={() => dismissAnalysis(latest.id)}
-                      className="px-2 py-0.5 rounded text-[10px] font-bold text-[var(--color-down)] border border-[var(--color-down)] hover:opacity-80 disabled:opacity-50"
-                    >{actionBusy[latest.id] === 'dismissing' ? '…' : '✕'}</button>
-                  </>
-                )}
+                <span className="text-[11px] text-[var(--color-muted)]">{rows.length} rev{rows.length !== 1 ? 's' : ''}</span>
+                <button type="button" disabled={actionBusy[latest.id]}
+                  onClick={() => dismissAnalysis(latest.id)}
+                  className="px-1.5 py-0.5 rounded text-[10px] text-[var(--color-muted)] hover:text-[var(--color-down)] border border-[var(--color-border)] hover:border-[var(--color-down)]"
+                  title="Dismiss this analysis"
+                >✕</button>
               </span>
             </div>
+
+            {isActive && (
+              <div className="px-2 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+                <p className="text-[10px] font-semibold text-[var(--color-muted)] mb-1">Pre-Flight Checklist</p>
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                  {checks.map((c, i) => (
+                    <span key={i} className={`text-[11px] flex items-center gap-1 ${c.ok ? 'text-[var(--color-text)]' : c.warn ? 'text-[var(--color-warning-text)]' : 'text-[var(--color-down)]'}`}>
+                      <span className="text-[10px]">{c.ok ? '✓' : '✗'}</span>
+                      <span className={c.ok ? '' : 'font-semibold'}>{c.label}</span>
+                      <span className="font-mono opacity-70">{c.detail}</span>
+                    </span>
+                  ))}
+                </div>
+                {allPass && <p className="text-[10px] text-[var(--color-up)] mt-1 font-semibold">All checks pass — agent will auto-execute when autotrade is ON</p>}
+                {!allPass && <p className="text-[10px] text-[var(--color-muted)] mt-1">Waiting for failing checks to clear before auto-execution</p>}
+              </div>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
                 <thead>
@@ -1394,8 +1442,9 @@ function PlannedOrders({ activity, role }) {
                     <th className="px-2 py-1 font-medium text-right">Current</th>
                     <th className="px-2 py-1 font-medium text-right">SL</th>
                     <th className="px-2 py-1 font-medium text-right">TP</th>
-                    <th className="px-2 py-1 font-medium">TTL</th>
+                    <th className="px-2 py-1 font-medium">Style</th>
                     <th className="px-2 py-1 font-medium">Strategy</th>
+                    <th className="px-2 py-1 font-medium">Desk</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-border)]">
@@ -1407,6 +1456,9 @@ function PlannedOrders({ activity, role }) {
                     const priceFmt = (p) => p ? fmtMoney(p, p > 100 ? 2 : 5) : '—'
                     const slPips = pipDist(a.entry_price, a.sl_price, symbol)
                     const tpPips = pipDist(a.entry_price, a.tp1_price, symbol)
+                    const rowTtl = a.time_cap_minutes
+                      ? a.time_cap_minutes <= 30 ? '⚡ Scalp' : a.time_cap_minutes <= 480 ? '🔄 Swing' : '📅 Short'
+                      : '—'
 
                     return (
                       <tr key={a.id} className={i === 0 ? 'bg-[var(--color-surface)]' : ''}>
@@ -1433,8 +1485,9 @@ function PlannedOrders({ activity, role }) {
                           {priceFmt(a.tp1_price)}
                           {tpPips != null && <span className="opacity-60 ml-0.5">({Math.abs(tpPips).toFixed(0)}p)</span>}
                         </td>
-                        <td className="px-2 py-1 font-mono text-[var(--color-muted)]">{a.time_cap_minutes ? `${a.time_cap_minutes}m` : '—'}</td>
-                        <td className="px-2 py-1 text-[var(--color-text)] truncate max-w-[140px]" title={a.strategy || ''}>{a.strategy || '—'}</td>
+                        <td className="px-2 py-1 text-[var(--color-text)]">{rowTtl}</td>
+                        <td className="px-2 py-1 text-[var(--color-text)] truncate max-w-[100px]" title={a.strategy || ''}>{a.strategy || '—'}</td>
+                        <td className="px-2 py-1 text-[var(--color-muted)] truncate max-w-[100px]">{deskNames}</td>
                       </tr>
                     )
                   })}
