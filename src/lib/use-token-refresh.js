@@ -38,7 +38,8 @@ export default function useTokenRefresh() {
     }
 
     if (!tokenExpiresAt) {
-      doRefresh()
+      // No expiry recorded — don't blindly refresh, the token may be fresh.
+      // The next OAuth or Railway push will set tokenExpiresAt properly.
       return
     }
 
