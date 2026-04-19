@@ -436,6 +436,8 @@ async function runLoop(db) {
   loopRunning = true
   loopCount++
   const start = Date.now()
+  setState(db, 'loop_phase', 'starting')
+  setState(db, 'loop_started_at', new Date().toISOString())
 
   // Reset daily error counter at midnight UTC
   const lastReset = getState(db, 'errors_reset_date')
@@ -487,7 +489,7 @@ async function runLoop(db) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
 
-    // Build context memory for this scan
+    setState(db, 'loop_phase', `scanning ${symbols.length} symbols`)
     const contextBrief = buildContextBrief(db)
     const scanDelta = buildScanDelta(db, []) // pre-scan delta (will be computed post-scan on next loop)
 
@@ -548,6 +550,7 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     if (analyzeEnabled && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
+      setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
         try {
           const wItem =
@@ -725,6 +728,7 @@ async function runLoop(db) {
       // scan+analyze was skipped (market closed, etc). Crypto positions and
       // stale FX positions still need tick checks.
       // ---------------------------------------------------------------------
+      if (openPositions.length > 0) setState(db, 'loop_phase', `monitoring ${openPositions.length} positions`)
       const activePositions = openPositions.length > 0
         ? openPositions
         : s.selectActivePositions.all('active')
@@ -923,6 +927,7 @@ async function runLoop(db) {
   loopRunning = false
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, LOOP_INTERVAL - elapsed)
+  setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }

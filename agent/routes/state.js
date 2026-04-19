@@ -56,6 +56,8 @@ export default function stateRouter(db) {
       status: circuitBreaker ? 'breaker_tripped' : 'ok',
       uptime: process.uptime(),
       loopCount: Number(getState(db, 'loop_count') || 0),
+      loopPhase: getState(db, 'loop_phase') || 'idle',
+      loopStartedAt: getState(db, 'loop_started_at') || null,
       lastScanAt: getState(db, 'last_scan_at'),
       lastLoopMs: lastLoopMs ? Number(lastLoopMs) : null,
       errorsToday: Number(getState(db, 'errors_today') || 0),

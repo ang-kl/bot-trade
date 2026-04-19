@@ -1003,97 +1003,127 @@ function MarketStatus({ symbols, activity }) {
 }
 
 // ---------------------------------------------------------------------------
-// Team Roster Desk — per-symbol agent roster with status + timing
+// Team Roster Desk — per-symbol agent roster with last results + timing
 // ---------------------------------------------------------------------------
 
 const ROLE_COLORS = {
   trader:    'text-[var(--color-up)]',
-  journalist:'text-[var(--color-info)]',
+  journalist:'text-[var(--color-info-text)]',
   researcher:'text-[var(--color-accent)]',
-  economist: 'text-[var(--color-warning)]',
+  economist: 'text-[var(--color-warning-text)]',
   political: 'text-[var(--color-down)]',
 }
 
-function agentStatus(minionId, symbol, activity) {
-  const analysisEvent = activity.find(r => r.kind === 'analysis' && r.symbol === symbol)
-  const scanEvent = activity.find(r => r.kind === 'scan' && r.symbol === symbol)
-  const latestEvent = analysisEvent || scanEvent
-  if (!latestEvent) return { status: 'idle' }
+function TeamRoster({ activity, role }) {
+  const [expanded, setExpanded] = useState(null)
+  const [analyses, setAnalyses] = useState(null)
 
-  const ageMs = Date.now() - new Date(latestEvent.at).getTime()
-  const ageMins = Math.round(ageMs / 60000)
-  const m = MINIONS[minionId]
+  useEffect(() => {
+    if (!agentConfigured(role)) return
+    agentGet('/state/analyses/latest', role).then(r => setAnalyses(r?.analyses || [])).catch(() => {})
+  }, [role, activity.length])
 
-  if (ageMins < 3) return { status: 'active', since: ageMins, label: `${ageMins}m ago` }
-  if (m?.role === 'trader' || m?.role === 'researcher') {
-    return { status: 'waiting', label: 'next cycle' }
+  const symbolAnalyses = {}
+  for (const a of (analyses || [])) {
+    if (!symbolAnalyses[a.symbol]) symbolAnalyses[a.symbol] = a
   }
-  return { status: 'done', label: `${ageMins}m ago` }
-}
 
-function TeamRoster({ activity }) {
   const hotSymbols = []
   const seen = new Set()
   for (const row of activity) {
-    if (row.kind === 'scan' && row.extra === 'potential' && !seen.has(row.symbol)) {
+    if ((row.kind === 'analysis' || (row.kind === 'scan' && row.extra === 'potential')) && !seen.has(row.symbol)) {
       seen.add(row.symbol)
       hotSymbols.push(row.symbol)
     }
-    if (hotSymbols.length >= 6) break
-  }
-  for (const row of activity) {
-    if (row.kind === 'analysis' && !seen.has(row.symbol)) {
-      seen.add(row.symbol)
-      hotSymbols.push(row.symbol)
-    }
-    if (hotSymbols.length >= 6) break
+    if (hotSymbols.length >= 8) break
   }
 
-  if (hotSymbols.length === 0) return null
+  if (hotSymbols.length === 0 && Object.keys(symbolAnalyses).length === 0) {
+    return (
+      <PanelFrame id="team-roster" title="Team Roster Desk" defaultSize="M">
+        <p className="text-[12px] text-[var(--color-muted)] text-center py-4">
+          No recent activity. Agents activate when the loop scans and analyzes symbols.
+        </p>
+      </PanelFrame>
+    )
+  }
+
+  const allSymbols = [...new Set([...hotSymbols, ...Object.keys(symbolAnalyses)])]
 
   return (
-    <Card>
-      <p className="t-label mb-2">Team Roster Desk</p>
-      <div className="space-y-2">
-        {hotSymbols.map(symbol => {
+    <PanelFrame id="team-roster" title="Team Roster Desk" defaultSize="M" badge={
+      <Badge tone="accent" className="text-[10px] px-1">{allSymbols.length} symbols</Badge>
+    }>
+      <div className="space-y-1">
+        {allSymbols.map(symbol => {
           const minionIds = dispatchMinions(symbol)
+          const analysis = symbolAnalyses[symbol]
+          const isExpanded = expanded === symbol
+          let reports = []
+          if (analysis?.minion_reports) {
+            try { reports = typeof analysis.minion_reports === 'string' ? JSON.parse(analysis.minion_reports) : analysis.minion_reports } catch {}
+          }
+
+          const scanEvent = activity.find(r => r.kind === 'scan' && r.symbol === symbol)
+          const analysisEvent = activity.find(r => r.kind === 'analysis' && r.symbol === symbol)
+          const latestAt = analysisEvent?.at || scanEvent?.at
+          const ageLabel = latestAt ? fmtAgo(latestAt) : null
+
           return (
             <div key={symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
-              <div className="px-2 py-1 flex items-center gap-2 border-b border-[var(--color-border)]">
+              <button type="button" onClick={() => setExpanded(isExpanded ? null : symbol)}
+                className="w-full px-2 py-1.5 flex items-center gap-2 text-[11px] hover:opacity-80 cursor-pointer">
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${analysisEvent ? 'bg-[var(--color-up)]' : scanEvent ? 'bg-[var(--color-warning-text)]' : 'bg-[var(--color-muted)]'}`} />
                 <span className="text-[12px] font-bold font-mono text-[var(--color-text)]">{symbol}</span>
                 <span className="text-[10px] text-[var(--color-muted)]">{minionIds.length} agents</span>
-              </div>
-              <div className="divide-y divide-[var(--color-border)]">
-                {minionIds.map(id => {
-                  const m = MINIONS[id]
-                  if (!m) return null
-                  const st = agentStatus(id, symbol, activity)
-                  return (
-                    <div key={id} className="px-2 py-1 flex items-center gap-2 text-[11px]">
-                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                        st.status === 'active' ? 'bg-[var(--color-up)]'
-                        : st.status === 'waiting' ? 'bg-[var(--color-warning-text)]'
-                        : st.status === 'done' ? 'bg-[var(--color-muted)]'
-                        : 'bg-[var(--color-border)]'
-                      }`} />
-                      <span className="text-[13px] leading-none">{m.icon}</span>
-                      <span className={`font-medium w-28 truncate ${ROLE_COLORS[m.role] || ''}`}>{m.name}</span>
-                      <span className="text-[10px] text-[var(--color-muted)] uppercase w-16">{m.role}</span>
-                      <span className="ml-auto text-[10px] font-mono text-[var(--color-muted)]">
-                        {st.label || st.status}
-                      </span>
+                {analysis && <Badge tone={analysis.consensus_bias === 'long' ? 'up' : analysis.consensus_bias === 'short' ? 'down' : 'muted'} className="text-[10px] px-1">
+                  {analysis.consensus_bias?.toUpperCase()} {analysis.overall_conviction}/10
+                </Badge>}
+                <span className="flex-1" />
+                {ageLabel && <span className="text-[10px] font-mono text-[var(--color-muted)]">{ageLabel}</span>}
+                <span className="text-[10px] text-[var(--color-muted)]">{isExpanded ? '▾' : '▸'}</span>
+              </button>
+
+              {isExpanded && (
+                <div className="border-t border-[var(--color-border)]">
+                  {analysis?.consensus_summary && (
+                    <div className="px-2 py-1.5 text-[11px] text-[var(--color-text-sub)] bg-[var(--color-surface)] border-b border-[var(--color-border)]">
+                      <span className="font-bold text-[var(--color-text)]">Consensus: </span>{analysis.consensus_summary}
                     </div>
-                  )
-                })}
-              </div>
+                  )}
+                  <div className="divide-y divide-[var(--color-border)]">
+                    {minionIds.map(id => {
+                      const m = MINIONS[id]
+                      if (!m) return null
+                      const report = reports.find(r => r.minion_id === id || r.name === m.name)
+                      return (
+                        <div key={id} className="px-2 py-1.5">
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="text-[13px] leading-none">{m.icon}</span>
+                            <span className={`font-medium ${ROLE_COLORS[m.role] || ''}`}>{m.name}</span>
+                            <span className="text-[10px] text-[var(--color-muted)] uppercase">{m.role}</span>
+                            {report && (
+                              <span className="ml-auto flex items-center gap-1">
+                                {report.bias && <Badge tone={report.bias === 'long' ? 'up' : report.bias === 'short' ? 'down' : 'muted'} className="text-[10px] px-1">{report.bias?.toUpperCase()}</Badge>}
+                                {report.conviction != null && <span className="font-mono text-[10px] text-[var(--color-text)]">{report.conviction}/10</span>}
+                              </span>
+                            )}
+                            {!report && <span className="ml-auto text-[10px] text-[var(--color-muted)] italic">no report</span>}
+                          </div>
+                          {report?.thesis && (
+                            <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5 ml-6 line-clamp-2">{report.thesis}</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )
         })}
       </div>
-      <p className="text-[10px] text-[var(--color-muted)] mt-2">
-        4-6 specialists dispatched per symbol. Hover for focus area.
-      </p>
-    </Card>
+    </PanelFrame>
   )
 }
 
@@ -1839,6 +1869,8 @@ const BIAS_OPTIONS = [
 function SymbolControls({ symbols, role, onRefresh }) {
   const [busy, setBusy] = useState({})
   const [expanded, setExpanded] = useState(null)
+  const [newSymbol, setNewSymbol] = useState('')
+  const [addingSymbol, setAddingSymbol] = useState(false)
 
   const updateSymbol = async (symbol, updates) => {
     setBusy(prev => ({ ...prev, [symbol]: true }))
@@ -1851,21 +1883,67 @@ function SymbolControls({ symbols, role, onRefresh }) {
     setBusy(prev => ({ ...prev, [symbol]: false }))
   }
 
-  if (!symbols || symbols.length === 0) return null
+  const addSymbol = async () => {
+    const sym = newSymbol.trim().toUpperCase()
+    if (!sym) return
+    setAddingSymbol(true)
+    try {
+      const existing = (symbols || []).map(s => typeof s === 'string' ? s : s.symbol)
+      const updated = [...existing.map(s => {
+        const found = symbols.find(x => (typeof x === 'string' ? x : x.symbol) === s)
+        return typeof found === 'string' ? { symbol: found, enabled: true } : found
+      })]
+      if (!existing.includes(sym)) {
+        updated.push({ symbol: sym, enabled: true })
+      }
+      await agentPost('/actions/symbols', { symbols: updated }, role)
+      setNewSymbol('')
+      if (onRefresh) onRefresh()
+    } catch (e) {
+      console.error('add symbol error:', e.message)
+    }
+    setAddingSymbol(false)
+  }
+
+  const removeSymbol = async (sym) => {
+    if (!confirm(`Remove ${sym} from watchlist?`)) return
+    setBusy(prev => ({ ...prev, [sym]: true }))
+    try {
+      const updated = (symbols || [])
+        .map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
+        .filter(s => s.symbol !== sym)
+      await agentPost('/actions/symbols', { symbols: updated }, role)
+      if (onRefresh) onRefresh()
+    } catch (e) {
+      console.error('remove symbol error:', e.message)
+    }
+    setBusy(prev => ({ ...prev, [sym]: false }))
+  }
 
   return (
     <PanelFrame id="symbol-controls" title="Symbol Controls" defaultSize="L" badge={
       <span className="flex items-center gap-1">
-        <Badge tone="accent" className="text-[10px] px-1">{symbols.filter(s => s.enabled !== false && !s.force_skip).length} active</Badge>
-        {symbols.some(s => s.force_skip) && <Badge tone="warning" className="text-[10px] px-1">{symbols.filter(s => s.force_skip).length} skipped</Badge>}
-        {symbols.some(s => s.override_bias) && <Badge tone="special" className="text-[10px] px-1">{symbols.filter(s => s.override_bias).length} overridden</Badge>}
+        <Badge tone="accent" className="text-[10px] px-1">{(symbols || []).filter(s => (typeof s === 'string' || s.enabled !== false) && !s.force_skip).length} active</Badge>
+        {(symbols || []).some(s => s.force_skip) && <Badge tone="warning" className="text-[10px] px-1">{symbols.filter(s => s.force_skip).length} skipped</Badge>}
+        {(symbols || []).some(s => s.override_bias) && <Badge tone="special" className="text-[10px] px-1">{symbols.filter(s => s.override_bias).length} overridden</Badge>}
       </span>
     }>
       <p className="text-[10px] text-[var(--color-muted)] mb-2">
         Force or disallow bias direction (Long/Short/Neutral/Skip) and trade type (Scalp/Day/Swing/Mid-Term) per symbol. Disabling a style blocks auto-trades of that duration.
       </p>
+      <div className="flex items-center gap-2 mb-2">
+        <input type="text" value={newSymbol} onChange={e => setNewSymbol(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addSymbol()}
+          placeholder="Add symbol (e.g. BTCUSD)"
+          className="flex-1 px-2 py-1 rounded text-[11px] font-mono bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)] placeholder:text-[var(--color-muted)]"
+        />
+        <button type="button" onClick={addSymbol} disabled={addingSymbol || !newSymbol.trim()}
+          className="px-3 py-1 rounded text-[11px] font-bold bg-[var(--color-accent)] text-white disabled:opacity-40">
+          + Add
+        </button>
+      </div>
       <div className="space-y-1">
-        {symbols.map(sym => {
+        {(symbols || []).map(sym => {
           const s = typeof sym === 'string' ? { symbol: sym, enabled: true } : sym
           const isExpanded = expanded === s.symbol
           const isBusy = busy[s.symbol]
@@ -1969,6 +2047,11 @@ function SymbolControls({ symbols, role, onRefresh }) {
                       >{s.enabled !== false ? 'ENABLED' : 'DISABLED'}</button>
                     </div>
                   </div>
+                  <button type="button" disabled={isBusy}
+                    onClick={() => removeSymbol(s.symbol)}
+                    className="text-[10px] text-[var(--color-down)] hover:underline mt-1">
+                    Remove {s.symbol} from watchlist
+                  </button>
                 </div>
               )}
             </div>
@@ -2364,6 +2447,13 @@ export default function Agent() {
           </div>
         )}
 
+        {health?.loopPhase && (
+          <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-[5px] bg-[var(--color-info-bg)] border border-[var(--color-info-border)]">
+            <span className={`inline-block w-2 h-2 rounded-full ${health.loopPhase.startsWith('sleeping') ? 'bg-[var(--color-muted)]' : 'bg-[var(--color-up)] animate-pulse'}`} />
+            <span className="text-[12px] font-bold text-[var(--color-info-text)] uppercase">{health.loopPhase}</span>
+            {health.loopStartedAt && <span className="text-[11px] text-[var(--color-muted)] ml-auto">started {fmtAgo(health.loopStartedAt)}</span>}
+          </div>
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div>
             <p className="t-meta text-[var(--color-muted)]">Loops</p>
@@ -2455,7 +2545,7 @@ export default function Agent() {
 
       {/* Two-column grid for operational panels */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <TeamRoster activity={activity} />
+        <TeamRoster activity={activity} role={role} />
         <ScanFeed activity={activity} />
       </div>
 
