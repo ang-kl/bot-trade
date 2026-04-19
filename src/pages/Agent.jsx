@@ -333,20 +333,31 @@ function AttributionPanel({ role }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
 
+  const [days, setDays] = useState(90)
+
   useEffect(() => {
     if (!agentConfigured(role)) return
     setLoading(true)
-    agentGet(`/state/attribution?groupBy=${tab}&days=90`, role)
+    agentGet(`/state/attribution?groupBy=${tab}&days=${days}`, role)
       .then(r => setData(r))
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [role, tab])
+  }, [role, tab, days])
 
   const rows = data?.rows || []
 
   return (
     <Card>
-      <p className="t-label mb-2">Attribution</p>
+      <div className="flex items-center gap-2 mb-2">
+        <p className="t-label">Attribution</p>
+        <div className="flex items-center gap-0.5 ml-auto">
+          {[30, 90, 365].map(d => (
+            <button key={d} type="button" onClick={() => setDays(d)}
+              className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${d === days ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold' : 'text-[var(--color-muted)] hover:text-[var(--color-text)]'}`}
+            >{d}d</button>
+          ))}
+        </div>
+      </div>
       <div className="flex items-center gap-0.5 mb-2 overflow-x-auto scrollbar-none">
         {ATTRIBUTION_TABS.map(t => (
           <button key={t} type="button" onClick={() => setTab(t)}
@@ -358,7 +369,17 @@ function AttributionPanel({ role }) {
         ))}
       </div>
       {loading && <p className="t-meta text-[var(--color-muted)]">Loading…</p>}
-      {!loading && rows.length === 0 && <p className="t-meta text-[var(--color-muted)]">No trade data yet.</p>}
+      {!loading && rows.length === 0 && (
+        <div className="py-3 text-center">
+          <p className="t-meta text-[var(--color-muted)]">No closed trades in {days}-day window.</p>
+          <p className="text-[9px] text-[var(--color-muted)] mt-1">Attribution populates after the first round-trip trade. Try widening the window or wait for trades to close.</p>
+          {days < 365 && (
+            <button type="button" onClick={() => setDays(365)} className="text-[9px] text-[var(--color-accent)] hover:underline mt-1">
+              Try 365 days →
+            </button>
+          )}
+        </div>
+      )}
       {!loading && rows.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-[10px]">
@@ -1608,6 +1629,241 @@ function PendingOrders({ ctrader }) {
 }
 
 // ---------------------------------------------------------------------------
+// API Health — connectivity status for Polygon, Anthropic, cTrader
+// ---------------------------------------------------------------------------
+
+function ApiHealth({ health }) {
+  if (!health?.apis) return null
+
+  const apis = [
+    { key: 'anthropic', label: 'Claude API', icon: '🧠' },
+    { key: 'polygon',   label: 'Polygon',    icon: '📊' },
+    { key: 'ctrader',   label: 'cTrader WS',  icon: '🔌' },
+  ]
+
+  return (
+    <PanelFrame id="api-health" title="System Health" defaultSize="M" defaultCollapsed={true} badge={
+      <span className="flex items-center gap-1">
+        {apis.map(a => {
+          const info = health.apis[a.key]
+          const ok = info?.lastCall
+          return (
+            <span key={a.key} className={`inline-block w-1.5 h-1.5 rounded-full ${ok ? 'bg-[var(--color-up)]' : 'bg-[var(--color-muted)]'}`}
+              title={`${a.label}: ${ok ? 'OK' : 'unknown'}`} />
+          )
+        })}
+        <span className="text-[9px] text-[var(--color-muted)] ml-0.5">{health.symbols?.enabled || 0} symbols</span>
+      </span>
+    }>
+      <div className="space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          {apis.map(a => {
+            const info = health.apis[a.key] || {}
+            const ok = !!info.lastCall
+            const lastErr = info.lastError
+            return (
+              <div key={a.key} className="rounded-[5px] bg-[var(--color-bg)] px-2 py-1.5">
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <span className={`inline-block w-2 h-2 rounded-full ${ok ? 'bg-[var(--color-up)]' : 'bg-[var(--color-muted)]'}`} />
+                  <span className="text-[10px] font-semibold text-[var(--color-text)]">{a.label}</span>
+                </div>
+                <p className="text-[9px] text-[var(--color-muted)]">
+                  {info.lastCall ? `OK · ${fmtAgo(info.lastCall)}` : 'No calls yet'}
+                </p>
+                {lastErr && (
+                  <p className="text-[9px] text-[var(--color-down)] truncate mt-0.5" title={lastErr}>{lastErr}</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[9.5px]">
+          <div>
+            <p className="text-[var(--color-muted)]">Symbols</p>
+            <p className="font-mono text-[var(--color-text)]">{health.symbols?.enabled || 0} / {health.symbols?.total || 0}</p>
+          </div>
+          <div>
+            <p className="text-[var(--color-muted)]">Force-Skipped</p>
+            <p className={`font-mono ${(health.symbols?.skipped || 0) > 0 ? 'text-[var(--color-warning-text)]' : 'text-[var(--color-text)]'}`}>{health.symbols?.skipped || 0}</p>
+          </div>
+          <div>
+            <p className="text-[var(--color-muted)]">Memory</p>
+            <p className={`font-mono ${(health.memoryMB || 0) > 256 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>{health.memoryMB ? `${health.memoryMB}MB` : '—'}</p>
+          </div>
+          <div>
+            <p className="text-[var(--color-muted)]">DB Size</p>
+            <p className="font-mono text-[var(--color-text)]">{health.dbSizeMB ? `${health.dbSizeMB}MB` : '—'}</p>
+          </div>
+        </div>
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Symbol Controls — human interference + strategy style toggles per symbol
+// ---------------------------------------------------------------------------
+
+const STYLE_META = {
+  scalper:    { label: 'Scalper',    desc: '< 30 min trades',    icon: '⚡' },
+  swing:     { label: 'Swing',      desc: '1-8 hour trades',    icon: '🔄' },
+  short_term:{ label: 'Short-Term', desc: '1-5 day trades',     icon: '📅' },
+  mid_term:  { label: 'Mid-Term',   desc: 'Weeks to months',    icon: '📆' },
+}
+
+const BIAS_OPTIONS = [
+  { value: '', label: 'AI decides' },
+  { value: 'long', label: '▲ Force Long' },
+  { value: 'short', label: '▼ Force Short' },
+  { value: 'neutral', label: '○ Force Neutral' },
+  { value: 'skip', label: '✕ Force Skip' },
+]
+
+function SymbolControls({ symbols, role, onRefresh }) {
+  const [busy, setBusy] = useState({})
+  const [expanded, setExpanded] = useState(null)
+
+  const updateSymbol = async (symbol, updates) => {
+    setBusy(prev => ({ ...prev, [symbol]: true }))
+    try {
+      await agentPost('/actions/symbol-config', { symbol, ...updates }, role)
+      if (onRefresh) onRefresh()
+    } catch (e) {
+      console.error('symbol-config error:', e.message)
+    }
+    setBusy(prev => ({ ...prev, [symbol]: false }))
+  }
+
+  if (!symbols || symbols.length === 0) return null
+
+  return (
+    <PanelFrame id="symbol-controls" title="Symbol Controls" defaultSize="L" badge={
+      <span className="flex items-center gap-1">
+        <Badge tone="accent" className="text-[8px] px-1">{symbols.filter(s => s.enabled !== false && !s.force_skip).length} active</Badge>
+        {symbols.some(s => s.force_skip) && <Badge tone="warning" className="text-[8px] px-1">{symbols.filter(s => s.force_skip).length} skipped</Badge>}
+        {symbols.some(s => s.override_bias) && <Badge tone="special" className="text-[8px] px-1">{symbols.filter(s => s.override_bias).length} overridden</Badge>}
+      </span>
+    }>
+      <p className="text-[9px] text-[var(--color-muted)] mb-2">
+        Override agent decisions per symbol. Style toggles control which trade durations are allowed — disabling a style blocks auto-trades of that duration.
+      </p>
+      <div className="space-y-1">
+        {symbols.map(sym => {
+          const s = typeof sym === 'string' ? { symbol: sym, enabled: true } : sym
+          const isExpanded = expanded === s.symbol
+          const isBusy = busy[s.symbol]
+          const styles = s.allowed_styles || { scalper: true, swing: true, short_term: true, mid_term: false }
+
+          return (
+            <div key={s.symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">
+              <button type="button" onClick={() => setExpanded(isExpanded ? null : s.symbol)}
+                className="w-full px-2 py-1.5 flex items-center gap-2 text-[11px] hover:opacity-80 cursor-pointer"
+              >
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${s.force_skip ? 'bg-[var(--color-warning-text)]' : s.enabled !== false ? 'bg-[var(--color-up)]' : 'bg-[var(--color-muted)]'}`} />
+                <span className="font-mono font-bold text-[var(--color-text)]">{s.symbol}</span>
+                {s.force_skip && <Badge tone="warning" className="text-[7px] px-1">SKIP</Badge>}
+                {s.override_bias && <Badge tone="special" className="text-[7px] px-1">BIAS: {s.override_bias.toUpperCase()}</Badge>}
+                {s.block_next_trade && <Badge tone="down" className="text-[7px] px-1">BLOCKED</Badge>}
+                <span className="flex-1" />
+                <span className="flex items-center gap-0.5">
+                  {Object.entries(styles).map(([k, v]) => (
+                    <span key={k} className={`text-[8px] ${v ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)] opacity-40'}`}
+                      title={`${STYLE_META[k]?.label}: ${v ? 'ON' : 'OFF'}`}>
+                      {STYLE_META[k]?.icon || k[0]}
+                    </span>
+                  ))}
+                </span>
+                <span className="text-[9px] text-[var(--color-muted)]">{isExpanded ? '▾' : '▸'}</span>
+              </button>
+
+              {isExpanded && (
+                <div className="px-2 pb-2 space-y-2 border-t border-[var(--color-border)]">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Force Skip</p>
+                      <button type="button" disabled={isBusy}
+                        onClick={() => updateSymbol(s.symbol, { force_skip: !s.force_skip })}
+                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.force_skip ? 'bg-[var(--color-warning-text)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
+                      >{s.force_skip ? 'SKIPPING' : 'Active'}</button>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Block Next Trade</p>
+                      <button type="button" disabled={isBusy}
+                        onClick={() => updateSymbol(s.symbol, { block_next_trade: !s.block_next_trade })}
+                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.block_next_trade ? 'bg-[var(--color-down)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)]'}`}
+                      >{s.block_next_trade ? 'BLOCKED' : 'Allow'}</button>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Override Bias</p>
+                      <select value={s.override_bias || ''} disabled={isBusy}
+                        onChange={e => updateSymbol(s.symbol, { override_bias: e.target.value || null })}
+                        className="w-full px-1.5 py-1 rounded text-[9px] bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
+                      >
+                        {BIAS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Auto-Trade Threshold</p>
+                      <div className="flex items-center gap-1">
+                        <input type="range" min="4" max="10" value={s.autoTradeThreshold || 8} disabled={isBusy}
+                          onChange={e => updateSymbol(s.symbol, { autoTradeThreshold: Number(e.target.value) })}
+                          className="flex-1 h-1 accent-[var(--color-accent)]"
+                        />
+                        <span className="font-mono text-[10px] text-[var(--color-text)] w-5 text-right">{s.autoTradeThreshold || 8}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[9px] text-[var(--color-muted)] mb-1">Allowed Trading Styles</p>
+                    <div className="flex flex-wrap gap-1">
+                      {Object.entries(STYLE_META).map(([key, meta]) => {
+                        const on = styles[key] !== false
+                        return (
+                          <button key={key} type="button" disabled={isBusy}
+                            onClick={() => updateSymbol(s.symbol, { allowed_styles: { ...styles, [key]: !on } })}
+                            className={`px-2 py-1 rounded text-[9px] flex items-center gap-1 ${on
+                              ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-bold'
+                              : 'bg-[var(--color-bg)] text-[var(--color-muted)] border border-[var(--color-border)] line-through'
+                            }`}
+                          >
+                            <span>{meta.icon}</span>
+                            <span>{meta.label}</span>
+                            <span className="opacity-60 text-[8px]">{meta.desc}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Max Volume (lots)</p>
+                      <input type="number" step="0.01" min="0.01" max="10" value={s.maxVolume || 0.01} disabled={isBusy}
+                        onChange={e => updateSymbol(s.symbol, { maxVolume: Number(e.target.value) || 0.01 })}
+                        className="w-full px-1.5 py-1 rounded text-[9px] font-mono bg-[var(--color-bg)] text-[var(--color-text)] border border-[var(--color-border)]"
+                      />
+                    </div>
+                    <div>
+                      <p className="text-[9px] text-[var(--color-muted)] mb-1">Status</p>
+                      <button type="button" disabled={isBusy}
+                        onClick={() => updateSymbol(s.symbol, { enabled: s.enabled === false })}
+                        className={`px-2 py-1 rounded text-[9px] font-bold w-full ${s.enabled !== false ? 'bg-[var(--color-up)] text-white' : 'bg-[var(--color-muted)] text-white'}`}
+                      >{s.enabled !== false ? 'ENABLED' : 'DISABLED'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // CSV Download helper
 // ---------------------------------------------------------------------------
 
@@ -2043,6 +2299,9 @@ export default function Agent() {
       {/* Risk dashboard — Sharpe, drawdown, daily P&L, risk limits */}
       <RiskDashboard role={role} />
 
+      {/* System + API health — connectivity status, symbol counts */}
+      <ApiHealth health={health} />
+
       {/* Market data strip — prices, VWAP, regime, EMA per symbol */}
       <MarketDataStrip symbols={enabledSymbols.map(s => s.symbol || s).filter(Boolean)} role={role} />
 
@@ -2057,6 +2316,13 @@ export default function Agent() {
 
       {/* Monitor Agent — what's being watched, last checks, thesis status */}
       <MonitorAgent role={role} />
+
+      {/* Symbol Controls — human interference, style toggles, overrides */}
+      <SymbolControls
+        symbols={config?.symbols || config?.watchlist || []}
+        role={role}
+        onRefresh={refresh}
+      />
 
       {/* Planned Orders — analysis revision trail per symbol */}
       <PlannedOrders activity={activity} role="autopilot" />

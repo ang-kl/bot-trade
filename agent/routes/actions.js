@@ -431,5 +431,37 @@ export default function actionsRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/symbol-config — update per-symbol overrides + style toggles
+  // Body: { symbol: "EURUSD", ...overrides }
+  // Merges into existing watchlist/symbols config stored in autopilot_symbols_json
+  // -----------------------------------------------------------------------
+  router.post('/symbol-config', (req, res) => {
+    try {
+      const { symbol, ...updates } = req.body || {}
+      if (!symbol) return res.status(400).json({ error: 'Missing required field: symbol' })
+
+      const key = 'autopilot_symbols_json'
+      const raw = getState(db, key) || getState(db, 'watchlist_json') || '[]'
+      let symbols
+      try { symbols = JSON.parse(raw) } catch { symbols = [] }
+      symbols = symbols.map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
+
+      const idx = symbols.findIndex(s => s.symbol === symbol.toUpperCase())
+      if (idx === -1) return res.status(404).json({ error: `Symbol ${symbol} not in watchlist` })
+
+      const ALLOWED = ['enabled', 'maxVolume', 'autoTradeThreshold', 'force_skip', 'override_bias', 'block_next_trade', 'allowed_styles']
+      for (const k of ALLOWED) {
+        if (k in updates) symbols[idx][k] = updates[k]
+      }
+
+      setState(db, key, JSON.stringify(symbols))
+      console.log(`[actions] symbol-config updated for ${symbol}:`, JSON.stringify(updates))
+      res.json({ ok: true, symbol: symbols[idx] })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   return router
 }

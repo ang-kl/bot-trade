@@ -138,6 +138,7 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
 
   try {
     const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+    setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
@@ -250,6 +251,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         stopLoss: eval_.newSL,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
       s.updatePositionSl.run(eval_.newSL, pos.id)
       return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
@@ -262,6 +264,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         volume: volumeUnits,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const closePrice = res.deal?.executionPrice || res.position?.price || null
       const cpd = res.deal?.closePositionDetail || {}
       const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
@@ -285,6 +288,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         positionId: ctx.positionId,
         volume: closeUnits,
       })
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (closeRes.alreadyClosed) {
         if (pos.trade_id) s.markTradeClosed.run(null, 'already_closed', null, null, pos.trade_id)
         s.closePosition.run('closed', pos.id)
@@ -304,6 +308,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
           positionId: ctx.positionId,
           stopLoss: eval_.newSL,
         })
+        setState(db, 'api_ctrader_last_ok', new Date().toISOString())
         if (!amendRes.alreadyClosed) s.updatePositionSl.run(eval_.newSL, pos.id)
       }
       return { summary: `closed ${(fraction * 100).toFixed(0)}% · runner ${remainingLots.toFixed(2)}L` }
@@ -462,6 +467,7 @@ async function runLoop(db) {
       const allSymbols = (Array.isArray(parsed) ? parsed : [])
         .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
         .filter(w => w.enabled !== false)
+        .filter(w => !w.force_skip)
 
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
@@ -522,6 +528,7 @@ async function runLoop(db) {
     }
 
     setState(db, 'last_scan_at', now)
+    setState(db, 'api_anthropic_last_ok', now)
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
 
     // Persist scan context for next loop's delta computation
@@ -587,6 +594,52 @@ async function runLoop(db) {
               await sendMessage(
                 `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
               )
+            } catch {}
+          }
+
+          // Human override: if override_bias is set, use it instead of AI's
+          if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
+            if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
+              synth.auto_trade = false
+            } else {
+              synth.consensus_bias = wItem.override_bias
+            }
+          }
+
+          // Style filter: check if time_cap_minutes matches allowed styles
+          if (wItem.allowed_styles && synth.auto_trade) {
+            const ttl = synth.time_cap_minutes || 180
+            const styles = wItem.allowed_styles
+            const isScalper = ttl <= 30
+            const isSwing = ttl > 30 && ttl <= 480
+            const isShortTerm = ttl > 480
+
+            if (isScalper && styles.scalper === false) {
+              log(`Style filter: ${sym} blocked — scalper style disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isSwing && styles.swing === false) {
+              log(`Style filter: ${sym} blocked — swing style disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isShortTerm && styles.short_term === false) {
+              log(`Style filter: ${sym} blocked — short-term style disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+          }
+
+          // Human override: block_next_trade — one-time veto then auto-clear
+          if (wItem.block_next_trade && synth.auto_trade) {
+            log(`Block next trade: ${sym} — human veto, clearing flag`)
+            synth.auto_trade = false
+            // Clear the flag after use
+            const symbolsJsonCurrent = getState(db, 'autopilot_symbols_json') || '[]'
+            try {
+              const syms = JSON.parse(symbolsJsonCurrent)
+              const s2 = syms.map(s => typeof s === 'string' ? { symbol: s } : s)
+              const target = s2.find(s => s.symbol === sym)
+              if (target) target.block_next_trade = false
+              setState(db, 'autopilot_symbols_json', JSON.stringify(s2))
             } catch {}
           }
 

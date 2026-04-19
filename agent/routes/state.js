@@ -21,12 +21,55 @@ export default function stateRouter(db) {
   // GET /state/health
   // -----------------------------------------------------------------------
   router.get('/health', (_req, res) => {
+    const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
+    let symbols = []
+    try { symbols = JSON.parse(symbolsJson) } catch {}
+    symbols = (Array.isArray(symbols) ? symbols : []).map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
+    const enabledCount = symbols.filter(s => s.enabled !== false).length
+    const skippedCount = symbols.filter(s => s.force_skip).length
+
+    const lastLoopMs = getState(db, 'last_loop_ms')
+    const lastError = getState(db, 'last_error')
+    const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
+    const memUsage = process.memoryUsage()
+
+    const apiHealth = {}
+    try {
+      apiHealth.polygon = {
+        lastCall: getState(db, 'api_polygon_last_ok'),
+        lastError: getState(db, 'api_polygon_last_error'),
+        status: getState(db, 'api_polygon_last_ok') ? 'ok' : 'unknown',
+      }
+      apiHealth.anthropic = {
+        lastCall: getState(db, 'api_anthropic_last_ok'),
+        lastError: getState(db, 'api_anthropic_last_error'),
+        status: getState(db, 'api_anthropic_last_ok') ? 'ok' : 'unknown',
+      }
+      apiHealth.ctrader = {
+        lastCall: getState(db, 'api_ctrader_last_ok'),
+        lastError: getState(db, 'api_ctrader_last_error'),
+        status: getState(db, 'api_ctrader_last_ok') ? 'ok' : 'unknown',
+      }
+    } catch {}
+
     res.json({
-      status: 'ok',
+      status: circuitBreaker ? 'breaker_tripped' : 'ok',
       uptime: process.uptime(),
       loopCount: Number(getState(db, 'loop_count') || 0),
       lastScanAt: getState(db, 'last_scan_at'),
+      lastLoopMs: lastLoopMs ? Number(lastLoopMs) : null,
       errorsToday: Number(getState(db, 'errors_today') || 0),
+      lastError: lastError || null,
+      circuitBreaker: circuitBreaker || null,
+      memoryMB: Math.round(memUsage.rss / 1048576),
+      dbSizeMB: (() => { try { const { size } = require('fs').statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
+      openTrades: (() => { try { return db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get()?.c || 0 } catch { return 0 } })(),
+      symbols: {
+        total: symbols.length,
+        enabled: enabledCount,
+        skipped: skippedCount,
+      },
+      apis: apiHealth,
     })
   })
 
