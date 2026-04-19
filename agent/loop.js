@@ -862,9 +862,9 @@ async function runLoop(db) {
     } // end symbolsJson
 
     // -----------------------------------------------------------------------
-    // 3.5. RECONCILE PHASE — every 6th loop (~30 min)
+    // 3.5. RECONCILE PHASE — every 3rd loop (~15 min)
     // -----------------------------------------------------------------------
-    if (loopCount % 6 === 0) {
+    if (loopCount % 3 === 0) {
       try {
         const clientId = process.env.CTRADER_CLIENT_ID
         const clientSecret = process.env.CTRADER_CLIENT_SECRET
