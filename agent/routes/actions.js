@@ -412,6 +412,44 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/reset-data — wipe all trading data but preserve config
+  // Clears: scans, analyses, trades, monitored_positions, regimes, signals,
+  //         performance_snapshots, risk_events.
+  // Resets: loop_count, errors_today, last_scan_at, last_error,
+  //         circuit_breaker_tripped_at.
+  // Preserves: autopilot_symbols_json, scan_enabled, analyze_enabled,
+  //            autotrade_enabled (and everything else in agent_state).
+  // -----------------------------------------------------------------------
+  router.post('/reset-data', (_req, res) => {
+    try {
+      db.transaction(() => {
+        // 1. Clear all trading data tables
+        db.exec('DELETE FROM scans')
+        db.exec('DELETE FROM analyses')
+        db.exec('DELETE FROM trades')
+        db.exec('DELETE FROM monitored_positions')
+        db.exec('DELETE FROM regimes')
+        db.exec('DELETE FROM signals')
+        db.exec('DELETE FROM performance_snapshots')
+        db.exec('DELETE FROM risk_events')
+
+        // 2. Reset agent_state counters (preserve config / toggles)
+        setState(db, 'loop_count', '0')
+        setState(db, 'errors_today', '0')
+        setState(db, 'last_scan_at', null)
+        setState(db, 'last_error', null)
+        setState(db, 'circuit_breaker_tripped_at', null)
+      })()
+
+      console.log('[actions] reset-data — all trading data cleared, counters reset')
+      res.json({ ok: true, message: 'All trading data cleared and counters reset. Config and toggles preserved.' })
+    } catch (err) {
+      console.error('[actions/reset-data] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/symbol-map — store symbolName → cTrader symbolId mapping
   // Required for auto-trade. Frontend fetches symbol list from cTrader and
   // pushes { map: { EURUSD: 1, XAUUSD: 42, ... } }
