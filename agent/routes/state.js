@@ -482,5 +482,27 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/broker-orders — external positions + pending orders from last reconciliation
+  // -----------------------------------------------------------------------
+  router.get('/broker-orders', (_req, res) => {
+    try {
+      const pendingJson = getState(db, 'broker_pending_orders_json')
+      const lastReconcileAt = getState(db, 'last_reconcile_at')
+      const externalPositions = db.prepare(
+        `SELECT mp.*, t.ctrader_position_id
+         FROM monitored_positions mp
+         LEFT JOIN trades t ON t.id = mp.trade_id
+         WHERE mp.status = 'active' AND mp.source = 'external'
+         ORDER BY mp.created_at DESC`
+      ).all()
+      let pendingOrders = []
+      try { pendingOrders = JSON.parse(pendingJson || '[]') } catch {}
+      res.json({ externalPositions, pendingOrders, lastReconcileAt })
+    } catch (e) {
+      res.json({ externalPositions: [], pendingOrders: [], lastReconcileAt: null, error: e.message })
+    }
+  })
+
   return router
 }

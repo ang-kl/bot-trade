@@ -32,7 +32,7 @@ function prep(db) {
       `SELECT * FROM monitored_positions
        WHERE status = ?
          AND COALESCE(paused, 0) = 0
-         AND (source IS NULL OR source = 'autopilot')`,
+         AND (source IS NULL OR source IN ('autopilot', 'external'))`,
     ),
     updateMetrics: db.prepare(`
       UPDATE monitored_positions
@@ -327,6 +327,32 @@ test('short-side: EURUSD runs BE at 0.7R, partial at 1.5R', () => {
 // ---------------------------------------------------------------------------
 // 6. Scoping invariants: keeper must not touch copilot/manual/paused
 // ---------------------------------------------------------------------------
+
+test('scoping: external position is visible to keeper but observe-only', () => {
+  const db = mkDb()
+  const stmts = prep(db)
+  const id = seedPosition(db, {
+    symbol: 'BTCUSD',
+    source: 'external',
+    label_raw: null,
+    entry_price: 90000,
+    current_sl: 88000,
+    current_tp: 96000,
+    initial_risk: 2000,
+  })
+
+  // Price at 91400 → +0.7R → would trigger BE for autopilot, but external is observe-only
+  const results = tick(db, stmts, 91400)
+  assert.equal(results.length, 1, 'external row IS returned by SELECT')
+  const res = results[0].eval
+  assert.equal(res.action, 'MOVE_SL', 'evaluatePosition still fires for external')
+
+  // The key distinction: in the real loop, executeBrokerAction would be skipped
+  // for source='external'. The tick() harness applies it, so we verify the
+  // position-manager CAN evaluate external positions (metrics update works).
+  const row = readPos(db, id)
+  assert.ok(row.mfe_r >= 0.69 && row.mfe_r <= 0.71, 'MFE tracks for external positions')
+})
 
 test('scoping: copilot position is invisible to the keeper even at BE trigger', () => {
   const db = mkDb()

@@ -14,7 +14,8 @@ import { detectFlip } from './quant/signals.js'
 import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsPlaceOrder, wsAmendPosition, wsClosePosition } from './lib/ctrader-ws.js'
+import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
+import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
@@ -341,15 +342,14 @@ function prepareStatements(db) {
       VALUES (@symbol, @consensus_bias, @overall_conviction, @consensus_summary, @synthesis, @entry_price, @sl_price, @tp1_price, @tp2_price, @auto_trade, @strategy, @risk_note, @minion_reports, @invalidation_trigger, @time_cap_minutes, @analyzed_at, @scan_id)
     `),
 
-    // Autopilot monitors only its own positions. Legacy rows (pre-migration)
-    // have NULL source and are treated as autopilot since autoTrade() was
-    // historically the only INSERT path. Copilot/manual trades — if ever
-    // ingested — must set source explicitly and will be excluded.
+    // Autopilot monitors its own positions + external positions (observe-only).
+    // Legacy rows (pre-migration) have NULL source and are treated as autopilot.
+    // Copilot/manual trades are excluded — the human owns those decisions.
     selectActivePositions: db.prepare(
       `SELECT * FROM monitored_positions
        WHERE status = ?
          AND COALESCE(paused, 0) = 0
-         AND (source IS NULL OR source = 'autopilot')`
+         AND (source IS NULL OR source IN ('autopilot', 'external'))`
     ),
 
     updatePositionCheck: db.prepare(`
@@ -572,6 +572,15 @@ async function runLoop(db) {
         try {
           const wItem =
             symbols.find(w => w.symbol === sym) || { autoTradeThreshold: 8 }
+
+          // Pre-flight: skip analysis if ALL trade styles are disabled for this symbol
+          if (wItem.allowed_styles) {
+            const st = wItem.allowed_styles
+            if (st.scalp === false && st.day === false && st.swing === false && st.mid_term === false) {
+              log(`Style filter: ${sym} — all styles disabled, skipping analysis`)
+              continue
+            }
+          }
           const result = await runAnalysis(client, sym, {
             autoTradeThreshold: wItem.autoTradeThreshold || 8,
           })
@@ -781,6 +790,18 @@ async function runLoop(db) {
           // summary string that rides along inside last_check_reasoning so the
           // Workshop feed shows intent *and* broker outcome on one row.
           if (eval_.action !== 'HOLD') {
+            // External positions: observe only — log what we'd do but don't touch the broker
+            if (pos.source === 'external') {
+              s.updatePositionCheck.run(
+                `EXT:${eval_.action}`,
+                `${eval_.reason} | external: observe_only`,
+                new Date().toISOString(),
+                eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+                pos.id
+              )
+              log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
+              continue
+            }
             const outcome = await executeBrokerAction(db, s, pos, eval_)
             let reasoning = eval_.reason
             let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
@@ -804,6 +825,9 @@ async function runLoop(db) {
             )
             continue
           }
+
+          // External positions: skip LLM monitor — just update metrics, no token spend
+          if (pos.source === 'external') continue
 
           // Fallback: free-text theses and ambiguous cases → LLM Monitor.
           const check = await runMonitorCheck(client, {
@@ -836,6 +860,62 @@ async function runLoop(db) {
         }
       }
     } // end symbolsJson
+
+    // -----------------------------------------------------------------------
+    // 3.5. RECONCILE PHASE — every 6th loop (~30 min)
+    // -----------------------------------------------------------------------
+    if (loopCount % 6 === 0) {
+      try {
+        const clientId = process.env.CTRADER_CLIENT_ID
+        const clientSecret = process.env.CTRADER_CLIENT_SECRET
+        const accessToken = getState(db, 'ctrader_access_token')
+        const accountId = getState(db, 'ctrader_account_id')
+        const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+        if (clientId && clientSecret && accessToken && accountId) {
+          setState(db, 'loop_phase', 'reconciling broker positions')
+          const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          const reconcileData = await wsReconcile(host, clientId, clientSecret, accessToken, accountId)
+
+          const allSymbolIds = [...new Set([
+            ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
+            ...(reconcileData.order || []).map(o => o.tradeData?.symbolId),
+          ].filter(Boolean))]
+
+          let symbolNameMap = {}
+          if (allSymbolIds.length > 0) {
+            const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, allSymbolIds)
+            for (const s2 of (symData.symbol || [])) {
+              symbolNameMap[s2.symbolId] = s2.symbolName
+            }
+          }
+
+          const positions = (reconcileData.position || []).map(p => ({
+            ...p,
+            symbolName: symbolNameMap[p.tradeData?.symbolId] || null,
+          }))
+          const orders = (reconcileData.order || []).map(o => ({
+            ...o,
+            symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
+          }))
+
+          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
+          setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${result.pendingOrders.length} pending orders`)
+
+          if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              for (const ext of result.newExternal) {
+                await sendMessage(`External position detected: ${ext.side} ${ext.symbol} @ ${ext.entry}`)
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        log('Reconcile phase error:', err.message)
+      }
+    }
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)

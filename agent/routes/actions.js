@@ -609,7 +609,7 @@ export default function actionsRouter(db) {
         const tradeInsert = db.prepare(`
           INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
             ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'autopilot', 'open')
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open')
         `).run(analysis.symbol, side, entryP, sl, tp1, volLots, positionId, structuredLabel,
           parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
         const tradeId = tradeInsert.lastInsertRowid
@@ -617,7 +617,7 @@ export default function actionsRouter(db) {
         db.prepare(`
           INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
             thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'autopilot', ?, 'active')
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, 'active')
         `).run(analysis.symbol, tradeId, side, entryP, sl, tp1,
           analysis.consensus_summary || '', initialRisk,
           synth.invalidation_trigger || analysis.invalidation_trigger || null,

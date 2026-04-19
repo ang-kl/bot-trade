@@ -21,6 +21,7 @@ const SOURCE_BADGE = {
   autopilot: { tone: 'info',    text: 'AUTOPILOT' },
   copilot:   { tone: 'special', text: 'COPILOT'   },
   manual:    { tone: 'neutral', text: 'MANUAL'    },
+  external:  { tone: 'warning', text: 'EXTERNAL'  },
 }
 
 const SCAN_CACHE_KEY = 'bot-trade:scan-cache'
@@ -1742,6 +1743,116 @@ function TradeResults({ role }) {
 }
 
 // ---------------------------------------------------------------------------
+// Broker Orders — external positions + pending orders from Railway reconciliation
+// ---------------------------------------------------------------------------
+
+function BrokerOrders({ role }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        const d = await agentGet('/state/broker-orders', role)
+        if (active) { setData(d); setError(null) }
+      } catch (e) {
+        if (active) setError(e.message)
+      }
+    }
+    load()
+    const iv = setInterval(load, 30_000)
+    return () => { active = false; clearInterval(iv) }
+  }, [role])
+
+  if (!data && !error) return null
+
+  const ext = data?.externalPositions || []
+  const pend = data?.pendingOrders || []
+  const total = ext.length + pend.length
+
+  return (
+    <PanelFrame id="broker-orders" title="Broker Positions (External)" defaultSize="M" badge={
+      <span className="flex items-center gap-1">
+        {total > 0 && <Badge tone="warning" className="text-[10px] px-1">{total}</Badge>}
+        {data?.lastReconcileAt && <span className="text-[10px] text-[var(--color-muted)]">synced {fmtAgo(data.lastReconcileAt)}</span>}
+      </span>
+    }>
+      {error && <p className="text-[11px] text-[var(--color-error)] py-1">{error}</p>}
+      {ext.length === 0 && pend.length === 0 && (
+        <p className="t-sub text-[var(--color-muted)] py-2 text-center">No external positions or pending orders detected.</p>
+      )}
+      {ext.length > 0 && (
+        <div className="mb-2">
+          <div className="text-[10px] text-[var(--color-muted)] uppercase font-semibold mb-1 px-1">External Positions (observe-only)</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
+                  <th className="px-2 py-1 font-medium">Symbol</th>
+                  <th className="px-2 py-1 font-medium">Side</th>
+                  <th className="px-2 py-1 font-medium text-right">Entry</th>
+                  <th className="px-2 py-1 font-medium text-right">SL</th>
+                  <th className="px-2 py-1 font-medium text-right">TP</th>
+                  <th className="px-2 py-1 font-medium">Agent Note</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--color-border)]">
+                {ext.map((p, i) => (
+                  <tr key={p.ctrader_position_id || i}>
+                    <td className="px-2 py-1 font-mono font-bold text-[var(--color-text)]">{p.symbol}</td>
+                    <td className={`px-2 py-1 font-semibold ${p.side === 'long' ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {p.side === 'long' ? '▲ LONG' : '▼ SHORT'}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono">{p.entry_price ?? '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono text-[var(--color-down)]">{p.current_sl ?? '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono text-[var(--color-up)]">{p.current_tp ?? '—'}</td>
+                    <td className="px-2 py-1 text-[10px] text-[var(--color-muted)]">
+                      {p.last_check_action ? `${p.last_check_action} — ${p.last_check_reasoning || ''}`.slice(0, 80) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {pend.length > 0 && (
+        <div>
+          <div className="text-[10px] text-[var(--color-muted)] uppercase font-semibold mb-1 px-1">Pending Orders</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-[var(--color-muted)] text-left bg-[var(--color-surface)]">
+                  <th className="px-2 py-1 font-medium">Symbol</th>
+                  <th className="px-2 py-1 font-medium">Side</th>
+                  <th className="px-2 py-1 font-medium">Type</th>
+                  <th className="px-2 py-1 font-medium text-right">Lots</th>
+                  <th className="px-2 py-1 font-medium text-right">Price</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--color-border)]">
+                {pend.map((o, i) => (
+                  <tr key={o.orderId || i}>
+                    <td className="px-2 py-1 font-mono font-bold">{o.symbolName}</td>
+                    <td className={`px-2 py-1 font-semibold ${o.side === 'BUY' || o.side === 1 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {o.side === 'BUY' || o.side === 1 ? '▲ BUY' : '▼ SELL'}
+                    </td>
+                    <td className="px-2 py-1"><Badge tone="accent" className="text-[10px] px-1">{o.orderType || '—'}</Badge></td>
+                    <td className="px-2 py-1 text-right font-mono">{o.volume != null ? (o.volume / 100).toFixed(2) : '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono">{o.limitPrice ?? o.stopPrice ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </PanelFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Pending Orders at cTrader — dedicated card for limit/stop orders
 // ---------------------------------------------------------------------------
 
@@ -2649,7 +2760,10 @@ export default function Agent() {
       <PlannedOrders activity={activity} role="autopilot" />
       {agentConfigured('copilot') && <PlannedOrders activity={activity} role="copilot" />}
 
-      {/* cTrader Pending Orders — limit/stop orders at broker */}
+      {/* Broker Reconciliation — external positions + pending orders from Railway */}
+      <BrokerOrders role={role} />
+
+      {/* cTrader Pending Orders — limit/stop orders at broker (real-time via Vercel) */}
       <PendingOrders ctrader={state.ctrader} />
 
       {/* Two-column grid: failed trades + trade results */}

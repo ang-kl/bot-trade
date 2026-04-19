@@ -18,7 +18,7 @@ const SELECT_ACTIVE = `
   SELECT * FROM monitored_positions
   WHERE status = ?
     AND COALESCE(paused, 0) = 0
-    AND (source IS NULL OR source = 'autopilot')
+    AND (source IS NULL OR source IN ('autopilot', 'external'))
 `
 
 function insertPosition(db, { symbol, source, label_raw, paused = 0, status = 'active' }) {
@@ -86,13 +86,22 @@ test('SELECT filters out paused autopilot positions', () => {
   assert.equal(rows[0].symbol, 'EURUSD')
 })
 
-test('mixed fleet: only autopilot + legacy rows come back', () => {
+test('SELECT includes external positions for monitoring', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'BTCUSD', source: 'external' })
+  const rows = db.prepare(SELECT_ACTIVE).all('active')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].source, 'external')
+})
+
+test('mixed fleet: autopilot + external + legacy rows come back, copilot/manual excluded', () => {
   const db = mkDb()
   insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot' })
   insertPosition(db, { symbol: 'EURUSD', source: 'copilot' })
   insertPosition(db, { symbol: 'USDJPY', source: 'manual' })
   insertPosition(db, { symbol: 'GBPUSD', source: null })  // legacy
+  insertPosition(db, { symbol: 'BTCUSD', source: 'external' })
   const rows = db.prepare(SELECT_ACTIVE).all('active')
   const symbols = rows.map(r => r.symbol).sort()
-  assert.deepEqual(symbols, ['GBPUSD', 'XAUUSD'])
+  assert.deepEqual(symbols, ['BTCUSD', 'GBPUSD', 'XAUUSD'])
 })
