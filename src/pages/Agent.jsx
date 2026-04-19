@@ -9,7 +9,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { useStrategy } from '../lib/strategy-store.js'
-import { agentGet, agentPost, agentConfigured, ROLES } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, agentBase, ROLES } from '../lib/agent-api.js'
 import { fmtAgo } from '../lib/time.js'
 import { parseLabel } from '../../agent/lib/trade-labels.js'
 import { dispatch as dispatchMinions, MINIONS } from '../../agent/lib/minions.js'
@@ -130,11 +130,12 @@ function RiskDashboard({ role }) {
   const [exposure, setExposure] = useState(null)
   const [riskEvents, setRiskEvents] = useState([])
   const [showEvents, setShowEvents] = useState(false)
+  const [riskError, setRiskError] = useState(null)
 
   useEffect(() => {
     if (!agentConfigured(role)) return
     const load = () => {
-      agentGet('/state/metrics', role).then(r => setMetrics(r)).catch(() => {})
+      agentGet('/state/metrics', role).then(r => { setMetrics(r); setRiskError(null) }).catch(e => setRiskError(e.message))
       agentGet('/state/risk-config', role).then(r => setRiskCfg(r)).catch(() => {})
       agentGet('/state/risk-exposure', role).then(r => setExposure(r?.exposure)).catch(() => {})
       agentGet('/state/risk-events?limit=5', role).then(r => setRiskEvents(r?.events || [])).catch(() => {})
@@ -261,6 +262,7 @@ function RiskDashboard({ role }) {
 
 function MarketDataStrip({ symbols, role }) {
   const [regimes, setRegimes] = useState({})
+  const [regimeError, setRegimeError] = useState(null)
   const priceCache = readPriceCache()
 
   useEffect(() => {
@@ -270,8 +272,9 @@ function MarketDataStrip({ symbols, role }) {
         const map = {}
         for (const row of (r?.regimes || [])) map[row.symbol] = row
         setRegimes(map)
+        setRegimeError(null)
       })
-      .catch(() => {})
+      .catch(e => setRegimeError(e.message))
   }, [role])
 
   if (!symbols || symbols.length === 0) return null
@@ -281,6 +284,7 @@ function MarketDataStrip({ symbols, role }) {
   return (
     <Card>
       <p className="t-label mb-2">Market Data</p>
+      {regimeError && <div className="px-3 py-2 mb-2 rounded-[5px] bg-[var(--color-error-bg)] border border-[var(--color-error-border)] text-[11px] text-[var(--color-error-text)]">Regime data: {regimeError}</div>}
       <div className="flex flex-wrap gap-1.5">
         {symbols.map(sym => {
           const mm = priceCache[sym] || {}
@@ -332,15 +336,17 @@ function AttributionPanel({ role }) {
   const [tab, setTab] = useState('strategy')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [fetchError, setFetchError] = useState(null)
 
   const [days, setDays] = useState(90)
 
   useEffect(() => {
     if (!agentConfigured(role)) return
     setLoading(true)
+    setFetchError(null)
     agentGet(`/state/attribution?groupBy=${tab}&days=${days}`, role)
       .then(r => setData(r))
-      .catch(() => setData(null))
+      .catch(e => { setData(null); setFetchError(e.message) })
       .finally(() => setLoading(false))
   }, [role, tab, days])
 
@@ -369,7 +375,8 @@ function AttributionPanel({ role }) {
         ))}
       </div>
       {loading && <p className="t-meta text-[var(--color-muted)]">Loading…</p>}
-      {!loading && rows.length === 0 && (
+      {fetchError && <div className="px-3 py-2 mb-2 rounded-[5px] bg-[var(--color-error-bg)] border border-[var(--color-error-border)] text-[11px] text-[var(--color-error-text)]">API error: {fetchError}</div>}
+      {!loading && !fetchError && rows.length === 0 && (
         <div className="py-3 text-center">
           <p className="t-meta text-[var(--color-muted)]">No closed trades in {days}-day window.</p>
           <p className="text-[10px] text-[var(--color-muted)] mt-1">Attribution populates after the first round-trip trade. Try widening the window or wait for trades to close.</p>
@@ -576,7 +583,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
         </div>
       )}
 
-      {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
+      {error && <div className="px-3 py-2 mb-3 rounded-[5px] bg-[var(--color-error-bg)] border border-[var(--color-error-border)] text-[12px] text-[var(--color-error-text)] font-medium">{error}</div>}
 
       {info && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
@@ -2348,15 +2355,19 @@ export default function Agent() {
     if (!agentConfigured(role)) return
     try {
       const [h, c, a, p] = await Promise.all([
-        agentGet('/health', role).catch(() => null),
-        agentGet('/state/config', role).catch(() => null),
-        agentGet('/state/activity?limit=40', role).catch(() => ({ activity: [] })),
-        agentGet('/state/positions', role).catch(() => ({ positions: [] })),
+        agentGet('/health', role).catch(e => { console.error('[health]', e.message); return null }),
+        agentGet('/state/config', role).catch(e => { console.error('[config]', e.message); return null }),
+        agentGet('/state/activity?limit=40', role).catch(e => { console.error('[activity]', e.message); return { activity: [] } }),
+        agentGet('/state/positions', role).catch(e => { console.error('[positions]', e.message); return { positions: [] } }),
       ])
       setHealth(h); setConfig(c)
       setActivity(a?.activity || [])
       setBotPositions(p?.positions || [])
-      setError(null)
+      if (!h && !c) {
+        setError(`Cannot reach ${role} backend at ${agentBase(role)} — check VITE_AGENT_URL_${role.toUpperCase()} and VITE_AGENT_SECRET_${role.toUpperCase()} in Vercel env vars`)
+      } else {
+        setError(null)
+      }
     } catch (e) { setError(e.message) }
   }, [role])
 
@@ -2516,7 +2527,12 @@ export default function Agent() {
           </div>
         )}
 
-        {error && <p className="text-[10px] text-[var(--color-down)] mb-2">{error}</p>}
+        {error && (
+          <div className="px-3 py-2 mb-3 rounded-[5px] bg-[var(--color-error-bg)] border border-[var(--color-error-border)]">
+            <p className="text-[12px] text-[var(--color-error-text)] font-medium">{error}</p>
+            <p className="text-[10px] text-[var(--color-error-text)] mt-1 opacity-70 font-mono break-all">Backend: {agentBase(role) || '(not set)'}</p>
+          </div>
+        )}
 
         {circuitBreaker && (
           <div className="mb-3 px-3 py-2 rounded-[5px] bg-[color-mix(in_srgb,var(--color-down)_15%,transparent)] border border-[var(--color-down)]">
