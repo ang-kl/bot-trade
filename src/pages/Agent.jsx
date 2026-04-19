@@ -298,7 +298,7 @@ function MarketDataStrip({ symbols, role }) {
           const price = sp.price ?? mm.currentPrice ?? mm.price ?? mm.vwap ?? null
           const vwap = mm.vwap_today ?? mm.vwap ?? null
           const vwapDev = price && vwap ? ((price - vwap) / vwap * 100) : null
-          const emaStack = mm.ema_stack_label || mm.ema_stack || null
+          const emaStack = mm.ema_stack_label || mm.ema_stack?.stack || (typeof mm.ema_stack === 'string' ? mm.ema_stack : null)
 
           return (
             <div key={sym} className="px-2 py-1.5 rounded-[5px] bg-[var(--color-bg)] min-w-[120px]">

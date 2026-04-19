@@ -5,13 +5,22 @@
 // Legacy VITE_AGENT_URL / VITE_AGENT_SECRET still work — they map to autopilot
 // so single-service deployments keep running without a redeploy.
 
+function normalizeBase(url) {
+  if (!url) return ''
+  let u = url.trim().replace(/\/+$/, '')
+  if (u.startsWith('http://') && typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+    u = 'https://' + u.slice(7)
+  }
+  return u
+}
+
 const CONFIG = {
   autopilot: {
-    base:   import.meta.env.VITE_AGENT_URL_AUTOPILOT    || import.meta.env.VITE_AGENT_URL    || '',
+    base:   normalizeBase(import.meta.env.VITE_AGENT_URL_AUTOPILOT    || import.meta.env.VITE_AGENT_URL    || ''),
     secret: import.meta.env.VITE_AGENT_SECRET_AUTOPILOT || import.meta.env.VITE_AGENT_SECRET || '',
   },
   copilot: {
-    base:   import.meta.env.VITE_AGENT_URL_COPILOT    || '',
+    base:   normalizeBase(import.meta.env.VITE_AGENT_URL_COPILOT    || ''),
     secret: import.meta.env.VITE_AGENT_SECRET_COPILOT || '',
   },
 }
