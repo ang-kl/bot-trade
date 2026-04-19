@@ -13,6 +13,7 @@ import AgentPage from './pages/Agent.jsx'
 import Workshop from './pages/Workshop.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
 import StatusRibbon from './components/StatusRibbon.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { useTheme } from './lib/theme.js'
 
 // Top-level shell. Single-theme, playbook-canonical palette.
@@ -87,20 +88,22 @@ export default function App() {
         style={{ overflowAnchor: 'none' }}
       >
         <div style={{ maxWidth: isWide ? 'none' : 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
-          <Routes>
-            <Route path="/" element={<Navigate to="/agent" replace />} />
-            <Route path="/agent" element={<AgentPage />} />
-            <Route path="/workshop" element={<Workshop />} />
-            <Route path="/feed" element={<Feed />} />
-            <Route path="/watchlist" element={<Watchlist />} />
-            <Route path="/alert" element={<Alert />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/vault" element={<Vault />} />
-            <Route path="/backtest" element={<Backtest />} />
-            <Route path="/admin" element={<Admin />} />
-            <Route path="/link-up" element={<LinkUp />} />
-            <Route path="*" element={<Navigate to="/agent" replace />} />
-          </Routes>
+          <ErrorBoundary key={pathname}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/agent" replace />} />
+              <Route path="/agent" element={<AgentPage />} />
+              <Route path="/workshop" element={<Workshop />} />
+              <Route path="/feed" element={<Feed />} />
+              <Route path="/watchlist" element={<Watchlist />} />
+              <Route path="/alert" element={<Alert />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/vault" element={<Vault />} />
+              <Route path="/backtest" element={<Backtest />} />
+              <Route path="/admin" element={<Admin />} />
+              <Route path="/link-up" element={<LinkUp />} />
+              <Route path="*" element={<Navigate to="/agent" replace />} />
+            </Routes>
+          </ErrorBoundary>
         </div>
       </main>
 

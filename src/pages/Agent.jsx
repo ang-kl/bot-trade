@@ -656,7 +656,7 @@ function AccountPanel({ ctrader, botPositionsById, onPause, onUnpause }) {
                       const ozDisplay = isGold && volLots != null ? ` (${(volLots * 100).toFixed(2)} Oz)` : ''
                       const priceDigits = (o.symbolName || '').endsWith('JPY') ? 3 : isGold ? 2 : 5
                       const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
-                      const typeLabel = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
+                      const typeLabel = String(o.orderType ?? '').replace(/^ORDER_TYPE_/, '') || '—'
                       const parsedLabel = o.label ? parseLabel(o.label) : null
                       const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
                       const slPips = pipDist(triggerPrice, o.stopLoss, o.symbolName)
@@ -1929,7 +1929,7 @@ function PendingOrders({ ctrader }) {
               const volLots = o.volume != null ? o.volume / 10000 : null
               const priceDigits = sym.endsWith('JPY') ? 3 : sym.startsWith('XAU') ? 2 : 5
               const triggerPrice = o.limitPrice ?? o.stopPrice ?? null
-              const typeRaw = o.orderType?.replace(/^ORDER_TYPE_/, '') || o.orderType || '—'
+              const typeRaw = String(o.orderType ?? '').replace(/^ORDER_TYPE_/, '') || '—'
               const parsedLabel = o.label ? parseLabel(o.label) : null
               const sourceBadge = parsedLabel?.source ? SOURCE_BADGE[parsedLabel.source] : null
               const slPips = pipDist(triggerPrice, o.stopLoss, sym)
