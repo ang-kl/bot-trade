@@ -61,6 +61,8 @@ export default function stateRouter(db) {
       lastScanAt: getState(db, 'last_scan_at'),
       lastLoopMs: lastLoopMs ? Number(lastLoopMs) : null,
       errorsToday: Number(getState(db, 'errors_today') || 0),
+      dailyTokensUsed: Number(getState(db, 'daily_tokens_used') || 0),
+      dailyTokenBudget: 500000,
       lastError: lastError || null,
       circuitBreaker: circuitBreaker || null,
       memoryMB: Math.round(memUsage.rss / 1048576),

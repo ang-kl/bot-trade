@@ -21,6 +21,7 @@ const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
+const DAILY_TOKEN_BUDGET = 500_000    // stop API calls if daily output tokens exceed this
 let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
@@ -444,6 +445,7 @@ async function runLoop(db) {
   const todayUTC = new Date().toISOString().slice(0, 10)
   if (lastReset !== todayUTC) {
     setState(db, 'errors_today', '0')
+    setState(db, 'daily_tokens_used', '0')
     setState(db, 'errors_reset_date', todayUTC)
   }
 
@@ -457,6 +459,14 @@ async function runLoop(db) {
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
     const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+    // Daily token budget check — pause API calls if exceeded
+    const dailyTokensUsed = parseInt(getState(db, 'daily_tokens_used') || '0')
+    const budgetExceeded = dailyTokensUsed >= DAILY_TOKEN_BUDGET
+    if (budgetExceeded) {
+      log(`Daily token budget exceeded (${dailyTokensUsed.toLocaleString()} / ${DAILY_TOKEN_BUDGET.toLocaleString()}) — skipping scan+analyze. Monitor-only mode.`)
+      setState(db, 'loop_phase', `budget exceeded — monitor only`)
+    }
 
     // Autopilot's own symbol universe, falling back to legacy watchlist
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
@@ -482,6 +492,8 @@ async function runLoop(db) {
 
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
+      } else if (budgetExceeded) {
+        log('Token budget exceeded — scan skipped')
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else {
@@ -531,6 +543,11 @@ async function runLoop(db) {
 
     setState(db, 'last_scan_at', now)
     setState(db, 'api_anthropic_last_ok', now)
+
+    // Track daily token usage
+    const scanTokens = scanResult.usage?.output_tokens || 0
+    const prevTokens = parseInt(getState(db, 'daily_tokens_used') || '0')
+    setState(db, 'daily_tokens_used', String(prevTokens + scanTokens))
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
 
     // Persist scan context for next loop's delta computation
@@ -548,7 +565,7 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (analyzeEnabled && scanResult.hot.length > 0) {
+    if (analyzeEnabled && !budgetExceeded && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
       setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
@@ -584,7 +601,10 @@ async function runLoop(db) {
             scan_id: scanId,
           })
 
-          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10)`)
+          const analyzeTokens = result.usage?.output_tokens || 0
+          const cumTokens = parseInt(getState(db, 'daily_tokens_used') || '0') + analyzeTokens
+          setState(db, 'daily_tokens_used', String(cumTokens))
+          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) [${analyzeTokens} tokens, daily total: ${cumTokens}]`)
 
           // Auto-trade — only when armed and synthesis recommends it.
           // Iterate all autopilot-enabled accounts so the same signal

@@ -2604,6 +2604,12 @@ export default function Agent() {
               <p className={`font-mono ${health.errorsToday > 0 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>{health.errorsToday ?? 0}</p>
             </div>
             <div>
+              <p className="text-[var(--color-muted)]">API Tokens</p>
+              <p className={`font-mono ${health.dailyTokensUsed > (health.dailyTokenBudget || 500000) * 0.8 ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
+                {health.dailyTokensUsed ? `${(health.dailyTokensUsed / 1000).toFixed(0)}k` : '0'} / {((health.dailyTokenBudget || 500000) / 1000).toFixed(0)}k
+              </p>
+            </div>
+            <div>
               <p className="text-[var(--color-muted)]">Open Trades</p>
               <p className="font-mono text-[var(--color-text)]">{health.openTrades ?? 0}</p>
             </div>

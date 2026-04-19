@@ -6,8 +6,8 @@ import { MINIONS, dispatch, buildMinionPrompt, buildSynthesisPrompt } from '../l
 
 // Minions: Sonnet 4.6 — fast parallel calls, each returning a short report
 const MINION_MODEL = 'claude-sonnet-4-6'
-// Synthesis: Opus 4.7 with adaptive thinking — final decision deserves best reasoning
-const SYNTH_MODEL = 'claude-opus-4-7'
+// Synthesis: Sonnet 4.6 with adaptive thinking — good reasoning at 5x lower cost than Opus
+const SYNTH_MODEL = 'claude-sonnet-4-6'
 const MINION_MAX_TOKENS = 512
 const SYNTH_MAX_TOKENS = 2048
 
