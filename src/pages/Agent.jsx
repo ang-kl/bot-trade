@@ -1382,7 +1382,7 @@ function PlannedOrders({ activity, role }) {
         const checks = preFlightChecks(latest, currentPrice, marketOpen)
         const allPass = checks.every(c => c.ok)
         const ttlStyle = latest.time_cap_minutes
-          ? latest.time_cap_minutes <= 30 ? 'Scalper' : latest.time_cap_minutes <= 480 ? 'Swing' : 'Short-Term'
+          ? latest.time_cap_minutes <= 30 ? 'Scalp' : latest.time_cap_minutes <= 480 ? 'Day' : latest.time_cap_minutes <= 10080 ? 'Swing' : 'Mid-Term'
           : '—'
 
         const ageMs = latest.analyzed_at ? Date.now() - new Date(latest.analyzed_at).getTime() : 0
@@ -1457,7 +1457,7 @@ function PlannedOrders({ activity, role }) {
                     const slPips = pipDist(a.entry_price, a.sl_price, symbol)
                     const tpPips = pipDist(a.entry_price, a.tp1_price, symbol)
                     const rowTtl = a.time_cap_minutes
-                      ? a.time_cap_minutes <= 30 ? '⚡ Scalp' : a.time_cap_minutes <= 480 ? '🔄 Swing' : '📅 Short'
+                      ? a.time_cap_minutes <= 30 ? '⚡ Scalp' : a.time_cap_minutes <= 480 ? '☀ Day' : a.time_cap_minutes <= 10080 ? '🔄 Swing' : '📆 Mid'
                       : '—'
 
                     return (
@@ -1822,18 +1822,18 @@ function ApiHealth({ health }) {
 // ---------------------------------------------------------------------------
 
 const STYLE_META = {
-  scalper:    { label: 'Scalper',    desc: '< 30 min trades',    icon: '⚡' },
-  swing:     { label: 'Swing',      desc: '1-8 hour trades',    icon: '🔄' },
-  short_term:{ label: 'Short-Term', desc: '1-5 day trades',     icon: '📅' },
-  mid_term:  { label: 'Mid-Term',   desc: 'Weeks to months',    icon: '📆' },
+  scalp:     { label: 'Scalp',      desc: 'Sec → 30 min',       icon: '⚡' },
+  day:       { label: 'Day',        desc: '30 min → 8 hr',      icon: '☀' },
+  swing:     { label: 'Swing',      desc: '1 day → 1 week',     icon: '🔄' },
+  mid_term:  { label: 'Mid-Term',   desc: 'Months → years',     icon: '📆' },
 }
 
 const BIAS_OPTIONS = [
   { value: '', label: 'AI decides' },
   { value: 'long', label: '▲ Force Long' },
   { value: 'short', label: '▼ Force Short' },
-  { value: 'neutral', label: '○ Force Neutral' },
-  { value: 'skip', label: '✕ Force Skip' },
+  { value: 'neutral', label: '○ Force Neutral (no trade)' },
+  { value: 'skip', label: '✕ Force Skip (exclude)' },
 ]
 
 function SymbolControls({ symbols, role, onRefresh }) {
@@ -1862,14 +1862,14 @@ function SymbolControls({ symbols, role, onRefresh }) {
       </span>
     }>
       <p className="text-[10px] text-[var(--color-muted)] mb-2">
-        Override agent decisions per symbol. Style toggles control which trade durations are allowed — disabling a style blocks auto-trades of that duration.
+        Force or disallow bias direction (Long/Short/Neutral/Skip) and trade type (Scalp/Day/Swing/Mid-Term) per symbol. Disabling a style blocks auto-trades of that duration.
       </p>
       <div className="space-y-1">
         {symbols.map(sym => {
           const s = typeof sym === 'string' ? { symbol: sym, enabled: true } : sym
           const isExpanded = expanded === s.symbol
           const isBusy = busy[s.symbol]
-          const styles = s.allowed_styles || { scalper: true, swing: true, short_term: true, mid_term: false }
+          const styles = s.allowed_styles || { scalp: true, day: true, swing: true, mid_term: false }
 
           return (
             <div key={s.symbol} className="rounded-[5px] bg-[var(--color-bg)] overflow-hidden">

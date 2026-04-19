@@ -606,24 +606,29 @@ async function runLoop(db) {
             }
           }
 
-          // Style filter: check if time_cap_minutes matches allowed styles
+          // Style filter: check if time_cap_minutes matches allowed trade types
           if (wItem.allowed_styles && synth.auto_trade) {
             const ttl = synth.time_cap_minutes || 180
             const styles = wItem.allowed_styles
-            const isScalper = ttl <= 30
-            const isSwing = ttl > 30 && ttl <= 480
-            const isShortTerm = ttl > 480
+            const isScalp = ttl <= 30
+            const isDay = ttl > 30 && ttl <= 480
+            const isSwing = ttl > 480 && ttl <= 10080
+            const isMidTerm = ttl > 10080
 
-            if (isScalper && styles.scalper === false) {
-              log(`Style filter: ${sym} blocked — scalper style disabled (TTL ${ttl}m)`)
+            if (isScalp && styles.scalp === false) {
+              log(`Style filter: ${sym} blocked — scalp trading disabled (TTL ${ttl}m)`)
+              synth.auto_trade = false
+            }
+            if (isDay && styles.day === false) {
+              log(`Style filter: ${sym} blocked — day trading disabled (TTL ${ttl}m)`)
               synth.auto_trade = false
             }
             if (isSwing && styles.swing === false) {
-              log(`Style filter: ${sym} blocked — swing style disabled (TTL ${ttl}m)`)
+              log(`Style filter: ${sym} blocked — swing trading disabled (TTL ${ttl}m)`)
               synth.auto_trade = false
             }
-            if (isShortTerm && styles.short_term === false) {
-              log(`Style filter: ${sym} blocked — short-term style disabled (TTL ${ttl}m)`)
+            if (isMidTerm && styles.mid_term === false) {
+              log(`Style filter: ${sym} blocked — mid-term trading disabled (TTL ${ttl}m)`)
               synth.auto_trade = false
             }
           }
