@@ -19,7 +19,7 @@ import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 import { getFreshAccessToken } from './lib/ctrader-token.js'
 
-const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const LOOP_INTERVAL = 3 * 60 * 1000 // 3 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
@@ -567,7 +567,7 @@ async function runLoop(db) {
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
     if (analyzeEnabled && !budgetExceeded && scanResult.hot.length > 0) {
-      const hotToAnalyze = scanResult.hot.slice(0, 3)
+      const hotToAnalyze = scanResult.hot.slice(0, 2)
       setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
         try {
@@ -863,9 +863,9 @@ async function runLoop(db) {
     } // end symbolsJson
 
     // -----------------------------------------------------------------------
-    // 3.5. RECONCILE PHASE — every 3rd loop (~15 min)
+    // 3.5. RECONCILE PHASE — every 5th loop (~15 min)
     // -----------------------------------------------------------------------
-    if (loopCount % 3 === 0) {
+    if (loopCount % 5 === 0) {
       try {
         const clientId = process.env.CTRADER_CLIENT_ID
         const clientSecret = process.env.CTRADER_CLIENT_SECRET

@@ -23,7 +23,7 @@ export const DEFAULT_RISK_CONFIG = {
   minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
   cooldownMinutes: 60,             // Cool-off window after hitting the streak.
-  maxOpenPositions: 5,             // Hard cap on concurrent positions.
+  maxOpenPositions: 6,             // Hard cap on concurrent positions.
   minRR: 1.5,                      // TP must be ≥ minRR × SL distance.
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).

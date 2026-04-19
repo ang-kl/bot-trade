@@ -4,8 +4,6 @@ import useTokenRefresh from './lib/use-token-refresh.js'
 import Feed from './pages/Feed.jsx'
 import Alert from './pages/Alert.jsx'
 import Settings from './pages/Settings.jsx'
-import Vault from './pages/Vault.jsx'
-import Backtest from './pages/Backtest.jsx'
 import LinkUp from './pages/LinkUp.jsx'
 import Admin from './pages/Admin.jsx'
 import Watchlist from './pages/Watchlist.jsx'
@@ -21,14 +19,7 @@ import { useTheme } from './lib/theme.js'
 
 const navLinks = [
   { to: '/agent', label: 'Agent' },
-  { to: '/workshop', label: 'Workshop' },
-  { to: '/feed', label: 'Feed' },
-  { to: '/watchlist', label: 'Watchlist' },
   { to: '/alert', label: 'Alert' },
-  { to: '/settings', label: 'Settings' },
-  { to: '/vault', label: 'Vault' },
-  { to: '/backtest', label: 'Backtest' },
-  { to: '/admin', label: 'Admin' },
 ]
 
 // Scroll to top on route change
@@ -97,8 +88,6 @@ export default function App() {
               <Route path="/watchlist" element={<Watchlist />} />
               <Route path="/alert" element={<Alert />} />
               <Route path="/settings" element={<Settings />} />
-              <Route path="/vault" element={<Vault />} />
-              <Route path="/backtest" element={<Backtest />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/link-up" element={<LinkUp />} />
               <Route path="*" element={<Navigate to="/agent" replace />} />
