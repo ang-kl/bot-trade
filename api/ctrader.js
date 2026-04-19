@@ -13,8 +13,23 @@
 // 3. Add redirect URI from the deployment origin (/link-up route)
 
 import WebSocket from 'ws'
+import { encodeLabel, convictionBucket } from '../agent/lib/trade-labels.js'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
+
+// Reconstructs the request origin without relying on the browser sending an
+// Origin header. Browsers only guarantee Origin on cross-origin/POST, so
+// same-origin GETs (like auth-url) arrive without one on most platforms.
+// Vercel, Netlify and other proxies expose x-forwarded-host/proto; fall
+// back to the raw Host header for direct node invocations.
+function resolveOrigin(req) {
+  const h = req.headers || {}
+  if (typeof h.origin === 'string' && h.origin) return h.origin
+  const host = h['x-forwarded-host'] || h.host
+  if (!host) return null
+  const proto = h['x-forwarded-proto'] || (host.startsWith('localhost') ? 'http' : 'https')
+  return `${proto}://${host}`
+}
 
 // Payload types — from github.com/spotware/openapi-proto-messages
 const PT = {
@@ -181,8 +196,10 @@ export default async function handler(req, res) {
 
   if (req.method === 'GET' && req.query.action === 'auth-url') {
     if (!clientId) return res.status(500).json({ error: 'CTRADER_CLIENT_ID not configured' })
-    const origin = req.headers.origin
-    if (!origin) return res.status(400).json({ error: 'auth-url requires an Origin header' })
+    // Browsers often omit Origin on same-origin GETs, so fall back to the
+    // forwarded host headers Vercel (and most reverse proxies) inject.
+    const origin = resolveOrigin(req)
+    if (!origin) return res.status(400).json({ error: 'unable to resolve request origin' })
     const redirectUri = `${origin}/link-up`
     const url = `${CTRADER_API}/apps/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=trading`
     return res.status(200).json({ url, redirectUri })
@@ -566,6 +583,28 @@ export default async function handler(req, res) {
       ])
 
       const reconcile = results[2] || {}
+
+      // Resolve symbolId → symbolName via SYMBOL_BY_ID batch lookup. Merge
+      // position and resting-order symbol IDs into a single call so we only
+      // pay one round-trip even if the account has a mix of both.
+      const allSymbolIds = [...new Set([
+        ...(reconcile.position || []).map(p => p.tradeData?.symbolId),
+        ...(reconcile.order || []).map(o => o.tradeData?.symbolId),
+      ].filter(Boolean))]
+      let symbolNameMap = {}
+      if (allSymbolIds.length > 0) {
+        try {
+          const symResults = await wsQuery(host, [
+            { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
+            { send: { payloadType: PT.ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT.ACCOUNT_AUTH_RES },
+            { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: allSymbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
+          ])
+          for (const s of (symResults[2]?.symbol || [])) {
+            symbolNameMap[s.symbolId] = s.symbolName
+          }
+        } catch {}
+      }
+
       // Each position has tradeData with symbolId, volume, tradeSide, etc.
       const positions = (reconcile.position || []).map(p => {
         const t = p.tradeData || {}
@@ -574,6 +613,7 @@ export default async function handler(req, res) {
         return {
           positionId: p.positionId,
           symbolId: t.symbolId,
+          symbolName: symbolNameMap[t.symbolId] || null,
           side: t.tradeSide,
           volume: t.volume,
           openPrice: p.price,
@@ -588,10 +628,35 @@ export default async function handler(req, res) {
         }
       })
 
+      // Pending orders — LIMIT/STOP/STOP_LIMIT that haven't filled yet.
+      // cTrader returns them in `reconcile.order` as a sibling to positions.
+      // Shape mirrors `positions` with order-specific fields layered on top.
+      const orders = (reconcile.order || []).map(o => {
+        const t = o.tradeData || {}
+        return {
+          orderId: o.orderId,
+          symbolId: t.symbolId,
+          symbolName: symbolNameMap[t.symbolId] || null,
+          side: t.tradeSide,
+          volume: t.volume,
+          orderType: o.orderType,         // 'LIMIT' | 'STOP' | 'STOP_LIMIT'
+          orderStatus: o.orderStatus,     // 'ORDER_STATUS_ACCEPTED' etc.
+          limitPrice: o.limitPrice || null,
+          stopPrice: o.stopPrice || null,
+          stopLoss: o.stopLoss || null,
+          takeProfit: o.takeProfit || null,
+          expirationTimestamp: o.expirationTimestamp || null,
+          utcLastUpdateTimestamp: o.utcLastUpdateTimestamp || t.openTimestamp || null,
+          label: t.label || '',
+          comment: t.comment || '',
+        }
+      })
+
       return res.status(200).json({
         positions,
         count: positions.length,
-        pendingOrders: (reconcile.order || []).length,
+        orders,
+        pendingOrders: orders.length,
       })
     } catch (err) {
       return res.status(500).json({ error: err.message })
@@ -614,10 +679,33 @@ export default async function handler(req, res) {
       takeProfitDistance,
       limitPrice,             // absolute price — required for LIMIT / STOP_LIMIT
       stopPrice,              // absolute price — required for STOP / STOP_LIMIT
-      comment = 'abot test',
-      label = 'abot-ema9',
+      comment = 'abot-copilot',
+      label: rawLabel,          // caller can pass a fully-formed label string
+      labelMeta,                // or pass {source, strategy, conviction, session, timeframe, regime, version}
       isLive = false,
     } = req.body
+
+    // Build the cTrader label: explicit `label` wins, otherwise encode from
+    // `labelMeta` (source defaults to 'copilot'), otherwise fall back to a
+    // minimal copilot tag so reconcile can still identify our orders.
+    let label
+    if (typeof rawLabel === 'string' && rawLabel.length > 0) {
+      label = rawLabel
+    } else if (labelMeta && typeof labelMeta === 'object') {
+      label = encodeLabel({
+        source: labelMeta.source || 'copilot',
+        version: labelMeta.version,
+        strategy: labelMeta.strategy,
+        conviction: typeof labelMeta.conviction === 'number'
+          ? convictionBucket(labelMeta.conviction)
+          : labelMeta.conviction,
+        session: labelMeta.session,
+        timeframe: labelMeta.timeframe,
+        regime: labelMeta.regime,
+      })
+    } else {
+      label = encodeLabel({ source: 'copilot' })
+    }
 
     // ── Safety gates (server-enforced) ──
 
