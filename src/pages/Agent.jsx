@@ -1084,21 +1084,79 @@ function TeamRoster({ activity, role }) {
                 <span className="text-[10px] text-[var(--color-muted)]">{isExpanded ? '▾' : '▸'}</span>
               </button>
 
-              {isExpanded && (
+              {isExpanded && (() => {
+                const techRoles = new Set(['trader', 'researcher'])
+                const fundRoles = new Set(['journalist', 'economist', 'political'])
+                const techReports = reports.filter(r => techRoles.has(r.role))
+                const fundReports = reports.filter(r => fundRoles.has(r.role))
+                const voteSummary = (team) => {
+                  if (team.length === 0) return { long: 0, short: 0, neutral: 0, avgConv: 0 }
+                  const long = team.filter(r => r.bias === 'long').length
+                  const short = team.filter(r => r.bias === 'short').length
+                  const neutral = team.length - long - short
+                  const avgConv = Math.round(team.reduce((s, r) => s + (r.conviction || 0), 0) / team.length * 10) / 10
+                  return { long, short, neutral, avgConv, total: team.length }
+                }
+                const tv = voteSummary(techReports)
+                const fv = voteSummary(fundReports)
+
+                return (
                 <div className="border-t border-[var(--color-border)]">
                   {analysis?.consensus_summary && (
                     <div className="px-2 py-1.5 text-[11px] text-[var(--color-text-sub)] bg-[var(--color-surface)] border-b border-[var(--color-border)]">
                       <span className="font-bold text-[var(--color-text)]">Consensus: </span>{analysis.consensus_summary}
                     </div>
                   )}
+
+                  {reports.length > 0 && (
+                    <div className="px-2 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[10px] font-bold text-[var(--color-accent)] uppercase mb-1">Technical ({tv.total || 0})</p>
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="text-[var(--color-up)] font-bold">{tv.long}▲</span>
+                            <span className="text-[var(--color-down)] font-bold">{tv.short}▼</span>
+                            <span className="text-[var(--color-muted)]">{tv.neutral}○</span>
+                            <span className="text-[10px] font-mono text-[var(--color-muted)] ml-auto">avg {tv.avgConv}/10</span>
+                          </div>
+                          {tv.total > 0 && (
+                            <div className="flex h-1.5 rounded-full overflow-hidden mt-1 bg-[var(--color-border)]">
+                              {tv.long > 0 && <div className="bg-[var(--color-up)]" style={{ width: `${(tv.long / tv.total) * 100}%` }} />}
+                              {tv.neutral > 0 && <div className="bg-[var(--color-muted)]" style={{ width: `${(tv.neutral / tv.total) * 100}%` }} />}
+                              {tv.short > 0 && <div className="bg-[var(--color-down)]" style={{ width: `${(tv.short / tv.total) * 100}%` }} />}
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-[var(--color-warning-text)] uppercase mb-1">Fundamental ({fv.total || 0})</p>
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="text-[var(--color-up)] font-bold">{fv.long}▲</span>
+                            <span className="text-[var(--color-down)] font-bold">{fv.short}▼</span>
+                            <span className="text-[var(--color-muted)]">{fv.neutral}○</span>
+                            <span className="text-[10px] font-mono text-[var(--color-muted)] ml-auto">avg {fv.avgConv}/10</span>
+                          </div>
+                          {fv.total > 0 && (
+                            <div className="flex h-1.5 rounded-full overflow-hidden mt-1 bg-[var(--color-border)]">
+                              {fv.long > 0 && <div className="bg-[var(--color-up)]" style={{ width: `${(fv.long / fv.total) * 100}%` }} />}
+                              {fv.neutral > 0 && <div className="bg-[var(--color-muted)]" style={{ width: `${(fv.neutral / fv.total) * 100}%` }} />}
+                              {fv.short > 0 && <div className="bg-[var(--color-down)]" style={{ width: `${(fv.short / fv.total) * 100}%` }} />}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="divide-y divide-[var(--color-border)]">
                     {minionIds.map(id => {
                       const m = MINIONS[id]
                       if (!m) return null
-                      const report = reports.find(r => r.minion_id === id || r.name === m.name)
+                      const report = reports.find(r => r.minionId === id || r.minion_id === id || r.name === m.name)
+                      const teamLabel = techRoles.has(m.role) ? 'T' : fundRoles.has(m.role) ? 'F' : '?'
                       return (
                         <div key={id} className="px-2 py-1.5">
                           <div className="flex items-center gap-2 text-[11px]">
+                            <span className={`text-[9px] font-bold w-3 text-center ${teamLabel === 'T' ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>{teamLabel}</span>
                             <span className="text-[13px] leading-none">{m.icon}</span>
                             <span className={`font-medium ${ROLE_COLORS[m.role] || ''}`}>{m.name}</span>
                             <span className="text-[10px] text-[var(--color-muted)] uppercase">{m.role}</span>
@@ -1110,15 +1168,16 @@ function TeamRoster({ activity, role }) {
                             )}
                             {!report && <span className="ml-auto text-[10px] text-[var(--color-muted)] italic">no report</span>}
                           </div>
-                          {report?.thesis && (
-                            <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5 ml-6 line-clamp-2">{report.thesis}</p>
+                          {report?.report && (
+                            <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5 ml-8 line-clamp-2">{report.report}</p>
                           )}
                         </div>
                       )
                     })}
                   </div>
                 </div>
-              )}
+                )
+              })()}
             </div>
           )
         })}
