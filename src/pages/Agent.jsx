@@ -1083,7 +1083,12 @@ function PlannedOrders({ activity, role }) {
     symbol,
     rows: rows.slice(0, 15),
     latest: rows[0],
-  }))
+  })).sort((a, b) => {
+    const aActive = a.latest.consensus_bias !== 'skip' && a.latest.consensus_bias !== 'neutral'
+    const bActive = b.latest.consensus_bias !== 'skip' && b.latest.consensus_bias !== 'neutral'
+    if (aActive !== bActive) return aActive ? -1 : 1
+    return (b.latest.overall_conviction || 0) - (a.latest.overall_conviction || 0)
+  })
 
   if (symbols.length === 0) return null
 
@@ -1181,6 +1186,13 @@ function PlannedOrders({ activity, role }) {
               </div>
             )}
 
+            {!isActive && (
+              <div className="px-2 py-1.5 text-[11px] text-[var(--color-muted)]">
+                Agent scanned {rows.length} time{rows.length !== 1 ? 's' : ''} — no trade setup met the threshold. Last scan {fmtAgo(latest.analyzed_at)}. Conv {latest.overall_conviction}/10.
+              </div>
+            )}
+
+            {isActive && (
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
                 <thead>
@@ -1246,6 +1258,7 @@ function PlannedOrders({ activity, role }) {
                 </tbody>
               </table>
             </div>
+            )}
           </div>
         )
       })}
