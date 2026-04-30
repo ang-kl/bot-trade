@@ -4,6 +4,11 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "functions": {
-    "api/ctrader.js": { "maxDuration": 60 }
+    "api/scan.js":      { "maxDuration": 60 },
+    "api/analyze.js":   { "maxDuration": 60 },
+    "api/chat.js":      { "maxDuration": 60 },
+    "api/ai-picks.js":  { "maxDuration": 60 },
+    "api/advisor.js":   { "maxDuration": 60 },
+    "api/ctrader.js":   { "maxDuration": 60 }
   }
 }
