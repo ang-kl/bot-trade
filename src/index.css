@@ -178,7 +178,6 @@
 
 @media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } .t-sub { font-size: 13px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-body { font-size: 16px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
-@media (min-width: 1153px) { html { zoom: 1.1; } }
 @media (min-width: 1280px) { .t-heading { font-size: 21px; } }
 @media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 18px; } .t-label { font-size: 15px; } .t-sub { font-size: 16px; } .t-meta { font-size: 14px; } }
 @media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 28px; } .t-body { font-size: 20px; } .t-label { font-size: 17px; } .t-sub { font-size: 17px; } .t-meta { font-size: 15px; } }
@@ -225,9 +224,24 @@
 
 /* -- Root + body -- */
 html, body, #root {
+  min-height: 100vh;
   min-height: 100svh;
-  min-height: 100vh; /* fallback */
   background: var(--color-bg);
   color: var(--color-text);
   font-family: system-ui, sans-serif;
+}
+
+/* Full viewport height with svh fallback for mobile Safari */
+.h-viewport {
+  height: 100vh;
+  height: 100svh;
+}
+
+/* Content container — used by header/main inner wrappers */
+.content-wrap {
+  max-width: var(--content-max);
+  padding-left: var(--content-pad);
+  padding-right: var(--content-pad);
+  margin-left: auto;
+  margin-right: auto;
 }

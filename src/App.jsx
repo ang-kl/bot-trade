@@ -39,12 +39,12 @@ export default function App() {
   const { theme, setTheme } = useTheme()
   const { pathname } = useLocation()
   return (
-    <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="h-viewport flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
       <ScrollToTop />
       {/* Sticky top chrome — header + session bar never scroll */}
-      <div className="shrink-0 z-30 bg-[var(--color-surface)]">
+      <div className="shrink-0 relative z-30 bg-[var(--color-surface)]">
         <header className="border-b-2 border-[var(--color-accent)]">
-          <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
+          <div className="content-wrap h-14 flex items-center gap-2">
             <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
             <button
               type="button"
@@ -64,15 +64,12 @@ export default function App() {
         <MarketSessionBar />
       </div>
 
-      {/* Scrollable content — only this area scrolls. `min-h-0` lets the
-          flex child honour its overflow on browsers that otherwise compute
-          min-height: auto and push the whole page to scroll. */}
+      {/* Scrollable content — only this area scrolls */}
       <main
         id="main-content"
         className="flex-1 min-h-0 overflow-y-auto"
-        style={{ overflowAnchor: 'none' }}
       >
-        <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
+        <div className="content-wrap pt-6 pb-6">
           <ErrorBoundary key={pathname}>
             <Routes>
               <Route path="/" element={<Navigate to="/watchlist" replace />} />

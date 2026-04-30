@@ -86,10 +86,7 @@ export default function MarketSessionBar() {
 
   return (
     <div className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-      <div
-        style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }}
-        className="mx-auto py-1.5"
-      >
+      <div className="content-wrap py-1.5">
         {/* Top row: date + times — stacks on mobile */}
         <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap pb-1 mb-1 border-b border-[var(--color-border)] sm:border-0 sm:pb-0 sm:mb-0 sm:float-none">
           <span className="text-[10px] font-mono text-[var(--color-muted)]">{dateStr}</span>
