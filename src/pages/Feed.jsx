@@ -1,6 +1,5 @@
-// Trading Floor — mission control for the minion swarm.
-// Scout → Analyst (parallel minions) → Synthesis → Trade → Monitor.
-// Activity log shows every agent action in real time.
+// Advisory — manual fundamental + technical analysis based on watchlist.
+// Scout scans → Analyst deep-dives → Manual order placement.
 
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import TradingFloor from '../components/AgentFeed/TradingFloor.jsx'
@@ -528,9 +527,6 @@ export default function Feed() {
   const [activityCollapsed, setActivityCollapsed] = useState(false)
   const [matrixCollapsed, setMatrixCollapsed] = useState(false)
   const [showScrollTop, setShowScrollTop] = useState(false)
-  const [autoTradeActive, setAutoTradeActive] = useState(false)
-  const [autoTradeCountdown, setAutoTradeCountdown] = useState(0)
-  const [autoTradeCount, setAutoTradeCount] = useState(0)
   const [massiveMetrics, setMassiveMetrics] = useState(() => readScanCache()?.massiveMetrics || {})
 
   const scanTimerRef = useRef(null)
@@ -729,43 +725,6 @@ export default function Feed() {
         if (syn.dissent) {
           addLog('synthesis', `Dissent: ${syn.dissent}`, { symbol })
         }
-
-        if (syn.auto_trade && isArmed && syn.entry != null) {
-          addLog('trader', `Auto-trade triggered. Placing ${syn.consensus_bias?.toUpperCase()} order...`, { symbol })
-          try {
-            const orderBody = {
-              action: 'new-market-order',
-              accountId: state.ctrader.linkedAccountId || state.ctrader.accounts?.[0]?.accountId,
-              symbolName: symbol,
-              orderType: 'MARKET',
-              tradeSide: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
-              volume: (wItem?.maxVolume || 0.01) * 100,
-              stopLoss: syn.sl || undefined,
-              takeProfit: syn.tp1 || undefined,
-            }
-            await apiPost('/api/ctrader', orderBody)
-            addLog('trader', `Order placed! ${syn.consensus_bias?.toUpperCase()} @ market`, { symbol })
-            setAgentCalls(prev => ({ ...prev, trader: (prev.trader || 0) + 1 })) // ctrader doesn't return tokens
-            // Monitor the auto-trade
-            addMonitoredTrade({
-              symbol,
-              side: syn.consensus_bias === 'short' ? 'SELL' : 'BUY',
-              entry: syn.entry,
-              sl: syn.sl,
-              tp: syn.tp1,
-              volume: wItem?.maxVolume || 0.01,
-              thesis: syn.synthesis || '',
-              placedAt: Date.now(),
-            })
-            sendTelegramAlert({
-              action: 'send-alert', alertType: 'trade',
-              trade: { symbol, side: syn.consensus_bias, entry: syn.entry, stopLoss: syn.sl, takeProfit: syn.tp1, action: 'AUTO-TRADE', message: syn.synthesis },
-            })
-            addLog('telegram', `Trade alert sent`, { symbol })
-          } catch (e) {
-            addLog('trader', `Order FAILED: ${e.message}`, { symbol })
-          }
-        }
       }
 
       setAgentStates(prev => ({ ...prev, analyst: 'done' }))
@@ -773,7 +732,7 @@ export default function Feed() {
       addLog('analyst', `FAILED: ${e.message}`, { symbol })
       setAgentStates(prev => ({ ...prev, analyst: 'idle' }))
     }
-  }, [state.watchlist, state.symbolStats, state.ctrader.linkedAccountId, state.ctrader.accounts, isArmed, addLog, sendTelegramAlert, trackTokens, addMonitoredTrade, dispatch])
+  }, [state.watchlist, state.symbolStats, isArmed, addLog, sendTelegramAlert, trackTokens, dispatch])
 
   // Keep ref in sync so runScout can call it without circular deps
   useEffect(() => { analystRef.current = runAnalyst }, [runAnalyst])
@@ -979,41 +938,6 @@ export default function Feed() {
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current) }
   }, [isArmed, enabledCount, runScout])
 
-  // ── Auto-trade toggle ──
-  const handleAutoTrade = useCallback(() => {
-    if (autoTradeActive) {
-      setAutoTradeActive(false)
-      setAutoTradeCountdown(0)
-      addLog('trader', 'Auto-trade STOPPED.')
-    } else {
-      setAutoTradeActive(true)
-      setAutoTradeCountdown(300) // 5 min countdown per cycle
-      addLog('trader', 'Auto-trade STARTED. Will execute eligible setups.')
-    }
-  }, [autoTradeActive, addLog])
-
-  // Auto-trade countdown tick
-  useEffect(() => {
-    if (!autoTradeActive) return
-    const id = setInterval(() => {
-      setAutoTradeCountdown(prev => {
-        if (prev <= 1) {
-          // Trigger scan + auto-trade cycle
-          runScout()
-          return 300
-        }
-        return prev - 1
-      })
-    }, 1000)
-    return () => clearInterval(id)
-  }, [autoTradeActive, runScout])
-
-  // Track auto-trades (count placements from auto-trade)
-  useEffect(() => {
-    const count = monitoredTrades.filter(t => t.placedAt > sessionStart).length
-    setAutoTradeCount(count)
-  }, [monitoredTrades, sessionStart])
-
   // ── Order dialog ──
   const handleOpenOrder = useCallback((symbol, synthesis, initialOrderType = 'market') => {
     setOrderFor({ symbol, synthesis, initialOrderType })
@@ -1131,9 +1055,6 @@ export default function Feed() {
         onScan={handleManualScan}
         enabledCount={enabledCount}
         scanning={scanning}
-        autoTradeCount={autoTradeCount}
-        onAutoTrade={handleAutoTrade}
-        autoTradeCountdown={autoTradeActive ? autoTradeCountdown : 0}
       />
 
       {/* Desk note */}
@@ -1238,10 +1159,6 @@ export default function Feed() {
 
       {/* Ask dock */}
       <AskDock context={askContext} onAsk={handleAskReply} />
-
-      {/* Trade monitoring lives on /agent — the Railway keeper runs 24/7
-          against monitored_positions. The old Feed-side Trade Monitor was a
-          browser-only duplicate that went stale whenever the tab closed. */}
 
       <BottomBar
         tokenCount={tokenCount}

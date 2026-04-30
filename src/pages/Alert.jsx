@@ -502,7 +502,7 @@ function AlertLog({ alerts, dispatch }) {
                   <Badge tone="info" pill>{items.length}</Badge>
                   <div className="flex-1" />
                   <Link
-                    to="/feed"
+                    to="/advisory"
                     className="t-meta text-[var(--color-accent)] hover:underline"
                   >
                     View in Feed

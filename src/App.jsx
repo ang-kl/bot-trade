@@ -7,18 +7,13 @@ import Settings from './pages/Settings.jsx'
 import LinkUp from './pages/LinkUp.jsx'
 import Admin from './pages/Admin.jsx'
 import Watchlist from './pages/Watchlist.jsx'
-import AgentPage from './pages/Agent.jsx'
-import Workshop from './pages/Workshop.jsx'
 import MarketSessionBar from './components/MarketSessionBar.jsx'
-import StatusRibbon from './components/StatusRibbon.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { useTheme } from './lib/theme.js'
 
-// Top-level shell. Single-theme, playbook-canonical palette.
-// No green anywhere - blue = up/long/positive, red = down/short/negative.
-
 const navLinks = [
-  { to: '/agent', label: 'Agent' },
+  { to: '/watchlist', label: 'Watchlist' },
+  { to: '/advisory', label: 'Advisory' },
   { to: '/alert', label: 'Alert' },
 ]
 
@@ -43,7 +38,6 @@ export default function App() {
   useTokenRefresh()
   const { theme, setTheme } = useTheme()
   const { pathname } = useLocation()
-  const isWide = pathname === '/agent'
   return (
     <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
       <ScrollToTop />
@@ -78,26 +72,23 @@ export default function App() {
         className="flex-1 min-h-0 overflow-y-auto"
         style={{ overflowAnchor: 'none' }}
       >
-        <div style={{ maxWidth: isWide ? 'none' : 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
+        <div style={{ maxWidth: 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
           <ErrorBoundary key={pathname}>
             <Routes>
-              <Route path="/" element={<Navigate to="/agent" replace />} />
-              <Route path="/agent" element={<AgentPage />} />
-              <Route path="/workshop" element={<Workshop />} />
-              <Route path="/feed" element={<Feed />} />
+              <Route path="/" element={<Navigate to="/watchlist" replace />} />
               <Route path="/watchlist" element={<Watchlist />} />
+              <Route path="/advisory" element={<Feed />} />
+              <Route path="/feed" element={<Navigate to="/advisory" replace />} />
               <Route path="/alert" element={<Alert />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin" element={<Admin />} />
               <Route path="/link-up" element={<LinkUp />} />
-              <Route path="*" element={<Navigate to="/agent" replace />} />
+              <Route path="*" element={<Navigate to="/watchlist" replace />} />
             </Routes>
           </ErrorBoundary>
         </div>
       </main>
 
-      {/* Persistent status ribbon — autopilot + positions + last scan */}
-      <StatusRibbon />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 // Catches any render/effect crash in the routed page and shows a recovery
-// panel inside <main>, while the top header and bottom StatusRibbon stay
-// mounted. Without this, one thrown error unmounts the whole app and the
-// user sees a blank page with no nav — looking like the bars "disappeared".
+// panel inside <main>, while the top header stays mounted. Without this,
+// one thrown error unmounts the whole app and the user sees a blank page
+// with no nav.
 
 import { Component } from 'react'
 

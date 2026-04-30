@@ -1,4 +1,4 @@
-// Trading Floor command strip — sticky top bar showing agent status,
+// Advisory command strip — sticky top bar showing scan status,
 // session clocks, risk usage, and arm/disarm control.
 
 import { useEffect, useState } from 'react'
@@ -46,8 +46,6 @@ function SessionClock() {
 const AGENT_LABELS = [
   { id: 'scout', name: 'SCOUT' },
   { id: 'analyst', name: 'ANALYST' },
-  { id: 'trader', name: 'TRADER' },
-  { id: 'monitor', name: 'MONITOR' },
 ]
 
 export default function TradingFloor({
@@ -61,20 +59,15 @@ export default function TradingFloor({
   onScan,
   enabledCount = 0,
   scanning = false,
-  autoTradeCount = 0,
-  onAutoTrade,
-  autoTradeCountdown = 0,
 }) {
   const { state } = useStrategy()
   const isArmed = state.risk.armed
 
-  // Tick the countdown display — use the prop directly as the starting
-  // point but track independently so the interval can decrement locally.
   const displayCountdown = countdown
 
   return (
     <Card className="sticky top-0 z-20 space-y-2">
-      {/* Row 1: Agent status + arm */}
+      {/* Row 1: Scan status + arm */}
       <div className="flex items-center gap-2 flex-wrap">
         {AGENT_LABELS.map(a => {
           const st = agentStates[a.id] || 'idle'
@@ -84,7 +77,7 @@ export default function TradingFloor({
             : st === 'done' ? 'text-[var(--color-up)]' : 'text-[var(--color-muted)]'
           return (
             <span key={a.id} className={`flex items-center gap-1 text-[10px] sm:text-[11px] font-bold ${color} ${pulse}`}>
-              <span className="text-[8px]">{st === 'running' ? '\u25CF' : st === 'done' ? '\u25CF' : '\u25CB'}</span>
+              <span className="text-[8px]">{st === 'running' ? '●' : st === 'done' ? '●' : '○'}</span>
               <span className="hidden sm:inline">{a.name}</span>
               <span className="sm:hidden">{a.name.slice(0, 3)}</span>
             </span>
@@ -113,26 +106,11 @@ export default function TradingFloor({
           onClick={onArm}
           disabled={enabledCount === 0}
         >
-          {isArmed ? '\u25A0 Disarm' : '\u25B6 Arm'}
+          {isArmed ? '■ Disarm' : '▶ Arm'}
         </Button>
         {!scanning && (
           <Button size="sm" variant="ghost" onClick={onScan} disabled={enabledCount === 0 || scanning}>
-            {'\u21BB'} Scan
-          </Button>
-        )}
-        {onAutoTrade && (
-          <Button
-            size="sm"
-            variant={autoTradeCountdown > 0 ? 'danger' : 'primary'}
-            onClick={onAutoTrade}
-            disabled={enabledCount === 0 || !isArmed}
-          >
-            {autoTradeCountdown > 0
-              ? `\u25A0 Auto ${formatCountdown(autoTradeCountdown)}`
-              : '\u26A1 Auto-Trade'}
-            {autoTradeCount > 0 && (
-              <span className="ml-1 px-1 py-0 text-[9px] bg-white/20 rounded-[4px]">{autoTradeCount}</span>
-            )}
+            {'↻'} Scan
           </Button>
         )}
       </div>
@@ -142,22 +120,21 @@ export default function TradingFloor({
         <SessionClock />
         <div className="flex-1" />
         <span className="text-[10px] text-[var(--color-muted)]">
-          {liveCount > 0 && <>{liveCount} live \u00B7 </>}
-          {pendingCount > 0 && <>{pendingCount} pending \u00B7 </>}
-          Risk: ${riskUsed.toFixed(0)} / {state.risk.dailyMaxLossPct}% daily
+          {pendingCount > 0 && <>{pendingCount} analysed {'·'} </>}
+          {enabledCount} symbols
         </span>
       </div>
 
-      {/* Auto-Trade guide — shown when not armed */}
+      {/* Guide — shown when not armed */}
       {!isArmed && enabledCount > 0 && (
         <div className="border-t border-[var(--color-border)] pt-2 mt-1">
           <p className="t-meta text-[var(--color-text-sub)] leading-relaxed">
-            <span className="font-bold text-[var(--color-accent)]">How algo trading works:</span>{' '}
-            <span className="font-bold">1.</span> Enable symbols in Settings and set per-symbol <span className="font-semibold">auto-trade threshold</span> (conviction score needed to auto-execute).{' '}
-            <span className="font-bold">2.</span> Set <span className="font-semibold">max volume</span> per symbol to cap position size.{' '}
-            <span className="font-bold">3.</span> Configure <span className="font-semibold">Risk</span> tab (daily loss limit, per-trade %).{' '}
-            <span className="font-bold">4.</span> Click <span className="font-semibold">Arm</span> to start scanning every 5 min.{' '}
-            <span className="font-bold">5.</span> Click <span className="font-semibold">Auto-Trade</span> for continuous cycles — the system scans, analyses hot setups with 30 minions, and auto-places orders when conviction meets your threshold.
+            <span className="font-bold text-[var(--color-accent)]">How it works:</span>{' '}
+            <span className="font-bold">1.</span> Enable symbols in <span className="font-semibold">Watchlist</span>.{' '}
+            <span className="font-bold">2.</span> Click <span className="font-semibold">Arm</span> to start scanning.{' '}
+            <span className="font-bold">3.</span> Review the fundamental + technical analysis.{' '}
+            <span className="font-bold">4.</span> Click <span className="font-semibold">Analyse</span> on promising setups for deep-dive reports.{' '}
+            <span className="font-bold">5.</span> Place orders manually when you're convinced.
           </p>
         </div>
       )}

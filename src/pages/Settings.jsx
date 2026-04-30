@@ -1,5 +1,4 @@
-// Settings - tab shell. cTrader lives in the bottom StatusRibbon + Admin.
-// News (Market Rundown), Risk.
+// Settings - tab shell. News (Market Rundown), Risk.
 
 import { useState } from 'react'
 import NewsTab from '../components/Settings/NewsTab.jsx'
