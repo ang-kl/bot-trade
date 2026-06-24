@@ -4,11 +4,11 @@ name: Daily Morning Scan
 # Hits the agent's /actions/scan endpoint and posts results to Telegram.
 
 on:
-  schedule:
-    # 22:00 UTC = 06:00 SGT — before Asia close, catches overnight setups
-    - cron: '0 22 * * *'
-    # 06:00 UTC = 14:00 SGT — before London open, catches European setups
-    - cron: '0 6 * * 1-5'
+  # Scheduled runs disabled — agent endpoint failing, daily failure emails noisy.
+  # Re-enable by restoring the `schedule:` block when the agent is healthy.
+  # schedule:
+  #   - cron: '0 22 * * *'      # 22:00 UTC = 06:00 SGT (Asia close)
+  #   - cron: '0 6 * * 1-5'     # 06:00 UTC = 14:00 SGT (London open)
   workflow_dispatch: {}
 
 jobs:
