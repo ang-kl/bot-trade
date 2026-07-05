@@ -5,8 +5,9 @@
 const BASE = 'https://api.polygon.io'
 
 function getApiKey() {
-  // const key = process.env.MASSIVE_API_KEY — disabled, no longer in use
-  throw new Error('MASSIVE_API_KEY env var not set')
+  // Massive/Polygon integration is disabled — the env read was removed on
+  // purpose, so setting MASSIVE_API_KEY will NOT revive this module.
+  throw new Error('Massive/Polygon integration disabled — agent/services/polygon.js is retained for reference only')
 }
 
 async function massiveGet(path, apiKey, params = {}) {

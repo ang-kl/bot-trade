@@ -5,6 +5,7 @@
 import { Router } from 'express'
 import { getState, setState } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
+import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder } from '../lib/ctrader-ws.js'
 import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
@@ -42,21 +43,12 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'No enabled symbols in watchlist' })
       }
 
-      const symbolMapJson = getState(db, 'symbol_id_map')
-      const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
-      const isLive = getState(db, 'ctrader_is_live') === 'true'
-      const ctraderCreds = {
-        host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
-        clientId: process.env.CTRADER_CLIENT_ID,
-        clientSecret: process.env.CTRADER_CLIENT_SECRET,
-        accessToken: getState(db, 'ctrader_access_token'),
-        accountId: getState(db, 'ctrader_account_id'),
-      }
-      if (!ctraderCreds.clientId || !ctraderCreds.clientSecret || !ctraderCreds.accessToken || !ctraderCreds.accountId) {
+      const ctraderCreds = getCtraderCreds(db)
+      if (!ctraderCreds.ready) {
         return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
       }
 
-      const scanResult = await runFibScan(ctraderCreds, symbolMap, symbols, {
+      const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db), symbols, {
         hotThreshold: Number(req.body?.hotThreshold) || 6,
       })
 
@@ -105,25 +97,21 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'Missing required field: symbol' })
       }
 
-      const symbolMapJson = getState(db, 'symbol_id_map')
-      const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
-      const symbolId = symbolMap[symbol]
+      const symbolId = getSymbolMap(db)[symbol]
       if (!symbolId) {
         return res.status(400).json({ error: `symbolId unknown for ${symbol} — call POST /actions/symbol-map` })
       }
-      const isLive = getState(db, 'ctrader_is_live') === 'true'
-      const ctraderCreds = {
-        host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
-        clientId: process.env.CTRADER_CLIENT_ID,
-        clientSecret: process.env.CTRADER_CLIENT_SECRET,
-        accessToken: getState(db, 'ctrader_access_token'),
-        accountId: getState(db, 'ctrader_account_id'),
-      }
-      if (!ctraderCreds.clientId || !ctraderCreds.clientSecret || !ctraderCreds.accessToken || !ctraderCreds.accountId) {
+      const ctraderCreds = getCtraderCreds(db)
+      if (!ctraderCreds.ready) {
         return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
       }
 
-      const { signal } = await scanSymbolFib(ctraderCreds, symbol, symbolId)
+      const { signal, error: scanError } = await scanSymbolFib(ctraderCreds, symbol, symbolId)
+      // An infrastructure failure (expired token, rate limit) must surface
+      // as an error, not masquerade as a "no setup" verdict.
+      if (scanError) {
+        return res.status(502).json({ error: scanError })
+      }
       const result = synthesizeFibSignal(symbol, signal, req.body?.autoTradeThreshold || 8)
 
       // Find latest scan for this symbol to link

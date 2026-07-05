@@ -2,44 +2,47 @@
 // agent/services/fib-strategy.js
 //
 // Deterministic Fibonacci 61.8% retracement fade strategy — replaces the
-// LLM-based scan/analyze pipeline (scanner.js / analyzer.js). Detects the
-// most recent swing leg via a simple fractal pivot method, computes the
-// 61.8% retracement zone, and fades price back toward the swing origin
-// when price re-enters that zone.
+// LLM-based scan/analyze pipeline. Detects the most recent swing leg via a
+// simple fractal pivot method, computes the 61.8% retracement zone, and
+// fades price back toward the swing origin when price re-enters that zone.
 //
 // NO LLM calls — every number here is computed from OHLC bars, same spirit
 // as agent/services/risk.js.
 // ---------------------------------------------------------------------------
 
-import { wsGetTrendbars, wsSymbolsByIds } from '../lib/ctrader-ws.js'
+import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
-const SL_BUFFER = 0.05        // 5% of leg range beyond the swing origin
+// SL buffer beyond the swing origin. Kept small deliberately: at the 61.8%
+// level tp1Distance is 0.618×range and slDistance is (0.382 + buffer)×range,
+// so the buffer sets the signal's R:R — 0.02 gives rr≈1.54 at the level,
+// clearing risk.js's minRR of 1.5. (The old 0.05 buffer pinned rr to 1.43
+// at the level, so the risk gate vetoed every at-level entry as bad_rr.)
+const SL_BUFFER = 0.02
 const TP2_EXTENSION = 0.272   // -27.2% extension beyond the swing end
 const BAR_COUNT = 150         // bars fetched per timeframe
 // Checked in this order (largest first); first timeframe with a valid
 // signal wins. All timeframes are eligible — none are excluded.
 const TIMEFRAMES = ['1d', '4h', '1h', '30m', '15m', '5m']
-
-function scalePrice(raw, digits) {
-  return raw / Math.pow(10, digits)
+// Position time cap by signal timeframe. Drives loop.js's style filter
+// (scalp ≤30m, day ≤480m, swing ≤7d, mid-term beyond) and the position
+// auto-expiry — a 1d fade is a multi-day swing, not a 180-minute day trade.
+const TIME_CAP_MINUTES = {
+  '5m': 240, '15m': 480, '30m': 720, '1h': 1440, '4h': 4320, '1d': 20160,
 }
+const SCAN_CONCURRENCY = 3    // symbols scanned at once (avoid WS burst)
 
-/**
- * Convert a raw GET_TRENDBARS_RES payload into ascending {t,o,h,l,c,v} bars.
- */
-export function convertTrendbars(payload, digits) {
-  return (payload?.trendbar || [])
-    .map(b => ({
-      t: (b.utcTimestampInMinutes || 0) * 60_000,
-      o: scalePrice(b.low + (b.deltaOpen || 0), digits),
-      h: scalePrice(b.low + (b.deltaHigh || 0), digits),
-      l: scalePrice(b.low, digits),
-      c: scalePrice(b.low + (b.deltaClose || 0), digits),
-      v: b.volume || 0,
-    }))
-    .sort((a, b) => a.t - b.t)
+// In-memory bar cache. A timeframe's bars only change when a new bar closes,
+// so refetching 1d candles every 5-minute loop is pure waste — cache entries
+// expire after one bar duration.
+const barCache = new Map() // `${symbolId}|${period}` -> { bars, fetchedAt }
+
+function cachedBars(symbolId, period) {
+  const entry = barCache.get(`${symbolId}|${period}`)
+  if (!entry) return null
+  const ttl = TRENDBAR_PERIODS[period]?.ms || 300_000
+  return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
 }
 
 /**
@@ -52,9 +55,15 @@ export function findSwings(bars, fractalWidth = FRACTAL_WIDTH) {
   const highs = []
   const lows = []
   for (let i = fractalWidth; i < bars.length - fractalWidth; i++) {
-    const window = bars.slice(i - fractalWidth, i + fractalWidth + 1)
-    if (window.every(b => bars[i].h >= b.h)) highs.push({ idx: i, price: bars[i].h, t: bars[i].t })
-    if (window.every(b => bars[i].l <= b.l)) lows.push({ idx: i, price: bars[i].l, t: bars[i].t })
+    let isHigh = true
+    let isLow = true
+    for (let j = i - fractalWidth; j <= i + fractalWidth; j++) {
+      if (bars[j].h > bars[i].h) isHigh = false
+      if (bars[j].l < bars[i].l) isLow = false
+      if (!isHigh && !isLow) break
+    }
+    if (isHigh) highs.push({ idx: i, price: bars[i].h, t: bars[i].t })
+    if (isLow) lows.push({ idx: i, price: bars[i].l, t: bars[i].t })
   }
   return { highs, lows }
 }
@@ -107,9 +116,15 @@ export function computeFibSignal(bars, timeframe) {
   const tp1Distance = Math.abs(tp1 - entry)
   const rr = slDistance > 0 ? tp1Distance / slDistance : 0
 
+  // Conviction = zone proximity mapped onto 0–10. R:R is deliberately NOT
+  // blended in: the fib geometry pins rr into a narrow structural band
+  // (~1.2–2.0), so it can't discriminate between setups — a blended score
+  // capped out at 7 and made the default auto_trade threshold of 8
+  // unreachable. Proximity spans the full band: 10 = close sits exactly on
+  // the 61.8% level, 0 = at the zone edge. hot ≥6 → inner 40% of the zone,
+  // auto_trade ≥8 → inner 20%.
   const proximity = 1 - Math.min(1, distFromLevel / tolerance)
-  const rrScore = Math.min(1, rr / 3)
-  const conviction = Math.round((proximity * 0.4 + rrScore * 0.6) * 10)
+  const conviction = Math.round(proximity * 10)
 
   const roundedLevel = Math.round(level618 * 100000) / 100000
 
@@ -125,55 +140,75 @@ export function computeFibSignal(bars, timeframe) {
     swingA: swingA.price,
     swingB: swingB.price,
     timeframe,
+    time_cap_minutes: TIME_CAP_MINUTES[timeframe] || null,
     strategy: 'fib_618_fade',
     thesis: `61.8% Fib fade — swing ${upLeg ? 'up' : 'down'} ${swingA.price} → ${swingB.price}, reacting at ${roundedLevel} on ${timeframe}. Targeting return to ${tp1}.`,
   }
 }
 
 /**
- * Fetch bars for a symbol across TIMEFRAMES (largest first) and return the
- * first timeframe that produces a valid signal, or null.
+ * Fetch bars for a symbol across TIMEFRAMES (one authenticated connection
+ * for all uncached timeframes) and return the first timeframe — largest
+ * first — that produces a valid signal.
+ *
+ * Returns `{ symbol, signal, lastPrice, error }`:
+ * - `lastPrice` is the freshest close seen on any timeframe, present even
+ *   when there's no signal — the monitor phase prices open positions from it.
+ * - `error` is set when the bar fetch failed outright (rate limit, expired
+ *   token); callers must surface it instead of reading "no signal".
  */
 export async function scanSymbolFib(creds, symbol, symbolId) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
 
-  let digits = 5
-  try {
-    const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, [symbolId])
-    const meta = (symData.symbol || [])[0]
-    if (meta && meta.digits != null) digits = meta.digits
-  } catch (err) {
-    return { symbol, signal: null, error: `symbol metadata failed: ${err.message}` }
-  }
-
-  for (const timeframe of TIMEFRAMES) {
+  const stale = TIMEFRAMES.filter(tf => !cachedBars(symbolId, tf))
+  if (stale.length > 0) {
     try {
-      const payload = await wsGetTrendbars(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframe, BAR_COUNT)
-      const bars = convertTrendbars(payload, digits)
-      const signal = computeFibSignal(bars, timeframe)
-      if (signal) return { symbol, signal }
-    } catch {
-      continue // one timeframe failing shouldn't kill the whole symbol scan
+      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT)
+      const now = Date.now()
+      for (const tf of stale) {
+        barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now })
+      }
+    } catch (err) {
+      return { symbol, signal: null, lastPrice: null, error: `trendbar fetch failed: ${err.message}` }
     }
   }
-  return { symbol, signal: null }
+
+  let signal = null
+  let lastPrice = null
+  let lastPriceT = -1
+  for (const timeframe of TIMEFRAMES) {
+    const bars = cachedBars(symbolId, timeframe) || []
+    const last = bars[bars.length - 1]
+    if (last && last.t > lastPriceT) { lastPrice = last.c; lastPriceT = last.t }
+    if (!signal) signal = computeFibSignal(bars, timeframe)
+  }
+  return { symbol, signal, lastPrice, error: null }
 }
 
 /**
- * Deterministic replacement for scanner.js's runScan — no LLM. Runs the
- * 61.8% Fib fade check across every symbol and shapes the output like the
- * old LLM scan result so the rest of loop.js doesn't need to change.
+ * Deterministic replacement for the old LLM runScan — no LLM. Runs the
+ * 61.8% Fib fade check across every symbol (bounded concurrency) and shapes
+ * the output like the old scan result so the rest of loop.js doesn't change.
+ *
+ * Every scanned symbol gets a `price` (signal entry or latest close) because
+ * the monitor phase resolves open-position prices from these rows. Fetch
+ * failures are counted in `errors` and surfaced in the row's thesis.
  */
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
   const batch = symbols.slice(0, 15)
 
-  const results = await Promise.all(batch.map(async (w) => {
-    const symbol = w.symbol
-    const symbolId = symbolMap[symbol.toUpperCase()]
-    if (!symbolId) return { symbol, signal: null, error: 'symbolId unknown — call POST /actions/symbol-map' }
-    return scanSymbolFib(creds, symbol, symbolId)
-  }))
+  const results = []
+  for (let i = 0; i < batch.length; i += SCAN_CONCURRENCY) {
+    const chunk = batch.slice(i, i + SCAN_CONCURRENCY)
+    const chunkResults = await Promise.all(chunk.map(async (w) => {
+      const symbol = w.symbol
+      const symbolId = symbolMap[symbol.toUpperCase()]
+      if (!symbolId) return { symbol, signal: null, lastPrice: null, error: 'symbolId unknown — call POST /actions/symbol-map' }
+      return scanSymbolFib(creds, symbol, symbolId)
+    }))
+    results.push(...chunkResults)
+  }
 
   const scans = results.map(r => {
     const sig = r.signal
@@ -181,11 +216,11 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
       symbol: r.symbol,
       bias: sig ? sig.bias : 'skip',
       confidence: sig ? sig.conviction : 0,
-      thesis: sig ? sig.thesis : (r.error || 'No 61.8% reaction zone found'),
+      thesis: sig ? sig.thesis : (r.error ? `SCAN ERROR: ${r.error}` : 'No 61.8% reaction zone found'),
       timeframe: sig ? sig.timeframe : null,
       session_fit: 'n/a',
       trade_at: 'now',
-      price: sig ? sig.entry : null,
+      price: sig ? sig.entry : r.lastPrice,
       trade_grade: sig ? (sig.conviction >= hotThreshold ? 'potential' : 'weak') : 'none',
     }
   })
@@ -193,6 +228,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const signals = {}
   for (const r of results) if (r.signal) signals[r.symbol] = r.signal
 
+  const errors = results.filter(r => r.error).map(r => `${r.symbol}: ${r.error}`)
   const hot = scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol)
   const warm = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
 
@@ -200,17 +236,18 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     scans,
     hot,
     warm,
-    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} symbols, ${hot.length} hot, ${warm.length} warm.`,
+    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} symbols, ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}.`,
     usage: { output_tokens: 0 },
     signals,
+    errors,
   }
 }
 
 /**
- * Deterministic replacement for analyzer.js's runAnalysis — reuses the
- * signal already computed during the scan phase (no second network round
- * trip) and shapes a "synthesis" object matching the old LLM output so
- * autoTrade() and DB persistence in loop.js are unchanged.
+ * Deterministic replacement for the old LLM runAnalysis — reuses the signal
+ * already computed during the scan phase (no second network round trip) and
+ * shapes a "synthesis" object matching the old LLM output so autoTrade()
+ * and DB persistence in loop.js are unchanged.
  */
 export function synthesizeFibSignal(symbol, signal, threshold = 8) {
   if (!signal) {
@@ -260,7 +297,7 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
       timeframe: signal.timeframe,
       risk_note: `R:R ${signal.rr} to TP1, 61.8% level=${signal.level618}`,
       invalidation_trigger: `Close beyond swing origin ${signal.swingA}`,
-      time_cap_minutes: null,
+      time_cap_minutes: signal.time_cap_minutes,
     },
     ms: 0,
     usage: { output_tokens: 0 },
