@@ -26,7 +26,7 @@ export default function actionsRouter(db) {
   let _client = null
   function getClient() {
     if (!_client) {
-      _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+      _client = new Anthropic({ apiKey: process.env.ANTHROPIC_MAP_KEY_API })
     }
     return _client
   }

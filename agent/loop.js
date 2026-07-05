@@ -458,7 +458,7 @@ async function runLoop(db) {
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
     const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_MAP_KEY_API })
 
     // Daily token budget check — pause API calls if exceeded
     const dailyTokensUsed = parseInt(getState(db, 'daily_tokens_used') || '0')

@@ -5,9 +5,8 @@
 const BASE = 'https://api.polygon.io'
 
 function getApiKey() {
-  const key = process.env.MASSIVE_API_KEY
-  if (!key) throw new Error('MASSIVE_API_KEY env var not set')
-  return key
+  // const key = process.env.MASSIVE_API_KEY — disabled, no longer in use
+  throw new Error('MASSIVE_API_KEY env var not set')
 }
 
 async function massiveGet(path, apiKey, params = {}) {

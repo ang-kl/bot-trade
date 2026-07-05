@@ -40,7 +40,7 @@ npm run check:no-green   # Accessibility gate
 
 | Var | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Claude API |
+| `ANTHROPIC_MAP_KEY_API` | Claude API |
 | `CTRADER_CLIENT_ID` | Spotware Connect OAuth2 |
 | `CTRADER_CLIENT_SECRET` | Spotware Connect OAuth2 |
 | `X_API_BEARER_TOKEN` | X API v2 Basic |

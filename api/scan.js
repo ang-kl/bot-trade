@@ -77,8 +77,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'method not allowed' })
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY missing' })
+  const apiKey = process.env.ANTHROPIC_MAP_KEY_API
+  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_MAP_KEY_API missing' })
 
   const body = readBody(req)
   const symbols = Array.isArray(body.symbols) ? body.symbols : []
