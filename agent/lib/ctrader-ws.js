@@ -41,7 +41,23 @@ export const PT = Object.freeze({
   RECONCILE_RES:           2125,
   EXECUTION_EVENT:         2126,
   ORDER_ERROR_EVENT:       2132,
+  GET_TRENDBARS_REQ:       2137,
+  GET_TRENDBARS_RES:       2138,
   ERROR_RES:               2142,
+})
+
+// ProtoOATrendbarPeriod enum — from github.com/spotware/openapi-proto-messages
+export const TRENDBAR_PERIOD = Object.freeze({
+  '1m': 1, '2m': 2, '3m': 3, '4m': 4, '5m': 5, '10m': 6,
+  '15m': 7, '30m': 8, '1h': 9, '4h': 10, '12h': 11,
+  '1d': 12, '1w': 13, '1mo': 14,
+})
+
+const TRENDBAR_DURATION_MS = Object.freeze({
+  '1m': 60_000, '2m': 120_000, '3m': 180_000, '4m': 240_000, '5m': 300_000,
+  '10m': 600_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000,
+  '4h': 14_400_000, '12h': 43_200_000, '1d': 86_400_000,
+  '1w': 604_800_000, '1mo': 2_592_000_000,
 })
 
 // ---------------------------------------------------------------------------
@@ -275,6 +291,39 @@ export function wsSymbolsByIds(host, clientId, clientSecret, accessToken, accoun
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
   ], timeoutMs), 2, 'wsSymbolsByIds')
+}
+
+/**
+ * Fetch historical OHLC trendbars for a symbol via GET_TRENDBARS_REQ.
+ * `period` is one of the TRENDBAR_PERIOD keys (e.g. '1h', '4h', '1d').
+ * Returns the raw GET_TRENDBARS_RES payload: `{ trendbar: [...] }` — use
+ * `convertTrendbars` (agent/services/fib-strategy.js) to turn it into
+ * plain `{t,o,h,l,c,v}` bars.
+ */
+export function wsGetTrendbars(host, clientId, clientSecret, accessToken, accountId, symbolId, period, count = 150, timeoutMs = 20_000) {
+  const periodCode = TRENDBAR_PERIOD[period]
+  if (!periodCode) throw new Error(`wsGetTrendbars: unknown period "${period}"`)
+  const durationMs = TRENDBAR_DURATION_MS[period]
+  const toTimestamp = Date.now()
+  const fromTimestamp = toTimestamp - durationMs * (count + 5)
+
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    {
+      send: {
+        payloadType: PT.GET_TRENDBARS_REQ,
+        payload: {
+          ctidTraderAccountId: parseInt(accountId),
+          symbolId: parseInt(symbolId),
+          period: periodCode,
+          fromTimestamp,
+          toTimestamp,
+          count,
+        },
+      },
+      expect: PT.GET_TRENDBARS_RES,
+    },
+  ], timeoutMs), 2, 'wsGetTrendbars')
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

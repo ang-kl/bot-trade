@@ -3,15 +3,14 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk'
-import { runScan } from './services/scanner.js'
-import { runAnalysis } from './services/analyzer.js'
+import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
-import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
+import { persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
@@ -502,16 +501,29 @@ async function runLoop(db) {
         }
 
     setState(db, 'loop_phase', `scanning ${symbols.length} symbols`)
-    const contextBrief = buildContextBrief(db)
-    const scanDelta = buildScanDelta(db, []) // pre-scan delta (will be computed post-scan on next loop)
 
-    // Run scan with accumulated context
-    const scanResult = await runScan(client, symbols, {
-      timezone: 'Asia/Singapore',
-      hotThreshold: 6,
-      contextBrief,
-      scanDelta,
-    })
+    // Deterministic 61.8% Fibonacci retracement fade scan — no LLM calls.
+    // Needs cTrader trendbar access (symbol map + credentials); skip cleanly
+    // if not configured yet.
+    const symbolMapJson = getState(db, 'symbol_id_map')
+    const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
+    const scanIsLive = getState(db, 'ctrader_is_live') === 'true'
+    const ctraderCreds = {
+      host: scanIsLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
+      clientId: process.env.CTRADER_CLIENT_ID,
+      clientSecret: process.env.CTRADER_CLIENT_SECRET,
+      accessToken: getState(db, 'ctrader_access_token'),
+      accountId: getState(db, 'ctrader_account_id'),
+    }
+    const ctraderReady = ctraderCreds.clientId && ctraderCreds.clientSecret && ctraderCreds.accessToken && ctraderCreds.accountId
+
+    const scanResult = ctraderReady
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6 })
+      : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {} }
+
+    if (!ctraderReady) {
+      log('Fib scan skipped — cTrader credentials not configured (push via /actions/ctrader-config)')
+    }
 
     log(
       `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm`
@@ -581,9 +593,7 @@ async function runLoop(db) {
               continue
             }
           }
-          const result = await runAnalysis(client, sym, {
-            autoTradeThreshold: wItem.autoTradeThreshold || 8,
-          })
+          const result = synthesizeFibSignal(sym, scanResult.signals[sym], wItem.autoTradeThreshold || 8)
 
           // Find latest scan id for this symbol to link
           const latestScan = s.latestScanForSymbol.get(sym)
