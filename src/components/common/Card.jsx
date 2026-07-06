@@ -1,10 +1,10 @@
-// Primary card - playbook 6.1.
-// Surface bg, 1px border, 10px radius, 14px 16px padding, no shadow.
+// Primary card — Ultra Neo Glass: liquid glass panel with specular sheen.
+// Material lives in .glass-panel (index.css); this stays a thin wrapper.
 
 export default function Card({ children, className = '', ...rest }) {
   const cls = [
-    'bg-[var(--color-surface)] border border-[var(--color-border)]',
-    'rounded-[10px] px-4 py-3.5',
+    'glass-panel',
+    'px-4 py-3.5',
     'text-[var(--color-text)]',
     className,
   ].filter(Boolean).join(' ')

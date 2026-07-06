@@ -1,126 +1,160 @@
 @import "tailwindcss";
 
 /*
- * Design tokens - Builder Playbook v1.0, single canonical palette.
+ * Design tokens — "Ultra Neo Glass" v2.0.
+ * Neon glassmorphism + liquid glass: translucent panels over an ambient
+ * neon field, specular top sheen, blur + saturation, soft glow accents.
  *
  * Accessibility invariant (red/green colourblind):
  *   Blue = up / long / positive / BUY
  *   Red  = down / short / negative / SELL
- *   NO GREEN anywhere. Success maps to blue/accent.
+ *   NO GREEN anywhere. Success maps to blue/accent. Neon palette runs
+ *   electric blue / violet / magenta only.
  *
- * Token names mirror playbook section 3. Every colour in the app
- * references a token - no raw hex in component code.
+ * Token names are unchanged from v1 — every component still reads the
+ * same variables; the glass materials live in the tokens + utilities.
  */
 
 :root {
-  /* -- Core palette (playbook 3.1) -- */
-  --color-bg:           #f5f7fa;
-  --color-surface:      #ffffff;
-  --color-border:       #dde3ec;
-  --color-accent:       #1a56db;
-  --color-accent-soft:  #e8f0fe;
-  --color-text:         #1a202c;
-  --color-text-sub:     #4a5568;
-  --color-muted:        #4f5d6e;
-  --color-muted-light:  #7a8899;
+  /* -- Core palette: liquid light glass -- */
+  --color-bg:           #eef1fb;
+  --color-surface:      rgba(255, 255, 255, 0.62);
+  --color-border:       rgba(120, 140, 200, 0.28);
+  --color-accent:       #2b5cff;
+  --color-accent-soft:  rgba(59, 108, 255, 0.12);
+  --color-text:         #131a2e;
+  --color-text-sub:     #47536f;
+  --color-muted:        #5a6785;
+  --color-muted-light:  #8b96b2;
 
   /* -- Trading semantics -- */
-  --color-up:           #1a56db;  /* accent = long / positive / buy */
-  --color-down:         #dc2626;  /* red = short / negative / sell */
+  --color-up:           #2b5cff;
+  --color-down:         #e11d48;
 
-  /* -- Semantic pairs (playbook 3.2, adapted: NO GREEN) -- */
+  /* -- Semantic pairs (NO GREEN) -- */
   --color-info-text:    #1e40af;
-  --color-info-bg:      #eff6ff;
-  --color-info-border:  #bfdbfe;
+  --color-info-bg:      rgba(59, 108, 255, 0.10);
+  --color-info-border:  rgba(59, 108, 255, 0.30);
 
-  --color-warning-text:   #b45309;
-  --color-warning-bg:     #fffbeb;
-  --color-warning-border: #fcd9a0;
+  --color-warning-text:   #a3510a;
+  --color-warning-bg:     rgba(245, 158, 11, 0.12);
+  --color-warning-border: rgba(245, 158, 11, 0.35);
 
   --color-error-text:   #dc2626;
-  --color-error-bg:     #fdecea;
-  --color-error-border: #f5c6c2;
+  --color-error-bg:     rgba(225, 29, 72, 0.10);
+  --color-error-border: rgba(225, 29, 72, 0.32);
 
   /* Success maps to blue/accent (no green for colourblind safety) */
   --color-success-text:   #1a56db;
-  --color-success-bg:     #e8f0fe;
-  --color-success-border: #c3d3f5;
+  --color-success-bg:     rgba(43, 92, 255, 0.10);
+  --color-success-border: rgba(43, 92, 255, 0.30);
 
   --color-special-text:   #7c3aed;
-  --color-special-bg:     #f3e8ff;
-  --color-special-border: #ddd6fe;
+  --color-special-bg:     rgba(139, 92, 246, 0.12);
+  --color-special-border: rgba(139, 92, 246, 0.32);
 
   --color-reflection-text:   #0e7490;
-  --color-reflection-bg:     #ecfeff;
-  --color-reflection-border: #a5f3fc;
+  --color-reflection-bg:     rgba(34, 211, 238, 0.10);
+  --color-reflection-border: rgba(34, 211, 238, 0.32);
 
-  /* -- Automation levels (playbook 3.3, green -> blue) -- */
-  --color-level-1-text: #dc2626;  --color-level-1-bg: #fef2f2;  --color-level-1-border: #fecaca;
-  --color-level-2-text: #d97706;  --color-level-2-bg: #fffbeb;  --color-level-2-border: #fcd9a0;
-  --color-level-3-text: #2563eb;  --color-level-3-bg: #eff6ff;  --color-level-3-border: #bfdbfe;
-  --color-level-4-text: #1a56db;  --color-level-4-bg: #e8f0fe;  --color-level-4-border: #c3d3f5;
+  /* -- Automation levels (green -> blue) -- */
+  --color-level-1-text: #dc2626;  --color-level-1-bg: rgba(225,29,72,0.10);   --color-level-1-border: rgba(225,29,72,0.30);
+  --color-level-2-text: #a3510a;  --color-level-2-bg: rgba(245,158,11,0.12);  --color-level-2-border: rgba(245,158,11,0.32);
+  --color-level-3-text: #2b5cff;  --color-level-3-bg: rgba(43,92,255,0.10);   --color-level-3-border: rgba(43,92,255,0.30);
+  --color-level-4-text: #1a56db;  --color-level-4-bg: rgba(43,92,255,0.12);   --color-level-4-border: rgba(43,92,255,0.32);
 
-  /* -- Layout (playbook 5.3) -- */
+  /* -- Glass material -- */
+  --glass-bg:        rgba(255, 255, 255, 0.55);
+  --glass-bg-strong: rgba(255, 255, 255, 0.72);
+  --glass-border:    rgba(255, 255, 255, 0.65);
+  --glass-edge:      rgba(100, 120, 190, 0.22);
+  --glass-sheen:     rgba(255, 255, 255, 0.85);
+  --glass-shadow:    0 8px 32px rgba(60, 80, 180, 0.14), 0 1.5px 4px rgba(60, 80, 180, 0.08);
+  --glass-blur:      22px;
+  --glow-accent:     0 0 18px rgba(43, 92, 255, 0.35);
+  --glow-down:       0 0 18px rgba(225, 29, 72, 0.35);
+
+  /* Ambient background field */
+  --ambient-base:    #eef1fb;
+  --ambient-blob-1:  rgba(80, 120, 255, 0.35);
+  --ambient-blob-2:  rgba(168, 85, 247, 0.28);
+  --ambient-blob-3:  rgba(236, 72, 153, 0.20);
+
+  /* -- Layout -- */
   --content-max: 820px;
   --content-pad: 12px;
 
   color-scheme: light;
 }
 
-/* -- Dark theme -- */
+/* -- Dark theme: deep-space neon glass -- */
 [data-theme="dark"] {
-  --color-bg:           #0f1117;
-  --color-surface:      #1a1d27;
-  --color-border:       #2d3348;
-  --color-accent:       #5b8af5;
-  --color-accent-soft:  #1e2a4a;
-  --color-text:         #e2e8f0;
-  --color-text-sub:     #a0aec0;
-  --color-muted:        #64748b;
-  --color-muted-light:  #475569;
+  --color-bg:           #060913;
+  --color-surface:      rgba(20, 26, 48, 0.55);
+  --color-border:       rgba(120, 150, 255, 0.18);
+  --color-accent:       #4f8cff;
+  --color-accent-soft:  rgba(79, 140, 255, 0.14);
+  --color-text:         #e8edfb;
+  --color-text-sub:     #9aa8cc;
+  --color-muted:        #6b7899;
+  --color-muted-light:  #4a5570;
 
-  --color-up:           #5b8af5;
-  --color-down:         #ef4444;
+  --color-up:           #4f8cff;
+  --color-down:         #ff4d6d;
 
-  --color-info-text:    #93b4f5;
-  --color-info-bg:      #1a2440;
-  --color-info-border:  #2a3a5c;
+  --color-info-text:    #9db9ff;
+  --color-info-bg:      rgba(79, 140, 255, 0.12);
+  --color-info-border:  rgba(79, 140, 255, 0.32);
 
-  --color-warning-text:   #e0a858;
-  --color-warning-bg:     #2a2010;
-  --color-warning-border: #4a3820;
+  --color-warning-text:   #ffc466;
+  --color-warning-bg:     rgba(255, 176, 66, 0.10);
+  --color-warning-border: rgba(255, 176, 66, 0.30);
 
-  --color-error-text:   #ef4444;
-  --color-error-bg:     #2a1010;
-  --color-error-border: #4a2020;
+  --color-error-text:   #ff6b81;
+  --color-error-bg:     rgba(255, 77, 109, 0.10);
+  --color-error-border: rgba(255, 77, 109, 0.32);
 
-  --color-success-text:   #5b8af5;
-  --color-success-bg:     #1a2440;
-  --color-success-border: #2a3a5c;
+  --color-success-text:   #7aa7ff;
+  --color-success-bg:     rgba(79, 140, 255, 0.12);
+  --color-success-border: rgba(79, 140, 255, 0.32);
 
-  --color-special-text:   #a78bfa;
-  --color-special-bg:     #1e1640;
-  --color-special-border: #332860;
+  --color-special-text:   #c4a5ff;
+  --color-special-bg:     rgba(167, 139, 250, 0.12);
+  --color-special-border: rgba(167, 139, 250, 0.32);
 
-  --color-reflection-text:   #22d3ee;
-  --color-reflection-bg:     #0c2a30;
-  --color-reflection-border: #164e50;
+  --color-reflection-text:   #67e0f5;
+  --color-reflection-bg:     rgba(34, 211, 238, 0.08);
+  --color-reflection-border: rgba(34, 211, 238, 0.28);
 
-  --color-level-1-text: #ef4444;  --color-level-1-bg: #2a1010;  --color-level-1-border: #4a2020;
-  --color-level-2-text: #e0a858;  --color-level-2-bg: #2a2010;  --color-level-2-border: #4a3820;
-  --color-level-3-text: #5b8af5;  --color-level-3-bg: #1a2440;  --color-level-3-border: #2a3a5c;
-  --color-level-4-text: #5b8af5;  --color-level-4-bg: #1a2440;  --color-level-4-border: #2a3a5c;
+  --color-level-1-text: #ff6b81;  --color-level-1-bg: rgba(255,77,109,0.10);  --color-level-1-border: rgba(255,77,109,0.30);
+  --color-level-2-text: #ffc466;  --color-level-2-bg: rgba(255,176,66,0.10);  --color-level-2-border: rgba(255,176,66,0.30);
+  --color-level-3-text: #7aa7ff;  --color-level-3-bg: rgba(79,140,255,0.12);  --color-level-3-border: rgba(79,140,255,0.32);
+  --color-level-4-text: #9db9ff;  --color-level-4-bg: rgba(79,140,255,0.14);  --color-level-4-border: rgba(79,140,255,0.34);
+
+  --glass-bg:        rgba(18, 24, 46, 0.52);
+  --glass-bg-strong: rgba(22, 29, 56, 0.72);
+  --glass-border:    rgba(140, 165, 255, 0.22);
+  --glass-edge:      rgba(90, 110, 200, 0.20);
+  --glass-sheen:     rgba(170, 195, 255, 0.28);
+  --glass-shadow:    0 8px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(90, 120, 255, 0.06);
+  --glow-accent:     0 0 22px rgba(79, 140, 255, 0.55);
+  --glow-down:       0 0 22px rgba(255, 77, 109, 0.5);
+
+  --ambient-base:    #060913;
+  --ambient-blob-1:  rgba(56, 99, 255, 0.32);
+  --ambient-blob-2:  rgba(147, 51, 234, 0.26);
+  --ambient-blob-3:  rgba(219, 39, 119, 0.16);
 
   color-scheme: dark;
 }
 
-/* -- Sepia theme -- */
+/* -- Sepia theme: warm smoked glass -- */
 [data-theme="sepia"] {
-  --color-bg:           #f5f0e6;
-  --color-surface:      #faf6ed;
-  --color-border:       #d9c89a;
+  --color-bg:           #f0e9d8;
+  --color-surface:      rgba(252, 248, 238, 0.6);
+  --color-border:       rgba(160, 130, 60, 0.30);
   --color-accent:       #8c5a1c;
-  --color-accent-soft:  #ecdbb6;
+  --color-accent-soft:  rgba(140, 90, 28, 0.12);
   --color-text:         #3a2f1b;
   --color-text-sub:     #5a4a30;
   --color-muted:        #8a7548;
@@ -130,38 +164,47 @@
   --color-down:         #a33a1e;
 
   --color-info-text:    #6b4a0a;
-  --color-info-bg:      #f5e8c8;
-  --color-info-border:  #d4bc80;
-
+  --color-info-bg:      rgba(140, 90, 28, 0.10);
+  --color-info-border:  rgba(140, 90, 28, 0.30);
   --color-warning-text:   #8a6010;
-  --color-warning-bg:     #f8ecd0;
-  --color-warning-border: #d4b870;
-
+  --color-warning-bg:     rgba(180, 130, 30, 0.12);
+  --color-warning-border: rgba(180, 130, 30, 0.32);
   --color-error-text:   #a33a1e;
-  --color-error-bg:     #f8e0d8;
-  --color-error-border: #d4a090;
-
+  --color-error-bg:     rgba(163, 58, 30, 0.10);
+  --color-error-border: rgba(163, 58, 30, 0.30);
   --color-success-text:   #8c5a1c;
-  --color-success-bg:     #ecdbb6;
-  --color-success-border: #d4bc80;
-
+  --color-success-bg:     rgba(140, 90, 28, 0.12);
+  --color-success-border: rgba(140, 90, 28, 0.30);
   --color-special-text:   #6b4b8a;
-  --color-special-bg:     #e8d9f0;
-  --color-special-border: #c8b0d8;
-
+  --color-special-bg:     rgba(107, 75, 138, 0.12);
+  --color-special-border: rgba(107, 75, 138, 0.30);
   --color-reflection-text:   #2a6a70;
-  --color-reflection-bg:     #daf0f0;
-  --color-reflection-border: #a0d0d0;
+  --color-reflection-bg:     rgba(42, 106, 112, 0.10);
+  --color-reflection-border: rgba(42, 106, 112, 0.30);
 
-  --color-level-1-text: #a33a1e;  --color-level-1-bg: #f8e0d8;  --color-level-1-border: #d4a090;
-  --color-level-2-text: #8a6010;  --color-level-2-bg: #f8ecd0;  --color-level-2-border: #d4b870;
-  --color-level-3-text: #8c5a1c;  --color-level-3-bg: #ecdbb6;  --color-level-3-border: #d4bc80;
-  --color-level-4-text: #8c5a1c;  --color-level-4-bg: #ecdbb6;  --color-level-4-border: #d4bc80;
+  --color-level-1-text: #a33a1e;  --color-level-1-bg: rgba(163,58,30,0.10);   --color-level-1-border: rgba(163,58,30,0.30);
+  --color-level-2-text: #8a6010;  --color-level-2-bg: rgba(180,130,30,0.12);  --color-level-2-border: rgba(180,130,30,0.32);
+  --color-level-3-text: #8c5a1c;  --color-level-3-bg: rgba(140,90,28,0.12);   --color-level-3-border: rgba(140,90,28,0.30);
+  --color-level-4-text: #8c5a1c;  --color-level-4-bg: rgba(140,90,28,0.14);   --color-level-4-border: rgba(140,90,28,0.32);
+
+  --glass-bg:        rgba(252, 248, 238, 0.55);
+  --glass-bg-strong: rgba(252, 248, 238, 0.75);
+  --glass-border:    rgba(255, 250, 235, 0.8);
+  --glass-edge:      rgba(160, 130, 60, 0.25);
+  --glass-sheen:     rgba(255, 252, 240, 0.9);
+  --glass-shadow:    0 8px 32px rgba(120, 90, 30, 0.15);
+  --glow-accent:     0 0 16px rgba(140, 90, 28, 0.30);
+  --glow-down:       0 0 16px rgba(163, 58, 30, 0.30);
+
+  --ambient-base:    #f0e9d8;
+  --ambient-blob-1:  rgba(200, 150, 60, 0.25);
+  --ambient-blob-2:  rgba(160, 100, 140, 0.15);
+  --ambient-blob-3:  rgba(220, 120, 80, 0.12);
 
   color-scheme: light;
 }
 
-/* -- Responsive layout tokens (playbook 5.2 / 5.3) -- */
+/* -- Responsive layout tokens -- */
 @media (min-width: 600px)  { :root { --content-pad: 20px; } }
 @media (min-width: 900px)  { :root { --content-pad: 32px; --content-max: 900px; } }
 @media (min-width: 1200px) { :root { --content-max: 1000px; } }
@@ -169,7 +212,7 @@
 @media (min-width: 2000px) { :root { --content-max: 1200px; } }
 @media (min-width: 2560px) { :root { --content-max: 1320px; } }
 
-/* -- Typography classes (playbook 2.2 / 2.3) -- */
+/* -- Typography classes -- */
 .t-heading { font-size: 17px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; }
 .t-body    { font-size: 14px; font-weight: 500; line-height: 1.5; }
 .t-label   { font-size: 13px; font-weight: 600; line-height: 1.5; }
@@ -177,7 +220,7 @@
 .t-meta    { font-size: 11px; font-weight: 400; line-height: 1.65; }
 
 @media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } .t-sub { font-size: 13px; } }
-@media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-body { font-size: 16px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
+@media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
 @media (min-width: 1153px) { html { zoom: 1.1; } }
 @media (min-width: 1280px) { .t-heading { font-size: 21px; } }
 @media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 18px; } .t-label { font-size: 15px; } .t-sub { font-size: 16px; } .t-meta { font-size: 14px; } }
@@ -193,7 +236,7 @@
   color: var(--color-muted);
 }
 
-/* Skip nav link (Builder Standard 8 - Accessibility) */
+/* Skip nav link */
 .skip-nav {
   position: absolute;
   left: -9999px;
@@ -208,7 +251,7 @@
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
-  border-radius: 0 0 7px 0;
+  border-radius: 0 0 12px 0;
 }
 .skip-nav:focus {
   position: fixed;
@@ -223,11 +266,104 @@
 .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
 .scrollbar-none::-webkit-scrollbar { display: none; }
 
-/* -- Root + body -- */
+/* -- Root + body + ambient neon field ------------------------------------ */
 html, body, #root {
   min-height: 100svh;
   min-height: 100vh; /* fallback */
-  background: var(--color-bg);
   color: var(--color-text);
   font-family: system-ui, sans-serif;
 }
+
+body {
+  background: var(--ambient-base);
+  position: relative;
+}
+
+/* Ambient neon blobs — fixed, behind everything, gently drifting */
+body::before {
+  content: '';
+  position: fixed;
+  inset: -20%;
+  z-index: -2;
+  background:
+    radial-gradient(42% 38% at 18% 18%, var(--ambient-blob-1), transparent 70%),
+    radial-gradient(36% 42% at 82% 12%, var(--ambient-blob-2), transparent 70%),
+    radial-gradient(46% 40% at 55% 92%, var(--ambient-blob-3), transparent 72%),
+    var(--ambient-base);
+  animation: ambient-drift 26s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+/* Fine specular grid — barely-there texture so glass has something to bend */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(var(--glass-edge) 1px, transparent 1px),
+    linear-gradient(90deg, var(--glass-edge) 1px, transparent 1px);
+  background-size: 44px 44px;
+  opacity: 0.14;
+  -webkit-mask-image: radial-gradient(75% 60% at 50% 30%, #000 0%, transparent 100%);
+          mask-image: radial-gradient(75% 60% at 50% 30%, #000 0%, transparent 100%);
+  pointer-events: none;
+}
+
+@keyframes ambient-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); }
+  to   { transform: translate3d(2%, 2%, 0) scale(1.06); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
+
+/* -- Liquid glass materials ---------------------------------------------- */
+
+/* Primary panel: translucent, blurred, specular top sheen, soft glow */
+.glass-panel {
+  position: relative;
+  background:
+    linear-gradient(160deg, var(--glass-sheen) 0%, transparent 24%) no-repeat,
+    var(--glass-bg);
+  background-blend-mode: soft-light, normal;
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 22px)) saturate(160%);
+          backdrop-filter: blur(var(--glass-blur, 22px)) saturate(160%);
+}
+.glass-panel::before {
+  /* liquid specular streak along the top edge */
+  content: '';
+  position: absolute;
+  inset: 0 12% auto 12%;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--glass-sheen), transparent);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* Denser variant for the floating header */
+.glass-bar {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(26px) saturate(170%);
+          backdrop-filter: blur(26px) saturate(170%);
+}
+
+/* Inset glass for inputs */
+.glass-inset {
+  background: var(--color-accent-soft);
+  background: color-mix(in srgb, var(--glass-bg) 70%, transparent);
+  border: 1px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+}
+
+/* Neon glow helpers */
+.glow-accent { box-shadow: var(--glow-accent); }
+.glow-down   { box-shadow: var(--glow-down); }

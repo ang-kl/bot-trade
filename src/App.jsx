@@ -19,20 +19,22 @@ export default function App() {
   const { theme, setTheme } = useTheme()
 
   return (
-    <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
-      <header className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-        <div className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-2.5">
-          <span className="text-[14px] font-bold tracking-tight">bot-trade</span>
+    <div className="min-h-screen text-[var(--color-text)]">
+      <header className="sticky top-3 z-50 mx-auto max-w-5xl px-3">
+        <div className="glass-bar flex items-center gap-3 rounded-full px-4 py-2 overflow-x-auto scrollbar-none">
+          <span className="text-[14px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent shrink-0">
+            bot-trade
+          </span>
           <nav className="flex gap-1" id="main-content">
             {TABS.map(t => (
               <NavLink
                 key={t.to}
                 to={t.to}
                 className={({ isActive }) =>
-                  `rounded-[7px] px-3 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center ${
+                  `rounded-full px-3.5 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center transition-all ${
                     isActive
-                      ? 'bg-[var(--color-accent)] text-white'
-                      : 'text-[var(--color-text-sub)] hover:bg-[var(--color-accent-soft)]'
+                      ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
+                      : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
                   }`
                 }
               >{t.label}</NavLink>
@@ -42,12 +44,12 @@ export default function App() {
             type="button"
             onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
             title={`Theme: ${theme}`}
-            className="ml-auto rounded-[7px] border border-[var(--color-border)] px-2.5 py-1 text-[14px] cursor-pointer hover:bg-[var(--color-accent-soft)]"
+            className="ml-auto glass-inset rounded-full px-2.5 py-1 text-[14px] cursor-pointer hover:shadow-[var(--glow-accent)] shrink-0"
           >{THEME_ICON[theme] || '◐'}</button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-4">
+      <main className="mx-auto max-w-5xl px-4 py-5">
         <Routes>
           <Route path="/" element={<Navigate to="/trade" replace />} />
           <Route path="/trade" element={<Trade />} />
