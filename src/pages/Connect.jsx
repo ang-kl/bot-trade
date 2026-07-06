@@ -29,6 +29,46 @@ export default function Connect() {
     }).catch(() => {})
   }, [])
 
+  // OAuth callback: Spotware redirects back with ?code=... after the user
+  // logs in. Exchange it for a token server-side, hand the token to the
+  // agent, and show the account picker — zero manual token handling.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    if (!code) return
+    window.history.replaceState(null, '', window.location.pathname)
+    ;(async () => {
+      setLinking(true)
+      try {
+        const redirectUri = `${window.location.origin}/link-up`
+        const ex = await fetch('/api/ctrader', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'exchange-token', code, redirectUri }),
+        }).then(r => r.json())
+        if (ex.error) throw new Error(ex.error)
+        const r = await agentPost('/actions/ctrader-token', { accessToken: ex.accessToken })
+        setAccounts(r.accounts || [])
+        flash('cTrader connected — now tap the account the bot should trade')
+      } catch (e) {
+        setError(`cTrader connect failed: ${e.message}`)
+      } finally {
+        setLinking(false)
+      }
+    })()
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startOAuth = async () => {
+    setError('')
+    try {
+      const r = await fetch('/api/ctrader?action=auth-url').then(x => x.json())
+      if (r.error) throw new Error(r.error)
+      window.location.href = r.url
+    } catch (e) {
+      setError(`Could not start cTrader login: ${e.message}`)
+    }
+  }
+
   const flash = (msg) => { setStatus(msg); setError(''); setTimeout(() => setStatus(''), 4000) }
 
   const saveConn = () => {
@@ -109,13 +149,18 @@ export default function Connect() {
           {symbolCount != null && symbolCount > 0 && <Badge tone="up">LINKED — {symbolCount} symbols mapped</Badge>}
         </div>
 
-        <label className="block text-[12px]">
-          <span className="text-[var(--color-text-sub)]">Access token (from openapi.ctrader.com — authorize once, paste here)</span>
-          <div className="mt-1 flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={startOAuth} disabled={linking}>{linking ? 'Connecting…' : 'Connect with cTrader'}</Button>
+          <span className="text-[12px] text-[var(--color-text-sub)]">— log in with your normal cTrader ID; your accounts appear below.</span>
+        </div>
+
+        <details className="mt-3">
+          <summary className="text-[12px] text-[var(--color-text-sub)] cursor-pointer">Advanced: paste an access token manually</summary>
+          <div className="mt-2 flex gap-2">
             <Input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Spotware OAuth access token" className="flex-1" />
-            <Button size="sm" onClick={loadAccounts} disabled={linking}>{linking && !accounts ? 'Loading…' : 'Load accounts'}</Button>
+            <Button size="sm" variant="subtle" onClick={loadAccounts} disabled={linking}>Load accounts</Button>
           </div>
-        </label>
+        </details>
 
         {accounts && accounts.length > 0 && (
           <div className="mt-3">
