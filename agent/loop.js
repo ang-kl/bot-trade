@@ -15,6 +15,7 @@ import { getActiveSessions, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsGetSymbolsList } from './lib/ctrader-ws.js'
 import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
+import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
@@ -69,8 +70,8 @@ function getAutopilotAccounts(db) {
 }
 
 async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
-  const clientId = process.env.CTRADER_CLIENT_ID
-  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  const clientId = ctraderEnv('clientId')
+  const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
   const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id')
   const isLive = accountOverride ? !!accountOverride.isLive : getState(db, 'ctrader_is_live') === 'true'
@@ -251,8 +252,8 @@ function log(...args) {
 // ---------------------------------------------------------------------------
 
 async function executeBrokerAction(db, s, pos, eval_) {
-  const clientId = process.env.CTRADER_CLIENT_ID
-  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  const clientId = ctraderEnv('clientId')
+  const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
   const accountId = getState(db, 'ctrader_account_id')
   const isLive = getState(db, 'ctrader_is_live') === 'true'
@@ -992,8 +993,8 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     if (loopCount % 3 === 0) {
       try {
-        const clientId = process.env.CTRADER_CLIENT_ID
-        const clientSecret = process.env.CTRADER_CLIENT_SECRET
+        const clientId = ctraderEnv('clientId')
+        const clientSecret = ctraderEnv('clientSecret')
         const accessToken = getState(db, 'ctrader_access_token')
         const accountId = getState(db, 'ctrader_account_id')
         const isLive = getState(db, 'ctrader_is_live') === 'true'
