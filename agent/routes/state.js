@@ -23,7 +23,7 @@ export default function stateRouter(db) {
   router.get('/health', (_req, res) => {
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
     let symbols = []
-    try { symbols = JSON.parse(symbolsJson) } catch {}
+    try { symbols = JSON.parse(symbolsJson) } catch { /* non-fatal */ }
     symbols = (Array.isArray(symbols) ? symbols : []).map(s => typeof s === 'string' ? { symbol: s, enabled: true } : s)
     const enabledCount = symbols.filter(s => s.enabled !== false).length
     const skippedCount = symbols.filter(s => s.force_skip).length
@@ -50,7 +50,7 @@ export default function stateRouter(db) {
         lastError: getState(db, 'api_ctrader_last_error'),
         status: getState(db, 'api_ctrader_last_ok') ? 'ok' : 'unknown',
       }
-    } catch {}
+    } catch { /* non-fatal */ }
 
     res.json({
       status: circuitBreaker ? 'breaker_tripped' : 'ok',
@@ -261,9 +261,9 @@ export default function stateRouter(db) {
     if (!row) return res.status(404).json({ error: 'analysis not found' })
 
     let reports = []
-    try { reports = JSON.parse(row.minion_reports || '[]') } catch {}
+    try { reports = JSON.parse(row.minion_reports || '[]') } catch { /* non-fatal */ }
     let synthesis = null
-    try { synthesis = JSON.parse(row.synthesis || 'null') } catch {}
+    try { synthesis = JSON.parse(row.synthesis || 'null') } catch { /* non-fatal */ }
 
     res.json({
       analysis: {
@@ -533,7 +533,7 @@ export default function stateRouter(db) {
          ORDER BY mp.created_at DESC`
       ).all()
       let pendingOrders = []
-      try { pendingOrders = JSON.parse(pendingJson || '[]') } catch {}
+      try { pendingOrders = JSON.parse(pendingJson || '[]') } catch { /* non-fatal */ }
       res.json({ externalPositions, pendingOrders, lastReconcileAt })
     } catch (e) {
       res.json({ externalPositions: [], pendingOrders: [], lastReconcileAt: null, error: e.message })

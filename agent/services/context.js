@@ -43,7 +43,7 @@ export function buildContextBrief(db) {
         lines.push(`- ${f.symbol}: ${f.flip_from} → ${f.bias} (conf ${f.confidence}) at ${f.recorded_at}`)
       }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 
   // 4. Active positions — the agent should know what's already on
   try {
@@ -58,7 +58,7 @@ export function buildContextBrief(db) {
         lines.push(`- ${p.side} ${p.symbol} @ ${p.entry_price} | SL ${p.current_sl} TP ${p.current_tp} | ${p.thesis_status || 'monitoring'} | last action: ${p.last_check_action || 'none'}`)
       }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 
   // 5. Today's trade results
   try {
@@ -77,7 +77,7 @@ export function buildContextBrief(db) {
         lines.push(`- ${t.side} ${t.symbol}: ${(t.net_pnl || 0) >= 0 ? '+' : ''}${(t.net_pnl || 0).toFixed(2)} (${t.close_reason || '?'})`)
       }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 
   // 6. Regime snapshots (latest per symbol)
   try {
@@ -95,7 +95,7 @@ export function buildContextBrief(db) {
         lines.push(`- ${r.symbol}: ${r.regime}${r.trend_direction ? ` (${r.trend_direction})` : ''} ATR% ${(r.atr_pct || 0).toFixed(2)}`)
       }
     }
-  } catch {}
+  } catch { /* non-fatal */ }
 
   return lines.join('\n')
 }

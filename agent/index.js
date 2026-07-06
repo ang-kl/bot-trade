@@ -19,7 +19,7 @@ try {
     const val = trimmed.slice(i + 1).trim().replace(/^["']|["']$/g, '')
     if (key && !(key in process.env)) process.env[key] = val
   }
-} catch {}
+} catch { /* non-fatal */ }
 
 // App version (from the repo-root package.json; agent deploys from the same repo).
 // Displayed as 0.#.### — patch zero-padded to three digits.
@@ -28,7 +28,7 @@ try {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const [maj, min, patch] = String(pkg.version || '0.0.0').split('.')
   APP_VERSION = `${maj}.${min}.${String(patch).padStart(3, '0')}`
-} catch {}
+} catch { /* non-fatal */ }
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -138,7 +138,7 @@ app.get('/health', (_req, res) => {
     const resolvedPath = DB_PATH || './agent.db';
     const stat = fs.statSync(resolvedPath);
     dbSize = stat.size;
-  } catch {}
+  } catch { /* non-fatal */ }
 
   const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
   const lastError = getState(db, 'last_error')
@@ -149,7 +149,7 @@ app.get('/health', (_req, res) => {
   try {
     openPositions = db.prepare("SELECT COUNT(*) as c FROM monitored_positions WHERE status = 'active'").get().c
     openTrades = db.prepare("SELECT COUNT(*) as c FROM trades WHERE status = 'open'").get().c
-  } catch {}
+  } catch { /* non-fatal */ }
 
   const status = circuitBreaker ? 'circuit_breaker_tripped' : 'ok'
 

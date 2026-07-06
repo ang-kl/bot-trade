@@ -64,7 +64,7 @@ export default function Connect() {
         setLinking(false)
       }
     })()
-  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])   
 
   const startOAuth = async () => {
     setError('')

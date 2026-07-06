@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Syntax-check agent entry points
+        run: |
+          for f in agent/index.js agent/loop.js agent/routes/actions.js agent/routes/state.js agent/lib/ctrader-ws.js agent/lib/ctrader-auth.js agent/services/fib-strategy.js agent/services/risk.js; do
+            node --check "$f"
+          done
+      - run: npm run build
+      - run: npx vitest run
+      - name: No-green colour gate (owner is red/green colourblind)
+        run: bash scripts/check-no-green.sh
