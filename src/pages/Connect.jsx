@@ -27,6 +27,14 @@ export default function Connect() {
     agentGet('/state/symbol-map').then(r => {
       if (r?.map) setSymbolCount(Object.keys(r.map).length)
     }).catch(() => {})
+    // If the agent already holds a token, re-list the accounts so the picker
+    // is always visible — it must survive reloads and navigation.
+    agentPost('/actions/ctrader-accounts').then(r => {
+      if (r?.accounts?.length) {
+        setAccounts(r.accounts)
+        if (r.selectedAccountId) setLinked({ accountId: Number(r.selectedAccountId) })
+      }
+    }).catch(() => {})
   }, [])
 
   // OAuth callback: Spotware redirects back with ?code=... after the user

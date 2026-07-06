@@ -273,6 +273,37 @@ export default function actionsRouter(db) {
   // Body: { accessToken, accounts: [{ accountId, isLive, autopilot, copilot }] }
   // The loop reads autopilot-enabled accounts and trades each one.
   // -----------------------------------------------------------------------
+  // List every trading account an access token can operate, with balances.
+  async function listCtraderAccounts(accessToken) {
+    const { ctraderEnv } = await import('../lib/ctrader-env.js')
+    const clientId = ctraderEnv('clientId')
+    const clientSecret = ctraderEnv('clientSecret')
+    if (!clientId || !clientSecret) {
+      throw new Error('cTrader client id/secret env vars not set on the agent')
+    }
+    // Account listing works on either host; use demo.
+    const { wsGetAccountsByToken, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
+    const data = await wsGetAccountsByToken('demo.ctraderapi.com', clientId, clientSecret, accessToken)
+    const accounts = (data.ctidTraderAccount || []).map(a => ({
+      accountId: a.ctidTraderAccountId,
+      isLive: !!a.isLive,
+      traderLogin: a.traderLogin ?? null,
+      brokerTitle: a.brokerTitleShort || a.brokerName || null,
+      balance: null,
+    }))
+    // Enrich each account with its balance (best effort — a failure just
+    // leaves balance null for that account).
+    await Promise.all(accounts.map(async (a) => {
+      try {
+        const host = a.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+        const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, a.accountId)
+        const bal = traderBalance(trader)
+        if (bal != null) a.balance = bal
+      } catch { /* leave null */ }
+    }))
+    return accounts
+  }
+
   // -----------------------------------------------------------------------
   // POST /actions/ctrader-token — store an access token and list every
   // trading account it can operate (no account id needed from the user).
@@ -282,36 +313,33 @@ export default function actionsRouter(db) {
     try {
       const { accessToken } = req.body || {}
       if (!accessToken) return res.status(400).json({ error: 'accessToken is required' })
-      const clientId = process.env.CTRADER_CLIENT_ID
-      const clientSecret = process.env.CTRADER_CLIENT_SECRET
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: 'CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET env vars not set on the agent' })
-      }
-      // Account listing works on either host; use demo.
-      const { wsGetAccountsByToken, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
-      const data = await wsGetAccountsByToken('demo.ctraderapi.com', clientId, clientSecret, accessToken)
-      const accounts = (data.ctidTraderAccount || []).map(a => ({
-        accountId: a.ctidTraderAccountId,
-        isLive: !!a.isLive,
-        traderLogin: a.traderLogin ?? null,
-        brokerTitle: a.brokerTitleShort || a.brokerName || null,
-        balance: null,
-      }))
-      // Enrich each account with its balance (best effort — a failure just
-      // leaves balance null for that account).
-      await Promise.all(accounts.map(async (a) => {
-        try {
-          const host = a.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-          const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, a.accountId)
-          const bal = traderBalance(trader)
-          if (bal != null) a.balance = bal
-        } catch { /* leave null */ }
-      }))
+      const accounts = await listCtraderAccounts(accessToken)
       setState(db, 'ctrader_access_token', accessToken)
       console.log(`[actions] ctrader token stored — ${accounts.length} account(s) available`)
       res.json({ ok: true, accounts })
     } catch (err) {
       console.error('[actions/ctrader-token] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/ctrader-accounts — re-list accounts from the token the
+  // agent already has stored (so the UI picker survives page reloads).
+  // -----------------------------------------------------------------------
+  router.post('/ctrader-accounts', async (_req, res) => {
+    try {
+      const { ctraderEnv } = await import('../lib/ctrader-env.js')
+      const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
+      if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
+      const accounts = await listCtraderAccounts(accessToken)
+      res.json({
+        ok: true,
+        accounts,
+        selectedAccountId: getState(db, 'ctrader_account_id') || null,
+      })
+    } catch (err) {
+      console.error('[actions/ctrader-accounts] error:', err.message)
       res.status(502).json({ error: err.message })
     }
   })
