@@ -46,3 +46,32 @@ export function getSymbolMap(db) {
   if (!json) return {}
   try { return JSON.parse(json) } catch { return {} }
 }
+
+/**
+ * Like getSymbolMap, but self-healing: when the map is missing/empty and
+ * credentials are ready, download the broker's light symbol list, persist
+ * the map, and return it. Removes the "link account before anything else"
+ * ordering requirement (a DB wipe or fresh boot no longer breaks charts,
+ * backtests, or streams).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {ReturnType<typeof getCtraderCreds>} creds
+ * @returns {Promise<Record<string, number>>}
+ */
+export async function ensureSymbolMap(db, creds) {
+  const existing = getSymbolMap(db)
+  if (Object.keys(existing).length > 0) return existing
+  if (!creds?.ready) return existing
+  const { wsGetSymbolsList } = await import('./ctrader-ws.js')
+  const { host, clientId, clientSecret, accessToken, accountId } = creds
+  const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
+  const map = {}
+  for (const s of (data.symbol || [])) {
+    if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
+  }
+  if (Object.keys(map).length > 0) {
+    const { setState } = await import('../db.js')
+    setState(db, 'symbol_id_map', JSON.stringify(map))
+  }
+  return map
+}

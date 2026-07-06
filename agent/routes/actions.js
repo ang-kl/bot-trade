@@ -5,7 +5,7 @@
 import { Router } from 'express'
 import { getState, setState } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
-import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
+import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
@@ -38,8 +38,8 @@ export default function actionsRouter(db) {
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const symbolId = getSymbolMap(db)[symbol]
-      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not in the symbol map` })
+      const symbolId = (await ensureSymbolMap(db, creds))[symbol]
+      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not offered by this broker account` })
 
       const { runBacktest } = await import('../scripts/backtest-fib.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
@@ -74,7 +74,7 @@ export default function actionsRouter(db) {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
 
-      const map = getSymbolMap(db)
+      const map = await ensureSymbolMap(db, creds)
       const idToName = {}
       const ids = []
       for (const n of names) {
@@ -133,8 +133,8 @@ export default function actionsRouter(db) {
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const symbolId = getSymbolMap(db)[symbol]
-      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not in the symbol map` })
+      const symbolId = (await ensureSymbolMap(db, creds))[symbol]
+      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not offered by this broker account` })
 
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, [timeframe], count)
@@ -1121,8 +1121,8 @@ export default function actionsRouter(db) {
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured' })
-      const symbolId = getSymbolMap(db)[symbol]
-      if (!symbolId) return res.status(400).json({ error: `Symbol ID unknown for ${symbol} — link the cTrader account first` })
+      const symbolId = (await ensureSymbolMap(db, creds))[symbol]
+      if (!symbolId) return res.status(400).json({ error: `Symbol ID unknown for ${symbol} — not offered by this broker account` })
 
       // Entry estimate = freshest 1m close (includes the forming bar — this
       // is a price estimate for the risk gate, the order itself is MARKET).
