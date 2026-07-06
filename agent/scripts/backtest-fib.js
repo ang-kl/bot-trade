@@ -109,14 +109,24 @@ function computeStats(trades) {
   }
 
   const round2 = x => Math.round(x * 100) / 100
+  const mean = trades.reduce((s, t) => s + t.pnlPct, 0) / n
+  // Per-trade Sharpe (rf=0), annualised by trades-per-year over the tested
+  // span. A strategy can have a fine win rate and still a Sharpe near zero —
+  // this is the standard "is the edge worth its volatility" number.
+  const std = Math.sqrt(trades.reduce((s, t) => s + (t.pnlPct - mean) ** 2, 0) / n)
+  const spanYears = n > 1 ? (trades[n - 1].exitT - trades[0].entryT) / (365.25 * 86_400_000) : 0
+  const sharpe = std > 0 && spanYears > 0 ? (mean / std) * Math.sqrt(n / spanYears) : null
   return {
     trades: n,
     wins: wins.length,
     losses: losses.length,
     winRatePct: round2((wins.length / n) * 100),
-    avgProfitPct: round2(trades.reduce((s, t) => s + t.pnlPct, 0) / n),
+    avgProfitPct: round2(mean),
+    // expectancy = average % per trade after costs — the "is there an edge" number
+    expectancyPct: round2(mean),
     totalProfitPct: round2(equity),
     profitFactor: grossLoss > 0 ? round2(grossWin / grossLoss) : null,
+    sharpeAnnualized: sharpe != null ? round2(sharpe) : null,
     maxDrawdownPct: round2(maxDrawdown),
     avgDurationMin: round2(trades.reduce((s, t) => s + (t.exitT - t.entryT), 0) / n / 60_000),
     exits: {
