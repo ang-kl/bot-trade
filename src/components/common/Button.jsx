@@ -1,27 +1,42 @@
-// Button - playbook 6.1 interactive states.
-// Blue = primary/BUY, red = danger/SELL, ghost = neutral.
+// Button — Ultra Neo Glass interactive states.
+// Neon blue = primary/BUY, neon red = danger/SELL, glass = neutral.
 // Min 36px touch target height. Always visible, never hover-only.
 
 const VARIANTS = {
-  primary: 'bg-[var(--color-accent)] text-white border-transparent hover:opacity-90',
-  ghost:   'bg-transparent text-[var(--color-text)] border-[var(--color-border)] hover:bg-[var(--color-accent-soft)] hover:border-[var(--color-accent)]',
-  danger:  'bg-[var(--color-down)] text-white border-transparent hover:opacity-90',
-  subtle:  'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)] hover:bg-[var(--color-accent-soft)]',
+  primary: [
+    'text-white border-transparent',
+    'bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_65%,#a855f7))]',
+    'shadow-[var(--glow-accent)] hover:brightness-110',
+  ].join(' '),
+  danger: [
+    'text-white border-transparent',
+    'bg-[linear-gradient(135deg,var(--color-down),color-mix(in_srgb,var(--color-down)_70%,#f472b6))]',
+    'shadow-[var(--glow-down)] hover:brightness-110',
+  ].join(' '),
+  ghost: [
+    'glass-inset text-[var(--color-text)]',
+    'hover:border-[var(--color-accent)] hover:shadow-[var(--glow-accent)]',
+  ].join(' '),
+  subtle: [
+    'glass-inset text-[var(--color-text-sub)]',
+    'hover:text-[var(--color-text)] hover:border-[var(--color-accent)]',
+  ].join(' '),
 }
 
 const SIZES = {
-  sm: 'px-2 py-1 text-[12px] min-h-[36px]',
-  md: 'px-3 py-1.5 text-[13px] min-h-[36px]',
-  lg: 'px-4 py-2 text-[14px] min-h-[40px]',
+  sm: 'px-2.5 py-1 text-[12px] min-h-[36px]',
+  md: 'px-3.5 py-1.5 text-[13px] min-h-[36px]',
+  lg: 'px-5 py-2 text-[14px] min-h-[40px]',
 }
 
 export default function Button({ children, variant = 'primary', size = 'md', className = '', ...rest }) {
   const cls = [
     'inline-flex items-center justify-center gap-1',
-    'rounded-[7px] border font-semibold',
-    'transition-colors cursor-pointer',
-    'disabled:opacity-50 disabled:cursor-not-allowed',
-    'focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40',
+    'rounded-full border font-semibold',
+    'transition-all cursor-pointer',
+    'disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none',
+    'focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/50',
+    'active:scale-[0.98]',
     VARIANTS[variant] || VARIANTS.primary,
     SIZES[size] || SIZES.md,
     className,
