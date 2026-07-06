@@ -74,6 +74,17 @@ export default function stateRouter(db) {
         skipped: skippedCount,
       },
       apis: apiHealth,
+      // Readiness — everything the UI needs to say "you can trade now"
+      broker: {
+        linked: !!getState(db, 'ctrader_account_id'),
+        accountId: getState(db, 'ctrader_account_id') || null,
+        isLive: getState(db, 'ctrader_is_live') === 'true',
+        symbolsMapped: (() => { try { return Object.keys(JSON.parse(getState(db, 'symbol_id_map') || '{}')).length } catch { return 0 } })(),
+        balance: Number(getState(db, 'account_balance_usd')) || null,
+      },
+      scanEnabled: getState(db, 'scan_enabled') !== 'false',
+      analyzeEnabled: getState(db, 'analyze_enabled') !== 'false',
+      autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
     })
   })
 

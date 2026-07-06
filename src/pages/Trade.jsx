@@ -140,6 +140,23 @@ export default function Trade() {
     <div className="space-y-8">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
+      {/* Readiness — answers "can this thing trade for me right now?" at a glance */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 text-[13px]">
+          <Badge tone={health ? 'up' : 'down'} pill>{health ? '1 · AGENT CONNECTED' : '1 · AGENT OFFLINE'}</Badge>
+          <Badge tone={health?.broker?.linked ? (health.broker.isLive ? 'down' : 'up') : 'neutral'} pill>
+            {health?.broker?.linked
+              ? `2 · ${health.broker.isLive ? '⚠ LIVE' : 'DEMO'} ACCOUNT LINKED · ${fmt(health.broker.symbolsMapped, 0)} symbols`
+              : '2 · NO ACCOUNT — tap one on Connect'}
+          </Badge>
+          <Badge tone={health?.scanEnabled ? 'up' : 'neutral'} pill>{`3 · SCAN ${health?.scanEnabled ? 'ON' : 'OFF'}`}</Badge>
+          <Badge tone={health?.autotradeEnabled ? 'up' : 'neutral'} pill>{`4 · AUTOTRADE ${health?.autotradeEnabled ? 'ARMED' : 'OFF'}`}</Badge>
+          {health && health.broker?.linked && !health.autotradeEnabled && (
+            <span className="text-[12px] text-[var(--color-text-sub)]">— ready to trade manually; run the backtest on Tune before arming autotrade</span>
+          )}
+        </div>
+      </Card>
+
       {/* Health strip */}
       <Card>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
