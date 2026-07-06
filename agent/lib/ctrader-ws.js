@@ -35,8 +35,12 @@ export const PT = Object.freeze({
   NEW_ORDER_REQ:           2106,
   AMEND_POSITION_SLTP_REQ: 2110,
   CLOSE_POSITION_REQ:      2111,
+  SYMBOLS_LIST_REQ:        2114,
+  SYMBOLS_LIST_RES:        2115,
   SYMBOL_BY_ID_REQ:        2116,
   SYMBOL_BY_ID_RES:        2117,
+  GET_ACCOUNTS_BY_TOKEN_REQ: 2149,
+  GET_ACCOUNTS_BY_TOKEN_RES: 2150,
   RECONCILE_REQ:           2124,
   RECONCILE_RES:           2125,
   EXECUTION_EVENT:         2126,
@@ -372,6 +376,29 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
     periods.forEach((period, i) => { out[period] = decodeTrendbars(barPayloads[i]) })
     return out
   }, 2, 'wsGetTrendbarsBatch')
+}
+
+/**
+ * List every trading account an access token can operate, via
+ * GET_ACCOUNTS_BY_TOKEN (app auth only — no account auth needed).
+ * Returns `{ ctidTraderAccount: [{ ctidTraderAccountId, isLive, traderLogin, ... }] }`.
+ */
+export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, timeoutMs = 20_000) {
+  return withRetry(() => wsRun(host, [
+    { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
+    { send: { payloadType: PT.GET_ACCOUNTS_BY_TOKEN_REQ, payload: { accessToken } }, expect: PT.GET_ACCOUNTS_BY_TOKEN_RES },
+  ], timeoutMs), 2, 'wsGetAccountsByToken')
+}
+
+/**
+ * Fetch the full light symbol list for an account via SYMBOLS_LIST_REQ.
+ * Returns `{ symbol: [{ symbolId, symbolName, ... }] }`.
+ */
+export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
+  ], timeoutMs), 2, 'wsGetSymbolsList')
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

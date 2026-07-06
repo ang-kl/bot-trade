@@ -229,7 +229,7 @@ export default function Tune() {
           ))}
         </div>
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-          New symbols also need a cTrader symbol ID mapping — see the Connect tab.
+          Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
         </p>
       </Card>
     </div>

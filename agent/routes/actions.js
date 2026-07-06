@@ -259,6 +259,74 @@ export default function actionsRouter(db) {
   // Body: { accessToken, accounts: [{ accountId, isLive, autopilot, copilot }] }
   // The loop reads autopilot-enabled accounts and trades each one.
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // POST /actions/ctrader-token — store an access token and list every
+  // trading account it can operate (no account id needed from the user).
+  // Body: { accessToken }
+  // -----------------------------------------------------------------------
+  router.post('/ctrader-token', async (req, res) => {
+    try {
+      const { accessToken } = req.body || {}
+      if (!accessToken) return res.status(400).json({ error: 'accessToken is required' })
+      const clientId = process.env.CTRADER_CLIENT_ID
+      const clientSecret = process.env.CTRADER_CLIENT_SECRET
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: 'CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET env vars not set on the agent' })
+      }
+      // Account listing works on either host; use demo.
+      const { wsGetAccountsByToken } = await import('../lib/ctrader-ws.js')
+      const data = await wsGetAccountsByToken('demo.ctraderapi.com', clientId, clientSecret, accessToken)
+      const accounts = (data.ctidTraderAccount || []).map(a => ({
+        accountId: a.ctidTraderAccountId,
+        isLive: !!a.isLive,
+        traderLogin: a.traderLogin ?? null,
+        brokerTitle: a.brokerTitleShort || a.brokerName || null,
+      }))
+      setState(db, 'ctrader_access_token', accessToken)
+      console.log(`[actions] ctrader token stored — ${accounts.length} account(s) available`)
+      res.json({ ok: true, accounts })
+    } catch (err) {
+      console.error('[actions/ctrader-token] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/ctrader-select-account — pick the trading account and
+  // auto-build the symbol → symbolId map from the broker's symbol list.
+  // Body: { accountId, isLive }
+  // -----------------------------------------------------------------------
+  router.post('/ctrader-select-account', async (req, res) => {
+    try {
+      const { accountId, isLive } = req.body || {}
+      if (!accountId) return res.status(400).json({ error: 'accountId is required' })
+      const accessToken = getState(db, 'ctrader_access_token')
+      if (!accessToken) return res.status(400).json({ error: 'No access token stored — push it first via /actions/ctrader-token' })
+      const clientId = process.env.CTRADER_CLIENT_ID
+      const clientSecret = process.env.CTRADER_CLIENT_SECRET
+
+      setState(db, 'ctrader_account_id', String(accountId))
+      setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
+      setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
+
+      const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const { wsGetSymbolsList } = await import('../lib/ctrader-ws.js')
+      const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
+      const map = {}
+      for (const s of (data.symbol || [])) {
+        if (s.symbolName && s.symbolId != null) map[String(s.symbolName).toUpperCase()] = s.symbolId
+      }
+      if (Object.keys(map).length > 0) {
+        setState(db, 'symbol_id_map', JSON.stringify(map))
+      }
+      console.log(`[actions] ctrader account ${accountId} selected (${isLive ? 'LIVE' : 'demo'}) — ${Object.keys(map).length} symbols mapped`)
+      res.json({ ok: true, accountId, isLive: !!isLive, symbolsMapped: Object.keys(map).length })
+    } catch (err) {
+      console.error('[actions/ctrader-select-account] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   router.post('/ctrader-config', (req, res) => {
     try {
       const { accessToken, accounts } = req.body || {}
