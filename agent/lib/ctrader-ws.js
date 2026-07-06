@@ -39,6 +39,8 @@ export const PT = Object.freeze({
   SYMBOLS_LIST_RES:        2115,
   SYMBOL_BY_ID_REQ:        2116,
   SYMBOL_BY_ID_RES:        2117,
+  TRADER_REQ:              2121,
+  TRADER_RES:              2122,
   GET_ACCOUNTS_BY_TOKEN_REQ: 2149,
   GET_ACCOUNTS_BY_TOKEN_RES: 2150,
   RECONCILE_REQ:           2124,
@@ -399,6 +401,19 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
   ], timeoutMs), 2, 'wsGetSymbolsList')
+}
+
+/**
+ * Fetch account details (balance, leverage) via TRADER_REQ.
+ * Returns the ProtoOATrader: `{ balance, leverageInCents, ... }` —
+ * monetary fields are in cents (divide by 100).
+ */
+export async function wsGetTrader(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
+  const payload = await withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.TRADER_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.TRADER_RES },
+  ], timeoutMs), 2, 'wsGetTrader')
+  return payload.trader || {}
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.
