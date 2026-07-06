@@ -405,8 +405,9 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
 
 /**
  * Fetch account details (balance, leverage) via TRADER_REQ.
- * Returns the ProtoOATrader: `{ balance, leverageInCents, ... }` —
- * monetary fields are in cents (divide by 100).
+ * Returns the ProtoOATrader: `{ balance, leverageInCents, moneyDigits, ... }`.
+ * Use `traderBalance(trader)` to decode the balance — monetary fields are
+ * scaled by 10^moneyDigits (2 for most brokers, but not guaranteed).
  */
 export async function wsGetTrader(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
   const payload = await withRetry(() => wsRun(host, [
@@ -414,6 +415,16 @@ export async function wsGetTrader(host, clientId, clientSecret, accessToken, acc
     { send: { payloadType: PT.TRADER_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.TRADER_RES },
   ], timeoutMs), 2, 'wsGetTrader')
   return payload.trader || {}
+}
+
+/**
+ * Decode a ProtoOATrader's balance honoring moneyDigits (default 2).
+ * Returns null when the trader has no balance field.
+ */
+export function traderBalance(trader) {
+  if (trader?.balance == null) return null
+  const digits = trader.moneyDigits != null ? trader.moneyDigits : 2
+  return trader.balance / Math.pow(10, digits)
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

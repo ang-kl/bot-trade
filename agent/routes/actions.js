@@ -288,7 +288,7 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET env vars not set on the agent' })
       }
       // Account listing works on either host; use demo.
-      const { wsGetAccountsByToken, wsGetTrader } = await import('../lib/ctrader-ws.js')
+      const { wsGetAccountsByToken, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
       const data = await wsGetAccountsByToken('demo.ctraderapi.com', clientId, clientSecret, accessToken)
       const accounts = (data.ctidTraderAccount || []).map(a => ({
         accountId: a.ctidTraderAccountId,
@@ -303,7 +303,8 @@ export default function actionsRouter(db) {
         try {
           const host = a.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
           const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, a.accountId)
-          if (trader.balance != null) a.balance = trader.balance / 100
+          const bal = traderBalance(trader)
+          if (bal != null) a.balance = bal
         } catch { /* leave null */ }
       }))
       setState(db, 'ctrader_access_token', accessToken)
@@ -334,7 +335,7 @@ export default function actionsRouter(db) {
       setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const { wsGetSymbolsList, wsGetTrader } = await import('../lib/ctrader-ws.js')
+      const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
       const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
       const map = {}
       for (const s of (data.symbol || [])) {
@@ -349,8 +350,8 @@ export default function actionsRouter(db) {
       let balance = null
       try {
         const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
-        if (trader.balance != null) {
-          balance = trader.balance / 100
+        balance = traderBalance(trader)
+        if (balance != null) {
           setState(db, 'account_balance_usd', String(balance))
         }
         if (trader.leverageInCents != null) {

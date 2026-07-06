@@ -227,7 +227,7 @@ async function start() {
       const haveBalance = getState(db, 'account_balance_usd') != null;
       if (haveMap && haveBalance) return;
 
-      const { wsGetSymbolsList, wsGetTrader } = await import('./lib/ctrader-ws.js');
+      const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js');
       if (!haveMap) {
         const data = await wsGetSymbolsList(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId);
         const map = {};
@@ -241,9 +241,10 @@ async function start() {
       }
       if (!haveBalance) {
         const trader = await wsGetTrader(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId);
-        if (trader.balance != null) {
-          setState(db, 'account_balance_usd', String(trader.balance / 100));
-          console.log(`[boot] cTrader self-link: balance ${trader.balance / 100}`);
+        const bal = traderBalance(trader);
+        if (bal != null) {
+          setState(db, 'account_balance_usd', String(bal));
+          console.log(`[boot] cTrader self-link: balance ${bal}`);
         }
         if (trader.leverageInCents != null) {
           setState(db, 'account_leverage', String(trader.leverageInCents / 100));
