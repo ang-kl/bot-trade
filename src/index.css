@@ -355,6 +355,12 @@ body::after {
           backdrop-filter: blur(26px) saturate(170%);
 }
 
+/* When liquidGL (WebGL refraction) takes over the bar it sets
+   pointer-events:none on it — children opt back in so nav stays clickable. */
+.glass-bar > * {
+  pointer-events: auto;
+}
+
 /* Inset glass for inputs */
 .glass-inset {
   background: var(--color-accent-soft);
