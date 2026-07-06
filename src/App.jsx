@@ -51,6 +51,8 @@ export default function App() {
           <Route path="/trade" element={<Trade />} />
           <Route path="/tune" element={<Tune />} />
           <Route path="/connect" element={<Connect />} />
+          {/* Spotware OAuth redirect URI (registered on the cTrader app) */}
+          <Route path="/link-up" element={<Connect />} />
           <Route path="*" element={<Navigate to="/trade" replace />} />
         </Routes>
       </main>
