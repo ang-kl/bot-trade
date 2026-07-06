@@ -1,7 +1,5 @@
 /* global __APP_VERSION__ */
-import { useEffect } from 'react'
-import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import { initLiquidGlass, refreshLiquidGlass } from './lib/liquid-glass.js'
+import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
@@ -20,14 +18,6 @@ const TABS = [
 
 export default function App() {
   const { theme, setTheme } = useTheme()
-  const location = useLocation()
-
-  // WebGL liquid-glass refraction on the header bar (progressive enhancement;
-  // no-op on mobile / reduced motion / no WebGL — CSS glass remains).
-  useEffect(() => { initLiquidGlass('.glass-bar') }, [])
-  // The effect refracts a page snapshot — refresh it when what's behind the
-  // bar changes: navigation, theme switch, and shortly after data loads.
-  useEffect(() => { refreshLiquidGlass(600) }, [location.pathname, theme])
 
   return (
     <div className="min-h-screen text-[var(--color-text)]">
