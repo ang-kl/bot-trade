@@ -676,6 +676,26 @@ async function runLoop(db) {
             }
           }
 
+          // Autotrade timeframe gate — only timeframes with demonstrated edge
+          // may auto-trade (default 4h/1d per the reference backtest; lower
+          // TFs were net-negative there even before spread). Scans and alerts
+          // still cover every timeframe. Widen via agent state:
+          //   autotrade_timeframes = '["1h","4h","1d"]'
+          if (synth.auto_trade) {
+            let allowedTfs = ['4h', '1d']
+            const tfJson = getState(db, 'autotrade_timeframes')
+            if (tfJson) {
+              try {
+                const parsedTfs = JSON.parse(tfJson)
+                if (Array.isArray(parsedTfs) && parsedTfs.length > 0) allowedTfs = parsedTfs
+              } catch { /* keep default */ }
+            }
+            if (!allowedTfs.includes(synth.timeframe)) {
+              log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
+              synth.auto_trade = false
+            }
+          }
+
           // Human override: if override_bias is set, use it instead of AI's
           if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
             if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {

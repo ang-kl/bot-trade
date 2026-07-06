@@ -23,6 +23,10 @@ export const DEFAULT_RISK_CONFIG = {
   minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
   cooldownMinutes: 60,             // Cool-off window after hitting the streak.
+  symbolCooldownMinutes: 240,      // Per-symbol lock after ANY closed trade on
+                                   // that symbol (freqtrade "CooldownPeriod").
+                                   // Stops instant re-entry into the same
+                                   // broken level after a stop-out.
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
   minRR: 1.5,                      // TP must be ≥ minRR × SL distance.
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
@@ -269,6 +273,28 @@ export function evaluateTrade(db, proposal, configOverride) {
   const existingSameSymbol = openPositions.find(p => p.symbol === proposal.symbol)
   if (existingSameSymbol) {
     return veto(`duplicate_symbol existing_side=${existingSameSymbol.side}`, checks, proposal)
+  }
+
+  // ---- 4b. Per-symbol re-entry cooldown -----------------------------------
+  // A signal zone persists after knocking us out, so without this the very
+  // next loop re-enters the same broken level. Locks the symbol for
+  // symbolCooldownMinutes after its most recent closed trade.
+  if (config.symbolCooldownMinutes > 0) {
+    const lastClosed = db
+      .prepare(
+        `SELECT closed_at FROM trades
+         WHERE status = 'closed' AND symbol = ? AND closed_at IS NOT NULL
+         ORDER BY closed_at DESC LIMIT 1`
+      )
+      .get(proposal.symbol)
+    if (lastClosed?.closed_at) {
+      const unlockAt = new Date(lastClosed.closed_at).getTime() + config.symbolCooldownMinutes * 60_000
+      if (unlockAt > Date.now()) {
+        const mins = Math.ceil((unlockAt - Date.now()) / 60_000)
+        checks.symbol_cooldown_wait = mins
+        return veto(`symbol_cooldown wait=${mins}m`, checks, proposal)
+      }
+    }
   }
 
   // ---- 5. Blocked-symbol gate (opt-in per-config) -------------------------

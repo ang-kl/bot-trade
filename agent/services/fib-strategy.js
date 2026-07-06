@@ -14,6 +14,12 @@ import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
+// Leg-significance floor: reject legs smaller than this many ATR(14). Fading
+// micro-legs is where spread/slippage (not modelled anywhere upstream)
+// exceeds the theoretical edge — the main reason the reference backtest bled
+// out on low timeframes.
+const MIN_LEG_ATR_MULT = 3
+const ATR_PERIOD = 14
 // SL buffer beyond the swing origin. Kept small deliberately: at the 61.8%
 // level tp1Distance is 0.618×range and slDistance is (0.382 + buffer)×range,
 // so the buffer sets the signal's R:R — 0.02 gives rr≈1.54 at the level,
@@ -43,6 +49,28 @@ function cachedBars(symbolId, period) {
   if (!entry) return null
   const ttl = TRENDBAR_PERIODS[period]?.ms || 300_000
   return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
+}
+
+/**
+ * Mean true range over the trailing `period` bars. Local implementation —
+ * the agent stays standalone from the frontend's src/lib/indicator-calc.js.
+ */
+export function atr(bars, period = ATR_PERIOD) {
+  if (bars.length < 2) return 0
+  const slice = bars.slice(-(period + 1))
+  let sum = 0
+  let n = 0
+  for (let i = 1; i < slice.length; i++) {
+    const prevClose = slice[i - 1].c
+    const tr = Math.max(
+      slice[i].h - slice[i].l,
+      Math.abs(slice[i].h - prevClose),
+      Math.abs(slice[i].l - prevClose),
+    )
+    sum += tr
+    n++
+  }
+  return n > 0 ? sum / n : 0
 }
 
 /**
@@ -88,6 +116,10 @@ export function computeFibSignal(bars, timeframe) {
   const swingB = upLeg ? lastHigh : lastLow // leg end (fib 0%)
   const range = Math.abs(swingB.price - swingA.price)
   if (range <= 0) return null
+
+  // Leg must be significant relative to recent volatility — micro-legs are
+  // noise whose "zone reactions" are spread-sized.
+  if (range < MIN_LEG_ATR_MULT * atr(bars)) return null
 
   const level618 = upLeg
     ? swingB.price - 0.618 * range
@@ -176,11 +208,21 @@ export async function scanSymbolFib(creds, symbol, symbolId) {
   let signal = null
   let lastPrice = null
   let lastPriceT = -1
+  const now = Date.now()
   for (const timeframe of TIMEFRAMES) {
     const bars = cachedBars(symbolId, timeframe) || []
     const last = bars[bars.length - 1]
     if (last && last.t > lastPriceT) { lastPrice = last.c; lastPriceT = last.t }
-    if (!signal) signal = computeFibSignal(bars, timeframe)
+    // Signals are evaluated on CLOSED bars only. cTrader's trendbar response
+    // includes the current forming bar, and a mid-bar "close" is the classic
+    // repainting/lookahead trap: intrabar wicks trigger entries a closed-bar
+    // rule (and any backtest of it) would never take. The forming bar's close
+    // still feeds lastPrice above — right for pricing, wrong for signals.
+    if (!signal) {
+      const periodMs = TRENDBAR_PERIODS[timeframe]?.ms || 0
+      const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
+      signal = computeFibSignal(closed, timeframe)
+    }
   }
   return { symbol, signal, lastPrice, error: null }
 }
