@@ -22,6 +22,57 @@ export default function actionsRouter(db) {
   const router = Router()
 
   // -----------------------------------------------------------------------
+  // POST /actions/chart — OHLC bars for one symbol/timeframe, plus the
+  // current fib read for overlay. Powers the per-position charts in the UI.
+  // Body: { symbol, timeframe='1h', bars=120 }
+  // -----------------------------------------------------------------------
+  router.post('/chart', async (req, res) => {
+    try {
+      const symbol = String(req.body?.symbol || '').toUpperCase()
+      const timeframe = String(req.body?.timeframe || '1h')
+      const count = Math.min(300, Math.max(30, Number(req.body?.bars) || 120))
+      if (!symbol) return res.status(400).json({ error: 'symbol required' })
+
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const symbolId = getSymbolMap(db)[symbol]
+      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not in the symbol map` })
+
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, [timeframe], count)
+      const bars = byPeriod[timeframe] || []
+      if (bars.length === 0) return res.status(502).json({ error: 'Broker returned no bars' })
+
+      // Fib overlay from the same bars (closed bars only, like the scanner)
+      let fib = null
+      try {
+        const { computeFibSignal } = await import('../services/fib-strategy.js')
+        fib = computeFibSignal(bars.slice(0, -1), timeframe, {})
+      } catch { /* overlay optional */ }
+
+      res.json({
+        symbol,
+        timeframe,
+        bars: bars.map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c })),
+        lastPrice: bars[bars.length - 1]?.c ?? null,
+        fib: fib ? {
+          bias: fib.bias,
+          level618: fib.level618,
+          entry: fib.entry,
+          sl: fib.sl,
+          tp1: fib.tp1,
+          tp2: fib.tp2,
+          swingA: fib.swingA,
+          swingB: fib.swingB,
+        } : null,
+        fetchedAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/scan — trigger immediate scan
   // -----------------------------------------------------------------------
   router.post('/scan', async (req, res) => {

@@ -7,6 +7,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import { agentPost, agentConfigured } from '../lib/agent-api.js'
+import PositionChart from '../components/PositionChart.jsx'
 
 function fmt(n, digits = 5) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -27,6 +28,42 @@ function ts(msOrIso) {
 
 const th = 'pr-3 py-1 text-left font-medium text-[var(--color-text-sub)] whitespace-nowrap'
 const td = 'pr-3 py-1.5 whitespace-nowrap'
+
+// A broker position row with an expandable live chart. The chart endpoint
+// resolves symbols via the SELECTED account's symbol map — for symbols shown
+// as raw #ids (or from other brokers) it reports "unknown symbol" gracefully.
+function BrokerPositionRow({ p }) {
+  const [showChart, setShowChart] = useState(false)
+  return (
+    <>
+      <tr className="border-t border-[var(--color-border)]">
+        <td className={`${td} font-semibold`}>{p.symbol}{p.guaranteedSl ? ' 🔒' : ''}</td>
+        <td className={td}><Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge></td>
+        <td className={td}>{p.lots != null ? fmt(p.lots, 2) : '—'}</td>
+        <td className={td}>{p.minLot != null ? fmt(p.minLot, 2) : '—'}</td>
+        <td className={td}>{fmt(p.entry)}</td>
+        <td className={td}>{fmt(p.currentPrice)}</td>
+        <td className={td}>{p.deltaPips != null ? <Badge tone={p.deltaPips >= 0 ? 'up' : 'down'}>{p.deltaPips >= 0 ? '+' : ''}{fmt(p.deltaPips, 1)}</Badge> : '—'}</td>
+        <td className={td}>{p.estPnlQuote != null ? <span className={p.estPnlQuote >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{money(p.estPnlQuote)}</span> : '—'}</td>
+        <td className={td}>{fmt(p.sl)}</td>
+        <td className={td}>{fmt(p.tp)}</td>
+        <td className={td}>{money(p.swap)}</td>
+        <td className={td}>{money(p.commission)}</td>
+        <td className={td}>{money(p.usedMargin)}</td>
+        <td className={td}>{ts(p.openedAt)}</td>
+        <td className={`${td} text-[var(--color-text-sub)] max-w-[160px] truncate`} title={p.comment || p.label || ''}>{p.label || p.comment || '—'}</td>
+        <td className={td}><Button size="sm" variant="ghost" onClick={() => setShowChart(s => !s)}>{showChart ? 'Hide' : 'Chart'}</Button></td>
+      </tr>
+      {showChart && (
+        <tr className="border-t border-[var(--color-border)]">
+          <td colSpan={16} className="py-2">
+            <PositionChart symbol={p.symbol} timeframe="1h" lines={{ entry: p.entry, sl: p.sl, tp: p.tp }} />
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
 
 export default function Accounts() {
   const [data, setData] = useState(null)
@@ -81,27 +118,11 @@ export default function Accounts() {
                   <th className={th}>Entry</th><th className={th}>Now</th><th className={th}>Δ pips</th>
                   <th className={th}>Est. P&L*</th><th className={th}>SL</th><th className={th}>TP</th>
                   <th className={th}>Swap</th><th className={th}>Comm.</th><th className={th}>Margin</th>
-                  <th className={th}>Opened</th><th className={th}>Label</th>
+                  <th className={th}>Opened</th><th className={th}>Label</th><th className={th}>Chart</th>
                 </tr></thead>
                 <tbody>
                   {acct.positions.map(p => (
-                    <tr key={p.positionId} className="border-t border-[var(--color-border)]">
-                      <td className={`${td} font-semibold`}>{p.symbol}{p.guaranteedSl ? ' 🔒' : ''}</td>
-                      <td className={td}><Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge></td>
-                      <td className={td}>{p.lots != null ? fmt(p.lots, 2) : '—'}</td>
-                      <td className={td}>{p.minLot != null ? fmt(p.minLot, 2) : '—'}</td>
-                      <td className={td}>{fmt(p.entry)}</td>
-                      <td className={td}>{fmt(p.currentPrice)}</td>
-                      <td className={td}>{p.deltaPips != null ? <Badge tone={p.deltaPips >= 0 ? 'up' : 'down'}>{p.deltaPips >= 0 ? '+' : ''}{fmt(p.deltaPips, 1)}</Badge> : '—'}</td>
-                      <td className={td}>{p.estPnlQuote != null ? <span className={p.estPnlQuote >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{money(p.estPnlQuote)}</span> : '—'}</td>
-                      <td className={td}>{fmt(p.sl)}</td>
-                      <td className={td}>{fmt(p.tp)}</td>
-                      <td className={td}>{money(p.swap)}</td>
-                      <td className={td}>{money(p.commission)}</td>
-                      <td className={td}>{money(p.usedMargin)}</td>
-                      <td className={td}>{ts(p.openedAt)}</td>
-                      <td className={`${td} text-[var(--color-text-sub)] max-w-[160px] truncate`} title={p.comment || p.label || ''}>{p.label || p.comment || '—'}</td>
-                    </tr>
+                    <BrokerPositionRow key={p.positionId} p={p} />
                   ))}
                 </tbody>
               </table>
