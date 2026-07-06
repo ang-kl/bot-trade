@@ -13,7 +13,7 @@ import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
+import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsGetSymbolsList } from './lib/ctrader-ws.js'
 import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
@@ -1001,9 +1001,11 @@ async function runLoop(db) {
             ...(reconcileData.order || []).map(o => o.tradeData?.symbolId),
           ].filter(Boolean))]
 
+          // Names come from the LIGHT symbols list — SYMBOL_BY_ID returns the
+          // full record, which has no symbolName field.
           let symbolNameMap = {}
           if (allSymbolIds.length > 0) {
-            const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, allSymbolIds)
+            const symData = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
             for (const s2 of (symData.symbol || [])) {
               symbolNameMap[s2.symbolId] = s2.symbolName
             }
