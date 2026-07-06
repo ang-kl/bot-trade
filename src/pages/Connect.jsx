@@ -1,5 +1,6 @@
-// Connect — wire the UI to the agent backend, push cTrader credentials,
-// and maintain the symbol → cTrader symbolId map.
+// Connect — wire the UI to the agent backend and link a cTrader account.
+// The cTrader flow is two taps: paste token → pick an account. The agent
+// discovers the accounts from the token and auto-builds the symbol map.
 import { useEffect, useState } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -13,19 +14,22 @@ export default function Connect() {
   const [secret, setSecret] = useState(conn.secret)
   const [testResult, setTestResult] = useState(null)
 
-  const [ctrader, setCtrader] = useState({ accessToken: '', accountId: '', isLive: false })
-  const [symbolMapText, setSymbolMapText] = useState('')
+  const [token, setToken] = useState('')
+  const [accounts, setAccounts] = useState(null)      // null = not loaded yet
+  const [linking, setLinking] = useState(false)
+  const [linked, setLinked] = useState(null)          // { accountId, isLive, symbolsMapped }
+  const [symbolCount, setSymbolCount] = useState(null)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
-    // Pre-fill the symbol map editor from current agent state (best effort).
+    // Show current linkage state (best effort).
     agentGet('/state/symbol-map').then(r => {
-      if (r?.map) setSymbolMapText(JSON.stringify(r.map, null, 2))
+      if (r?.map) setSymbolCount(Object.keys(r.map).length)
     }).catch(() => {})
   }, [])
 
-  const flash = (msg) => { setStatus(msg); setError(''); setTimeout(() => setStatus(''), 3000) }
+  const flash = (msg) => { setStatus(msg); setError(''); setTimeout(() => setStatus(''), 4000) }
 
   const saveConn = () => {
     setAgentConn({ url, secret })
@@ -44,27 +48,27 @@ export default function Connect() {
     }
   }
 
-  const pushCtrader = async () => {
+  const loadAccounts = async () => {
+    if (!token.trim()) { setError('Paste your access token first'); return }
+    setLinking(true)
+    setAccounts(null)
+    setLinked(null)
     try {
-      if (!ctrader.accessToken) { setError('Access token is required'); return }
-      const body = { accessToken: ctrader.accessToken }
-      if (ctrader.accountId) {
-        body.accounts = [{ accountId: ctrader.accountId, isLive: ctrader.isLive, autopilot: true }]
-      }
-      await agentPost('/actions/ctrader-config', body)
-      setCtrader({ accessToken: '', accountId: '', isLive: false })
-      flash('cTrader credentials pushed to agent')
-    } catch (e) { setError(e.message) }
+      const r = await agentPost('/actions/ctrader-token', { accessToken: token.trim() })
+      setAccounts(r.accounts || [])
+      if ((r.accounts || []).length === 0) setError('Token accepted but no trading accounts found on it')
+    } catch (e) { setError(e.message) } finally { setLinking(false) }
   }
 
-  const pushSymbolMap = async () => {
+  const selectAccount = async (a) => {
+    setLinking(true)
     try {
-      const map = JSON.parse(symbolMapText)
-      const r = await agentPost('/actions/symbol-map', { map })
-      flash(`Symbol map saved (${r.count} symbols)`)
-    } catch (e) {
-      setError(e instanceof SyntaxError ? 'Symbol map must be valid JSON, e.g. {"EURUSD": 1, "XAUUSD": 41}' : e.message)
-    }
+      const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive })
+      setLinked(r)
+      setSymbolCount(r.symbolsMapped)
+      setToken('')
+      flash(`Linked account ${r.accountId} (${r.isLive ? 'LIVE' : 'demo'}) — ${r.symbolsMapped} symbols mapped automatically`)
+    } catch (e) { setError(e.message) } finally { setLinking(false) }
   }
 
   return (
@@ -74,7 +78,7 @@ export default function Connect() {
 
       {/* Agent connection */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-2">Agent backend</h2>
+        <h2 className="text-[13px] font-semibold mb-2">1 · Agent backend</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-[12px]">
             <span className="text-[var(--color-text-sub)]">Agent URL</span>
@@ -94,52 +98,55 @@ export default function Connect() {
           )}
         </div>
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-          Stored in this browser's localStorage. Falls back to the VITE_AGENT_URL / VITE_AGENT_SECRET build-time env vars when empty.
-          Tip: a one-tap setup link configures any browser — <code>{'{site}'}/#{'{secret}'}</code> when the agent URL is already set (or built in), or the full form <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code>. The #fragment never leaves the browser; share the link like a password.
+          One-tap setup link: <code>{'{site}'}/#{'{secret}'}</code> (or full form <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code>). The #fragment never leaves the browser — share it like a password.
         </p>
       </Card>
 
       {/* cTrader */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-2">cTrader account</h2>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">Access token</span>
-            <Input type="password" value={ctrader.accessToken} onChange={e => setCtrader(c => ({ ...c, accessToken: e.target.value }))} placeholder="Spotware OAuth access token" />
-          </label>
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">ctidTraderAccountId</span>
-            <Input value={ctrader.accountId} onChange={e => setCtrader(c => ({ ...c, accountId: e.target.value }))} placeholder="e.g. 41112345" />
-          </label>
-          <label className="flex items-end gap-2 text-[12px] pb-2">
-            <input type="checkbox" checked={ctrader.isLive} onChange={e => setCtrader(c => ({ ...c, isLive: e.target.checked }))} />
-            <span>Live account (unchecked = demo)</span>
-          </label>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-[13px] font-semibold">2 · cTrader account</h2>
+          {symbolCount != null && symbolCount > 0 && <Badge tone="up">LINKED — {symbolCount} symbols mapped</Badge>}
         </div>
-        <div className="mt-3">
-          <Button size="sm" onClick={pushCtrader}>Push to agent</Button>
-        </div>
-        <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-          Get a token from the Spotware Open API portal (openapi.ctrader.com). The token is stored in the agent's database, never in this browser.
-        </p>
-      </Card>
 
-      {/* Symbol map */}
-      <Card>
-        <h2 className="text-[13px] font-semibold mb-2">Symbol → cTrader ID map</h2>
-        <textarea
-          value={symbolMapText}
-          onChange={e => setSymbolMapText(e.target.value)}
-          rows={8}
-          spellCheck={false}
-          placeholder={'{\n  "EURUSD": 1,\n  "GBPUSD": 2,\n  "XAUUSD": 41\n}'}
-          className="block w-full rounded-[7px] border bg-[var(--color-surface)] text-[var(--color-text)] border-[var(--color-border)] px-2.5 py-2 text-[13px] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40"
-        />
-        <div className="mt-3">
-          <Button size="sm" onClick={pushSymbolMap}>Save symbol map</Button>
-        </div>
+        <label className="block text-[12px]">
+          <span className="text-[var(--color-text-sub)]">Access token (from openapi.ctrader.com — authorize once, paste here)</span>
+          <div className="mt-1 flex gap-2">
+            <Input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="Spotware OAuth access token" className="flex-1" />
+            <Button size="sm" onClick={loadAccounts} disabled={linking}>{linking && !accounts ? 'Loading…' : 'Load accounts'}</Button>
+          </div>
+        </label>
+
+        {accounts && accounts.length > 0 && (
+          <div className="mt-3">
+            <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tap the account the bot should trade with:</div>
+            <div className="space-y-1.5">
+              {accounts.map(a => (
+                <button
+                  key={a.accountId}
+                  type="button"
+                  disabled={linking}
+                  onClick={() => selectAccount(a)}
+                  className={`flex w-full items-center gap-3 rounded-[7px] border px-3 py-2 text-left text-[13px] cursor-pointer hover:border-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] ${
+                    linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'
+                  }`}
+                >
+                  <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
+                  <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
+                  {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
+                  <span className="ml-auto text-[var(--color-text-sub)]">id {a.accountId}</span>
+                  {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[12px] text-[var(--color-warning-text)]">
+              Start with a DEMO account. Picking it also downloads the broker's full symbol list automatically — no manual IDs needed.
+            </p>
+          </div>
+        )}
+
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-          The agent needs each symbol's numeric cTrader symbolId to fetch candles and place orders. Find IDs in the cTrader platform or via the Open API symbol list.
+          The token is stored in the agent's database, never in this browser.
         </p>
       </Card>
     </div>
