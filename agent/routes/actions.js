@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { getState, setState } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
+import { ctraderEnv } from '../lib/ctrader-env.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { getActiveSessions } from '../lib/sessions.js'
@@ -668,8 +669,8 @@ export default function actionsRouter(db) {
       if (!accountId) return res.status(400).json({ error: 'accountId is required' })
       const accessToken = getState(db, 'ctrader_access_token')
       if (!accessToken) return res.status(400).json({ error: 'No access token stored — push it first via /actions/ctrader-token' })
-      const clientId = process.env.CTRADER_CLIENT_ID
-      const clientSecret = process.env.CTRADER_CLIENT_SECRET
+      const clientId = ctraderEnv('clientId')
+      const clientSecret = ctraderEnv('clientSecret')
 
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
@@ -1000,8 +1001,8 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: `Cannot execute trade with bias "${bias}"` })
       }
 
-      const clientId = process.env.CTRADER_CLIENT_ID
-      const clientSecret = process.env.CTRADER_CLIENT_SECRET
+      const clientId = ctraderEnv('clientId')
+      const clientSecret = ctraderEnv('clientSecret')
       const accessToken = getState(db, 'ctrader_access_token')
       const accountId = getState(db, 'ctrader_account_id')
       const isLive = getState(db, 'ctrader_is_live') === 'true'
