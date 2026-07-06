@@ -134,7 +134,8 @@ export default function Connect() {
                   <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
                   <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
                   {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
-                  <span className="ml-auto text-[var(--color-text-sub)]">id {a.accountId}</span>
+                  <span className="ml-auto font-semibold">{a.balance != null ? `$${Number(a.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}</span>
+                  <span className="text-[var(--color-text-sub)]">id {a.accountId}</span>
                   {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
                 </button>
               ))}

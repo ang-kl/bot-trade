@@ -28,24 +28,30 @@ export default function Trade() {
   const [positions, setPositions] = useState([])
   const [trades, setTrades] = useState([])
   const [riskEvents, setRiskEvents] = useState([])
+  const [account, setAccount] = useState(null)   // risk-config derived: balance, leverage
+  const [broker, setBroker] = useState(null)     // reconcile snapshot: pending orders, external positions
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [h, s, p, t, r] = await Promise.all([
+      const [h, s, p, t, r, rc, bo] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
         agentGet('/state/risk-events?limit=15'),
+        agentGet('/state/risk-config').catch(() => null),
+        agentGet('/state/broker-orders').catch(() => null),
       ])
       setHealth(h)
       setScans(s.rows || s.scans || [])
       setPositions(p.rows || p.positions || [])
       setTrades((t.rows || t.trades || []).slice(0, 15))
       setRiskEvents(r.rows || [])
+      setAccount(rc?.derived || null)
+      setBroker(bo || null)
       setError('')
     } catch (e) {
       setError(e.message)
@@ -76,6 +82,9 @@ export default function Trade() {
           <Badge tone={health?.status === 'ok' ? 'up' : health ? 'down' : 'neutral'} pill>
             {health ? (health.status === 'ok' ? 'AGENT OK' : health.status.toUpperCase()) : 'NO DATA'}
           </Badge>
+          {account?.balance != null && (
+            <span className="font-semibold">${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}</span>
+          )}
           <span>loop #{fmt(health?.loopCount, 0)}</span>
           <span>phase: {health?.loopPhase || '—'}</span>
           <span>last scan: {ago(health?.lastScanAt)}</span>
@@ -150,6 +159,46 @@ export default function Trade() {
           </div>
         )}
       </Card>
+
+      {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}
+      {broker && ((broker.pendingOrders?.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
+        <Card>
+          <h2 className="text-[13px] font-semibold mb-2">
+            At the broker
+            {broker.lastReconcileAt && <span className="ml-2 font-normal text-[var(--color-text-sub)]">synced {ago(broker.lastReconcileAt)}</span>}
+          </h2>
+          {(broker.pendingOrders?.length || 0) > 0 && (
+            <div className="mb-2">
+              <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
+              <ul className="space-y-1 text-[13px]">
+                {broker.pendingOrders.map((o, i) => (
+                  <li key={o.orderId || i} className="flex items-center gap-2">
+                    <Badge tone={String(o.tradeData?.tradeSide || o.tradeSide).toUpperCase() === 'BUY' ? 'up' : 'down'}>
+                      {String(o.tradeData?.tradeSide || o.tradeSide || '?').toUpperCase()}
+                    </Badge>
+                    <span className="font-semibold">{o.symbolName || o.tradeData?.symbolId}</span>
+                    <span className="text-[var(--color-text-sub)]">{o.orderType || 'order'} @ {fmt(o.limitPrice ?? o.stopPrice)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(broker.externalPositions?.length || 0) > 0 && (
+            <div>
+              <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
+              <ul className="space-y-1 text-[13px]">
+                {broker.externalPositions.map(p => (
+                  <li key={p.id} className="flex items-center gap-2">
+                    <Badge tone={String(p.side).toUpperCase() === 'BUY' ? 'up' : 'down'}>{String(p.side).toUpperCase()}</Badge>
+                    <span className="font-semibold">{p.symbol}</span>
+                    <span className="text-[var(--color-text-sub)]">entry {fmt(p.entry_price)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {/* Recent trades */}

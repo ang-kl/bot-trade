@@ -972,6 +972,14 @@ async function runLoop(db) {
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
           log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${result.pendingOrders.length} pending orders`)
 
+          // Refresh the real account balance so risk sizing tracks equity as
+          // trades close (linking set it once; this keeps it live).
+          try {
+            const { wsGetTrader } = await import('./lib/ctrader-ws.js')
+            const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
+            if (trader.balance != null) setState(db, 'account_balance_usd', String(trader.balance / 100))
+          } catch { /* best effort */ }
+
           if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
             try {
               const { sendMessage } = await import('./services/telegram.js')

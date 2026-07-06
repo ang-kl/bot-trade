@@ -274,13 +274,23 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'CTRADER_CLIENT_ID / CTRADER_CLIENT_SECRET env vars not set on the agent' })
       }
       // Account listing works on either host; use demo.
-      const { wsGetAccountsByToken } = await import('../lib/ctrader-ws.js')
+      const { wsGetAccountsByToken, wsGetTrader } = await import('../lib/ctrader-ws.js')
       const data = await wsGetAccountsByToken('demo.ctraderapi.com', clientId, clientSecret, accessToken)
       const accounts = (data.ctidTraderAccount || []).map(a => ({
         accountId: a.ctidTraderAccountId,
         isLive: !!a.isLive,
         traderLogin: a.traderLogin ?? null,
         brokerTitle: a.brokerTitleShort || a.brokerName || null,
+        balance: null,
+      }))
+      // Enrich each account with its balance (best effort — a failure just
+      // leaves balance null for that account).
+      await Promise.all(accounts.map(async (a) => {
+        try {
+          const host = a.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, a.accountId)
+          if (trader.balance != null) a.balance = trader.balance / 100
+        } catch { /* leave null */ }
       }))
       setState(db, 'ctrader_access_token', accessToken)
       console.log(`[actions] ctrader token stored — ${accounts.length} account(s) available`)
@@ -310,7 +320,7 @@ export default function actionsRouter(db) {
       setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const { wsGetSymbolsList } = await import('../lib/ctrader-ws.js')
+      const { wsGetSymbolsList, wsGetTrader } = await import('../lib/ctrader-ws.js')
       const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
       const map = {}
       for (const s of (data.symbol || [])) {
@@ -319,8 +329,25 @@ export default function actionsRouter(db) {
       if (Object.keys(map).length > 0) {
         setState(db, 'symbol_id_map', JSON.stringify(map))
       }
-      console.log(`[actions] ctrader account ${accountId} selected (${isLive ? 'LIVE' : 'demo'}) — ${Object.keys(map).length} symbols mapped`)
-      res.json({ ok: true, accountId, isLive: !!isLive, symbolsMapped: Object.keys(map).length })
+
+      // Pull real balance + leverage from the broker so the risk manager is
+      // equity-aware without manual entry (Tune's fields remain an override).
+      let balance = null
+      try {
+        const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
+        if (trader.balance != null) {
+          balance = trader.balance / 100
+          setState(db, 'account_balance_usd', String(balance))
+        }
+        if (trader.leverageInCents != null) {
+          setState(db, 'account_leverage', String(trader.leverageInCents / 100))
+        }
+      } catch (e) {
+        console.warn('[actions/ctrader-select-account] balance fetch failed:', e.message)
+      }
+
+      console.log(`[actions] ctrader account ${accountId} selected (${isLive ? 'LIVE' : 'demo'}) — ${Object.keys(map).length} symbols mapped, balance ${balance ?? 'unknown'}`)
+      res.json({ ok: true, accountId, isLive: !!isLive, symbolsMapped: Object.keys(map).length, balance })
     } catch (err) {
       console.error('[actions/ctrader-select-account] error:', err.message)
       res.status(502).json({ error: err.message })
