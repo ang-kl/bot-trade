@@ -66,13 +66,21 @@ const db = initDB(resolvedDbPath);
 
 // Seed cTrader credentials from env vars if present and not already stored.
 // This lets Railway hold the secrets so the agent starts trading immediately
-// after deploy — no UI push required.
-if (CTRADER_ACCESS_TOKEN && !getState(db, 'ctrader_access_token')) {
-  setState(db, 'ctrader_access_token', CTRADER_ACCESS_TOKEN)
+// after deploy — no UI push required. Both CANONICAL_CASE and the
+// cTrader_Mixed_Case spellings are accepted.
+const envAccessToken = CTRADER_ACCESS_TOKEN || process.env.cTrader_Access_Token
+const envAccountId = CTRADER_ACCOUNT_ID || process.env.cTrader_Account_ID
+const envRefreshToken = process.env.CTRADER_REFRESH_TOKEN || process.env.cTrader_Refresh_Token
+if (envAccessToken && !getState(db, 'ctrader_access_token')) {
+  setState(db, 'ctrader_access_token', envAccessToken)
   console.log('[boot] cTrader access token seeded from env')
 }
-if (CTRADER_ACCOUNT_ID && !getState(db, 'ctrader_account_id')) {
-  setState(db, 'ctrader_account_id', CTRADER_ACCOUNT_ID)
+if (envRefreshToken && !getState(db, 'ctrader_refresh_token')) {
+  setState(db, 'ctrader_refresh_token', envRefreshToken)
+  console.log('[boot] cTrader refresh token seeded from env')
+}
+if (envAccountId && !getState(db, 'ctrader_account_id')) {
+  setState(db, 'ctrader_account_id', String(envAccountId))
   setState(db, 'ctrader_is_live', CTRADER_IS_LIVE === 'true' ? 'true' : 'false')
   console.log('[boot] cTrader account ID seeded from env')
 }
