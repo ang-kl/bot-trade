@@ -11,7 +11,7 @@ import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance } fr
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
-import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
+import { getActiveSessions, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsGetSymbolsList } from './lib/ctrader-ws.js'
 import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
@@ -106,7 +106,7 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
       try {
         const { sendMessage } = await import('./services/telegram.js')
         await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — ${riskResult.veto_reason}`)
-      } catch {}
+      } catch { /* non-fatal */ }
     }
     return null
   }
@@ -449,7 +449,7 @@ async function runLoop(db) {
         try {
           const { sendMessage } = await import('./services/telegram.js')
           await sendMessage(`🔴 CIRCUIT BREAKER: Agent loop halted after ${consecutiveErrors} consecutive errors. Manual reset required via POST /actions/reset-breaker`)
-        } catch {}
+        } catch { /* non-fatal */ }
       }
     }
     setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), CIRCUIT_BREAKER_RESET_MS)
@@ -461,6 +461,13 @@ async function runLoop(db) {
   const start = Date.now()
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
+
+  // Keep the OAuth access token alive (daily proactive refresh; no-op if no
+  // refresh token or refreshed recently — never blocks or throws).
+  try {
+    const { maybeRefreshCtraderToken } = await import('./lib/ctrader-auth.js')
+    await maybeRefreshCtraderToken(db, log)
+  } catch { /* auth module optional */ }
 
   // Reset daily error counter at midnight UTC
   const lastReset = getState(db, 'errors_reset_date')
@@ -508,7 +515,7 @@ async function runLoop(db) {
       const activeSessions = getActiveSessions()
       const openPositions = s.selectActivePositions.all('active')
       const tradPositions = openPositions.filter(p => categoriseSymbol(p.symbol) !== 'crypto')
-      const nextOpen = nextSessionOpening()
+      
       const marketClosed = activeSessions.length === 0
 
       // 24/7 scanning — all symbols always. No market-hours filter.
@@ -673,7 +680,7 @@ async function runLoop(db) {
                   `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
                 )
                 setState(db, alertKey, alertSig)
-              } catch {}
+              } catch { /* non-fatal */ }
             }
           }
 
@@ -745,7 +752,7 @@ async function runLoop(db) {
               const target = s2.find(s => s.symbol === sym)
               if (target) target.block_next_trade = false
               setState(db, 'autopilot_symbols_json', JSON.stringify(s2))
-            } catch {}
+            } catch { /* non-fatal */ }
           }
 
           if (autotradeEnabled && synth.auto_trade && synth.entry) {
@@ -758,7 +765,7 @@ async function runLoop(db) {
                   await sendMessage(
                     `🤖 AUTO-TRADE [${acct.accountId}]: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
                   )
-                } catch {}
+                } catch { /* non-fatal */ }
               }
             }
           }
@@ -813,7 +820,7 @@ async function runLoop(db) {
                 await sendMessage(
                   `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}${citeLine}`
                 )
-              } catch {}
+              } catch { /* non-fatal */ }
             }
           } catch (err) {
             log(`Weekend check failed for ${pos.symbol}:`, err.message)
@@ -832,7 +839,7 @@ async function runLoop(db) {
         : s.selectActivePositions.all('active')
       const lastScanResultsJson = getState(db, 'last_scan_results')
       let lastScanResults = null
-      try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch {}
+      try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch { /* non-fatal */ }
 
       for (const pos of activePositions) {
         try {
@@ -972,7 +979,7 @@ async function runLoop(db) {
             try {
               const { sendMessage } = await import('./services/telegram.js')
               await sendMessage(`🛑 EQUITY STOP: daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)}. All positions closed, autotrade DISARMED.`)
-            } catch {}
+            } catch { /* non-fatal */ }
           }
         }
       } catch (err) {
@@ -1039,7 +1046,7 @@ async function runLoop(db) {
               for (const ext of result.newExternal) {
                 await sendMessage(`External position detected: ${ext.side} ${ext.symbol} @ ${ext.entry}`)
               }
-            } catch {}
+            } catch { /* non-fatal */ }
           }
         }
       } catch (err) {

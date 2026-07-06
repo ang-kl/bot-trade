@@ -424,7 +424,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   }
 }
 
-function veto(reason, checks, proposal) {
+function veto(reason, checks) {
   return {
     approved: false,
     veto_reason: reason,

@@ -42,7 +42,7 @@ function round(n, d) {
  * @returns {Promise<object>} Polygon API response with .results array
  */
 export async function fetchBars(ticker, fromDate, toDate) {
-  const apiKey = getApiKey()
+  getApiKey() // validates the key is configured
   const path = `/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/day/${fromDate}/${toDate}`
   return massiveGet(path, apiKey, { adjusted: true, sort: 'asc', limit: 50000 })
 }
@@ -330,7 +330,7 @@ export function computeEmaStack(bars) {
  * @returns {Promise<object>} Full metrics result
  */
 export async function computeForTicker(ticker, periods) {
-  const apiKey = getApiKey()
+  getApiKey() // validates the key is configured
 
   const now = new Date()
   const toDate = formatDate(now)
