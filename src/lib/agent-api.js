@@ -9,7 +9,11 @@ const LS_SECRET = 'agent_secret'
 function normalizeBase(url) {
   if (!url) return ''
   let u = url.trim().replace(/\/+$/, '')
-  if (u.startsWith('http://') && typeof window !== 'undefined' && window.location?.protocol === 'https:') {
+  // Upgrade http -> https when the UI itself is on https (mixed content is
+  // blocked), EXCEPT for localhost — browsers exempt it from mixed-content
+  // rules and a local agent has no TLS.
+  const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)([:/]|$)/.test(u)
+  if (!isLocal && u.startsWith('http://') && typeof window !== 'undefined' && window.location?.protocol === 'https:') {
     u = 'https://' + u.slice(7)
   }
   return u
@@ -45,14 +49,21 @@ async function request(method, path, body) {
   if (!c.base || !c.secret) {
     throw new Error('Agent not connected — set the URL and secret on the Connect tab')
   }
-  const res = await fetch(`${c.base}${path}`, {
-    method,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${c.secret}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  let res
+  try {
+    res = await fetch(`${c.base}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${c.secret}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch {
+    // fetch rejects with an opaque "Failed to fetch" — say WHERE it tried,
+    // so a stale VITE_AGENT_URL (or down agent) is diagnosable from the UI.
+    throw new Error(`Agent unreachable at ${c.base} — check the URL on the Connect tab and that the agent is running`)
+  }
   if (!res.ok) {
     let msg = `${method} ${path} ${res.status}`
     const ct = res.headers.get('content-type') || ''
