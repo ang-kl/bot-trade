@@ -72,8 +72,10 @@ function getToken() {
 }
 
 function getChatId() {
-  const chatId = process.env.TELEGRAM_CHAT_ID
-  if (!chatId) throw new Error('TELEGRAM_CHAT_ID env var not set')
+  // TELEGRAM_OWNER_CHAT_ID is the canonical name; TELEGRAM_CHAT_ID kept as a
+  // fallback for older deployments.
+  const chatId = process.env.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_CHAT_ID
+  if (!chatId) throw new Error('TELEGRAM_OWNER_CHAT_ID env var not set')
   return chatId
 }
 

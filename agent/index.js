@@ -28,7 +28,6 @@ try {
 const {
   ANTHROPIC_MAP_KEY_API,
   TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHAT_ID,
   AGENT_SECRET,
   FRONTEND_URL,
   PORT = '3001',
@@ -43,7 +42,7 @@ const {
 if (!AGENT_SECRET) {
   console.error('[agent] FATAL: AGENT_SECRET env var is required — set it in Railway Variables')
   console.error('[agent] Required env vars: AGENT_SECRET, ANTHROPIC_MAP_KEY_API')
-  console.error('[agent] Optional: CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID, CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID')
+  console.error('[agent] Optional: CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID, CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_ID')
   process.exit(1)
 }
 
