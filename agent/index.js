@@ -32,10 +32,8 @@ const {
   FRONTEND_URL,
   PORT = '3001',
   DB_PATH,
-  // cTrader credentials from env — seeded into agent_state at boot so the
-  // loop can trade without waiting for the UI to push config.
-  CTRADER_ACCESS_TOKEN,
-  CTRADER_ACCOUNT_ID,
+  // cTrader credentials are looked up spelling-tolerantly via
+  // lib/ctrader-env.js and seeded into agent_state at boot below.
   CTRADER_IS_LIVE,
 } = process.env;
 
@@ -66,11 +64,13 @@ const db = initDB(resolvedDbPath);
 
 // Seed cTrader credentials from env vars if present and not already stored.
 // This lets Railway hold the secrets so the agent starts trading immediately
-// after deploy — no UI push required. Both CANONICAL_CASE and the
-// cTrader_Mixed_Case spellings are accepted.
-const envAccessToken = CTRADER_ACCESS_TOKEN || process.env.cTrader_Access_Token
-const envAccountId = CTRADER_ACCOUNT_ID || process.env.cTrader_Account_ID
-const envRefreshToken = process.env.CTRADER_REFRESH_TOKEN || process.env.cTrader_Refresh_Token
+// after deploy — no UI push required. Any capitalization/underscore spelling
+// of the variable names is accepted (see lib/ctrader-env.js).
+const { ctraderEnv } = await import('./lib/ctrader-env.js')
+const envAccessToken = ctraderEnv('accessToken')
+const envAccountId = ctraderEnv('accountId')
+const envRefreshToken = ctraderEnv('refreshToken')
+const envIsLive = ctraderEnv('isLive') ?? CTRADER_IS_LIVE
 if (envAccessToken && !getState(db, 'ctrader_access_token')) {
   setState(db, 'ctrader_access_token', envAccessToken)
   console.log('[boot] cTrader access token seeded from env')
@@ -81,7 +81,7 @@ if (envRefreshToken && !getState(db, 'ctrader_refresh_token')) {
 }
 if (envAccountId && !getState(db, 'ctrader_account_id')) {
   setState(db, 'ctrader_account_id', String(envAccountId))
-  setState(db, 'ctrader_is_live', CTRADER_IS_LIVE === 'true' ? 'true' : 'false')
+  setState(db, 'ctrader_is_live', envIsLive === 'true' ? 'true' : 'false')
   console.log('[boot] cTrader account ID seeded from env')
 }
 
@@ -199,7 +199,7 @@ async function start() {
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
     console.log(`[agent] ANTHROPIC_MAP_KEY_API: ${ANTHROPIC_MAP_KEY_API ? 'set' : 'MISSING'}`);
-    console.log(`[agent] CTRADER_ACCESS_TOKEN: ${CTRADER_ACCESS_TOKEN ? 'set' : 'not set'}`);
+    console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
 
