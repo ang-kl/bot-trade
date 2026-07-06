@@ -14,6 +14,7 @@
 
 import WebSocket from 'ws'
 import { encodeLabel, convictionBucket } from '../agent/lib/trade-labels.js'
+import { ctraderEnv } from '../agent/lib/ctrader-env.js'
 
 const CTRADER_API = 'https://openapi.ctrader.com'
 
@@ -189,9 +190,10 @@ function wsQuery(host, steps, timeoutMs = 25000) {
 }
 
 export default async function handler(req, res) {
-  // Accept both the canonical and the cTrader_Mixed_Case env var spellings
-  const clientId = process.env.CTRADER_CLIENT_ID || process.env.cTrader_Client_ID
-  const clientSecret = process.env.CTRADER_CLIENT_SECRET || process.env.cTrader_Client_Secret
+  // Spelling-tolerant lookup — accepts CTRADER_CLIENT_ID, cTrader_ClientID,
+  // cTrader_Secret, etc. (see agent/lib/ctrader-env.js)
+  const clientId = ctraderEnv('clientId')
+  const clientSecret = ctraderEnv('clientSecret')
 
   // ── OAuth2 (REST) ──
 
