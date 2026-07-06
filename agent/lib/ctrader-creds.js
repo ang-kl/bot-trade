@@ -15,10 +15,12 @@ import { getState } from '../db.js'
  * @returns {{host: string, clientId: string|undefined, clientSecret: string|undefined, accessToken: string|null, accountId: string|null, ready: boolean}}
  */
 export function getCtraderCreds(db, accountOverride) {
-  const clientId = process.env.CTRADER_CLIENT_ID
-  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  const clientId = process.env.CTRADER_CLIENT_ID || process.env.cTrader_Client_ID
+  const clientSecret = process.env.CTRADER_CLIENT_SECRET || process.env.cTrader_Client_Secret
   const accessToken = getState(db, 'ctrader_access_token')
+    || process.env.CTRADER_ACCESS_TOKEN || process.env.cTrader_Access_Token
   const accountId = accountOverride?.accountId || getState(db, 'ctrader_account_id')
+    || process.env.CTRADER_ACCOUNT_ID || process.env.cTrader_Account_ID
   const isLive = accountOverride
     ? !!accountOverride.isLive
     : getState(db, 'ctrader_is_live') === 'true'

@@ -1025,9 +1025,10 @@ async function runLoop(db) {
           // Refresh the real account balance so risk sizing tracks equity as
           // trades close (linking set it once; this keeps it live).
           try {
-            const { wsGetTrader } = await import('./lib/ctrader-ws.js')
+            const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js')
             const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
-            if (trader.balance != null) setState(db, 'account_balance_usd', String(trader.balance / 100))
+            const bal = traderBalance(trader)
+            if (bal != null) setState(db, 'account_balance_usd', String(bal))
           } catch { /* best effort */ }
 
           if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
