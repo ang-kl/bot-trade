@@ -15,9 +15,18 @@ const LS_SECRET = 'agent_secret'
 function initConnFromHash() {
   if (typeof window === 'undefined' || !window.location?.hash) return
   try {
-    const params = new URLSearchParams(window.location.hash.slice(1))
-    const url = params.get('agent')
-    const secret = params.get('secret')
+    const raw = window.location.hash.slice(1)
+    let url = null
+    let secret = null
+    if (raw.includes('=')) {
+      const params = new URLSearchParams(raw)
+      url = params.get('agent')
+      secret = params.get('secret')
+    } else if (raw) {
+      // Shorthand: the entire hash IS the secret (e.g. site.app/#123).
+      // Agent URL comes from what's already saved or the VITE_ default.
+      secret = decodeURIComponent(raw)
+    }
     if (url) localStorage.setItem(LS_URL, url.trim())
     if (secret) localStorage.setItem(LS_SECRET, secret.trim())
     if (url || secret) {
