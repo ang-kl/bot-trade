@@ -48,6 +48,11 @@ export const PT = Object.freeze({
   RECONCILE_REQ:           2124,
   RECONCILE_RES:           2125,
   EXECUTION_EVENT:         2126,
+  SUBSCRIBE_SPOTS_REQ:     2127,
+  SUBSCRIBE_SPOTS_RES:     2128,
+  UNSUBSCRIBE_SPOTS_REQ:   2129,
+  UNSUBSCRIBE_SPOTS_RES:   2130,
+  SPOT_EVENT:              2131,
   ORDER_ERROR_EVENT:       2132,
   GET_TRENDBARS_REQ:       2137,
   GET_TRENDBARS_RES:       2138,
@@ -474,6 +479,91 @@ export function wsGetLastCloses(host, clientId, clientSecret, accessToken, accou
     })
     return out
   }, 2, 'wsGetLastCloses')
+}
+
+/**
+ * Long-lived spot-price stream. Opens one WS, authenticates, subscribes to
+ * the given symbolIds, and calls `onTick({symbolId, bid, ask, t})` for every
+ * SPOT_EVENT until `close()` is called or the socket drops (then `onClose`
+ * fires with the reason and the caller may reconnect).
+ *
+ * Spot prices arrive scaled like trendbars (fixed 1e5). Events may carry
+ * only bid or only ask — missing sides are null (caller keeps last value).
+ *
+ * @returns {Promise<{close: () => void}>} resolves once subscribed
+ */
+export function wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, symbolIds, onTick, onClose = () => {}) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`wss://${host}:5036`)
+    let hb, settled = false, closedByUs = false
+
+    const finishClose = (reason) => {
+      clearInterval(hb)
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
+      if (!settled) { settled = true; reject(new Error(reason)) }
+      else if (!closedByUs) onClose(reason)
+    }
+
+    const steps = [
+      { send: { payloadType: PT.APP_AUTH_REQ, payload: { clientId, clientSecret } }, expect: PT.APP_AUTH_RES },
+      { send: { payloadType: PT.ACCOUNT_AUTH_REQ, payload: { ctidTraderAccountId: parseInt(accountId), accessToken } }, expect: PT.ACCOUNT_AUTH_RES },
+      {
+        send: {
+          payloadType: PT.SUBSCRIBE_SPOTS_REQ,
+          payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)) },
+        },
+        expect: PT.SUBSCRIBE_SPOTS_RES,
+      },
+    ]
+    let stepIdx = 0
+
+    ws.on('open', () => {
+      hb = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ payloadType: PT.HEARTBEAT }))
+      }, 9000)
+      ws.send(JSON.stringify({ payloadType: steps[0].send.payloadType, payload: steps[0].send.payload }))
+    })
+
+    ws.on('message', (raw) => {
+      let msg
+      try { msg = JSON.parse(raw.toString()) } catch { return }
+      if (msg.payloadType === PT.HEARTBEAT) return
+
+      if (msg.payloadType === PT.ERROR_RES) {
+        const e = msg.payload || {}
+        finishClose(`cTrader error: ${e.errorCode || 'unknown'} — ${e.description || ''}`)
+        return
+      }
+
+      if (!settled) {
+        if (msg.payloadType === steps[stepIdx].expect) {
+          stepIdx++
+          if (stepIdx >= steps.length) {
+            settled = true
+            resolve({
+              close: () => { closedByUs = true; clearInterval(hb); if (ws.readyState === WebSocket.OPEN) ws.close() },
+            })
+          } else {
+            ws.send(JSON.stringify({ payloadType: steps[stepIdx].send.payloadType, payload: steps[stepIdx].send.payload }))
+          }
+        }
+        return
+      }
+
+      if (msg.payloadType === PT.SPOT_EVENT) {
+        const p = msg.payload || {}
+        onTick({
+          symbolId: p.symbolId,
+          bid: p.bid != null ? p.bid / POINTS_PER_PRICE : null,
+          ask: p.ask != null ? p.ask / POINTS_PER_PRICE : null,
+          t: Date.now(),
+        })
+      }
+    })
+
+    ws.on('error', (err) => finishClose(`cTrader WS error: ${err.message}`))
+    ws.on('close', () => finishClose('socket closed'))
+  })
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.
