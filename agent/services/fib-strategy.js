@@ -74,6 +74,34 @@ export function atr(bars, period = ATR_PERIOD) {
 }
 
 /**
+ * Wilder-smoothed RSI over closes. Returns null when there aren't enough
+ * bars. Local implementation — the agent stays standalone.
+ */
+export function rsi(bars, period = 14) {
+  if (bars.length < period + 1) return null
+  let gain = 0
+  let loss = 0
+  for (let i = 1; i <= period; i++) {
+    const d = bars[i].c - bars[i - 1].c
+    if (d >= 0) gain += d; else loss -= d
+  }
+  let avgGain = gain / period
+  let avgLoss = loss / period
+  for (let i = period + 1; i < bars.length; i++) {
+    const d = bars[i].c - bars[i - 1].c
+    avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period
+    avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period
+  }
+  if (avgLoss === 0) return 100
+  return 100 - 100 / (1 + avgGain / avgLoss)
+}
+
+// Default RSI confluence thresholds (only applied when the filter is on):
+// a long fade should be entered into weakness (RSI at/below longMax), a
+// short fade into strength (RSI at/above shortMin).
+export const RSI_FILTER_DEFAULTS = { longMax: 45, shortMin: 55 }
+
+/**
  * Find confirmed swing highs/lows using a simple N-bar fractal (a bar is a
  * swing point if it's the extreme of the `2*fractalWidth+1` bars centred on
  * it). Excludes the trailing `fractalWidth` bars, which can't yet be
@@ -101,7 +129,7 @@ export function findSwings(bars, fractalWidth = FRACTAL_WIDTH) {
  * Returns null if there's no confirmed swing leg, or price isn't currently
  * in the 61.8% reaction zone, or the leg already invalidated.
  */
-export function computeFibSignal(bars, timeframe) {
+export function computeFibSignal(bars, timeframe, opts = {}) {
   if (!Array.isArray(bars) || bars.length < FRACTAL_WIDTH * 2 + 10) return null
 
   const { highs, lows } = findSwings(bars)
@@ -139,6 +167,19 @@ export function computeFibSignal(bars, timeframe) {
   if (invalidated) return null
 
   const bias = upLeg ? 'long' : 'short'
+
+  // Optional RSI confluence (off by default): a fade should enter longs
+  // into weakness and shorts into strength — fib alone has no documented
+  // standalone edge, so this is the standard "combine with another
+  // indicator" gate, A/B-testable via the backtest harness.
+  if (opts.rsiFilter) {
+    const { longMax, shortMin } = { ...RSI_FILTER_DEFAULTS, ...opts.rsiFilter }
+    const r = rsi(bars)
+    if (r == null) return null
+    if (bias === 'long' && r > longMax) return null
+    if (bias === 'short' && r < shortMin) return null
+  }
+
   const entry = lastClose
   const sl = upLeg ? swingA.price - buffer : swingA.price + buffer
   const tp1 = swingB.price
@@ -189,7 +230,7 @@ export function computeFibSignal(bars, timeframe) {
  * - `error` is set when the bar fetch failed outright (rate limit, expired
  *   token); callers must surface it instead of reading "no signal".
  */
-export async function scanSymbolFib(creds, symbol, symbolId) {
+export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
 
   const stale = TIMEFRAMES.filter(tf => !cachedBars(symbolId, tf))
@@ -221,7 +262,7 @@ export async function scanSymbolFib(creds, symbol, symbolId) {
     if (!signal) {
       const periodMs = TRENDBAR_PERIODS[timeframe]?.ms || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-      signal = computeFibSignal(closed, timeframe)
+      signal = computeFibSignal(closed, timeframe, opts)
     }
   }
   return { symbol, signal, lastPrice, error: null }
@@ -238,6 +279,7 @@ export async function scanSymbolFib(creds, symbol, symbolId) {
  */
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
+  const scanOpts = { rsiFilter: options.rsiFilter || null }
   const batch = symbols.slice(0, 15)
 
   const results = []
@@ -247,7 +289,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
       const symbol = w.symbol
       const symbolId = symbolMap[symbol.toUpperCase()]
       if (!symbolId) return { symbol, signal: null, lastPrice: null, error: 'symbolId unknown — call POST /actions/symbol-map' }
-      return scanSymbolFib(creds, symbol, symbolId)
+      return scanSymbolFib(creds, symbol, symbolId, scanOpts)
     }))
     results.push(...chunkResults)
   }

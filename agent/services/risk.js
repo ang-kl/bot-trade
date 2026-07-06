@@ -28,6 +28,12 @@ export const DEFAULT_RISK_CONFIG = {
                                    // Stops instant re-entry into the same
                                    // broken level after a stop-out.
   maxOpenPositions: 5,             // Hard cap on concurrent positions.
+  equityStopPct: null,             // Daily-drawdown EQUITY STOP: when today's
+                                   // realized PnL breaches -(balance × pct),
+                                   // the loop closes every open bot position
+                                   // and disarms autotrade (the dailyLossPct
+                                   // veto only blocks NEW trades). null =
+                                   // same threshold as dailyLossPct.
   minRR: 1.5,                      // TP must be ≥ minRR × SL distance.
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).

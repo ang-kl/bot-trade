@@ -74,7 +74,7 @@ export function runBacktest(bars, opts) {
 
     if (next.t < cooldownUntil) continue
 
-    const signal = computeFibSignal(bars.slice(0, i + 1), timeframe)
+    const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, { rsiFilter: opts.rsiFilter || null })
     if (!signal || signal.rr < MIN_RR) continue
 
     pos = {
@@ -140,6 +140,7 @@ function parseArgs(argv) {
     else if (a === '--bars') args.bars = parseInt(argv[++i])
     else if (a === '--cost-pct') args.costPct = parseFloat(argv[++i])
     else if (a === '--all-timeframes') args.all = true
+    else if (a === '--rsi-filter') args.rsiFilter = {}
   }
   return args
 }
@@ -181,7 +182,7 @@ async function main() {
     const last = bars[bars.length - 1]
     if (last && last.t + periodMs > Date.now()) bars = bars.slice(0, -1)
 
-    const { stats } = runBacktest(bars, { timeframe: tf, costPct: args.costPct })
+    const { stats } = runBacktest(bars, { timeframe: tf, costPct: args.costPct, rsiFilter: args.rsiFilter || null })
     console.log(`[${tf}] bars=${bars.length}`, JSON.stringify(stats))
   }
   db.close()

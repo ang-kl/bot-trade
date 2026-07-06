@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
+import Input from '../components/common/Input.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 30_000
@@ -71,6 +72,35 @@ export default function Trade() {
 
   const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
   const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
+
+  const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
+  const [orderResult, setOrderResult] = useState(null)
+  const [placing, setPlacing] = useState(false)
+
+  const placeOrder = async () => {
+    const sym = order.symbol.toUpperCase().trim()
+    if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and stop-loss are required' }); return }
+    if (!window.confirm(`Place a REAL ${order.side} market order on ${sym} (SL ${order.sl}${order.tp ? `, TP ${order.tp}` : ''})?`)) return
+    setPlacing(true)
+    setOrderResult(null)
+    try {
+      const r = await agentPost('/actions/manual-order', {
+        symbol: sym,
+        side: order.side,
+        lots: order.lots ? Number(order.lots) : undefined,
+        sl: Number(order.sl),
+        tp: order.tp ? Number(order.tp) : undefined,
+      })
+      if (r.vetoed) setOrderResult({ ok: false, text: `Risk manager vetoed: ${r.reason}` })
+      else {
+        setOrderResult({ ok: true, text: `${r.side} ${r.symbol} ${r.volume} lots @ ${r.executionPrice ?? 'market'}` })
+        setOrder({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
+        await load()
+      }
+    } catch (e) {
+      setOrderResult({ ok: false, text: e.message })
+    } finally { setPlacing(false) }
+  }
 
   return (
     <div className="space-y-4">
@@ -158,6 +188,51 @@ export default function Trade() {
             </table>
           </div>
         )}
+      </Card>
+
+      {/* Manual order — goes through the same risk gate as autopilot trades */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Manual order</h2>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Symbol</span>
+            <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))} placeholder="EURUSD" className="w-28" />
+          </label>
+          <datalist id="watchlist-symbols">
+            {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
+          </datalist>
+          <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]">
+            {['BUY', 'SELL'].map(s => (
+              <button key={s} type="button" onClick={() => setOrder(o => ({ ...o, side: s }))}
+                className={`px-3 py-2 text-[13px] font-semibold cursor-pointer ${
+                  order.side === s
+                    ? (s === 'BUY' ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-down)] text-white')
+                    : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
+                }`}>{s}</button>
+            ))}
+          </div>
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Lots</span>
+            <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))} placeholder="0.01" className="w-20" />
+          </label>
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Stop-loss (required)</span>
+            <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))} placeholder="price" className="w-28" />
+          </label>
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Take-profit</span>
+            <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))} placeholder="optional" className="w-28" />
+          </label>
+          <Button size="md" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}>
+            {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
+          </Button>
+        </div>
+        {orderResult && (
+          <div className="mt-2"><Badge tone={orderResult.ok ? 'up' : 'warning'}>{orderResult.ok ? `FILLED — ${orderResult.text}` : orderResult.text}</Badge></div>
+        )}
+        <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+          Manual orders pass the same risk gate as the bot's (sizing, R:R floor, cooldowns) and are then managed by the position monitor.
+        </p>
       </Card>
 
       {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}

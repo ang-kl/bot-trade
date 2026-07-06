@@ -7,7 +7,7 @@ import { getState, setState } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
-import { wsPlaceOrder } from '../lib/ctrader-ws.js'
+import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 
@@ -50,6 +50,7 @@ export default function actionsRouter(db) {
 
       const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db), symbols, {
         hotThreshold: Number(req.body?.hotThreshold) || 6,
+        rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
       })
 
       // Persist latest results to state
@@ -106,7 +107,9 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
       }
 
-      const { signal, error: scanError } = await scanSymbolFib(ctraderCreds, symbol, symbolId)
+      const { signal, error: scanError } = await scanSymbolFib(ctraderCreds, symbol, symbolId, {
+        rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
+      })
       // An infrastructure failure (expired token, rate limit) must surface
       // as an error, not masquerade as a "no setup" verdict.
       if (scanError) {
@@ -183,6 +186,17 @@ export default function actionsRouter(db) {
     setState(db, 'autotrade_timeframes', JSON.stringify(tfs))
     console.log('[actions] autotrade timeframes set:', tfs.join(', '))
     res.json({ ok: true, timeframes: tfs })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/fib-rsi-filter — toggle the RSI confluence gate on fib
+  // signals. Body: { on: boolean }
+  // -----------------------------------------------------------------------
+  router.post('/fib-rsi-filter', (req, res) => {
+    const on = req.body?.on === true
+    setState(db, 'fib_rsi_filter', on ? 'true' : 'false')
+    console.log(`[actions] fib RSI filter ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, on })
   })
 
   router.post('/autotrade-toggle', (req, res) => {
@@ -743,6 +757,99 @@ export default function actionsRouter(db) {
       res.json({ ok: true, side, symbol: analysis.symbol, volume: volLots, executionPrice, positionId })
     } catch (err) {
       console.error('[actions/execute-trade] error:', err.message)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/manual-order — place a trader-entered market order from
+  // the UI. Body: { symbol, side: 'BUY'|'SELL', lots?, sl, tp? }
+  // Entry is estimated from the latest 1m close; the FULL risk gate runs
+  // before anything reaches the broker (same as autopilot trades).
+  // -----------------------------------------------------------------------
+  router.post('/manual-order', async (req, res) => {
+    try {
+      const { symbol: rawSymbol, side: rawSide, lots, sl, tp } = req.body || {}
+      const symbol = (rawSymbol || '').toUpperCase().trim()
+      const side = String(rawSide || '').toUpperCase()
+      if (!symbol) return res.status(400).json({ error: 'symbol required' })
+      if (side !== 'BUY' && side !== 'SELL') return res.status(400).json({ error: "side must be 'BUY' or 'SELL'" })
+      if (sl == null || !Number.isFinite(Number(sl))) return res.status(400).json({ error: 'sl (stop-loss price) required — no manual orders without a stop' })
+
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured' })
+      const symbolId = getSymbolMap(db)[symbol]
+      if (!symbolId) return res.status(400).json({ error: `Symbol ID unknown for ${symbol} — link the cTrader account first` })
+
+      // Entry estimate = freshest 1m close (includes the forming bar — this
+      // is a price estimate for the risk gate, the order itself is MARKET).
+      const barsByTf = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 3)
+      const m1 = barsByTf['1m'] || []
+      const entry = m1.length > 0 ? m1[m1.length - 1].c : null
+      if (entry == null) return res.status(502).json({ error: `Could not fetch a current price for ${symbol}` })
+
+      const proposal = {
+        symbol, side, entry,
+        sl: Number(sl),
+        tp1: tp != null && Number.isFinite(Number(tp)) ? Number(tp) : null,
+        requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
+        strategy: 'manual',
+        conviction: null,
+      }
+      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+      persistRiskEvent(db, proposal, riskResult)
+      if (!riskResult.approved) {
+        return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
+      }
+
+      const volLots = riskResult.adjusted_volume
+      const POINTS = 100000
+      const slDistance = Math.abs(entry - proposal.sl)
+      const tpDistance = proposal.tp1 != null ? Math.abs(proposal.tp1 - entry) : null
+
+      const sessionNow = getActiveSessions()[0]?.label || 'Off'
+      const structuredLabel = encodeLabel({
+        source: 'manual', version: LABEL_VERSION, strategy: 'manual',
+        conviction: null, session: sessionNow,
+      })
+      const orderPayload = {
+        ctidTraderAccountId: parseInt(creds.accountId),
+        symbolId: parseInt(symbolId),
+        orderType: 'MARKET',
+        tradeSide: side,
+        volume: Math.round(volLots * 10000),
+        comment: 'abot-manual-ui',
+        label: structuredLabel,
+        relativeStopLoss: Math.round(slDistance * POINTS),
+        ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+      }
+
+      const exec = await wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+      const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
+      const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+      const entryP = executionPrice ?? entry
+      const parsedLabel = parseLabel(structuredLabel)
+
+      db.transaction(() => {
+        const tradeInsert = db.prepare(`
+          INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
+            ctrader_position_id, label_raw, label_strategy, label_conviction, label_session, source, status)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'manual', 'open')
+        `).run(symbol, side, entryP, proposal.sl, proposal.tp1, volLots, positionId, structuredLabel,
+          parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
+        db.prepare(`
+          INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+            thesis, initial_risk, strategy, source, label_raw, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'manual', ?, 'active')
+        `).run(symbol, tradeInsert.lastInsertRowid, side, entryP, proposal.sl, proposal.tp1,
+          'Manual order via UI', Math.abs(entryP - proposal.sl), structuredLabel)
+      })()
+
+      console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
+      res.json({ ok: true, side, symbol, volume: volLots, executionPrice, positionId })
+    } catch (err) {
+      console.error('[actions/manual-order] error:', err.message)
       res.status(500).json({ error: err.message })
     }
   })
