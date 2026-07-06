@@ -6,6 +6,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import PositionChart from '../components/PositionChart.jsx'
 
 const REFRESH_MS = 30_000
 
@@ -21,6 +22,39 @@ function ago(iso) {
   if (mins < 60) return `${mins}m ago`
   if (mins < 1440) return `${Math.round(mins / 60)}h ago`
   return `${Math.round(mins / 1440)}d ago`
+}
+
+// One open-position row with an expandable live chart (entry/SL/TP overlaid).
+function PositionRow({ p }) {
+  const [showChart, setShowChart] = useState(false)
+  const side = String(p.side).toUpperCase()
+  return (
+    <>
+      <tr className="border-t border-[var(--color-border)]">
+        <td className="pr-3 py-1.5 font-semibold">{p.symbol}</td>
+        <td className="pr-3"><Badge tone={side === 'BUY' ? 'up' : 'down'}>{side}</Badge></td>
+        <td className="pr-3">{fmt(p.entry_price)}</td>
+        <td className="pr-3">{fmt(p.current_sl)}</td>
+        <td className="pr-3">{fmt(p.current_tp)}</td>
+        <td className="pr-3">{ago(p.opened_at)}</td>
+        <td className="pr-3 text-[var(--color-text-sub)]">{p.last_check_action || '—'} {p.last_checked_at ? `(${ago(p.last_checked_at)})` : ''}</td>
+        <td>
+          <Button size="sm" variant="ghost" onClick={() => setShowChart(s => !s)}>{showChart ? 'Hide' : 'Chart'}</Button>
+        </td>
+      </tr>
+      {showChart && (
+        <tr className="border-t border-[var(--color-border)]">
+          <td colSpan={8} className="py-2">
+            <PositionChart
+              symbol={p.symbol}
+              timeframe="1h"
+              lines={{ entry: p.entry_price, sl: p.current_sl, tp: p.current_tp }}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  )
 }
 
 export default function Trade() {
@@ -170,19 +204,11 @@ export default function Trade() {
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
               <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Side</th><th className="pr-3">Entry</th><th className="pr-3">SL</th><th className="pr-3">TP</th><th className="pr-3">Opened</th><th>Last check</th></tr>
+                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Side</th><th className="pr-3">Entry</th><th className="pr-3">SL</th><th className="pr-3">TP</th><th className="pr-3">Opened</th><th className="pr-3">Last check</th><th>Chart</th></tr>
               </thead>
               <tbody>
                 {positions.map(p => (
-                  <tr key={p.id} className="border-t border-[var(--color-border)]">
-                    <td className="pr-3 py-1.5 font-semibold">{p.symbol}</td>
-                    <td className="pr-3"><Badge tone={String(p.side).toUpperCase() === 'BUY' ? 'up' : 'down'}>{String(p.side).toUpperCase()}</Badge></td>
-                    <td className="pr-3">{fmt(p.entry_price)}</td>
-                    <td className="pr-3">{fmt(p.current_sl)}</td>
-                    <td className="pr-3">{fmt(p.current_tp)}</td>
-                    <td className="pr-3">{ago(p.opened_at)}</td>
-                    <td className="text-[var(--color-text-sub)]">{p.last_check_action || '—'} {p.last_checked_at ? `(${ago(p.last_checked_at)})` : ''}</td>
-                  </tr>
+                  <PositionRow key={p.id} p={p} />
                 ))}
               </tbody>
             </table>
