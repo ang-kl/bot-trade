@@ -170,6 +170,21 @@ export default function actionsRouter(db) {
     res.json({ ok: true, analyze_enabled: on })
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/autotrade-timeframes — set which signal timeframes may
+  // auto-trade. Body: { timeframes: ["4h","1d"] }
+  // -----------------------------------------------------------------------
+  router.post('/autotrade-timeframes', (req, res) => {
+    const tfs = req.body?.timeframes
+    const valid = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+    if (!Array.isArray(tfs) || tfs.length === 0 || !tfs.every(t => valid.includes(t))) {
+      return res.status(400).json({ error: `timeframes must be a non-empty array of: ${valid.join(', ')}` })
+    }
+    setState(db, 'autotrade_timeframes', JSON.stringify(tfs))
+    console.log('[actions] autotrade timeframes set:', tfs.join(', '))
+    res.json({ ok: true, timeframes: tfs })
+  })
+
   router.post('/autotrade-toggle', (req, res) => {
     const on = req.body?.on === true
     setState(db, 'autotrade_enabled', on ? 'true' : 'false')

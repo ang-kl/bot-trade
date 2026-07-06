@@ -1,9 +1,10 @@
-// Thin client for the Railway-hosted agent backends.
-// Supports two roles running on separate Railway services:
-//   - autopilot → VITE_AGENT_URL_AUTOPILOT + VITE_AGENT_SECRET_AUTOPILOT
-//   - copilot   → VITE_AGENT_URL_COPILOT   + VITE_AGENT_SECRET_COPILOT
-// Legacy VITE_AGENT_URL / VITE_AGENT_SECRET still work — they map to autopilot
-// so single-service deployments keep running without a redeploy.
+// Thin client for the agent backend.
+// Connection is configured at runtime on the Connect page (stored in
+// localStorage) and falls back to build-time VITE_ env vars so existing
+// deployments keep working without touching the UI.
+
+const LS_URL = 'agent_url'
+const LS_SECRET = 'agent_secret'
 
 function normalizeBase(url) {
   if (!url) return ''
@@ -14,33 +15,35 @@ function normalizeBase(url) {
   return u
 }
 
-const CONFIG = {
-  autopilot: {
-    base:   normalizeBase(import.meta.env.VITE_AGENT_URL_AUTOPILOT    || import.meta.env.VITE_AGENT_URL    || ''),
-    secret: import.meta.env.VITE_AGENT_SECRET_AUTOPILOT || import.meta.env.VITE_AGENT_SECRET || '',
-  },
-  copilot: {
-    base:   normalizeBase(import.meta.env.VITE_AGENT_URL_COPILOT    || ''),
-    secret: import.meta.env.VITE_AGENT_SECRET_COPILOT || '',
-  },
+export function getAgentConn() {
+  const lsUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_URL) : ''
+  const lsSecret = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_SECRET) : ''
+  return {
+    base: normalizeBase(lsUrl || import.meta.env.VITE_AGENT_URL_AUTOPILOT || import.meta.env.VITE_AGENT_URL || ''),
+    secret: lsSecret || import.meta.env.VITE_AGENT_SECRET_AUTOPILOT || import.meta.env.VITE_AGENT_SECRET || '',
+    fromLocalStorage: Boolean(lsUrl),
+  }
 }
 
-export const ROLES = ['autopilot', 'copilot']
-
-export function agentConfigured(role = 'autopilot') {
-  const c = CONFIG[role]
-  return Boolean(c && c.base && c.secret)
+export function setAgentConn({ url, secret }) {
+  if (url != null) localStorage.setItem(LS_URL, url.trim())
+  if (secret != null) localStorage.setItem(LS_SECRET, secret.trim())
 }
 
-export function agentBase(role = 'autopilot') {
-  return CONFIG[role]?.base || ''
+export function clearAgentConn() {
+  localStorage.removeItem(LS_URL)
+  localStorage.removeItem(LS_SECRET)
 }
 
-async function request(role, method, path, body) {
-  const c = CONFIG[role]
-  if (!c || !c.base || !c.secret) {
-    const upper = String(role).toUpperCase()
-    throw new Error(`${role} agent not configured — set VITE_AGENT_URL_${upper} + VITE_AGENT_SECRET_${upper} in Vercel env vars`)
+export function agentConfigured() {
+  const c = getAgentConn()
+  return Boolean(c.base && c.secret)
+}
+
+async function request(method, path, body) {
+  const c = getAgentConn()
+  if (!c.base || !c.secret) {
+    throw new Error('Agent not connected — set the URL and secret on the Connect tab')
   }
   const res = await fetch(`${c.base}${path}`, {
     method,
@@ -54,14 +57,12 @@ async function request(role, method, path, body) {
     let msg = `${method} ${path} ${res.status}`
     const ct = res.headers.get('content-type') || ''
     if (ct.includes('application/json')) {
-      try { const j = await res.json(); if (j.error) msg = j.error } catch {}
-    } else if (res.status === 405) {
-      msg = `${method} ${path} 405 — VITE_AGENT_URL_${String(role).toUpperCase()} may be pointing at Vercel instead of the Railway agent`
+      try { const j = await res.json(); if (j.error) msg = j.error } catch { /* keep default */ }
     }
     throw new Error(msg)
   }
   return res.json()
 }
 
-export const agentGet  = (path, role = 'autopilot')       => request(role, 'GET',  path)
-export const agentPost = (path, body, role = 'autopilot') => request(role, 'POST', path, body)
+export const agentGet = (path) => request('GET', path)
+export const agentPost = (path, body) => request('POST', path, body)
