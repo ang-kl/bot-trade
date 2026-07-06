@@ -318,7 +318,7 @@ export default function actionsRouter(db) {
       if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
-      const { wsReconcile, wsSymbolsByIds, wsGetLastCloses } = await import('../lib/ctrader-ws.js')
+      const { wsReconcile, wsSymbolsByIds, wsGetLastCloses, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
 
       const accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
@@ -328,14 +328,27 @@ export default function actionsRouter(db) {
         const out = {
           ...acct,
           selected: String(acct.accountId) === String(selectedId),
+          currency: null,
           positions: [],
           orders: [],
           error: null,
+          metaError: null,
         }
         try {
           const rec = await wsReconcile(host, clientId, clientSecret, accessToken, acct.accountId)
           const rawPositions = rec.position || []
           const rawOrders = rec.order || []
+
+          // Deposit currency: trader.depositAssetId resolved via the asset list
+          try {
+            const [trader, assets] = await Promise.all([
+              wsGetTrader(host, clientId, clientSecret, accessToken, acct.accountId),
+              wsGetAssets(host, clientId, clientSecret, accessToken, acct.accountId),
+            ])
+            const asset = (assets.asset || []).find(a => a.assetId === trader.depositAssetId)
+            out.currency = asset?.displayName || asset?.name || null
+          } catch { /* currency stays null */ }
+
           if (rawPositions.length === 0 && rawOrders.length === 0) return out
 
           const symbolIds = [...new Set([
@@ -343,39 +356,54 @@ export default function actionsRouter(db) {
             ...rawOrders.map(o => o.tradeData?.symbolId),
           ].filter(Boolean))]
 
-          // Symbol metadata (name, digits, pip position, lot size) + fresh prices
+          // Symbol metadata (name, digits, pip position, lot size, min volume).
+          // A failure here must be VISIBLE — without it the table shows raw
+          // numeric ids and cannot compute lots.
           const symMeta = {}
           try {
             const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
             for (const s of (symData.symbol || [])) symMeta[s.symbolId] = s
-          } catch { /* names/pips degrade gracefully */ }
+          } catch (err) {
+            out.metaError = `symbol names unavailable: ${err.message}`
+          }
           let lastCloses = {}
           try {
             lastCloses = await wsGetLastCloses(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
           } catch { /* est P&L omitted */ }
 
           const money = (v) => (v == null ? null : v / Math.pow(10, acct.moneyDigits ?? 2))
+          // volume and lotSize are both in cents-of-units, so lots is their
+          // ratio — correct for every asset class (FX, metals, crypto,
+          // indices), unlike a fixed per-lot constant.
+          const toLots = (volume, meta) =>
+            volume != null && meta.lotSize ? Math.round((volume / meta.lotSize) * 100) / 100 : null
+          // The JSON bridge returns proto enums as NUMBERS.
+          const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
+          const sideOf = (v) => SIDE_NAME[v] || String(v || '').toUpperCase()
+          const ORDER_TYPE_NAME = { 1: 'MARKET', 2: 'LIMIT', 3: 'STOP', 4: 'SL/TP', 5: 'MARKET RANGE', 6: 'STOP LIMIT' }
+          const orderTypeOf = (v) => ORDER_TYPE_NAME[v] || String(v || 'ORDER').toUpperCase()
 
           out.positions = rawPositions.map(p => {
             const td = p.tradeData || {}
             const meta = symMeta[td.symbolId] || {}
-            const lots = td.volume != null ? td.volume / 10000 : null
-            const dir = String(td.tradeSide).toUpperCase() === 'SELL' ? -1 : 1
+            const lots = toLots(td.volume, meta)
+            const dir = sideOf(td.tradeSide) === 'SELL' ? -1 : 1
             const now = lastCloses[td.symbolId] ?? null
             const pipSize = meta.pipPosition != null ? Math.pow(10, -meta.pipPosition) : null
             const deltaPips = now != null && p.price != null && pipSize
               ? Math.round(((now - p.price) * dir) / pipSize * 10) / 10
               : null
-            // lotSize is in hundredths of units; default 100k units/lot (FX)
-            const unitsPerLot = meta.lotSize != null ? meta.lotSize / 100 : 100000
-            const estPnlQuote = now != null && p.price != null && lots != null
+            const unitsPerLot = meta.lotSize != null ? meta.lotSize / 100 : null
+            const estPnlQuote = now != null && p.price != null && lots != null && unitsPerLot != null
               ? Math.round((now - p.price) * dir * lots * unitsPerLot * 100) / 100
               : null
             return {
               positionId: p.positionId,
-              symbol: meta.symbolName || td.symbolId,
-              side: String(td.tradeSide || '').toUpperCase(),
+              symbol: meta.symbolName || `#${td.symbolId}`,
+              side: sideOf(td.tradeSide),
               lots,
+              rawVolume: td.volume ?? null,
+              minLot: toLots(meta.minVolume, meta),
               entry: p.price ?? null,
               currentPrice: now,
               deltaPips,
@@ -397,10 +425,11 @@ export default function actionsRouter(db) {
             const meta = symMeta[td.symbolId] || {}
             return {
               orderId: o.orderId,
-              type: o.orderType || 'ORDER',
-              symbol: meta.symbolName || td.symbolId,
-              side: String(td.tradeSide || '').toUpperCase(),
-              lots: td.volume != null ? td.volume / 10000 : null,
+              type: orderTypeOf(o.orderType),
+              symbol: meta.symbolName || `#${td.symbolId}`,
+              side: sideOf(td.tradeSide),
+              lots: toLots(td.volume, meta),
+              minLot: toLots(meta.minVolume, meta),
               limitPrice: o.limitPrice ?? null,
               stopPrice: o.stopPrice ?? null,
               currentPrice: lastCloses[td.symbolId] ?? null,

@@ -46,7 +46,7 @@ export default function Accounts() {
   useEffect(() => { load() }, [load])
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <div className="flex items-center gap-3">
         <h1 className="text-[14px] font-bold">All trading accounts</h1>
         <Button size="sm" variant="ghost" onClick={load} disabled={loading}>{loading ? 'Fetching from broker…' : 'Refresh'}</Button>
@@ -62,7 +62,7 @@ export default function Accounts() {
             <span className="text-[13px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
             {acct.brokerTitle && <span className="text-[12px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
             <span className="text-[12px] text-[var(--color-text-sub)]">id {acct.accountId}</span>
-            {acct.balance != null && <span className="text-[13px] font-semibold ml-2">balance ${fmt(acct.balance, 2)}</span>}
+            {acct.balance != null && <span className="text-[13px] font-semibold ml-2">balance {fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
             {acct.selected && <Badge tone="up">BOT TRADES THIS ONE</Badge>}
             <span className="ml-auto text-[12px] text-[var(--color-text-sub)]">
               {acct.positions.length} open · {acct.orders.length} pending
@@ -70,13 +70,14 @@ export default function Accounts() {
           </div>
 
           {acct.error && <div className="text-[13px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
+          {acct.metaError && <div className="text-[13px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids; lots need symbol metadata.</div>}
 
           {acct.positions.length > 0 && (
             <div className="overflow-x-auto mb-2">
               <div className="text-[12px] font-semibold mb-1">Live positions</div>
               <table className="w-full text-[13px]">
                 <thead><tr>
-                  <th className={th}>Symbol</th><th className={th}>Side</th><th className={th}>Lots</th>
+                  <th className={th}>Symbol</th><th className={th}>Side</th><th className={th}>Lots</th><th className={th}>Min lot</th>
                   <th className={th}>Entry</th><th className={th}>Now</th><th className={th}>Δ pips</th>
                   <th className={th}>Est. P&L*</th><th className={th}>SL</th><th className={th}>TP</th>
                   <th className={th}>Swap</th><th className={th}>Comm.</th><th className={th}>Margin</th>
@@ -87,7 +88,8 @@ export default function Accounts() {
                     <tr key={p.positionId} className="border-t border-[var(--color-border)]">
                       <td className={`${td} font-semibold`}>{p.symbol}{p.guaranteedSl ? ' 🔒' : ''}</td>
                       <td className={td}><Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge></td>
-                      <td className={td}>{fmt(p.lots, 2)}</td>
+                      <td className={td}>{p.lots != null ? fmt(p.lots, 2) : '—'}</td>
+                      <td className={td}>{p.minLot != null ? fmt(p.minLot, 2) : '—'}</td>
                       <td className={td}>{fmt(p.entry)}</td>
                       <td className={td}>{fmt(p.currentPrice)}</td>
                       <td className={td}>{p.deltaPips != null ? <Badge tone={p.deltaPips >= 0 ? 'up' : 'down'}>{p.deltaPips >= 0 ? '+' : ''}{fmt(p.deltaPips, 1)}</Badge> : '—'}</td>
@@ -112,7 +114,7 @@ export default function Accounts() {
               <table className="w-full text-[13px]">
                 <thead><tr>
                   <th className={th}>Symbol</th><th className={th}>Type</th><th className={th}>Side</th>
-                  <th className={th}>Lots</th><th className={th}>Trigger</th><th className={th}>Now</th>
+                  <th className={th}>Lots</th><th className={th}>Min lot</th><th className={th}>Trigger</th><th className={th}>Now</th>
                   <th className={th}>SL</th><th className={th}>TP</th><th className={th}>Expires</th><th className={th}>Label</th>
                 </tr></thead>
                 <tbody>
@@ -121,7 +123,8 @@ export default function Accounts() {
                       <td className={`${td} font-semibold`}>{o.symbol}</td>
                       <td className={td}>{o.type}</td>
                       <td className={td}><Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge></td>
-                      <td className={td}>{fmt(o.lots, 2)}</td>
+                      <td className={td}>{o.lots != null ? fmt(o.lots, 2) : '—'}</td>
+                      <td className={td}>{o.minLot != null ? fmt(o.minLot, 2) : '—'}</td>
                       <td className={td}>{fmt(o.limitPrice ?? o.stopPrice)}</td>
                       <td className={td}>{fmt(o.currentPrice)}</td>
                       <td className={td}>{fmt(o.sl)}</td>
