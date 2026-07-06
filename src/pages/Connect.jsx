@@ -95,7 +95,7 @@ export default function Connect() {
         </div>
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
           Stored in this browser's localStorage. Falls back to the VITE_AGENT_URL / VITE_AGENT_SECRET build-time env vars when empty.
-          Tip: a one-tap setup link configures any browser — <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code> (the #fragment never leaves the browser; share the link like a password).
+          Tip: a one-tap setup link configures any browser — <code>{'{site}'}/#{'{secret}'}</code> when the agent URL is already set (or built in), or the full form <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code>. The #fragment never leaves the browser; share the link like a password.
         </p>
       </Card>
 
