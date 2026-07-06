@@ -6,6 +6,27 @@
 const LS_URL = 'agent_url'
 const LS_SECRET = 'agent_secret'
 
+// Self-configuring link: opening the app with
+//   #agent=https://your-agent-host&secret=your-agent-secret
+// saves the connection to localStorage and strips the fragment from the
+// address bar. The hash never leaves the browser (not sent to servers or
+// logs), so this is a safe one-tap setup link — but anyone who has the
+// full link can operate the agent, so share it like a password.
+function initConnFromHash() {
+  if (typeof window === 'undefined' || !window.location?.hash) return
+  try {
+    const params = new URLSearchParams(window.location.hash.slice(1))
+    const url = params.get('agent')
+    const secret = params.get('secret')
+    if (url) localStorage.setItem(LS_URL, url.trim())
+    if (secret) localStorage.setItem(LS_SECRET, secret.trim())
+    if (url || secret) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
+  } catch { /* malformed hash — ignore */ }
+}
+initConnFromHash()
+
 function normalizeBase(url) {
   if (!url) return ''
   let u = url.trim().replace(/\/+$/, '')
