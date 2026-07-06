@@ -22,6 +22,45 @@ export default function actionsRouter(db) {
   const router = Router()
 
   // -----------------------------------------------------------------------
+  // POST /actions/backtest — walk-forward backtest of the fib strategy on
+  // REAL broker bars. The go/no-go gate before arming autotrade.
+  // Body: { symbol='EURUSD', timeframes=['4h','1d'], bars=1000, rsiFilter=false }
+  // Fetches all timeframes over one authenticated connection; ~seconds.
+  // -----------------------------------------------------------------------
+  router.post('/backtest', async (req, res) => {
+    try {
+      const symbol = String(req.body?.symbol || 'EURUSD').toUpperCase()
+      const timeframes = Array.isArray(req.body?.timeframes) && req.body.timeframes.length
+        ? req.body.timeframes : ['4h', '1d']
+      const count = Math.min(3000, Math.max(200, Number(req.body?.bars) || 1000))
+      const rsiFilter = req.body?.rsiFilter ? {} : null
+
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const symbolId = getSymbolMap(db)[symbol]
+      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not in the symbol map` })
+
+      const { runBacktest } = await import('../scripts/backtest-fib.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframes, count, 60_000)
+
+      const results = {}
+      for (const tf of timeframes) {
+        const bars = byPeriod[tf] || []
+        if (bars.length < 100) {
+          results[tf] = { error: `only ${bars.length} bars available` }
+          continue
+        }
+        const { stats } = runBacktest(bars.slice(0, -1), { timeframe: tf, rsiFilter })
+        results[tf] = { ...stats, barsUsed: bars.length - 1 }
+      }
+      res.json({ symbol, bars: count, rsiFilter: !!rsiFilter, results, ranAt: new Date().toISOString() })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /actions/stream-prices?symbols=EURUSD,BTCUSD — live tick feed.
   // Server-sent events: one cTrader spot subscription per client, ticks
   // forwarded as `data: {"symbol","bid","ask","t"}` frames. Closes with the

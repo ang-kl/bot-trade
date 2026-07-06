@@ -48,6 +48,25 @@ export default function Tune() {
   const [rsiFilter, setRsiFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
+  const [btSymbol, setBtSymbol] = useState('EURUSD')
+  const [bt, setBt] = useState(null)
+  const [btError, setBtError] = useState('')
+  const [btRunning, setBtRunning] = useState(false)
+
+  const runBacktest = async () => {
+    setBtRunning(true)
+    setBtError('')
+    setBt(null)
+    try {
+      const r = await agentPost('/actions/backtest', {
+        symbol: btSymbol.trim().toUpperCase() || 'EURUSD',
+        timeframes: ['4h', '1d'],
+        bars: 1000,
+        rsiFilter,
+      })
+      setBt(r)
+    } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
+  }
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
@@ -242,6 +261,53 @@ export default function Tune() {
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
           Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
         </p>
+      </Card>
+
+      {/* Backtest — the go/no-go gate before arming autotrade */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Backtest (go/no-go before autotrade)</h2>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Symbol</span>
+            <Input value={btSymbol} onChange={e => setBtSymbol(e.target.value)} placeholder="EURUSD" className="w-28" />
+          </label>
+          <Button size="sm" onClick={runBacktest} disabled={btRunning}>{btRunning ? 'Fetching bars & simulating…' : 'Run backtest'}</Button>
+          <span className="text-[12px] text-[var(--color-text-sub)]">1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+        </div>
+        {bt?.results && (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead className="text-left text-[var(--color-text-sub)]">
+                <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">Avg P/L</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Max DD</th><th>Verdict</th></tr>
+              </thead>
+              <tbody>
+                {Object.entries(bt.results).map(([tf, r]) => {
+                  const go = !r.error && r.trades >= 10 && (r.profitFactor ?? 0) >= 1.1 && r.totalProfitPct > 0
+                  return (
+                    <tr key={tf} className="border-t border-[var(--color-border)]">
+                      <td className="pr-3 py-1.5 font-semibold">{tf}</td>
+                      {r.error
+                        ? <td colSpan={6} className="text-[var(--color-warning-text)]">{r.error}</td>
+                        : <>
+                            <td className="pr-3">{r.trades}</td>
+                            <td className="pr-3">{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
+                            <td className="pr-3">{r.avgProfitPct != null ? `${r.avgProfitPct}%` : '—'}</td>
+                            <td className="pr-3">{r.totalProfitPct != null ? `${r.totalProfitPct}%` : '—'}</td>
+                            <td className="pr-3">{r.profitFactor ?? '—'}</td>
+                            <td className="pr-3">{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
+                          </>}
+                      <td>{!r.error && <Badge tone={go ? 'up' : 'down'}>{go ? 'GO' : 'NO-GO'}</Badge>}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+              GO = ≥10 trades, profit factor ≥1.1, positive total. Past performance is not a promise — it only says the strategy wasn't losing on this data. RSI filter setting above is applied.
+            </p>
+          </div>
+        )}
+        {btError && <div className="mt-2 text-[13px] text-[var(--color-warning-text)]">{btError}</div>}
       </Card>
 
       {/* Presets — the .cbotset idea: settings as a shareable file */}
