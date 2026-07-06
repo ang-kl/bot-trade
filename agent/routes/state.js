@@ -464,6 +464,35 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/symbol-map — symbol → cTrader symbolId map (edited on the
+  // UI's Connect tab)
+  // -----------------------------------------------------------------------
+  router.get('/symbol-map', (_req, res) => {
+    try {
+      const json = getState(db, 'symbol_id_map')
+      res.json({ map: json ? JSON.parse(json) : {} })
+    } catch (e) {
+      res.json({ map: {}, error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/autotrade-timeframes — timeframes eligible for auto_trade
+  // (mirrors the default in loop.js's timeframe gate)
+  // -----------------------------------------------------------------------
+  router.get('/autotrade-timeframes', (_req, res) => {
+    let timeframes = ['4h', '1d']
+    const json = getState(db, 'autotrade_timeframes')
+    if (json) {
+      try {
+        const parsed = JSON.parse(json)
+        if (Array.isArray(parsed) && parsed.length > 0) timeframes = parsed
+      } catch { /* keep default */ }
+    }
+    res.json({ timeframes })
+  })
+
   router.get('/prices', (_req, res) => {
     try {
       const rows = db.prepare(`

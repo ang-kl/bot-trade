@@ -1,0 +1,189 @@
+// Trade — the single live view: agent health, current fib signals, open
+// positions, recent trades, and the risk manager's latest decisions.
+import { useEffect, useState, useCallback } from 'react'
+import Card from '../components/common/Card.jsx'
+import Badge from '../components/common/Badge.jsx'
+import Button from '../components/common/Button.jsx'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+
+const REFRESH_MS = 30_000
+
+function fmt(n, digits = 5) {
+  if (n == null || Number.isNaN(Number(n))) return '—'
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
+}
+
+function ago(iso) {
+  if (!iso) return '—'
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000)
+  if (mins < 1) return 'now'
+  if (mins < 60) return `${mins}m ago`
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`
+  return `${Math.round(mins / 1440)}d ago`
+}
+
+export default function Trade() {
+  const [health, setHealth] = useState(null)
+  const [scans, setScans] = useState([])
+  const [positions, setPositions] = useState([])
+  const [trades, setTrades] = useState([])
+  const [riskEvents, setRiskEvents] = useState([])
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(async () => {
+    if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
+    try {
+      const [h, s, p, t, r] = await Promise.all([
+        agentGet('/state/health'),
+        agentGet('/state/scans'),
+        agentGet('/state/positions'),
+        agentGet('/state/trades'),
+        agentGet('/state/risk-events?limit=15'),
+      ])
+      setHealth(h)
+      setScans(s.rows || s.scans || [])
+      setPositions(p.rows || p.positions || [])
+      setTrades((t.rows || t.trades || []).slice(0, 15))
+      setRiskEvents(r.rows || [])
+      setError('')
+    } catch (e) {
+      setError(e.message)
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+    const id = setInterval(load, REFRESH_MS)
+    return () => clearInterval(id)
+  }, [load])
+
+  const act = async (label, path) => {
+    setBusy(label)
+    try { await agentPost(path); await load() } catch (e) { setError(e.message) } finally { setBusy('') }
+  }
+
+  const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
+  const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
+
+  return (
+    <div className="space-y-4">
+      {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
+
+      {/* Health strip */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
+          <Badge tone={health?.status === 'ok' ? 'up' : health ? 'down' : 'neutral'} pill>
+            {health ? (health.status === 'ok' ? 'AGENT OK' : health.status.toUpperCase()) : 'NO DATA'}
+          </Badge>
+          <span>loop #{fmt(health?.loopCount, 0)}</span>
+          <span>phase: {health?.loopPhase || '—'}</span>
+          <span>last scan: {ago(health?.lastScanAt)}</span>
+          <span>errors today: {fmt(health?.errorsToday, 0)}</span>
+          {health?.circuitBreaker && <Badge tone="down">BREAKER TRIPPED</Badge>}
+          <span className="ml-auto flex gap-2">
+            <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={() => act('scan', '/actions/scan')}>
+              {busy === 'scan' ? 'Scanning…' : 'Scan now'}
+            </Button>
+            {health?.circuitBreaker && (
+              <Button size="sm" variant="ghost" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
+            )}
+            <Button
+              size="sm" variant="danger" disabled={busy !== ''}
+              onClick={() => { if (window.confirm('Close ALL open positions at market?')) act('kill', '/actions/kill-all') }}
+            >Kill all</Button>
+          </span>
+        </div>
+      </Card>
+
+      {/* Signals */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Fib 61.8% signals</h2>
+        {signalScans.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No active signals. {skipScans.length > 0 ? `${skipScans.length} symbols scanned without a zone.` : ''}</div>}
+        {signalScans.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead className="text-left text-[var(--color-text-sub)]">
+                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Bias</th><th className="pr-3">TF</th><th className="pr-3">Conviction</th><th className="pr-3">Price</th><th>Thesis</th></tr>
+              </thead>
+              <tbody>
+                {signalScans.map(sc => (
+                  <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
+                    <td className="pr-3 py-1.5 font-semibold">{sc.symbol}</td>
+                    <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'up' : 'down'}>{sc.bias?.toUpperCase()}</Badge></td>
+                    <td className="pr-3">{sc.timeframe || '—'}</td>
+                    <td className="pr-3">{fmt(sc.confidence, 0)}/10</td>
+                    <td className="pr-3">{fmt(sc.price)}</td>
+                    <td className="text-[var(--color-text-sub)]">{sc.thesis}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* Open positions */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
+        {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
+        {positions.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead className="text-left text-[var(--color-text-sub)]">
+                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Side</th><th className="pr-3">Entry</th><th className="pr-3">SL</th><th className="pr-3">TP</th><th className="pr-3">Opened</th><th>Last check</th></tr>
+              </thead>
+              <tbody>
+                {positions.map(p => (
+                  <tr key={p.id} className="border-t border-[var(--color-border)]">
+                    <td className="pr-3 py-1.5 font-semibold">{p.symbol}</td>
+                    <td className="pr-3"><Badge tone={String(p.side).toUpperCase() === 'BUY' ? 'up' : 'down'}>{String(p.side).toUpperCase()}</Badge></td>
+                    <td className="pr-3">{fmt(p.entry_price)}</td>
+                    <td className="pr-3">{fmt(p.current_sl)}</td>
+                    <td className="pr-3">{fmt(p.current_tp)}</td>
+                    <td className="pr-3">{ago(p.opened_at)}</td>
+                    <td className="text-[var(--color-text-sub)]">{p.last_check_action || '—'} {p.last_checked_at ? `(${ago(p.last_checked_at)})` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        {/* Recent trades */}
+        <Card>
+          <h2 className="text-[13px] font-semibold mb-2">Recent trades</h2>
+          {trades.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
+          <ul className="space-y-1 text-[13px]">
+            {trades.map(t => (
+              <li key={t.id} className="flex items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
+                <span className="font-semibold">{t.symbol}</span>
+                <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
+                <Badge tone={(t.net_pnl ?? 0) >= 0 ? 'up' : 'down'}>{t.net_pnl != null ? `${t.net_pnl >= 0 ? '+' : ''}${fmt(t.net_pnl, 2)}` : t.status}</Badge>
+                <span className="ml-auto text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        {/* Risk decisions */}
+        <Card>
+          <h2 className="text-[13px] font-semibold mb-2">Risk manager decisions</h2>
+          {riskEvents.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
+          <ul className="space-y-1 text-[13px]">
+            {riskEvents.map(ev => (
+              <li key={ev.id} className="flex items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
+                <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
+                <span className="font-semibold">{ev.symbol}</span>
+                <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ev.sizing_note || ''}</span>
+                <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      </div>
+    </div>
+  )
+}

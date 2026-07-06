@@ -1,111 +1,59 @@
-import { useEffect } from 'react'
-import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import useTokenRefresh from './lib/use-token-refresh.js'
-import Feed from './pages/Feed.jsx'
-import Alert from './pages/Alert.jsx'
-import Settings from './pages/Settings.jsx'
-import Vault from './pages/Vault.jsx'
-import Backtest from './pages/Backtest.jsx'
-import LinkUp from './pages/LinkUp.jsx'
-import Admin from './pages/Admin.jsx'
-import Watchlist from './pages/Watchlist.jsx'
-import AgentPage from './pages/Agent.jsx'
-import Workshop from './pages/Workshop.jsx'
-import MarketSessionBar from './components/MarketSessionBar.jsx'
-import StatusRibbon from './components/StatusRibbon.jsx'
+import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import Trade from './pages/Trade.jsx'
+import Tune from './pages/Tune.jsx'
+import Connect from './pages/Connect.jsx'
 import { useTheme } from './lib/theme.js'
 
-// Top-level shell. Single-theme, playbook-canonical palette.
-// No green anywhere - blue = up/long/positive, red = down/short/negative.
+const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
+const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
-const navLinks = [
-  { to: '/agent', label: 'Agent' },
-  { to: '/workshop', label: 'Workshop' },
-  { to: '/feed', label: 'Feed' },
-  { to: '/watchlist', label: 'Watchlist' },
-  { to: '/alert', label: 'Alert' },
-  { to: '/settings', label: 'Settings' },
-  { to: '/vault', label: 'Vault' },
-  { to: '/backtest', label: 'Backtest' },
-  { to: '/admin', label: 'Admin' },
+const TABS = [
+  { to: '/trade', label: 'Trade' },
+  { to: '/tune', label: 'Tune' },
+  { to: '/connect', label: 'Connect' },
 ]
 
-// Scroll to top on route change
-function ScrollToTop() {
-  const { pathname } = useLocation()
-  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
-  return null
-}
-
-function linkClass({ isActive }) {
-  const base = 'px-2 sm:px-3 py-2 text-[12px] sm:text-[13px] font-bold rounded-[7px] whitespace-nowrap'
-  return isActive
-    ? `${base} border-b-[3px] border-[var(--color-accent)] text-[var(--color-accent)]`
-    : `${base} text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]`
-}
-
-const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'sepia', sepia: 'system' }
-const THEME_ICON = { system: '◐', light: '☀', dark: '☾', sepia: '☕' }
-
 export default function App() {
-  useTokenRefresh()
   const { theme, setTheme } = useTheme()
-  const { pathname } = useLocation()
-  const isWide = pathname === '/agent'
+
   return (
-    <div className="h-[100svh] flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]" style={{ fontFamily: 'system-ui, sans-serif' }}>
-      <ScrollToTop />
-      {/* Sticky top chrome — header + session bar never scroll */}
-      <div className="shrink-0 z-30 bg-[var(--color-surface)]">
-        <header className="border-b-2 border-[var(--color-accent)]">
-          <div style={{ maxWidth: 'var(--content-max)', padding: '0 var(--content-pad)' }} className="mx-auto h-14 flex items-center gap-2">
-            <span className="t-body font-bold mr-2 sm:mr-4 shrink-0">bot-trade</span>
-            <button
-              type="button"
-              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-              className="w-7 h-7 rounded-[5px] text-[14px] text-[var(--color-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)] shrink-0"
-              title={`Theme: ${theme}`}
-            >{THEME_ICON[theme] || '◐'}</button>
-            <nav aria-label="Main navigation" className="flex gap-0.5 sm:gap-1 overflow-x-auto scrollbar-none">
-              {navLinks.map(l => (
-                <NavLink key={l.to} to={l.to} className={linkClass}>
-                  {l.label}
-                </NavLink>
-              ))}
-            </nav>
-          </div>
-        </header>
-        <MarketSessionBar />
-      </div>
-
-      {/* Scrollable content — only this area scrolls. `min-h-0` lets the
-          flex child honour its overflow on browsers that otherwise compute
-          min-height: auto and push the whole page to scroll. */}
-      <main
-        id="main-content"
-        className="flex-1 min-h-0 overflow-y-auto"
-        style={{ overflowAnchor: 'none' }}
-      >
-        <div style={{ maxWidth: isWide ? 'none' : 'var(--content-max)', padding: '24px var(--content-pad)' }} className="mx-auto">
-          <Routes>
-            <Route path="/" element={<Navigate to="/agent" replace />} />
-            <Route path="/agent" element={<AgentPage />} />
-            <Route path="/workshop" element={<Workshop />} />
-            <Route path="/feed" element={<Feed />} />
-            <Route path="/watchlist" element={<Watchlist />} />
-            <Route path="/alert" element={<Alert />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/vault" element={<Vault />} />
-            <Route path="/backtest" element={<Backtest />} />
-            <Route path="/admin" element={<Admin />} />
-            <Route path="/link-up" element={<LinkUp />} />
-            <Route path="*" element={<Navigate to="/agent" replace />} />
-          </Routes>
+    <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+      <header className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+        <div className="mx-auto flex max-w-5xl items-center gap-4 px-4 py-2.5">
+          <span className="text-[14px] font-bold tracking-tight">bot-trade</span>
+          <nav className="flex gap-1" id="main-content">
+            {TABS.map(t => (
+              <NavLink
+                key={t.to}
+                to={t.to}
+                className={({ isActive }) =>
+                  `rounded-[7px] px-3 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center ${
+                    isActive
+                      ? 'bg-[var(--color-accent)] text-white'
+                      : 'text-[var(--color-text-sub)] hover:bg-[var(--color-accent-soft)]'
+                  }`
+                }
+              >{t.label}</NavLink>
+            ))}
+          </nav>
+          <button
+            type="button"
+            onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+            title={`Theme: ${theme}`}
+            className="ml-auto rounded-[7px] border border-[var(--color-border)] px-2.5 py-1 text-[14px] cursor-pointer hover:bg-[var(--color-accent-soft)]"
+          >{THEME_ICON[theme] || '◐'}</button>
         </div>
-      </main>
+      </header>
 
-      {/* Persistent status ribbon — autopilot + positions + last scan */}
-      <StatusRibbon />
+      <main className="mx-auto max-w-5xl px-4 py-4">
+        <Routes>
+          <Route path="/" element={<Navigate to="/trade" replace />} />
+          <Route path="/trade" element={<Trade />} />
+          <Route path="/tune" element={<Tune />} />
+          <Route path="/connect" element={<Connect />} />
+          <Route path="*" element={<Navigate to="/trade" replace />} />
+        </Routes>
+      </main>
     </div>
   )
 }

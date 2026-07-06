@@ -1,0 +1,237 @@
+// Tune — every knob a trader can turn, in one place:
+// pipeline toggles, autotrade timeframes, risk limits, account, watchlist.
+import { useEffect, useState, useCallback } from 'react'
+import Card from '../components/common/Card.jsx'
+import Badge from '../components/common/Badge.jsx'
+import Button from '../components/common/Button.jsx'
+import Input from '../components/common/Input.jsx'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+
+const ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
+
+// Risk fields exposed for editing: [key, label, hint]
+const RISK_FIELDS = [
+  ['perTradeRiskPct', 'Risk per trade', 'fraction of balance, e.g. 0.01 = 1%'],
+  ['dailyLossPct', 'Daily loss cap', 'fraction of balance, e.g. 0.03 = 3%'],
+  ['minRR', 'Min risk:reward', 'trades below this R:R are vetoed'],
+  ['maxOpenPositions', 'Max open positions', 'hard cap on concurrent positions'],
+  ['symbolCooldownMinutes', 'Symbol cooldown (min)', 'lock a symbol after any closed trade'],
+  ['maxConsecutiveLosses', 'Loss streak limit', 'losses in a row before cooldown'],
+  ['cooldownMinutes', 'Streak cooldown (min)', 'pause after hitting the streak'],
+  ['minSLDistancePct', 'Min SL distance %', 'stops tighter than this are vetoed'],
+  ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
+  ['kellyFraction', 'Kelly fraction', '0.25 = quarter-Kelly sizing'],
+]
+
+function Toggle({ on, onClick, label }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded-[7px] border px-3 py-1.5 text-[13px] font-semibold min-h-[36px] cursor-pointer transition-colors ${
+        on
+          ? 'bg-[var(--color-accent)] text-white border-transparent'
+          : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)]'
+      }`}
+    >
+      <span className={`inline-block w-2 h-2 rounded-full ${on ? 'bg-white' : 'bg-[var(--color-muted)]'}`} />
+      {label}: {on ? 'ON' : 'OFF'}
+    </button>
+  )
+}
+
+export default function Tune() {
+  const [config, setConfig] = useState(null)          // toggles + symbols
+  const [risk, setRisk] = useState(null)              // { effective, derived }
+  const [riskDraft, setRiskDraft] = useState({})
+  const [timeframes, setTimeframes] = useState(['4h', '1d'])
+  const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
+  const [newSymbol, setNewSymbol] = useState('')
+  const [status, setStatus] = useState('')
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
+    try {
+      const [c, r, tf] = await Promise.all([
+        agentGet('/state/config'),
+        agentGet('/state/risk-config'),
+        agentGet('/state/autotrade-timeframes').catch(() => null),
+      ])
+      setConfig(c)
+      setRisk(r)
+      setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
+      if (tf?.timeframes) setTimeframes(tf.timeframes)
+      setBalanceDraft({
+        balance: r.derived?.balance ?? '',
+        leverage: r.derived?.leverage ?? '',
+      })
+      setError('')
+    } catch (e) { setError(e.message) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const flash = (msg) => { setStatus(msg); setTimeout(() => setStatus(''), 2500) }
+  const run = async (fn, okMsg) => {
+    try { await fn(); await load(); flash(okMsg) } catch (e) { setError(e.message) }
+  }
+
+  const toggle = (path, key, current) =>
+    run(() => agentPost(path, { on: !current }), `${key} ${!current ? 'enabled' : 'disabled'}`)
+
+  const toggleTimeframe = (tf) => {
+    const next = timeframes.includes(tf) ? timeframes.filter(t => t !== tf) : [...timeframes, tf]
+    if (next.length === 0) { setError('At least one timeframe must stay enabled'); return }
+    setTimeframes(next)
+    run(() => agentPost('/actions/autotrade-timeframes', { timeframes: next }), 'Autotrade timeframes saved')
+  }
+
+  const saveRisk = () => {
+    const body = {}
+    for (const [k] of RISK_FIELDS) {
+      const v = Number(riskDraft[k])
+      if (Number.isFinite(v)) body[k] = v
+    }
+    run(() => agentPost('/actions/risk-config', body), 'Risk config saved')
+  }
+
+  const saveBalance = () => {
+    const body = {}
+    if (balanceDraft.balance !== '') body.balance = Number(balanceDraft.balance)
+    if (balanceDraft.leverage !== '') body.leverage = Number(balanceDraft.leverage)
+    run(() => agentPost('/actions/balance', body), 'Account saved')
+  }
+
+  const symbols = config?.symbols || []
+
+  const pushSymbols = (next) =>
+    run(() => agentPost('/actions/symbols', { symbols: next }), 'Watchlist saved')
+
+  const addSymbol = () => {
+    const sym = newSymbol.toUpperCase().trim()
+    if (!sym) return
+    if (symbols.some(s => s.symbol === sym)) { setError(`${sym} already in watchlist`); return }
+    setNewSymbol('')
+    pushSymbols([...symbols, { symbol: sym, enabled: true }])
+  }
+
+  return (
+    <div className="space-y-4">
+      {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
+      {status && <div className="text-[13px] text-[var(--color-info-text)]">{status}</div>}
+
+      {/* Pipeline toggles */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Pipeline</h2>
+        <div className="flex flex-wrap gap-2">
+          <Toggle on={config?.scan_enabled} label="Scan" onClick={() => toggle('/actions/scan-toggle', 'Scan', config?.scan_enabled)} />
+          <Toggle on={config?.analyze_enabled} label="Analyze" onClick={() => toggle('/actions/analyze-toggle', 'Analyze', config?.analyze_enabled)} />
+          <Toggle on={config?.autotrade_enabled} label="Autotrade" onClick={() => {
+            if (!config?.autotrade_enabled && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
+            toggle('/actions/autotrade-toggle', 'Autotrade', config?.autotrade_enabled)
+          }} />
+        </div>
+        <div className="mt-3">
+          <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Autotrade timeframes (scans always cover all):</div>
+          <div className="flex flex-wrap gap-1.5">
+            {ALL_TIMEFRAMES.map(tf => (
+              <button
+                key={tf} type="button" onClick={() => toggleTimeframe(tf)}
+                className={`rounded-[20px] border px-3 py-1 text-[12px] font-semibold cursor-pointer ${
+                  timeframes.includes(tf)
+                    ? 'bg-[var(--color-accent)] text-white border-transparent'
+                    : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)]'
+                }`}
+              >{tf}</button>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* Risk limits */}
+      <Card>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-[13px] font-semibold">Risk limits</h2>
+          {risk?.derived && (
+            <span className="text-[12px] text-[var(--color-text-sub)]">
+              balance {risk.derived.balance != null ? `$${risk.derived.balance}` : 'not set'} · daily cap ${risk.derived.daily_cap_usd} · per-trade ${risk.derived.per_trade_budget_usd ?? '—'}
+            </span>
+          )}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {RISK_FIELDS.map(([k, label, hint]) => (
+            <label key={k} className="block text-[12px]">
+              <span className="text-[var(--color-text-sub)]">{label}</span>
+              <Input
+                type="number" step="any" value={riskDraft[k] ?? ''}
+                onChange={e => setRiskDraft(d => ({ ...d, [k]: e.target.value }))}
+                title={hint} placeholder={hint}
+              />
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex gap-2">
+          <Button size="sm" onClick={saveRisk}>Save risk config</Button>
+          <Button size="sm" variant="subtle" onClick={() => run(() => agentPost('/actions/risk-config', { reset: true }), 'Risk config reset to defaults')}>Reset to defaults</Button>
+        </div>
+      </Card>
+
+      {/* Account */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Account</h2>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Balance (USD)</span>
+            <Input type="number" step="any" value={balanceDraft.balance} onChange={e => setBalanceDraft(d => ({ ...d, balance: e.target.value }))} />
+          </label>
+          <label className="block text-[12px]">
+            <span className="text-[var(--color-text-sub)]">Leverage (e.g. 200 = 1:200)</span>
+            <Input type="number" value={balanceDraft.leverage} onChange={e => setBalanceDraft(d => ({ ...d, leverage: e.target.value }))} />
+          </label>
+          <Button size="sm" onClick={saveBalance}>Save account</Button>
+        </div>
+      </Card>
+
+      {/* Watchlist */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Watchlist ({symbols.length})</h2>
+        <div className="flex gap-2 mb-3">
+          <Input value={newSymbol} onChange={e => setNewSymbol(e.target.value)} placeholder="Add symbol, e.g. EURUSD" className="max-w-[220px]" onKeyDown={e => e.key === 'Enter' && addSymbol()} />
+          <Button size="sm" onClick={addSymbol}>Add</Button>
+        </div>
+        {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
+        <div className="space-y-1.5">
+          {symbols.map((s, i) => (
+            <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-1.5 first:border-t-0 first:pt-0 text-[13px]">
+              <span className="font-semibold w-20">{s.symbol}</span>
+              <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
+              <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
+                max lots
+                <Input
+                  type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
+                  placeholder="0.01"
+                  onChange={e => {
+                    const next = [...symbols]
+                    next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
+                    setConfig(c => ({ ...c, symbols: next }))
+                  }}
+                  onBlur={() => pushSymbols(symbols)}
+                />
+              </label>
+              <span className="ml-auto flex gap-1.5">
+                <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                  {s.enabled !== false ? 'Disable' : 'Enable'}
+                </Button>
+                <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+          New symbols also need a cTrader symbol ID mapping — see the Connect tab.
+        </p>
+      </Card>
+    </div>
+  )
+}
