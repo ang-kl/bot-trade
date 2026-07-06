@@ -55,7 +55,7 @@ cd agent && npm install && node index.js   # agent on :3001
 | `ANTHROPIC_MAP_KEY_API` | agent + Vercel | Claude API — position monitor / weekend checks |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
 | `VITE_AGENT_URL` / `VITE_AGENT_SECRET` | Vercel (build) | Default agent connection (overridable per-browser on the Connect tab) |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | agent | Optional signal/trade alerts |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_OWNER_CHAT_ID` | agent | Optional signal/trade alerts |
 | `DB_PATH` / `PORT` / `FRONTEND_URL` | agent | SQLite path, listen port, CORS origin |
 
 Access token + account ID are pushed at runtime via the Connect tab and stored in the agent's SQLite DB.
