@@ -21,6 +21,15 @@ try {
   }
 } catch {}
 
+// App version (from the repo-root package.json; agent deploys from the same repo).
+// Displayed as 0.#.### — patch zero-padded to three digits.
+let APP_VERSION = '0.0.000'
+try {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const [maj, min, patch] = String(pkg.version || '0.0.0').split('.')
+  APP_VERSION = `${maj}.${min}.${String(patch).padStart(3, '0')}`
+} catch {}
+
 // ---------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------
@@ -146,6 +155,7 @@ app.get('/health', (_req, res) => {
 
   res.json({
     status,
+    version: APP_VERSION,
     uptime: process.uptime(),
     loopCount: Number(getState(db, 'loop_count') || 0),
     lastScanAt: getState(db, 'last_scan_at'),

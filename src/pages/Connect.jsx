@@ -90,7 +90,7 @@ export default function Connect() {
       const base = url.trim().replace(/\/+$/, '')
       const res = await fetch(`${base}/health`)
       const j = await res.json()
-      setTestResult({ ok: res.ok, detail: `status=${j.status} loop#${j.loopCount} uptime=${Math.round(j.uptime / 60)}m` })
+      setTestResult({ ok: res.ok, detail: `${j.version ? `v${j.version} ` : ''}status=${j.status} loop#${j.loopCount} uptime=${Math.round(j.uptime / 60)}m` })
     } catch (e) {
       setTestResult({ ok: false, detail: e.message })
     }

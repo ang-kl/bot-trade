@@ -1,3 +1,4 @@
+/* global __APP_VERSION__ */
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
@@ -25,6 +26,7 @@ export default function App() {
           <span className="text-[14px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent shrink-0">
             bot-trade
           </span>
+          <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title="App version">v{__APP_VERSION__}</span>
           <nav className="flex gap-1" id="main-content">
             {TABS.map(t => (
               <NavLink

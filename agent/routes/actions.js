@@ -318,7 +318,7 @@ export default function actionsRouter(db) {
       if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
-      const { wsReconcile, wsSymbolsByIds, wsGetLastCloses, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
+      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
 
       const accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
@@ -359,10 +359,21 @@ export default function actionsRouter(db) {
           // Symbol metadata (name, digits, pip position, lot size, min volume).
           // A failure here must be VISIBLE — without it the table shows raw
           // numeric ids and cannot compute lots.
+          // SYMBOL_BY_ID returns the FULL symbol record (lotSize, minVolume,
+          // pipPosition…) but — per the Open API spec — NOT symbolName. Names
+          // only exist on the LIGHT symbols list, so both calls are needed.
           const symMeta = {}
           try {
-            const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
-            for (const s of (symData.symbol || [])) symMeta[s.symbolId] = s
+            const [symData, lightData] = await Promise.all([
+              wsSymbolsByIds(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds),
+              wsGetSymbolsList(host, clientId, clientSecret, accessToken, acct.accountId),
+            ])
+            for (const s of (symData.symbol || [])) symMeta[s.symbolId] = { ...s }
+            for (const s of (lightData.symbol || [])) {
+              if (symbolIds.includes(s.symbolId) && s.symbolName) {
+                symMeta[s.symbolId] = { ...(symMeta[s.symbolId] || {}), symbolName: s.symbolName }
+              }
+            }
           } catch (err) {
             out.metaError = `symbol names unavailable: ${err.message}`
           }
