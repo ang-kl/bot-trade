@@ -493,6 +493,13 @@ export default function stateRouter(db) {
     res.json({ timeframes })
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/fib-rsi-filter — whether the RSI confluence gate is on
+  // -----------------------------------------------------------------------
+  router.get('/fib-rsi-filter', (_req, res) => {
+    res.json({ on: getState(db, 'fib_rsi_filter') === 'true' })
+  })
+
   router.get('/prices', (_req, res) => {
     try {
       const rows = db.prepare(`

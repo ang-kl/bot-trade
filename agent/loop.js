@@ -7,7 +7,7 @@ import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
-import { evaluateTrade, loadRiskConfig, persistRiskEvent } from './services/risk.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -531,8 +531,9 @@ async function runLoop(db) {
     const symbolMap = getSymbolMap(db)
     const ctraderCreds = getCtraderCreds(db)
 
+    const rsiFilterOn = getState(db, 'fib_rsi_filter') === 'true'
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6 })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {
@@ -927,6 +928,55 @@ async function runLoop(db) {
         } catch (err) {
           log(`Monitor check failed for ${pos.symbol}:`, err.message)
         }
+      }
+
+      // ---------------------------------------------------------------------
+      // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions.
+      // risk.js's dailyLossPct only vetoes NEW trades; this closes everything
+      // and disarms autotrade when today's realized PnL breaches the cap.
+      // Fires at most once per UTC day.
+      // ---------------------------------------------------------------------
+      try {
+        const riskCfg = loadRiskConfig(db)
+        const stopPct = riskCfg.equityStopPct ?? riskCfg.dailyLossPct
+        const balance = getAccountBalance(db)
+        const cap = balance != null ? balance * stopPct : riskCfg.dailyLossLimit
+        const dayStart = new Date()
+        dayStart.setUTCHours(0, 0, 0, 0)
+        const todayPnl = db
+          .prepare(`SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades WHERE status = 'closed' AND closed_at >= ?`)
+          .get(dayStart.toISOString())?.pnl || 0
+        const todayUTCDate = new Date().toISOString().slice(0, 10)
+        const alreadyTripped = (getState(db, 'equity_stop_tripped_at') || '').slice(0, 10) === todayUTCDate
+        const botPositions = s.selectActivePositions.all('active').filter(p => p.source !== 'external')
+
+        if (!alreadyTripped && todayPnl <= -Math.abs(cap) && botPositions.length > 0) {
+          setState(db, 'equity_stop_tripped_at', new Date().toISOString())
+          setState(db, 'autotrade_enabled', 'false')
+          log(`EQUITY STOP: today's PnL ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} — closing ${botPositions.length} position(s), autotrade disarmed`)
+          for (const pos of botPositions) {
+            try {
+              const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: 'equity_stop_daily_drawdown' })
+              s.updatePositionCheck.run(
+                'EQUITY_STOP',
+                `daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} | ${outcome.error || outcome.summary || outcome.reason || 'closed'}`,
+                new Date().toISOString(),
+                'broken',
+                pos.id
+              )
+            } catch (err) {
+              log(`Equity stop close failed for ${pos.symbol}:`, err.message)
+            }
+          }
+          if (process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              await sendMessage(`🛑 EQUITY STOP: daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)}. All positions closed, autotrade DISARMED.`)
+            } catch {}
+          }
+        }
+      } catch (err) {
+        log('Equity stop check failed:', err.message)
       }
     } // end symbolsJson
 

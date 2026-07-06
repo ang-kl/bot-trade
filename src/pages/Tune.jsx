@@ -45,6 +45,7 @@ export default function Tune() {
   const [risk, setRisk] = useState(null)              // { effective, derived }
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
+  const [rsiFilter, setRsiFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [status, setStatus] = useState('')
@@ -53,15 +54,17 @@ export default function Tune() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [c, r, tf] = await Promise.all([
+      const [c, r, tf, rf] = await Promise.all([
         agentGet('/state/config'),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
+        agentGet('/state/fib-rsi-filter').catch(() => null),
       ])
       setConfig(c)
       setRisk(r)
       setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
       if (tf?.timeframes) setTimeframes(tf.timeframes)
+      if (rf) setRsiFilter(!!rf.on)
       setBalanceDraft({
         balance: r.derived?.balance ?? '',
         leverage: r.derived?.leverage ?? '',
@@ -131,7 +134,15 @@ export default function Tune() {
             if (!config?.autotrade_enabled && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
             toggle('/actions/autotrade-toggle', 'Autotrade', config?.autotrade_enabled)
           }} />
+          <Toggle on={rsiFilter} label="RSI filter" onClick={() => {
+            const next = !rsiFilter
+            setRsiFilter(next)
+            run(() => agentPost('/actions/fib-rsi-filter', { on: next }), `RSI confluence filter ${next ? 'enabled' : 'disabled'}`)
+          }} />
         </div>
+        <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
+          RSI filter: only take long fades when RSI(14) ≤ 45 and shorts when ≥ 55. Backtest it first: <code>--rsi-filter</code>.
+        </p>
         <div className="mt-3">
           <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Autotrade timeframes (scans always cover all):</div>
           <div className="flex flex-wrap gap-1.5">
@@ -230,6 +241,49 @@ export default function Tune() {
         </div>
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
           Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
+        </p>
+      </Card>
+
+      {/* Presets — the .cbotset idea: settings as a shareable file */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-2">Presets</h2>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="subtle" onClick={() => {
+            const preset = {
+              version: 1,
+              riskConfig: risk?.effective || {},
+              autotradeTimeframes: timeframes,
+              rsiFilter,
+              symbols,
+            }
+            const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' })
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = 'bot-trade-preset.json'
+            a.click()
+            URL.revokeObjectURL(a.href)
+          }}>Export settings</Button>
+          <label className="inline-flex">
+            <span className="sr-only">Import settings</span>
+            <input type="file" accept="application/json" className="hidden" id="preset-import" onChange={async (e) => {
+              const file = e.target.files?.[0]
+              e.target.value = ''
+              if (!file) return
+              try {
+                const preset = JSON.parse(await file.text())
+                if (preset.riskConfig) await agentPost('/actions/risk-config', preset.riskConfig)
+                if (Array.isArray(preset.autotradeTimeframes) && preset.autotradeTimeframes.length > 0) await agentPost('/actions/autotrade-timeframes', { timeframes: preset.autotradeTimeframes })
+                if (typeof preset.rsiFilter === 'boolean') await agentPost('/actions/fib-rsi-filter', { on: preset.rsiFilter })
+                if (Array.isArray(preset.symbols) && preset.symbols.length > 0) await agentPost('/actions/symbols', { symbols: preset.symbols })
+                await load()
+                flash('Preset imported')
+              } catch (err) { setError(`Preset import failed: ${err.message}`) }
+            }} />
+            <Button size="sm" variant="subtle" onClick={() => document.getElementById('preset-import').click()}>Import settings</Button>
+          </label>
+        </div>
+        <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+          Everything on this page (risk limits, timeframes, RSI filter, watchlist) as one shareable JSON file. Autotrade arming is deliberately NOT included.
         </p>
       </Card>
     </div>
