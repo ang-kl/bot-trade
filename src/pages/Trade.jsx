@@ -103,7 +103,7 @@ export default function Trade() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {/* Health strip */}

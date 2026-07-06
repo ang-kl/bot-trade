@@ -35,6 +35,8 @@ export const PT = Object.freeze({
   NEW_ORDER_REQ:           2106,
   AMEND_POSITION_SLTP_REQ: 2110,
   CLOSE_POSITION_REQ:      2111,
+  ASSET_LIST_REQ:          2112,
+  ASSET_LIST_RES:          2113,
   SYMBOLS_LIST_REQ:        2114,
   SYMBOLS_LIST_RES:        2115,
   SYMBOL_BY_ID_REQ:        2116,
@@ -425,6 +427,17 @@ export function traderBalance(trader) {
   if (trader?.balance == null) return null
   const digits = trader.moneyDigits != null ? trader.moneyDigits : 2
   return trader.balance / Math.pow(10, digits)
+}
+
+/**
+ * Fetch the account's asset list (assetId → name/displayName), used to
+ * resolve the deposit currency. Returns `{ asset: [...] }`.
+ */
+export function wsGetAssets(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.ASSET_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.ASSET_LIST_RES },
+  ], timeoutMs), 2, 'wsGetAssets')
 }
 
 /**

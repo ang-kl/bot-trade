@@ -120,7 +120,7 @@ export default function Tune() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
       {status && <div className="text-[13px] text-[var(--color-info-text)]">{status}</div>}
 
