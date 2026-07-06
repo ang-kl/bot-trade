@@ -427,5 +427,41 @@ export function traderBalance(trader) {
   return trader.balance / Math.pow(10, digits)
 }
 
+/**
+ * Latest close per symbol — one authenticated connection, one 1m-trendbar
+ * request per symbolId (collectAll). Returns { [symbolId]: closePrice }.
+ */
+export function wsGetLastCloses(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+  const now = Date.now()
+  const spec = TRENDBAR_PERIODS['1m']
+  const steps = symbolIds.map(symbolId => ({
+    send: {
+      payloadType: PT.GET_TRENDBARS_REQ,
+      payload: {
+        ctidTraderAccountId: parseInt(accountId),
+        symbolId: parseInt(symbolId),
+        period: spec.code,
+        fromTimestamp: now - spec.ms * 10,
+        toTimestamp: now,
+        count: 2,
+      },
+    },
+    expect: PT.GET_TRENDBARS_RES,
+  }))
+  return withRetry(async () => {
+    const payloads = await wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      ...steps,
+    ], timeoutMs, true)
+    const barPayloads = payloads.slice(-symbolIds.length)
+    const out = {}
+    symbolIds.forEach((id, i) => {
+      const bars = decodeTrendbars(barPayloads[i])
+      if (bars.length > 0) out[id] = bars[bars.length - 1].c
+    })
+    return out
+  }, 2, 'wsGetLastCloses')
+}
+
 // Exposed for tests that need to stub WebSocket behaviour.
 export const _internal = { wsRun }
