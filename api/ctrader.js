@@ -189,8 +189,9 @@ function wsQuery(host, steps, timeoutMs = 25000) {
 }
 
 export default async function handler(req, res) {
-  const clientId = process.env.CTRADER_CLIENT_ID
-  const clientSecret = process.env.CTRADER_CLIENT_SECRET
+  // Accept both the canonical and the cTrader_Mixed_Case env var spellings
+  const clientId = process.env.CTRADER_CLIENT_ID || process.env.cTrader_Client_ID
+  const clientSecret = process.env.CTRADER_CLIENT_SECRET || process.env.cTrader_Client_Secret
 
   // ── OAuth2 (REST) ──
 
