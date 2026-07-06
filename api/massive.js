@@ -26,7 +26,7 @@ async function massiveGet(path, apiKey, params = {}) {
 
 export default async function handler(req, res) {
   if (req.method === 'GET' && req.query?.action === 'test') {
-    const apiKey = req.query.apiKey || process.env.MASSIVE_API_KEY
+    const apiKey = req.query.apiKey // MASSIVE_API_KEY env fallback disabled — no longer in use
     if (!apiKey) return res.status(400).json({ error: 'API key required' })
     try {
       const data = await massiveGet('/v3/reference/tickers', apiKey, {
@@ -48,7 +48,7 @@ export default async function handler(req, res) {
   }
 
   const body = readBody(req)
-  const apiKey = body.apiKey || process.env.MASSIVE_API_KEY
+  const apiKey = body.apiKey // MASSIVE_API_KEY env fallback disabled — no longer in use
   if (!apiKey) return res.status(400).json({ error: 'Massive API key required' })
 
   const action = body.action

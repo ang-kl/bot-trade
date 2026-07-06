@@ -144,8 +144,8 @@ export default async function handler(req, res) {
   }
 
   const body = readBody(req)
-  const massiveApiKey = body.massiveApiKey || process.env.MASSIVE_API_KEY
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
+  const massiveApiKey = body.massiveApiKey // MASSIVE_API_KEY env fallback disabled — no longer in use
+  const anthropicKey = process.env.ANTHROPIC_MAP_KEY_API
 
   if (!massiveApiKey) return res.status(400).json({ error: 'Massive API key required' })
 
@@ -164,7 +164,7 @@ export default async function handler(req, res) {
 
   // ── AI Pick — fetch data + Claude picks ──
   if (action === 'pick') {
-    if (!anthropicKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY missing' })
+    if (!anthropicKey) return res.status(500).json({ error: 'ANTHROPIC_MAP_KEY_API missing' })
 
     const index = body.index || 'US30'
     const count = Math.min(Math.max(Number(body.count) || 5, 1), 15)

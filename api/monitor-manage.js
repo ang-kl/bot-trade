@@ -93,8 +93,8 @@ Return ONLY valid JSON:
 }
 
 async function runCheck(rec) {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY missing')
+  const apiKey = process.env.ANTHROPIC_MAP_KEY_API
+  if (!apiKey) throw new Error('ANTHROPIC_MAP_KEY_API missing')
 
   const client = new Anthropic({ apiKey })
   const sessionContext = getSessionContext()

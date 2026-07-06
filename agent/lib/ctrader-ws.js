@@ -41,7 +41,30 @@ export const PT = Object.freeze({
   RECONCILE_RES:           2125,
   EXECUTION_EVENT:         2126,
   ORDER_ERROR_EVENT:       2132,
+  GET_TRENDBARS_REQ:       2137,
+  GET_TRENDBARS_RES:       2138,
   ERROR_RES:               2142,
+})
+
+// ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
+// can never exist in one map but not the other (a missing duration would
+// silently produce a NaN fromTimestamp).
+// Codes from github.com/spotware/openapi-proto-messages.
+export const TRENDBAR_PERIODS = Object.freeze({
+  '1m':  { code: 1,  ms: 60_000 },
+  '2m':  { code: 2,  ms: 120_000 },
+  '3m':  { code: 3,  ms: 180_000 },
+  '4m':  { code: 4,  ms: 240_000 },
+  '5m':  { code: 5,  ms: 300_000 },
+  '10m': { code: 6,  ms: 600_000 },
+  '15m': { code: 7,  ms: 900_000 },
+  '30m': { code: 8,  ms: 1_800_000 },
+  '1h':  { code: 9,  ms: 3_600_000 },
+  '4h':  { code: 10, ms: 14_400_000 },
+  '12h': { code: 11, ms: 43_200_000 },
+  '1d':  { code: 12, ms: 86_400_000 },
+  '1w':  { code: 13, ms: 604_800_000 },
+  '1mo': { code: 14, ms: 2_592_000_000 },
 })
 
 // ---------------------------------------------------------------------------
@@ -53,16 +76,22 @@ export const PT = Object.freeze({
  * final step's payload. Times out at `timeoutMs`. Surfaces cTrader ERROR_RES
  * and ORDER_ERROR_EVENT as rejections with their errorCode + description.
  *
+ * With `collectAll: true`, resolves with the array of every step's response
+ * payload (in step order) instead of only the last one — used to batch many
+ * requests over a single authenticated connection.
+ *
  * @param {string} host — e.g. 'demo.ctraderapi.com'
  * @param {Array<{send: {payloadType: number, payload: any}, expect: number}>} steps
  * @param {number} [timeoutMs=20000]
+ * @param {boolean} [collectAll=false]
  * @returns {Promise<any>}
  */
-function wsRun(host, steps, timeoutMs = 20_000) {
+function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${host}:5036`)
     let hb, timer, stepIdx = 0
     const seen = []
+    const collected = []
 
     const cleanup = () => {
       clearTimeout(timer)
@@ -120,10 +149,11 @@ function wsRun(host, steps, timeoutMs = 20_000) {
 
       const expected = steps[stepIdx]?.expect
       if (msg.payloadType === expected) {
+        if (collectAll) collected.push(msg.payload || {})
         stepIdx++
         if (stepIdx >= steps.length) {
           cleanup()
-          resolve(msg.payload || {})
+          resolve(collectAll ? collected : (msg.payload || {}))
         } else {
           sendStep(stepIdx)
         }
@@ -275,6 +305,73 @@ export function wsSymbolsByIds(host, clientId, clientSecret, accessToken, accoun
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: symbolIds.map(id => parseInt(id)) } }, expect: PT.SYMBOL_BY_ID_RES },
   ], timeoutMs), 2, 'wsSymbolsByIds')
+}
+
+// cTrader stores trendbar OHLC in raw points where 1 point = 10^-5 of the
+// quoted price, for every symbol regardless of its digits — same fixed scale
+// api/ctrader.js uses (POINTS_PER_PRICE). Do NOT scale by symbol digits.
+const POINTS_PER_PRICE = 100_000
+
+/**
+ * Decode a raw GET_TRENDBARS_RES payload into ascending {t,o,h,l,c,v} bars.
+ * Bars missing the `low` anchor field are dropped (they would decode to NaN,
+ * and NaN survives every downstream comparison silently).
+ */
+export function decodeTrendbars(payload) {
+  return (payload?.trendbar || [])
+    .filter(b => b.low != null)
+    .map(b => ({
+      t: (b.utcTimestampInMinutes || 0) * 60_000,
+      o: (b.low + (b.deltaOpen || 0)) / POINTS_PER_PRICE,
+      h: (b.low + (b.deltaHigh || 0)) / POINTS_PER_PRICE,
+      l: b.low / POINTS_PER_PRICE,
+      c: (b.low + (b.deltaClose || 0)) / POINTS_PER_PRICE,
+      v: b.volume || 0,
+    }))
+    .sort((a, b) => a.t - b.t)
+}
+
+/**
+ * Fetch historical OHLC trendbars for a symbol across one or more periods
+ * over a SINGLE authenticated connection (one WS + one app/account auth for
+ * the whole batch, instead of one per period).
+ *
+ * @param {string[]} periods - TRENDBAR_PERIODS keys, e.g. ['1d','4h','1h']
+ * @returns {Promise<Record<string, Array<{t,o,h,l,c,v}>>>} bars keyed by period
+ */
+export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000) {
+  const now = Date.now()
+  const steps = periods.map(period => {
+    const spec = TRENDBAR_PERIODS[period]
+    if (!spec) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
+    return {
+      send: {
+        payloadType: PT.GET_TRENDBARS_REQ,
+        payload: {
+          ctidTraderAccountId: parseInt(accountId),
+          symbolId: parseInt(symbolId),
+          period: spec.code,
+          fromTimestamp: now - spec.ms * (count + 5),
+          toTimestamp: now,
+          count,
+        },
+      },
+      expect: PT.GET_TRENDBARS_RES,
+    }
+  })
+
+  return withRetry(async () => {
+    const payloads = await wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      ...steps,
+    ], timeoutMs, true)
+    // collectAll returns auth payloads too — the trendbar responses are the
+    // last `periods.length` entries, in request order.
+    const barPayloads = payloads.slice(-periods.length)
+    const out = {}
+    periods.forEach((period, i) => { out[period] = decodeTrendbars(barPayloads[i]) })
+    return out
+  }, 2, 'wsGetTrendbarsBatch')
 }
 
 // Exposed for tests that need to stub WebSocket behaviour.

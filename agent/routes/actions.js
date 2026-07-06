@@ -3,10 +3,9 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
-import Anthropic from '@anthropic-ai/sdk'
 import { getState, setState } from '../db.js'
-import { runScan } from '../services/scanner.js'
-import { runAnalysis } from '../services/analyzer.js'
+import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
+import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder } from '../lib/ctrader-ws.js'
 import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
@@ -21,15 +20,6 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib
  */
 export default function actionsRouter(db) {
   const router = Router()
-
-  // Lazy-init Anthropic client (created on first use)
-  let _client = null
-  function getClient() {
-    if (!_client) {
-      _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-    }
-    return _client
-  }
 
   // -----------------------------------------------------------------------
   // POST /actions/scan — trigger immediate scan
@@ -53,9 +43,12 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'No enabled symbols in watchlist' })
       }
 
-      const client = getClient()
-      const scanResult = await runScan(client, symbols, {
-        timezone: typeof req.body?.timezone === 'string' ? req.body.timezone : 'Asia/Singapore',
+      const ctraderCreds = getCtraderCreds(db)
+      if (!ctraderCreds.ready) {
+        return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
+      }
+
+      const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db), symbols, {
         hotThreshold: Number(req.body?.hotThreshold) || 6,
       })
 
@@ -104,10 +97,22 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'Missing required field: symbol' })
       }
 
-      const client = getClient()
-      const result = await runAnalysis(client, symbol, {
-        autoTradeThreshold: req.body?.autoTradeThreshold || 8,
-      })
+      const symbolId = getSymbolMap(db)[symbol]
+      if (!symbolId) {
+        return res.status(400).json({ error: `symbolId unknown for ${symbol} — call POST /actions/symbol-map` })
+      }
+      const ctraderCreds = getCtraderCreds(db)
+      if (!ctraderCreds.ready) {
+        return res.status(400).json({ error: 'cTrader credentials not configured — push via /actions/ctrader-config' })
+      }
+
+      const { signal, error: scanError } = await scanSymbolFib(ctraderCreds, symbol, symbolId)
+      // An infrastructure failure (expired token, rate limit) must surface
+      // as an error, not masquerade as a "no setup" verdict.
+      if (scanError) {
+        return res.status(502).json({ error: scanError })
+      }
+      const result = synthesizeFibSignal(symbol, signal, req.body?.autoTradeThreshold || 8)
 
       // Find latest scan for this symbol to link
       const latestScan = db

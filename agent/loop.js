@@ -3,18 +3,18 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk'
-import { runScan } from './services/scanner.js'
-import { runAnalysis } from './services/analyzer.js'
+import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
-import { buildContextBrief, buildScanDelta, persistScanContext } from './services/context.js'
+import { persistScanContext } from './services/context.js'
 import { getActiveSessions, nextSessionOpening, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsSymbolsByIds } from './lib/ctrader-ws.js'
+import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
@@ -22,10 +22,32 @@ const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
 const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
-const DAILY_TOKEN_BUDGET = 500_000    // stop API calls if daily output tokens exceed this
+const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
 let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
+
+// Lazy singleton — only the monitor/weekend position checks call Anthropic
+// now; the scan/analyze pipeline is deterministic (fib-strategy.js).
+let _anthropicClient = null
+function getAnthropicClient() {
+  if (!_anthropicClient) {
+    _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_MAP_KEY_API })
+  }
+  return _anthropicClient
+}
+
+// Count monitor/weekend LLM usage against the daily budget and stamp the
+// Anthropic health key — these are the only remaining Anthropic call sites,
+// so they own the health signal (the scan must not stamp it).
+function recordAnthropicUsage(db, usage) {
+  const tokens = usage?.output_tokens || 0
+  if (tokens > 0) {
+    const prev = parseInt(getState(db, 'daily_tokens_used') || '0')
+    setState(db, 'daily_tokens_used', String(prev + tokens))
+  }
+  setState(db, 'api_anthropic_last_ok', new Date().toISOString())
+}
 
 // ---------------------------------------------------------------------------
 // cTrader auto-trade via WebSocket — places a market order when synthesis
@@ -458,14 +480,16 @@ async function runLoop(db) {
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
     const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    const client = getAnthropicClient()
 
-    // Daily token budget check — pause API calls if exceeded
+    // Daily token budget — reporting only. Scan/analyze are deterministic
+    // (zero tokens) since the fib migration; the remaining Anthropic
+    // consumers are the monitor/weekend position-safety checks, which must
+    // not be paused mid-position, so an exceeded budget warns instead of
+    // gating.
     const dailyTokensUsed = parseInt(getState(db, 'daily_tokens_used') || '0')
-    const budgetExceeded = dailyTokensUsed >= DAILY_TOKEN_BUDGET
-    if (budgetExceeded) {
-      log(`Daily token budget exceeded (${dailyTokensUsed.toLocaleString()} / ${DAILY_TOKEN_BUDGET.toLocaleString()}) — skipping scan+analyze. Monitor-only mode.`)
-      setState(db, 'loop_phase', `budget exceeded — monitor only`)
+    if (dailyTokensUsed >= DAILY_TOKEN_BUDGET) {
+      log(`Daily token budget exceeded (${dailyTokensUsed.toLocaleString()} / ${DAILY_TOKEN_BUDGET.toLocaleString()}) — monitor/weekend LLM checks still running.`)
     }
 
     // Autopilot's own symbol universe, falling back to legacy watchlist
@@ -492,8 +516,6 @@ async function runLoop(db) {
 
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
-      } else if (budgetExceeded) {
-        log('Token budget exceeded — scan skipped')
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else {
@@ -502,16 +524,31 @@ async function runLoop(db) {
         }
 
     setState(db, 'loop_phase', `scanning ${symbols.length} symbols`)
-    const contextBrief = buildContextBrief(db)
-    const scanDelta = buildScanDelta(db, []) // pre-scan delta (will be computed post-scan on next loop)
 
-    // Run scan with accumulated context
-    const scanResult = await runScan(client, symbols, {
-      timezone: 'Asia/Singapore',
-      hotThreshold: 6,
-      contextBrief,
-      scanDelta,
-    })
+    // Deterministic 61.8% Fibonacci retracement fade scan — no LLM calls.
+    // Needs cTrader trendbar access (symbol map + credentials); skip cleanly
+    // if not configured yet.
+    const symbolMap = getSymbolMap(db)
+    const ctraderCreds = getCtraderCreds(db)
+
+    const scanResult = ctraderCreds.ready
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6 })
+      : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
+
+    if (!ctraderCreds.ready) {
+      log('Fib scan skipped — cTrader credentials not configured (push via /actions/ctrader-config)')
+    }
+
+    // Surface fetch failures — an expired token or rate limit must not be
+    // indistinguishable from "no setups found".
+    if (scanResult.errors?.length) {
+      log(`Scan fetch errors (${scanResult.errors.length}): ${scanResult.errors[0]}`)
+      setState(db, 'api_ctrader_last_error', `${new Date().toISOString()} ${scanResult.errors[0]}`)
+      const errorsToday0 = Number(getState(db, 'errors_today') || 0)
+      setState(db, 'errors_today', String(errorsToday0 + 1))
+    } else if (ctraderCreds.ready && scanResult.scans.length > 0) {
+      setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+    }
 
     log(
       `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm`
@@ -542,30 +579,37 @@ async function runLoop(db) {
     }
 
     setState(db, 'last_scan_at', now)
-    setState(db, 'api_anthropic_last_ok', now)
-
-    // Track daily token usage
-    const scanTokens = scanResult.usage?.output_tokens || 0
-    const prevTokens = parseInt(getState(db, 'daily_tokens_used') || '0')
-    setState(db, 'daily_tokens_used', String(prevTokens + scanTokens))
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
 
     // Persist scan context for next loop's delta computation
     persistScanContext(db, scanResult.scans)
 
-    // Telegram alert for hot symbols
+    // Telegram alert for hot symbols — deduped on the signal signature
+    // (symbol@timeframe@level). A fib zone persists across many 5-minute
+    // loops; without dedup the identical alert fires every loop until price
+    // leaves the zone.
     if (scanResult.hot.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
-      try {
-        await sendScanAlert(scanResult.scans, scanResult.desk_note, '')
-      } catch (err) {
-        log('Telegram alert failed:', err.message)
+      const hotSignature = scanResult.hot
+        .map(sym => {
+          const sig = scanResult.signals[sym]
+          return sig ? `${sym}@${sig.timeframe}@${sig.level618}` : sym
+        })
+        .sort()
+        .join('|')
+      if (hotSignature !== getState(db, 'last_hot_alert_signature')) {
+        try {
+          await sendScanAlert(scanResult.scans, scanResult.desk_note, '')
+          setState(db, 'last_hot_alert_signature', hotSignature)
+        } catch (err) {
+          log('Telegram alert failed:', err.message)
+        }
       }
     }
 
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (analyzeEnabled && !budgetExceeded && scanResult.hot.length > 0) {
+    if (analyzeEnabled && scanResult.hot.length > 0) {
       const hotToAnalyze = scanResult.hot.slice(0, 3)
       setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
@@ -581,9 +625,7 @@ async function runLoop(db) {
               continue
             }
           }
-          const result = await runAnalysis(client, sym, {
-            autoTradeThreshold: wItem.autoTradeThreshold || 8,
-          })
+          const result = synthesizeFibSignal(sym, scanResult.signals[sym], wItem.autoTradeThreshold || 8)
 
           // Find latest scan id for this symbol to link
           const latestScan = s.latestScanForSymbol.get(sym)
@@ -610,23 +652,48 @@ async function runLoop(db) {
             scan_id: scanId,
           })
 
-          const analyzeTokens = result.usage?.output_tokens || 0
-          const cumTokens = parseInt(getState(db, 'daily_tokens_used') || '0') + analyzeTokens
-          setState(db, 'daily_tokens_used', String(cumTokens))
-          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) [${analyzeTokens} tokens, daily total: ${cumTokens}]`)
+          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) rr=${synth.risk_note || ''}`)
 
           // Auto-trade — only when armed and synthesis recommends it.
           // Iterate all autopilot-enabled accounts so the same signal
           // replicates across every assigned account with per-account sizing.
-          // Send Telegram alert for every analysis regardless of autotrade
+          // Telegram alert per analysis, deduped on the zone signature —
+          // a persisting fib zone re-analyzes every loop with near-identical
+          // numbers and must not re-ping every 5 minutes.
           if (synth.overall_conviction >= 6 && process.env.TELEGRAM_BOT_TOKEN) {
-            try {
-              const { sendMessage } = await import('./services/telegram.js')
-              const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
-              await sendMessage(
-                `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
-              )
-            } catch {}
+            const sig = scanResult.signals[sym]
+            const alertKey = `last_analysis_alert_${sym}`
+            const alertSig = sig ? `${sig.timeframe}@${sig.level618}` : String(synth.entry)
+            if (alertSig !== getState(db, alertKey)) {
+              try {
+                const { sendMessage } = await import('./services/telegram.js')
+                const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
+                await sendMessage(
+                  `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
+                )
+                setState(db, alertKey, alertSig)
+              } catch {}
+            }
+          }
+
+          // Autotrade timeframe gate — only timeframes with demonstrated edge
+          // may auto-trade (default 4h/1d per the reference backtest; lower
+          // TFs were net-negative there even before spread). Scans and alerts
+          // still cover every timeframe. Widen via agent state:
+          //   autotrade_timeframes = '["1h","4h","1d"]'
+          if (synth.auto_trade) {
+            let allowedTfs = ['4h', '1d']
+            const tfJson = getState(db, 'autotrade_timeframes')
+            if (tfJson) {
+              try {
+                const parsedTfs = JSON.parse(tfJson)
+                if (Array.isArray(parsedTfs) && parsedTfs.length > 0) allowedTfs = parsedTfs
+              } catch { /* keep default */ }
+            }
+            if (!allowedTfs.includes(synth.timeframe)) {
+              log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
+              synth.auto_trade = false
+            }
           }
 
           // Human override: if override_bias is set, use it instead of AI's
@@ -713,6 +780,7 @@ async function runLoop(db) {
         for (const pos of tradPositions) {
           try {
             const check = await runWeekendPositionCheck(client, pos)
+            recordAnthropicUsage(db, { output_tokens: check.tokens || 0 })
             // Store the full payload (citations, searches_used, watch_events)
             // in last_check_reasoning as JSON so Workshop can render the audit
             // trail — user sees WHICH headlines triggered the call.
@@ -842,6 +910,7 @@ async function runLoop(db) {
               ? `${Math.round(eval_.metrics.minutesInTrade)}m`
               : null,
           })
+          recordAnthropicUsage(db, check.usage)
 
           s.updatePositionCheck.run(
             check.action,
