@@ -107,3 +107,48 @@ async function request(method, path, body) {
 
 export const agentGet = (path) => request('GET', path)
 export const agentPost = (path, body) => request('POST', path, body)
+
+/**
+ * Live tick stream over server-sent events. EventSource can't set an
+ * Authorization header, so this reads the SSE body via fetch streaming.
+ * Returns { close() }; onTick gets {symbol, bid, ask, t}; onEnd gets a
+ * reason string when the server or network drops the stream.
+ */
+export function agentStreamPrices(symbols, onTick, onEnd = () => {}) {
+  const c = getAgentConn()
+  const ctrl = new AbortController()
+  ;(async () => {
+    try {
+      const res = await fetch(`${c.base}/actions/stream-prices?symbols=${encodeURIComponent(symbols.join(','))}`, {
+        headers: { authorization: `Bearer ${c.secret}` },
+        signal: ctrl.signal,
+      })
+      if (!res.ok || !res.body) {
+        let msg = `stream ${res.status}`
+        try { const j = await res.json(); if (j.error) msg = j.error } catch { /* keep default */ }
+        return onEnd(msg)
+      }
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) return onEnd('stream ended')
+        buf += dec.decode(value, { stream: true })
+        let i
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, i)
+          buf = buf.slice(i + 2)
+          const dataLine = frame.split('\n').find(l => l.startsWith('data: '))
+          if (!dataLine || frame.startsWith(':')) continue
+          if (frame.startsWith('event: end')) return onEnd('server closed stream')
+          if (frame.startsWith('event: hello')) continue
+          try { onTick(JSON.parse(dataLine.slice(6))) } catch { /* skip bad frame */ }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') onEnd(e.message)
+    }
+  })()
+  return { close: () => ctrl.abort() }
+}

@@ -8,7 +8,7 @@ import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-
 import { getCtraderCreds, getSymbolMap } from '../lib/ctrader-creds.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
-import { getActiveSessions, categoriseSymbol } from '../lib/sessions.js'
+import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 
 /**
@@ -20,6 +20,64 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib
  */
 export default function actionsRouter(db) {
   const router = Router()
+
+  // -----------------------------------------------------------------------
+  // GET /actions/stream-prices?symbols=EURUSD,BTCUSD — live tick feed.
+  // Server-sent events: one cTrader spot subscription per client, ticks
+  // forwarded as `data: {"symbol","bid","ask","t"}` frames. Closes with the
+  // client. Capped at 10 symbols per stream.
+  // -----------------------------------------------------------------------
+  router.get('/stream-prices', async (req, res) => {
+    try {
+      const names = String(req.query.symbols || '').toUpperCase().split(',').map(s => s.trim()).filter(Boolean).slice(0, 10)
+      if (names.length === 0) return res.status(400).json({ error: 'symbols query param required' })
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+
+      const map = getSymbolMap(db)
+      const idToName = {}
+      const ids = []
+      for (const n of names) {
+        if (map[n]) { ids.push(map[n]); idToName[map[n]] = n }
+      }
+      if (ids.length === 0) return res.status(404).json({ error: 'none of the requested symbols are in the symbol map' })
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      res.write(`event: hello\ndata: ${JSON.stringify({ symbols: names.filter(n => map[n]) })}\n\n`)
+
+      const { wsStreamSpots } = await import('../lib/ctrader-ws.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      let stream = null
+      let hb = null
+      const shutdown = () => {
+        clearInterval(hb)
+        try { stream?.close() } catch { /* already closed */ }
+        try { res.end() } catch { /* client gone */ }
+      }
+      try {
+        stream = await wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, ids,
+          (tick) => {
+            res.write(`data: ${JSON.stringify({ symbol: idToName[tick.symbolId], bid: tick.bid, ask: tick.ask, t: tick.t })}\n\n`)
+          },
+          (reason) => {
+            res.write(`event: end\ndata: ${JSON.stringify({ reason })}\n\n`)
+            shutdown()
+          })
+      } catch (err) {
+        res.write(`event: end\ndata: ${JSON.stringify({ reason: err.message })}\n\n`)
+        return shutdown()
+      }
+      hb = setInterval(() => res.write(': ping\n\n'), 15_000)
+      req.on('close', shutdown)
+    } catch (err) {
+      if (!res.headersSent) res.status(502).json({ error: err.message })
+    }
+  })
 
   // -----------------------------------------------------------------------
   // POST /actions/chart — OHLC bars for one symbol/timeframe, plus the
@@ -923,7 +981,7 @@ export default function actionsRouter(db) {
       const side = bias === 'short' ? 'SELL' : 'BUY'
       const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
       let symbols = []
-      try { symbols = JSON.parse(symbolsJson) } catch {}
+      try { symbols = JSON.parse(symbolsJson) } catch { /* corrupt state — use empty list */ }
       const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
       const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
 

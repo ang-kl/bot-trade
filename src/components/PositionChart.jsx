@@ -6,7 +6,7 @@
 // Colour rules: up = blue, down = red (owner is red/green colourblind —
 // NEVER green). Candle colours use the shared CSS tokens.
 import { useEffect, useRef, useState } from 'react'
-import { agentPost } from '../lib/agent-api.js'
+import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
 
 const TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
 const POLL_MS = 15_000
@@ -26,6 +26,8 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState(null)
+  const [tick, setTick] = useState(null)      // live {bid, ask, t} from SSE
+  const [live, setLive] = useState(false)     // stream connected?
   const timer = useRef(null)
 
   useEffect(() => {
@@ -43,6 +45,17 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     return () => { dead = true; clearInterval(timer.current) }
   }, [symbol, timeframe])
 
+  // Live tick stream (SSE). If the agent doesn't support it yet or the
+  // stream drops, the 15s bar poll above remains the feed.
+  useEffect(() => {
+    const stream = agentStreamPrices(
+      [symbol],
+      t => { setTick(t); setLive(true) },
+      () => setLive(false),
+    )
+    return () => stream.close()
+  }, [symbol])
+
   const bars = data?.bars || []
   if (error) return <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>
   if (bars.length === 0) return <div className="text-[12px] text-[var(--color-text-sub)] py-2">Loading {symbol} {timeframe} bars…</div>
@@ -59,6 +72,10 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
   const x = i => PAD.left + i * step + step / 2
 
   const last = bars[bars.length - 1]
+  // Live price: mid of the freshest tick when streaming, else last bar close
+  const livePrice = tick?.bid != null && tick?.ask != null
+    ? (tick.bid + tick.ask) / 2
+    : (tick?.bid ?? tick?.ask ?? last.c)
   const OVERLAYS = [
     lines.entry != null && { v: lines.entry, label: 'entry', cls: 'var(--color-text)' },
     lines.sl != null && { v: lines.sl, label: 'SL', cls: 'var(--color-down)' },
@@ -80,7 +97,9 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           >{t}</button>
         ))}
         <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-          {niceFmt(last?.c, last?.c)} · live, refreshes 15s{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ''}
+          {live && tick
+            ? <>bid {niceFmt(tick.bid, last?.c)} / ask {niceFmt(tick.ask, last?.c)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
+            : <>{niceFmt(last?.c, last?.c)} · bars refresh 15s{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ''}</>}
         </span>
       </div>
       <div className="overflow-x-auto">
@@ -117,10 +136,10 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
               <text x={PAD.left + 2} y={y(o.v) - 3} fontSize="9" fontWeight="700" fill={o.cls}>{o.label} {niceFmt(o.v, last?.c)}</text>
             </g>
           ))}
-          {/* last price marker */}
-          <line x1={PAD.left} x2={W - PAD.right} y1={y(last.c)} y2={y(last.c)} stroke="var(--color-accent)" strokeWidth="0.75" />
-          <rect x={W - PAD.right + 1} y={y(last.c) - 7} width={PAD.right - 2} height={14} rx="3" fill="var(--color-accent)" />
-          <text x={W - PAD.right + 5} y={y(last.c) + 3} fontSize="9" fontWeight="700" fill="#fff">{niceFmt(last.c, last.c)}</text>
+          {/* live price marker (tick-driven when streaming, else last close) */}
+          <line x1={PAD.left} x2={W - PAD.right} y1={y(livePrice)} y2={y(livePrice)} stroke="var(--color-accent)" strokeWidth="0.75" />
+          <rect x={W - PAD.right + 1} y={y(livePrice) - 7} width={PAD.right - 2} height={14} rx="3" fill="var(--color-accent)" />
+          <text x={W - PAD.right + 5} y={y(livePrice) + 3} fontSize="9" fontWeight="700" fill="#fff">{niceFmt(livePrice, last.c)}</text>
         </svg>
       </div>
       {data?.fib && (
