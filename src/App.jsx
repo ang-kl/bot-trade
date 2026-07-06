@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import Trade from './pages/Trade.jsx'
+import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
 import Connect from './pages/Connect.jsx'
 import { useTheme } from './lib/theme.js'
@@ -9,6 +10,7 @@ const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
 const TABS = [
   { to: '/trade', label: 'Trade' },
+  { to: '/accounts', label: 'Accounts' },
   { to: '/tune', label: 'Tune' },
   { to: '/connect', label: 'Connect' },
 ]
@@ -49,6 +51,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/trade" replace />} />
           <Route path="/trade" element={<Trade />} />
+          <Route path="/accounts" element={<Accounts />} />
           <Route path="/tune" element={<Tune />} />
           <Route path="/connect" element={<Connect />} />
           {/* Spotware OAuth redirect URI (registered on the cTrader app) */}

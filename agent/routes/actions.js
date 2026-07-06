@@ -305,6 +305,131 @@ export default function actionsRouter(db) {
   }
 
   // -----------------------------------------------------------------------
+  // POST /actions/broker-positions — full per-account broker snapshot for
+  // the Accounts view: every account on the stored token, with its live
+  // positions (entry, now, Δpips, est. P&L, SL/TP, swap, commission,
+  // margin, open time, label) and pending orders.
+  // On-demand only (up to ~3 WS round-trips per account) — not on the loop.
+  // -----------------------------------------------------------------------
+  router.post('/broker-positions', async (_req, res) => {
+    try {
+      const { ctraderEnv } = await import('../lib/ctrader-env.js')
+      const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
+      if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
+      const clientId = ctraderEnv('clientId')
+      const clientSecret = ctraderEnv('clientSecret')
+      const { wsReconcile, wsSymbolsByIds, wsGetLastCloses } = await import('../lib/ctrader-ws.js')
+
+      const accounts = await listCtraderAccounts(accessToken)
+      const selectedId = getState(db, 'ctrader_account_id')
+
+      const snapshotAccount = async (acct) => {
+        const host = acct.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+        const out = {
+          ...acct,
+          selected: String(acct.accountId) === String(selectedId),
+          positions: [],
+          orders: [],
+          error: null,
+        }
+        try {
+          const rec = await wsReconcile(host, clientId, clientSecret, accessToken, acct.accountId)
+          const rawPositions = rec.position || []
+          const rawOrders = rec.order || []
+          if (rawPositions.length === 0 && rawOrders.length === 0) return out
+
+          const symbolIds = [...new Set([
+            ...rawPositions.map(p => p.tradeData?.symbolId),
+            ...rawOrders.map(o => o.tradeData?.symbolId),
+          ].filter(Boolean))]
+
+          // Symbol metadata (name, digits, pip position, lot size) + fresh prices
+          const symMeta = {}
+          try {
+            const symData = await wsSymbolsByIds(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
+            for (const s of (symData.symbol || [])) symMeta[s.symbolId] = s
+          } catch { /* names/pips degrade gracefully */ }
+          let lastCloses = {}
+          try {
+            lastCloses = await wsGetLastCloses(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
+          } catch { /* est P&L omitted */ }
+
+          const money = (v) => (v == null ? null : v / Math.pow(10, acct.moneyDigits ?? 2))
+
+          out.positions = rawPositions.map(p => {
+            const td = p.tradeData || {}
+            const meta = symMeta[td.symbolId] || {}
+            const lots = td.volume != null ? td.volume / 10000 : null
+            const dir = String(td.tradeSide).toUpperCase() === 'SELL' ? -1 : 1
+            const now = lastCloses[td.symbolId] ?? null
+            const pipSize = meta.pipPosition != null ? Math.pow(10, -meta.pipPosition) : null
+            const deltaPips = now != null && p.price != null && pipSize
+              ? Math.round(((now - p.price) * dir) / pipSize * 10) / 10
+              : null
+            // lotSize is in hundredths of units; default 100k units/lot (FX)
+            const unitsPerLot = meta.lotSize != null ? meta.lotSize / 100 : 100000
+            const estPnlQuote = now != null && p.price != null && lots != null
+              ? Math.round((now - p.price) * dir * lots * unitsPerLot * 100) / 100
+              : null
+            return {
+              positionId: p.positionId,
+              symbol: meta.symbolName || td.symbolId,
+              side: String(td.tradeSide || '').toUpperCase(),
+              lots,
+              entry: p.price ?? null,
+              currentPrice: now,
+              deltaPips,
+              estPnlQuote, // in the symbol's QUOTE currency, price-move only (excludes swap/commission)
+              sl: p.stopLoss ?? null,
+              tp: p.takeProfit ?? null,
+              swap: money(p.swap),
+              commission: money(p.commission),
+              usedMargin: money(p.usedMargin),
+              openedAt: td.openTimestamp ?? null,
+              label: td.label || null,
+              comment: td.comment || null,
+              guaranteedSl: !!p.guaranteedStopLoss,
+            }
+          })
+
+          out.orders = rawOrders.map(o => {
+            const td = o.tradeData || {}
+            const meta = symMeta[td.symbolId] || {}
+            return {
+              orderId: o.orderId,
+              type: o.orderType || 'ORDER',
+              symbol: meta.symbolName || td.symbolId,
+              side: String(td.tradeSide || '').toUpperCase(),
+              lots: td.volume != null ? td.volume / 10000 : null,
+              limitPrice: o.limitPrice ?? null,
+              stopPrice: o.stopPrice ?? null,
+              currentPrice: lastCloses[td.symbolId] ?? null,
+              sl: o.stopLoss ?? null,
+              tp: o.takeProfit ?? null,
+              expiresAt: o.expirationTimestamp ?? null,
+              label: td.label || null,
+              comment: td.comment || null,
+            }
+          })
+        } catch (err) {
+          out.error = err.message
+        }
+        return out
+      }
+
+      // Snapshot accounts with small concurrency to avoid a WS burst
+      const results = []
+      for (let i = 0; i < accounts.length; i += 3) {
+        results.push(...await Promise.all(accounts.slice(i, i + 3).map(snapshotAccount)))
+      }
+      res.json({ ok: true, accounts: results, fetchedAt: new Date().toISOString() })
+    } catch (err) {
+      console.error('[actions/broker-positions] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/ctrader-token — store an access token and list every
   // trading account it can operate (no account id needed from the user).
   // Body: { accessToken }
