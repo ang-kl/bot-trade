@@ -58,11 +58,94 @@ function MonitorPositionRow({ p }) {
   )
 }
 
+// Report card — tabbed area chart (equity curve / daily activity), in the
+// style of the analytics report the owner referenced. SVG, blue/violet only.
+function ReportCard({ allTrades, events }) {
+  const [tab, setTab] = useState('equity')
+  const W = 720, H = 200, PL = 8, PR = 44, PT = 10, PB = 22
+
+  let points = []
+  if (tab === 'equity') {
+    let eq = 0
+    points = [...allTrades]
+      .filter(t => t.closed_at && t.pnl != null)
+      .sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+      .map(t => { eq += Number(t.pnl); return { x: new Date(t.closed_at).getTime(), y: eq } })
+  } else {
+    const byDay = {}
+    for (const e of events) {
+      const d = String(e.created_at || '').slice(0, 10)
+      if (d) byDay[d] = (byDay[d] || 0) + 1
+    }
+    points = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b))
+      .map(([d, n]) => ({ x: new Date(d).getTime(), y: n }))
+  }
+
+  const hasData = points.length >= 2
+  let path = '', area = '', lastY = null, yTicks = []
+  if (hasData) {
+    const xs = points.map(p => p.x), ys = points.map(p => p.y)
+    const x0 = Math.min(...xs), x1 = Math.max(...xs)
+    const yLo = Math.min(0, ...ys), yHi = Math.max(...ys) || 1
+    const X = v => PL + ((v - x0) / (x1 - x0 || 1)) * (W - PL - PR)
+    const Y = v => PT + (1 - (v - yLo) / (yHi - yLo || 1)) * (H - PT - PB)
+    path = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ')
+    area = `${path} L${X(x1).toFixed(1)},${H - PB} L${X(x0).toFixed(1)},${H - PB} Z`
+    lastY = points[points.length - 1].y
+    yTicks = [yLo, (yLo + yHi) / 2, yHi].map(v => ({ v, y: Y(v) }))
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-2">
+        <h2 className="text-[13px] font-semibold">Report</h2>
+        <div className="flex gap-1 ml-2">
+          {[['equity', 'Equity curve'], ['activity', 'Daily decisions']].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setTab(k)}
+              className={`rounded-full px-3 py-1 text-[12px] font-semibold cursor-pointer ${
+                tab === k ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
+              }`}>{label}</button>
+          ))}
+        </div>
+        {hasData && lastY != null && (
+          <span className="ml-auto text-[13px] font-semibold">
+            {tab === 'equity' ? `${lastY >= 0 ? '+' : ''}${fmt(lastY, 2)} total` : `${fmt(lastY, 0)} today`}
+          </span>
+        )}
+      </div>
+      {!hasData && (
+        <div className="text-[13px] text-[var(--color-text-sub)] py-4">
+          The {tab === 'equity' ? 'equity curve draws itself from closed trades' : 'activity chart draws from the risk manager\'s decisions'} — it appears after the first {tab === 'equity' ? 'trade closes' : 'decisions are logged'}.
+        </div>
+      )}
+      {hasData && (
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="report chart">
+          <defs>
+            <linearGradient id="repFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#a855f7" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity="0.03" />
+            </linearGradient>
+          </defs>
+          {yTicks.map(t => (
+            <g key={t.y}>
+              <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="var(--color-border)" strokeWidth="0.5" />
+              <text x={W - PR + 4} y={t.y + 3} fontSize="9" fill="var(--color-text-sub)">{fmt(t.v, 2)}</text>
+            </g>
+          ))}
+          <path d={area} fill="url(#repFill)" />
+          <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinejoin="round" />
+        </svg>
+      )}
+    </Card>
+  )
+}
+
 export default function Monitor() {
   const cached = readCache()
   const [health, setHealth] = useState(cached?.health ?? null)
   const [positions, setPositions] = useState(cached?.positions ?? [])
   const [trades, setTrades] = useState(cached?.trades ?? [])
+  const [allTrades, setAllTrades] = useState(cached?.allTrades ?? [])
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [error, setError] = useState('')
@@ -74,19 +157,22 @@ export default function Monitor() {
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
-        agentGet('/state/risk-events?limit=5'),
+        agentGet('/state/risk-events?limit=200'),
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
       ])
+      const fullTrades = t.rows || t.trades || []
       const next = {
         health: h,
         positions: p.rows || p.positions || [],
-        trades: (t.rows || t.trades || []).slice(0, 5),
-        events: r.rows || [],
+        trades: fullTrades.slice(0, 5),
+        allTrades: fullTrades,
+        events: (r.rows || []),
         broker: b?.accounts?.[0] ?? null,
       }
       setHealth(next.health)
       setPositions(next.positions)
       setTrades(next.trades)
+      setAllTrades(next.allTrades)
       setEvents(next.events)
       setBroker(next.broker)
       writeCache(next)
@@ -121,6 +207,12 @@ export default function Monitor() {
             </>
           )}
         </div>
+        {health && active && health.scanEnabled === false && (
+          <p className="mt-2 text-[13px] font-semibold text-[var(--color-down)]">
+            ⚠ Scan is OFF — autotrade is armed but the bot cannot see the market, so it will never trade.
+            Turn <Link to="/tune" className="underline">Scan ON in Tune</Link>.
+          </p>
+        )}
         {health && (
           <p className="mt-2 text-[13px] text-[var(--color-text-sub)]">
             {positions.length > 0
@@ -131,6 +223,8 @@ export default function Monitor() {
           </p>
         )}
       </Card>
+
+      <ReportCard allTrades={allTrades} events={events} />
 
       {/* THE BROKER'S TRUTH for the bot's account: live positions + set (pending) orders */}
       <Card>
@@ -185,7 +279,7 @@ export default function Monitor() {
             {t.pnl != null && <span className={Number(t.pnl) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{Number(t.pnl) >= 0 ? '+' : ''}{fmt(t.pnl, 2)}</span>}
           </div>
         ))}
-        {events.map(e => (
+        {events.slice(0, 5).map(e => (
           <div key={`e${e.id}`} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
             <span className="text-[var(--color-text-sub)]">{ago(e.created_at)}</span>
             <span className="font-semibold">{e.symbol}</span>
