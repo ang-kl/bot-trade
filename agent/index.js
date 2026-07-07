@@ -133,7 +133,7 @@ function addSession() {
 }
 
 function authMiddleware(req, res, next) {
-  if (req.method === 'GET' && req.path === '/health') return next();
+  if (req.method === 'GET' && (req.path === '/health' || req.path === '/icon.png')) return next();
   if (req.path.startsWith('/auth/')) return next(); // login endpoints are public (rate-limited below)
 
   const header = req.headers.authorization || '';
@@ -186,7 +186,17 @@ app.post('/auth/telegram/verify', (req, res) => {
   }
   setState(db, 'login_code', '')   // single use
   const token = addSession()
+  // Confirm on Telegram (fire-and-forget) — an unexpected one of these
+  // means someone else has your code: revoke by rotating AGENT_SECRET.
+  import('./services/telegram.js')
+    .then(({ sendMessage }) => sendMessage('✅ bot-trade: a new device just logged in with your code (valid 90 days). If this was not you, act now.'))
+    .catch(() => { /* alert is best-effort */ })
   res.json({ ok: true, token })
+})
+
+// Bot icon (public) — same artwork as the site favicon and the Telegram bot.
+app.get('/icon.png', (_req, res) => {
+  res.sendFile(resolve(new URL('../bot-icon.png', import.meta.url).pathname))
 })
 
 // ---------------------------------------------------------------------------
