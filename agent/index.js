@@ -113,13 +113,33 @@ app.use(
 // Auth middleware — skip for GET /health
 // ---------------------------------------------------------------------------
 
+// Device sessions issued by the Telegram login flow — accepted alongside the
+// master AGENT_SECRET. Stored as { token: expiresAtMs } JSON in agent_state.
+function getSessions() {
+  try { return JSON.parse(getState(db, 'device_sessions') || '{}') } catch { return {} }
+}
+function isValidSession(token) {
+  const s = getSessions()
+  return !!token && !!s[token] && s[token] > Date.now()
+}
+function addSession() {
+  const token = 'sess_' + [...crypto.getRandomValues(new Uint8Array(24))].map(b => b.toString(16).padStart(2, '0')).join('')
+  const s = getSessions()
+  // prune expired, cap at 20 devices
+  for (const [k, v] of Object.entries(s)) if (v < Date.now()) delete s[k]
+  s[token] = Date.now() + 90 * 86_400_000 // 90 days
+  setState(db, 'device_sessions', JSON.stringify(s))
+  return token
+}
+
 function authMiddleware(req, res, next) {
   if (req.method === 'GET' && req.path === '/health') return next();
+  if (req.path.startsWith('/auth/')) return next(); // login endpoints are public (rate-limited below)
 
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
 
-  if (!token || token !== AGENT_SECRET) {
+  if (!token || (token !== AGENT_SECRET && !isValidSession(token))) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -127,6 +147,47 @@ function authMiddleware(req, res, next) {
 }
 
 app.use(authMiddleware);
+
+// ---------------------------------------------------------------------------
+// Telegram device login — the bot texts a 6-digit code to the OWNER's chat;
+// typing it here authorizes this browser with a device session token.
+// No master secret ever reaches the page. Public but tightly rate-limited.
+// ---------------------------------------------------------------------------
+
+let lastCodeRequestAt = 0
+let verifyFailures = 0
+
+app.post('/auth/telegram/request', async (_req, res) => {
+  try {
+    if (Date.now() - lastCodeRequestAt < 30_000) {
+      return res.status(429).json({ error: 'A code was just sent — check Telegram (new code possible in 30s)' })
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    setState(db, 'login_code', code)
+    setState(db, 'login_code_expires', String(Date.now() + 5 * 60_000))
+    lastCodeRequestAt = Date.now()
+    verifyFailures = 0
+    const { sendMessage } = await import('./services/telegram.js')
+    await sendMessage(`🔑 bot-trade login code: *${code}*\n\nValid 5 minutes. If you didn't request this, ignore it.`)
+    res.json({ ok: true, sentVia: 'telegram' })
+  } catch (err) {
+    res.status(502).json({ error: `Could not send Telegram code: ${err.message}` })
+  }
+})
+
+app.post('/auth/telegram/verify', (req, res) => {
+  if (verifyFailures >= 5) return res.status(429).json({ error: 'Too many wrong codes — request a new one' })
+  const code = String(req.body?.code || '').trim()
+  const stored = getState(db, 'login_code')
+  const expires = Number(getState(db, 'login_code_expires') || 0)
+  if (!stored || !code || code !== stored || Date.now() > expires) {
+    verifyFailures++
+    return res.status(401).json({ error: 'Wrong or expired code' })
+  }
+  setState(db, 'login_code', '')   // single use
+  const token = addSession()
+  res.json({ ok: true, token })
+})
 
 // ---------------------------------------------------------------------------
 // Health endpoint (public)
