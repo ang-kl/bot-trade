@@ -460,7 +460,7 @@ export default function actionsRouter(db) {
   // margin, open time, label) and pending orders.
   // On-demand only (up to ~3 WS round-trips per account) — not on the loop.
   // -----------------------------------------------------------------------
-  router.post('/broker-positions', async (_req, res) => {
+  router.post('/broker-positions', async (req, res) => {
     try {
       const { ctraderEnv } = await import('../lib/ctrader-env.js')
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
@@ -469,8 +469,13 @@ export default function actionsRouter(db) {
       const clientSecret = ctraderEnv('clientSecret')
       const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
 
-      const accounts = await listCtraderAccounts(accessToken)
+      let accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
+      // selectedOnly: snapshot just the bot's account (Monitor uses this —
+      // 1 account × ~4 round-trips instead of 7 accounts' worth).
+      if (req.body?.selectedOnly && selectedId) {
+        accounts = accounts.filter(a => String(a.accountId) === String(selectedId))
+      }
 
       const snapshotAccount = async (acct) => {
         const host = acct.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'

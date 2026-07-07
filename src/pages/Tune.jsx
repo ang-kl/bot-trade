@@ -49,7 +49,11 @@ export default function Tune() {
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [btSymbol, setBtSymbol] = useState('EURUSD')
-  const [bt, setBt] = useState(null)
+  // Backtest results survive tab switches (sessionStorage) — losing them on
+  // navigation hid the Activate button and read as "nothing happened".
+  const [bt, setBt] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('backtest_cache_v1')) || null } catch { return null }
+  })
   const [btError, setBtError] = useState('')
   const [btRunning, setBtRunning] = useState(false)
 
@@ -65,6 +69,7 @@ export default function Tune() {
         rsiFilter,
       })
       setBt(r)
+      try { sessionStorage.setItem('backtest_cache_v1', JSON.stringify(r)) } catch { /* quota — skip */ }
     } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
   }
   const [status, setStatus] = useState('')

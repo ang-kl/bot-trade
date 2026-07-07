@@ -13,6 +13,8 @@ export default function Connect() {
   const [url, setUrl] = useState(conn.base)
   const [secret, setSecret] = useState(conn.secret)
   const [testResult, setTestResult] = useState(null)
+  const [tgSent, setTgSent] = useState(false)
+  const [tgCode, setTgCode] = useState('')
 
   const [token, setToken] = useState('')
   const [accounts, setAccounts] = useState(null)      // null = not loaded yet
@@ -155,6 +157,48 @@ export default function Connect() {
           {testResult && (
             <Badge tone={testResult.ok ? 'up' : 'down'}>{testResult.ok ? `REACHABLE — ${testResult.detail}` : `FAILED — ${testResult.detail}`}</Badge>
           )}
+        </div>
+        <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+          <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
+            Or log in without typing the secret — the bot texts a code to your Telegram:
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {!tgSent ? (
+              <Button size="sm" onClick={async () => {
+                setError('')
+                try {
+                  const base = url.trim().replace(/\/+$/, '')
+                  if (!base) { setError('Enter the Agent URL first'); return }
+                  const r = await fetch(`${base}/auth/telegram/request`, { method: 'POST' }).then(x => x.json())
+                  if (r.error) throw new Error(r.error)
+                  setTgSent(true)
+                  flash('Code sent — check your Telegram')
+                } catch (e) { setError(e.message) }
+              }}>Send login code to my Telegram</Button>
+            ) : (
+              <>
+                <Input value={tgCode} onChange={e => setTgCode(e.target.value)} placeholder="6-digit code" className="w-32" inputMode="numeric" />
+                <Button size="sm" onClick={async () => {
+                  setError('')
+                  try {
+                    const base = url.trim().replace(/\/+$/, '')
+                    const r = await fetch(`${base}/auth/telegram/verify`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ code: tgCode.trim() }),
+                    }).then(x => x.json())
+                    if (r.error) throw new Error(r.error)
+                    setAgentConn({ url: base, secret: r.token })
+                    setSecret(r.token)
+                    setTgSent(false)
+                    setTgCode('')
+                    flash('Logged in — this device is authorized for 90 days')
+                  } catch (e) { setError(e.message) }
+                }}>Verify & log in</Button>
+                <Button size="sm" variant="subtle" onClick={() => { setTgSent(false); setTgCode('') }}>Cancel</Button>
+              </>
+            )}
+          </div>
         </div>
         <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
           One-tap setup link: <code>{'{site}'}/#{'{secret}'}</code> (or full form <code>{'{site}'}/connect#agent={'{agent-url}'}&secret={'{secret}'}</code>). The #fragment never leaves the browser — share it like a password.
