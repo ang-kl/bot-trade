@@ -339,9 +339,12 @@ export default function Trade() {
           {trades.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
           <ul className="space-y-1 text-[13px]">
             {trades.map(t => (
-              <li key={t.id} className="flex items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
+              <li key={t.id} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
                 <span className="font-semibold">{t.symbol}</span>
                 <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
+                <span className="text-[var(--color-text-sub)]">in {fmt(t.entry_price)}{t.exit_price != null ? ` → out ${fmt(t.exit_price)}` : ''}</span>
+                <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
+                {t.exit_reason && <span className="text-[var(--color-text-sub)]">({t.exit_reason})</span>}
                 <Badge tone={(t.net_pnl ?? 0) >= 0 ? 'up' : 'down'}>{t.net_pnl != null ? `${t.net_pnl >= 0 ? '+' : ''}${fmt(t.net_pnl, 2)}` : t.status}</Badge>
                 <span className="ml-auto text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
               </li>

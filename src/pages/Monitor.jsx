@@ -260,6 +260,8 @@ export default function Monitor() {
             <span className="text-[var(--color-text-sub)]">{ago(t.closed_at)}</span>
             <span className="font-semibold">{t.symbol}</span>
             <Badge tone={String(t.side).toUpperCase() === 'BUY' ? 'up' : 'down'}>{String(t.side).toUpperCase()}</Badge>
+            <span className="text-[var(--color-text-sub)]">in {fmt(t.entry_price)} → out {fmt(t.exit_price)}</span>
+            <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
             <span>closed {t.exit_reason ? `(${t.exit_reason})` : ''}</span>
             {t.pnl != null && <span className={Number(t.pnl) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{Number(t.pnl) >= 0 ? '+' : ''}{fmt(t.pnl, 2)}</span>}
           </div>
