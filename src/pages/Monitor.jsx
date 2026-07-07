@@ -73,9 +73,9 @@ export default function Monitor() {
   }, [])
 
   useEffect(() => {
-    load()
+    const kick = setTimeout(load, 0)   // async fetch — avoid sync setState in effect body
     const t = setInterval(load, REFRESH_MS)
-    return () => clearInterval(t)
+    return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
 
   const active = health?.autotradeEnabled
