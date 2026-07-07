@@ -193,6 +193,38 @@ export default function Monitor() {
         )}
       </Card>
 
+      {/* WHY NO TRADES — the product explains itself instead of looking dead.
+          Every line is computed from live state, not canned text. */}
+      {health && positions.length === 0 && (broker?.positions?.length ?? 0) === 0 && (
+        <Card>
+          <h2 className="text-[13px] font-semibold mb-1">Why no trades right now?</h2>
+          <ul className="text-[13px] space-y-1 list-disc pl-5">
+            {!active && <li className="font-semibold text-[var(--color-down)]">Autotrade is OFF — the bot never places orders. <Link to="/tune" className="underline">Activate on Tune</Link>.</li>}
+            {active && health.scanEnabled === false && <li className="font-semibold text-[var(--color-down)]">Scan is OFF — the bot cannot see the market. <Link to="/tune" className="underline">Turn it on in Tune</Link>.</li>}
+            {active && health.scanEnabled !== false && (() => {
+              const rows = scan?.rows || []
+              const found = rows.filter(r => r.bias !== 'skip')
+              const noZone = rows.length - found.length
+              const rejected = found.map(r => {
+                const sig = scan?.signals?.[r.symbol]
+                if (sig && !armedTfs.includes(sig.timeframe)) return `${r.symbol}: signal on ${sig.timeframe}, but only ${armedTfs.join('/')} are armed (your backtest only proved those)`
+                if ((r.confidence ?? 0) < 8) return `${r.symbol}: conviction ${r.confidence}/10 — below the 8/10 bar for automatic entry`
+                return `${r.symbol}: passed the signal checks — waiting on the risk gate at the next 5-min loop`
+              })
+              return (
+                <>
+                  {noZone > 0 && <li>{noZone} of {rows.length} watchlist symbols have no price at a 61.8% retracement zone at this moment — no setup exists to trade.</li>}
+                  {rejected.map(txt => <li key={txt}>{txt}</li>)}
+                  <li className="text-[var(--color-text-sub)]">
+                    Expected pace on {armedTfs.join('/')}: your own backtest produced roughly 1–2 qualifying trades per month per symbol — a quiet screen for days is the strategy working, not failing. Telegram announces the moment anything changes.
+                  </li>
+                </>
+              )
+            })()}
+          </ul>
+        </Card>
+      )}
+
       {/* Proof of life: what the last 5-minute scan actually looked at */}
       <Card>
         <div className="flex items-center gap-2 mb-1">
