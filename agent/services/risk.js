@@ -37,6 +37,13 @@ export const DEFAULT_RISK_CONFIG = {
   minRR: 1.5,                      // TP must be ≥ minRR × SL distance.
   minSLDistancePct: 0.15,          // SL must be ≥ this % from entry (stops too
                                    // tight get swept by noise).
+  maxSpreadFracOfSL: 0.25,         // Microstructure gate: the live bid/ask
+                                   // spread is a cost paid at entry. If it
+                                   // exceeds this fraction of the SL distance,
+                                   // the R:R the signal was approved on is
+                                   // fiction — veto (doc_reference/
+                                   // microstructure-frequent-trading-notes.md).
+                                   // 0 disables the check.
   maxCurrencyExposure: 2,          // Net long/short exposure to any one ccy.
   minTradesForKelly: 30,           // Below this → use default volume.
   kellyFraction: 0.25,             // Quarter-Kelly for drawdown control.

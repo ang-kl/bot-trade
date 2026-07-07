@@ -99,7 +99,8 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
   }
-  const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+  const riskCfg = loadRiskConfig(db)
+  const riskResult = evaluateTrade(db, proposal, riskCfg)
   persistRiskEvent(db, proposal, riskResult)
   if (!riskResult.approved) {
     log(`RISK VETO ${symbol} ${side}: ${riskResult.veto_reason}`)
@@ -159,6 +160,35 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   }
 
   const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+
+  // Microstructure spread gate: the live spread is a cost paid the instant
+  // the market order fills. If it eats more than maxSpreadFracOfSL of the SL
+  // distance, the R:R this signal was approved on no longer exists (rollover /
+  // off-hours spread blowouts). Best-effort — a failed quote fails OPEN.
+  if (slDistance && riskCfg.maxSpreadFracOfSL > 0) {
+    try {
+      const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+      const q = await wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId)
+      if (q) {
+        const spread = q.ask - q.bid
+        if (spread > riskCfg.maxSpreadFracOfSL * slDistance) {
+          const reason = `spread_too_wide: ${spread.toFixed(5)} > ${(riskCfg.maxSpreadFracOfSL * 100).toFixed(0)}% of SL distance ${slDistance.toFixed(5)}`
+          persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+          log(`RISK VETO ${symbol} ${side}: ${reason}`)
+          if (process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — spread too wide (${spread.toFixed(5)} vs SL ${slDistance.toFixed(5)}). Likely off-hours/rollover — the signal stays; it can fire next loop when the spread normalises.`)
+            } catch { /* non-fatal */ }
+          }
+          return null
+        }
+      }
+    } catch (e) {
+      log(`Spread gate skipped (fail-open): ${e.message}`)
+    }
+  }
+
   log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
 
   try {

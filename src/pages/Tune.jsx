@@ -30,6 +30,7 @@ const RISK_FIELDS = [
   ['maxConsecutiveLosses', 'Loss streak limit', 'losses in a row before cooldown'],
   ['cooldownMinutes', 'Streak cooldown', 'pause after hitting the streak'],
   ['minSLDistancePct', 'Min SL distance', 'stops tighter than this % are vetoed'],
+  ['maxSpreadFracOfSL', 'Max spread (of SL)', 'veto entry if the live spread exceeds this share of the SL distance — blocks off-hours/rollover fills'],
   ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
   ['kellyFraction', 'Kelly fraction', '0.25 = quarter-Kelly sizing'],
 ]
@@ -39,7 +40,7 @@ const RISK_FIELDS = [
 const RISK_GROUPS = [
   { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'kellyFraction', 'maxMarginUsagePct'] },
   { title: 'Circuit breakers', blurb: 'When the bot must stand down.', keys: ['dailyLossPct', 'maxConsecutiveLosses', 'cooldownMinutes'] },
-  { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct'] },
+  { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct', 'maxSpreadFracOfSL'] },
   { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes'] },
 ]
 
@@ -55,6 +56,7 @@ const RISK_CONTROLS = {
   maxConsecutiveLosses: { type: 'select', options: [2, 3, 4, 5, 6].map(n => [n, String(n)]) },
   cooldownMinutes: { type: 'select', options: [[30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
   minSLDistancePct: { type: 'slider', min: 0.05, max: 0.5, step: 0.05, fmt: v => `${Number(v).toFixed(2)}%` },
+  maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   kellyFraction: { type: 'select', options: [[0.1, '0.10 — very conservative'], [0.25, '0.25 — quarter-Kelly (default)'], [0.5, '0.50 — aggressive'], [1, '1.00 — full Kelly (not advised)']] },
 }
