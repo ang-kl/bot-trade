@@ -383,7 +383,8 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/autotrade-timeframes', (req, res) => {
     const tfs = req.body?.timeframes
-    const valid = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+    // Every trendbar period the broker supports — minutes to months.
+    const valid = ['1m', '2m', '3m', '4m', '5m', '10m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo']
     if (!Array.isArray(tfs) || tfs.length === 0 || !tfs.every(t => valid.includes(t))) {
       return res.status(400).json({ error: `timeframes must be a non-empty array of: ${valid.join(', ')}` })
     }
