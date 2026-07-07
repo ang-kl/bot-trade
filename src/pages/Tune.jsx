@@ -26,12 +26,21 @@ const RISK_FIELDS = [
   ['dailyLossPct', 'Daily loss cap', 'fraction of balance, e.g. 0.03 = 3%'],
   ['minRR', 'Min risk:reward', 'trades below this R:R are vetoed'],
   ['maxOpenPositions', 'Max open positions', 'hard cap on concurrent positions'],
-  ['symbolCooldownMinutes', 'Symbol cooldown (min)', 'lock a symbol after any closed trade'],
+  ['symbolCooldownMinutes', 'Symbol cooldown', 'lock a symbol after any closed trade'],
   ['maxConsecutiveLosses', 'Loss streak limit', 'losses in a row before cooldown'],
-  ['cooldownMinutes', 'Streak cooldown (min)', 'pause after hitting the streak'],
-  ['minSLDistancePct', 'Min SL distance %', 'stops tighter than this are vetoed'],
+  ['cooldownMinutes', 'Streak cooldown', 'pause after hitting the streak'],
+  ['minSLDistancePct', 'Min SL distance', 'stops tighter than this % are vetoed'],
   ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
   ['kellyFraction', 'Kelly fraction', '0.25 = quarter-Kelly sizing'],
+]
+
+// Grouped by what the trader is deciding — sizing, when to stop, what
+// counts as a good trade, and how much runs at once.
+const RISK_GROUPS = [
+  { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'kellyFraction', 'maxMarginUsagePct'] },
+  { title: 'Circuit breakers', blurb: 'When the bot must stand down.', keys: ['dailyLossPct', 'maxConsecutiveLosses', 'cooldownMinutes'] },
+  { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct'] },
+  { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes'] },
 ]
 
 // Rich controls for the Risk tab — sliders for continuous fractions
@@ -287,31 +296,64 @@ export default function Tune() {
           </div>
         )}
 
-        {tab === 'risk' && (
+        {tab === 'risk' && (() => {
+          const labels = Object.fromEntries(RISK_FIELDS.map(([k, label, hint]) => [k, { label, hint }]))
+          const bal = Number(balanceDraft.balance) || Number(risk?.derived?.balance) || null
+          const usd = (frac) => {
+            const f = Number(frac)
+            return bal && Number.isFinite(f) ? `$${(bal * f).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'
+          }
+          const dirty = risk?.effective && RISK_FIELDS.some(([k]) => Number(riskDraft[k]) !== Number(risk.effective[k]))
+          return (
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-[13px] font-semibold">Risk limits</h2>
-              {risk?.derived && (
-                <span className="text-[12px] text-[var(--color-text-sub)]">
-                  balance {risk.derived.balance != null ? `$${risk.derived.balance}` : 'not set'} · daily cap ${risk.derived.daily_cap_usd} · per-trade ${risk.derived.per_trade_budget_usd ?? '—'}
-                </span>
-              )}
-            </div>
-            <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
-              {RISK_FIELDS.map(([k, label, hint]) => (
-                <RiskControl
-                  key={k} k={k} label={label} hint={hint}
-                  value={riskDraft[k]}
-                  onChange={v => setRiskDraft(d => ({ ...d, [k]: v }))}
-                />
+            {/* Live impact strip — recomputes from the DRAFT values as you drag,
+                so the money consequence is visible before saving. */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+              {[
+                ['Balance', bal ? `$${bal.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'not set'],
+                ['Risk per trade', usd(riskDraft.perTradeRiskPct)],
+                ['Daily stop-out', usd(riskDraft.dailyLossPct)],
+                ['Worst case open', bal && Number.isFinite(Number(riskDraft.perTradeRiskPct)) && Number.isFinite(Number(riskDraft.maxOpenPositions))
+                  ? `$${(bal * riskDraft.perTradeRiskPct * riskDraft.maxOpenPositions).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+                  : '—'],
+              ].map(([label, value]) => (
+                <div key={label} className="glass-inset rounded-[10px] px-3 py-2">
+                  <div className="text-[11px] text-[var(--color-text-sub)]">{label}</div>
+                  <div className="text-[15px] font-bold tabular-nums">{value}</div>
+                </div>
               ))}
             </div>
-            <div className="mt-3 flex gap-2">
-              <Button size="sm" onClick={saveRisk}>Save risk config</Button>
-              <Button size="sm" variant="subtle" onClick={() => run(() => agentPost('/actions/risk-config', { reset: true }), 'Risk config reset to defaults')}>Reset to defaults</Button>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              {RISK_GROUPS.map(g => (
+                <div key={g.title} className="glass-inset rounded-[12px] p-3.5">
+                  <div className="flex items-baseline justify-between mb-2.5">
+                    <h3 className="text-[13px] font-semibold">{g.title}</h3>
+                    <span className="text-[11px] text-[var(--color-text-sub)]">{g.blurb}</span>
+                  </div>
+                  <div className="space-y-4">
+                    {g.keys.map(k => (
+                      <RiskControl
+                        key={k} k={k} label={labels[k].label} hint={labels[k].hint}
+                        value={riskDraft[k]}
+                        onChange={v => setRiskDraft(d => ({ ...d, [k]: v }))}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
 
-            <h2 className="text-[13px] font-semibold mt-5 mb-2 pt-4 border-t border-[var(--color-border)]">Account</h2>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={saveRisk} disabled={!dirty}>{dirty ? 'Save risk config' : 'Saved'}</Button>
+              {dirty && <span className="text-[12px] font-semibold text-[var(--color-warning-text)]">Unsaved changes — the bot still uses the old values.</span>}
+              <span className="ml-auto">
+                <Button size="sm" variant="subtle" onClick={() => run(() => agentPost('/actions/risk-config', { reset: true }), 'Risk config reset to defaults')}>Reset to defaults</Button>
+              </span>
+            </div>
+
+            <h2 className="text-[13px] font-semibold mt-5 mb-1 pt-4 border-t border-[var(--color-border)]">Account</h2>
+            <p className="text-[12px] text-[var(--color-text-sub)] mb-2">These feed every $ figure above. Balance auto-syncs from the broker when linked; set it manually only if you want a smaller working budget.</p>
             <div className="flex flex-wrap items-end gap-3">
               <label className="block text-[12px]">
                 <span className="text-[var(--color-text-sub)]">Balance (USD)</span>
@@ -324,7 +366,8 @@ export default function Tune() {
               <Button size="sm" onClick={saveBalance}>Save account</Button>
             </div>
           </div>
-        )}
+          )
+        })()}
 
         {tab === 'watchlist' && (
           <div>
