@@ -10,7 +10,9 @@ rejects, with reasons.
 > Source note: arxiv.org and safe-frankfurt.de are unreachable from the build
 > sandbox (proxy 403), so the paper summaries below are from the published
 > literature these URLs refer to (Cont–Kukanov–Stoikov line of OFI research;
-> Jones 2013 HFT survey). The owner's URLs are kept for at-home reading.
+> Jones 2013 HFT survey). The four GitHub repos WERE fetched and read
+> (2026-07-08, second pass after the owner challenged the first version of
+> this doc, which had summarised them from prior knowledge) — findings in §1.5.
 
 ---
 
@@ -86,6 +88,54 @@ dx = θ(μ − x)dt + σ dW        z = (x − μ)/σ_x
 enter at |z| > 2, exit near 0. Empirically repeatable but capacity-constrained
 and regime-fragile (the correlated pair decouples exactly when you're sized up
 — e.g. 2007 quant quake, documented in the Jones HFT survey's references).
+
+### 1.5 The four repos, actually read
+
+- **wilsonfreitas/awesome-quant** — an index, not code. 17 categories. The
+  entries relevant to us: backtesting engines (Backtrader, vectorbt,
+  Backtesting.py, nautilus_trader) and risk analytics (PyPortfolioOpt,
+  Riskfolio-Lib, pyfolio/empyrical). Verdict: a map of the Python ecosystem;
+  our stack is Node — the *methods* port, the libraries don't.
+- **EliteQuant/EliteQuant** — despite the brief's "platform-agnostic
+  collection … research-to-production workflows", it is **another link list**
+  (platforms, libraries, company blogs; entries filtered at 100+ stars).
+  No architecture, no code to adopt.
+- **github.com/topics/quant-trading-framework** — 7 small repos; the flagship
+  is `Krexibd/quant-trading` (VIX calculator via variance-swap replication —
+  Riemann sum over an option strip; Monte Carlo price paths as Wiener
+  processes, *with the author's own caveat that the i.i.d. assumption breaks
+  on real markets*; Engle–Granger two-step cointegration pairs with ±1σ
+  standardized-residual thresholds; Bollinger W/M and RSI head-shoulder
+  pattern detection; MACD/Heikin-Ashi/London-Breakout/Dual-Thrust/SAR
+  strategy scripts). Verdict: a strategy sampler. Its useful transferable
+  idea is not any single strategy but the Monte Carlo mindset — a single
+  historical path is one draw from a distribution.
+- **dcajasn/Riskfolio-Lib** — the substantial one. 26+ convex risk measures
+  in three families (dispersion: σ/MAD/GMD; downside: semi-σ, **CVaR**, EVaR,
+  RLVaR, Tail Gini; drawdown: ADD, Ulcer, **CDaR**, EDaR, MDD) and optimizers
+  (mean-risk with 4 objectives, Kelly log-utility, risk parity, HRP/HERC/NCO,
+  Black-Litterman, worst-case MV). Needs a returns panel + covariance —
+  i.e., a *portfolio* of simultaneous positions. We hold 1–3 sequential
+  positions from one strategy, so the optimizers don't apply yet; the risk
+  *measures* do.
+
+**Adopted from this second pass (implemented in `backtest-fib.js`):**
+
+```
+CVaR(95)  = mean of the worst 5% of per-trade returns   (Riskfolio family)
+MDD p95   = 95th-pct max drawdown over 1,000 bootstrap
+            reshuffles of the trade sequence            (MC mindset, applied
+                                                         to trades not prices
+                                                         — no Wiener/i.i.d.
+                                                         price assumption)
+```
+
+Both appear in the Tune → Backtest table. Rationale: our GO verdict rests on
+~10 trades; the observed MDD is one lucky-or-unlucky ordering. Bootstrapping
+the *same trades* answers "how bad could this exact edge have looked?" —
+demo sanity check: 10 alternating trades showed 1.1% path-MDD but 4.8% p95.
+Revisit Riskfolio's HRP/risk-parity only if the bot ever runs multiple
+concurrent strategies/instruments as a true portfolio.
 
 ---
 

@@ -471,7 +471,7 @@ export default function Tune() {
                         <div className="overflow-x-auto">
                           <table className="w-full text-[13px]">
                             <thead className="text-left text-[var(--color-text-sub)]">
-                              <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">ARR</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Sortino</th><th className="pr-3">Calmar</th><th className="pr-3">Max DD</th><th>Verdict</th></tr>
+                              <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">ARR</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Sortino</th><th className="pr-3">Calmar</th><th className="pr-3">Max DD</th><th className="pr-3" title="95th-percentile max drawdown across 1,000 reshuffles of the same trades — the single backtest path may be a lucky ordering">DD p95</th><th className="pr-3" title="Average of the worst 5% of trades (tail-loss expectancy)">CVaR</th><th>Verdict</th></tr>
                             </thead>
                             <tbody>
                               {Object.entries(sr.results).map(([tf, r]) => {
@@ -480,7 +480,7 @@ export default function Tune() {
                                   <tr key={tf} className="border-t border-[var(--color-border)]">
                                     <td className="pr-3 py-1.5 font-semibold">{tf}</td>
                                     {r.error
-                                      ? <td colSpan={9} className="text-[var(--color-warning-text)]">{r.error}</td>
+                                      ? <td colSpan={11} className="text-[var(--color-warning-text)]">{r.error}</td>
                                       : <>
                                           <td className="pr-3">{r.trades}</td>
                                           <td className="pr-3">{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
@@ -491,6 +491,8 @@ export default function Tune() {
                                           <td className="pr-3">{r.sortinoAnnualized ?? '—'}</td>
                                           <td className="pr-3">{r.calmarRatio ?? '—'}</td>
                                           <td className="pr-3">{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
+                                          <td className="pr-3">{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
+                                          <td className="pr-3">{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
                                         </>}
                                     <td>{!r.error && <Badge tone={go ? 'up' : 'down'}>{go ? 'GO' : 'NO-GO'}</Badge>}</td>
                                   </tr>
@@ -503,7 +505,7 @@ export default function Tune() {
                   </div>
                 ))}
                 <p className="text-[12px] text-[var(--color-text-sub)]">
-                  GO = ≥10 trades, profit factor ≥1.1, positive total. Past performance is not a promise — it only says the strategy wasn't losing on this data. RSI filter setting (Pipeline tab) is applied.
+                  GO = ≥10 trades, profit factor ≥1.1, positive total. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades (the actual path may be a lucky ordering); CVaR = average of the worst 5% of trades. Past performance is not a promise — it only says the strategy wasn't losing on this data. RSI filter setting (Pipeline tab) is applied.
                 </p>
                 {goTfs.length === 0 && (
                   <p className="text-[13px] font-semibold text-[var(--color-warning-text)]">No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, or wait for more data.</p>

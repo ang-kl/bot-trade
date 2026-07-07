@@ -146,12 +146,59 @@ function computeStats(trades) {
     sharpeAnnualized: sharpe != null ? round2(sharpe) : null,
     maxDrawdownPct: round2(maxDrawdown),
     avgDurationMin: round2(trades.reduce((s, t) => s + (t.exitT - t.entryT), 0) / n / 60_000),
+    // Tail risk (Riskfolio-Lib's core downside measure): CVaR(95) = mean of
+    // the worst 5% of trades. With small N this is simply the worst trade —
+    // which is itself the honest answer.
+    cvar95Pct: round2(cvar95(trades.map(t => t.pnlPct))),
+    // Distribution of drawdowns, not one lucky path: bootstrap-resample the
+    // trade sequence 1000× and take the 95th-percentile max drawdown. See
+    // doc_reference/microstructure-frequent-trading-notes.md §3.
+    mddP95Pct: round2(bootstrapMddP95(trades.map(t => t.pnlPct))),
     exits: {
       sl: trades.filter(t => t.reason === 'sl').length,
       tp: trades.filter(t => t.reason === 'tp').length,
       time_cap: trades.filter(t => t.reason === 'time_cap').length,
     },
   }
+}
+
+/** CVaR(alpha): mean of the worst (1-alpha) share of per-trade returns. */
+export function cvar95(returns, alpha = 0.95) {
+  const sorted = [...returns].sort((a, b) => a - b)
+  const k = Math.max(1, Math.floor(sorted.length * (1 - alpha)))
+  return sorted.slice(0, k).reduce((s, r) => s + r, 0) / k
+}
+
+/**
+ * Bootstrap the trade-return sequence B times (sampling with replacement,
+ * seeded PRNG so results are reproducible) and return the 95th-percentile
+ * max drawdown across resamples. A single backtest path shows ONE ordering
+ * of wins and losses; the same trades in an unluckier order draw down more.
+ */
+export function bootstrapMddP95(returns, B = 1000, seed = 42) {
+  const n = returns.length
+  if (n === 0) return 0
+  // mulberry32 — tiny deterministic PRNG (seeded for reproducible reports)
+  let s = seed >>> 0
+  const rand = () => {
+    s = (s + 0x6D2B79F5) >>> 0
+    let t = s
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const mdds = new Array(B)
+  for (let b = 0; b < B; b++) {
+    let equity = 0, peak = 0, mdd = 0
+    for (let i = 0; i < n; i++) {
+      equity += returns[Math.floor(rand() * n)]
+      if (equity > peak) peak = equity
+      if (peak - equity > mdd) mdd = peak - equity
+    }
+    mdds[b] = mdd
+  }
+  mdds.sort((a, b) => a - b)
+  return mdds[Math.min(B - 1, Math.floor(B * 0.95))]
 }
 
 // ---------------------------------------------------------------------------
