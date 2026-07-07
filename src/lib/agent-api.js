@@ -49,11 +49,16 @@ function normalizeBase(url) {
   return u
 }
 
+// The agent's canonical home. Hardcoded on purpose: a stale VITE_AGENT_URL
+// baked into old Vercel builds kept resurfacing wrong hosts — the address is
+// stable now, and localStorage still overrides for anyone self-hosting.
+const DEFAULT_AGENT_URL = 'https://sg-trade.up.railway.app'
+
 export function getAgentConn() {
   const lsUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_URL) : ''
   const lsSecret = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_SECRET) : ''
   return {
-    base: normalizeBase(lsUrl || import.meta.env.VITE_AGENT_URL_AUTOPILOT || import.meta.env.VITE_AGENT_URL || ''),
+    base: normalizeBase(lsUrl || DEFAULT_AGENT_URL),
     secret: lsSecret || import.meta.env.VITE_AGENT_SECRET_AUTOPILOT || import.meta.env.VITE_AGENT_SECRET || '',
     fromLocalStorage: Boolean(lsUrl),
   }
