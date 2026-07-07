@@ -30,12 +30,14 @@ const TP2_EXTENSION = 0.272   // -27.2% extension beyond the swing end
 const BAR_COUNT = 150         // bars fetched per timeframe
 // Checked in this order (largest first); first timeframe with a valid
 // signal wins. All timeframes are eligible — none are excluded.
-const TIMEFRAMES = ['1d', '4h', '1h', '30m', '15m', '5m']
+const TIMEFRAMES = ['1mo', '1w', '1d', '4h', '1h', '30m', '15m', '5m']
 // Position time cap by signal timeframe. Drives loop.js's style filter
 // (scalp ≤30m, day ≤480m, swing ≤7d, mid-term beyond) and the position
 // auto-expiry — a 1d fade is a multi-day swing, not a 180-minute day trade.
 const TIME_CAP_MINUTES = {
   '5m': 240, '15m': 480, '30m': 720, '1h': 1440, '4h': 4320, '1d': 20160,
+  '1w': 60480,    // a weekly fade is a ~6-week position
+  '1mo': 259200,  // a monthly fade is a ~6-month position
 }
 const SCAN_CONCURRENCY = 3    // symbols scanned at once (avoid WS burst)
 

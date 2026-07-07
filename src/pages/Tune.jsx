@@ -10,7 +10,15 @@ import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
-const ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
+// Every timeframe the broker's trendbar API supports, minutes → months.
+// Duration map doubles as the canonical sort order (slowest first).
+const TF_MS = {
+  '1mo': 2_592_000_000, '1w': 604_800_000, '1d': 86_400_000, '12h': 43_200_000,
+  '4h': 14_400_000, '1h': 3_600_000, '30m': 1_800_000, '15m': 900_000,
+  '10m': 600_000, '5m': 300_000, '4m': 240_000, '3m': 180_000, '2m': 120_000, '1m': 60_000,
+}
+const ALL_TIMEFRAMES = Object.keys(TF_MS)
+const byTfDesc = (a, b) => (TF_MS[b] ?? 0) - (TF_MS[a] ?? 0)
 
 const TABS = [
   { id: 'pipeline', label: 'Pipeline' },
@@ -182,6 +190,40 @@ function metricClass(v, { good, bad, lowerBetter = false } = {}) {
   return ''
 }
 
+// Backtest table columns — key is the result field ('tf' sorts by duration).
+const BT_COLS = [
+  { key: 'tf', label: 'TF' },
+  { key: 'trades', label: 'Trades' },
+  { key: 'winRatePct', label: 'Win rate' },
+  { key: 'arrPct', label: 'ARR' },
+  { key: 'totalProfitPct', label: 'Total' },
+  { key: 'profitFactor', label: 'Profit factor' },
+  { key: 'sharpeAnnualized', label: 'Sharpe' },
+  { key: 'sortinoAnnualized', label: 'Sortino' },
+  { key: 'calmarRatio', label: 'Calmar' },
+  { key: 'maxDrawdownPct', label: 'Max DD' },
+  { key: 'mddP95Pct', label: 'DD p95', title: '95th-percentile max drawdown across 1,000 reshuffles of the same trades — the single backtest path may be a lucky ordering' },
+  { key: 'cvar95Pct', label: 'CVaR', title: 'Average of the worst 5% of trades (tail-loss expectancy)' },
+]
+
+function sortBtRows(entries, { col, dir }) {
+  const sign = dir === 'desc' ? -1 : 1
+  const val = ([tf, r]) => {
+    if (col === 'tf') return TF_MS[tf] ?? 0
+    if (col === 'profitFactor') return r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? Infinity : null)
+    const v = Number(r[col])
+    return Number.isFinite(v) ? v : null
+  }
+  return [...entries].sort((a, b) => {
+    const va = val(a)
+    const vb = val(b)
+    if (va == null && vb == null) return byTfDesc(a[0], b[0])
+    if (va == null) return 1   // rows without the metric sink to the bottom
+    if (vb == null) return -1
+    return sign * (va - vb) || byTfDesc(a[0], b[0])
+  })
+}
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -209,6 +251,9 @@ export default function Tune() {
   const [risk, setRisk] = useState(null)              // { effective, derived }
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
+  const [tfMenu, setTfMenu] = useState(false)
+  // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
+  const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
@@ -364,18 +409,40 @@ export default function Tune() {
               RSI filter: only take long fades when RSI(14) ≤ 45 and shorts when ≥ 55. Backtest it first on the Backtest tab.
             </p>
             <div className="mt-3">
-              <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Autotrade timeframes (scans always cover all):</div>
-              <div className="flex flex-wrap gap-1.5">
-                {ALL_TIMEFRAMES.map(tf => (
-                  <button
-                    key={tf} type="button" onClick={() => toggleTimeframe(tf)}
-                    className={`rounded-[20px] border px-3 py-1 text-[12px] font-semibold cursor-pointer min-h-[36px] ${
-                      timeframes.includes(tf)
-                        ? 'bg-[var(--color-accent)] text-white border-transparent'
-                        : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)]'
-                    }`}
-                  >{tf}</button>
+              <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
+                Autotrade timeframes — add or remove any the broker supports (1m → 1 month). Scans and backtests follow this list:
+              </div>
+              <div className="flex flex-wrap gap-1.5 items-center">
+                {[...timeframes].sort(byTfDesc).map(tf => (
+                  <span
+                    key={tf}
+                    className="inline-flex items-center gap-1.5 rounded-[20px] bg-[var(--color-accent)] text-white px-3 py-1 text-[12px] font-semibold min-h-[36px]"
+                  >
+                    {tf}
+                    <button
+                      type="button" aria-label={`Remove ${tf}`}
+                      onClick={() => toggleTimeframe(tf)}
+                      className="cursor-pointer rounded-full hover:bg-white/25 w-5 h-5 leading-none"
+                    >×</button>
+                  </span>
                 ))}
+                <span className="relative">
+                  <button
+                    type="button" onClick={() => setTfMenu(o => !o)} aria-expanded={tfMenu}
+                    className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[12px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+                  >+ Add timeframe</button>
+                  {tfMenu && (
+                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-40 rounded-[12px] p-1.5 shadow-xl block max-h-72 overflow-y-auto">
+                      {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
+                        <button
+                          key={tf} type="button"
+                          onClick={() => { setTfMenu(false); toggleTimeframe(tf) }}
+                          className="w-full text-left rounded-[8px] px-3 py-1.5 text-[13px] cursor-pointer hover:bg-[var(--color-accent-soft)] block"
+                        >{tf}</button>
+                      ))}
+                    </span>
+                  )}
+                </span>
               </div>
             </div>
           </div>
@@ -554,10 +621,21 @@ export default function Tune() {
                         <div className="overflow-x-auto">
                           <table className="w-full text-[13px]">
                             <thead className="text-left text-[var(--color-text-sub)]">
-                              <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">ARR</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Sortino</th><th className="pr-3">Calmar</th><th className="pr-3">Max DD</th><th className="pr-3" title="95th-percentile max drawdown across 1,000 reshuffles of the same trades — the single backtest path may be a lucky ordering">DD p95</th><th className="pr-3" title="Average of the worst 5% of trades (tail-loss expectancy)">CVaR</th><th>Verdict</th></tr>
+                              <tr>
+                                {BT_COLS.map(c => (
+                                  <th
+                                    key={c.key} className="pr-3 py-1 cursor-pointer select-none whitespace-nowrap"
+                                    title={c.title || `Sort by ${c.label}`}
+                                    onClick={() => setBtSort(s => ({ col: c.key, dir: s.col === c.key && s.dir === 'desc' ? 'asc' : 'desc' }))}
+                                  >
+                                    {c.label}{btSort.col === c.key ? (btSort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+                                  </th>
+                                ))}
+                                <th>Verdict</th>
+                              </tr>
                             </thead>
                             <tbody>
-                              {Object.entries(sr.results).map(([tf, r]) => {
+                              {sortBtRows(Object.entries(sr.results), btSort).map(([tf, r]) => {
                                 // PF is null when no trade lost — display ∞, and let
                                 // the highlight treat it as excellent, not missing.
                                 const pfShown = r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? '∞' : '—')
