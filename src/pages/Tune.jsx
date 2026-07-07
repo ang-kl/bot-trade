@@ -57,21 +57,6 @@ export default function Tune() {
   const [btError, setBtError] = useState('')
   const [btRunning, setBtRunning] = useState(false)
 
-  const [btAll, setBtAll] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem('backtest_all_cache_v1')) || null } catch { return null }
-  })
-  const [btAllRunning, setBtAllRunning] = useState(false)
-
-  const runBacktestAll = async () => {
-    setBtAllRunning(true)
-    setBtError('')
-    try {
-      const r = await agentPost('/actions/backtest-all', { timeframes: ['4h', '1d'], bars: 1000, rsiFilter })
-      setBtAll(r)
-      try { sessionStorage.setItem('backtest_all_cache_v1', JSON.stringify(r)) } catch { /* quota */ }
-    } catch (e) { setBtError(e.message) } finally { setBtAllRunning(false) }
-  }
-
   const runBacktest = async () => {
     setBtRunning(true)
     setBtError('')
@@ -291,8 +276,7 @@ export default function Tune() {
             <span className="text-[var(--color-text-sub)]">Symbol</span>
             <Input value={btSymbol} onChange={e => setBtSymbol(e.target.value)} placeholder="EURUSD" className="w-28" />
           </label>
-          <Button size="sm" onClick={runBacktest} disabled={btRunning || btAllRunning}>{btRunning ? 'Fetching bars & simulating…' : 'Run backtest'}</Button>
-          <Button size="sm" variant="subtle" onClick={runBacktestAll} disabled={btRunning || btAllRunning}>{btAllRunning ? 'Testing whole watchlist…' : 'Backtest whole watchlist'}</Button>
+          <Button size="sm" onClick={runBacktest} disabled={btRunning}>{btRunning ? 'Fetching bars & simulating…' : 'Run backtest'}</Button>
           <span className="text-[12px] text-[var(--color-text-sub)]">1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
         </div>
         {bt?.results && (
@@ -355,49 +339,6 @@ export default function Tune() {
                 </div>
               )
             })()}
-          </div>
-        )}
-        {btAll?.bySymbol && (
-          <div className="mt-4 overflow-x-auto">
-            <div className="text-[12px] font-semibold mb-1">Whole watchlist — {btAll.bars} bars · conviction ≥{btAll.minConviction} · ran {new Date(btAll.ranAt).toLocaleTimeString()}</div>
-            <table className="w-full text-[13px]">
-              <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Sortino</th><th className="pr-3">Max DD</th><th>Verdict</th></tr>
-              </thead>
-              <tbody>
-                {Object.entries(btAll.bySymbol).flatMap(([sym, entry]) => {
-                  if (entry.error) return [
-                    <tr key={sym} className="border-t border-[var(--color-border)]">
-                      <td className="pr-3 py-1.5 font-semibold">{sym}</td>
-                      <td colSpan={8} className="text-[var(--color-warning-text)]">{entry.error}</td>
-                    </tr>,
-                  ]
-                  return Object.entries(entry.results).map(([tf, r]) => {
-                    const go = !r.error && r.trades >= 10 && (r.profitFactor ?? 0) >= 1.1 && r.totalProfitPct > 0
-                    return (
-                      <tr key={`${sym}${tf}`} className="border-t border-[var(--color-border)]">
-                        <td className="pr-3 py-1.5 font-semibold">{sym}</td>
-                        <td className="pr-3">{tf}</td>
-                        {r.error
-                          ? <td colSpan={6} className="text-[var(--color-warning-text)]">{r.error}</td>
-                          : <>
-                              <td className="pr-3">{r.trades}</td>
-                              <td className="pr-3">{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
-                              <td className="pr-3">{r.profitFactor ?? '—'}</td>
-                              <td className="pr-3">{r.sharpeAnnualized ?? '—'}</td>
-                              <td className="pr-3">{r.sortinoAnnualized ?? '—'}</td>
-                              <td className="pr-3">{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
-                            </>}
-                        <td>{!r.error && <Badge tone={go ? 'up' : 'down'}>{go ? 'GO' : 'NO-GO'}</Badge>}</td>
-                      </tr>
-                    )
-                  })
-                })}
-              </tbody>
-            </table>
-            <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-              Same walk-forward rules and conviction bar as live autotrade, per symbol. A symbol trading well on EURUSD's rules is not guaranteed — this table is how you find out before money moves.
-            </p>
           </div>
         )}
         {btError && <div className="mt-2 text-[13px] text-[var(--color-warning-text)]">{btError}</div>}
