@@ -545,7 +545,13 @@ async function runLoop(db) {
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {
-      log('Fib scan skipped — cTrader credentials not configured (push via /actions/ctrader-config)')
+      const missing = [
+        !ctraderCreds.clientId && 'clientId',
+        !ctraderCreds.clientSecret && 'clientSecret',
+        !ctraderCreds.accessToken && 'accessToken',
+        !ctraderCreds.accountId && 'accountId (link an account on the Connect tab)',
+      ].filter(Boolean).join(', ')
+      log(`Fib scan skipped — missing cTrader ${missing}`)
     }
 
     // Surface fetch failures — an expired token or rate limit must not be
