@@ -7,6 +7,7 @@ import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
 import Connect from './pages/Connect.jsx'
+import AccountSwitcher from './components/AccountSwitcher.jsx'
 import { useTheme } from './lib/theme.js'
 
 const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
@@ -98,6 +99,7 @@ export default function App() {
                 </div>
               </div>
             ))}
+            <AccountSwitcher />
           </nav>
           <button
             type="button"

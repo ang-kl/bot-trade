@@ -21,6 +21,7 @@ export default function Connect() {
   const [linking, setLinking] = useState(false)
   const [linked, setLinked] = useState(null)          // { accountId, isLive, symbolsMapped }
   const [symbolCount, setSymbolCount] = useState(null)
+  const [floating, setFloating] = useState({})    // accountId -> open-trade P&L sum
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
@@ -36,6 +37,17 @@ export default function Connect() {
         setAccounts(r.accounts)
         if (r.selectedAccountId) setLinked({ accountId: Number(r.selectedAccountId) })
       }
+    }).catch(() => {})
+    // Live-trade P&L per account (best effort, slower call) — the balance
+    // shown then includes what open positions are currently worth.
+    agentPost('/actions/broker-positions').then(r => {
+      const m = {}
+      for (const acct of r?.accounts || []) {
+        if (acct.positions?.length) {
+          m[acct.accountId] = acct.positions.reduce((s, p) => s + (Number(p.estPnlQuote) || 0), 0)
+        }
+      }
+      setFloating(m)
     }).catch(() => {})
   }, [])
 
@@ -242,8 +254,14 @@ export default function Connect() {
                   <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
                   <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
                   {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
-                  <span className="ml-auto font-semibold">{a.balance != null ? `$${Number(a.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}</span>
-                  <span className="text-[var(--color-text-sub)]">id {a.accountId}</span>
+                  <span className="ml-auto text-right">
+                    <span className="font-semibold block">
+                      {a.balance != null ? `$${(Number(a.balance) + (floating[a.accountId] ?? 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
+                    </span>
+                    {floating[a.accountId] != null && (
+                      <span className="block text-[11px] text-[var(--color-text-sub)]">incl. open trades ({floating[a.accountId] >= 0 ? '+' : '−'}${Math.abs(floating[a.accountId]).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
+                    )}
+                  </span>
                   {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
                 </button>
               ))}
