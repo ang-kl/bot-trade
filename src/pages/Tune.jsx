@@ -306,6 +306,32 @@ export default function Tune() {
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               GO = ≥10 trades, profit factor ≥1.1, positive total. Past performance is not a promise — it only says the strategy wasn't losing on this data. RSI filter setting above is applied.
             </p>
+            {(() => {
+              const goTfs = Object.entries(bt.results)
+                .filter(([, r]) => !r.error && r.trades >= 10 && (r.profitFactor ?? 0) >= 1.1 && r.totalProfitPct > 0)
+                .map(([tf]) => tf)
+              if (goTfs.length === 0) {
+                return <p className="mt-2 text-[13px] font-semibold text-[var(--color-warning-text)]">No timeframe passed — do NOT arm autotrade. Try another symbol, or wait for more data.</p>
+              }
+              if (config?.autotrade_enabled) {
+                return <p className="mt-2 text-[13px] font-semibold">Quant trading is already ACTIVE.</p>
+              }
+              return (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button onClick={async () => {
+                    if (!window.confirm(`Activate quant trading on ${goTfs.join(' + ')}? The bot will place REAL orders on the linked ${'account'} whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle above or Kill-all on Trade.`)) return
+                    try {
+                      await agentPost('/actions/autotrade-timeframes', { timeframes: goTfs })
+                      await agentPost('/actions/autotrade-toggle', { on: true })
+                      setTimeframes(goTfs)
+                      await load()
+                      flash(`Quant trading ACTIVE on ${goTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
+                    } catch (err) { setError(err.message) }
+                  }}>Activate quant trading on {goTfs.join(' + ')}</Button>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">arms autotrade on the GO timeframes only</span>
+                </div>
+              )
+            })()}
           </div>
         )}
         {btError && <div className="mt-2 text-[13px] text-[var(--color-warning-text)]">{btError}</div>}
