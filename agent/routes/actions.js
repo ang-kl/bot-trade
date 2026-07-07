@@ -13,6 +13,32 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 
 /**
+ * Resolve which symbols a backtest run covers.
+ * Priority: explicit `symbols` list > legacy single `symbol` > every ENABLED
+ * watchlist symbol (the instruments set on Tune — never a hardcoded default).
+ * Uppercased, deduped, capped at 8 per run (sequential broker fetches).
+ *
+ * @param {{symbols?: string[], symbol?: string}|undefined} body
+ * @param {string|null} watchlistJson — raw autopilot_symbols_json state
+ * @returns {string[]}
+ */
+export function pickBacktestSymbols(body, watchlistJson) {
+  let names = Array.isArray(body?.symbols) && body.symbols.length
+    ? body.symbols
+    : body?.symbol ? [body.symbol] : null
+  if (!names) {
+    try {
+      const raw = JSON.parse(watchlistJson || '[]')
+      names = (Array.isArray(raw) ? raw : [])
+        .map(s => (typeof s === 'string' ? { symbol: s } : s))
+        .filter(s => s.enabled !== false)
+        .map(s => s.symbol)
+    } catch { names = [] }
+  }
+  return [...new Set(names.map(s => String(s).toUpperCase().trim()).filter(Boolean))].slice(0, 8)
+}
+
+/**
  * Factory — returns a configured Express Router.
  * The caller (index.js) passes the better-sqlite3 `db` instance.
  *
@@ -25,12 +51,23 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   // POST /actions/backtest — walk-forward backtest of the fib strategy on
   // REAL broker bars. The go/no-go gate before arming autotrade.
-  // Body: { symbol='EURUSD', timeframes=['4h','1d'], bars=1000, rsiFilter=false }
-  // Fetches all timeframes over one authenticated connection; ~seconds.
+  // Body: { symbols=[…], symbol (legacy single), timeframes=['4h','1d'],
+  //         bars=1000, rsiFilter=false }
+  // With no symbols in the body it tests every ENABLED watchlist symbol —
+  // the instruments the trader set on Tune, never a hardcoded default.
+  // Fetches all timeframes per symbol over one authenticated connection each.
   // -----------------------------------------------------------------------
   router.post('/backtest', async (req, res) => {
     try {
-      const symbol = String(req.body?.symbol || 'EURUSD').toUpperCase()
+      // Requested symbols: explicit list > legacy single > enabled watchlist.
+      const names = pickBacktestSymbols(
+        req.body,
+        getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json'),
+      )
+      if (names.length === 0) {
+        return res.status(400).json({ error: 'No symbols to test — watchlist is empty and none were given' })
+      }
+
       const timeframes = Array.isArray(req.body?.timeframes) && req.body.timeframes.length
         ? req.body.timeframes : ['4h', '1d']
       const count = Math.min(3000, Math.max(200, Number(req.body?.bars) || 1000))
@@ -38,29 +75,42 @@ export default function actionsRouter(db) {
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const symbolId = (await ensureSymbolMap(db, creds))[symbol]
-      if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not offered by this broker account` })
+      const map = await ensureSymbolMap(db, creds)
 
       const { runBacktest } = await import('../scripts/backtest-fib.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
-      const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframes, count, 60_000)
 
-      const results = {}
-      for (const tf of timeframes) {
-        const bars = byPeriod[tf] || []
-        if (bars.length < 100) {
-          results[tf] = { error: `only ${bars.length} bars available` }
+      const symbols = {}
+      for (const name of names) {
+        const symbolId = map[name]
+        if (!symbolId) {
+          symbols[name] = { error: 'not offered by this broker account' }
           continue
         }
-        const { stats } = runBacktest(bars.slice(0, -1), {
-          timeframe: tf,
-          rsiFilter,
-          // mirror live autotrade's conviction bar unless the caller overrides
-          minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
-        })
-        results[tf] = { ...stats, barsUsed: bars.length - 1 }
+        try {
+          const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframes, count, 60_000)
+          const results = {}
+          for (const tf of timeframes) {
+            const bars = byPeriod[tf] || []
+            if (bars.length < 100) {
+              results[tf] = { error: `only ${bars.length} bars available` }
+              continue
+            }
+            const { stats } = runBacktest(bars.slice(0, -1), {
+              timeframe: tf,
+              rsiFilter,
+              // mirror live autotrade's conviction bar unless the caller overrides
+              minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
+            })
+            results[tf] = { ...stats, barsUsed: bars.length - 1 }
+          }
+          symbols[name] = { results }
+        } catch (err) {
+          // one symbol failing (ws timeout, thin data) must not sink the rest
+          symbols[name] = { error: err.message }
+        }
       }
-      res.json({ symbol, bars: count, rsiFilter: !!rsiFilter, results, ranAt: new Date().toISOString() })
+      res.json({ symbols, bars: count, rsiFilter: !!rsiFilter, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
