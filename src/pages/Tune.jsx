@@ -38,15 +38,15 @@ const RISK_FIELDS = [
 // (displayed as %), dropdowns for enumerable choices. Values are stored in
 // the same units the agent expects; only the display is humanised.
 const RISK_CONTROLS = {
-  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.03, step: 0.0025, fmt: v => `${(v * 100).toFixed(2)}%` },
-  dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fmt: v => `${(v * 100).toFixed(1)}%` },
+  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.03, step: 0.0025, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
+  dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fraction: true, fmt: v => `${(v * 100).toFixed(1)}%` },
   minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
   maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10].map(n => [n, String(n)]) },
   symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
   maxConsecutiveLosses: { type: 'select', options: [2, 3, 4, 5, 6].map(n => [n, String(n)]) },
   cooldownMinutes: { type: 'select', options: [[30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
   minSLDistancePct: { type: 'slider', min: 0.05, max: 0.5, step: 0.05, fmt: v => `${Number(v).toFixed(2)}%` },
-  maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fmt: v => `${(v * 100).toFixed(0)}%` },
+  maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   kellyFraction: { type: 'select', options: [[0.1, '0.10 — very conservative'], [0.25, '0.25 — quarter-Kelly (default)'], [0.5, '0.50 — aggressive'], [1, '1.00 — full Kelly (not advised)']] },
 }
 
@@ -54,9 +54,9 @@ function RiskControl({ k, label, hint, value, onChange }) {
   const ctl = RISK_CONTROLS[k]
   if (ctl?.type === 'slider') {
     // Percent-style fields edit in % but the model stays a fraction where
-    // needed (perTradeRiskPct/dailyLossPct/maxMarginUsagePct are fractions;
-    // minSLDistancePct is already in %).
-    const isFraction = ctl.max <= 1
+    // flagged (perTradeRiskPct/dailyLossPct/maxMarginUsagePct are fractions;
+    // minSLDistancePct is already percent-native).
+    const isFraction = !!ctl.fraction
     return (
       <div title={hint}>
         <SliderInput
