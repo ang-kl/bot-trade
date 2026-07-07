@@ -1,19 +1,15 @@
-// PositionChart — SVG candlestick chart for one symbol, with optional
-// entry/SL/TP overlay lines (for an open position) and the agent's current
-// fib read (61.8% level + swing leg). Polls the agent for fresh bars while
-// mounted, so it acts as a live feed.
-//
-// Colour rules: up = blue, down = red (owner is red/green colourblind —
-// NEVER green). Candle colours use the shared CSS tokens.
+// PositionChart — professional candlestick chart powered by Lightweight
+// Charts (TradingView's open-source engine, bundled locally — no CDN).
+// Shows OHLC bars for a symbol with price lines for the position's
+// entry/SL/TP and the scanner's 61.8% fib level, plus live tick updates
+// from the agent's SSE stream. Colours: blue up / red down (no green).
 import { useEffect, useRef, useState } from 'react'
+import { createChart, CandlestickSeries } from 'lightweight-charts'
 import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
 
 const TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
 const POLL_MS = 15_000
-
-const W = 720
-const H = 260
-const PAD = { top: 10, right: 56, bottom: 20, left: 8 }
+const UP = '#2563eb', DOWN = '#dc2626', VIOLET = '#a855f7'
 
 function niceFmt(v, ref) {
   if (v == null) return ''
@@ -23,65 +19,100 @@ function niceFmt(v, ref) {
 
 export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {} }) {
   const [timeframe, setTimeframe] = useState(tf0)
-  const [data, setData] = useState(null)
   const [error, setError] = useState('')
-  const [updatedAt, setUpdatedAt] = useState(null)
-  const [tick, setTick] = useState(null)      // live {bid, ask, t} from SSE
-  const [live, setLive] = useState(false)     // stream connected?
-  const timer = useRef(null)
+  const [fib, setFib] = useState(null)
+  const [tick, setTick] = useState(null)
+  const [live, setLive] = useState(false)
+  const [lastClose, setLastClose] = useState(null)
 
+  const boxRef = useRef(null)
+  const chartRef = useRef(null)     // { chart, series, priceLines: [] }
+  const lastBarRef = useRef(null)   // forming bar, updated by live ticks
+
+  // Create/destroy the chart with the container.
+  useEffect(() => {
+    if (!boxRef.current) return undefined
+    const style = getComputedStyle(document.documentElement)
+    const textColor = style.getPropertyValue('--color-text-sub').trim() || '#8a8fa3'
+    const chart = createChart(boxRef.current, {
+      autoSize: true,
+      layout: { background: { color: 'transparent' }, textColor, attributionLogo: false },
+      grid: {
+        vertLines: { color: 'rgba(128,128,160,0.12)' },
+        horzLines: { color: 'rgba(128,128,160,0.12)' },
+      },
+      timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
+      rightPriceScale: { borderVisible: false },
+      crosshair: { mode: 0 },
+    })
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: UP, downColor: DOWN,
+      borderUpColor: UP, borderDownColor: DOWN,
+      wickUpColor: UP, wickDownColor: DOWN,
+    })
+    chartRef.current = { chart, series, priceLines: [] }
+    return () => { chart.remove(); chartRef.current = null }
+  }, [])
+
+  // Bars: fetch now and every 15s (the poll also keeps SL/TP overlays fresh).
   useEffect(() => {
     let dead = false
     const load = async () => {
       try {
-        const r = await agentPost('/actions/chart', { symbol, timeframe, bars: 120 })
-        if (!dead) { setData(r); setError(''); setUpdatedAt(new Date()) }
-      } catch (e) {
-        if (!dead) setError(e.message)
-      }
+        const r = await agentPost('/actions/chart', { symbol, timeframe, bars: 200 })
+        if (dead || !chartRef.current) return
+        const bars = (r.bars || []).map(b => ({
+          time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c,
+        }))
+        chartRef.current.series.setData(bars)
+        lastBarRef.current = bars[bars.length - 1] || null
+        setLastClose(r.lastPrice ?? null)
+        setFib(r.fib || null)
+        setError('')
+      } catch (e) { if (!dead) setError(e.message) }
     }
     load()
-    timer.current = setInterval(load, POLL_MS)
-    return () => { dead = true; clearInterval(timer.current) }
+    const t = setInterval(load, POLL_MS)
+    return () => { dead = true; clearInterval(t) }
   }, [symbol, timeframe])
 
-  // Live tick stream (SSE). If the agent doesn't support it yet or the
-  // stream drops, the 15s bar poll above remains the feed.
+  // Price lines: entry/SL/TP from the position + the scanner's 61.8% level.
+  useEffect(() => {
+    const ref = chartRef.current
+    if (!ref) return
+    for (const pl of ref.priceLines) ref.series.removePriceLine(pl)
+    ref.priceLines = []
+    const defs = [
+      lines.entry != null && { price: Number(lines.entry), color: '#94a3b8', title: 'entry' },
+      lines.sl != null && { price: Number(lines.sl), color: DOWN, title: 'SL' },
+      lines.tp != null && { price: Number(lines.tp), color: UP, title: 'TP' },
+      fib?.level618 != null && { price: Number(fib.level618), color: VIOLET, title: '61.8%' },
+    ].filter(Boolean)
+    for (const d of defs) {
+      ref.priceLines.push(ref.series.createPriceLine({
+        ...d, lineWidth: 1, lineStyle: 2, axisLabelVisible: true,
+      }))
+    }
+  }, [lines.entry, lines.sl, lines.tp, fib?.level618])
+
+  // Live ticks: update the forming candle in place.
   useEffect(() => {
     const stream = agentStreamPrices(
       [symbol],
-      t => { setTick(t); setLive(true) },
+      t => {
+        setTick(t); setLive(true)
+        const mid = t.bid != null && t.ask != null ? (t.bid + t.ask) / 2 : (t.bid ?? t.ask)
+        const bar = lastBarRef.current
+        if (mid != null && bar && chartRef.current) {
+          const next = { ...bar, close: mid, high: Math.max(bar.high, mid), low: Math.min(bar.low, mid) }
+          lastBarRef.current = next
+          chartRef.current.series.update(next)
+        }
+      },
       () => setLive(false),
     )
     return () => stream.close()
   }, [symbol])
-
-  const bars = data?.bars || []
-  if (error) return <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>
-  if (bars.length === 0) return <div className="text-[12px] text-[var(--color-text-sub)] py-2">Loading {symbol} {timeframe} bars…</div>
-
-  // ---- scales -------------------------------------------------------------
-  const overlayVals = [lines.entry, lines.sl, lines.tp, data?.fib?.level618].filter(v => v != null)
-  const lo = Math.min(...bars.map(b => b.l), ...overlayVals)
-  const hi = Math.max(...bars.map(b => b.h), ...overlayVals)
-  const span = hi - lo || 1
-  const y = v => PAD.top + (1 - (v - lo) / span) * (H - PAD.top - PAD.bottom)
-  const plotW = W - PAD.left - PAD.right
-  const step = plotW / bars.length
-  const cw = Math.max(1.5, step * 0.62)
-  const x = i => PAD.left + i * step + step / 2
-
-  const last = bars[bars.length - 1]
-  // Live price: mid of the freshest tick when streaming, else last bar close
-  const livePrice = tick?.bid != null && tick?.ask != null
-    ? (tick.bid + tick.ask) / 2
-    : (tick?.bid ?? tick?.ask ?? last.c)
-  const OVERLAYS = [
-    lines.entry != null && { v: lines.entry, label: 'entry', cls: 'var(--color-text)' },
-    lines.sl != null && { v: lines.sl, label: 'SL', cls: 'var(--color-down)' },
-    lines.tp != null && { v: lines.tp, label: 'TP', cls: 'var(--color-up)' },
-    data?.fib?.level618 != null && { v: data.fib.level618, label: '61.8%', cls: '#a855f7' },
-  ].filter(Boolean)
 
   return (
     <div>
@@ -98,53 +129,15 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         ))}
         <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
           {live && tick
-            ? <>bid {niceFmt(tick.bid, last?.c)} / ask {niceFmt(tick.ask, last?.c)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
-            : <>{niceFmt(last?.c, last?.c)} · bars refresh 15s{updatedAt ? ` · ${updatedAt.toLocaleTimeString()}` : ''}</>}
+            ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
+            : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
         </span>
       </div>
-      <div className="overflow-x-auto">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[560px]" role="img" aria-label={`${symbol} ${timeframe} candlestick chart`}>
-          {/* horizontal gridlines */}
-          {[0.25, 0.5, 0.75].map(f => {
-            const v = lo + span * f
-            return <g key={f}>
-              <line x1={PAD.left} x2={W - PAD.right} y1={y(v)} y2={y(v)} stroke="var(--color-border)" strokeWidth="0.5" />
-              <text x={W - PAD.right + 4} y={y(v) + 3} fontSize="9" fill="var(--color-text-sub)">{niceFmt(v, last?.c)}</text>
-            </g>
-          })}
-          {/* candles: blue up / red down (colourblind-safe, no green) */}
-          {bars.map((b, i) => {
-            const up = b.c >= b.o
-            const col = up ? 'var(--color-up)' : 'var(--color-down)'
-            return (
-              <g key={b.t}>
-                <line x1={x(i)} x2={x(i)} y1={y(b.h)} y2={y(b.l)} stroke={col} strokeWidth="1" />
-                <rect
-                  x={x(i) - cw / 2}
-                  y={y(Math.max(b.o, b.c))}
-                  width={cw}
-                  height={Math.max(1, Math.abs(y(b.o) - y(b.c)))}
-                  fill={col}
-                />
-              </g>
-            )
-          })}
-          {/* overlay lines */}
-          {OVERLAYS.map(o => (
-            <g key={o.label}>
-              <line x1={PAD.left} x2={W - PAD.right} y1={y(o.v)} y2={y(o.v)} stroke={o.cls} strokeWidth="1" strokeDasharray="5 3" />
-              <text x={PAD.left + 2} y={y(o.v) - 3} fontSize="9" fontWeight="700" fill={o.cls}>{o.label} {niceFmt(o.v, last?.c)}</text>
-            </g>
-          ))}
-          {/* live price marker (tick-driven when streaming, else last close) */}
-          <line x1={PAD.left} x2={W - PAD.right} y1={y(livePrice)} y2={y(livePrice)} stroke="var(--color-accent)" strokeWidth="0.75" />
-          <rect x={W - PAD.right + 1} y={y(livePrice) - 7} width={PAD.right - 2} height={14} rx="3" fill="var(--color-accent)" />
-          <text x={W - PAD.right + 5} y={y(livePrice) + 3} fontSize="9" fontWeight="700" fill="#fff">{niceFmt(livePrice, last.c)}</text>
-        </svg>
-      </div>
-      {data?.fib && (
+      {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
+      <div ref={boxRef} className="w-full h-[300px]" />
+      {fib && (
         <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
-          Fib read ({timeframe}): {data.fib.bias?.toUpperCase()} fade at 61.8% {niceFmt(data.fib.level618, last?.c)} — entry {niceFmt(data.fib.entry, last?.c)}, SL {niceFmt(data.fib.sl, last?.c)}, TP1 {niceFmt(data.fib.tp1, last?.c)}, TP2 {niceFmt(data.fib.tp2, last?.c)}
+          Fib read ({timeframe}): {String(fib.bias || '').toUpperCase()} fade at 61.8% {niceFmt(fib.level618, lastClose)} — entry {niceFmt(fib.entry, lastClose)}, SL {niceFmt(fib.sl, lastClose)}, TP1 {niceFmt(fib.tp1, lastClose)}, TP2 {niceFmt(fib.tp2, lastClose)}
         </div>
       )}
     </div>
