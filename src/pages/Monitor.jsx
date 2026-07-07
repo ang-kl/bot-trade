@@ -8,9 +8,19 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import PositionChart from '../components/PositionChart.jsx'
-import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 20_000
+
+// Survive tab switches: cache the last snapshot in sessionStorage so
+// navigating away and back shows data instantly (then refreshes live).
+const CACHE_KEY = 'monitor_cache_v1'
+function readCache() {
+  try { return JSON.parse(sessionStorage.getItem(CACHE_KEY)) || null } catch { return null }
+}
+function writeCache(data) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(data)) } catch { /* quota — skip */ }
+}
 
 function fmt(n, digits = 5) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -49,25 +59,37 @@ function MonitorPositionRow({ p }) {
 }
 
 export default function Monitor() {
-  const [health, setHealth] = useState(null)
-  const [positions, setPositions] = useState([])
-  const [trades, setTrades] = useState([])
-  const [events, setEvents] = useState([])
+  const cached = readCache()
+  const [health, setHealth] = useState(cached?.health ?? null)
+  const [positions, setPositions] = useState(cached?.positions ?? [])
+  const [trades, setTrades] = useState(cached?.trades ?? [])
+  const [events, setEvents] = useState(cached?.events ?? [])
+  const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on the Connect tab.'); return }
     try {
-      const [h, p, t, r] = await Promise.all([
+      const [h, p, t, r, b] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
         agentGet('/state/risk-events?limit=5'),
+        agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
       ])
-      setHealth(h)
-      setPositions(p.rows || p.positions || [])
-      setTrades((t.rows || t.trades || []).slice(0, 5))
-      setEvents(r.rows || [])
+      const next = {
+        health: h,
+        positions: p.rows || p.positions || [],
+        trades: (t.rows || t.trades || []).slice(0, 5),
+        events: r.rows || [],
+        broker: b?.accounts?.[0] ?? null,
+      }
+      setHealth(next.health)
+      setPositions(next.positions)
+      setTrades(next.trades)
+      setEvents(next.events)
+      setBroker(next.broker)
+      writeCache(next)
       setError('')
     } catch (e) { setError(e.message) }
   }, [])
@@ -110,10 +132,41 @@ export default function Monitor() {
         )}
       </Card>
 
-      {/* Open positions */}
+      {/* THE BROKER'S TRUTH for the bot's account: live positions + set (pending) orders */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-1">Open positions ({positions.length})</h2>
-        {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat — no positions open.</div>}
+        <h2 className="text-[13px] font-semibold mb-1">
+          At the broker — live positions ({broker?.positions?.length ?? '…'}) & set orders ({broker?.orders?.length ?? '…'})
+        </h2>
+        {!broker && <div className="text-[13px] text-[var(--color-text-sub)]">Fetching the account snapshot from the broker…</div>}
+        {broker?.positions?.map(p => (
+          <div key={p.positionId} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
+            <span className="font-semibold">{p.symbol}</span>
+            <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
+            <span>{p.lots != null ? `${fmt(p.lots, 2)} lots` : ''}</span>
+            <span>in {fmt(p.entry)} → now {fmt(p.currentPrice)}</span>
+            {p.estPnlQuote != null && <span className={p.estPnlQuote >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{p.estPnlQuote >= 0 ? '+' : ''}{fmt(p.estPnlQuote, 2)}</span>}
+            <span className="text-[var(--color-text-sub)]">SL {fmt(p.sl)} · TP {fmt(p.tp)}</span>
+          </div>
+        ))}
+        {broker?.orders?.map(o => (
+          <div key={o.orderId} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
+            <span className="font-semibold">{o.symbol}</span>
+            <Badge tone="info">{o.type}</Badge>
+            <Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge>
+            <span>{o.lots != null ? `${fmt(o.lots, 2)} lots` : ''}</span>
+            <span>trigger {fmt(o.limitPrice ?? o.stopPrice)} · now {fmt(o.currentPrice)}</span>
+            <span className="text-[var(--color-text-sub)]">SL {fmt(o.sl)} · TP {fmt(o.tp)}</span>
+          </div>
+        ))}
+        {broker && broker.positions?.length === 0 && broker.orders?.length === 0 && (
+          <div className="text-[13px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders on the bot's account.</div>
+        )}
+      </Card>
+
+      {/* Bot-managed positions (with charts) */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-1">Bot-managed positions ({positions.length})</h2>
+        {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None — positions the bot opens (or adopts) appear here with charts.</div>}
         {positions.map(p => <MonitorPositionRow key={p.id} p={p} />)}
       </Card>
 
