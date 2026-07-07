@@ -283,7 +283,7 @@ export default function Tune() {
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-[13px]">
               <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">Avg P/L</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Max DD</th><th>Verdict</th></tr>
+                <tr><th className="pr-3 py-1">TF</th><th className="pr-3">Trades</th><th className="pr-3">Win rate</th><th className="pr-3">ARR</th><th className="pr-3">Total</th><th className="pr-3">Profit factor</th><th className="pr-3">Sharpe</th><th className="pr-3">Sortino</th><th className="pr-3">Calmar</th><th className="pr-3">Max DD</th><th>Verdict</th></tr>
               </thead>
               <tbody>
                 {Object.entries(bt.results).map(([tf, r]) => {
@@ -292,14 +292,16 @@ export default function Tune() {
                     <tr key={tf} className="border-t border-[var(--color-border)]">
                       <td className="pr-3 py-1.5 font-semibold">{tf}</td>
                       {r.error
-                        ? <td colSpan={7} className="text-[var(--color-warning-text)]">{r.error}</td>
+                        ? <td colSpan={9} className="text-[var(--color-warning-text)]">{r.error}</td>
                         : <>
                             <td className="pr-3">{r.trades}</td>
                             <td className="pr-3">{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
-                            <td className="pr-3">{r.avgProfitPct != null ? `${r.avgProfitPct}%` : '—'}</td>
+                            <td className="pr-3">{r.arrPct != null ? `${r.arrPct}%` : '—'}</td>
                             <td className="pr-3">{r.totalProfitPct != null ? `${r.totalProfitPct}%` : '—'}</td>
                             <td className="pr-3">{r.profitFactor ?? '—'}</td>
                             <td className="pr-3">{r.sharpeAnnualized ?? '—'}</td>
+                            <td className="pr-3">{r.sortinoAnnualized ?? '—'}</td>
+                            <td className="pr-3">{r.calmarRatio ?? '—'}</td>
                             <td className="pr-3">{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
                           </>}
                       <td>{!r.error && <Badge tone={go ? 'up' : 'down'}>{go ? 'GO' : 'NO-GO'}</Badge>}</td>

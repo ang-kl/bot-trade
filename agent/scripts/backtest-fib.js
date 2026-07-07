@@ -110,13 +110,26 @@ function computeStats(trades) {
 
   const round2 = x => Math.round(x * 100) / 100
   const mean = trades.reduce((s, t) => s + t.pnlPct, 0) / n
-  // Per-trade Sharpe (rf=0), annualised by trades-per-year over the tested
-  // span. A strategy can have a fine win rate and still a Sharpe near zero —
-  // this is the standard "is the edge worth its volatility" number.
+  // Risk metrics per FinWorld (KDD'26) Appendix D Table 7 — see
+  // doc_reference/FinWorld-KDD26-notes.md. rf = 0; annualisation factor is
+  // trades-per-year over the tested span (per-trade return series).
   const std = Math.sqrt(trades.reduce((s, t) => s + (t.pnlPct - mean) ** 2, 0) / n)
   const spanYears = n > 1 ? (trades[n - 1].exitT - trades[0].entryT) / (365.25 * 86_400_000) : 0
-  const sharpe = std > 0 && spanYears > 0 ? (mean / std) * Math.sqrt(n / spanYears) : null
+  const perYear = spanYears > 0 ? n / spanYears : 0
+  const sharpe = std > 0 && perYear > 0 ? (mean / std) * Math.sqrt(perYear) : null
+  // Sortino: penalise only downside deviation
+  const dd = Math.sqrt(trades.reduce((s, t) => s + Math.min(t.pnlPct, 0) ** 2, 0) / n)
+  const sortino = dd > 0 && perYear > 0 ? (mean / dd) * Math.sqrt(perYear) : null
+  // ARR: compounded annualised return over the span
+  const growth = trades.reduce((g, t) => g * (1 + t.pnlPct / 100), 1)
+  const arr = spanYears > 0 ? (Math.pow(growth, 1 / spanYears) - 1) * 100 : null
+  const calmar = arr != null && maxDrawdown > 0 ? arr / maxDrawdown : null
+  const vol = perYear > 0 ? std * Math.sqrt(perYear) : null
   return {
+    arrPct: arr != null ? round2(arr) : null,
+    sortinoAnnualized: sortino != null ? round2(sortino) : null,
+    calmarRatio: calmar != null ? round2(calmar) : null,
+    volAnnualizedPct: vol != null ? round2(vol) : null,
     trades: n,
     wins: wins.length,
     losses: losses.length,
