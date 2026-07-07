@@ -59,6 +59,49 @@ function MonitorPositionRow({ p }) {
   )
 }
 
+// One scan result row: what was found, what the trade WOULD be (entry/SL/TP),
+// whether the bot will act on it (armed timeframe + conviction ≥8), and a
+// chart with the levels drawn.
+function ScanRow({ s, signal, armedTfs, autotradeOn }) {
+  const [showChart, setShowChart] = useState(false)
+  const found = s.bias !== 'skip'
+  const tfArmed = signal ? armedTfs.includes(signal.timeframe) : false
+  const willTrade = found && autotradeOn && tfArmed && (s.confidence ?? 0) >= 8
+  let verdict = null
+  if (found) {
+    if (willTrade) verdict = { tone: 'up', text: 'WILL AUTO-TRADE next loop (risk gate permitting)' }
+    else if (!autotradeOn) verdict = { tone: 'neutral', text: 'autotrade off — signal only' }
+    else if (!tfArmed) verdict = { tone: 'neutral', text: `no trade: ${signal?.timeframe} not armed (armed: ${armedTfs.join(', ')})` }
+    else verdict = { tone: 'neutral', text: `no trade: conviction ${s.confidence}/10 below the 8/10 auto bar` }
+  }
+  return (
+    <div className="border-t border-[var(--color-border)] py-1.5">
+      <div className="text-[13px] flex flex-wrap items-center gap-2">
+        <span className="font-semibold w-20">{s.symbol}</span>
+        {found
+          ? <>
+              <Badge tone={s.bias === 'short' ? 'down' : 'up'}>{String(s.bias).toUpperCase()} {s.timeframe}</Badge>
+              <span>conviction {s.confidence}/10</span>
+              {verdict && <Badge tone={verdict.tone}>{verdict.text}</Badge>}
+              <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>
+            </>
+          : <span className="text-[var(--color-text-sub)]">{String(s.thesis || '').startsWith('SCAN ERROR') ? s.thesis : 'no setup — price not at a 61.8% zone'}</span>}
+        {s.price != null && <span className="ml-auto text-[var(--color-text-sub)]">{fmt(s.price)}</span>}
+      </div>
+      {found && signal && (
+        <div className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+          plan: enter {fmt(signal.entry)} · SL {fmt(signal.sl)} · TP1 {fmt(signal.tp1)} · TP2 {fmt(signal.tp2)} · R:R {signal.rr ?? '—'}
+        </div>
+      )}
+      {showChart && signal && (
+        <div className="mt-2">
+          <PositionChart symbol={s.symbol} timeframe={signal.timeframe || '1h'} lines={{ entry: signal.entry, sl: signal.sl, tp: signal.tp1 }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Monitor() {
   const cached = readCache()
   const [health, setHealth] = useState(cached?.health ?? null)
@@ -68,6 +111,7 @@ export default function Monitor() {
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
+  const [armedTfs, setArmedTfs] = useState(cached?.armedTfs ?? ['4h', '1d'])
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -89,10 +133,12 @@ export default function Monitor() {
         allTrades: fullTrades,
         events: (r.rows || []),
         broker: b?.accounts?.[0] ?? null,
-        scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [] } : null,
+        scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [], signals: sc.lastResults?.signals || {} } : null,
+        armedTfs: await agentGet('/state/autotrade-timeframes').then(x => x.timeframes || ['4h', '1d']).catch(() => ['4h', '1d']),
       }
       setHealth(next.health)
       setScan(next.scan)
+      setArmedTfs(next.armedTfs)
       setPositions(next.positions)
       setTrades(next.trades)
       setAllTrades(next.allTrades)
@@ -159,16 +205,7 @@ export default function Monitor() {
           </div>
         )}
         {scan?.rows?.map(s => (
-          <div key={s.symbol} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
-            <span className="font-semibold w-20">{s.symbol}</span>
-            {s.bias !== 'skip'
-              ? <>
-                  <Badge tone={s.bias === 'short' ? 'down' : 'up'}>{String(s.bias).toUpperCase()} {s.timeframe}</Badge>
-                  <span>conviction {s.confidence}/10</span>
-                </>
-              : <span className="text-[var(--color-text-sub)]">{String(s.thesis || '').startsWith('SCAN ERROR') ? s.thesis : 'no setup — price not at a 61.8% zone'}</span>}
-            {s.price != null && <span className="ml-auto text-[var(--color-text-sub)]">{fmt(s.price)}</span>}
-          </div>
+          <ScanRow key={s.symbol} s={s} signal={scan.signals?.[s.symbol]} armedTfs={armedTfs} autotradeOn={!!active} />
         ))}
       </Card>
 
