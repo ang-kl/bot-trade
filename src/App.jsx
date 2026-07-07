@@ -154,6 +154,11 @@ export default function App() {
             <Route path="/link-up" element={<Connect />} />
             <Route path="*" element={<Navigate to="/monitor" replace />} />
           </Routes>
+          <footer className="mt-8 pt-4 border-t border-[var(--color-border)] text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
+            <span>bot-trade v{__APP_VERSION__}</span>
+            <span>fib 61.8% strategy · deterministic, no LLM in trade decisions</span>
+            <span>trading involves risk — demo first, never money you can't lose</span>
+          </footer>
         </main>
       </div>
     </div>

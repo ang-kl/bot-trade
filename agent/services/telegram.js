@@ -2,6 +2,8 @@
 // Standalone business logic, no HTTP handler.
 // Uses env vars TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID directly.
 
+import { readFileSync } from 'node:fs'
+
 const TG_API = 'https://api.telegram.org'
 
 async function tgPost(botToken, method, payload) {
@@ -125,12 +127,25 @@ export async function sendTradeAlert(trade) {
  * @param {string} text - Message text (supports Markdown)
  * @returns {Promise<{ ok: true, messageId: number }>}
  */
+// Footer stamped onto every message — which build sent it, at a glance.
+let _version = null
+function versionFooter() {
+  if (_version === null) {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+      const [maj, min, patch] = String(pkg.version || '0.0.0').split('.')
+      _version = `${maj}.${min}.${String(patch).padStart(3, '0')}`
+    } catch { _version = '' }
+  }
+  return _version ? `\n\n_bot-trade v${_version}_` : ''
+}
+
 export async function sendMessage(text) {
   const botToken = getToken()
   const chatId = getChatId()
   const msg = await tgPost(botToken, 'sendMessage', {
     chat_id: chatId,
-    text,
+    text: text + versionFooter(),
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
   })
