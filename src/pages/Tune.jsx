@@ -373,6 +373,14 @@ export default function Tune() {
     } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
   }
 
+  // Trades per symbol in the last backtest (all timeframes summed) — surfaced
+  // on the Watchlist so each instrument shows how much it actually traded.
+  const btTradeCount = (sym) => {
+    const results = bt?.symbols?.[sym]?.results
+    if (!results) return null
+    return Object.values(results).reduce((n, r) => n + (r.trades || 0), 0)
+  }
+
   // GO timeframes across every tested symbol (union) — the Activate flow arms
   // timeframes, not symbols, so a GO on any symbol lights that timeframe up.
   const goVerdict = (r) => verdictFor(r)?.state === 'go'
@@ -540,32 +548,45 @@ export default function Tune() {
               <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
             )}
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
-            <div className="space-y-1.5">
-              {symbols.map((s, i) => (
-                <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-1.5 first:border-t-0 first:pt-0 text-[13px]">
-                  <span className="font-semibold w-20">{s.symbol}</span>
-                  <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
-                  <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
-                    max lots
-                    <Input
-                      type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
-                      placeholder="0.01"
-                      onChange={e => {
-                        const next = [...symbols]
-                        next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
-                        setConfig(c => ({ ...c, symbols: next }))
-                      }}
-                      onBlur={() => pushSymbols(symbols)}
-                    />
-                  </label>
-                  <span className="ml-auto flex gap-1.5">
-                    <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
-                      {s.enabled !== false ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
-                  </span>
-                </div>
-              ))}
+            {/* Two-column grid — 8 symbols fit a 2048×1280 notebook screen
+                without scrolling. Each cell carries its own hairline. */}
+            <div className="grid gap-x-8 gap-y-0 lg:grid-cols-2">
+              {symbols.map((s, i) => {
+                const tested = btTradeCount(s.symbol)
+                return (
+                  <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
+                    <span className="font-semibold w-20">{s.symbol}</span>
+                    <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
+                    <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
+                      max lots
+                      <Input
+                        type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
+                        placeholder="0.01"
+                        onChange={e => {
+                          const next = [...symbols]
+                          next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
+                          setConfig(c => ({ ...c, symbols: next }))
+                        }}
+                        onBlur={() => pushSymbols(symbols)}
+                      />
+                    </label>
+                    {tested != null && (
+                      <span
+                        className="rounded-[20px] border border-[var(--color-info-border)] bg-[var(--color-info-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--color-info-text)]"
+                        title="Trades this symbol produced in the last backtest (all timeframes)"
+                      >
+                        {tested} trade{tested === 1 ? '' : 's'} in backtest
+                      </span>
+                    )}
+                    <span className="ml-auto flex gap-1.5">
+                      <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                        {s.enabled !== false ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                    </span>
+                  </div>
+                )
+              })}
             </div>
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
