@@ -7,6 +7,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
+import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const ALL_TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
@@ -51,40 +52,32 @@ const RISK_CONTROLS = {
 
 function RiskControl({ k, label, hint, value, onChange }) {
   const ctl = RISK_CONTROLS[k]
-  const num = Number(value)
-  if (ctl?.type === 'slider' && Number.isFinite(num)) {
+  if (ctl?.type === 'slider') {
+    // Percent-style fields edit in % but the model stays a fraction where
+    // needed (perTradeRiskPct/dailyLossPct/maxMarginUsagePct are fractions;
+    // minSLDistancePct is already in %).
+    const isFraction = ctl.max <= 1
     return (
-      <label className="block text-[12px]" title={hint}>
-        <span className="flex items-baseline justify-between text-[var(--color-text-sub)]">
-          {label}
-          <span className="font-semibold text-[13px] text-[var(--color-text)]">{ctl.fmt(num)}</span>
-        </span>
-        <input
-          type="range" min={ctl.min} max={ctl.max} step={ctl.step} value={num}
-          onChange={e => onChange(Number(e.target.value))}
-          className="w-full accent-[var(--color-accent)] cursor-pointer mt-2"
+      <div title={hint}>
+        <SliderInput
+          label={label} value={value} onChange={onChange}
+          min={ctl.min} max={ctl.max} step={ctl.step}
+          display={ctl.fmt}
+          unit="%"
+          toInput={v => isFraction ? Number((v * 100).toFixed(3)) : v}
+          parse={v => isFraction ? v / 100 : v}
         />
-        <span className="flex justify-between text-[10px] text-[var(--color-text-sub)]">
-          <span>{ctl.fmt(ctl.min)}</span><span>{ctl.fmt(ctl.max)}</span>
-        </span>
-      </label>
+      </div>
     )
   }
   if (ctl?.type === 'select') {
-    const opts = ctl.options.some(([v]) => Number(v) === num) || !Number.isFinite(num)
-      ? ctl.options
-      : [...ctl.options, [num, `${num} (custom)`]].sort((a, b) => a[0] - b[0])
     return (
-      <label className="block text-[12px]" title={hint}>
-        <span className="text-[var(--color-text-sub)]">{label}</span>
-        <select
-          value={String(value)}
-          onChange={e => onChange(Number(e.target.value))}
-          className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-[13px] min-h-[40px] cursor-pointer bg-transparent"
-        >
-          {opts.map(([v, text]) => <option key={v} value={String(v)}>{text}</option>)}
-        </select>
-      </label>
+      <div title={hint}>
+        <PresetSelect
+          label={label} value={value} onChange={onChange}
+          options={ctl.options} display={v => String(v)}
+        />
+      </div>
     )
   }
   return (
