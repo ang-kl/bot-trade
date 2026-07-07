@@ -10,10 +10,10 @@ const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
 const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
 const TABS = [
-  { to: '/trade', label: 'Trade' },
-  { to: '/accounts', label: 'Accounts' },
-  { to: '/tune', label: 'Tune' },
-  { to: '/connect', label: 'Connect' },
+  { to: '/trade', label: 'Trade', icon: '📈' },
+  { to: '/accounts', label: 'Accounts', icon: '💼' },
+  { to: '/tune', label: 'Tune', icon: '⚙️' },
+  { to: '/connect', label: 'Connect', icon: '🔗' },
 ]
 
 export default function App() {
@@ -33,13 +33,13 @@ export default function App() {
                 key={t.to}
                 to={t.to}
                 className={({ isActive }) =>
-                  `rounded-full px-3.5 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center transition-all ${
+                  `folio-tab rounded-[12px] px-3.5 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all ${
                     isActive
                       ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
-                      : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
+                      : 'glass-inset text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]'
                   }`
                 }
-              >{t.label}</NavLink>
+              ><span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}</NavLink>
             ))}
           </nav>
           <button

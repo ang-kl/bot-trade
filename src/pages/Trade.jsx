@@ -5,8 +5,14 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
+import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
+
+// Inline tab link used by the "Next:" guide line
+function NavTab({ to, children }) {
+  return <Link to={to} className="font-semibold text-[var(--color-accent)] underline underline-offset-2">{children}</Link>
+}
 
 const REFRESH_MS = 30_000
 
@@ -151,8 +157,16 @@ export default function Trade() {
           </Badge>
           <Badge tone={health?.scanEnabled ? 'up' : 'neutral'} pill>{`3 · SCAN ${health?.scanEnabled ? 'ON' : 'OFF'}`}</Badge>
           <Badge tone={health?.autotradeEnabled ? 'up' : 'neutral'} pill>{`4 · AUTOTRADE ${health?.autotradeEnabled ? 'ARMED' : 'OFF'}`}</Badge>
+        </div>
+        {/* One-line guide: always name the single next action */}
+        <div className="mt-2 text-[13px]">
+          {!health && <>Next: connect the agent on the <NavTab to="/connect">Connect</NavTab> tab (or redeploy Railway if it was working before).</>}
+          {health && !health.broker?.linked && <>Next: tap your <strong>DEMO</strong> account on the <NavTab to="/connect">Connect</NavTab> tab — one tap links it and downloads the symbol list.</>}
           {health && health.broker?.linked && !health.autotradeEnabled && (
-            <span className="text-[12px] text-[var(--color-text-sub)]">— ready to trade manually; run the backtest on Tune before arming autotrade</span>
+            <>Next: run the <strong>backtest</strong> on the <NavTab to="/tune">Tune</NavTab> tab — if a timeframe shows GO, an "Activate quant trading" button appears right under the results.</>
+          )}
+          {health && health.broker?.linked && health.autotradeEnabled && (
+            <span className="font-semibold">Quant trading is ACTIVE on the {health.broker.isLive ? 'LIVE ⚠' : 'demo'} account — the bot scans every 5 minutes and trades passing signals by itself. You can close this window.</span>
           )}
         </div>
       </Card>
