@@ -148,17 +148,19 @@ export default function Monitor() {
   const [allTrades, setAllTrades] = useState(cached?.allTrades ?? [])
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
+  const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on the Connect tab.'); return }
     try {
-      const [h, p, t, r, b] = await Promise.all([
+      const [h, p, t, r, b, sc] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
         agentGet('/state/risk-events?limit=200'),
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
+        agentGet('/state/scans').catch(() => null),
       ])
       const fullTrades = t.rows || t.trades || []
       const next = {
@@ -168,8 +170,10 @@ export default function Monitor() {
         allTrades: fullTrades,
         events: (r.rows || []),
         broker: b?.accounts?.[0] ?? null,
+        scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [] } : null,
       }
       setHealth(next.health)
+      setScan(next.scan)
       setPositions(next.positions)
       setTrades(next.trades)
       setAllTrades(next.allTrades)
@@ -222,6 +226,31 @@ export default function Monitor() {
                 : <>Autotrade is off — the bot only watches. <Link to="/tune" className="text-[var(--color-accent)] underline">Run the backtest on Tune</Link> to activate.</>}
           </p>
         )}
+      </Card>
+
+      {/* Proof of life: what the last 5-minute scan actually looked at */}
+      <Card>
+        <div className="flex items-center gap-2 mb-1">
+          <h2 className="text-[13px] font-semibold">Latest scan</h2>
+          {scan?.at && <span className="text-[12px] text-[var(--color-text-sub)]">{ago(scan.at)} — every symbol on the watchlist, all timeframes</span>}
+        </div>
+        {(!scan || scan.rows.length === 0) && (
+          <div className="text-[13px] text-[var(--color-text-sub)]">
+            No scan results yet — if Scan is ON, the next 5-minute loop fills this. If it stays empty, check Tune → Scan and the watchlist.
+          </div>
+        )}
+        {scan?.rows?.map(s => (
+          <div key={s.symbol} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
+            <span className="font-semibold w-20">{s.symbol}</span>
+            {s.bias !== 'skip'
+              ? <>
+                  <Badge tone={s.bias === 'short' ? 'down' : 'up'}>{String(s.bias).toUpperCase()} {s.timeframe}</Badge>
+                  <span>conviction {s.confidence}/10</span>
+                </>
+              : <span className="text-[var(--color-text-sub)]">{String(s.thesis || '').startsWith('SCAN ERROR') ? s.thesis : 'no setup — price not at a 61.8% zone'}</span>}
+            {s.price != null && <span className="ml-auto text-[var(--color-text-sub)]">{fmt(s.price)}</span>}
+          </div>
+        ))}
       </Card>
 
       <ReportCard allTrades={allTrades} events={events} />
