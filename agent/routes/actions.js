@@ -28,6 +28,60 @@ export default function actionsRouter(db) {
   // Body: { symbol='EURUSD', timeframes=['4h','1d'], bars=1000, rsiFilter=false }
   // Fetches all timeframes over one authenticated connection; ~seconds.
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // POST /actions/backtest-all — run the backtest over EVERY enabled
+  // watchlist symbol (walk-forward, same gates as live). Body:
+  // { timeframes=['4h','1d'], bars=1000, rsiFilter, minConviction }
+  // Sequential on purpose: ~2 broker round-trips per symbol.
+  // -----------------------------------------------------------------------
+  router.post('/backtest-all', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+      let watchlist = []
+      try { watchlist = JSON.parse(symbolsJson || '[]') } catch { /* empty */ }
+      const symbols = watchlist
+        .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
+        .filter(w => w.enabled !== false)
+        .map(w => String(w.symbol).toUpperCase())
+        .slice(0, 10)
+      if (symbols.length === 0) return res.status(400).json({ error: 'Watchlist is empty' })
+
+      const timeframes = Array.isArray(req.body?.timeframes) && req.body.timeframes.length
+        ? req.body.timeframes : ['4h', '1d']
+      const count = Math.min(3000, Math.max(200, Number(req.body?.bars) || 1000))
+      const rsiFilter = req.body?.rsiFilter ? {} : null
+      const minConviction = req.body?.minConviction != null ? Number(req.body.minConviction) : 8
+
+      const { runBacktest } = await import('../scripts/backtest-fib.js')
+      const map = await ensureSymbolMap(db, creds)
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+
+      const bySymbol = {}
+      for (const sym of symbols) {
+        const symbolId = map[sym]
+        if (!symbolId) { bySymbol[sym] = { error: 'not offered by this broker account' }; continue }
+        try {
+          const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframes, count, 60_000)
+          const results = {}
+          for (const tf of timeframes) {
+            const bars = byPeriod[tf] || []
+            if (bars.length < 100) { results[tf] = { error: `only ${bars.length} bars` }; continue }
+            const { stats } = runBacktest(bars.slice(0, -1), { timeframe: tf, rsiFilter, minConviction })
+            results[tf] = { ...stats, barsUsed: bars.length - 1 }
+          }
+          bySymbol[sym] = { results }
+        } catch (err) {
+          bySymbol[sym] = { error: err.message }
+        }
+      }
+      res.json({ symbols, timeframes, bars: count, minConviction, rsiFilter: !!rsiFilter, bySymbol, ranAt: new Date().toISOString() })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   router.post('/backtest', async (req, res) => {
     try {
       const symbol = String(req.body?.symbol || 'EURUSD').toUpperCase()
