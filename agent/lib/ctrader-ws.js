@@ -566,5 +566,35 @@ export function wsStreamSpots(host, clientId, clientSecret, accessToken, account
   })
 }
 
+/**
+ * One-shot quote: subscribe to a single symbol's spots, resolve with the
+ * first tick that carries BOTH sides (merging bid/ask across ticks), then
+ * close. Resolves null on timeout instead of rejecting — callers use this
+ * as a best-effort pre-trade check and must fail open.
+ *
+ * @returns {Promise<{bid: number, ask: number}|null>}
+ */
+export async function wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId, timeoutMs = 6000) {
+  let stream = null
+  try {
+    return await new Promise((resolve) => {
+      const quote = { bid: null, ask: null }
+      const timer = setTimeout(() => resolve(null), timeoutMs)
+      wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, [symbolId], (tick) => {
+        if (tick.bid != null) quote.bid = tick.bid
+        if (tick.ask != null) quote.ask = tick.ask
+        if (quote.bid != null && quote.ask != null) {
+          clearTimeout(timer)
+          resolve({ ...quote })
+        }
+      }, () => { clearTimeout(timer); resolve(null) })
+        .then(s => { stream = s })
+        .catch(() => { clearTimeout(timer); resolve(null) })
+    })
+  } finally {
+    try { stream?.close() } catch { /* already closed */ }
+  }
+}
+
 // Exposed for tests that need to stub WebSocket behaviour.
 export const _internal = { wsRun }
