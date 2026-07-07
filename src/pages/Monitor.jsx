@@ -8,6 +8,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import PositionChart from '../components/PositionChart.jsx'
+import ReportChart from '../components/ReportChart.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 20_000
@@ -55,88 +56,6 @@ function MonitorPositionRow({ p }) {
         </div>
       )}
     </div>
-  )
-}
-
-// Report card — tabbed area chart (equity curve / daily activity), in the
-// style of the analytics report the owner referenced. SVG, blue/violet only.
-function ReportCard({ allTrades, events }) {
-  const [tab, setTab] = useState('equity')
-  const W = 720, H = 200, PL = 8, PR = 44, PT = 10, PB = 22
-
-  let points = []
-  if (tab === 'equity') {
-    let eq = 0
-    points = [...allTrades]
-      .filter(t => t.closed_at && t.pnl != null)
-      .sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
-      .map(t => { eq += Number(t.pnl); return { x: new Date(t.closed_at).getTime(), y: eq } })
-  } else {
-    const byDay = {}
-    for (const e of events) {
-      const d = String(e.created_at || '').slice(0, 10)
-      if (d) byDay[d] = (byDay[d] || 0) + 1
-    }
-    points = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b))
-      .map(([d, n]) => ({ x: new Date(d).getTime(), y: n }))
-  }
-
-  const hasData = points.length >= 2
-  let path = '', area = '', lastY = null, yTicks = []
-  if (hasData) {
-    const xs = points.map(p => p.x), ys = points.map(p => p.y)
-    const x0 = Math.min(...xs), x1 = Math.max(...xs)
-    const yLo = Math.min(0, ...ys), yHi = Math.max(...ys) || 1
-    const X = v => PL + ((v - x0) / (x1 - x0 || 1)) * (W - PL - PR)
-    const Y = v => PT + (1 - (v - yLo) / (yHi - yLo || 1)) * (H - PT - PB)
-    path = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ')
-    area = `${path} L${X(x1).toFixed(1)},${H - PB} L${X(x0).toFixed(1)},${H - PB} Z`
-    lastY = points[points.length - 1].y
-    yTicks = [yLo, (yLo + yHi) / 2, yHi].map(v => ({ v, y: Y(v) }))
-  }
-
-  return (
-    <Card>
-      <div className="flex items-center gap-2 mb-2">
-        <h2 className="text-[13px] font-semibold">Report</h2>
-        <div className="flex gap-1 ml-2">
-          {[['equity', 'Equity curve'], ['activity', 'Daily decisions']].map(([k, label]) => (
-            <button key={k} type="button" onClick={() => setTab(k)}
-              className={`rounded-full px-3 py-1 text-[12px] font-semibold cursor-pointer ${
-                tab === k ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
-              }`}>{label}</button>
-          ))}
-        </div>
-        {hasData && lastY != null && (
-          <span className="ml-auto text-[13px] font-semibold">
-            {tab === 'equity' ? `${lastY >= 0 ? '+' : ''}${fmt(lastY, 2)} total` : `${fmt(lastY, 0)} today`}
-          </span>
-        )}
-      </div>
-      {!hasData && (
-        <div className="text-[13px] text-[var(--color-text-sub)] py-4">
-          The {tab === 'equity' ? 'equity curve draws itself from closed trades' : 'activity chart draws from the risk manager\'s decisions'} — it appears after the first {tab === 'equity' ? 'trade closes' : 'decisions are logged'}.
-        </div>
-      )}
-      {hasData && (
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="report chart">
-          <defs>
-            <linearGradient id="repFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#a855f7" stopOpacity="0.35" />
-              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity="0.03" />
-            </linearGradient>
-          </defs>
-          {yTicks.map(t => (
-            <g key={t.y}>
-              <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="var(--color-border)" strokeWidth="0.5" />
-              <text x={W - PR + 4} y={t.y + 3} fontSize="9" fill="var(--color-text-sub)">{fmt(t.v, 2)}</text>
-            </g>
-          ))}
-          <path d={area} fill="url(#repFill)" />
-          <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="2" strokeLinejoin="round" />
-        </svg>
-      )}
-    </Card>
   )
 }
 
@@ -253,7 +172,7 @@ export default function Monitor() {
         ))}
       </Card>
 
-      <ReportCard allTrades={allTrades} events={events} />
+      <ReportChart allTrades={allTrades} events={events} />
 
       {/* THE BROKER'S TRUTH for the bot's account: live positions + set (pending) orders */}
       <Card>
