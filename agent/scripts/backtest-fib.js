@@ -76,6 +76,10 @@ export function runBacktest(bars, opts) {
 
     const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, { rsiFilter: opts.rsiFilter || null })
     if (!signal || signal.rr < MIN_RR) continue
+    // Fidelity with live autotrade: only take entries the bot would actually
+    // fire on (conviction >= 8 by default, same bar as synthesizeFibSignal).
+    // Pass minConviction: 0 to test every zone touch instead.
+    if (signal.conviction < (opts.minConviction ?? 8)) continue
 
     pos = {
       dir: signal.bias === 'long' ? 1 : -1,

@@ -52,7 +52,12 @@ export default function actionsRouter(db) {
           results[tf] = { error: `only ${bars.length} bars available` }
           continue
         }
-        const { stats } = runBacktest(bars.slice(0, -1), { timeframe: tf, rsiFilter })
+        const { stats } = runBacktest(bars.slice(0, -1), {
+          timeframe: tf,
+          rsiFilter,
+          // mirror live autotrade's conviction bar unless the caller overrides
+          minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
+        })
         results[tf] = { ...stats, barsUsed: bars.length - 1 }
       }
       res.json({ symbol, bars: count, rsiFilter: !!rsiFilter, results, ranAt: new Date().toISOString() })
