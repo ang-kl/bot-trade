@@ -99,6 +99,89 @@ function RiskControl({ k, label, hint, value, onChange }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Backtest verdict — evidence-based, three states:
+//   go        every criterion passed
+//   thin      the EDGE criteria pass but there aren't enough trades to trust
+//             them (1,000 bars is ~5.5 months of 4h but only ~10 days of 15m
+//             — high TFs can't physically reach 10 trades in the window, so
+//             "not enough evidence" must not read as "proven bad")
+//   no-go     an edge criterion actually failed
+// Profit factor is null when there are zero losing trades — that's an
+// INFINITE profit factor and must pass, not fail, the PF bar.
+// ---------------------------------------------------------------------------
+const GO_MIN_TRADES = 10
+function verdictFor(r) {
+  if (!r || r.error) return null
+  if (!r.trades) return { state: 'no-go', label: 'NO-GO', checks: [{ ok: false, text: 'no trades taken in this window' }] }
+  const pfVal = r.profitFactor ?? (r.losses === 0 ? Infinity : 0)
+  const checks = [
+    {
+      ok: r.trades >= GO_MIN_TRADES, gate: 'evidence',
+      text: `${r.trades} trade${r.trades === 1 ? '' : 's'} — need ≥${GO_MIN_TRADES} to trust the numbers`,
+    },
+    {
+      ok: pfVal >= 1.1, gate: 'edge',
+      text: `profit factor ${pfVal === Infinity ? '∞ (no losing trades)' : pfVal} — need ≥1.1`,
+    },
+    {
+      ok: r.totalProfitPct > 0, gate: 'edge',
+      text: `total ${r.totalProfitPct}% after costs — need >0`,
+    },
+  ]
+  const edgeOk = checks.filter(c => c.gate === 'edge').every(c => c.ok)
+  const evidenceOk = checks.filter(c => c.gate === 'evidence').every(c => c.ok)
+  if (edgeOk && evidenceOk) return { state: 'go', label: 'GO', checks }
+  if (edgeOk) return { state: 'thin', label: 'THIN DATA', checks }
+  return { state: 'no-go', label: 'NO-GO', checks }
+}
+
+// Tap (or hover) the verdict to see exactly which criteria passed/failed.
+function VerdictBadge({ r }) {
+  const [open, setOpen] = useState(false)
+  const v = verdictFor(r)
+  if (!v) return null
+  const tone = v.state === 'go' ? 'up' : v.state === 'thin' ? 'info' : 'down'
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        title={v.checks.map(c => `${c.ok ? '✓' : '✗'} ${c.text}`).join('\n')}
+        className="cursor-pointer"
+      >
+        <Badge tone={tone}>{v.label}</Badge>
+      </button>
+      {open && (
+        <span className="glass-panel absolute right-0 top-full z-30 mt-1 w-72 rounded-[12px] p-3 shadow-xl block text-left">
+          <span className="block text-[12px] font-semibold mb-1">Why {v.label}?</span>
+          {v.checks.map((c, i) => (
+            <span key={i} className={`block text-[12px] py-0.5 ${c.ok ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+              {c.ok ? '✓' : '✗'} {c.text}
+            </span>
+          ))}
+          {v.state === 'thin' && (
+            <span className="block text-[11px] text-[var(--color-text-sub)] mt-1">
+              The edge looks positive but the sample is too small to prove it. Not armed by Activate — let more bars/demo trades accumulate.
+            </span>
+          )}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// Colour clearly-good cells blue and clearly-bad cells red; leave the
+// ambiguous middle neutral. lowerBetter flips the sense for drawdown columns.
+function metricClass(v, { good, bad, lowerBetter = false } = {}) {
+  const n = Number(v)
+  if (v == null || Number.isNaN(n)) return ''
+  const isGood = lowerBetter ? n <= good : n >= good
+  const isBad = lowerBetter ? n >= bad : n <= bad
+  if (isGood) return 'text-[var(--color-up)] font-semibold'
+  if (isBad) return 'text-[var(--color-down)]'
+  return ''
+}
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -247,7 +330,7 @@ export default function Tune() {
 
   // GO timeframes across every tested symbol (union) — the Activate flow arms
   // timeframes, not symbols, so a GO on any symbol lights that timeframe up.
-  const goVerdict = (r) => !r.error && r.trades >= 10 && (r.profitFactor ?? 0) >= 1.1 && r.totalProfitPct > 0
+  const goVerdict = (r) => verdictFor(r)?.state === 'go'
   const goTfs = bt?.symbols
     ? [...new Set(
         Object.values(bt.symbols).flatMap(s => s.results
@@ -475,26 +558,29 @@ export default function Tune() {
                             </thead>
                             <tbody>
                               {Object.entries(sr.results).map(([tf, r]) => {
-                                const go = goVerdict(r)
+                                // PF is null when no trade lost — display ∞, and let
+                                // the highlight treat it as excellent, not missing.
+                                const pfShown = r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? '∞' : '—')
+                                const pfNum = r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? 999 : null)
                                 return (
                                   <tr key={tf} className="border-t border-[var(--color-border)]">
                                     <td className="pr-3 py-1.5 font-semibold">{tf}</td>
                                     {r.error
                                       ? <td colSpan={11} className="text-[var(--color-warning-text)]">{r.error}</td>
                                       : <>
-                                          <td className="pr-3">{r.trades}</td>
-                                          <td className="pr-3">{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
-                                          <td className="pr-3">{r.arrPct != null ? `${r.arrPct}%` : '—'}</td>
-                                          <td className="pr-3">{r.totalProfitPct != null ? `${r.totalProfitPct}%` : '—'}</td>
-                                          <td className="pr-3">{r.profitFactor ?? '—'}</td>
-                                          <td className="pr-3">{r.sharpeAnnualized ?? '—'}</td>
-                                          <td className="pr-3">{r.sortinoAnnualized ?? '—'}</td>
-                                          <td className="pr-3">{r.calmarRatio ?? '—'}</td>
-                                          <td className="pr-3">{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
-                                          <td className="pr-3">{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
-                                          <td className="pr-3">{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.trades, { good: GO_MIN_TRADES, bad: -1 })}`}>{r.trades}</td>
+                                          <td className={`pr-3 ${metricClass(r.winRatePct, { good: 50, bad: 30 })}`}>{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.arrPct, { good: 0.0001, bad: -0.0001 })}`}>{r.arrPct != null ? `${r.arrPct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.totalProfitPct, { good: 0.0001, bad: -0.0001 })}`}>{r.totalProfitPct != null ? `${r.totalProfitPct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(pfNum, { good: 1.1, bad: 1 })}`}>{pfShown}</td>
+                                          <td className={`pr-3 ${metricClass(r.sharpeAnnualized, { good: 1, bad: 0 })}`}>{r.sharpeAnnualized ?? '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.sortinoAnnualized, { good: 1.5, bad: 0 })}`}>{r.sortinoAnnualized ?? '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.calmarRatio, { good: 1, bad: 0 })}`}>{r.calmarRatio ?? '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.maxDrawdownPct, { good: 1, bad: 3, lowerBetter: true })}`}>{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.mddP95Pct, { good: 2, bad: 5, lowerBetter: true })}`}>{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
+                                          <td className={`pr-3 ${metricClass(r.cvar95Pct, { good: -0.25, bad: -1 })}`}>{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
                                         </>}
-                                    <td>{!r.error && <Badge tone={go ? 'up' : 'down'}>{go ? 'GO' : 'NO-GO'}</Badge>}</td>
+                                    <td>{!r.error && <VerdictBadge r={r} />}</td>
                                   </tr>
                                 )
                               })}
@@ -505,11 +591,18 @@ export default function Tune() {
                   </div>
                 ))}
                 <p className="text-[12px] text-[var(--color-text-sub)]">
-                  GO = ≥10 trades, profit factor ≥1.1, positive total. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades (the actual path may be a lucky ordering); CVaR = average of the worst 5% of trades. Past performance is not a promise — it only says the strategy wasn't losing on this data. RSI filter setting (Pipeline tab) is applied.
+                  Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. THIN DATA = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
-                {goTfs.length === 0 && (
-                  <p className="text-[13px] font-semibold text-[var(--color-warning-text)]">No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, or wait for more data.</p>
-                )}
+                {goTfs.length === 0 && (() => {
+                  const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
+                  return (
+                    <p className="text-[13px] font-semibold text-[var(--color-warning-text)]">
+                      {anyThin
+                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (THIN DATA). Options: keep the bot in demo to accumulate evidence, or re-run later as more bars build up. Do NOT arm autotrade on thin data alone.'
+                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, or wait for more data.'}
+                    </p>
+                  )
+                })()}
                 {goTfs.length > 0 && config?.autotrade_enabled && (
                   <p className="text-[13px] font-semibold">Quant trading is already ACTIVE.</p>
                 )}
