@@ -100,6 +100,9 @@ async function request(method, path, body) {
     if (ct.includes('application/json')) {
       try { const j = await res.json(); if (j.error) msg = j.error } catch { /* keep default */ }
     }
+    if (res.status === 401) {
+      msg = 'Login expired — go to the Connect tab and log in again (Telegram code or secret). This happens when the agent redeploys without a persistent Volume.'
+    }
     throw new Error(msg)
   }
   return res.json()

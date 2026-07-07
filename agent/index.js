@@ -69,6 +69,9 @@ try {
 }
 
 console.log(`[boot] Opening database at: ${resolvedDbPath}`);
+if (!DB_PATH) {
+  console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
+}
 const db = initDB(resolvedDbPath);
 
 // Seed cTrader credentials from env vars if present and not already stored.
@@ -140,11 +143,23 @@ function authMiddleware(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
 
   if (!token || (token !== AGENT_SECRET && !isValidSession(token))) {
+    console.warn(`[auth] 401 ${req.method} ${req.path} — ${token ? `stale/unknown token ${token.slice(0, 10)}…` : 'no token'}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   next();
 }
+
+// Request footprints — every non-health call logged with outcome + timing,
+// so Railway logs read as an activity journal, not just boot lines.
+app.use((req, res, next) => {
+  if (req.path === '/health') return next();
+  const t0 = Date.now();
+  res.on('finish', () => {
+    console.log(`[http] ${req.method} ${req.path} → ${res.statusCode} (${Date.now() - t0}ms)`);
+  });
+  next();
+});
 
 app.use(authMiddleware);
 
