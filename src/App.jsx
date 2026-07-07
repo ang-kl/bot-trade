@@ -1,5 +1,41 @@
 /* global __APP_VERSION__ */
-import { Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
+import { getAgentConn, agentConfigured } from './lib/agent-api.js'
+
+// Global agent watchdog — the connection is saved once per device
+// (localStorage), so the only thing the user ever needs to know is when
+// the agent stops answering. Polls the public /health every 30s and shows
+// a red banner on EVERY tab while it's down.
+function AgentDownBanner() {
+  const [down, setDown] = useState(false)
+  const location = useLocation()
+  useEffect(() => {
+    if (!agentConfigured()) return undefined
+    let dead = false
+    const check = async () => {
+      try {
+        const c = getAgentConn()
+        const res = await fetch(`${c.base}/health`, { signal: AbortSignal.timeout(8000) })
+        if (!dead) setDown(!res.ok)
+      } catch {
+        if (!dead) setDown(true)
+      }
+    }
+    check()
+    const t = setInterval(check, 30_000)
+    return () => { dead = true; clearInterval(t) }
+  }, [])
+  if (!down || location.pathname === '/connect' || location.pathname === '/link-up') return null
+  return (
+    <div role="alert" className="mx-auto max-w-5xl px-4 pt-3">
+      <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-[13px] font-semibold">
+        ⚠ Agent unreachable — the bot is NOT scanning, trading, or protecting positions right now.
+        Check that the Railway service is up, then <NavLink to="/connect" className="underline">test the connection</NavLink>.
+      </div>
+    </div>
+  )
+}
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
@@ -50,6 +86,8 @@ export default function App() {
           >{THEME_ICON[theme] || '◐'}</button>
         </div>
       </header>
+
+      <AgentDownBanner />
 
       <main className="mx-auto max-w-5xl px-4 py-5">
         <Routes>

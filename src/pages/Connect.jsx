@@ -109,6 +109,17 @@ export default function Connect() {
   }
 
   const selectAccount = async (a) => {
+    // LIVE accounts hold real money — make switching to one deliberate.
+    // (Backtests and charts are read-only either way; this gates what
+    // autotrade and manual orders would act on.)
+    if (a.isLive) {
+      const word = window.prompt(
+        `⚠ ${a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`} is a LIVE account with REAL money.\n\n` +
+        'Backtests and charts never trade — but if you later arm Autotrade or place a manual order, it will use REAL funds on this account.\n\n' +
+        'Type LIVE to confirm, or Cancel to pick a DEMO account instead.'
+      )
+      if (word !== 'LIVE') return
+    }
     setLinking(true)
     try {
       const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive })
