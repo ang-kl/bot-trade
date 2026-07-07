@@ -36,6 +36,7 @@ function AgentDownBanner() {
     </div>
   )
 }
+import Monitor from './pages/Monitor.jsx'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
@@ -46,6 +47,7 @@ const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
 const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
 const TABS = [
+  { to: '/monitor', label: 'Monitor', icon: '👁️' },
   { to: '/trade', label: 'Trade', icon: '📈' },
   { to: '/accounts', label: 'Accounts', icon: '💼' },
   { to: '/tune', label: 'Tune', icon: '⚙️' },
@@ -91,14 +93,15 @@ export default function App() {
 
       <main className="mx-auto max-w-5xl px-4 py-5">
         <Routes>
-          <Route path="/" element={<Navigate to="/trade" replace />} />
+          <Route path="/" element={<Navigate to="/monitor" replace />} />
+          <Route path="/monitor" element={<Monitor />} />
           <Route path="/trade" element={<Trade />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/tune" element={<Tune />} />
           <Route path="/connect" element={<Connect />} />
           {/* Spotware OAuth redirect URI (registered on the cTrader app) */}
           <Route path="/link-up" element={<Connect />} />
-          <Route path="*" element={<Navigate to="/trade" replace />} />
+          <Route path="*" element={<Navigate to="/monitor" replace />} />
         </Routes>
       </main>
     </div>
