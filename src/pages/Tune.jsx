@@ -33,6 +33,68 @@ const RISK_FIELDS = [
   ['kellyFraction', 'Kelly fraction', '0.25 = quarter-Kelly sizing'],
 ]
 
+// Rich controls for the Risk tab — sliders for continuous fractions
+// (displayed as %), dropdowns for enumerable choices. Values are stored in
+// the same units the agent expects; only the display is humanised.
+const RISK_CONTROLS = {
+  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.03, step: 0.0025, fmt: v => `${(v * 100).toFixed(2)}%` },
+  dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fmt: v => `${(v * 100).toFixed(1)}%` },
+  minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
+  maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10].map(n => [n, String(n)]) },
+  symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
+  maxConsecutiveLosses: { type: 'select', options: [2, 3, 4, 5, 6].map(n => [n, String(n)]) },
+  cooldownMinutes: { type: 'select', options: [[30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
+  minSLDistancePct: { type: 'slider', min: 0.05, max: 0.5, step: 0.05, fmt: v => `${Number(v).toFixed(2)}%` },
+  maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fmt: v => `${(v * 100).toFixed(0)}%` },
+  kellyFraction: { type: 'select', options: [[0.1, '0.10 — very conservative'], [0.25, '0.25 — quarter-Kelly (default)'], [0.5, '0.50 — aggressive'], [1, '1.00 — full Kelly (not advised)']] },
+}
+
+function RiskControl({ k, label, hint, value, onChange }) {
+  const ctl = RISK_CONTROLS[k]
+  const num = Number(value)
+  if (ctl?.type === 'slider' && Number.isFinite(num)) {
+    return (
+      <label className="block text-[12px]" title={hint}>
+        <span className="flex items-baseline justify-between text-[var(--color-text-sub)]">
+          {label}
+          <span className="font-semibold text-[13px] text-[var(--color-text)]">{ctl.fmt(num)}</span>
+        </span>
+        <input
+          type="range" min={ctl.min} max={ctl.max} step={ctl.step} value={num}
+          onChange={e => onChange(Number(e.target.value))}
+          className="w-full accent-[var(--color-accent)] cursor-pointer mt-2"
+        />
+        <span className="flex justify-between text-[10px] text-[var(--color-text-sub)]">
+          <span>{ctl.fmt(ctl.min)}</span><span>{ctl.fmt(ctl.max)}</span>
+        </span>
+      </label>
+    )
+  }
+  if (ctl?.type === 'select') {
+    const opts = ctl.options.some(([v]) => Number(v) === num) || !Number.isFinite(num)
+      ? ctl.options
+      : [...ctl.options, [num, `${num} (custom)`]].sort((a, b) => a[0] - b[0])
+    return (
+      <label className="block text-[12px]" title={hint}>
+        <span className="text-[var(--color-text-sub)]">{label}</span>
+        <select
+          value={String(value)}
+          onChange={e => onChange(Number(e.target.value))}
+          className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-[13px] min-h-[40px] cursor-pointer bg-transparent"
+        >
+          {opts.map(([v, text]) => <option key={v} value={String(v)}>{text}</option>)}
+        </select>
+      </label>
+    )
+  }
+  return (
+    <label className="block text-[12px]" title={hint}>
+      <span className="text-[var(--color-text-sub)]">{label}</span>
+      <Input type="number" step="any" value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={hint} />
+    </label>
+  )
+}
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -63,6 +125,7 @@ export default function Tune() {
   const [rsiFilter, setRsiFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
+  const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -99,6 +162,20 @@ export default function Tune() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Broker instrument list (once) — powers the add-symbol autocomplete.
+  useEffect(() => {
+    if (!agentConfigured()) return
+    agentGet('/state/symbol-map')
+      .then(r => setAllSymbols(Object.keys(r?.map || {}).sort()))
+      .catch(() => {})
+  }, [])
+
+  // Top matches for the typed prefix (name contains, prefix first)
+  const q = newSymbol.trim().toUpperCase()
+  const suggestions = q.length >= 1
+    ? allSymbols.filter(s => s.includes(q)).sort((a, b) => (a.startsWith(q) === b.startsWith(q) ? a.localeCompare(b) : a.startsWith(q) ? -1 : 1)).slice(0, 25)
+    : []
 
   const flash = (msg) => { setStatus(msg); setTimeout(() => setStatus(''), 2500) }
   const run = async (fn, okMsg) => {
@@ -154,7 +231,8 @@ export default function Tune() {
     try {
       const r = await agentPost('/actions/backtest', {
         symbols: btSymbols,
-        timeframes: ['4h', '1d'],
+        // Test exactly what Pipeline arms — one source of truth for timeframes.
+        timeframes,
         bars: 1000,
         rsiFilter,
       })
@@ -226,16 +304,13 @@ export default function Tune() {
                 </span>
               )}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
               {RISK_FIELDS.map(([k, label, hint]) => (
-                <label key={k} className="block text-[12px]">
-                  <span className="text-[var(--color-text-sub)]">{label}</span>
-                  <Input
-                    type="number" step="any" value={riskDraft[k] ?? ''}
-                    onChange={e => setRiskDraft(d => ({ ...d, [k]: e.target.value }))}
-                    title={hint} placeholder={hint}
-                  />
-                </label>
+                <RiskControl
+                  key={k} k={k} label={label} hint={hint}
+                  value={riskDraft[k]}
+                  onChange={v => setRiskDraft(d => ({ ...d, [k]: v }))}
+                />
               ))}
             </div>
             <div className="mt-3 flex gap-2">
@@ -262,9 +337,20 @@ export default function Tune() {
           <div>
             <h2 className="text-[13px] font-semibold mb-2">Watchlist ({symbols.length})</h2>
             <div className="flex gap-2 mb-3">
-              <Input value={newSymbol} onChange={e => setNewSymbol(e.target.value)} placeholder="Add symbol, e.g. EURUSD" className="max-w-[220px]" onKeyDown={e => e.key === 'Enter' && addSymbol()} />
+              <Input
+                value={newSymbol} onChange={e => setNewSymbol(e.target.value)}
+                placeholder={allSymbols.length ? `Search ${allSymbols.length.toLocaleString()} instruments…` : 'Add symbol, e.g. EURUSD'}
+                className="max-w-[260px]" list="broker-symbols"
+                onKeyDown={e => e.key === 'Enter' && addSymbol()}
+              />
+              <datalist id="broker-symbols">
+                {suggestions.map(s => <option key={s} value={s} />)}
+              </datalist>
               <Button size="sm" onClick={addSymbol}>Add</Button>
             </div>
+            {q.length >= 2 && allSymbols.length > 0 && !allSymbols.includes(q) && suggestions.length === 0 && (
+              <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
+            )}
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
             <div className="space-y-1.5">
               {symbols.map((s, i) => (
@@ -331,7 +417,7 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {timeframes.join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}
