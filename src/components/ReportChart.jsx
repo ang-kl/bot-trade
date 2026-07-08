@@ -50,7 +50,9 @@ export default function ReportChart({ allTrades, events }) {
     return rows
   }, [allTrades, events, range])
 
-  const hasData = model.length >= 2
+  // Two points interpolate into meaningless straight lines that read as a
+  // real trend (owner flagged exactly that) — draw only from 3 active days.
+  const hasData = model.length >= 3
   let geom = null
   if (hasData) {
     const x0 = model[0].t, x1 = model[model.length - 1].t
@@ -113,7 +115,7 @@ export default function ReportChart({ allTrades, events }) {
 
       {!hasData && (
         <div className="text-[13px] text-[var(--color-text-sub)] py-6">
-          The chart draws from the bot's decisions and closed trades — it fills in as activity accumulates (needs at least two active days in this range).
+          Not enough history yet — this chart draws from the bot's decisions and closed trades and appears after 3 active days in this range. Two points would just be a straight line pretending to be a trend.
         </div>
       )}
 
