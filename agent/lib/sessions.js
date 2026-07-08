@@ -45,6 +45,43 @@ export function categoriseSymbol(symbol) {
   return 'stock'
 }
 
+/**
+ * Per-symbol tradability gate. Backtests run on history and don't care, but
+ * a MARKET order into a closed market is a guaranteed broker rejection —
+ * stocks/indices only trade their exchange session, FX/metals close on
+ * weekends, crypto never closes.
+ *
+ * Conservative approximations (UTC):
+ *   stock/index  → NYSE cash-ish window, Mon–Fri 14:30–20:55
+ *   fx/metal/commodity → Sun 22:00 → Fri 21:00
+ *   crypto       → always
+ *
+ * @returns {{open: boolean, reason?: string}}
+ */
+export function isSymbolMarketOpen(symbol, now = new Date()) {
+  const cat = categoriseSymbol(symbol)
+  if (cat === 'crypto') return { open: true }
+
+  const day = now.getUTCDay()            // 0 Sun … 6 Sat
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes()
+
+  if (cat === 'stock' || cat === 'index') {
+    const inSession = day >= 1 && day <= 5 && mins >= 14 * 60 + 30 && mins <= 20 * 60 + 55
+    return inSession
+      ? { open: true }
+      : { open: false, reason: `${symbol} trades the New York session only (Mon–Fri 14:30–20:55 UTC) — signal skipped until the market opens` }
+  }
+
+  // fx / metal / commodity: closed from Fri 21:00 UTC to Sun 22:00 UTC
+  const weekendClosed =
+    day === 6 ||
+    (day === 5 && mins >= 21 * 60) ||
+    (day === 0 && mins < 22 * 60)
+  return weekendClosed
+    ? { open: false, reason: `${symbol}: FX/CFD market is closed for the weekend (reopens Sun 22:00 UTC)` }
+    : { open: true }
+}
+
 // Next session opening — returns { label, minsUntil } or null.
 export function nextSessionOpening() {
   const now = new Date()
