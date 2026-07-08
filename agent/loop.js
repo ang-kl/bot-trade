@@ -83,6 +83,18 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
   const requestedVol = watchlistItem?.maxVolume || 0.01
 
+  // Market-hours gate: a MARKET order into a closed market is a guaranteed
+  // broker rejection — stocks/indices trade the NY session only, FX/metals
+  // close on weekends. The signal isn't lost: if the zone still holds when
+  // the market reopens, the scan will fire it again.
+  const { isSymbolMarketOpen } = await import('./lib/sessions.js')
+  const marketGate = isSymbolMarketOpen(symbol)
+  if (!marketGate.open) {
+    persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+    log(`Auto-trade deferred — ${marketGate.reason}`)
+    return null
+  }
+
   // -------------------------------------------------------------------------
   // Risk Manager pre-trade gate — deterministic veto + Kelly volume scaling.
   // Runs before cTrader WS open. No LLM calls. Every evaluation is persisted
