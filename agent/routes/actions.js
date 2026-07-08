@@ -12,6 +12,7 @@ import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
+import { getVolumeMeta, lotsToVolume } from '../lib/lot-sizing.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -1220,7 +1221,15 @@ export default function actionsRouter(db) {
       }
 
       const volLots = riskResult.adjusted_volume
-      const volume = Math.round(volLots * 10000)
+      // Per-symbol volume (lotSize varies by asset class) — the hardcoded
+      // 10000/lot constant caused TRADING_BAD_VOLUME on every order.
+      const metaHost = (getState(db, 'ctrader_is_live') === 'true') ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+      const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
+      const sized = lotsToVolume(volLots, volMeta)
+      if (sized.belowMin) {
+        return res.json({ ok: false, vetoed: true, reason: `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)` })
+      }
+      const volume = sized.volume
       const slDistance = sl && entry ? Math.abs(entry - sl) : null
       const tpDistance = tp1 && entry ? Math.abs(tp1 - entry) : null
       const POINTS = 100000
@@ -1332,6 +1341,11 @@ export default function actionsRouter(db) {
       }
 
       const volLots = riskResult.adjusted_volume
+      const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      const sized = lotsToVolume(volLots, volMeta)
+      if (sized.belowMin) {
+        return res.json({ ok: false, vetoed: true, reason: `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)` })
+      }
       const POINTS = 100000
       const slDistance = Math.abs(entry - proposal.sl)
       const tpDistance = proposal.tp1 != null ? Math.abs(proposal.tp1 - entry) : null
@@ -1346,7 +1360,7 @@ export default function actionsRouter(db) {
         symbolId: parseInt(symbolId),
         orderType: 'MARKET',
         tradeSide: side,
-        volume: Math.round(volLots * 10000),
+        volume: sized.volume,
         comment: 'abot-manual-ui',
         label: structuredLabel,
         relativeStopLoss: Math.round(slDistance * POINTS),
