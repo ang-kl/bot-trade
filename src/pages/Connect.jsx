@@ -21,7 +21,8 @@ export default function Connect() {
   const [linking, setLinking] = useState(false)
   const [linked, setLinked] = useState(null)          // { accountId, isLive, symbolsMapped }
   const [symbolCount, setSymbolCount] = useState(null)
-  const [floating, setFloating] = useState({})    // accountId -> open-trade P&L sum
+  const [broker, setBroker] = useState({})        // accountId -> full broker snapshot (positions, orders)
+  const [openDetail, setOpenDetail] = useState(null) // accountId whose trade detail is expanded
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
@@ -38,16 +39,12 @@ export default function Connect() {
         if (r.selectedAccountId) setLinked({ accountId: Number(r.selectedAccountId) })
       }
     }).catch(() => {})
-    // Live-trade P&L per account (best effort, slower call) — the balance
-    // shown then includes what open positions are currently worth.
+    // Full broker snapshot per account (best effort, slower call) — powers
+    // the equity figure, the live/set/profit/loss chips, and the expanders.
     agentPost('/actions/broker-positions').then(r => {
       const m = {}
-      for (const acct of r?.accounts || []) {
-        if (acct.positions?.length) {
-          m[acct.accountId] = acct.positions.reduce((s, p) => s + (Number(p.estPnlQuote) || 0), 0)
-        }
-      }
-      setFloating(m)
+      for (const acct of r?.accounts || []) m[acct.accountId] = acct
+      setBroker(m)
     }).catch(() => {})
   }, [])
 
@@ -241,30 +238,85 @@ export default function Connect() {
           <div className="mt-3">
             <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tap the account the bot should trade with:</div>
             <div className="space-y-1.5">
-              {accounts.map(a => (
-                <button
-                  key={a.accountId}
-                  type="button"
-                  disabled={linking}
-                  onClick={() => selectAccount(a)}
-                  className={`flex w-full items-center gap-3 rounded-[7px] border px-3 py-2 text-left text-[13px] cursor-pointer hover:border-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] ${
-                    linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'
-                  }`}
-                >
-                  <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
-                  <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
-                  {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
-                  <span className="ml-auto text-right">
-                    <span className="font-semibold block">
-                      {a.balance != null ? `$${(Number(a.balance) + (floating[a.accountId] ?? 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
-                    </span>
-                    {floating[a.accountId] != null && (
-                      <span className="block text-[11px] text-[var(--color-text-sub)]">incl. open trades ({floating[a.accountId] >= 0 ? '+' : '−'}${Math.abs(floating[a.accountId]).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
+              {accounts.map(a => {
+                const b = broker[a.accountId]
+                const positions = b?.positions || []
+                const orders = b?.orders || []
+                const floating = positions.reduce((s, p) => s + (Number(p.estPnlQuote) || 0), 0)
+                const winners = positions.filter(p => Number(p.estPnlQuote) > 0).length
+                const losers = positions.filter(p => Number(p.estPnlQuote) < 0).length
+                const detailOpen = openDetail === a.accountId
+                return (
+                <div key={a.accountId} className={`rounded-[7px] border ${linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}>
+                  <button
+                    type="button"
+                    disabled={linking}
+                    onClick={() => selectAccount(a)}
+                    className="flex w-full items-center gap-3 px-3 py-2 text-left text-[13px] cursor-pointer hover:bg-[var(--color-accent-soft)] rounded-[7px]"
+                  >
+                    <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
+                    <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
+                    {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
+                    {b && (
+                      <span
+                        role="button" tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); setOpenDetail(detailOpen ? null : a.accountId) }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setOpenDetail(detailOpen ? null : a.accountId) } }}
+                        className="inline-flex items-center gap-2 text-[12px] glass-inset rounded-[16px] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
+                        title="Tap for per-trade detail"
+                      >
+                        <span>{positions.length} live · {orders.length} set</span>
+                        {positions.length > 0 && (
+                          <span>
+                            <span className="text-[var(--color-up)] font-semibold">{winners}▲</span>
+                            {' '}
+                            <span className="text-[var(--color-down)] font-semibold">{losers}▼</span>
+                          </span>
+                        )}
+                        <span aria-hidden="true">{detailOpen ? '▾' : '▸'}</span>
+                      </span>
                     )}
-                  </span>
-                  {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
-                </button>
-              ))}
+                    <span className="ml-auto text-right">
+                      <span className="font-semibold block">
+                        {a.balance != null ? `$${(Number(a.balance) + floating).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
+                      </span>
+                      {positions.length > 0 && (
+                        <span className="block text-[11px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
+                      )}
+                    </span>
+                    {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
+                  </button>
+                  {detailOpen && (
+                    <div className="px-3 pb-2 text-[12px] border-t border-[var(--color-border)]">
+                      {positions.length === 0 && orders.length === 0 && <div className="pt-2 text-[var(--color-text-sub)]">Flat — no open positions or pending orders.</div>}
+                      {positions.map(p => (
+                        <div key={p.positionId} className="flex flex-wrap items-center gap-2 pt-2">
+                          <span className="font-semibold">{p.symbol}</span>
+                          <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
+                          {p.lots != null && <span>{p.lots} lots</span>}
+                          <span>in {p.entry} → now {p.currentPrice ?? '—'}</span>
+                          {p.estPnlQuote != null && (
+                            <span className={`font-semibold ${p.estPnlQuote >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                              {p.estPnlQuote >= 0 ? '+' : '−'}${Math.abs(p.estPnlQuote).toFixed(2)}
+                            </span>
+                          )}
+                          <span className="text-[var(--color-text-sub)]">SL {p.sl ?? '—'} · TP {p.tp ?? '—'}</span>
+                        </div>
+                      ))}
+                      {orders.map(o => (
+                        <div key={o.orderId} className="flex flex-wrap items-center gap-2 pt-2">
+                          <span className="font-semibold">{o.symbol}</span>
+                          <Badge tone="info">{o.type}</Badge>
+                          <Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge>
+                          <span>trigger {o.limitPrice ?? o.stopPrice ?? '—'}</span>
+                        </div>
+                      ))}
+                      <div className="pt-2 text-[var(--color-text-sub)]">Full history and P&L per closed trade: Accounts page (open positions) and Monitor → Recent trades (bot's closed trades).</div>
+                    </div>
+                  )}
+                </div>
+                )
+              })}
             </div>
             <p className="mt-2 text-[12px] text-[var(--color-warning-text)]">
               Start with a DEMO account. Picking it also downloads the broker's full symbol list automatically — no manual IDs needed.
