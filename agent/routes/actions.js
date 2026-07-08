@@ -416,8 +416,32 @@ export default function actionsRouter(db) {
     const seen = new Set()
     const canonical = parsed.filter(p => !seen.has(p.ms) && seen.add(p.ms)).map(p => p.label)
     setState(db, 'autotrade_timeframes', JSON.stringify(canonical))
+
+    // Optional per-instrument arming: matrix = { SYMBOL: [timeframes] }.
+    // When present, a symbol only auto-trades the timeframes armed FOR IT
+    // (loop.js matrix gate) — "arm anyway" on one row must not widen the
+    // whole watchlist. Pass matrix: null/{} to clear back to TF-wide.
+    if ('matrix' in (req.body || {})) {
+      const rawMatrix = req.body.matrix
+      if (rawMatrix == null || (typeof rawMatrix === 'object' && Object.keys(rawMatrix).length === 0)) {
+        setState(db, 'autotrade_matrix_json', null)
+        console.log('[actions] autotrade matrix cleared (TF-wide arming)')
+      } else if (typeof rawMatrix === 'object') {
+        const clean = {}
+        for (const [sym, list] of Object.entries(rawMatrix)) {
+          if (!Array.isArray(list)) continue
+          const ptfs = list.map(t => parseTimeframe(String(t))).filter(Boolean)
+          if (ptfs.length) clean[String(sym).toUpperCase().trim()] = [...new Set(ptfs.map(p2 => p2.label))]
+        }
+        setState(db, 'autotrade_matrix_json', JSON.stringify(clean))
+        console.log('[actions] autotrade matrix set:', Object.entries(clean).map(([k, v]) => `${k}:${v.join('/')}`).join(' '))
+      }
+    }
+
     console.log('[actions] autotrade timeframes set:', canonical.join(', '))
-    res.json({ ok: true, timeframes: canonical })
+    let matrixOut = null
+    try { matrixOut = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
+    res.json({ ok: true, timeframes: canonical, matrix: matrixOut })
   })
 
   // -----------------------------------------------------------------------

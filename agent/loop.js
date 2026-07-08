@@ -814,6 +814,27 @@ async function runLoop(db) {
               log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
               synth.auto_trade = false
             }
+
+            // Per-instrument arming (autotrade_matrix_json = {SYM: [tfs]}):
+            // when the matrix exists, a symbol only trades the timeframes the
+            // trader armed FOR THAT SYMBOL — "arm anyway" on NATGAS 2h must
+            // not arm 2h for the whole watchlist. Absent matrix = legacy
+            // TF-wide behaviour.
+            if (synth.auto_trade) {
+              const matrixJson = getState(db, 'autotrade_matrix_json')
+              if (matrixJson) {
+                try {
+                  const matrix = JSON.parse(matrixJson)
+                  if (matrix && typeof matrix === 'object' && Object.keys(matrix).length > 0) {
+                    const armedForSym = matrix[sym.toUpperCase()] || []
+                    if (!armedForSym.includes(synth.timeframe)) {
+                      log(`Matrix gate: ${sym} blocked — ${synth.timeframe} not armed for this symbol (armed: ${armedForSym.join(',') || 'none'})`)
+                      synth.auto_trade = false
+                    }
+                  }
+                } catch { /* corrupt matrix — fall back to TF-wide */ }
+              }
+            }
           }
 
           // Human override: if override_bias is set, use it instead of AI's

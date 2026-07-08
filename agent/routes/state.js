@@ -501,7 +501,9 @@ export default function stateRouter(db) {
         if (Array.isArray(parsed) && parsed.length > 0) timeframes = parsed
       } catch { /* keep default */ }
     }
-    res.json({ timeframes })
+    let matrix = null
+    try { matrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
+    res.json({ timeframes, matrix })
   })
 
   // -----------------------------------------------------------------------
