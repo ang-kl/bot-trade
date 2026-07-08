@@ -20,7 +20,6 @@ import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
-const CTRADER_UNITS_PER_LOT = 10_000  // cTrader volume: 10000 = 1 lot
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
@@ -116,7 +115,6 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   if (Math.abs(volLots - requestedVol) > 0.001) {
     log(`Risk sizing: ${symbol} ${requestedVol} → ${volLots} (${riskResult.sizing_note})`)
   }
-  const volume = Math.round(volLots * CTRADER_UNITS_PER_LOT)
 
   // We need symbolId — look it up from previously stored symbol map, or skip
   const symbolMapJson = getState(db, 'symbol_id_map')
@@ -126,6 +124,33 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     log(`Auto-trade ${symbol}: symbolId unknown — call POST /actions/symbol-map to register it`)
     return null
   }
+
+  // Volume in the symbol's OWN units (lotSize is per-symbol; a hardcoded
+  // per-lot constant sent every order ~1000× too small → TRADING_BAD_VOLUME).
+  const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+  let sized
+  try {
+    const { getVolumeMeta, lotsToVolume } = await import('./lib/lot-sizing.js')
+    const meta = await getVolumeMeta(hostForMeta, clientId, clientSecret, accessToken, accountId, symbolId)
+    sized = lotsToVolume(volLots, meta)
+    if (sized.belowMin) {
+      const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`
+      persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+      log(`RISK VETO ${symbol} ${side}: ${reason}`)
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        try {
+          const { sendMessage } = await import('./services/telegram.js')
+          await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — sized volume is below the broker's minimum lot. Raise risk per trade or skip this symbol.`)
+        } catch { /* non-fatal */ }
+      }
+      return null
+    }
+  } catch (err) {
+    persistRiskEvent(db, proposal, { approved: false, veto_reason: `sizing_failed: ${err.message}` })
+    log(`Auto-trade ${symbol}: sizing failed — ${err.message}`)
+    return null
+  }
+  const volume = sized.volume
 
   const slDistance = synth.sl && synth.entry ? Math.abs(synth.entry - synth.sl) : null
   const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
@@ -326,8 +351,19 @@ async function executeBrokerAction(db, s, pos, eval_) {
       return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
     }
 
+    // Per-symbol volume math — lotSize varies by asset class; a hardcoded
+    // constant here was the TRADING_BAD_VOLUME bug (see lib/lot-sizing.js).
+    const volumeMeta = async () => {
+      const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+      const symbolId = symbolMap[(pos.symbol || '').toUpperCase()]
+      if (!symbolId) throw new Error(`symbolId unknown for ${pos.symbol}`)
+      const { getVolumeMeta } = await import('./lib/lot-sizing.js')
+      return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
+    }
+
     if (action === 'FULL_EXIT') {
-      const volumeUnits = Math.round((ctx.volumeLots || 0) * CTRADER_UNITS_PER_LOT)
+      const meta = await volumeMeta()
+      const volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
       if (volumeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
       const res = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
         positionId: ctx.positionId,
@@ -348,10 +384,17 @@ async function executeBrokerAction(db, s, pos, eval_) {
     }
 
     if (action === 'PARTIAL_EXIT') {
-      const totalUnits = Math.round((ctx.volumeLots || 0) * CTRADER_UNITS_PER_LOT)
+      const meta = await volumeMeta()
+      const totalUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
       const fraction = eval_.exitFraction ?? 0.5
-      const closeUnits = Math.round(totalUnits * fraction)
+      let closeUnits = Math.round(totalUnits * fraction)
+      if (meta.stepVolume) closeUnits = Math.floor(closeUnits / meta.stepVolume) * meta.stepVolume
       if (totalUnits <= 0 || closeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
+      // A partial that the broker would reject (below min lot) is skipped —
+      // the runner keeps its full size rather than erroring every tick.
+      if (meta.minVolume != null && closeUnits < meta.minVolume) {
+        return { skipped: true, reason: 'partial_below_min_volume' }
+      }
 
       const closeRes = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
         positionId: ctx.positionId,
@@ -368,7 +411,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
       // runner size. cTrader returns the remaining position but we track
       // lots not cTrader units on our side.
       const remainingUnits = totalUnits - closeUnits
-      const remainingLots = remainingUnits / CTRADER_UNITS_PER_LOT
+      const remainingLots = remainingUnits / meta.lotSize
       if (pos.trade_id) s.reduceTradeVolume.run(remainingLots, pos.trade_id)
 
       // Move SL for the runner leg (skip if newSL is null / same as current).
