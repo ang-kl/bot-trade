@@ -252,6 +252,7 @@ export default function Tune() {
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
   const [tfMenu, setTfMenu] = useState(false)
+  const [scanInfo, setScanInfo] = useState(null)   // latest scan per symbol, for the watchlist table
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
   const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
@@ -302,6 +303,16 @@ export default function Tune() {
       .then(r => setAllSymbols(Object.keys(r?.map || {}).sort()))
       .catch(() => {})
   }, [])
+
+  // Latest scan snapshot — powers the watchlist market table.
+  useEffect(() => {
+    if (tab !== 'watchlist' || !agentConfigured()) return
+    agentGet('/state/scans').then(r => {
+      const by = {}
+      for (const s of r?.lastResults?.scans || []) by[s.symbol] = s
+      setScanInfo({ at: r?.lastScanAt || null, by })
+    }).catch(() => {})
+  }, [tab])
 
   // Top matches for the typed prefix (name contains, prefix first)
   const q = newSymbol.trim().toUpperCase()
@@ -540,33 +551,64 @@ export default function Tune() {
               <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
             )}
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
-            <div className="space-y-1.5">
-              {symbols.map((s, i) => (
-                <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-1.5 first:border-t-0 first:pt-0 text-[13px]">
-                  <span className="font-semibold w-20">{s.symbol}</span>
-                  <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
-                  <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
-                    max lots
-                    <Input
-                      type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
-                      placeholder="0.01"
-                      onChange={e => {
-                        const next = [...symbols]
-                        next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
-                        setConfig(c => ({ ...c, symbols: next }))
-                      }}
-                      onBlur={() => pushSymbols(symbols)}
-                    />
-                  </label>
-                  <span className="ml-auto flex gap-1.5">
-                    <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
-                      {s.enabled !== false ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
-                  </span>
-                </div>
-              ))}
-            </div>
+            {symbols.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[13px]">
+                  <thead className="text-left text-[var(--color-text-sub)]">
+                    <tr>
+                      <th className="pr-3 py-1">Symbol</th>
+                      <th className="pr-3">Status</th>
+                      <th className="pr-3">Last price</th>
+                      <th className="pr-3">Latest signal</th>
+                      <th className="pr-3">Max lots</th>
+                      <th className="text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {symbols.map((s, i) => {
+                      const scan = scanInfo?.by?.[s.symbol]
+                      return (
+                        <tr key={s.symbol} className="border-t border-[var(--color-border)]">
+                          <td className="pr-3 py-1.5 font-semibold">{s.symbol}</td>
+                          <td className="pr-3"><Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge></td>
+                          <td className="pr-3 tabular-nums">{scan?.price != null ? Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 }) : '—'}</td>
+                          <td className="pr-3">
+                            {scan?.bias && scan.bias !== 'skip'
+                              ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
+                                  {scan.bias.toUpperCase()} {scan.timeframe || ''}{scan.confidence != null ? ` · ${scan.confidence}/10` : ''}
+                                </span>
+                              : <span className="text-[var(--color-text-sub)]">no setup</span>}
+                          </td>
+                          <td className="pr-3">
+                            <Input
+                              type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
+                              placeholder="0.01" aria-label={`${s.symbol} max lots`}
+                              onChange={e => {
+                                const next = [...symbols]
+                                next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
+                                setConfig(c => ({ ...c, symbols: next }))
+                              }}
+                              onBlur={() => pushSymbols(symbols)}
+                            />
+                          </td>
+                          <td className="py-1">
+                            <span className="flex gap-1.5 justify-end">
+                              <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                                {s.enabled !== false ? 'Disable' : 'Enable'}
+                              </Button>
+                              <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                            </span>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
+                  Price and signal come from the bot's latest scan{scanInfo?.at ? ` (${new Date(scanInfo.at).toLocaleString()})` : ''} — turn Scan on (Pipeline) to keep them fresh.
+                </p>
+              </div>
+            )}
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
             </p>
@@ -687,16 +729,20 @@ export default function Tune() {
                 {goTfs.length > 0 && !config?.autotrade_enabled && (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button onClick={async () => {
-                      if (!window.confirm(`Activate quant trading on ${goTfs.join(' + ')}? The bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
+                      if (!window.confirm(`Arm the bot on ${goTfs.join(' + ')}? This turns ON Scan, Analyze and Autotrade in one go — the bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. Turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
                       try {
+                        // One tap arms the WHOLE pipeline — an armed-but-blind
+                        // bot (autotrade on, scan off) was a real support case.
                         await agentPost('/actions/autotrade-timeframes', { timeframes: goTfs })
+                        if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
+                        if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
                         await agentPost('/actions/autotrade-toggle', { on: true })
                         setTimeframes(goTfs)
                         await load()
-                        flash(`Quant trading ACTIVE on ${goTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
+                        flash(`Bot fully ARMED on ${goTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
                       } catch (err) { setError(err.message) }
-                    }}>Activate quant trading on {goTfs.join(' + ')}</Button>
-                    <span className="text-[12px] text-[var(--color-text-sub)]">arms autotrade on the GO timeframes only</span>
+                    }}>Arm the bot on {goTfs.join(' + ')} (everything in one tap)</Button>
+                    <span className="text-[12px] text-[var(--color-text-sub)]">turns on Scan + Analyze + Autotrade and arms the GO timeframes</span>
                   </div>
                 )}
               </div>
