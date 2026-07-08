@@ -74,7 +74,11 @@ export function runBacktest(bars, opts) {
 
     if (next.t < cooldownUntil) continue
 
-    const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, { rsiFilter: opts.rsiFilter || null })
+    const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, {
+      rsiFilter: opts.rsiFilter || null,
+      vwapFilter: opts.vwapFilter || null,
+      fvgFilter: opts.fvgFilter || null,
+    })
     if (!signal || signal.rr < MIN_RR) continue
     // Fidelity with live autotrade: only take entries the bot would actually
     // fire on (conviction >= 8 by default, same bar as synthesizeFibSignal).

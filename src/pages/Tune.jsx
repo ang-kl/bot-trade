@@ -254,6 +254,8 @@ export default function Tune() {
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
   const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
+  const [vwapFilter, setVwapFilter] = useState(false)
+  const [fvgFilter, setFvgFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
@@ -286,17 +288,21 @@ export default function Tune() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [c, r, tf, rf] = await Promise.all([
+      const [c, r, tf, rf, vf, ff] = await Promise.all([
         agentGet('/state/config'),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/fib-rsi-filter').catch(() => null),
+        agentGet('/state/fib-vwap-filter').catch(() => null),
+        agentGet('/state/fib-fvg-filter').catch(() => null),
       ])
       setConfig(c)
       setRisk(r)
       setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
       if (tf?.timeframes) setTimeframes(tf.timeframes)
       if (rf) setRsiFilter(!!rf.on)
+      if (vf) setVwapFilter(!!vf.on)
+      if (ff) setFvgFilter(!!ff.on)
       setBalanceDraft({
         balance: r.derived?.balance ?? '',
         leverage: r.derived?.leverage ?? '',
@@ -404,6 +410,8 @@ export default function Tune() {
         timeframes,
         bars: 1000,
         rsiFilter,
+        vwapFilter,
+        fvgFilter,
       })
       setBt(r)
       try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(r)) } catch { /* quota — skip */ }
@@ -461,9 +469,19 @@ export default function Tune() {
                 setRsiFilter(next)
                 run(() => agentPost('/actions/fib-rsi-filter', { on: next }), `RSI confluence filter ${next ? 'enabled' : 'disabled'}`)
               }} />
+              <Toggle on={vwapFilter} label="VWAP filter" onClick={() => {
+                const next = !vwapFilter
+                setVwapFilter(next)
+                run(() => agentPost('/actions/fib-vwap-filter', { on: next }), `VWAP confluence filter ${next ? 'enabled' : 'disabled'}`)
+              }} />
+              <Toggle on={fvgFilter} label="FVG filter" onClick={() => {
+                const next = !fvgFilter
+                setFvgFilter(next)
+                run(() => agentPost('/actions/fib-fvg-filter', { on: next }), `FVG confluence filter ${next ? 'enabled' : 'disabled'}`)
+              }} />
             </div>
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
-              RSI filter: only take long fades when RSI(14) ≤ 45 and shorts when ≥ 55. Backtest it first on the Backtest tab.
+              Confluence filters (each A/B-testable on the Backtest tab — turn one on only after it proves itself there): RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
             <div className="mt-3">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
@@ -868,6 +886,8 @@ export default function Tune() {
                   riskConfig: risk?.effective || {},
                   autotradeTimeframes: timeframes,
                   rsiFilter,
+                  vwapFilter,
+                  fvgFilter,
                   symbols,
                 }
                 const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' })
@@ -888,6 +908,8 @@ export default function Tune() {
                     if (preset.riskConfig) await agentPost('/actions/risk-config', preset.riskConfig)
                     if (Array.isArray(preset.autotradeTimeframes) && preset.autotradeTimeframes.length > 0) await agentPost('/actions/autotrade-timeframes', { timeframes: preset.autotradeTimeframes })
                     if (typeof preset.rsiFilter === 'boolean') await agentPost('/actions/fib-rsi-filter', { on: preset.rsiFilter })
+                    if (typeof preset.vwapFilter === 'boolean') await agentPost('/actions/fib-vwap-filter', { on: preset.vwapFilter })
+                    if (typeof preset.fvgFilter === 'boolean') await agentPost('/actions/fib-fvg-filter', { on: preset.fvgFilter })
                     if (Array.isArray(preset.symbols) && preset.symbols.length > 0) await agentPost('/actions/symbols', { symbols: preset.symbols })
                     await load()
                     flash('Preset imported')
