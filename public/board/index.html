@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>Development Board</title>
+<style>
+  /* ── Light (default): warm off-white, near-black ink, dark-cobalt + dark-amber
+       accents so text hits WCAG AA on the page. Tuned for low vision + dyslexia:
+       big type, high contrast, roomy spacing, no red/green. ── */
+  :root{
+    --ground:#f4efe6; --panel:#fffdf8; --panel2:#efe8db; --line:#d8cebd;
+    --ink:#191f29; --dim:#3f4a5c; --faint:#5b6678;
+    --cobalt:#0b57d0; --cobalt-soft:rgba(11,87,208,.10); --cobalt-line:rgba(11,87,208,.38);
+    --amber:#8a4f00; --amber-soft:rgba(176,106,0,.14); --amber-line:rgba(176,106,0,.45);
+    --shadow:0 1px 3px rgba(25,31,41,.08),0 6px 20px rgba(25,31,41,.06);
+    --sans:Verdana,"Segoe UI",Tahoma,system-ui,-apple-system,sans-serif;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  html[data-theme="dark"]{
+    --ground:#0e151f; --panel:#16202f; --panel2:#111a27; --line:#2b3a4f;
+    --ink:#f0f5fb; --dim:#c3d1e6; --faint:#8ea0bb;
+    --cobalt:#6aa4ff; --cobalt-soft:rgba(106,164,255,.16); --cobalt-line:rgba(106,164,255,.45);
+    --amber:#f6c374; --amber-soft:rgba(246,195,116,.16); --amber-line:rgba(246,195,116,.5);
+    --shadow:0 2px 14px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  /* Font doctrine: large type for low-vision + dyslexia + progressive lens.
+     Base 19px phone → 21px tablet/desktop; everything scales up from here. */
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:19px;line-height:1.55;letter-spacing:.006em;-webkit-font-smoothing:antialiased}
+  @media (min-width:768px){body{font-size:21px}}
+  .wrap{max-width:2024px;margin:0 auto;padding:14px clamp(16px,4vw,56px) 56px}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* header */
+  .top{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:flex-start;justify-content:space-between}
+  .eyebrow{font-size:14px;letter-spacing:.04em;color:var(--dim);font-weight:700}
+  h1{font-size:30px;margin:.08em 0 .08em;letter-spacing:-.01em;line-height:1.18}
+  @media (min-width:768px){h1{font-size:40px}}
+  .subtitle{color:var(--dim);max-width:60ch;font-size:18px}
+  /* subtitle just re-lists the tabs — hide it on phones to reclaim ~70px of header */
+  @media (max-width:640px){.subtitle{display:none}}
+  .hdr-right{display:flex;align-items:center;gap:14px}
+  .clock b{font-size:20px;color:var(--cobalt);font-family:var(--mono);display:block}
+  .clock span{font-size:12px;color:var(--faint);font-weight:700}
+  .themebtn{appearance:none;cursor:pointer;font-family:var(--sans);font-size:14px;font-weight:700;
+    color:var(--ink);background:var(--panel);border:2px solid var(--line);border-radius:22px;
+    padding:9px 14px;min-height:44px;display:inline-flex;align-items:center;gap:8px}
+  .themebtn:hover{border-color:var(--cobalt-line)}
+  .themebtn:focus-visible{outline:3px solid var(--cobalt);outline-offset:2px}
+
+  /* tabs — big, scrollable on phone */
+  .tabs{display:flex;gap:6px;margin:22px 0 6px;border-bottom:2px solid var(--line);
+    overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-family:var(--sans);
+    font-size:18px;font-weight:700;padding:12px 16px;min-height:48px;border-bottom:3px solid transparent;
+    margin-bottom:-2px;white-space:nowrap;display:flex;gap:8px;align-items:center}
+  .tab small{font-size:12px;letter-spacing:.06em;color:var(--faint);font-weight:700}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected=true]{color:var(--cobalt);border-bottom-color:var(--cobalt)}
+  .tab[aria-selected=true] small{color:var(--cobalt)}
+  .tab:focus-visible{outline:3px solid var(--cobalt);outline-offset:-3px;border-radius:6px}
+
+  section[data-tab]{display:none;padding-top:14px}
+  section[data-tab].on{display:block}
+  h2{font-size:23px;color:var(--ink);margin:20px 0 11px;padding-bottom:8px;border-bottom:2px solid var(--line);font-weight:700}
+  h2:first-child{margin-top:2px}
+  .lens{color:var(--dim);max-width:62ch;margin:0 0 10px;font-size:18px}
+
+  /* stat chips */
+  .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:8px}
+  .stat{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:31px;font-family:var(--mono);line-height:1.1}
+  .stat span{font-size:15px;color:var(--faint);font-weight:700;margin-top:2px;display:block}
+  .stat.good b{color:var(--cobalt)} .stat.warn b{color:var(--amber)}
+
+  /* lanes — CARDS, not a table (reflow-free on phone) */
+  .lanes{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .lanecard{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;
+    box-shadow:var(--shadow);display:flex;flex-direction:column;gap:9px}
+  .lc-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+  .lc-name{font-size:19px;font-weight:700;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+  .lc-sub{color:var(--dim);font-size:17px;margin-top:-4px}
+  .lc-meta{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:14px}
+  .lc-meta .k{color:var(--faint);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .agent-tag{font-family:var(--mono);font-size:13px;color:var(--cobalt);background:var(--cobalt-soft);border:1.5px solid var(--cobalt-line);border-radius:6px;padding:1px 7px}
+  .model{font-family:var(--mono);font-size:14px}
+  .stages{display:flex;align-items:center}
+  .dot{width:12px;height:12px;border-radius:50%;border:2px solid var(--faint);background:transparent}
+  .dot.done{background:var(--cobalt);border-color:var(--cobalt)}
+  .dot.here{background:var(--amber);border-color:var(--amber);box-shadow:0 0 0 4px var(--amber-soft)}
+  .bar{width:14px;height:2px;background:var(--line)}.bar.done{background:var(--cobalt)}
+  .ver{font-family:var(--mono);font-size:14px;color:var(--dim)}.ver.live{color:var(--cobalt);font-weight:700}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:800;letter-spacing:.03em;
+    padding:5px 11px 5px 9px;border-radius:22px;white-space:nowrap}
+  .pill i{width:10px;height:10px;border-radius:50%;flex:none}
+  .p-build{color:var(--amber);background:var(--amber-soft);border:2px solid var(--amber-line)}.p-build i{background:var(--amber);animation:pulse 1.4s ease-in-out infinite}
+  .p-live{color:var(--cobalt);background:var(--cobalt-soft);border:2px solid var(--cobalt-line)}.p-live i{background:var(--cobalt)}
+  .p-queue{color:var(--dim);border:2px solid var(--line)}.p-queue i{border:2px solid var(--faint)}
+  .p-block{color:var(--amber);border:2px dashed var(--amber-line)}.p-block i{border:2px dashed var(--amber)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @media (prefers-reduced-motion:reduce){.p-build i{animation:none}}
+  .legend{display:flex;flex-wrap:wrap;gap:12px 16px;margin-top:14px;font-size:14px;color:var(--dim);align-items:center}
+
+  /* PR tree */
+  .tree{border-left:3px solid var(--line);margin-left:4px}
+  .branch{margin:0 0 8px}
+  .branch>summary{cursor:pointer;list-style:none;padding:12px 14px;margin-left:-3px;border-left:3px solid var(--cobalt);
+    display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;min-height:44px;border-radius:0 10px 10px 0}
+  .branch>summary::-webkit-details-marker{display:none}
+  .branch>summary:hover{background:var(--cobalt-soft)}
+  .branch>summary:focus-visible{outline:3px solid var(--cobalt);outline-offset:-3px}
+  .branch>summary b{font-size:19px}
+  .branch>summary .count{font-family:var(--mono);font-size:13px;color:var(--cobalt);background:var(--cobalt-soft);border:1.5px solid var(--cobalt-line);border-radius:22px;padding:1px 10px;margin-left:auto}
+  .branch>summary em{color:var(--dim);font-style:normal;font-size:15px;flex-basis:100%}
+  .subb{margin:2px 0 10px 18px;padding-left:14px;border-left:2px solid var(--line)}
+  .subb h4{margin:10px 0 5px;font-size:13px;letter-spacing:.03em;color:var(--faint);font-weight:700}
+  .pr{display:flex;gap:10px;align-items:baseline;padding:6px 0;font-size:17px;flex-wrap:wrap}
+  .pr a.n{font-family:var(--mono);font-size:13px;color:var(--cobalt);min-width:46px;font-weight:700;text-decoration:none;border-bottom:1.5px solid var(--cobalt-line)}
+  .pr a.n:hover{background:var(--cobalt-soft)}
+  .pr a.n:focus-visible{outline:3px solid var(--cobalt);outline-offset:2px}
+  .pr .who{font-family:var(--mono);font-size:12px;color:var(--amber);border:1.5px solid var(--amber-line);border-radius:5px;padding:0 6px}
+  .pr .v{font-family:var(--mono);font-size:13px;color:var(--faint);white-space:nowrap}
+  .pr .sp{margin-left:auto}
+  /* fulfilment score badge — number carries it; ring is decorative */
+  .score{font-family:var(--mono);font-size:12px;font-weight:800;border-radius:20px;padding:1px 9px;white-space:nowrap;border:2px solid}
+  .sc-hi{color:var(--cobalt);background:var(--cobalt-soft);border-color:var(--cobalt-line)}
+  .sc-mid{color:var(--dim);background:transparent;border-color:var(--line)}
+  .sc-low{color:var(--amber);background:var(--amber-soft);border-color:var(--amber-line)}
+  .branch>summary .score{margin-left:8px}
+  /* docs */
+  .doclist{display:flex;flex-direction:column}
+  .docrow{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-bottom:1.5px dashed var(--line);flex-wrap:wrap}
+  .docrow:last-child{border-bottom:none}
+  .docrow .dn{font-weight:700;font-size:17px}
+  .docrow a.dn{color:var(--cobalt);text-decoration:none;border-bottom:1.5px solid var(--cobalt-line)}
+  .docrow .dnote{color:var(--dim);font-size:16px}
+  .docrow .dmeta{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--faint)}
+
+  /* activity feed */
+  .feed{display:flex;flex-direction:column}
+  .ev{display:flex;flex-direction:column;gap:2px;padding:12px 0;border-bottom:1.5px solid var(--line)}
+  .ev:last-child{border-bottom:none}
+  .ev time{font-family:var(--mono);font-size:13px;color:var(--cobalt);font-weight:700}
+  .ev b{font-weight:700;font-size:18px}.ev p{margin:2px 0 0;color:var(--dim);font-size:17px}
+  .ev time{font-size:14px}
+
+  /* dimensions matrix — scrolls on phone, sticky first column */
+  .matrix{border-collapse:collapse;min-width:640px}
+  .matrix th,.matrix td{padding:12px 10px;border-bottom:1.5px solid var(--line)}
+  .matrix thead th{font-size:13px;color:var(--faint);text-align:center;font-weight:700}
+  .matrix thead th:first-child,.matrix td.surf{text-align:left}
+  .matrix td.surf{font-weight:700;white-space:nowrap;position:sticky;left:0;background:var(--panel);font-size:17px}
+  .cell{text-align:center;font-family:var(--mono);font-size:22px}
+  .c-full{color:var(--cobalt)}.c-part{color:var(--amber)}.c-none{color:var(--faint)}.c-na{color:var(--line)}
+
+  /* governance + crew grids */
+  .gcols,.grid{display:grid;grid-template-columns:1fr;gap:12px}
+  @media (min-width:760px){.gcols,.grid{grid-template-columns:1fr 1fr}}
+  @media (min-width:1080px){.grid{grid-template-columns:1fr 1fr 1fr}}
+  @media (min-width:1500px){.grid{grid-template-columns:repeat(4,1fr)}}
+  .board{border:2px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:var(--shadow)}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding:6px}
+  .gcard{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:16px 18px;box-shadow:var(--shadow)}
+  .gcard h3{margin:0 0 10px;font-size:19px}
+  .grow{display:flex;gap:10px;align-items:baseline;padding:7px 0;font-size:17px;border-bottom:1.5px dashed var(--line);flex-wrap:wrap}
+  .grow:last-child{border-bottom:none}
+  .grow .mk{font-family:var(--mono);font-size:15px;font-weight:700}.ok{color:var(--cobalt)}.risk{color:var(--amber)}
+  .grow .r{margin-left:auto;color:var(--dim);font-size:13px}
+
+  .card{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;display:flex;flex-direction:column;gap:9px;box-shadow:var(--shadow)}
+  /* tap-to-expand cards — collapsed on phone, opened on tablet+ (JS sets default). */
+  details.card>summary,details.mode>summary{cursor:pointer;list-style:none;min-height:44px}
+  details.card>summary::-webkit-details-marker,details.mode>summary::-webkit-details-marker{display:none}
+  summary.card-h{justify-content:flex-start}
+  details.card>summary::after,details.mode>summary::after{content:"▸ more";font-family:var(--mono);font-size:14px;color:var(--cobalt);margin-left:auto;align-self:center;white-space:nowrap}
+  details[open].card>summary::after,details[open].mode>summary::after{content:"▾ less"}
+  details.card>summary:focus-visible,details.mode>summary:focus-visible{outline:3px solid var(--cobalt);outline-offset:4px;border-radius:8px}
+  details.mode>summary{display:flex;align-items:center;gap:11px}
+  .card-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .card-h h3{margin:0;font-size:20px;display:flex;gap:9px;align-items:baseline;flex-wrap:wrap}
+  .card-h .model{color:var(--cobalt);white-space:nowrap}
+  .alias{font-family:var(--mono);font-size:13px;color:var(--amber);background:var(--amber-soft);border:1.5px solid var(--amber-line);border-radius:6px;padding:2px 8px}
+  .role{color:var(--ink);font-size:18px;font-weight:700;margin:-2px 0 0}
+  .job{color:var(--dim);font-size:17px;margin:0}
+  .recipe{list-style:none;margin:0;padding:0;counter-reset:step;display:flex;flex-direction:column;gap:8px}
+  .recipe li{position:relative;padding-left:32px;font-size:17px}
+  .recipe li::before{counter-increment:step;content:counter(step);position:absolute;left:0;top:1px;width:22px;height:22px;border-radius:7px;background:var(--cobalt-soft);border:1.5px solid var(--cobalt-line);color:var(--cobalt);font-family:var(--mono);font-size:12px;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .guard{font-size:14px;color:var(--ink);background:var(--amber-soft);border-left:4px solid var(--amber);padding:9px 12px;border-radius:0 8px 8px 0}
+  .guard b{color:var(--ink)}
+  .from{font-size:13px;color:var(--faint);border-top:1.5px dashed var(--line);padding-top:9px}
+  .from b{color:var(--dim);font-size:12px;letter-spacing:.03em}
+
+  /* agent type badge — sits under the alias on crew cards + on lanes */
+  .atype{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--dim);background:var(--panel2);
+    border:1.5px solid var(--line);border-radius:6px;padding:1px 8px;white-space:nowrap}
+  .lc-name .atype{font-weight:700}
+
+  /* advisory modality cards */
+  .mode{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;gap:8px}
+  .mode-h{display:flex;align-items:center;gap:11px}
+  .mode-h .ico{font-size:26px;line-height:1;flex:none}
+  .mode-h b{font-size:20px}
+  .mode .bestfor{font-size:14px;color:var(--faint);font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+  .mode .how{font-size:17px;color:var(--ink)}
+  .mode .eg{font-size:16px;color:var(--dim);border-left:3px solid var(--cobalt-line);padding:4px 0 4px 11px}
+  .mode .save{align-self:flex-start;font-size:13px;font-weight:800;color:var(--cobalt);background:var(--cobalt-soft);
+    border:1.5px solid var(--cobalt-line);border-radius:22px;padding:4px 12px}
+  .mode .save::before{content:"⏳ saves ";font-weight:700}
+
+  /* advisory — copy-ready syntax */
+  .sx{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+  .sx-do{font-size:15px;font-weight:800;color:var(--faint);text-transform:uppercase;letter-spacing:.03em}
+  .sx-say{font-family:var(--mono);font-size:16px;color:var(--cobalt);background:var(--cobalt-soft);border:1.5px solid var(--cobalt-line);border-radius:9px;padding:9px 11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;user-select:all}
+  /* advisory — visual (ASCII) examples */
+  .vz{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px}
+  .vz-h{font-size:18px;font-weight:800}
+  pre.ascii{font-family:var(--mono);font-size:14px;line-height:1.35;color:var(--ink);background:var(--panel2);border:1.5px solid var(--line);border-radius:9px;padding:11px;margin:0;overflow-x:auto;white-space:pre}
+  .vz-note{font-size:15px;color:var(--dim)}
+  /* advisory — prep checklists */
+  .pc{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:9px}
+  .pc-h{font-size:18px;font-weight:800;color:var(--cobalt)}
+  .pc-l{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+  .pc-l li{position:relative;padding-left:30px;font-size:16px}
+  .pc-l li::before{content:"▢";position:absolute;left:0;top:0;color:var(--cobalt);font-size:18px;font-weight:800}
+
+  /* interaction ledger — asked · amended · done · changed · friction · deleted.
+     Blue = progress, amber = attention; icon + WORD carry the state, never colour alone. */
+  .ledger{display:flex;flex-direction:column;gap:9px}
+  .led{display:flex;gap:12px;align-items:baseline;padding:11px 14px;border:2px solid var(--line);
+    border-radius:12px;background:var(--panel);box-shadow:var(--shadow);flex-wrap:wrap}
+  .led .tag{font-family:var(--mono);font-size:13px;font-weight:800;border-radius:20px;padding:2px 11px;
+    border:2px solid;white-space:nowrap;text-transform:uppercase;letter-spacing:.03em}
+  .led .txt{font-size:17px;flex:1;min-width:220px}
+  .led .when{font-family:var(--mono);font-size:14px;color:var(--faint);margin-left:auto}
+  .k-asked{color:var(--cobalt);background:var(--cobalt-soft);border-color:var(--cobalt-line)}
+  .k-amended{color:var(--cobalt);background:transparent;border-color:var(--cobalt-line)}
+  .k-done{color:var(--cobalt);background:var(--cobalt-soft);border-color:var(--cobalt-line)}
+  .k-changed{color:var(--amber);background:var(--amber-soft);border-color:var(--amber-line)}
+  .k-friction{color:var(--amber);background:var(--amber-soft);border-color:var(--amber-line)}
+  .k-deleted{color:var(--amber);background:transparent;border-color:var(--amber-line);border-style:dashed}
+  .ledger-tally{display:flex;flex-wrap:wrap;gap:8px 10px;margin:0 0 12px}
+  .ledger-tally .tag{font-family:var(--mono);font-size:13px;font-weight:800;border-radius:20px;padding:3px 11px;border:2px solid;text-transform:uppercase;letter-spacing:.03em}
+
+  .note{font-size:16px;color:var(--ink);background:var(--amber-soft);border:2px solid var(--amber-line);border-radius:10px;padding:11px 14px;margin:12px 0}
+  .lb{display:flex;flex-direction:column;gap:12px}
+  .lbrow{display:grid;grid-template-columns:1fr;gap:5px}
+  @media (min-width:520px){.lbrow{grid-template-columns:150px 1fr 80px;align-items:center;gap:12px}}
+  .lbrow .nm{font-weight:700;font-size:16px}.lbrow .nm small{color:var(--amber);font-family:var(--mono);font-size:12px;display:block;font-weight:700}
+  .track{height:16px;background:var(--panel2);border:1.5px solid var(--line);border-radius:22px;overflow:hidden}
+  .fill{height:100%;background:var(--cobalt);border-radius:22px}
+  .lbrow .num{font-family:var(--mono);color:var(--dim);font-size:14px}
+  @media (min-width:520px){.lbrow .num{text-align:right}}
+  .tf{border:2px solid var(--line);border-radius:14px;background:var(--panel);padding:16px 18px;display:flex;flex-direction:column;gap:10px;box-shadow:var(--shadow)}
+  .tf h3{margin:0;font-size:17px}
+  .crewrow{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{font-family:var(--mono);font-size:13px;border-radius:7px;padding:3px 9px;border:1.5px solid var(--cobalt-line);color:var(--cobalt);background:var(--cobalt-soft)}
+  .chip.lead{color:var(--amber);border-color:var(--amber-line);background:var(--amber-soft)}
+  .cmd{font-family:var(--mono);font-size:14px;color:var(--dim)}.cmd b{color:var(--cobalt)}
+  /* inline-SVG visualisations (mindmap · bayes net · kalman) — themed via classes
+     so the light/dark + colour-blind palette holds; scroll on phone. */
+  .viz{overflow-x:auto;-webkit-overflow-scrolling:touch;border:2px solid var(--line);border-radius:14px;
+    background:var(--panel);box-shadow:var(--shadow);padding:10px}
+  .viz svg{display:block;width:100%;height:auto;min-width:680px}
+  .viz text{font-family:var(--sans)}
+  .viz .mono{font-family:var(--mono)}
+  .v-root{fill:var(--cobalt)} .v-root-t{fill:#fff}
+  .v-node{fill:var(--panel);stroke:var(--cobalt-line);stroke-width:2}
+  .v-edge{fill:none;stroke:var(--cobalt)}
+  .v-ink{fill:var(--ink)} .v-cobalt{fill:var(--cobalt)} .v-dim{fill:var(--faint)} .v-amber{fill:var(--amber)}
+  .v-halo{fill:none;stroke:var(--cobalt);opacity:.2;stroke-width:2}
+  .v-band{fill:var(--cobalt-soft)} .v-line{fill:none;stroke:var(--cobalt);stroke-width:3;stroke-linejoin:round}
+  .v-meas{fill:none;stroke:var(--amber);stroke-width:2.5}
+  .v-axis{stroke:var(--line);stroke-width:1.5}
+  .foot{margin-top:34px;color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="eyebrow" id="eyebrow"></div>
+      <h1 id="title">Development Board</h1>
+      <div class="subtitle" id="subtitle"></div>
+    </div>
+    <div class="hdr-right">
+      <div class="clock"><b id="now">--:--:--</b><span id="tzlabel">now</span></div>
+      <button class="themebtn" id="theme" type="button" aria-label="Switch light or dark">◐ Theme</button>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-go="build" aria-selected="true">Build <small>CBO</small></button>
+    <button class="tab" role="tab" data-go="dev" aria-selected="false">Product <small>CDO</small></button>
+    <button class="tab" role="tab" data-go="ui" aria-selected="false">UI <small>CUIO</small></button>
+    <button class="tab" role="tab" data-go="gov" aria-selected="false">Governance <small>CGO</small></button>
+    <button class="tab" role="tab" data-go="docs" aria-selected="false">Docs <small>records</small></button>
+    <button class="tab" role="tab" data-go="crew" aria-selected="false">Crew</button>
+    <button class="tab" role="tab" data-go="advice" aria-selected="false">Advisory <small>you↔me</small></button>
+  </div>
+
+  <section data-tab="build" class="on">
+    <h2>Throughput</h2>
+    <div class="stats" id="stats"></div>
+    <h2>Lanes — what's moving</h2>
+    <div class="lanes" id="lanes"></div>
+    <div class="legend">
+      <span class="pill p-build"><i></i>Building</span><span class="pill p-live"><i></i>Live</span>
+      <span class="pill p-queue"><i></i>Queued</span><span class="pill p-block"><i></i>Blocked</span>
+    </div>
+    <div class="legend"><span>Stages: Spec · Build · Gate · PR · Merge · Live</span></div>
+    <h2>Shipped — what's done earlier</h2>
+    <p class="lens">Everything already landed, by feature area — auto-derived from the merged PRs. Newest version + fulfilment per area.</p>
+    <div class="lanes" id="doneMilestones"></div>
+    <h2>Mindmap — feature areas</h2>
+    <p class="lens">The build as a mind map: the project at the centre, each feature branch a limb sized by how many PRs it took. Auto-drawn from the tree.</p>
+    <div class="viz" id="buildMap"></div>
+  </section>
+
+  <section data-tab="dev">
+    <h2>PR tree — branches, sub-branches, PRs</h2>
+    <p class="lens">Each feature is a branch; sub-branches are work threads; the leaves are merged PRs. Tap a branch to open it.</p>
+    <div class="tree" id="tree"></div>
+    <h2>Activity log</h2>
+    <div class="feed" id="feed"></div>
+    <h2>Bayesian neural net — PRs → product</h2>
+    <p class="lens">A stylised Bayesian network: feature branches (inputs) flow through integration layers to the shipped product. Edges are weight <em>distributions</em> — thickness = mean influence (PR volume), halo = uncertainty. Illustrative, not trained.</p>
+    <div class="viz" id="productNet"></div>
+  </section>
+
+  <section data-tab="ui">
+    <h2>Change ledger — asked · amended · done · changed · deleted</h2>
+    <p class="lens">The human↔machine record: what you asked for, what got amended, shipped, changed, or deleted — friction points included. Blue = progress · amber = needs attention; the word + icon carry it, not colour.</p>
+    <div class="ledger-tally" id="ledgerTally"></div>
+    <div class="ledger" id="ledger"></div>
+    <h2>What we can do, where</h2>
+    <p class="lens">Surfaces down the side, capabilities across the top. ● shipped · ◐ partial · ○ none · — not applicable. The glyph carries the meaning, so colour is never needed to read it. Scroll sideways to see all columns.</p>
+    <div class="board"><div class="scroll"><table class="matrix" id="matrix"></table></div></div>
+    <div class="legend"><span><b class="c-full mono">●</b> shipped</span><span><b class="c-part mono">◐</b> partial</span><span><b class="c-none mono">○</b> none</span><span><b class="c-na mono">—</b> n/a</span></div>
+    <h2>Mindmap — surfaces &amp; capability</h2>
+    <p class="lens">Each surface as a limb off the UI; the number is how many capabilities it fully ships (● in the matrix above).</p>
+    <div class="viz" id="uiMap"></div>
+  </section>
+
+  <section data-tab="gov">
+    <h2>Quality &amp; risk register</h2>
+    <div class="gcols">
+      <div class="gcard"><h3>Coverage &amp; gates</h3><div id="gGates"></div></div>
+      <div class="gcard"><h3>Guardrails</h3><div id="gGuards"></div></div>
+      <div class="gcard"><h3>Accessibility</h3><div id="gA11y"></div></div>
+      <div class="gcard"><h3>Open risks</h3><div id="gRisk"></div></div>
+    </div>
+    <h2>Kalman filter — release-readiness confidence</h2>
+    <p class="lens">Each gate (tests · types · build · review · deploy · live-QA) is a noisy read of “are we ready to ship?”. The filter fuses them into a confidence estimate (line); the shaded band is uncertainty — it shrinks as gates pass. A real 1-D Kalman filter over the gate sequence.</p>
+    <div class="viz" id="govKalman"></div>
+  </section>
+
+  <section data-tab="docs">
+    <h2>Knowledge trail</h2>
+    <p class="lens">The records the build runs on — the source of truth, the rollback vault, and the vibe-journal that captures the <em>why</em>. Same discipline scales from here to a 1,500-PR repo.</p>
+    <div class="gcols">
+      <div class="gcard"><h3>📘 Documentation</h3><div class="doclist" id="dDoc"></div></div>
+      <div class="gcard"><h3>🗄️ Vault — snapshots</h3><div class="doclist" id="dVault"></div></div>
+      <div class="gcard" style="grid-column:1/-1"><h3>📓 Vibe-journal &amp; memory</h3><div class="doclist" id="dJournal"></div></div>
+    </div>
+  </section>
+
+  <section data-tab="crew">
+    <h2>Workload — PRs led</h2>
+    <div class="note" id="lbnote"></div>
+    <div class="lb" id="lb"></div>
+    <h2>Recommended taskforces</h2>
+    <p class="lens">A published board can't launch agents itself. These are the teams to spin up as a workflow on request.</p>
+    <div class="grid" id="tfs"></div>
+    <h2>The crew</h2>
+    <div class="grid" id="agents"></div>
+  </section>
+
+  <section data-tab="advice">
+    <h2>How to brief the machine</h2>
+    <p class="lens" id="advLens"></p>
+    <h2>Best way to say it</h2>
+    <p class="lens">Ranked most-effective first. Pick the input that fits the task — a picture, a paste, a doodle, a word.</p>
+    <div class="grid" id="advModes"></div>
+    <h2>Working principles</h2>
+    <div class="gcard" id="advPrinc"></div>
+    <h2>Copy-ready phrasings</h2>
+    <p class="lens">Syntax that lands first try. Steal any line — swap the &lt;bits&gt;.</p>
+    <div class="grid" id="advSyntax"></div>
+    <h2>Show, don't tell — visual examples</h2>
+    <p class="lens">A doodle or an annotated shot carries layout intent faster than words.</p>
+    <div class="grid" id="advVisual"></div>
+    <h2>Prep before a big ask</h2>
+    <p class="lens">Gather these first and I get it right the first time.</p>
+    <div class="grid" id="advPrep"></div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script src="board.data.js"></script>
+<script>
+  const B = window.BOARD || {};
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+  // theme (default light; remembers your choice)
+  const html=document.documentElement;
+  try{const saved=localStorage.getItem("board-theme"); if(saved) html.dataset.theme=saved;}catch(e){}
+  const setLbl=()=>$("theme").textContent = html.dataset.theme==="dark" ? "☀ Light" : "☾ Dark";
+  setLbl();
+  $("theme").addEventListener("click",()=>{html.dataset.theme = html.dataset.theme==="dark"?"light":"dark";
+    try{localStorage.setItem("board-theme",html.dataset.theme);}catch(e){} setLbl();});
+
+  const P = B.project || {};
+  $("eyebrow").textContent = [P.name, P.eyebrow].filter(Boolean).join(" · ");
+  if (P.name) $("title").textContent = P.name + " · Development Board";
+  $("subtitle").innerHTML = esc(P.subtitle);
+  $("tzlabel").textContent = P.tzLabel || "now";
+
+  document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.setAttribute("aria-selected", x===t));
+    document.querySelectorAll("section[data-tab]").forEach(s=>s.classList.toggle("on", s.dataset.tab===t.dataset.go));
+    window.scrollTo({top:0,behavior:"smooth"});
+  }));
+
+  const bd = B.build || {};
+  $("stats").innerHTML = (bd.stats||[]).map(s=>`<div class="stat ${s.tone||""}"><b>${esc(s.n)}</b><span>${esc(s.label)}</span></div>`).join("");
+  const S=["Spec","Build","Gate","PR","Merge","Live"];
+  const PILL={build:["p-build","Building"],live:["p-live","Live"],queue:["p-queue","Queued"],block:["p-block","Blocked"]};
+  const stages=(here,st)=>{let h="";for(let i=0;i<S.length;i++){const done=st==="live"?true:i<here;const cur=st==="build"&&i===here;if(i)h+=`<span class="bar ${(done||cur)?'done':''}"></span>`;h+=`<span class="dot ${done?'done':''} ${cur?'here':''}"></span>`;}return`<div class="stages" title="${S[Math.min(here,5)]}">${h}</div>`;};
+  $("lanes").innerHTML=(bd.lanes||[]).map(x=>{const[c,l]=PILL[x.status]||PILL.queue;return`<div class="lanecard">
+    <div class="lc-top"><span class="lc-name">${esc(x.name)}${x.agent?` <span class="agent-tag">${esc(x.agent)}</span>`:""}</span><span class="pill ${c}"><i></i>${l}</span></div>
+    <div class="lc-sub">${esc(x.sub)}</div>
+    <div class="lc-meta">
+      ${x.type?`<span><span class="k">Type</span> <span class="atype">${esc(x.type)}</span></span>`:""}
+      <span><span class="k">Model</span> <span class="model">${esc(x.model)||"—"}</span></span>
+      ${stages(x.stage||0,x.status)}
+      <span><span class="k">Ver</span> <span class="${x.status==='live'?'ver live':'ver'}">${esc(x.ver)}</span></span>
+    </div></div>`;}).join("");
+
+  const repo=(P.repo||"").replace(/^\/|\/$/g,"");
+  const prLink=num=>{const raw=String(num).replace(/^#/,"");return repo?`https://github.com/${repo}/pull/${raw}`:null;};
+  const scoreClass=v=>v>=93?"sc-hi":v>=85?"sc-mid":"sc-low";
+  const allPRs=[]; (B.tree||[]).forEach(br=>(br.subs||[]).forEach(s=>(s.prs||[]).forEach(p=>{if(typeof p[4]==="number")allPRs.push(p[4]);})));
+  $("tree").innerHTML=(B.tree||[]).map((br,i)=>{
+    const prs=(br.subs||[]).flatMap(s=>s.prs||[]);
+    const n=prs.length;
+    const sc=prs.filter(p=>typeof p[4]==="number").map(p=>p[4]);
+    const bScore=sc.length?Math.round(sc.reduce((a,b)=>a+b,0)/sc.length):null;
+    const bBadge=bScore!=null?`<span class="score ${scoreClass(bScore)}" title="branch fulfilment (avg of PR scores)">◇ ${bScore}</span>`:"";
+    return`<details class="branch" ${i<1?"open":""}><summary><b>${esc(br.b)}</b><span class="count">${n} PR${n>1?"s":""}</span>${bBadge}<em>${esc(br.e)}</em></summary>
+      ${(br.subs||[]).map(s=>`<div class="subb"><h4>${esc(s.h)}</h4>${(s.prs||[]).map(p=>{
+        const link=prLink(p[0]);
+        const num=link?`<a class="n" href="${link}" target="_blank" rel="noopener">${esc(p[0])}</a>`:`<span class="n">${esc(p[0])}</span>`;
+        const sb=typeof p[4]==="number"?`<span class="score ${scoreClass(p[4])}" title="PR fulfilment score">${p[4]}</span>`:"";
+        return`<div class="pr">${num}<span>${esc(p[1])}</span><span class="who">${esc(p[3])}</span><span class="sp"></span>${sb}<span class="v">${esc(p[2])}</span></div>`;}).join("")}</div>`).join("")}
+    </details>`;}).join("");
+  $("feed").innerHTML=(B.feed||[]).map(e=>`<div class="ev"><time>${esc(e[0])}</time><b>${esc(e[1])}</b><p>${esc(e[2])}</p></div>`).join("");
+
+  const dm=B.dimensions||{caps:[],rows:[]};
+  const GL={"●":"c-full","◐":"c-part","○":"c-none","—":"c-na"};
+  $("matrix").innerHTML=`<thead><tr><th>Surface</th>${dm.caps.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${dm.rows.map(r=>`<tr><td class="surf">${esc(r[0])}</td>${r[1].map(g=>`<td class="cell ${GL[g]||''}">${esc(g)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+
+  const gv=B.governance||{};
+  const grows=a=>(a||[]).map(r=>`<div class="grow"><span class="mk ${r[1]}">${esc(r[0])}</span><span>${esc(r[2])}</span><span class="r">${esc(r[3])}</span></div>`).join("");
+  $("gGates").innerHTML=grows(gv.gates); $("gGuards").innerHTML=grows(gv.guards);
+  $("gA11y").innerHTML=grows(gv.a11y);  $("gRisk").innerHTML=grows(gv.risks);
+
+  // DOCS
+  const dc=B.docs||{};
+  const docrows=a=>(a||[]).map(d=>{const nm=d.url?`<a class="dn" href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.name)}</a>`:`<span class="dn">${esc(d.name)}</span>`;
+    return`<div class="docrow">${nm}<span class="dnote">${esc(d.note)}</span>${d.meta?`<span class="dmeta">${esc(d.meta)}</span>`:""}</div>`;}).join("");
+  $("dDoc").innerHTML=docrows(dc.documentation); $("dVault").innerHTML=docrows(dc.vault); $("dJournal").innerHTML=docrows(dc.journal);
+
+  $("lbnote").textContent = B.leaderboardNote || "Role-attribution, not telemetry: how many PRs each role primarily drove.";
+  const lb=B.leaderboard||[]; const max=Math.max(1,...lb.map(r=>r[2]||0));
+  $("lb").innerHTML=lb.map(r=>`<div class="lbrow"><div class="nm">${esc(r[1])}<small>${esc(r[0])}</small></div>
+    <div class="track"><div class="fill" style="width:${Math.max(4,(r[2]||0)/max*100)}%"></div></div>
+    <div class="num">${r[2]||esc(r[3])}</div></div>`).join("");
+  $("tfs").innerHTML=(B.taskforces||[]).map(t=>`<div class="tf"><h3>${esc(t.n)}</h3>
+    <div class="crewrow">${(t.crew||[]).map(c=>`<span class="chip ${c[1]?'lead':''}">${esc(c[0])}${c[1]?' · lead':''}</span>`).join("")}</div>
+    <div class="job">${esc(t.desc)}</div><div class="cmd">${t.cmd||""}</div></div>`).join("");
+  $("agents").innerHTML=(B.crew||[]).map(a=>`<details class="card"><summary class="card-h"><h3>${esc(a.n)} <span class="alias">${esc(a.alias)}</span></h3>${a.type?`<span class="atype">${esc(a.type)}</span>`:""}<span class="model mono">${esc(a.m)}</span></summary>
+    <div class="role">${esc(a.role)}</div><div class="job">${esc(a.job)}</div>
+    <ol class="recipe">${(a.recipe||[]).map(s=>`<li>${esc(s)}</li>`).join("")}</ol>
+    <div class="guard">${a.guard||""}</div><div class="from"><b>BORN FROM</b> &nbsp;${esc(a.from)}</div></details>`).join("");
+
+  // ADVISORY — how to brief the machine (input modalities + working principles)
+  const ad=B.advisory||{};
+  $("advLens").textContent = ad.lens || "";
+  $("advModes").innerHTML=(ad.modalities||[]).map(m=>`<details class="mode"><summary class="mode-h"><span class="ico">${esc(m.icon)}</span><b>${esc(m.mode)}</b></summary>
+    <div class="bestfor">Best for — ${esc(m.best)}</div>
+    <div class="how">${esc(m.how)}</div>
+    ${m.example?`<div class="eg">${esc(m.example)}</div>`:""}
+    ${m.save?`<span class="save">${esc(m.save)}</span>`:""}
+  </details>`).join("");
+  $("advPrinc").innerHTML=grows(ad.principles);
+  $("advSyntax").innerHTML=(ad.syntax||[]).map(s=>`<div class="sx"><div class="sx-do">${esc(s.do)}</div><code class="sx-say">${esc(s.say)}</code></div>`).join("");
+  $("advVisual").innerHTML=(ad.visual||[]).map(v=>`<div class="vz"><div class="vz-h">${esc(v.label)}</div><pre class="ascii">${esc(v.ascii)}</pre><div class="vz-note">${esc(v.note)}</div></div>`).join("");
+  $("advPrep").innerHTML=(ad.prep||[]).map(p=>`<div class="pc"><div class="pc-h">${esc(p.for)}</div><ul class="pc-l">${(p.items||[]).map(i=>`<li>${esc(i)}</li>`).join("")}</ul></div>`).join("");
+
+  // BUILD — shipped milestones (auto-derived from the PR tree = "what's done earlier")
+  $("doneMilestones").innerHTML=(B.tree||[]).map(br=>{
+    const prs=(br.subs||[]).flatMap(s=>s.prs||[]);
+    const n=prs.length;
+    const vers=prs.map(p=>p[2]).filter(Boolean);
+    const latest=vers.length?vers[vers.length-1]:"—";
+    const sc=prs.filter(p=>typeof p[4]==="number").map(p=>p[4]);
+    const avg=sc.length?Math.round(sc.reduce((a,b)=>a+b,0)/sc.length):null;
+    return`<div class="lanecard"><div class="lc-top"><span class="lc-name">${esc(br.b)}</span><span class="pill p-live"><i></i>Shipped</span></div>
+      <div class="lc-sub">${esc(br.e)}</div>
+      <div class="lc-meta">
+        <span><span class="k">PRs</span> <span class="model">${n}</span></span>
+        <span><span class="k">Latest</span> <span class="ver live">${esc(latest)}</span></span>
+        ${avg!=null?`<span><span class="k">Fulfilment</span> <span class="score ${scoreClass(avg)}">${avg}</span></span>`:""}
+      </div></div>`;}).join("");
+
+  // UI — interaction ledger (asked · amended · done · changed · friction · deleted)
+  const KIND={asked:["📝","Asked","k-asked"],amended:["✏️","Amended","k-amended"],done:["✅","Done","k-done"],
+    changed:["🔀","Changed","k-changed"],friction:["⚠️","Friction","k-friction"],deleted:["🗑️","Deleted","k-deleted"]};
+  const led=B.ledger||[];
+  $("ledger").innerHTML=led.map(e=>{const[ic,lb,cls]=KIND[e.kind]||KIND.done;
+    return`<div class="led"><span class="tag ${cls}">${ic} ${lb}</span><span class="txt">${esc(e.text)}</span>${e.when?`<span class="when">${esc(e.when)}</span>`:""}</div>`;}).join("");
+  const kOrder=["asked","amended","done","changed","friction","deleted"];
+  const kc={}; led.forEach(e=>kc[e.kind]=(kc[e.kind]||0)+1);
+  $("ledgerTally").innerHTML=kOrder.filter(k=>kc[k]).map(k=>{const[ic,lb,cls]=KIND[k];return`<span class="tag ${cls}">${ic} ${lb} ${kc[k]}</span>`;}).join("");
+
+  // Crew + Advisory cards: collapsed on phone (whole list fits), open on tablet+.
+  // User can still toggle any card; a breakpoint change resets to the sensible default.
+  const wide=window.matchMedia("(min-width:768px)");
+  const setCards=()=>document.querySelectorAll("details.card,details.mode").forEach(d=>{d.open=wide.matches;});
+  setCards(); wide.addEventListener("change",setCards);
+
+  // ---- inline-SVG visualisations (no libraries, CSP-safe) ----
+  const short=(s,n=26)=>{s=String(s);return s.length>n?s.slice(0,n-1)+"…":s;};
+  const svgWrap=(w,h,inner,label)=>`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`;
+
+  // left-rooted mindmap (Build + UI)
+  function mindmap(el, root, nodes){
+    if(!el||!nodes.length) return;
+    const W=820, top=22, rowH=60, H=top*2+nodes.length*rowH;
+    const rcx=140, rcy=H/2, rrx=112, rry=Math.min(60,H/2-6);
+    const bx=430, bw=300, bh=44, maxW=Math.max(1,...nodes.map(n=>n.w||1));
+    let edges="", boxes="";
+    nodes.forEach((n,i)=>{
+      const by=top+i*rowH+(rowH-bh)/2, cy=by+bh/2, sw=(2+(n.w||1)/maxW*5).toFixed(1);
+      edges+=`<path class="v-edge" style="stroke-width:${sw};opacity:.55" d="M${rcx+rrx} ${rcy} C ${rcx+rrx+110} ${rcy}, ${bx-110} ${cy}, ${bx} ${cy}"/>`;
+      boxes+=`<rect class="v-node" x="${bx}" y="${by}" width="${bw}" height="${bh}" rx="12"/>`
+        +`<text class="v-ink" x="${bx+14}" y="${cy}" font-size="18" font-weight="700" dominant-baseline="central">${esc(n.label)}</text>`
+        +(n.meta?`<text class="v-cobalt mono" x="${bx+bw+12}" y="${cy}" font-size="15" dominant-baseline="central">${esc(n.meta)}</text>`:"");
+    });
+    const rt=`<ellipse class="v-root" cx="${rcx}" cy="${rcy}" rx="${rrx}" ry="${rry}"/>`
+      +`<text class="v-root-t" x="${rcx}" y="${rcy}" font-size="22" font-weight="800" text-anchor="middle" dominant-baseline="central">${esc(root)}</text>`;
+    el.innerHTML=svgWrap(W,H,edges+boxes+rt, root+" mind map");
+  }
+
+  // Bayesian neural net (Product)
+  function bayesNet(el){
+    if(!el) return;
+    const W=900,H=480;
+    const inputs=(B.tree||[]).map(br=>({name:short(br.b,15),w:(br.subs||[]).flatMap(s=>s.prs||[]).length}))
+      .sort((a,b)=>b.w-a.w).slice(0,6);
+    if(!inputs.length) return;
+    const hidden=["Integrate","Review","Polish","Verify"], maxW=Math.max(1,...inputs.map(n=>n.w));
+    const ix=250,hx=540,ox=800;
+    const iy=i=>72+i*((H-144)/(inputs.length-1||1));
+    const hy=j=>100+j*((H-200)/(hidden.length-1||1));
+    const oy=H/2;
+    const nodeC=(x,y,label,meta,big,side)=>{const r=big?34:26;
+      const t=side==="left"
+        ? `<text class="v-ink" x="${x-r-12}" y="${y+1}" font-size="15" font-weight="700" text-anchor="end" dominant-baseline="central">${esc(label)}</text>`
+        : `<text class="v-ink" x="${x}" y="${y+r+18}" font-size="15" font-weight="700" text-anchor="middle">${esc(label)}</text>`;
+      return `<circle class="v-halo" cx="${x}" cy="${y}" r="${r+7}"/><circle class="v-node" cx="${x}" cy="${y}" r="${r}"/>`
+        +(meta?`<text class="v-cobalt mono" x="${x}" y="${y+4}" font-size="13" text-anchor="middle">${esc(meta)}</text>`:"")+t;};
+    let edges="";
+    inputs.forEach((inp,i)=>hidden.forEach((h,j)=>{const w=inp.w/maxW,op=(0.12+w*0.5).toFixed(2),sw=(0.6+w*2.4).toFixed(1);
+      edges+=`<line class="v-edge" style="stroke-width:${(+sw+3).toFixed(1)};opacity:.06" x1="${ix+33}" y1="${iy(i)}" x2="${hx-29}" y2="${hy(j)}"/>`
+        +`<line class="v-edge" style="stroke-width:${sw};opacity:${op}" x1="${ix+33}" y1="${iy(i)}" x2="${hx-29}" y2="${hy(j)}"/>`;}));
+    hidden.forEach((h,j)=>{edges+=`<line class="v-edge" style="stroke-width:5;opacity:.06" x1="${hx+29}" y1="${hy(j)}" x2="${ox-33}" y2="${oy}"/>`
+      +`<line class="v-edge" style="stroke-width:2.4;opacity:.5" x1="${hx+29}" y1="${hy(j)}" x2="${ox-33}" y2="${oy}"/>`;});
+    let nodes="";
+    inputs.forEach((inp,i)=>nodes+=nodeC(ix,iy(i),inp.name,inp.w+" PR",false,"left"));
+    hidden.forEach((h,j)=>nodes+=nodeC(hx,hy(j),h,""));
+    nodes+=nodeC(ox,oy,"Product","live",true);
+    const lab=`<text class="v-dim" x="${ix}" y="34" font-size="14" text-anchor="middle">FEATURES (in)</text>`
+      +`<text class="v-dim" x="${hx}" y="34" font-size="14" text-anchor="middle">INTEGRATION</text>`
+      +`<text class="v-dim" x="${ox}" y="34" font-size="14" text-anchor="middle">SHIPPED (out)</text>`;
+    el.innerHTML=svgWrap(W,H,edges+lab+nodes,"Bayesian neural network from feature PRs to shipped product");
+  }
+
+  // 1-D Kalman filter (Governance)
+  function kalman(el){
+    if(!el) return;
+    const gates=["Vitest","Typecheck","Build","Review","Deploy","Live-QA"];
+    const meas=[46,58,55,71,68,83,80,90,88,95];      // fixed noisy gate readings (deterministic)
+    let x=40,P=100; const Q=4,R=90, est=[],sig=[];
+    meas.forEach(z=>{P=P+Q; const K=P/(P+R); x=x+K*(z-x); P=(1-K)*P; est.push(x); sig.push(Math.sqrt(P));});
+    const W=760,H=430, mL=52,mR=22,mT=34,mB=64, pW=W-mL-mR, pH=H-mT-mB, n=meas.length;
+    const X=i=>mL+(n===1?0:i*pW/(n-1)), Y=v=>mT+pH-(v/100*pH);
+    let up="",dn=""; est.forEach((e,i)=>{up+=`${X(i).toFixed(1)},${Y(Math.min(100,e+sig[i])).toFixed(1)} `; dn=`${X(i).toFixed(1)},${Y(Math.max(0,e-sig[i])).toFixed(1)} `+dn;});
+    const band=`<polygon class="v-band" points="${up}${dn}"/>`;
+    const line=`<polyline class="v-line" points="${est.map((e,i)=>X(i).toFixed(1)+","+Y(e).toFixed(1)).join(" ")}"/>`;
+    let dots=""; meas.forEach((z,i)=>dots+=`<circle class="v-meas" cx="${X(i).toFixed(1)}" cy="${Y(z).toFixed(1)}" r="5"/>`);
+    let axis=`<line class="v-axis" x1="${mL}" y1="${mT}" x2="${mL}" y2="${mT+pH}"/><line class="v-axis" x1="${mL}" y1="${mT+pH}" x2="${mL+pW}" y2="${mT+pH}"/>`;
+    [0,50,100].forEach(v=>{axis+=`<line class="v-axis" style="opacity:.4" x1="${mL}" y1="${Y(v)}" x2="${mL+pW}" y2="${Y(v)}"/><text class="v-dim mono" x="${mL-8}" y="${Y(v)+4}" font-size="13" text-anchor="end">${v}</text>`;});
+    let xl=""; meas.forEach((z,i)=>{if(i%2===0) xl+=`<text class="v-dim" x="${X(i).toFixed(1)}" y="${mT+pH+24}" font-size="13" text-anchor="middle">${esc(gates[i%gates.length])}</text>`;});
+    const leg=`<circle class="v-meas" cx="${mL+8}" cy="16" r="5"/><text class="v-dim" x="${mL+20}" y="20" font-size="13">gate reading</text>`
+      +`<line class="v-line" x1="${mL+150}" y1="16" x2="${mL+184}" y2="16"/><text class="v-dim" x="${mL+192}" y="20" font-size="13">confidence</text>`
+      +`<rect class="v-band" x="${mL+330}" y="9" width="26" height="14"/><text class="v-dim" x="${mL+362}" y="20" font-size="13">uncertainty</text>`;
+    el.innerHTML=svgWrap(W,H,band+line+dots+axis+xl+leg,"Kalman filter of release-readiness confidence across gates");
+  }
+
+  mindmap($("buildMap"), (P.name||"Build"), (B.tree||[]).map(br=>{const c=(br.subs||[]).flatMap(s=>s.prs||[]).length;return{label:short(br.b),meta:c+" PR",w:c};}));
+  mindmap($("uiMap"), "UI", (dm.rows||[]).map(r=>{const c=r[1].filter(g=>g==="●").length;return{label:short(r[0]),meta:c+" ●",w:c||1};}));
+  bayesNet($("productNet"));
+  kalman($("govKalman"));
+
+  const off=(P.tzOffsetMin==null)?null:P.tzOffsetMin;
+  function tick(){const d=new Date();const s=off==null?d:new Date(d.getTime()+(d.getTimezoneOffset()+off)*60000);
+    $("now").textContent=[s.getHours(),s.getMinutes(),s.getSeconds()].map(n=>String(n).padStart(2,"0")).join(":");}
+  tick();setInterval(tick,1000);
+  $("foot").textContent="static board · clock ticks live · edit board.data.js to retarget · buildndev";
+</script>
+</body>
+</html>

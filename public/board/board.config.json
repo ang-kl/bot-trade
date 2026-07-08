@@ -1,0 +1,142 @@
+{
+  "_": "Human-edited config for the bot-trade Board. Run `node generate.mjs` (needs gh CLI, or any `gh` shim printing the merged-PR JSON) to regenerate board.data.js. Served at /board/ on the deployed site.",
+
+  "project": {
+    "name": "bot-trade",
+    "repo": "ang-kl/bot-trade",
+    "eyebrow": "bot-trade-five.vercel.app · chief build officer",
+    "subtitle": "fib 61.8% autotrading bot — Build · Product · Governance · Docs · Crew",
+    "tzOffsetMin": 480,
+    "tzLabel": "SGT now"
+  },
+
+  "limit": 300,
+  "feedCount": 6,
+
+  "branchMap": [
+    { "kw": ["vwap", "fvg", "rsi", "confluence", "indicator"], "branch": "Confluence filters", "sub": "Merged" },
+    { "kw": ["backtest", "verdict", "go/no-go", "go /", "thin data", "sortable", "arm anyway", "conviction", "tail-risk", "cvar", "mdd"], "branch": "Backtest & evidence", "sub": "Merged" },
+    { "kw": ["risk", "equity stop", "spread", "kelly", "veto", "sizing", "sl distance", "margin"], "branch": "Risk & safety", "sub": "Merged" },
+    { "kw": ["fib", "strategy", "signal", "swing", "retracement", "autotrade", "trade now", "timeframe", "scan loop"], "branch": "Strategy & autotrade", "sub": "Merged" },
+    { "kw": ["monitor", "chart", "lightweight", "report chart", "live feed", "stream", "tick", "why no trades", "footprint", "activity"], "branch": "Monitor & live feed", "sub": "Merged" },
+    { "kw": ["account", "ctrader", "broker", "symbol map", "connect", "oauth", "token", "equity incl", "switcher", "positions"], "branch": "Broker & accounts", "sub": "Merged" },
+    { "kw": ["telegram", "login", "session", "device", "auth", "db_path", "persist", "database", "icon", "bot icon"], "branch": "Auth, Telegram & persistence", "sub": "Merged" },
+    { "kw": ["tune", "folio", "sidebar", "navigation", "form control", "slider", "dropdown", "watchlist", "margin", "friction", "design", "glass", "ui", "tab"], "branch": "UI & design system", "sub": "Merged" },
+    { "kw": ["finworld", "microstructure", "doc_reference", "notes", "study", "kdd"], "branch": "Research & docs", "sub": "Merged" }
+  ],
+  "fallbackBranch": "Groundwork & misc",
+
+  "branchBlurbs": {
+    "Confluence filters": "Optional RSI / VWAP / FVG gates — each must earn its place in an A/B backtest.",
+    "Backtest & evidence": "Walk-forward on real broker bars: GO / THIN DATA / NO-GO, tail risk, tap-for-evidence.",
+    "Risk & safety": "Deterministic pre-trade gate: 1%/trade, daily cap, R:R floor, spread gate, equity stop.",
+    "Strategy & autotrade": "The fib 61.8% fade — closed bars only, conviction-gated, real orders with broker-side SL/TP.",
+    "Monitor & live feed": "The glanceable truth: scans, decisions, positions, live ticks, charts.",
+    "Broker & accounts": "cTrader Open API: accounts, symbol maps, snapshots, one-tap account switching.",
+    "Auth, Telegram & persistence": "Telegram-code device login, alerts with version footers, persistent DB.",
+    "UI & design system": "Colorblind-safe (no green ever), left nav, folio tabs, proper form controls.",
+    "Research & docs": "FinWorld KDD'26 + market-microstructure studies — formulas kept, hype rejected.",
+    "Groundwork & misc": "Versioning, CI gates, cleanup and cross-cutting merges."
+  },
+
+  "scores": {},
+  "leads": {},
+  "defaultLead": "FABLE",
+
+  "build": {
+    "stats": [
+      { "n": "AUTO", "label": "PRs merged", "tone": "good" },
+      { "n": "74", "label": "tests green", "tone": "good" },
+      { "n": "AUTO_VER", "label": "live", "tone": "" },
+      { "n": "DEMO", "label": "account armed", "tone": "good" },
+      { "n": "0", "label": "LIVE $ at risk", "tone": "good" }
+    ],
+    "lanes": [
+      { "name": "First verified demo trade", "sub": "OK → position at cTrader", "agent": "A", "type": "Verifier · broker truth", "model": "—", "stage": 2, "tok": "—", "status": "run", "ver": "blocked on Railway redeploy + Volume" },
+      { "name": "Filter A/B on real bars", "sub": "base vs RSI vs VWAP vs FVG", "agent": "B", "type": "Analyst · backtest", "model": "—", "stage": 1, "tok": "—", "status": "queue", "ver": "after redeploy" },
+      { "name": "LIVE graduation", "sub": "≥10 demo trades · PF ≥ 1 · funded acct", "agent": "C", "type": "Governance gate", "model": "—", "stage": 0, "tok": "—", "status": "block", "ver": "checklist" }
+    ]
+  },
+
+  "dimensions": {
+    "caps": ["Real orders", "SL/TP at broker", "Live feed", "Charting", "Backtest", "Risk gate", "Alerts"],
+    "rows": [
+      ["Fib 61.8% fade",   ["●","●","●","●","●","●","●"]],
+      ["Monitor page",     ["—","—","●","●","—","●","—"]],
+      ["Trade-now burst",  ["●","●","—","—","○","●","●"]],
+      ["Confluence filters",["—","—","—","—","●","●","—"]],
+      ["LIVE account",     ["○","○","●","●","●","●","●"]]
+    ]
+  },
+
+  "governance": {
+    "gates": [
+      ["✓","ok","CI on every PR","node --check · build · vitest 74 · no-green"],
+      ["✓","ok","No-green colour gate","owner is red/green colorblind — blue=up, red=down"],
+      ["✓","ok","Risk gate is final","deterministic veto — no LLM in the trade path"],
+      ["○","risk","Railway Volume","DB_PATH set; Volume mount at /data unconfirmed"]
+    ],
+    "guards": [
+      ["→","ok","Demo first, LIVE never by default","typing LIVE required to select a real-money account"],
+      ["→","ok","Closed bars only","no repainting signals"],
+      ["→","ok","Order failures must be loud","order_failed risk events + Telegram (v0.1.95)"],
+      ["→","ok","Adopt the better duplicate","two parallel sessions merge to one main"]
+    ],
+    "a11y": [
+      ["✓","ok","Blue/red only","no green anywhere, CI-enforced"],
+      ["✓","ok","State by shape + word","badges, ✓/✗, not colour alone"],
+      ["✓","ok","≥36px touch targets","phone-first controls"]
+    ],
+    "risks": [
+      ["⚠","risk","N≈10 trades of evidence","backtest GO is necessary, not sufficient"],
+      ["⚠","risk","LIVE balance SGD 34.30","1% risk < min lot — gate vetoes everything (by design)"],
+      ["⚠","risk","Redeploy lag","agent features ship dark until Railway redeploys"]
+    ]
+  },
+
+  "ledger": [
+    { "kind": "asked",   "text": "Charting per position, live feed, real demo autotrading (fib retracement/extension).", "when": "Jul 5" },
+    { "kind": "done",    "text": "All three delivered — bot ARMED on demo, SL/TP at broker, Telegram buzzer.", "when": "Jul 6" },
+    { "kind": "friction","text": "'Why no trades' — quiet screens read as broken; Monitor now explains itself.", "when": "Jul 7" },
+    { "kind": "done",    "text": "Risk tab redesign · account switcher · evidence-based verdicts · tail risk.", "when": "Jul 7" },
+    { "kind": "asked",   "text": "Study FinWorld + microstructure repos — adopt only what survives critique.", "when": "Jul 8" },
+    { "kind": "done",    "text": "Spread gate, MDD p95 bootstrap, CVaR(95), VWAP+FVG filters shipped.", "when": "Jul 8" },
+    { "kind": "friction","text": "Two days, OK approvals, zero positions — placement failures were silent.", "when": "Jul 8" },
+    { "kind": "done",    "text": "order_failed now loud (risk event + Telegram) · dead-code sweep · Trade-now burst.", "when": "Jul 8" }
+  ],
+
+  "docs": {
+    "documentation": [
+      { "name": "doc_reference/FinWorld-KDD26-notes.md", "note": "task formulations, metrics, critique", "meta": "studied" },
+      { "name": "doc_reference/microstructure-frequent-trading-notes.md", "note": "OBI/OFI, LLN, adopted vs rejected", "meta": "studied" },
+      { "name": ".github/workflows/ci.yml", "note": "the merge gate", "meta": "enforced" }
+    ],
+    "vault": [
+      { "name": "agent_state.db", "note": "trades, sessions, risk events", "meta": "needs Volume" },
+      { "name": "backtest cache", "note": "sessionStorage, survives tabs", "meta": "auto" }
+    ],
+    "journal": [
+      { "name": "PR stream", "note": "every change is a squash-merged, CI-gated PR", "meta": "89+" },
+      { "name": "risk_events", "note": "every approve/veto/order-failure, auditable", "meta": "rolling" }
+    ]
+  },
+
+  "leaderboardNote": "Two Claude sessions built this in parallel against one main; counts are PRs primarily driven.",
+  "leaderboard": [
+    ["FABLE", "Build & audit", "AUTO", "this session"],
+    ["TWIN-2", "Parallel session", 10, "folio tabs · free-text TFs · watchlist"],
+    ["OWNER", "Direction & QA", 0, "every friction report became a fix"]
+  ],
+
+  "taskforces": [
+    { "n": "Verify first demo trade", "crew": [["FABLE",1],["OWNER",1]], "desc": "Redeploy Railway (+ attach the /data Volume), then the next OK either fills or names its blocker.", "cmd": "redeploy, then say <b>\"check trades\"</b>" },
+    { "n": "Filter A/B", "crew": [["FABLE",1]], "desc": "Backtest base vs RSI vs VWAP vs FVG on the armed timeframes; keep only what improves PF.", "cmd": "say <b>\"run the A/B\"</b>" }
+  ],
+
+  "crew": [
+    { "n": "Strategy Engine", "alias": "FIB", "type": "Deterministic · no LLM", "m": "pure math", "role": "Owns every entry decision.", "job": "Swing detection, 61.8% zones, conviction scoring on closed bars; optional RSI/VWAP/FVG confluence.", "recipe": ["Fetch closed bars", "Find swings, project fib", "Score proximity 0–10", "Hand to the risk gate"], "guard": "<b>Closed bars only.</b> No repainting.", "from": "fib-strategy.js" },
+    { "n": "Risk Manager", "alias": "GATE", "type": "Deterministic veto", "m": "pure math", "role": "Owns the last word before any order.", "job": "1%/trade, daily cap, R:R floor, SL distance, margin, cooldowns, spread gate, equity stop.", "recipe": ["Evaluate proposal", "Size via quarter-Kelly", "Persist every decision", "Veto loudly"], "guard": "<b>Every decision is audited</b> in risk_events.", "from": "risk.js · loop.js" },
+    { "n": "Broker Link", "alias": "WIRE", "type": "cTrader Open API", "m": "JSON/WSS", "role": "Owns real execution.", "job": "Market orders with server-side SL/TP, reconcile, spot streams, trendbars, account snapshots.", "recipe": ["Auth app+account", "Place with relative SL/TP", "Reconcile truth", "Stream ticks"], "guard": "<b>Protection lives at the broker</b>, not in the process.", "from": "ctrader-ws.js" },
+    { "n": "The Buzzer", "alias": "PING", "type": "Telegram", "m": "bot API", "role": "Owns 'you heard it first'.", "job": "Entries, exits, vetoes, order failures, equity stops, login codes — with version footers.", "recipe": ["Format with context", "Send", "Footer the version"], "guard": "<b>Silence is a bug.</b> Every terminal outcome pings.", "from": "telegram.js" }
+  ]
+}
