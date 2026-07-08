@@ -222,6 +222,19 @@ function sortBtRows(entries, { col, dir }) {
   })
 }
 
+// Rough instrument classifier for the catalogue browser — display-only.
+function instrumentCategory(sym) {
+  const s = sym.toUpperCase()
+  if (s.endsWith('.US') || s.endsWith('.UK') || s.endsWith('.DE') || s.endsWith('.AU') || s.includes('.')) return 'Stocks'
+  if (/^X(AU|AG|PT|PD)/.test(s)) return 'Metals'
+  if (/(BTC|ETH|XRP|SOL|ADA|DOG|LTC|BNB|DOT|LINK)/.test(s)) return 'Crypto'
+  if (/^(US30|US500|NAS100|USTEC|UK100|GER40|FRA40|EUSTX|JPN225|AUS200|HK50|CN50|US2000|VIX)/.test(s)) return 'Indices'
+  if (/(OIL|CRUDE|BRENT|NATGAS|GASOLINE|COCOA|COFFEE|SUGAR|COTTON|WHEAT|CORN|SOYBEAN|COPPER|ALUMIN)/.test(s)) return 'Energy & Commodities'
+  if (/^[A-Z]{6}$/.test(s)) return 'FX'
+  return 'Other'
+}
+const BROWSE_CATS = ['All', 'FX', 'Metals', 'Indices', 'Energy & Commodities', 'Crypto', 'Stocks', 'Other']
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -259,6 +272,9 @@ export default function Tune() {
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
+  const [browse, setBrowse] = useState(false)        // full-catalogue browser open?
+  const [browseQ, setBrowseQ] = useState('')
+  const [browseCat, setBrowseCat] = useState('All')
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
@@ -625,6 +641,54 @@ export default function Tune() {
             </div>
             {q.length >= 2 && allSymbols.length > 0 && !allSymbols.includes(q) && suggestions.length === 0 && (
               <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
+            )}
+
+            {/* Full catalogue browser — every instrument the broker offers,
+                searchable + category-filtered, one tap to add. */}
+            {allSymbols.length > 0 && (
+              <div className="mb-3">
+                <button
+                  type="button" onClick={() => setBrowse(b => !b)} aria-expanded={browse}
+                  className="text-[12px] font-semibold text-[var(--color-accent)] cursor-pointer hover:underline"
+                >
+                  {browse ? '▾' : '▸'} Browse all {allSymbols.length.toLocaleString()} instruments on this account
+                </button>
+                {browse && (() => {
+                  const bq = browseQ.trim().toUpperCase()
+                  const filtered = allSymbols.filter(s =>
+                    (browseCat === 'All' || instrumentCategory(s) === browseCat) &&
+                    (!bq || s.toUpperCase().includes(bq)))
+                  const shown = filtered.slice(0, 200)
+                  const inList = new Set(symbols.map(s => s.symbol))
+                  return (
+                    <div className="glass-inset rounded-[12px] p-3 mt-2">
+                      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                        <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter…" className="max-w-[180px] !py-1 !min-h-0" />
+                        {BROWSE_CATS.map(c => (
+                          <button key={c} type="button" onClick={() => setBrowseCat(c)}
+                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold cursor-pointer min-h-[28px] ${browseCat === c ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                          >{c}</button>
+                        ))}
+                        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{filtered.length.toLocaleString()} match{filtered.length === 1 ? '' : 'es'}{filtered.length > 200 ? ' — showing first 200, refine the filter' : ''}</span>
+                      </div>
+                      <div className="max-h-72 overflow-y-auto grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {shown.map(s => (
+                          <div key={s} className="flex items-center gap-2 border-b border-[var(--color-border)] py-1 text-[12px]">
+                            <span className="font-semibold">{s}</span>
+                            <span className="text-[var(--color-text-sub)] text-[10px]">{instrumentCategory(s)}</span>
+                            <span className="ml-auto">
+                              {inList.has(s)
+                                ? <span className="text-[11px] text-[var(--color-text-sub)]">in watchlist</span>
+                                : <Button size="sm" variant="subtle" onClick={() => pushSymbols([...symbols, { symbol: s, enabled: true }])}>Add</Button>}
+                            </span>
+                          </div>
+                        ))}
+                        {shown.length === 0 && <span className="text-[12px] text-[var(--color-text-sub)] py-2">Nothing matches.</span>}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
             )}
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
             {/* Two-column grid — 8 symbols fit a 2048×1280 notebook screen
