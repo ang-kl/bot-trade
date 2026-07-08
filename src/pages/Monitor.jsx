@@ -236,9 +236,20 @@ export default function Monitor() {
             No scan results yet — if Scan is ON, the next 5-minute loop fills this. If it stays empty, check Tune → Scan and the watchlist.
           </div>
         )}
-        {scan?.rows?.map(s => (
+        {/* Symbols WITH a signal get full rows; the quiet ones collapse to a
+            single line — a screen of "no setup" rows was pure scrolling. */}
+        {scan?.rows?.filter(s => scan.signals?.[s.symbol]).map(s => (
           <ScanRow key={s.symbol} s={s} signal={scan.signals?.[s.symbol]} armedTfs={armedTfs} autotradeOn={!!active} />
         ))}
+        {(() => {
+          const quiet = (scan?.rows || []).filter(s => !scan.signals?.[s.symbol])
+          if (quiet.length === 0) return null
+          return (
+            <div className="border-t border-[var(--color-border)] pt-1.5 mt-1 text-[12px] text-[var(--color-text-sub)]">
+              {quiet.length} quiet — no price at a 61.8% zone: {quiet.map(s => `${s.symbol} ${s.price != null ? fmt(s.price) : ''}`.trim()).join(' · ')}
+            </div>
+          )
+        })()}
       </Card>
 
       <ReportChart allTrades={allTrades} events={events} />

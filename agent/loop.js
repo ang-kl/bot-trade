@@ -256,7 +256,21 @@ async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}`)
     return { executionPrice, positionId, side, volume: volLots }
   } catch (err) {
+    // A placement failure AFTER risk approval must be as loud as a veto —
+    // silently logging it made "risk gate said OK but no trade appeared"
+    // undiagnosable from the UI (real support case: two days of OKs with
+    // zero positions and no explanation anywhere but Railway logs).
     log(`Auto-trade FAILED for ${symbol}: ${err.message}`)
+    try {
+      persistRiskEvent(db, proposal, { approved: false, veto_reason: `order_failed: ${err.message}` })
+    } catch { /* audit only */ }
+    setState(db, 'last_order_error', JSON.stringify({ symbol, side, error: err.message, at: new Date().toISOString() }))
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      try {
+        const { sendMessage } = await import('./services/telegram.js')
+        await sendMessage(`⚠️ ORDER FAILED after risk approval: ${symbol} ${side} — ${err.message}. The broker rejected or the connection dropped; the signal may retry next loop.`)
+      } catch { /* non-fatal */ }
+    }
     return null
   }
 }
