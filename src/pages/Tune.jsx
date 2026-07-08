@@ -140,7 +140,8 @@ function verdictFor(r) {
   const edgeOk = checks.filter(c => c.gate === 'edge').every(c => c.ok)
   const evidenceOk = checks.filter(c => c.gate === 'evidence').every(c => c.ok)
   if (edgeOk && evidenceOk) return { state: 'go', label: 'GO', checks }
-  if (edgeOk) return { state: 'thin', label: 'THIN DATA', checks }
+  // Conservative go: the edge criteria pass, only the sample size is short.
+  if (edgeOk) return { state: 'thin', label: 'GO (thin)', checks }
   return { state: 'no-go', label: 'NO-GO', checks }
 }
 
@@ -169,7 +170,7 @@ function VerdictBadge({ r }) {
           ))}
           {v.state === 'thin' && (
             <span className="block text-[11px] text-[var(--color-text-sub)] mt-1">
-              The edge looks positive but the sample is too small to prove it. Not armed by Activate — let more bars/demo trades accumulate.
+              The edge looks positive but the sample is too small to prove it. Not armed by Activate unless you tick "arm anyway" on the row.
             </span>
           )}
         </span>
@@ -268,6 +269,18 @@ export default function Tune() {
   })
   const [btError, setBtError] = useState('')
   const [btRunning, setBtRunning] = useState(false)
+  // Per-row "arm anyway" overrides (sym|tf) — the trader may knowingly arm a
+  // NO-GO / GO (thin) timeframe; the verdict stays honest, the choice is theirs.
+  const [btForce, setBtForce] = useState(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem('bt_force_v1')) || []) } catch { return new Set() }
+  })
+  const toggleForce = (sym, tf) => setBtForce(prev => {
+    const k = `${sym}|${tf}`
+    const next = new Set(prev)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    try { sessionStorage.setItem('bt_force_v1', JSON.stringify([...next])) } catch { /* quota — skip */ }
+    return next
+  })
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
@@ -391,6 +404,18 @@ export default function Tune() {
           : []),
       )]
     : []
+  // Timeframes armed only because the trader ticked "arm anyway" on a
+  // NO-GO / GO (thin) row of the CURRENT result set (stale overrides ignored).
+  const forcedTfs = bt?.symbols
+    ? [...new Set(
+        Object.entries(bt.symbols).flatMap(([sym, s]) => s.results
+          ? Object.entries(s.results)
+              .filter(([tf, r]) => !r.error && btForce.has(`${sym}|${tf}`) && verdictFor(r)?.state !== 'go')
+              .map(([tf]) => tf)
+          : []),
+      )].filter(tf => !goTfs.includes(tf))
+    : []
+  const armTfs = [...goTfs, ...forcedTfs]
 
   return (
     <div className="space-y-4">
@@ -626,7 +651,7 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">on {timeframes.join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => (TF_MS[a] ?? 0) - (TF_MS[b] ?? 0)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}
@@ -679,7 +704,26 @@ export default function Tune() {
                                           <td className={`pr-3 ${metricClass(r.mddP95Pct, { good: 2, bad: 5, lowerBetter: true })}`}>{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
                                           <td className={`pr-3 ${metricClass(r.cvar95Pct, { good: -0.25, bad: -1 })}`}>{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
                                         </>}
-                                    <td>{!r.error && <VerdictBadge r={r} />}</td>
+                                    <td>
+                                      {!r.error && (
+                                        <span className="flex items-center gap-2 whitespace-nowrap">
+                                          <VerdictBadge r={r} />
+                                          {verdictFor(r)?.state !== 'go' && (
+                                            <label
+                                              className="flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer"
+                                              title="Include this timeframe in Activate even though it did not fully pass — you accept the unproven risk"
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={btForce.has(`${sym}|${tf}`)}
+                                                onChange={() => toggleForce(sym, tf)}
+                                              />
+                                              arm anyway
+                                            </label>
+                                          )}
+                                        </span>
+                                      )}
+                                    </td>
                                   </tr>
                                 )
                               })}
@@ -690,34 +734,41 @@ export default function Tune() {
                   </div>
                 ))}
                 <p className="text-[12px] text-[var(--color-text-sub)]">
-                  Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. THIN DATA = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
+                  Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. GO (thin) = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". Tick "arm anyway" on any row to include it in Activate at your own risk. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
-                {goTfs.length === 0 && (() => {
+                {armTfs.length === 0 && (() => {
                   const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
                   return (
                     <p className="text-[13px] font-semibold text-[var(--color-warning-text)]">
                       {anyThin
-                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (THIN DATA). Options: keep the bot in demo to accumulate evidence, or re-run later as more bars build up. Do NOT arm autotrade on thin data alone.'
-                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, or wait for more data.'}
+                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (GO thin). Keep the bot in demo to accumulate evidence, re-run later as more bars build up — or tick "arm anyway" on a row to proceed at your own risk.'
+                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, wait for more data, or tick "arm anyway" on a row to proceed at your own risk.'}
                     </p>
                   )
                 })()}
-                {goTfs.length > 0 && config?.autotrade_enabled && (
+                {armTfs.length > 0 && config?.autotrade_enabled && (
                   <p className="text-[13px] font-semibold">Quant trading is already ACTIVE.</p>
                 )}
-                {goTfs.length > 0 && !config?.autotrade_enabled && (
+                {armTfs.length > 0 && !config?.autotrade_enabled && (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button onClick={async () => {
-                      if (!window.confirm(`Activate quant trading on ${goTfs.join(' + ')}? The bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
+                      const forcedNote = forcedTfs.length
+                        ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
+                        : ''
+                      if (!window.confirm(`Activate quant trading on ${armTfs.join(' + ')}?${forcedNote} The bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
                       try {
-                        await agentPost('/actions/autotrade-timeframes', { timeframes: goTfs })
+                        await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
                         await agentPost('/actions/autotrade-toggle', { on: true })
-                        setTimeframes(goTfs)
+                        setTimeframes(armTfs)
                         await load()
-                        flash(`Quant trading ACTIVE on ${goTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
+                        flash(`Quant trading ACTIVE on ${armTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
                       } catch (err) { setError(err.message) }
-                    }}>Activate quant trading on {goTfs.join(' + ')}</Button>
-                    <span className="text-[12px] text-[var(--color-text-sub)]">arms autotrade on the GO timeframes only</span>
+                    }}>Activate quant trading on {armTfs.join(' + ')}</Button>
+                    <span className="text-[12px] text-[var(--color-text-sub)]">
+                      {forcedTfs.length
+                        ? `GO timeframes + your overrides (${forcedTfs.join(', ')})`
+                        : 'arms autotrade on the GO timeframes only'}
+                    </span>
                   </div>
                 )}
               </div>
