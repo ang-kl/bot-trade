@@ -166,6 +166,7 @@ export default function Monitor() {
   const [positions, setPositions] = useState(cached?.positions ?? [])
   const [trades, setTrades] = useState(cached?.trades ?? [])
   const [allTrades, setAllTrades] = useState(cached?.allTrades ?? [])
+  const [benchmarks, setBenchmarks] = useState(null)   // {"SYM|tf": {profitFactor,...}} stored at Apply time
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
@@ -179,6 +180,7 @@ export default function Monitor() {
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
+        agentGet('/state/arm-benchmarks').then(r => setBenchmarks(r?.benchmarks || null)).catch(() => {}),
         agentGet('/state/risk-events?limit=200'),
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
         agentGet('/state/scans').catch(() => null),
@@ -252,6 +254,46 @@ export default function Monitor() {
       </Card>
 
       <TradeNowCard onDone={load} />
+
+      {/* REALITY GAP — live results vs the backtest that justified arming.
+          The forward test is the real exam (algo-quant-practice-notes §3.3). */}
+      {benchmarks && Object.keys(benchmarks).length > 0 && (() => {
+        const rows = Object.entries(benchmarks).map(([pair, bench]) => {
+          const [sym, tf] = pair.split('|')
+          const closed = allTrades.filter(t =>
+            t.status !== 'open' && t.symbol === sym && (t.label_timeframe == null || t.label_timeframe === tf))
+          const pnls = closed.map(t => Number(t.net_pnl ?? t.gross_pnl)).filter(Number.isFinite)
+          const wins = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0)
+          const losses = Math.abs(pnls.filter(v => v < 0).reduce((a, b) => a + b, 0))
+          const livePf = losses > 0 ? Math.round((wins / losses) * 100) / 100 : (pnls.length > 0 && wins > 0 ? Infinity : null)
+          return { pair: `${sym} ${tf}`, bench, n: pnls.length, livePf }
+        })
+        const ready = rows.filter(r => r.n >= 5)
+        return (
+          <Card>
+            <h2 className="text-[13px] font-semibold mb-1">Reality gap — live vs the backtest that armed it</h2>
+            {ready.length === 0 && (
+              <p className="text-[13px] text-[var(--color-text-sub)]">
+                Building evidence: {rows.map(r => `${r.pair} ${r.n}/5 closed trades`).join(' · ')} — each armed pair compares live profit factor against its backtest once 5 real trades close.
+              </p>
+            )}
+            {ready.map(r => {
+              const btPf = r.bench.profitFactor
+              const gap = btPf != null && r.livePf != null && r.livePf !== Infinity && r.livePf < btPf * 0.6
+              return (
+                <div key={r.pair} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{r.pair}</span>
+                  <span>backtest PF {btPf ?? '∞'}</span>
+                  <span className={r.livePf != null && (r.livePf === Infinity || r.livePf >= 1) ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
+                    live PF {r.livePf === Infinity ? '∞' : r.livePf ?? '—'} ({r.n} trades)
+                  </span>
+                  {gap && <Badge tone="down">GAP — live is under 60% of backtest; consider disarming this pair</Badge>}
+                </div>
+              )
+            })}
+          </Card>
+        )
+      })()}
 
       {/* WHY NO TRADES — the product explains itself instead of looking dead.
           Every line is computed from live state, not canned text. */}

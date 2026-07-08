@@ -166,6 +166,36 @@ function computeStats(trades) {
   }
 }
 
+/**
+ * Walk-forward evaluation: split the bar series into K sequential segments,
+ * run the SAME simulation on each, and report per-segment outcomes. One
+ * 1,000-bar window is one draw — the literature's majority-pass gate
+ * (doc_reference/algo-quant-practice-notes.md §3.1) needs segment evidence.
+ * Each segment re-warms up (WARMUP_BARS lost per segment — acceptable).
+ *
+ * @returns {{segments: Array<{trades:number,totalProfitPct:number,maxDrawdownPct:number}>, active:number, positive:number, worstMddPct:number}}
+ */
+export function walkForward(bars, opts, K = 4) {
+  const segLen = Math.floor(bars.length / K)
+  const segments = []
+  for (let k = 0; k < K; k++) {
+    const slice = bars.slice(k * segLen, k === K - 1 ? bars.length : (k + 1) * segLen)
+    const { stats } = runBacktest(slice, opts)
+    segments.push({
+      trades: stats.trades || 0,
+      totalProfitPct: stats.totalProfitPct ?? 0,
+      maxDrawdownPct: stats.maxDrawdownPct ?? 0,
+    })
+  }
+  const active = segments.filter(s => s.trades > 0)
+  return {
+    segments,
+    active: active.length,
+    positive: active.filter(s => s.totalProfitPct > 0).length,
+    worstMddPct: Math.max(0, ...segments.map(s => s.maxDrawdownPct || 0)),
+  }
+}
+
 /** CVaR(alpha): mean of the worst (1-alpha) share of per-trade returns. */
 export function cvar95(returns, alpha = 0.95) {
   const sorted = [...returns].sort((a, b) => a - b)

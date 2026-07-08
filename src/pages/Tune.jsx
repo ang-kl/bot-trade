@@ -134,6 +134,20 @@ function verdictFor(r) {
       text: `total ${r.totalProfitPct}% after costs — need >0`,
     },
   ]
+  // Walk-forward gates (when the agent returned segment data): the edge must
+  // repeat across sequential segments, and no segment may be catastrophic.
+  if (r.wfActive != null && r.wfActive >= 2) {
+    checks.push({
+      ok: r.wfPositive * 2 > r.wfActive, gate: 'edge',
+      text: `walk-forward: ${r.wfPositive} of ${r.wfActive} active segments positive — need a majority`,
+    })
+  }
+  if (r.wfWorstMddPct != null && r.wfWorstMddPct > 10) {
+    checks.push({
+      ok: false, gate: 'edge',
+      text: `a walk-forward segment drew down ${r.wfWorstMddPct}% — catastrophic (cap 10%)`,
+    })
+  }
   const edgeOk = checks.filter(c => c.gate === 'edge').every(c => c.ok)
   const evidenceOk = checks.filter(c => c.gate === 'evidence').every(c => c.ok)
   if (edgeOk && evidenceOk) return { state: 'go', label: 'GO', checks }
@@ -202,6 +216,7 @@ const BT_COLS = [
   { key: 'maxDrawdownPct', label: 'Max DD' },
   { key: 'mddP95Pct', label: 'DD p95', title: '95th-percentile max drawdown across 1,000 reshuffles of the same trades — the single backtest path may be a lucky ordering' },
   { key: 'cvar95Pct', label: 'CVaR', title: 'Average of the worst 5% of trades (tail-loss expectancy)' },
+  { key: 'wfPositive', label: 'WF', title: 'Walk-forward: the same rule over 4 sequential quarters of the data — filled blue = profitable segment, filled red = losing, hollow = no trades. The edge should repeat, not appear once.' },
 ]
 
 function sortBtRows(entries, { col, dir }) {
@@ -844,7 +859,7 @@ export default function Tune() {
                                   <tr key={tf} className="border-t border-[var(--color-border)]">
                                     <td className="pr-3 py-1.5 font-semibold">{tf}</td>
                                     {r.error
-                                      ? <td colSpan={11} className="text-[var(--color-warning-text)]">{r.error}</td>
+                                      ? <td colSpan={12} className="text-[var(--color-warning-text)]">{r.error}</td>
                                       : <>
                                           <td className={`pr-3 ${metricClass(r.trades, { good: GO_MIN_TRADES, bad: -1 })}`}>{r.trades}</td>
                                           <td className={`pr-3 ${metricClass(r.winRatePct, { good: 50, bad: 30 })}`}>{r.winRatePct != null ? `${r.winRatePct}%` : '—'}</td>
@@ -857,6 +872,21 @@ export default function Tune() {
                                           <td className={`pr-3 ${metricClass(r.maxDrawdownPct, { good: 1, bad: 3, lowerBetter: true })}`}>{r.maxDrawdownPct != null ? `${r.maxDrawdownPct}%` : '—'}</td>
                                           <td className={`pr-3 ${metricClass(r.mddP95Pct, { good: 2, bad: 5, lowerBetter: true })}`}>{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
                                           <td className={`pr-3 ${metricClass(r.cvar95Pct, { good: -0.25, bad: -1 })}`}>{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
+                                          <td className="pr-3 whitespace-nowrap">
+                                            {r.wfSegments
+                                              ? r.wfSegments.map((seg, si) => (
+                                                  <span
+                                                    key={si}
+                                                    title={`Segment ${si + 1}: ${seg.trades} trade${seg.trades === 1 ? '' : 's'}, ${seg.totalProfitPct}% total, ${seg.maxDrawdownPct}% max DD`}
+                                                    className={`inline-block w-2.5 h-3.5 mr-0.5 rounded-[2px] align-middle ${
+                                                      seg.trades === 0
+                                                        ? 'border border-[var(--color-border)]'
+                                                        : seg.totalProfitPct > 0 ? 'bg-[var(--color-up)]' : 'bg-[var(--color-down)]'
+                                                    }`}
+                                                  />
+                                                ))
+                                              : '—'}
+                                          </td>
                                         </>}
                                     <td>
                                       {!r.error && (
@@ -888,6 +918,10 @@ export default function Tune() {
                   </div>
                 ))}
                 <p className="text-[12px] text-[var(--color-text-sub)]">
+                  {(() => {
+                    const cells = Object.values(bt.symbols).reduce((n, s2) => n + (s2.results ? Object.keys(s2.results).length : 0), 0)
+                    return `Selection-bias note: this run evaluated ${cells} symbol×timeframe cells — the single best-looking cell is partly luck (the more cells you look at, the prettier the best one gets). Trust rows whose walk-forward strip repeats, not one pretty row. `
+                  })()}
                   Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. GO (thin) = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". Tick "arm anyway" on any row to include it in Activate at your own risk. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
                 {armTfs.length === 0 && (() => {
@@ -918,6 +952,14 @@ export default function Tune() {
                         if (!window.confirm(`Apply per-instrument arming: ${matrixSummary}?${forcedNote} Autotrade stays ON — each symbol will only trade its own armed timeframes.`)) return
                         try {
                           await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
+                          const benchmarks = {}
+                          for (const [sym2, tfs2] of Object.entries(armMatrix)) {
+                            for (const tf2 of tfs2) {
+                              const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
+                              if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
+                            }
+                          }
+                          agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
                           setTimeframes(armTfs)
                           await load()
                           flash(`Armed per instrument: ${matrixSummary} — autotrade stays ON.`)
@@ -940,6 +982,14 @@ export default function Tune() {
                         // One tap arms the WHOLE pipeline — an armed-but-blind
                         // bot (autotrade on, scan off) was a real support case.
                         await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
+                        const benchmarks = {}
+                        for (const [sym2, tfs2] of Object.entries(armMatrix)) {
+                          for (const tf2 of tfs2) {
+                            const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
+                            if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
+                          }
+                        }
+                        agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
                         if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
                         if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
                         await agentPost('/actions/autotrade-toggle', { on: true })
