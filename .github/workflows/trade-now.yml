@@ -1,0 +1,51 @@
+name: Trade Now
+
+# Manually-triggered burst: asks the agent to scan the watchlist and place up
+# to N risk-gated demo trades (POST /actions/trade-now, added in v0.1.96).
+# Trigger from the Actions tab — or Claude triggers it via the GitHub API on
+# request ("initiate the demo trades") without any secret leaving GitHub.
+#
+# Requires repo secrets (Settings → Secrets and variables → Actions):
+#   AGENT_URL    e.g. https://sg-trade.up.railway.app
+#   AGENT_SECRET the agent's master secret
+# If this job fails with "unreachable", those secrets are stale — update them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Max trades to place (1-5)'
+        default: '2'
+        required: false
+      minConviction:
+        description: 'Minimum conviction 1-10 (lower = more, weaker setups)'
+        default: '5'
+        required: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf -m 20 "${{ secrets.AGENT_URL }}/health" | jq -r '.status' 2>/dev/null || echo "unreachable")
+          echo "Agent status: $STATUS"
+          if [ "$STATUS" = "unreachable" ]; then
+            echo "::error::Agent unreachable — check the AGENT_URL secret and that Railway is up"
+            exit 1
+          fi
+
+      - name: Trade now
+        run: |
+          RESPONSE=$(curl -sf -m 240 -X POST "${{ secrets.AGENT_URL }}/actions/trade-now" \
+            -H "Authorization: Bearer ${{ secrets.AGENT_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d '{"count":${{ inputs.count }},"minConviction":${{ inputs.minConviction }}}') || {
+              echo "::error::trade-now call failed — wrong AGENT_SECRET, or the agent predates v0.1.96 (redeploy Railway)"
+              exit 1
+            }
+          echo "$RESPONSE" | jq '.'
+          PLACED=$(echo "$RESPONSE" | jq -r '.placed // 0')
+          CANDS=$(echo "$RESPONSE" | jq -r '.candidates // 0')
+          echo "::notice::placed $PLACED trade(s) from $CANDS candidate setup(s) — details in the log above, vetoes in Monitor's Risk manager decisions"
