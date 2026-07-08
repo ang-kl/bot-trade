@@ -797,9 +797,35 @@ export default function Tune() {
                     </p>
                   )
                 })()}
-                {armTfs.length > 0 && config?.autotrade_enabled && (
-                  <p className="text-[13px] font-semibold">Quant trading is already ACTIVE.</p>
-                )}
+                {armTfs.length > 0 && config?.autotrade_enabled && (() => {
+                  // Already armed — but if the checked selection differs from
+                  // what's currently armed, offer to push the new set. The old
+                  // static "already ACTIVE" text left ticked checkboxes with
+                  // no button to act on them.
+                  const same = armTfs.length === timeframes.length && armTfs.every(tf => timeframes.includes(tf))
+                  if (same) {
+                    return <p className="text-[13px] font-semibold">Quant trading is already ACTIVE on {[...timeframes].sort(byTfDesc).join(' + ')} — nothing to apply.</p>
+                  }
+                  return (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button onClick={async () => {
+                        const forcedNote = forcedTfs.length
+                          ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
+                          : ''
+                        if (!window.confirm(`Update the armed timeframes to ${armTfs.join(' + ')}?${forcedNote} Autotrade stays ON and will now fire on this new set.`)) return
+                        try {
+                          await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
+                          setTimeframes(armTfs)
+                          await load()
+                          flash(`Armed timeframes updated to ${armTfs.join(' + ')} — autotrade stays ON.`)
+                        } catch (err) { setError(err.message) }
+                      }}>Apply new timeframes: {armTfs.join(' + ')}</Button>
+                      <span className="text-[12px] text-[var(--color-text-sub)]">
+                        currently armed: {[...timeframes].sort(byTfDesc).join(' + ')} — autotrade is already ON, this only swaps the timeframe set
+                      </span>
+                    </div>
+                  )
+                })()}
                 {armTfs.length > 0 && !config?.autotrade_enabled && (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button onClick={async () => {
