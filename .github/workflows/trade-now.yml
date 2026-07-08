@@ -27,11 +27,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check secrets exist
+        run: |
+          if [ -z "${{ secrets.AGENT_URL }}" ] || [ -z "${{ secrets.AGENT_SECRET }}" ]; then
+            echo "::error::AGENT_URL and/or AGENT_SECRET repo secrets are NOT SET — add them in Settings → Secrets and variables → Actions (AGENT_URL=https://sg-trade.up.railway.app, AGENT_SECRET=the agent's master secret)"
+            exit 1
+          fi
+
       - name: Health check
         run: |
           STATUS=$(curl -sf -m 20 "${{ secrets.AGENT_URL }}/health" | jq -r '.status' 2>/dev/null || echo "unreachable")
           echo "Agent status: $STATUS"
-          if [ "$STATUS" = "unreachable" ]; then
+          if [ -z "$STATUS" ] || [ "$STATUS" = "unreachable" ]; then
             echo "::error::Agent unreachable — check the AGENT_URL secret and that Railway is up"
             exit 1
           fi
