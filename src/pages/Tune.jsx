@@ -9,16 +9,13 @@ import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 
-// Every timeframe the broker's trendbar API supports, minutes → months.
-// Duration map doubles as the canonical sort order (slowest first).
-const TF_MS = {
-  '1mo': 2_592_000_000, '1w': 604_800_000, '1d': 86_400_000, '12h': 43_200_000,
-  '4h': 14_400_000, '1h': 3_600_000, '30m': 1_800_000, '15m': 900_000,
-  '10m': 600_000, '5m': 300_000, '4m': 240_000, '3m': 180_000, '2m': 120_000, '1m': 60_000,
-}
-const ALL_TIMEFRAMES = Object.keys(TF_MS)
-const byTfDesc = (a, b) => (TF_MS[b] ?? 0) - (TF_MS[a] ?? 0)
+// Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
+// 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
+const TF_MS = NATIVE_TF_MS
+const ALL_TIMEFRAMES = [...Object.keys(TF_MS)].sort((a, b) => tfMs(b) - tfMs(a))
+const byTfDesc = (a, b) => tfMs(b) - tfMs(a)
 
 const TABS = [
   { id: 'pipeline', label: 'Pipeline' },
@@ -210,7 +207,7 @@ const BT_COLS = [
 function sortBtRows(entries, { col, dir }) {
   const sign = dir === 'desc' ? -1 : 1
   const val = ([tf, r]) => {
-    if (col === 'tf') return TF_MS[tf] ?? 0
+    if (col === 'tf') return tfMs(tf)
     if (col === 'profitFactor') return r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? Infinity : null)
     const v = Number(r[col])
     return Number.isFinite(v) ? v : null
@@ -253,6 +250,7 @@ export default function Tune() {
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
   const [tfMenu, setTfMenu] = useState(false)
+  const [tfDraft, setTfDraft] = useState('')   // free-text timeframe, e.g. "1.5h"
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
   const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
@@ -335,6 +333,21 @@ export default function Tune() {
     if (next.length === 0) { setError('At least one timeframe must stay enabled'); return }
     setTimeframes(next)
     run(() => agentPost('/actions/autotrade-timeframes', { timeframes: next }), 'Autotrade timeframes saved')
+  }
+
+  // Free-text timeframe: "90m", "1.5h", "0.25d", "2d", "1w", "1M" — parsed
+  // locally, synthesised agent-side by aggregating the closest native bars.
+  const addCustomTimeframe = () => {
+    const parsed = parseTimeframe(tfDraft)
+    if (!parsed) {
+      setError(`Cannot read "${tfDraft}" — try forms like 90m, 1.5h, 2d, 1w, 1M (decimals from hours up)`)
+      return
+    }
+    const clash = timeframes.find(t => tfMs(t) === parsed.ms)
+    if (clash) { setError(`${parsed.label} is the same timeframe as ${clash} — already on the list`); return }
+    setTfDraft('')
+    setTfMenu(false)
+    toggleTimeframe(parsed.label)
   }
 
   const saveRisk = () => {
@@ -465,7 +478,19 @@ export default function Tune() {
                     className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[12px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
                   >+ Add timeframe</button>
                   {tfMenu && (
-                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-40 rounded-[12px] p-1.5 shadow-xl block max-h-72 overflow-y-auto">
+                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
+                      <span className="flex gap-1 p-1">
+                        <Input
+                          value={tfDraft} onChange={e => setTfDraft(e.target.value)}
+                          placeholder="e.g. 90m · 1.5h · 2d · 1M"
+                          className="!py-1 text-[13px]"
+                          onKeyDown={e => e.key === 'Enter' && addCustomTimeframe()}
+                        />
+                        <Button size="sm" onClick={addCustomTimeframe}>Add</Button>
+                      </span>
+                      <span className="block px-2 pb-1 text-[11px] text-[var(--color-text-sub)]">
+                        min/h/d/w · M = month · decimals from hours up
+                      </span>
                       {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
                         <button
                           key={tf} type="button"
@@ -651,7 +676,7 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => (TF_MS[a] ?? 0) - (TF_MS[b] ?? 0)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}

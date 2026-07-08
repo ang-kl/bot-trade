@@ -11,6 +11,7 @@ import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } 
 import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
+import { parseTimeframe } from '../lib/timeframes.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -68,8 +69,17 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'No symbols to test — watchlist is empty and none were given' })
       }
 
-      const timeframes = Array.isArray(req.body?.timeframes) && req.body.timeframes.length
+      const rawTfs = Array.isArray(req.body?.timeframes) && req.body.timeframes.length
         ? req.body.timeframes : ['4h', '1d']
+      // Canonicalize (free-text like "1.5h"/"90m" allowed) — reject junk
+      // here with a clear 400 instead of a 502 from the bar fetcher.
+      const parsedTfs = rawTfs.map(t => parseTimeframe(String(t)))
+      const badTfs = rawTfs.filter((_, i) => !parsedTfs[i])
+      if (badTfs.length) {
+        return res.status(400).json({ error: `unreadable timeframe(s): ${badTfs.join(', ')} — use forms like 15m, 90m, 1.5h, 4h, 2d, 1w, 1M` })
+      }
+      const tfSeen = new Set()
+      const timeframes = parsedTfs.filter(p => !tfSeen.has(p.ms) && tfSeen.add(p.ms)).map(p => p.label)
       const count = Math.min(3000, Math.max(200, Number(req.body?.bars) || 1000))
       const rsiFilter = req.body?.rsiFilter ? {} : null
 
@@ -383,14 +393,22 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/autotrade-timeframes', (req, res) => {
     const tfs = req.body?.timeframes
-    // Every trendbar period the broker supports — minutes to months.
-    const valid = ['1m', '2m', '3m', '4m', '5m', '10m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo']
-    if (!Array.isArray(tfs) || tfs.length === 0 || !tfs.every(t => valid.includes(t))) {
-      return res.status(400).json({ error: `timeframes must be a non-empty array of: ${valid.join(', ')}` })
+    if (!Array.isArray(tfs) || tfs.length === 0) {
+      return res.status(400).json({ error: 'timeframes must be a non-empty array, e.g. ["4h","1d"] — free-text like "90m", "1.5h", "1M" is accepted' })
     }
-    setState(db, 'autotrade_timeframes', JSON.stringify(tfs))
-    console.log('[actions] autotrade timeframes set:', tfs.join(', '))
-    res.json({ ok: true, timeframes: tfs })
+    // Native periods pass through; anything else must parse (90m, 1.5h, 2d,
+    // 1M …) and is stored under its canonical label. Duplicates by duration
+    // collapse to one ("90m" and "1.5h" are the same timeframe).
+    const parsed = tfs.map(t => parseTimeframe(String(t)))
+    const bad = tfs.filter((_, i) => !parsed[i])
+    if (bad.length) {
+      return res.status(400).json({ error: `unreadable timeframe(s): ${bad.join(', ')} — use forms like 15m, 90m, 1.5h, 4h, 2d, 1w, 1M (decimals from hours up)` })
+    }
+    const seen = new Set()
+    const canonical = parsed.filter(p => !seen.has(p.ms) && seen.add(p.ms)).map(p => p.label)
+    setState(db, 'autotrade_timeframes', JSON.stringify(canonical))
+    console.log('[actions] autotrade timeframes set:', canonical.join(', '))
+    res.json({ ok: true, timeframes: canonical })
   })
 
   // -----------------------------------------------------------------------

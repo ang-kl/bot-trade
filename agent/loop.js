@@ -570,8 +570,12 @@ async function runLoop(db) {
     const ctraderCreds = getCtraderCreds(db)
 
     const rsiFilterOn = getState(db, 'fib_rsi_filter') === 'true'
+    // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
+    // classic scan set only covers the native ladder.
+    let extraTimeframes = []
+    try { extraTimeframes = JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { /* keep [] */ }
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, extraTimeframes })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {
