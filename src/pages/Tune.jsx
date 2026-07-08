@@ -262,6 +262,7 @@ export default function Tune() {
   const [risk, setRisk] = useState(null)              // { effective, derived }
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
+  const [armedMatrix, setArmedMatrix] = useState(null)   // {SYM:[tfs]} currently armed on the agent
   const [tfMenu, setTfMenu] = useState(false)
   const [tfDraft, setTfDraft] = useState('')   // free-text timeframe, e.g. "1.5h"
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
@@ -316,6 +317,7 @@ export default function Tune() {
       setRisk(r)
       setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
       if (tf?.timeframes) setTimeframes(tf.timeframes)
+      setArmedMatrix(tf?.matrix && typeof tf.matrix === 'object' ? tf.matrix : null)
       if (rf) setRsiFilter(!!rf.on)
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
@@ -464,6 +466,25 @@ export default function Tune() {
       )].filter(tf => !goTfs.includes(tf))
     : []
   const armTfs = [...goTfs, ...forcedTfs]
+  // Per-instrument arm matrix: {SYMBOL: [tfs]} — a GO row arms that
+  // symbol×timeframe pair; "arm anyway" arms exactly its own pair, never the
+  // whole watchlist. This is what the agent's matrix gate enforces.
+  const armMatrix = bt?.symbols
+    ? Object.fromEntries(
+        Object.entries(bt.symbols)
+          .map(([sym, s]) => [sym, s.results
+            ? Object.entries(s.results)
+                .filter(([tf, r]) => !r.error && (verdictFor(r)?.state === 'go' || btForce.has(`${sym}|${tf}`)))
+                .map(([tf]) => tf)
+            : []])
+          .filter(([, tfs]) => tfs.length > 0),
+      )
+    : {}
+  const matrixSummary = Object.entries(armMatrix).map(([s, tfs]) => `${s} (${tfs.join(', ')})`).join(' · ')
+  const matrixEq = (a, b) => {
+    const norm = (m) => JSON.stringify(Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v?.length).map(([k, v]) => [k, [...v].sort()]).sort()))
+    return norm(a) === norm(b)
+  }
 
   return (
     <div className="space-y-4">
@@ -884,26 +905,26 @@ export default function Tune() {
                   // what's currently armed, offer to push the new set. The old
                   // static "already ACTIVE" text left ticked checkboxes with
                   // no button to act on them.
-                  const same = armTfs.length === timeframes.length && armTfs.every(tf => timeframes.includes(tf))
+                  const same = matrixEq(armMatrix, armedMatrix)
                   if (same) {
-                    return <p className="text-[13px] font-semibold">Quant trading is already ACTIVE on {[...timeframes].sort(byTfDesc).join(' + ')} — nothing to apply.</p>
+                    return <p className="text-[13px] font-semibold">Quant trading is ACTIVE, armed per instrument: {matrixSummary}. Your current selection matches — nothing to apply.</p>
                   }
                   return (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button onClick={async () => {
                         const forcedNote = forcedTfs.length
-                          ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
+                          ? ` NOTE: some rows did NOT fully pass — you are overriding those verdicts.`
                           : ''
-                        if (!window.confirm(`Update the armed timeframes to ${armTfs.join(' + ')}?${forcedNote} Autotrade stays ON and will now fire on this new set.`)) return
+                        if (!window.confirm(`Apply per-instrument arming: ${matrixSummary}?${forcedNote} Autotrade stays ON — each symbol will only trade its own armed timeframes.`)) return
                         try {
-                          await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
+                          await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
                           setTimeframes(armTfs)
                           await load()
-                          flash(`Armed timeframes updated to ${armTfs.join(' + ')} — autotrade stays ON.`)
+                          flash(`Armed per instrument: ${matrixSummary} — autotrade stays ON.`)
                         } catch (err) { setError(err.message) }
-                      }}>Apply new timeframes: {armTfs.join(' + ')}</Button>
+                      }}>Apply selection: {Object.keys(armMatrix).length} instrument{Object.keys(armMatrix).length === 1 ? '' : 's'}</Button>
                       <span className="text-[12px] text-[var(--color-text-sub)]">
-                        currently armed: {[...timeframes].sort(byTfDesc).join(' + ')} — autotrade is already ON, this only swaps the timeframe set
+                        will arm {matrixSummary || 'nothing'} — currently armed: {armedMatrix ? Object.entries(armedMatrix).map(([s2, t2]) => `${s2} (${t2.join(', ')})`).join(' · ') : `${[...timeframes].sort(byTfDesc).join(' + ')} (all watchlist symbols)`}
                       </span>
                     </div>
                   )
@@ -918,7 +939,7 @@ export default function Tune() {
                       try {
                         // One tap arms the WHOLE pipeline — an armed-but-blind
                         // bot (autotrade on, scan off) was a real support case.
-                        await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
+                        await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
                         if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
                         if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
                         await agentPost('/actions/autotrade-toggle', { on: true })
@@ -926,7 +947,7 @@ export default function Tune() {
                         await load()
                         flash(`Bot fully ARMED on ${armTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
                       } catch (err) { setError(err.message) }
-                    }}>Arm the bot on {armTfs.join(' + ')} (everything in one tap)</Button>
+                    }}>Arm the bot: {matrixSummary || armTfs.join(' + ')} (everything in one tap)</Button>
                     <span className="text-[12px] text-[var(--color-text-sub)]">
                       {forcedTfs.length
                         ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
