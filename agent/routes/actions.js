@@ -430,6 +430,89 @@ export default function actionsRouter(db) {
     res.json({ ok: true, on })
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/trade-now — proactive burst: scan the watchlist RIGHT NOW,
+  // rank live setups by conviction, and place up to N of them through the
+  // SAME risk gate + order path the loop uses. No backtest ritual required —
+  // the risk manager is still the last word on every one (it can veto all).
+  // Body: { count=2 (max 5), minConviction=5 }
+  // -----------------------------------------------------------------------
+  router.post('/trade-now', async (req, res) => {
+    try {
+      const count = Math.min(5, Math.max(1, Number(req.body?.count) || 2))
+      const minConviction = Math.min(10, Math.max(1, Number(req.body?.minConviction) || 5))
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+
+      let watchlist = []
+      try {
+        const raw = JSON.parse(getState(db, 'autopilot_symbols_json') || '[]')
+        watchlist = (Array.isArray(raw) ? raw : [])
+          .map(s => (typeof s === 'string' ? { symbol: s } : s))
+          .filter(s => s.enabled !== false)
+      } catch { /* empty */ }
+      if (watchlist.length === 0) return res.status(400).json({ error: 'watchlist is empty — add symbols on Tune' })
+
+      const map = await ensureSymbolMap(db, creds)
+      let extraTimeframes = []
+      try { extraTimeframes = JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { /* keep [] */ }
+      const scanOpts = {
+        rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
+        vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
+        fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
+        extraTimeframes,
+      }
+
+      // Scan every enabled symbol for a live setup, then rank by conviction.
+      const candidates = []
+      for (const w of watchlist.slice(0, 15)) {
+        const symbolId = map[w.symbol.toUpperCase()]
+        if (!symbolId) continue
+        try {
+          const { signal } = await scanSymbolFib(creds, w.symbol, symbolId, scanOpts)
+          if (signal && signal.conviction >= minConviction) candidates.push({ w, signal })
+        } catch { /* one symbol failing must not sink the burst */ }
+      }
+      candidates.sort((a, b) => b.signal.conviction - a.signal.conviction)
+
+      const { autoTrade } = await import('../loop.js')
+      const attempts = []
+      let placed = 0
+      for (const { w, signal } of candidates) {
+        if (placed >= count) break
+        const synth = synthesizeFibSignal(w.symbol, signal, minConviction).synthesis
+        const result = await autoTrade(db, w.symbol, synth, w, null)
+        attempts.push({
+          symbol: w.symbol,
+          timeframe: signal.timeframe || null,
+          bias: signal.bias,
+          conviction: signal.conviction,
+          placed: !!result,
+          executionPrice: result?.executionPrice ?? null,
+          positionId: result?.positionId ?? null,
+          // veto/order-failure detail is in risk_events (Monitor shows it)
+        })
+        if (result) placed++
+      }
+
+      console.log(`[actions] trade-now: ${candidates.length} candidates ≥${minConviction}/10, ${placed}/${count} placed`)
+      res.json({
+        ok: true,
+        requested: count,
+        minConviction,
+        candidates: candidates.length,
+        placed,
+        attempts,
+        note: candidates.length === 0
+          ? `No symbol currently has a 61.8% setup at conviction ≥${minConviction}/10 — a burst cannot invent setups; try again later or lower the bar.`
+          : undefined,
+      })
+    } catch (err) {
+      console.error('[actions/trade-now] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/fib-vwap-filter — leg-anchored VWAP confluence gate.
   router.post('/fib-vwap-filter', (req, res) => {
     const on = req.body?.on === true

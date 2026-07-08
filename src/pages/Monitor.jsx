@@ -28,6 +28,64 @@ function fmt(n, digits = 5) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
+// Proactive burst — scan NOW, place up to N risk-gated trades on the selected
+// demo account without waiting for the loop or the backtest ritual.
+function TradeNowCard({ onDone }) {
+  const [count, setCount] = useState(2)
+  const [minConviction, setMinConviction] = useState(5)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  const [err, setErr] = useState('')
+  const fire = async () => {
+    if (!window.confirm(`Scan the watchlist now and place up to ${count} REAL orders (demo account) on the best setups at conviction ≥${minConviction}/10? Every one still passes the risk gate — it may veto some or all.`)) return
+    setBusy(true)
+    setErr('')
+    setResult(null)
+    try {
+      const r = await agentPost('/actions/trade-now', { count, minConviction })
+      setResult(r)
+      onDone?.()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-[13px] font-semibold">Trade now</h2>
+        <span className="text-[12px] text-[var(--color-text-sub)]">place up to</span>
+        {[2, 3, 5].map(n => (
+          <button key={n} type="button" onClick={() => setCount(n)}
+            className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold cursor-pointer min-h-[32px] ${count === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{n}</button>
+        ))}
+        <span className="text-[12px] text-[var(--color-text-sub)]">trades at conviction ≥</span>
+        {[5, 6, 8].map(n => (
+          <button key={n} type="button" onClick={() => setMinConviction(n)}
+            className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold cursor-pointer min-h-[32px] ${minConviction === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{n}/10</button>
+        ))}
+        <span className="ml-auto">
+          <Button size="sm" onClick={fire} disabled={busy}>{busy ? 'Scanning & placing…' : 'Scan & trade now'}</Button>
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+        Skips the backtest ritual, not the safety: real market orders with SL/TP attached at cTrader, sized and vetoable by the risk gate. Lower conviction = more (weaker) setups qualify.
+      </p>
+      {err && <p className="mt-1.5 text-[13px] text-[var(--color-warning-text)]">{err}</p>}
+      {result && (
+        <div className="mt-1.5 text-[13px]">
+          <span className="font-semibold">{result.placed}/{result.requested} placed</span>
+          <span className="text-[var(--color-text-sub)]"> — {result.candidates} setup{result.candidates === 1 ? '' : 's'} found at ≥{result.minConviction}/10</span>
+          {result.note && <span className="block text-[12px] text-[var(--color-text-sub)]">{result.note}</span>}
+          {result.attempts?.map((a, i) => (
+            <span key={i} className="block text-[12px]">
+              {a.placed ? '✓' : '✗'} {a.symbol} {a.bias?.toUpperCase()} {a.timeframe || ''} ({a.conviction}/10)
+              {a.placed ? ` — filled @ ${fmt(a.executionPrice)} (position ${a.positionId ?? '—'})` : ' — vetoed or rejected (see Risk manager decisions below)'}
+            </span>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function ago(iso) {
   if (!iso) return '—'
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -192,6 +250,8 @@ export default function Monitor() {
           </p>
         )}
       </Card>
+
+      <TradeNowCard onDone={load} />
 
       {/* WHY NO TRADES — the product explains itself instead of looking dead.
           Every line is computed from live state, not canned text. */}
