@@ -113,6 +113,55 @@ export function rsi(bars, period = 14) {
 export const RSI_FILTER_DEFAULTS = { longMax: 45, shortMin: 55 }
 
 /**
+ * Anchored VWAP from bar index `anchorIdx` to the last bar: Σ(typical×vol)/Σvol.
+ * Anchored to the swing leg's origin, not calendar sessions — FX has no
+ * exchange session, and leg-anchoring makes the question structural:
+ * "is price cheap/rich relative to this leg's volume-weighted average?"
+ * Volume is broker TICK volume (all cTrader offers) — fine as a weighting,
+ * do not read it as real traded volume. Falls back to equal weights when a
+ * feed reports zero volume. Returns null on an empty range.
+ */
+export function vwap(bars, anchorIdx = 0) {
+  let pv = 0
+  let v = 0
+  let n = 0
+  let sumTypical = 0
+  for (let i = Math.max(0, anchorIdx); i < bars.length; i++) {
+    const b = bars[i]
+    const typical = (b.h + b.l + b.c) / 3
+    const vol = Number(b.v) || 0
+    pv += typical * vol
+    v += vol
+    sumTypical += typical
+    n++
+  }
+  if (n === 0) return null
+  return v > 0 ? pv / v : sumTypical / n
+}
+
+/**
+ * Unfilled 3-bar fair value gaps (imbalances). Bullish FVG: low[i] > high[i-2]
+ * (the gap is the zone between them); bearish: high[i] < low[i-2]. A gap is
+ * "filled" once any LATER bar trades through it — only unfilled gaps return.
+ * Returns [{ dir: 'bull'|'bear', top, bottom, idx }].
+ */
+export function findFVGs(bars) {
+  const gaps = []
+  for (let i = 2; i < bars.length; i++) {
+    if (bars[i].l > bars[i - 2].h) gaps.push({ dir: 'bull', top: bars[i].l, bottom: bars[i - 2].h, idx: i })
+    else if (bars[i].h < bars[i - 2].l) gaps.push({ dir: 'bear', top: bars[i - 2].l, bottom: bars[i].h, idx: i })
+  }
+  // Keep only gaps no later bar has traded through.
+  return gaps.filter(g => {
+    for (let j = g.idx + 1; j < bars.length; j++) {
+      if (g.dir === 'bull' && bars[j].l <= g.bottom) return false
+      if (g.dir === 'bear' && bars[j].h >= g.top) return false
+    }
+    return true
+  })
+}
+
+/**
  * Find confirmed swing highs/lows using a simple N-bar fractal (a bar is a
  * swing point if it's the extreme of the `2*fractalWidth+1` bars centred on
  * it). Excludes the trailing `fractalWidth` bars, which can't yet be
@@ -189,6 +238,28 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
     if (r == null) return null
     if (bias === 'long' && r > longMax) return null
     if (bias === 'short' && r < shortMin) return null
+  }
+
+  // Optional VWAP confluence (off by default): anchored to the swing leg's
+  // origin — long fades only below value (entry ≤ VWAP), shorts only above.
+  if (opts.vwapFilter) {
+    const anchorIdx = Math.min(swingA.idx, swingB.idx)
+    const vw = vwap(bars, anchorIdx)
+    if (vw == null) return null
+    if (bias === 'long' && lastClose > vw) return null
+    if (bias === 'short' && lastClose < vw) return null
+  }
+
+  // Optional FVG confluence (off by default): require an unfilled fair value
+  // gap in the signal's direction overlapping the 61.8% zone — the fib level
+  // and the imbalance agree on where price should react.
+  if (opts.fvgFilter) {
+    const zoneTop = level618 + tolerance
+    const zoneBottom = level618 - tolerance
+    const wantDir = bias === 'long' ? 'bull' : 'bear'
+    const overlap = findFVGs(bars).some(g =>
+      g.dir === wantDir && g.bottom <= zoneTop && g.top >= zoneBottom)
+    if (!overlap) return null
   }
 
   const entry = lastClose
@@ -296,7 +367,12 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
  */
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
-  const scanOpts = { rsiFilter: options.rsiFilter || null, extraTimeframes: options.extraTimeframes || [] }
+  const scanOpts = {
+    rsiFilter: options.rsiFilter || null,
+    vwapFilter: options.vwapFilter || null,
+    fvgFilter: options.fvgFilter || null,
+    extraTimeframes: options.extraTimeframes || [],
+  }
   const batch = symbols.slice(0, 15)
 
   const results = []

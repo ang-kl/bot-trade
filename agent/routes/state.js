@@ -511,6 +511,14 @@ export default function stateRouter(db) {
     res.json({ on: getState(db, 'fib_rsi_filter') === 'true' })
   })
 
+  // GET /state/fib-vwap-filter / fib-fvg-filter — confluence gate states
+  router.get('/fib-vwap-filter', (_req, res) => {
+    res.json({ on: getState(db, 'fib_vwap_filter') === 'true' })
+  })
+  router.get('/fib-fvg-filter', (_req, res) => {
+    res.json({ on: getState(db, 'fib_fvg_filter') === 'true' })
+  })
+
   router.get('/prices', (_req, res) => {
     try {
       const rows = db.prepare(`

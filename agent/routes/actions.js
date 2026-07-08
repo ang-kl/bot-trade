@@ -82,6 +82,8 @@ export default function actionsRouter(db) {
       const timeframes = parsedTfs.filter(p => !tfSeen.has(p.ms) && tfSeen.add(p.ms)).map(p => p.label)
       const count = Math.min(3000, Math.max(200, Number(req.body?.bars) || 1000))
       const rsiFilter = req.body?.rsiFilter ? {} : null
+      const vwapFilter = req.body?.vwapFilter ? {} : null
+      const fvgFilter = req.body?.fvgFilter ? {} : null
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
@@ -109,6 +111,8 @@ export default function actionsRouter(db) {
             const { stats } = runBacktest(bars.slice(0, -1), {
               timeframe: tf,
               rsiFilter,
+              vwapFilter,
+              fvgFilter,
               // mirror live autotrade's conviction bar unless the caller overrides
               minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
             })
@@ -120,7 +124,7 @@ export default function actionsRouter(db) {
           symbols[name] = { error: err.message }
         }
       }
-      res.json({ symbols, bars: count, rsiFilter: !!rsiFilter, ranAt: new Date().toISOString() })
+      res.json({ symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -265,6 +269,8 @@ export default function actionsRouter(db) {
       const scanResult = await runFibScan(ctraderCreds, getSymbolMap(db), symbols, {
         hotThreshold: Number(req.body?.hotThreshold) || 6,
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
+        vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
+        fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
       })
 
       // Persist latest results to state
@@ -323,6 +329,8 @@ export default function actionsRouter(db) {
 
       const { signal, error: scanError } = await scanSymbolFib(ctraderCreds, symbol, symbolId, {
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
+        vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
+        fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
       })
       // An infrastructure failure (expired token, rate limit) must surface
       // as an error, not masquerade as a "no setup" verdict.
@@ -419,6 +427,22 @@ export default function actionsRouter(db) {
     const on = req.body?.on === true
     setState(db, 'fib_rsi_filter', on ? 'true' : 'false')
     console.log(`[actions] fib RSI filter ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, on })
+  })
+
+  // POST /actions/fib-vwap-filter — leg-anchored VWAP confluence gate.
+  router.post('/fib-vwap-filter', (req, res) => {
+    const on = req.body?.on === true
+    setState(db, 'fib_vwap_filter', on ? 'true' : 'false')
+    console.log(`[actions] fib VWAP filter ${on ? 'enabled' : 'disabled'}`)
+    res.json({ ok: true, on })
+  })
+
+  // POST /actions/fib-fvg-filter — unfilled fair-value-gap confluence gate.
+  router.post('/fib-fvg-filter', (req, res) => {
+    const on = req.body?.on === true
+    setState(db, 'fib_fvg_filter', on ? 'true' : 'false')
+    console.log(`[actions] fib FVG filter ${on ? 'enabled' : 'disabled'}`)
     res.json({ ok: true, on })
   })
 
