@@ -69,7 +69,7 @@ function getAutopilotAccounts(db) {
   return [{ accountId: id, isLive: getState(db, 'ctrader_is_live') === 'true' }]
 }
 
-async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
+export async function autoTrade(db, symbol, synth, watchlistItem, accountOverride) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
