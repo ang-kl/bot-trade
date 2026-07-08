@@ -257,6 +257,7 @@ export default function Tune() {
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
+  const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -305,6 +306,16 @@ export default function Tune() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Latest scan snapshot — live price + signal per watchlist symbol.
+  useEffect(() => {
+    if (tab !== 'watchlist' || !agentConfigured()) return
+    agentGet('/state/scans').then(r => {
+      const by = {}
+      for (const s of r?.lastResults?.scans || []) by[s.symbol] = s
+      setScanInfo({ at: r?.lastScanAt || null, by })
+    }).catch(() => {})
+  }, [tab])
 
   // Broker instrument list (once) — powers the add-symbol autocomplete.
   useEffect(() => {
@@ -607,6 +618,21 @@ export default function Tune() {
                   <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
                     <span className="font-semibold w-20">{s.symbol}</span>
                     <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
+                    {(() => {
+                      const scan = scanInfo?.by?.[s.symbol]
+                      if (!scan) return null
+                      return (
+                        <span className="text-[12px] tabular-nums">
+                          {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
+                          {' '}
+                          {scan.bias && scan.bias !== 'skip'
+                            ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
+                                {scan.bias.toUpperCase()} {scan.timeframe || ''}{scan.confidence != null ? ` ${scan.confidence}/10` : ''}
+                              </span>
+                            : <span className="text-[var(--color-text-sub)]">no setup</span>}
+                        </span>
+                      )
+                    })()}
                     <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
                       max lots
                       <Input
@@ -780,19 +806,23 @@ export default function Tune() {
                       const forcedNote = forcedTfs.length
                         ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
                         : ''
-                      if (!window.confirm(`Activate quant trading on ${armTfs.join(' + ')}?${forcedNote} The bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
+                      if (!window.confirm(`Arm the bot on ${armTfs.join(' + ')}?${forcedNote} This turns ON Scan, Analyze and Autotrade in one go — the bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. Turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
                       try {
+                        // One tap arms the WHOLE pipeline — an armed-but-blind
+                        // bot (autotrade on, scan off) was a real support case.
                         await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
+                        if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
+                        if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
                         await agentPost('/actions/autotrade-toggle', { on: true })
                         setTimeframes(armTfs)
                         await load()
-                        flash(`Quant trading ACTIVE on ${armTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
+                        flash(`Bot fully ARMED on ${armTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
                       } catch (err) { setError(err.message) }
-                    }}>Activate quant trading on {armTfs.join(' + ')}</Button>
+                    }}>Arm the bot on {armTfs.join(' + ')} (everything in one tap)</Button>
                     <span className="text-[12px] text-[var(--color-text-sub)]">
                       {forcedTfs.length
-                        ? `GO timeframes + your overrides (${forcedTfs.join(', ')})`
-                        : 'arms autotrade on the GO timeframes only'}
+                        ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
+                        : 'turns on Scan + Analyze + Autotrade and arms the GO timeframes'}
                     </span>
                   </div>
                 )}
