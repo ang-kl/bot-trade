@@ -24,6 +24,7 @@
 // ---------------------------------------------------------------------------
 
 import WebSocket from 'ws'
+import { parseTimeframe, fetchPlan, aggregateBars } from './timeframes.js'
 
 // Payload type constants — from github.com/spotware/openapi-proto-messages
 export const PT = Object.freeze({
@@ -354,24 +355,36 @@ export function decodeTrendbars(payload) {
  */
 export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000) {
   const now = Date.now()
-  const steps = periods.map(period => {
+  // Custom (non-native) periods are synthesised: fetch the largest native
+  // period that divides them, then aggregate. Base fetch is capped at 3,000
+  // bars, so high factors return fewer target bars rather than failing —
+  // e.g. 1,000 requested 6h bars = 6,000 1h bars → capped to 500 × 6h.
+  const plans = periods.map(period => {
     const spec = TRENDBAR_PERIODS[period]
-    if (!spec) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
+    if (spec) return { period, code: spec.code, ms: spec.ms, fetchCount: count, factor: 1 }
+    const parsed = parseTimeframe(period)
+    const plan = parsed && fetchPlan(parsed.ms)
+    if (!plan) throw new Error(`wsGetTrendbarsBatch: unknown period "${period}"`)
+    const baseSpec = TRENDBAR_PERIODS[plan.base]
     return {
-      send: {
-        payloadType: PT.GET_TRENDBARS_REQ,
-        payload: {
-          ctidTraderAccountId: parseInt(accountId),
-          symbolId: parseInt(symbolId),
-          period: spec.code,
-          fromTimestamp: now - spec.ms * (count + 5),
-          toTimestamp: now,
-          count,
-        },
-      },
-      expect: PT.GET_TRENDBARS_RES,
+      period, code: baseSpec.code, ms: baseSpec.ms,
+      fetchCount: Math.min(count * plan.factor, 3000), factor: plan.factor,
     }
   })
+  const steps = plans.map(p => ({
+    send: {
+      payloadType: PT.GET_TRENDBARS_REQ,
+      payload: {
+        ctidTraderAccountId: parseInt(accountId),
+        symbolId: parseInt(symbolId),
+        period: p.code,
+        fromTimestamp: now - p.ms * (p.fetchCount + 5),
+        toTimestamp: now,
+        count: p.fetchCount,
+      },
+    },
+    expect: PT.GET_TRENDBARS_RES,
+  }))
 
   return withRetry(async () => {
     const payloads = await wsRun(host, [
@@ -380,9 +393,12 @@ export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, a
     ], timeoutMs, true)
     // collectAll returns auth payloads too — the trendbar responses are the
     // last `periods.length` entries, in request order.
-    const barPayloads = payloads.slice(-periods.length)
+    const barPayloads = payloads.slice(-plans.length)
     const out = {}
-    periods.forEach((period, i) => { out[period] = decodeTrendbars(barPayloads[i]) })
+    plans.forEach((p, i) => {
+      const bars = decodeTrendbars(barPayloads[i])
+      out[p.period] = p.factor === 1 ? bars : aggregateBars(bars, p.factor).slice(-count)
+    })
     return out
   }, 2, 'wsGetTrendbarsBatch')
 }

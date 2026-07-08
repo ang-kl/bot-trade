@@ -9,16 +9,13 @@ import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 
-// Every timeframe the broker's trendbar API supports, minutes → months.
-// Duration map doubles as the canonical sort order (slowest first).
-const TF_MS = {
-  '1mo': 2_592_000_000, '1w': 604_800_000, '1d': 86_400_000, '12h': 43_200_000,
-  '4h': 14_400_000, '1h': 3_600_000, '30m': 1_800_000, '15m': 900_000,
-  '10m': 600_000, '5m': 300_000, '4m': 240_000, '3m': 180_000, '2m': 120_000, '1m': 60_000,
-}
-const ALL_TIMEFRAMES = Object.keys(TF_MS)
-const byTfDesc = (a, b) => (TF_MS[b] ?? 0) - (TF_MS[a] ?? 0)
+// Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
+// 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
+const TF_MS = NATIVE_TF_MS
+const ALL_TIMEFRAMES = [...Object.keys(TF_MS)].sort((a, b) => tfMs(b) - tfMs(a))
+const byTfDesc = (a, b) => tfMs(b) - tfMs(a)
 
 const TABS = [
   { id: 'pipeline', label: 'Pipeline' },
@@ -140,7 +137,8 @@ function verdictFor(r) {
   const edgeOk = checks.filter(c => c.gate === 'edge').every(c => c.ok)
   const evidenceOk = checks.filter(c => c.gate === 'evidence').every(c => c.ok)
   if (edgeOk && evidenceOk) return { state: 'go', label: 'GO', checks }
-  if (edgeOk) return { state: 'thin', label: 'THIN DATA', checks }
+  // Conservative go: the edge criteria pass, only the sample size is short.
+  if (edgeOk) return { state: 'thin', label: 'GO (thin)', checks }
   return { state: 'no-go', label: 'NO-GO', checks }
 }
 
@@ -169,7 +167,7 @@ function VerdictBadge({ r }) {
           ))}
           {v.state === 'thin' && (
             <span className="block text-[11px] text-[var(--color-text-sub)] mt-1">
-              The edge looks positive but the sample is too small to prove it. Not armed by Activate — let more bars/demo trades accumulate.
+              The edge looks positive but the sample is too small to prove it. Not armed by Activate unless you tick "arm anyway" on the row.
             </span>
           )}
         </span>
@@ -209,7 +207,7 @@ const BT_COLS = [
 function sortBtRows(entries, { col, dir }) {
   const sign = dir === 'desc' ? -1 : 1
   const val = ([tf, r]) => {
-    if (col === 'tf') return TF_MS[tf] ?? 0
+    if (col === 'tf') return tfMs(tf)
     if (col === 'profitFactor') return r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? Infinity : null)
     const v = Number(r[col])
     return Number.isFinite(v) ? v : null
@@ -252,7 +250,7 @@ export default function Tune() {
   const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
   const [tfMenu, setTfMenu] = useState(false)
-  const [scanInfo, setScanInfo] = useState(null)   // latest scan per symbol, for the watchlist table
+  const [tfDraft, setTfDraft] = useState('')   // free-text timeframe, e.g. "1.5h"
   // Backtest table sorting — TF slow→fast by default; click a header to re-sort.
   const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
@@ -269,6 +267,18 @@ export default function Tune() {
   })
   const [btError, setBtError] = useState('')
   const [btRunning, setBtRunning] = useState(false)
+  // Per-row "arm anyway" overrides (sym|tf) — the trader may knowingly arm a
+  // NO-GO / GO (thin) timeframe; the verdict stays honest, the choice is theirs.
+  const [btForce, setBtForce] = useState(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem('bt_force_v1')) || []) } catch { return new Set() }
+  })
+  const toggleForce = (sym, tf) => setBtForce(prev => {
+    const k = `${sym}|${tf}`
+    const next = new Set(prev)
+    if (next.has(k)) next.delete(k); else next.add(k)
+    try { sessionStorage.setItem('bt_force_v1', JSON.stringify([...next])) } catch { /* quota — skip */ }
+    return next
+  })
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
 
@@ -304,16 +314,6 @@ export default function Tune() {
       .catch(() => {})
   }, [])
 
-  // Latest scan snapshot — powers the watchlist market table.
-  useEffect(() => {
-    if (tab !== 'watchlist' || !agentConfigured()) return
-    agentGet('/state/scans').then(r => {
-      const by = {}
-      for (const s of r?.lastResults?.scans || []) by[s.symbol] = s
-      setScanInfo({ at: r?.lastScanAt || null, by })
-    }).catch(() => {})
-  }, [tab])
-
   // Top matches for the typed prefix (name contains, prefix first)
   const q = newSymbol.trim().toUpperCase()
   const suggestions = q.length >= 1
@@ -333,6 +333,21 @@ export default function Tune() {
     if (next.length === 0) { setError('At least one timeframe must stay enabled'); return }
     setTimeframes(next)
     run(() => agentPost('/actions/autotrade-timeframes', { timeframes: next }), 'Autotrade timeframes saved')
+  }
+
+  // Free-text timeframe: "90m", "1.5h", "0.25d", "2d", "1w", "1M" — parsed
+  // locally, synthesised agent-side by aggregating the closest native bars.
+  const addCustomTimeframe = () => {
+    const parsed = parseTimeframe(tfDraft)
+    if (!parsed) {
+      setError(`Cannot read "${tfDraft}" — try forms like 90m, 1.5h, 2d, 1w, 1M (decimals from hours up)`)
+      return
+    }
+    const clash = timeframes.find(t => tfMs(t) === parsed.ms)
+    if (clash) { setError(`${parsed.label} is the same timeframe as ${clash} — already on the list`); return }
+    setTfDraft('')
+    setTfMenu(false)
+    toggleTimeframe(parsed.label)
   }
 
   const saveRisk = () => {
@@ -384,6 +399,14 @@ export default function Tune() {
     } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
   }
 
+  // Trades per symbol in the last backtest (all timeframes summed) — surfaced
+  // on the Watchlist so each instrument shows how much it actually traded.
+  const btTradeCount = (sym) => {
+    const results = bt?.symbols?.[sym]?.results
+    if (!results) return null
+    return Object.values(results).reduce((n, r) => n + (r.trades || 0), 0)
+  }
+
   // GO timeframes across every tested symbol (union) — the Activate flow arms
   // timeframes, not symbols, so a GO on any symbol lights that timeframe up.
   const goVerdict = (r) => verdictFor(r)?.state === 'go'
@@ -394,6 +417,18 @@ export default function Tune() {
           : []),
       )]
     : []
+  // Timeframes armed only because the trader ticked "arm anyway" on a
+  // NO-GO / GO (thin) row of the CURRENT result set (stale overrides ignored).
+  const forcedTfs = bt?.symbols
+    ? [...new Set(
+        Object.entries(bt.symbols).flatMap(([sym, s]) => s.results
+          ? Object.entries(s.results)
+              .filter(([tf, r]) => !r.error && btForce.has(`${sym}|${tf}`) && verdictFor(r)?.state !== 'go')
+              .map(([tf]) => tf)
+          : []),
+      )].filter(tf => !goTfs.includes(tf))
+    : []
+  const armTfs = [...goTfs, ...forcedTfs]
 
   return (
     <div className="space-y-4">
@@ -443,7 +478,19 @@ export default function Tune() {
                     className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[12px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
                   >+ Add timeframe</button>
                   {tfMenu && (
-                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-40 rounded-[12px] p-1.5 shadow-xl block max-h-72 overflow-y-auto">
+                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
+                      <span className="flex gap-1 p-1">
+                        <Input
+                          value={tfDraft} onChange={e => setTfDraft(e.target.value)}
+                          placeholder="e.g. 90m · 1.5h · 2d · 1M"
+                          className="!py-1 text-[13px]"
+                          onKeyDown={e => e.key === 'Enter' && addCustomTimeframe()}
+                        />
+                        <Button size="sm" onClick={addCustomTimeframe}>Add</Button>
+                      </span>
+                      <span className="block px-2 pb-1 text-[11px] text-[var(--color-text-sub)]">
+                        min/h/d/w · M = month · decimals from hours up
+                      </span>
                       {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
                         <button
                           key={tf} type="button"
@@ -551,64 +598,46 @@ export default function Tune() {
               <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
             )}
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
-            {symbols.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-[13px]">
-                  <thead className="text-left text-[var(--color-text-sub)]">
-                    <tr>
-                      <th className="pr-3 py-1">Symbol</th>
-                      <th className="pr-3">Status</th>
-                      <th className="pr-3">Last price</th>
-                      <th className="pr-3">Latest signal</th>
-                      <th className="pr-3">Max lots</th>
-                      <th className="text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {symbols.map((s, i) => {
-                      const scan = scanInfo?.by?.[s.symbol]
-                      return (
-                        <tr key={s.symbol} className="border-t border-[var(--color-border)]">
-                          <td className="pr-3 py-1.5 font-semibold">{s.symbol}</td>
-                          <td className="pr-3"><Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge></td>
-                          <td className="pr-3 tabular-nums">{scan?.price != null ? Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 }) : '—'}</td>
-                          <td className="pr-3">
-                            {scan?.bias && scan.bias !== 'skip'
-                              ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
-                                  {scan.bias.toUpperCase()} {scan.timeframe || ''}{scan.confidence != null ? ` · ${scan.confidence}/10` : ''}
-                                </span>
-                              : <span className="text-[var(--color-text-sub)]">no setup</span>}
-                          </td>
-                          <td className="pr-3">
-                            <Input
-                              type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
-                              placeholder="0.01" aria-label={`${s.symbol} max lots`}
-                              onChange={e => {
-                                const next = [...symbols]
-                                next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
-                                setConfig(c => ({ ...c, symbols: next }))
-                              }}
-                              onBlur={() => pushSymbols(symbols)}
-                            />
-                          </td>
-                          <td className="py-1">
-                            <span className="flex gap-1.5 justify-end">
-                              <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
-                                {s.enabled !== false ? 'Disable' : 'Enable'}
-                              </Button>
-                              <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
-                            </span>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-                <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
-                  Price and signal come from the bot's latest scan{scanInfo?.at ? ` (${new Date(scanInfo.at).toLocaleString()})` : ''} — turn Scan on (Pipeline) to keep them fresh.
-                </p>
-              </div>
-            )}
+            {/* Two-column grid — 8 symbols fit a 2048×1280 notebook screen
+                without scrolling. Each cell carries its own hairline. */}
+            <div className="grid gap-x-8 gap-y-0 lg:grid-cols-2">
+              {symbols.map((s, i) => {
+                const tested = btTradeCount(s.symbol)
+                return (
+                  <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
+                    <span className="font-semibold w-20">{s.symbol}</span>
+                    <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
+                    <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
+                      max lots
+                      <Input
+                        type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
+                        placeholder="0.01"
+                        onChange={e => {
+                          const next = [...symbols]
+                          next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
+                          setConfig(c => ({ ...c, symbols: next }))
+                        }}
+                        onBlur={() => pushSymbols(symbols)}
+                      />
+                    </label>
+                    {tested != null && (
+                      <span
+                        className="rounded-[20px] border border-[var(--color-info-border)] bg-[var(--color-info-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--color-info-text)]"
+                        title="Trades this symbol produced in the last backtest (all timeframes)"
+                      >
+                        {tested} trade{tested === 1 ? '' : 's'} in backtest
+                      </span>
+                    )}
+                    <span className="ml-auto flex gap-1.5">
+                      <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                        {s.enabled !== false ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
             </p>
@@ -647,7 +676,7 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">on {timeframes.join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}
@@ -700,7 +729,26 @@ export default function Tune() {
                                           <td className={`pr-3 ${metricClass(r.mddP95Pct, { good: 2, bad: 5, lowerBetter: true })}`}>{r.mddP95Pct != null ? `${r.mddP95Pct}%` : '—'}</td>
                                           <td className={`pr-3 ${metricClass(r.cvar95Pct, { good: -0.25, bad: -1 })}`}>{r.cvar95Pct != null ? `${r.cvar95Pct}%` : '—'}</td>
                                         </>}
-                                    <td>{!r.error && <VerdictBadge r={r} />}</td>
+                                    <td>
+                                      {!r.error && (
+                                        <span className="flex items-center gap-2 whitespace-nowrap">
+                                          <VerdictBadge r={r} />
+                                          {verdictFor(r)?.state !== 'go' && (
+                                            <label
+                                              className="flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer"
+                                              title="Include this timeframe in Activate even though it did not fully pass — you accept the unproven risk"
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={btForce.has(`${sym}|${tf}`)}
+                                                onChange={() => toggleForce(sym, tf)}
+                                              />
+                                              arm anyway
+                                            </label>
+                                          )}
+                                        </span>
+                                      )}
+                                    </td>
                                   </tr>
                                 )
                               })}
@@ -711,38 +759,41 @@ export default function Tune() {
                   </div>
                 ))}
                 <p className="text-[12px] text-[var(--color-text-sub)]">
-                  Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. THIN DATA = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
+                  Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. GO (thin) = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". Tick "arm anyway" on any row to include it in Activate at your own risk. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
-                {goTfs.length === 0 && (() => {
+                {armTfs.length === 0 && (() => {
                   const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
                   return (
                     <p className="text-[13px] font-semibold text-[var(--color-warning-text)]">
                       {anyThin
-                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (THIN DATA). Options: keep the bot in demo to accumulate evidence, or re-run later as more bars build up. Do NOT arm autotrade on thin data alone.'
-                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, or wait for more data.'}
+                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (GO thin). Keep the bot in demo to accumulate evidence, re-run later as more bars build up — or tick "arm anyway" on a row to proceed at your own risk.'
+                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, wait for more data, or tick "arm anyway" on a row to proceed at your own risk.'}
                     </p>
                   )
                 })()}
-                {goTfs.length > 0 && config?.autotrade_enabled && (
+                {armTfs.length > 0 && config?.autotrade_enabled && (
                   <p className="text-[13px] font-semibold">Quant trading is already ACTIVE.</p>
                 )}
-                {goTfs.length > 0 && !config?.autotrade_enabled && (
+                {armTfs.length > 0 && !config?.autotrade_enabled && (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button onClick={async () => {
-                      if (!window.confirm(`Arm the bot on ${goTfs.join(' + ')}? This turns ON Scan, Analyze and Autotrade in one go — the bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. Turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
+                      const forcedNote = forcedTfs.length
+                        ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
+                        : ''
+                      if (!window.confirm(`Activate quant trading on ${armTfs.join(' + ')}?${forcedNote} The bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. You can turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
                       try {
-                        // One tap arms the WHOLE pipeline — an armed-but-blind
-                        // bot (autotrade on, scan off) was a real support case.
-                        await agentPost('/actions/autotrade-timeframes', { timeframes: goTfs })
-                        if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
-                        if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
+                        await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs })
                         await agentPost('/actions/autotrade-toggle', { on: true })
-                        setTimeframes(goTfs)
+                        setTimeframes(armTfs)
                         await load()
-                        flash(`Bot fully ARMED on ${goTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
+                        flash(`Quant trading ACTIVE on ${armTfs.join(' + ')} — the bot now trades on your behalf, window closed included`)
                       } catch (err) { setError(err.message) }
-                    }}>Arm the bot on {goTfs.join(' + ')} (everything in one tap)</Button>
-                    <span className="text-[12px] text-[var(--color-text-sub)]">turns on Scan + Analyze + Autotrade and arms the GO timeframes</span>
+                    }}>Activate quant trading on {armTfs.join(' + ')}</Button>
+                    <span className="text-[12px] text-[var(--color-text-sub)]">
+                      {forcedTfs.length
+                        ? `GO timeframes + your overrides (${forcedTfs.join(', ')})`
+                        : 'arms autotrade on the GO timeframes only'}
+                    </span>
                   </div>
                 )}
               </div>

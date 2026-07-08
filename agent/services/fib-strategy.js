@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
+import { tfMs } from '../lib/timeframes.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -49,8 +50,16 @@ const barCache = new Map() // `${symbolId}|${period}` -> { bars, fetchedAt }
 function cachedBars(symbolId, period) {
   const entry = barCache.get(`${symbolId}|${period}`)
   if (!entry) return null
-  const ttl = TRENDBAR_PERIODS[period]?.ms || 300_000
+  const ttl = tfMs(period) || 300_000
   return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
+}
+
+// Position time cap for a timeframe — the fixed table for the classic set,
+// 24× the bar duration (clamped to the table's own range) for custom
+// timeframes like 1.5h or 6h that the trader typed in.
+function timeCapFor(timeframe) {
+  return TIME_CAP_MINUTES[timeframe]
+    ?? Math.min(Math.max(Math.round((tfMs(timeframe) / 60_000) * 24), 240), 259_200)
 }
 
 /**
@@ -215,7 +224,7 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
     swingA: swingA.price,
     swingB: swingB.price,
     timeframe,
-    time_cap_minutes: TIME_CAP_MINUTES[timeframe] || null,
+    time_cap_minutes: timeCapFor(timeframe) || null,
     strategy: 'fib_618_fade',
     thesis: `61.8% Fib fade — swing ${upLeg ? 'up' : 'down'} ${swingA.price} → ${swingB.price}, reacting at ${roundedLevel} on ${timeframe}. Targeting return to ${tp1}.`,
   }
@@ -235,7 +244,13 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
 export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
 
-  const stale = TIMEFRAMES.filter(tf => !cachedBars(symbolId, tf))
+  // Classic set plus any custom timeframes the trader added (e.g. 1.5h) —
+  // a custom TF armed for autotrade must also be scanned, or it never fires.
+  const scanTfs = [...new Set([...TIMEFRAMES, ...(opts.extraTimeframes || [])])]
+    .filter(tf => tfMs(tf) > 0)
+    .sort((a, b) => tfMs(b) - tfMs(a))
+
+  const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf))
   if (stale.length > 0) {
     try {
       const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT)
@@ -252,7 +267,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   let lastPrice = null
   let lastPriceT = -1
   const now = Date.now()
-  for (const timeframe of TIMEFRAMES) {
+  for (const timeframe of scanTfs) {
     const bars = cachedBars(symbolId, timeframe) || []
     const last = bars[bars.length - 1]
     if (last && last.t > lastPriceT) { lastPrice = last.c; lastPriceT = last.t }
@@ -262,7 +277,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     // rule (and any backtest of it) would never take. The forming bar's close
     // still feeds lastPrice above — right for pricing, wrong for signals.
     if (!signal) {
-      const periodMs = TRENDBAR_PERIODS[timeframe]?.ms || 0
+      const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
       signal = computeFibSignal(closed, timeframe, opts)
     }
@@ -281,7 +296,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
  */
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
-  const scanOpts = { rsiFilter: options.rsiFilter || null }
+  const scanOpts = { rsiFilter: options.rsiFilter || null, extraTimeframes: options.extraTimeframes || [] }
   const batch = symbols.slice(0, 15)
 
   const results = []
