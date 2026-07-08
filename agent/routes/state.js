@@ -513,6 +513,13 @@ export default function stateRouter(db) {
     res.json({ on: getState(db, 'fib_rsi_filter') === 'true' })
   })
 
+  // GET /state/arm-benchmarks — backtest stats stored at Apply time
+  router.get('/arm-benchmarks', (_req, res) => {
+    let benchmarks = null
+    try { benchmarks = JSON.parse(getState(db, 'arm_benchmarks_json') || 'null') } catch { /* null */ }
+    res.json({ benchmarks })
+  })
+
   // GET /state/fib-vwap-filter / fib-fvg-filter — confluence gate states
   router.get('/fib-vwap-filter', (_req, res) => {
     res.json({ on: getState(db, 'fib_vwap_filter') === 'true' })

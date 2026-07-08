@@ -90,7 +90,7 @@ export default function actionsRouter(db) {
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const map = await ensureSymbolMap(db, creds)
 
-      const { runBacktest } = await import('../scripts/backtest-fib.js')
+      const { runBacktest, walkForward } = await import('../scripts/backtest-fib.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
 
       const symbols = {}
@@ -109,15 +109,26 @@ export default function actionsRouter(db) {
               results[tf] = { error: `only ${bars.length} bars available` }
               continue
             }
-            const { stats } = runBacktest(bars.slice(0, -1), {
+            const btOpts = {
               timeframe: tf,
               rsiFilter,
               vwapFilter,
               fvgFilter,
               // mirror live autotrade's conviction bar unless the caller overrides
               minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
-            })
-            results[tf] = { ...stats, barsUsed: bars.length - 1 }
+            }
+            const { stats } = runBacktest(bars.slice(0, -1), btOpts)
+            // Walk-forward: same rule over 4 sequential segments — evidence
+            // that the edge repeats, not one lucky window.
+            const wf = walkForward(bars.slice(0, -1), btOpts, 4)
+            results[tf] = {
+              ...stats,
+              barsUsed: bars.length - 1,
+              wfSegments: wf.segments,
+              wfActive: wf.active,
+              wfPositive: wf.positive,
+              wfWorstMddPct: wf.worstMddPct,
+            }
           }
           symbols[name] = { results }
         } catch (err) {
@@ -536,6 +547,20 @@ export default function actionsRouter(db) {
       console.error('[actions/trade-now] error:', err.message)
       res.status(502).json({ error: err.message })
     }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/arm-benchmarks — persist the backtest stats that justified
+  // the current arming, so Monitor can compare live results against them
+  // (the "reality gap"). Body: { benchmarks: { "SYM|tf": {profitFactor,
+  // expectancyPct, trades} } }. Overwrites wholesale on each Apply.
+  // -----------------------------------------------------------------------
+  router.post('/arm-benchmarks', (req, res) => {
+    const b = req.body?.benchmarks
+    if (b != null && typeof b !== 'object') return res.status(400).json({ error: 'benchmarks must be an object' })
+    setState(db, 'arm_benchmarks_json', b && Object.keys(b).length ? JSON.stringify(b) : null)
+    console.log('[actions] arm benchmarks stored:', b ? Object.keys(b).length : 0, 'pairs')
+    res.json({ ok: true, pairs: b ? Object.keys(b).length : 0 })
   })
 
   // POST /actions/fib-vwap-filter — leg-anchored VWAP confluence gate.
