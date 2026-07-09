@@ -59,6 +59,8 @@ export const PT = Object.freeze({
   UNSUBSCRIBE_SPOTS_RES:   2130,
   SPOT_EVENT:              2131,
   ORDER_ERROR_EVENT:       2132,
+  DEAL_LIST_REQ:           2133,
+  DEAL_LIST_RES:           2134,
   GET_TRENDBARS_REQ:       2137,
   GET_TRENDBARS_RES:       2138,
   ERROR_RES:               2142,
@@ -312,6 +314,25 @@ export function wsReconcile(host, clientId, clientSecret, accessToken, accountId
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.RECONCILE_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.RECONCILE_RES },
   ], timeoutMs), 2, 'wsReconcile')
+}
+
+/**
+ * Deal history over a time window — the broker's own record of every fill.
+ * The ground truth a local trades row must match to count as a real trade.
+ * cTrader caps the window at 1 week per request; callers page if needed.
+ * Returns the raw payload: { deal: [{ dealId, positionId, symbolId, volume,
+ * tradeSide, executionPrice, executionTimestamp, dealStatus, ... }] }
+ */
+export function wsGetDeals(host, clientId, clientSecret, accessToken, accountId, fromTimestamp, toTimestamp, timeoutMs = 25_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.DEAL_LIST_REQ, payload: {
+      ctidTraderAccountId: parseInt(accountId),
+      fromTimestamp: Math.floor(fromTimestamp),
+      toTimestamp: Math.floor(toTimestamp),
+      maxRows: 500,
+    } }, expect: PT.DEAL_LIST_RES },
+  ], timeoutMs), 2, 'wsGetDeals')
 }
 
 /**
