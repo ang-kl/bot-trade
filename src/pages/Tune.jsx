@@ -277,6 +277,7 @@ export default function Tune() {
   // Backtest-only session filter — proves whether the edge depends on the
   // instrument's prime-liquidity hours before any live gate exists.
   const [btSessionFilter, setBtSessionFilter] = useState(false)
+  const [btTouchFill, setBtTouchFill] = useState(false)
   const [btStrategy, setBtStrategy] = useState('fib_618_fade')
   const [screener, setScreener] = useState(null)     // cup-screener results
   const [screenerBusy, setScreenerBusy] = useState(false)
@@ -474,6 +475,7 @@ export default function Tune() {
         vwapFilter,
         sessionFilter: btSessionFilter,
         strategy: btStrategy,
+        entryMode: btTouchFill ? 'touch' : 'close',
         fvgFilter,
       })
       setBt(r)
@@ -1023,6 +1025,10 @@ export default function Tune() {
                       >{lbl}</button>
                     ))}
                   </span>
+                  <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Fib fade only: simulate a resting LIMIT order at the 61.8% level instead of a market order after a close in the zone. Fills on any touch of the level; cancelled when price closes beyond the stop first or the zone expires. A/B this against the default before asking for live pending orders.">
+                    <input type="checkbox" checked={btTouchFill} onChange={e => setBtTouchFill(e.target.checked)} disabled={btStrategy === 'cup_handle'} />
+                    Touch-fill (pending order)
+                  </label>
                   <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Only take entries during the instrument's prime-liquidity hours: exchange session for stocks/indices, London+New York (Mon–Fri 08:00–21:00 UTC) for FX/metals/commodities. Proves whether the edge is session-dependent.">
                     <input type="checkbox" checked={btSessionFilter} onChange={e => setBtSessionFilter(e.target.checked)} />
                     Session filter

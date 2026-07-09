@@ -31,6 +31,25 @@ import { inPrimeSession } from '../lib/sessions.js'
  * - a bar that opens beyond the TP still books only the TP (never better)
  * @returns {{price:number, reason:string}|null}
  */
+/**
+ * Resolve a resting limit order against a bar (touch-fill mode):
+ * 'cancel' when the bar CLOSES beyond the stop (setup invalidated before
+ * fill) or the order expired; 'fill' when the bar's range touches the level.
+ * Cancel is checked first — a bar that blows through the level to beyond
+ * the stop would fill a real limit, but modelling it as a fill would book
+ * an instant loss the close-confirmed rule never takes; counting it as a
+ * cancel is the OPTIMISTIC branch, so the honest reading is a coin we
+ * deliberately call AGAINST the strategy elsewhere (SL-first). Documented
+ * trade-off, revisit with tick data.
+ * @returns {'fill'|'cancel'|null}
+ */
+export function resolvePending(pending, bar) {
+  if (bar.t >= pending.expireT) return 'cancel'
+  if (pending.dir > 0 ? bar.c <= pending.sl : bar.c >= pending.sl) return 'cancel'
+  if (bar.l <= pending.level && pending.level <= bar.h) return 'fill'
+  return null
+}
+
 export function resolveExit(pos, bar) {
   if (pos.dir > 0 ? bar.l <= pos.sl : bar.h >= pos.sl) {
     const price = pos.dir > 0 ? Math.min(pos.sl, bar.o) : Math.max(pos.sl, bar.o)
@@ -62,8 +81,10 @@ export function runBacktest(bars, opts) {
   const costPct = opts.costPct ?? DEFAULT_COST_PCT
   const cooldownMs = (opts.cooldownMinutes ?? DEFAULT_COOLDOWN_MIN) * 60_000
 
+  const touchMode = opts.entryMode === 'touch'
   const trades = []
   let pos = null            // { dir, entry, sl, tp, entryT, capMs }
+  let pending = null        // touch mode: resting limit at the 61.8 level
   let cooldownUntil = -1
 
   const closeTrade = (exitPrice, exitT, reason) => {
@@ -90,6 +111,20 @@ export function runBacktest(bars, opts) {
       continue
     }
 
+    if (pending) {
+      const r = resolvePending(pending, next)
+      if (r === 'cancel') { pending = null }
+      else if (r === 'fill') {
+        pos = { dir: pending.dir, entry: pending.level, sl: pending.sl, tp: pending.tp, entryT: next.t, capMs: pending.capMs }
+        pending = null
+        const sameBar = resolveExit(pos, next)
+        if (sameBar) closeTrade(sameBar.price, next.t, sameBar.reason)
+        continue
+      }
+      // while an order rests, no new setups are sought (one order at a time)
+      continue
+    }
+
     if (next.t < cooldownUntil) continue
     // Session filter (off by default): only enter when the instrument's
     // market is in its prime-liquidity window at the entry bar's time.
@@ -100,6 +135,8 @@ export function runBacktest(bars, opts) {
       rsiFilter: opts.rsiFilter || null,
       vwapFilter: opts.vwapFilter || null,
       fvgFilter: opts.fvgFilter || null,
+      // touch mode: fib zones are valid resting-order levels pre-touch
+      pendingSetup: touchMode && opts.strategy !== 'cup_handle',
     })
     if (!signal || signal.rr < MIN_RR) continue
     // Fidelity with live autotrade: only take entries the bot would actually
@@ -107,6 +144,20 @@ export function runBacktest(bars, opts) {
     // Pass minConviction: 0 to test every zone touch instead.
     if (signal.conviction < (opts.minConviction ?? 8)) continue
 
+    if (touchMode && opts.strategy !== 'cup_handle') {
+      // Park a limit at the level instead of entering at market. TTL = the
+      // signal's own time cap — a zone older than its trade horizon is stale.
+      const capMs = signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 86_400_000
+      pending = {
+        dir: signal.bias === 'long' ? 1 : -1,
+        level: signal.entry, // = level618 in pendingSetup mode
+        sl: signal.sl,
+        tp: signal.tp1,
+        capMs,
+        expireT: next.t + capMs,
+      }
+      continue
+    }
     pos = {
       dir: signal.bias === 'long' ? 1 : -1,
       entry: next.o, // fill at next bar's open, not the signal close

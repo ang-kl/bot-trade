@@ -217,7 +217,12 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
   const tolerance = ZONE_TOLERANCE * range
   const lastClose = bars[bars.length - 1].c
   const distFromLevel = Math.abs(lastClose - level618)
-  if (distFromLevel > tolerance) return null
+  // Pending-setup mode (touch-fill backtests / future pending-order mode):
+  // the zone is a valid RESTING-ORDER level as soon as the swing confirms —
+  // no close-in-zone requirement. Everything else (leg size, invalidation,
+  // confluence filters) still applies.
+  const pendingMode = !!opts.pendingSetup
+  if (!pendingMode && distFromLevel > tolerance) return null
 
   // Invalidation: price already broke past the swing origin — the leg
   // failed to react at all, so the fade thesis is dead.
@@ -263,7 +268,7 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
     if (!overlap) return null
   }
 
-  const entry = lastClose
+  const entry = pendingMode ? level618 : lastClose
   const sl = upLeg ? swingA.price - buffer : swingA.price + buffer
   const tp1 = swingB.price
   const tp2 = upLeg ? swingB.price + TP2_EXTENSION * range : swingB.price - TP2_EXTENSION * range
@@ -280,7 +285,9 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
   // the 61.8% level, 0 = at the zone edge. hot ≥6 → inner 40% of the zone,
   // auto_trade ≥8 → inner 20%.
   const proximity = 1 - Math.min(1, distFromLevel / tolerance)
-  const conviction = Math.round(proximity * 10)
+  // Proximity is meaningless for a resting order AT the level — a structurally
+  // valid setup scores the autotrade bar and the fill IS the proximity.
+  const conviction = pendingMode ? 8 : Math.round(proximity * 10)
 
   const roundedLevel = Math.round(level618 * 100000) / 100000
 
