@@ -20,6 +20,29 @@
 
 import { pathToFileURL } from 'node:url'
 import { computeFibSignal } from '../services/fib-strategy.js'
+import { inPrimeSession } from '../lib/sessions.js'
+
+/**
+ * Resolve whether `bar` exits the position, honestly:
+ * - SL before TP when both are inside the bar (conservative)
+ * - a bar that OPENS beyond the SL fills at that open, not the SL — gap
+ *   slippage is real (weekend gaps on indices/commodities)
+ * - a bar that opens beyond the TP still books only the TP (never better)
+ * @returns {{price:number, reason:string}|null}
+ */
+export function resolveExit(pos, bar) {
+  if (pos.dir > 0 ? bar.l <= pos.sl : bar.h >= pos.sl) {
+    const price = pos.dir > 0 ? Math.min(pos.sl, bar.o) : Math.max(pos.sl, bar.o)
+    return { price, reason: 'sl' }
+  }
+  if (pos.dir > 0 ? bar.h >= pos.tp : bar.l <= pos.tp) {
+    return { price: pos.tp, reason: 'tp' }
+  }
+  if (pos.capMs && bar.t - pos.entryT >= pos.capMs) {
+    return { price: bar.c, reason: 'time_cap' }
+  }
+  return null
+}
 
 const WARMUP_BARS = 30
 const MIN_RR = 1.5
@@ -61,18 +84,15 @@ export function runBacktest(bars, opts) {
     const next = bars[i + 1]
 
     if (pos) {
-      // Conservative intra-bar sequencing: stop-loss checked before target.
-      if (pos.dir > 0 ? next.l <= pos.sl : next.h >= pos.sl) {
-        closeTrade(pos.sl, next.t, 'sl')
-      } else if (pos.dir > 0 ? next.h >= pos.tp : next.l <= pos.tp) {
-        closeTrade(pos.tp, next.t, 'tp')
-      } else if (pos.capMs && next.t - pos.entryT >= pos.capMs) {
-        closeTrade(next.c, next.t, 'time_cap')
-      }
+      const exit = resolveExit(pos, next)
+      if (exit) closeTrade(exit.price, next.t, exit.reason)
       continue
     }
 
     if (next.t < cooldownUntil) continue
+    // Session filter (off by default): only enter when the instrument's
+    // market is in its prime-liquidity window at the entry bar's time.
+    if (opts.sessionFilter && opts.symbol && !inPrimeSession(opts.symbol, next.t)) continue
 
     const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, {
       rsiFilter: opts.rsiFilter || null,
@@ -93,6 +113,10 @@ export function runBacktest(bars, opts) {
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
     }
+    // The entry bar's own range can hit the SL/TP after the open fill —
+    // skipping it understated losses (audit flaw #1).
+    const sameBar = resolveExit(pos, next)
+    if (sameBar) closeTrade(sameBar.price, next.t, sameBar.reason)
   }
   if (pos) closeTrade(bars[bars.length - 1].c, bars[bars.length - 1].t, 'end_of_data')
 
