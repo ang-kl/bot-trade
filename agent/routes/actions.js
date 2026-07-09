@@ -272,6 +272,19 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/loop-interval — scan/trade loop cadence in minutes (1–60).
+  // Read fresh every cycle; no restart needed.
+  // -----------------------------------------------------------------------
+  router.post('/loop-interval', (req, res) => {
+    const n = Number(req.body?.minutes)
+    if (!Number.isFinite(n) || n < 1 || n > 60) {
+      return res.status(400).json({ error: 'minutes must be a number between 1 and 60' })
+    }
+    setState(db, 'loop_interval_min', String(Math.round(n)))
+    res.json({ ok: true, minutes: Math.round(n) })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
   // strategy in the scan loop (fib fade is untouched by this flag).
   // -----------------------------------------------------------------------

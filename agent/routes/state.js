@@ -328,6 +328,8 @@ export default function stateRouter(db) {
     res.json({
       scan_enabled: getState(db, 'scan_enabled') !== 'false',
       cup_handle_enabled: getState(db, 'cup_handle_enabled') === 'true',
+      loop_interval_min: Number(getState(db, 'loop_interval_min')) || 5,
+      selected_account_id: getState(db, 'ctrader_account_id') || null,
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',
       autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',
       // Backward compat: armed = autotrade_enabled

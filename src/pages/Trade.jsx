@@ -272,6 +272,11 @@ export default function Trade() {
       {/* Health strip */}
       <Card>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
+          {health?.broker?.accountId && (
+            <span className="font-semibold" title="Every number on this page belongs to this account — switch on the left panel">
+              Account: {health.broker.isLive ? 'LIVE ⚠' : 'DEMO'} {health.broker.accountId}
+            </span>
+          )}
           <Badge tone={health?.status === 'ok' ? 'up' : health ? 'down' : 'neutral'} pill>
             {health ? (health.status === 'ok' ? 'AGENT OK' : health.status.toUpperCase()) : 'NO DATA'}
           </Badge>
