@@ -313,6 +313,9 @@ export default function actionsRouter(db) {
       const symbol = String(req.body?.symbol || '').toUpperCase()
       const timeframe = String(req.body?.timeframe || '1h')
       const count = Math.min(300, Math.max(30, Number(req.body?.bars) || 120))
+      // centerT (epoch ms): historical mode — window ends 1/3 of the span
+      // AFTER this moment, so a past trade sits ~2/3 in with context both ways.
+      const centerT = Number(req.body?.centerT) || 0
       if (!symbol) return res.status(400).json({ error: 'symbol required' })
 
       const creds = getCtraderCreds(db)
@@ -321,13 +324,17 @@ export default function actionsRouter(db) {
       if (!symbolId) return res.status(404).json({ error: `Unknown symbol ${symbol} — not offered by this broker account` })
 
       const { host, clientId, clientSecret, accessToken, accountId } = creds
-      const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, [timeframe], count)
+      const tfDurMs = (await import('../lib/timeframes.js')).tfMs(timeframe) || 3_600_000
+      const endTime = centerT ? Math.min(Date.now(), centerT + tfDurMs * Math.floor(count / 3)) : 0
+      const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, [timeframe], count, 30_000, endTime)
       const bars = byPeriod[timeframe] || []
       if (bars.length === 0) return res.status(502).json({ error: 'Broker returned no bars' })
 
-      // Fib overlay from the same bars (closed bars only, like the scanner)
+      // Fib overlay from the same bars (closed bars only, like the scanner).
+      // Skipped in historical mode — a fib read on an old window would be
+      // presented as if it were current.
       let fib = null
-      try {
+      if (!centerT) try {
         const { computeFibSignal } = await import('../services/fib-strategy.js')
         fib = computeFibSignal(bars.slice(0, -1), timeframe, {})
       } catch { /* overlay optional */ }

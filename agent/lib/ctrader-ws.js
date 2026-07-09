@@ -357,8 +357,10 @@ export function decodeTrendbars(payload) {
  * @param {string[]} periods - TRENDBAR_PERIODS keys, e.g. ['1d','4h','1h']
  * @returns {Promise<Record<string, Array<{t,o,h,l,c,v}>>>} bars keyed by period
  */
-export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000) {
-  const now = Date.now()
+export function wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, periods, count = 150, timeoutMs = 30_000, endTime = 0) {
+  // endTime anchors the window's right edge for HISTORICAL charts (a past
+  // trade's period); 0/omitted = now, exactly as before.
+  const now = endTime || Date.now()
   // Custom (non-native) periods are synthesised: fetch the largest native
   // period that divides them, then aggregate. Base fetch is capped at 3,000
   // bars, so high factors return fewer target bars rather than failing —

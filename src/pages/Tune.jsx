@@ -888,14 +888,14 @@ export default function Tune() {
                 const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
                 return (
-                  <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
-                    <span className="font-semibold w-20">{s.symbol}</span>
+                  <div key={s.symbol} className="flex flex-nowrap items-center gap-1.5 border-b border-[var(--color-border)] py-1 text-[13px] min-w-0">
+                    <span className="font-semibold w-[4.5rem] shrink-0">{s.symbol}</span>
                     <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
                     {(() => {
                       const scan = scanInfo?.by?.[s.symbol]
                       if (!scan) return null
                       return (
-                        <span className="text-[12px] tabular-nums">
+                        <span className="text-[12px] tabular-nums truncate min-w-0">
                           {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
                           {' '}
                           {scan.bias && scan.bias !== 'skip'
@@ -906,11 +906,18 @@ export default function Tune() {
                         </span>
                       )
                     })()}
-                    <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
-                      max lots
+                    <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                      {tested != null && (
+                        <span
+                          className="rounded-[20px] border border-[var(--color-info-border)] bg-[var(--color-info-bg)] px-1.5 py-0.5 text-[11px] font-semibold text-[var(--color-info-text)]"
+                          title={`${tested} trade${tested === 1 ? '' : 's'} in the last backtest (all timeframes)`}
+                        >
+                          {tested} bt
+                        </span>
+                      )}
                       <Input
-                        type="number" step="0.01" className="w-20 !py-1 !min-h-0" value={s.maxVolume ?? ''}
-                        placeholder="0.01"
+                        type="number" step="0.01" className="w-14 !py-0.5 !min-h-0 text-[12px]" value={s.maxVolume ?? ''}
+                        placeholder="0.01" title="Max lots for this symbol" aria-label={`Max lots for ${s.symbol}`}
                         onChange={e => {
                           const next = [...symbols]
                           next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
@@ -918,20 +925,10 @@ export default function Tune() {
                         }}
                         onBlur={() => pushSymbols(symbols)}
                       />
-                    </label>
-                    {tested != null && (
-                      <span
-                        className="rounded-[20px] border border-[var(--color-info-border)] bg-[var(--color-info-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--color-info-text)]"
-                        title="Trades this symbol produced in the last backtest (all timeframes)"
-                      >
-                        {tested} trade{tested === 1 ? '' : 's'} in backtest
-                      </span>
-                    )}
-                    <span className="ml-auto flex gap-1.5">
-                      <Button size="sm" variant="subtle" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
-                        {s.enabled !== false ? 'Disable' : 'Enable'}
+                      <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                        {s.enabled !== false ? 'Off' : 'On'}
                       </Button>
-                      <Button size="sm" variant="danger" onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                      <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[11px]" aria-label={`Remove ${s.symbol}`} title={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>✕</Button>
                     </span>
                   </div>
                 )
