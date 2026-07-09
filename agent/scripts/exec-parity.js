@@ -39,6 +39,14 @@ async function main() {
   const creds = getCtraderCreds(db)
   if (!creds.ready) { console.error('cTrader creds not configured in the agent DB'); process.exit(1) }
 
+  // 0 — push broker credentials (the sidecar holds none of its own)
+  await sidecar('POST', '/connect', {
+    host: creds.host, clientId: creds.clientId, clientSecret: creds.clientSecret,
+    accessToken: creds.accessToken, accountId: creds.accountId,
+  })
+  console.log('[parity] credentials pushed — waiting for the sidecar to auth')
+  await new Promise(r => setTimeout(r, 4000))
+
   // 1 — sidecar alive and authenticated
   const health = await sidecar('GET', '/health')
   console.log('[parity] sidecar health:', JSON.stringify(health))

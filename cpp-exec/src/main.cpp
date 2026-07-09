@@ -46,21 +46,29 @@ static HttpResponse forward(const std::string& body,
 
 int main() {
   bool ok = true;
-  std::string host = envOr("CTRADER_HOST", "live.ctraderapi.com");
-  std::string clientId = requireEnv("CTRADER_CLIENT_ID", ok);
-  std::string clientSecret = requireEnv("CTRADER_CLIENT_SECRET", ok);
-  std::string accessToken = requireEnv("CTRADER_ACCESS_TOKEN", ok);
-  std::string accountIdStr = requireEnv("CTRADER_ACCOUNT_ID", ok);
+  // The ONLY required env var. Broker credentials are pushed at runtime by
+  // the Node keeper via POST /connect — the access token and account id live
+  // in the keeper's DB (Connect tab), not in anyone's env. CTRADER_* env
+  // vars still work as an optional pre-seed for standalone runs.
   std::string execSecret = requireEnv("EXEC_SECRET", ok);
   int port = std::atoi(envOr("PORT", "8091").c_str());
   if (!ok) return 1;
-  long long accountId = std::strtoll(accountIdStr.c_str(), nullptr, 10);
-  if (accountId <= 0) {
-    logLine("CTRADER_ACCOUNT_ID is not a positive integer");
-    return 1;
-  }
 
-  ExecEngine engine(host, clientId, clientSecret, accessToken, accountId);
+  ExecEngine engine;
+  {
+    std::string host = envOr("CTRADER_HOST", "");
+    std::string clientId = envOr("CTRADER_CLIENT_ID", "");
+    std::string clientSecret = envOr("CTRADER_CLIENT_SECRET", "");
+    std::string accessToken = envOr("CTRADER_ACCESS_TOKEN", "");
+    long long accountId = std::strtoll(envOr("CTRADER_ACCOUNT_ID", "0").c_str(), nullptr, 10);
+    if (!clientId.empty() && !accessToken.empty() && accountId > 0) {
+      engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
+                            clientId, clientSecret, accessToken, accountId);
+      logLine("credentials pre-seeded from env");
+    } else {
+      logLine("waiting for credentials via POST /connect");
+    }
+  }
 
   std::thread engineThread([&engine] { engine.runLoop(); });
   engineThread.detach();
@@ -71,6 +79,7 @@ int main() {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
+    v.set("hasCredentials", engine.hasCredentials());
     long long at = engine.lastReconcileAtMs();
     v.set("lastReconcileAt", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));
     return {200, jsn::dump(v)};
@@ -83,6 +92,27 @@ int main() {
     return {200, last};
   });
 
+  server.route("POST", "/connect", [&engine](const HttpRequest& req) -> HttpResponse {
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    const jsn::Value& v = *parsed;
+    std::string host = v.get("host").asString();
+    std::string clientId = v.get("clientId").asString();
+    std::string clientSecret = v.get("clientSecret").asString();
+    std::string accessToken = v.get("accessToken").asString();
+    const jsn::Value& acct = v.get("accountId");
+    long long accountId = acct.isNumber()
+        ? (long long)acct.asNumber()
+        : std::strtoll(acct.asString().c_str(), nullptr, 10);
+    if (clientId.empty() || accessToken.empty() || accountId <= 0)
+      return {400, "{\"error\":\"need clientId, accessToken, accountId (host/clientSecret optional)\"}"};
+    engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
+                          clientId, clientSecret, accessToken, accountId);
+    logLine("credentials updated via /connect");
+    return {200, "{\"ok\":true}"};
+  });
+
   server.route("POST", "/order", [&engine](const HttpRequest& req) {
     return forward(req.body, &ExecEngine::placeOrder, engine);
   });
@@ -93,8 +123,7 @@ int main() {
     return forward(req.body, &ExecEngine::closePosition, engine);
   });
 
-  logLine("starting: host=" + host + " account=" + accountIdStr +
-          " port=" + std::to_string(port));
+  logLine("starting on port " + std::to_string(port));
   if (!server.run()) return 1;
   return 0;
 }

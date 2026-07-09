@@ -35,6 +35,26 @@ ExecEngine::ExecEngine(std::string host, std::string clientId,
       accessToken_(std::move(accessToken)),
       accountId_(accountId) {}
 
+void ExecEngine::setCredentials(std::string host, std::string clientId,
+                                std::string clientSecret,
+                                std::string accessToken, long long accountId) {
+  std::lock_guard lk(mtx_);
+  host_ = std::move(host);
+  clientId_ = std::move(clientId);
+  clientSecret_ = std::move(clientSecret);
+  accessToken_ = std::move(accessToken);
+  accountId_ = accountId;
+  // Force a clean reconnect+reauth on the next runLoop pass — the old
+  // session (if any) may be authed against a different account/token.
+  ws_.close();
+  authed_ = false;
+}
+
+bool ExecEngine::hasCredentials() {
+  std::lock_guard lk(mtx_);
+  return !clientId_.empty() && !accessToken_.empty() && accountId_ > 0;
+}
+
 bool ExecEngine::isConnected() {
   std::lock_guard lk(mtx_);
   return ws_.isOpen() && authed_;
@@ -200,6 +220,10 @@ void ExecEngine::runLoop() {
   int backoffMs = 1000;
   constexpr int kBackoffCapMs = 60000;
   for (;;) {
+    if (!hasCredentials()) { // waiting for POST /connect from the keeper
+      std::this_thread::sleep_for(milliseconds(1000));
+      continue;
+    }
     if (!isConnected()) {
       if (connectAndAuth()) {
         backoffMs = 1000;
