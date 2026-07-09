@@ -75,13 +75,16 @@ function PositionRow({ p }) {
 // (the truthful reading of a null entry on a rejected-order era row).
 function TradeRow({ t }) {
   const [showChart, setShowChart] = useState(false)
-  const unconfirmed = t.entry_price == null
+  const rejected = t.status === 'rejected'
+  const unconfirmed = !rejected && t.entry_price == null
   return (
     <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold">{t.symbol}</span>
         <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
-        {unconfirmed
+        {rejected
+          ? <Badge tone="warning">✗ REJECTED — broker has no record (reconciled)</Badge>
+          : unconfirmed
           ? <Badge tone="warning">✗ UNCONFIRMED — no broker fill recorded</Badge>
           : (
             <>
@@ -98,7 +101,7 @@ function TradeRow({ t }) {
       </div>
       {unconfirmed && (
         <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
-          The order was sent but no execution price came back from cTrader — most likely rejected (pre-v0.1.100 volume bug era). Check the account's History in cTrader; this row is not counted as a trade.
+          The order was sent but no execution price came back from cTrader — tap "Reconcile with broker" above to settle it against the broker's deal history.
         </p>
       )}
       {showChart && (
@@ -158,6 +161,7 @@ export default function Trade() {
   const [broker, setBroker] = useState(null)     // reconcile snapshot: pending orders, external positions
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
+  const [reconcileNote, setReconcileNote] = useState('')
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -420,7 +424,23 @@ export default function Trade() {
       <div className="grid gap-4 md:grid-cols-2">
         {/* Recent trades */}
         <Card>
-          <h2 className="text-[13px] font-semibold mb-2">Recent trades</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="text-[13px] font-semibold">Recent trades</h2>
+            <Button
+              size="sm" variant="subtle" className="ml-auto" disabled={busy === 'reconcile'}
+              onClick={async () => {
+                setBusy('reconcile')
+                try {
+                  const r = await agentPost('/actions/reconcile-trades', {})
+                  setReconcileNote(`Checked ${r.checked} against ${r.dealsSeen} broker deals — ${r.confirmed} confirmed, ${r.repaired} repaired, ${r.rejected} rejected.`)
+                  await load()
+                } catch (e) { setReconcileNote(`Reconcile failed: ${e.message}`) } finally { setBusy('') }
+              }}
+            >
+              {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile with broker'}
+            </Button>
+          </div>
+          {reconcileNote && <p className="text-[12px] text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
           {trades.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
           <ul className="space-y-1 text-[13px]">
             {trades.map(t => <TradeRow key={t.id} t={t} />)}

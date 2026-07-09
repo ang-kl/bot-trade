@@ -203,7 +203,7 @@ export default function stateRouter(db) {
   router.get('/trades', (_req, res) => {
     const rows = db
       .prepare(
-        "SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 100"
+        "SELECT * FROM trades WHERE status IN ('closed', 'rejected') ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT 100"
       )
       .all()
 

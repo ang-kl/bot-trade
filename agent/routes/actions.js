@@ -158,6 +158,62 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/reconcile-trades — cross-check local trade rows against
+  // the BROKER's deal history (the ground truth). For each row from the
+  // last 30 days:
+  //   · matching deal found + local entry missing → repair entry_price
+  //   · NO deal at the broker → status='rejected' (the order never filled;
+  //     the row stops posing as a trade)
+  // Deal windows are paged in 1-week chunks (cTrader API cap).
+  // -----------------------------------------------------------------------
+  router.post('/reconcile-trades', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const rows = db.prepare(
+        "SELECT * FROM trades WHERE opened_at >= datetime('now', '-30 days') ORDER BY opened_at ASC"
+      ).all()
+      if (rows.length === 0) return res.json({ checked: 0, confirmed: 0, repaired: 0, rejected: 0, details: [] })
+
+      const { wsGetDeals } = await import('../lib/ctrader-ws.js')
+      const toMs = (v) => Date.parse(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z')
+      const from = Math.min(...rows.map(r => toMs(r.opened_at))) - 3_600_000
+      const WEEK = 7 * 24 * 3_600_000
+      const deals = []
+      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
+        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
+        deals.push(...(chunk.deal || []))
+      }
+
+      const map = await ensureSymbolMap(db, creds)
+      const details = []
+      let confirmed = 0; let repaired = 0; let rejected = 0
+      const upEntry = db.prepare('UPDATE trades SET entry_price = ? WHERE id = ?')
+      const upStatus = db.prepare("UPDATE trades SET status = 'rejected', exit_reason = 'no broker fill (reconciled)' WHERE id = ?")
+      for (const r of rows) {
+        const symbolId = map[String(r.symbol).toUpperCase()]
+        const t = toMs(r.opened_at)
+        const match = deals.find(d =>
+          (r.ctrader_position_id && String(d.positionId) === String(r.ctrader_position_id)) ||
+          (String(d.symbolId) === String(symbolId) && Math.abs((d.executionTimestamp || 0) - t) < 15 * 60_000))
+        if (match) {
+          const px = match.executionPrice ?? null
+          const wasNull = r.entry_price == null
+          if (wasNull && px != null) { upEntry.run(px, r.id); repaired++ } else confirmed++
+          details.push({ id: r.id, symbol: r.symbol, result: wasNull ? 'repaired' : 'confirmed', dealId: match.dealId ?? null, positionId: match.positionId ?? null, executionPrice: px })
+        } else if (r.status !== 'rejected') {
+          upStatus.run(r.id); rejected++
+          details.push({ id: r.id, symbol: r.symbol, result: 'rejected', note: 'no matching deal at the broker' })
+        }
+      }
+      res.json({ checked: rows.length, confirmed, repaired, rejected, dealsSeen: deals.length, details, ranAt: new Date().toISOString() })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
   // strategy in the scan loop (fib fade is untouched by this flag).
   // -----------------------------------------------------------------------
