@@ -844,6 +844,7 @@ export default function Tune() {
                 <div className="glass-inset rounded-[12px] p-3 mt-2 text-[12px]">
                   <p className="font-semibold mb-1">
                     {screener.passed.length} of {screener.rows.length} passed{screener.passed.length > 0 ? `: ${screener.passed.join(', ')}` : ''}
+                    {screener.rows.some(r => r.error) && ` · ${screener.rows.filter(r => r.error).length} could not be fetched (shown below)`}
                   </p>
                   <ul className="space-y-0.5">
                     {screener.rows.filter(r => !r.pass).map(r => (

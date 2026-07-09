@@ -244,16 +244,21 @@ export default function actionsRouter(db) {
       const { screenBars } = await import('../services/cup-handle.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const opts = { minPrice: Number(req.body?.minPrice ?? 20), minAvgVolume: Number(req.body?.minAvgVolume ?? 0) }
-      const rows = []
-      for (const name of names) {
+      // 3 symbols at a time, 20s cap each — one slow instrument must neither
+      // serialize the run into a gateway timeout nor sink the others.
+      const screenOne = async (name) => {
         const symbolId = map[name]
-        if (!symbolId) { rows.push({ symbol: name, error: 'not offered by this broker account' }); continue }
+        if (!symbolId) return { symbol: name, error: 'not offered by this broker account' }
         try {
-          const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1d'], 260, 60_000)
-          rows.push({ symbol: name, ...screenBars(fetched['1d'] || [], opts) })
+          const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1d'], 260, 20_000)
+          return { symbol: name, ...screenBars(fetched['1d'] || [], opts) }
         } catch (err) {
-          rows.push({ symbol: name, error: err.message })
+          return { symbol: name, error: err.message }
         }
+      }
+      const rows = []
+      for (let i = 0; i < names.length; i += 3) {
+        rows.push(...await Promise.all(names.slice(i, i + 3).map(screenOne)))
       }
       res.json({
         rows,
