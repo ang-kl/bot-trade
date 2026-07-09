@@ -30,6 +30,13 @@ function ago(iso) {
   return `${Math.round(mins / 1440)}d ago`
 }
 
+// sqlite writes "YYYY-MM-DD HH:MM:SS" (UTC, no zone marker) — parse as UTC.
+function toMs(v) {
+  if (!v) return null
+  const t = Date.parse(String(v).includes('T') ? v : v.replace(' ', 'T') + 'Z')
+  return Number.isFinite(t) ? t : null
+}
+
 // One open-position row with an expandable live chart (entry/SL/TP overlaid).
 function PositionRow({ p }) {
   const [showChart, setShowChart] = useState(false)
@@ -100,6 +107,8 @@ function TradeRow({ t }) {
             symbol={t.symbol}
             timeframe={t.label_timeframe || '1h'}
             lines={{ entry: t.entry_price, sl: t.sl_price, tp: t.tp_price }}
+            at={toMs(t.closed_at || t.opened_at)}
+            markers={{ entryT: toMs(t.opened_at), exitT: toMs(t.closed_at) }}
           />
         </div>
       )}
@@ -130,6 +139,8 @@ function RiskEventRow({ ev }) {
             symbol={ev.symbol}
             timeframe={prop.timeframe || '1h'}
             lines={{ entry: prop.entry, sl: prop.sl, tp: prop.tp1 }}
+            at={toMs(ev.created_at)}
+            markers={{ entryT: toMs(ev.created_at) }}
           />
         </div>
       )}
