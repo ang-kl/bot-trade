@@ -87,6 +87,7 @@ export default function actionsRouter(db) {
       const fvgFilter = req.body?.fvgFilter ? {} : null
       const sessionFilter = !!req.body?.sessionFilter
       const strategy = req.body?.strategy === 'cup_handle' ? 'cup_handle' : 'fib_618_fade'
+      const entryMode = req.body?.entryMode === 'touch' ? 'touch' : 'close'
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
@@ -119,6 +120,7 @@ export default function actionsRouter(db) {
               sessionFilter,
               symbol: name,
               strategy,
+              entryMode,
               // mirror live autotrade's conviction bar unless the caller overrides
               minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
             }
@@ -141,7 +143,7 @@ export default function actionsRouter(db) {
           symbols[name] = { error: err.message }
         }
       }
-      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, ranAt: new Date().toISOString() }
+      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, entryMode, ranAt: new Date().toISOString() }
       // Persist a self-contained HTML report under backtest/results/ and hand
       // the same document to the UI for a browser download. A write failure
       // (read-only disk) must not sink the backtest itself.

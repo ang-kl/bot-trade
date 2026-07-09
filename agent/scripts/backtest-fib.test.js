@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveExit } from './backtest-fib.js'
+import { resolveExit, resolvePending } from './backtest-fib.js'
 import { inPrimeSession } from '../lib/sessions.js'
 
 const longPos = { dir: 1, entry: 100, sl: 95, tp: 110, entryT: 0, capMs: 0 }
@@ -54,4 +54,24 @@ test('inPrimeSession: indices follow the exchange window, crypto always on', () 
   assert.equal(inPrimeSession('US30', tue15utc), true)
   assert.equal(inPrimeSession('US30', tue09utc), false)
   assert.equal(inPrimeSession('BTCUSD', Date.UTC(2026, 6, 11, 3, 0)), true)
+})
+
+// --- touch-fill (pending order) mechanics -----------------------------------
+
+test('resolvePending: fills when the bar range touches the level', () => {
+  const p = { dir: 1, level: 100, sl: 95, tp: 110, expireT: 10_000 }
+  assert.equal(resolvePending(p, { t: 1, o: 103, h: 104, l: 99.5, c: 102 }), 'fill')
+})
+
+test('resolvePending: cancels on close beyond the stop before fill', () => {
+  const p = { dir: 1, level: 100, sl: 95, tp: 110, expireT: 10_000 }
+  assert.equal(resolvePending(p, { t: 1, o: 96, h: 97, l: 93, c: 94 }), 'cancel')
+  const short = { dir: -1, level: 100, sl: 105, tp: 90, expireT: 10_000 }
+  assert.equal(resolvePending(short, { t: 1, o: 104, h: 107, l: 103, c: 106 }), 'cancel')
+})
+
+test('resolvePending: cancels on expiry, null while waiting', () => {
+  const p = { dir: 1, level: 100, sl: 95, tp: 110, expireT: 5_000 }
+  assert.equal(resolvePending(p, { t: 5_000, o: 102, h: 103, l: 101, c: 102 }), 'cancel')
+  assert.equal(resolvePending(p, { t: 1, o: 102, h: 103, l: 101, c: 102 }), null)
 })
