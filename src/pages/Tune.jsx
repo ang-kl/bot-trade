@@ -883,41 +883,36 @@ export default function Tune() {
                 })}
               </div>
             )}
-            <div className="grid gap-x-8 gap-y-0 lg:grid-cols-2">
-              {singles.map((s) => {
+            {/* Two labelled half-tables side by side — headers say what every
+                cell means; the right half is visibly separated by a rule. */}
+            {(() => {
+              const renderRow = (s) => {
                 const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
+                const scan = scanInfo?.by?.[s.symbol]
+                const on = s.enabled !== false
                 return (
-                  <div key={s.symbol} className="flex flex-nowrap items-center gap-1.5 border-b border-[var(--color-border)] py-1 text-[13px] min-w-0">
-                    <span className="font-semibold w-[4.5rem] shrink-0">{s.symbol}</span>
-                    <Badge tone={s.enabled !== false ? 'up' : 'neutral'}>{s.enabled !== false ? 'ON' : 'OFF'}</Badge>
-                    {(() => {
-                      const scan = scanInfo?.by?.[s.symbol]
-                      if (!scan) return null
-                      return (
-                        <span className="text-[12px] tabular-nums truncate min-w-0">
-                          {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
-                          {' '}
-                          {scan.bias && scan.bias !== 'skip'
-                            ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
-                                {scan.bias.toUpperCase()} {scan.timeframe || ''}{scan.confidence != null ? ` ${scan.confidence}/10` : ''}
-                              </span>
-                            : <span className="text-[var(--color-text-sub)]">no setup</span>}
-                        </span>
-                      )
-                    })()}
-                    <span className="ml-auto flex items-center gap-1.5 shrink-0">
-                      {tested != null && (
-                        <span
-                          className="rounded-[20px] border border-[var(--color-info-border)] bg-[var(--color-info-bg)] px-1.5 py-0.5 text-[11px] font-semibold text-[var(--color-info-text)]"
-                          title={`${tested} trade${tested === 1 ? '' : 's'} in the last backtest (all timeframes)`}
-                        >
-                          {tested} bt
-                        </span>
-                      )}
+                  <tr key={s.symbol} className="border-t border-[var(--color-border)]">
+                    <td className="pr-2 py-1 font-semibold">{s.symbol}</td>
+                    <td className="pr-2"><Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge></td>
+                    <td className="pr-2 text-[12px] tabular-nums truncate max-w-[9rem]">
+                      {scan
+                        ? <>
+                            {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
+                            {' '}
+                            {scan.bias && scan.bias !== 'skip'
+                              ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
+                                  {scan.bias.toUpperCase()} {scan.timeframe || ''}{scan.confidence != null ? ` ${scan.confidence}/10` : ''}
+                                </span>
+                              : <span className="text-[var(--color-text-sub)]">no setup</span>}
+                          </>
+                        : <span className="text-[var(--color-text-sub)]">—</span>}
+                    </td>
+                    <td className="pr-2 text-[12px] tabular-nums text-center">{tested != null ? tested : '—'}</td>
+                    <td className="pr-2">
                       <Input
-                        type="number" step="0.01" className="w-14 !py-0.5 !min-h-0 text-[12px]" value={s.maxVolume ?? ''}
-                        placeholder="0.01" title="Max lots for this symbol" aria-label={`Max lots for ${s.symbol}`}
+                        type="number" step="0.01" className="w-16 !py-0.5 !min-h-0 text-[12px]" value={s.maxVolume ?? ''}
+                        placeholder="0.01" aria-label={`Max lots for ${s.symbol}`}
                         onChange={e => {
                           const next = [...symbols]
                           next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
@@ -925,15 +920,44 @@ export default function Tune() {
                         }}
                         onBlur={() => pushSymbols(symbols)}
                       />
+                    </td>
+                    <td className="whitespace-nowrap">
                       <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
-                        {s.enabled !== false ? 'Off' : 'On'}
+                        {on ? 'Disable' : 'Enable'}
                       </Button>
-                      <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[11px]" aria-label={`Remove ${s.symbol}`} title={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>✕</Button>
-                    </span>
-                  </div>
+                      {' '}
+                      <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[11px]" aria-label={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                    </td>
+                  </tr>
                 )
-              })}
-            </div>
+              }
+              const header = (
+                <thead>
+                  <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
+                    <th className="pr-2 pb-1 font-semibold">Symbol</th>
+                    <th className="pr-2 pb-1 font-semibold">Scanned</th>
+                    <th className="pr-2 pb-1 font-semibold">Live signal</th>
+                    <th className="pr-2 pb-1 font-semibold text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
+                    <th className="pr-2 pb-1 font-semibold">Max lots</th>
+                    <th className="pb-1 font-semibold">Actions</th>
+                  </tr>
+                </thead>
+              )
+              const half = Math.ceil(singles.length / 2)
+              const halves = [singles.slice(0, half), singles.slice(half)].filter(h => h.length)
+              return (
+                <div className="grid gap-x-0 lg:grid-cols-2">
+                  {halves.map((rows, hi) => (
+                    <div key={hi} className={hi === 1 ? 'lg:border-l lg:border-[var(--color-border)] lg:pl-6' : 'lg:pr-6'}>
+                      <table className="w-full text-[13px]">
+                        {header}
+                        <tbody>{rows.map(renderRow)}</tbody>
+                      </table>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
             </p>
