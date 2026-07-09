@@ -60,3 +60,18 @@ Docker image (same as Railway uses):
 ```sh
 docker build -t cpp-exec .
 ```
+
+
+## Deploy checklist (owner steps — Railway dashboard)
+
+1. Railway → New Service → "Deploy from GitHub repo" → pick this repo, set
+   **Root Directory = cpp-exec** (it finds the Dockerfile).
+2. Variables: `CTRADER_HOST` (demo.ctraderapi.com), `CTRADER_CLIENT_ID`,
+   `CTRADER_CLIENT_SECRET`, `CTRADER_ACCESS_TOKEN`, `CTRADER_ACCOUNT_ID`
+   (copy from the Node agent service), plus a NEW long random `EXEC_SECRET`.
+3. On the **Node agent** service add: `EXEC_URL` = the sidecar's private URL,
+   `EXEC_SECRET` = same value. Do NOT set `EXEC_ENGINE` yet.
+4. Parity: `node agent/scripts/exec-parity.js` (read-only), then
+   `node agent/scripts/exec-parity.js --order` (one min order on DEMO,
+   auto-closed). Both must print PASS.
+5. Flip: set `EXEC_ENGINE=cpp` on the Node service. Rollback = unset it.
