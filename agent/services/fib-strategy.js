@@ -348,14 +348,22 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     // repainting/lookahead trap: intrabar wicks trigger entries a closed-bar
     // rule (and any backtest of it) would never take. The forming bar's close
     // still feeds lastPrice above — right for pricing, wrong for signals.
-    if (!signal) {
+    // Shadowing fix: an unarmed larger timeframe must not hide an armed
+    // smaller one — a preferred-TF (armed) signal REPLACES a fallback signal.
+    const preferred = opts.preferredTfs || null
+    const isPreferred = (tf) => !preferred || preferred.includes(tf)
+    if (!signal || (preferred && !signal._preferred)) {
       const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-      signal = computeFibSignal(closed, timeframe, opts)
+      let cand = computeFibSignal(closed, timeframe, opts)
       // Cup & Handle is a SEPARATE strategy (own module/toggle) that shares
       // this scan's bar cache — one fetch serves both rule sets.
-      if (!signal && opts.cupHandle) {
-        signal = computeCupHandleSignal(closed, timeframe, opts)
+      if (!cand && opts.cupHandle) {
+        cand = computeCupHandleSignal(closed, timeframe, opts)
+      }
+      if (cand) {
+        cand._preferred = isPreferred(timeframe)
+        if (!signal || (cand._preferred && !signal._preferred)) signal = cand
       }
     }
   }
@@ -389,7 +397,10 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
       const symbol = w.symbol
       const symbolId = symbolMap[symbol.toUpperCase()]
       if (!symbolId) return { symbol, signal: null, lastPrice: null, error: 'symbolId unknown — call POST /actions/symbol-map' }
-      return scanSymbolFib(creds, symbol, symbolId, scanOpts)
+      // Armed timeframes for THIS symbol (matrix beats the TF-wide list) —
+      // scanSymbolFib prefers signals it can actually trade.
+      const preferredTfs = options.matrix?.[symbol.toUpperCase()] || options.armedTfs || null
+      return scanSymbolFib(creds, symbol, symbolId, { ...scanOpts, preferredTfs })
     }))
     results.push(...chunkResults)
   }

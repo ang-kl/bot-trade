@@ -274,6 +274,19 @@ async function mountRoutes() {
 
   try {
     const { default: actionsRouter } = await import('./routes/actions.js');
+    // Owner's action audit trail — every mutating call to /actions is a
+    // human (or UI) decision; log it. Secret-looking fields are redacted.
+    app.use('/actions', (req, _res, next) => {
+      if (req.method === 'POST') {
+        try {
+          const redacted = JSON.stringify(req.body || {}, (k, v) =>
+            /secret|token|password|key/i.test(k) ? '[redacted]' : v)
+          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+            .run(req.method, req.path, redacted.slice(0, 2000))
+        } catch { /* logging must never block the action */ }
+      }
+      next()
+    });
     app.use('/actions', actionsRouter(db));
   } catch (err) {
     console.warn('[boot] routes/actions.js not loaded:', err.message);

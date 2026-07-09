@@ -162,11 +162,12 @@ export default function Trade() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [reconcileNote, setReconcileNote] = useState('')
+  const [armed, setArmed] = useState(null)  // { timeframes, matrix } — what autotrade may act on
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [h, s, p, t, r, rc, bo] = await Promise.all([
+      const [h, s, p, t, r, rc, bo, atf] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -174,6 +175,7 @@ export default function Trade() {
         agentGet('/state/risk-events?limit=15'),
         agentGet('/state/risk-config').catch(() => null),
         agentGet('/state/broker-orders').catch(() => null),
+        agentGet('/state/autotrade-timeframes').catch(() => null),
       ])
       setHealth(h)
       setScans(s.rows || s.scans || [])
@@ -182,6 +184,7 @@ export default function Trade() {
       setRiskEvents(r.rows || [])
       setAccount(rc?.derived || null)
       setBroker(bo || null)
+      setArmed(atf || null)
       setError('')
     } catch (e) {
       setError(e.message)
@@ -255,7 +258,13 @@ export default function Trade() {
             <>Next: run the <strong>backtest</strong> on the <NavTab to="/tune">Tune</NavTab> tab — if a timeframe shows GO, an "Activate quant trading" button appears right under the results.</>
           )}
           {health && health.broker?.linked && health.autotradeEnabled && (
-            <span className="font-semibold">Quant trading is ACTIVE on the {health.broker.isLive ? 'LIVE ⚠' : 'demo'} account — the bot scans every 5 minutes and trades passing signals by itself. You can close this window.</span>
+            <span>
+              <span className="font-semibold">Quant trading is ACTIVE on the {health.broker.isLive ? 'LIVE ⚠' : 'demo'} account.</span>
+              {' '}Armed{armed?.matrix && Object.keys(armed.matrix).length > 0
+                ? <> per instrument: <strong>{Object.entries(armed.matrix).map(([sym, tfs]) => `${sym} (${tfs.join(', ')})`).join(' · ')}</strong></>
+                : <> timeframes: <strong>{(armed?.timeframes || []).join(', ') || '—'}</strong> (all watchlist symbols)</>}.
+              {' '}The bot scans every 5 minutes; an order reaches cTrader only when a signal passes every gate — <strong>nothing is parked in advance</strong>, so an empty cTrader means "waiting", not "broken".
+            </span>
           )}
         </div>
       </Card>
@@ -449,7 +458,25 @@ export default function Trade() {
 
         {/* Risk decisions */}
         <Card>
-          <h2 className="text-[13px] font-semibold mb-2">Risk manager decisions</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="text-[13px] font-semibold">Risk manager decisions</h2>
+            <Button
+              size="sm" variant="subtle" className="ml-auto"
+              title="Every action you sent the agent (orders, toggles, arming, watchlist edits), newest first"
+              onClick={async () => {
+                try {
+                  const r = await agentGet('/state/action-log?limit=1000')
+                  const text = (r.rows || []).map(x => `${x.at}Z  ${x.method} ${x.path}  ${x.body || ''}`).join('\n')
+                  const url = URL.createObjectURL(new Blob([text || 'no actions logged yet'], { type: 'text/plain' }))
+                  const a = document.createElement('a')
+                  a.href = url; a.download = 'action-log.txt'; a.click()
+                  URL.revokeObjectURL(url)
+                } catch (e) { setError(e.message) }
+              }}
+            >
+              Download my action log
+            </Button>
+          </div>
           {riskEvents.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
           <ul className="space-y-1 text-[13px]">
             {riskEvents.map(ev => <RiskEventRow key={ev.id} ev={ev} />)}

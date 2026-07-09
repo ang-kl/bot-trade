@@ -147,6 +147,14 @@ const TABLES = `
     value TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS action_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL DEFAULT (datetime('now')),
+    method TEXT,
+    path TEXT NOT NULL,
+    body TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS risk_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol         TEXT,

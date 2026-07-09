@@ -646,8 +646,10 @@ async function runLoop(db) {
     // classic scan set only covers the native ladder.
     let extraTimeframes = []
     try { extraTimeframes = JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { /* keep [] */ }
+    let scanMatrix = null
+    try { scanMatrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, cupHandle: cupHandleOn, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, cupHandle: cupHandleOn, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {
