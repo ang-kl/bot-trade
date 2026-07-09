@@ -4,7 +4,7 @@
 // entry/SL/TP and the scanner's 61.8% fib level, plus live tick updates
 // from the agent's SSE stream. Colours: blue up / red down (no green).
 import { useEffect, useRef, useState } from 'react'
-import { createChart, CandlestickSeries } from 'lightweight-charts'
+import { createChart, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
 import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
 
 const TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
@@ -17,7 +17,10 @@ function niceFmt(v, ref) {
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
-export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {} }) {
+// Historical mode: pass `at` (epoch ms of a past trade) — bars are fetched
+// AROUND that moment (no polling, no live ticks, no fib overlay) and
+// `markers` ({ entryT, exitT } epoch ms) pins the fill/exit on the candles.
+export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {}, at = null, markers = null }) {
   const [timeframe, setTimeframe] = useState(tf0)
   const [error, setError] = useState('')
   const [fib, setFib] = useState(null)
@@ -59,22 +62,36 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     let dead = false
     const load = async () => {
       try {
-        const r = await agentPost('/actions/chart', { symbol, timeframe, bars: 200 })
+        const r = await agentPost('/actions/chart', { symbol, timeframe, bars: 200, ...(at ? { centerT: at } : {}) })
         if (dead || !chartRef.current) return
         const bars = (r.bars || []).map(b => ({
           time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c,
         }))
         chartRef.current.series.setData(bars)
         lastBarRef.current = bars[bars.length - 1] || null
+        if (markers && bars.length) {
+          const snap = (ms) => {
+            const target = Math.floor(ms / 1000)
+            let best = bars[0].time
+            for (const bb of bars) { if (bb.time <= target) best = bb.time; else break }
+            return best
+          }
+          const defs = [
+            markers.entryT && { time: snap(markers.entryT), position: 'belowBar', shape: 'arrowUp', color: UP, text: 'entry' },
+            markers.exitT && { time: snap(markers.exitT), position: 'aboveBar', shape: 'square', color: VIOLET, text: 'exit' },
+          ].filter(Boolean)
+          createSeriesMarkers(chartRef.current.series, defs)
+        }
         setLastClose(r.lastPrice ?? null)
         setFib(r.fib || null)
         setError('')
       } catch (e) { if (!dead) setError(e.message) }
     }
     load()
+    if (at) return () => { dead = true } // historical: one fetch, no polling
     const t = setInterval(load, POLL_MS)
     return () => { dead = true; clearInterval(t) }
-  }, [symbol, timeframe])
+  }, [symbol, timeframe, at])
 
   // Price lines: entry/SL/TP from the position + the scanner's 61.8% level.
   useEffect(() => {
@@ -95,8 +112,9 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     }
   }, [lines.entry, lines.sl, lines.tp, fib?.level618])
 
-  // Live ticks: update the forming candle in place.
+  // Live ticks: update the forming candle in place (not for past trades).
   useEffect(() => {
+    if (at) return undefined
     const stream = agentStreamPrices(
       [symbol],
       t => {
@@ -112,7 +130,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       () => setLive(false),
     )
     return () => stream.close()
-  }, [symbol])
+  }, [symbol, at])
 
   return (
     <div>
@@ -128,9 +146,11 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           >{t}</button>
         ))}
         <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-          {live && tick
-            ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
-            : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
+          {at
+            ? <>historical — window around {new Date(at).toLocaleString()}</>
+            : live && tick
+              ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
+              : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
         </span>
       </div>
       {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
