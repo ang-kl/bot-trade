@@ -235,7 +235,7 @@ export default function Trade() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-4">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {/* Readiness — answers "can this thing trade for me right now?" at a glance */}
@@ -435,11 +435,11 @@ export default function Trade() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2 items-start">
         {/* Recent trades */}
         <Card>
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-[13px] font-semibold">Recent trades</h2>
+            <h2 className="text-[13px] font-semibold">Recent trades <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
             <Button
               size="sm" variant="subtle" className="ml-auto" disabled={busy === 'reconcile'}
               onClick={async () => {

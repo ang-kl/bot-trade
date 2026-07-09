@@ -153,7 +153,7 @@ export default function Accounts() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-[14px] font-bold t-heading">Accounts</h1>
         <span className="text-[12px] text-[var(--color-text-sub)]">
-          bot's account auto-refreshes every 30s{updatedAt ? ` · updated ${updatedAt.toLocaleTimeString()}` : ''}
+          broker truth for ALL your accounts — manual trades show here · auto-refresh 30s{updatedAt ? ` · updated ${updatedAt.toLocaleTimeString()}` : ''}
         </span>
         <span className="ml-auto">
           <Button size="sm" variant="ghost" onClick={loadAll} disabled={loadingAll}>
