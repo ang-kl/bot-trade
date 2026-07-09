@@ -462,6 +462,20 @@ export default function Trade() {
             <h2 className="text-[13px] font-semibold">Risk manager decisions</h2>
             <Button
               size="sm" variant="subtle" className="ml-auto"
+              title="Prove the C++ execution engine matches the JS path: credentials push, broker login, open-position diff. Read-only."
+              onClick={async () => {
+                setBusy('parity')
+                try {
+                  const r = await agentPost('/actions/exec-parity', {})
+                  setReconcileNote(`C++ parity ${r.pass ? 'PASS ✓' : 'FAIL ✗'} — ${(r.steps || []).join(' · ')}${r.error ? ` · ${r.error}` : ''}`)
+                } catch (e) { setReconcileNote(`C++ parity failed to run: ${e.message}`) } finally { setBusy('') }
+              }}
+              disabled={busy === 'parity'}
+            >
+              {busy === 'parity' ? 'Testing C++ engine…' : 'Test C++ engine'}
+            </Button>
+            <Button
+              size="sm" variant="subtle"
               title="Every action you sent the agent (orders, toggles, arming, watchlist edits), newest first"
               onClick={async () => {
                 try {
