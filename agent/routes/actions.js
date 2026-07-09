@@ -153,6 +153,41 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /actions/instrument-tree — every instrument the broker account
+  // offers, classified: asset class → category → symbols. Cached in
+  // agent_state for 24h (the catalogue barely changes); ?refresh=1 forces.
+  // Backs the Tune Watchlist classification tree.
+  // -----------------------------------------------------------------------
+  router.get('/instrument-tree', async (req, res) => {
+    try {
+      const CACHE_KEY = 'instrument_tree_json'
+      if (!req.query.refresh) {
+        const cached = getState(db, CACHE_KEY)
+        if (cached) {
+          const parsed = JSON.parse(cached)
+          if (Date.now() - Date.parse(parsed.builtAt) < 24 * 3600_000) return res.json(parsed)
+        }
+      }
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const { wsGetAssetClasses, wsGetSymbolCategories, wsGetSymbolsList } = await import('../lib/ctrader-ws.js')
+      const [ac, cat, sym] = await Promise.all([
+        wsGetAssetClasses(host, clientId, clientSecret, accessToken, accountId),
+        wsGetSymbolCategories(host, clientId, clientSecret, accessToken, accountId),
+        wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId),
+      ])
+      const { buildInstrumentTree } = await import('../lib/instrument-tree.js')
+      const tree = buildInstrumentTree(ac.assetClass || [], cat.symbolCategory || [], sym.symbol || [])
+      const payload = { ...tree, builtAt: new Date().toISOString() }
+      setState(db, CACHE_KEY, JSON.stringify(payload))
+      res.json(payload)
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /actions/stream-prices?symbols=EURUSD,BTCUSD — live tick feed.
   // Server-sent events: one cTrader spot subscription per client, ticks
   // forwarded as `data: {"symbol","bid","ask","t"}` frames. Closes with the

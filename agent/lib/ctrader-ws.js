@@ -44,6 +44,10 @@ export const PT = Object.freeze({
   SYMBOL_BY_ID_RES:        2117,
   TRADER_REQ:              2121,
   TRADER_RES:              2122,
+  ASSET_CLASS_LIST_REQ:    2153,
+  ASSET_CLASS_LIST_RES:    2154,
+  SYMBOL_CATEGORY_REQ:     2160,
+  SYMBOL_CATEGORY_RES:     2161,
   GET_ACCOUNTS_BY_TOKEN_REQ: 2149,
   GET_ACCOUNTS_BY_TOKEN_RES: 2150,
   RECONCILE_REQ:           2124,
@@ -424,6 +428,25 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
   ], timeoutMs), 2, 'wsGetSymbolsList')
+}
+
+/**
+ * Asset classes (Forex, Metals, Indices, …) and symbol categories (the
+ * broker's sub-classification under each class). Together with the light
+ * symbol list these build the instrument tree: class → category → symbols.
+ */
+export function wsGetAssetClasses(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.ASSET_CLASS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.ASSET_CLASS_LIST_RES },
+  ], timeoutMs), 2, 'wsGetAssetClasses')
+}
+
+export function wsGetSymbolCategories(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.SYMBOL_CATEGORY_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.SYMBOL_CATEGORY_RES },
+  ], timeoutMs), 2, 'wsGetSymbolCategories')
 }
 
 /**

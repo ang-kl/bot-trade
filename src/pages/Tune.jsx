@@ -237,18 +237,8 @@ function sortBtRows(entries, { col, dir }) {
   })
 }
 
-// Rough instrument classifier for the catalogue browser — display-only.
-function instrumentCategory(sym) {
-  const s = sym.toUpperCase()
-  if (s.endsWith('.US') || s.endsWith('.UK') || s.endsWith('.DE') || s.endsWith('.AU') || s.includes('.')) return 'Stocks'
-  if (/^X(AU|AG|PT|PD)/.test(s)) return 'Metals'
-  if (/(BTC|ETH|XRP|SOL|ADA|DOG|LTC|BNB|DOT|LINK)/.test(s)) return 'Crypto'
-  if (/^(US30|US500|NAS100|USTEC|UK100|GER40|FRA40|EUSTX|JPN225|AUS200|HK50|CN50|US2000|VIX)/.test(s)) return 'Indices'
-  if (/(OIL|CRUDE|BRENT|NATGAS|GASOLINE|COCOA|COFFEE|SUGAR|COTTON|WHEAT|CORN|SOYBEAN|COPPER|ALUMIN)/.test(s)) return 'Energy & Commodities'
-  if (/^[A-Z]{6}$/.test(s)) return 'FX'
-  return 'Other'
-}
-const BROWSE_CATS = ['All', 'FX', 'Metals', 'Indices', 'Energy & Commodities', 'Crypto', 'Stocks', 'Other']
+// (The old regex-based instrumentCategory browser was replaced by the
+// broker-truth classification tree from GET /actions/instrument-tree.)
 
 function Toggle({ on, onClick, label }) {
   return (
@@ -290,7 +280,16 @@ export default function Tune() {
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
   const [browse, setBrowse] = useState(false)        // full-catalogue browser open?
   const [browseQ, setBrowseQ] = useState('')
-  const [browseCat, setBrowseCat] = useState('All')
+  // Broker-truth classification tree (asset class → category → symbols) for
+  // the tree browser; loaded once when the browser is first opened.
+  const [tree, setTree] = useState(null)
+  const [treeErr, setTreeErr] = useState('')
+  const [openNodes, setOpenNodes] = useState(() => new Set())
+  const toggleNode = (key) => setOpenNodes(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
@@ -430,6 +429,29 @@ export default function Tune() {
     setNewSymbol('')
     pushSymbols([...symbols, { symbol: sym, enabled: true }])
   }
+
+  // --- Classification groups -----------------------------------------------
+  // Ticking a category adds its symbols tagged { group } — the agent loop
+  // keeps seeing plain per-symbol rows (nothing to change server-side), but
+  // the watchlist UI folds every group into ONE row: "Forex / Majors (42)".
+  const groupOf = new Map()
+  for (const s of symbols) {
+    if (!s.group) continue
+    if (!groupOf.has(s.group)) groupOf.set(s.group, [])
+    groupOf.get(s.group).push(s)
+  }
+  const singles = symbols.filter(s => !s.group)
+  const groupSelected = (key) => groupOf.has(key)
+
+  const addGroup = (key, memberNames) => {
+    const have = new Set(symbols.map(s => s.symbol))
+    const fresh = memberNames.filter(n => !have.has(n)).map(n => ({ symbol: n, enabled: true, group: key }))
+    if (fresh.length === 0) { setError('All symbols in this classification are already in the watchlist'); return }
+    pushSymbols([...symbols, ...fresh])
+  }
+  const removeGroup = (key) => pushSymbols(symbols.filter(s => s.group !== key))
+  const toggleGroupEnabled = (key, on) =>
+    pushSymbols(symbols.map(s => (s.group === key ? { ...s, enabled: on } : s)))
 
   const runBacktest = async () => {
     if (btSymbols.length === 0) { setBtError('No symbols selected — enable some on the Watchlist tab.'); return }
@@ -684,42 +706,97 @@ export default function Tune() {
             {allSymbols.length > 0 && (
               <div className="mb-3">
                 <button
-                  type="button" onClick={() => setBrowse(b => !b)} aria-expanded={browse}
+                  type="button" aria-expanded={browse}
+                  onClick={() => {
+                    setBrowse(b => !b)
+                    if (!tree) {
+                      agentGet('/actions/instrument-tree')
+                        .then(t => { setTree(t); setTreeErr('') })
+                        .catch(e => setTreeErr(e.message))
+                    }
+                  }}
                   className="text-[12px] font-semibold text-[var(--color-accent)] cursor-pointer hover:underline"
                 >
                   {browse ? '▾' : '▸'} Browse all {allSymbols.length.toLocaleString()} instruments on this account
                 </button>
                 {browse && (() => {
+                  if (treeErr) return <p className="text-[12px] text-[var(--color-warning-text)] mt-2">Could not load the classification tree: {treeErr}</p>
+                  if (!tree) return <p className="text-[12px] text-[var(--color-text-sub)] mt-2">Loading classifications…</p>
                   const bq = browseQ.trim().toUpperCase()
-                  const filtered = allSymbols.filter(s =>
-                    (browseCat === 'All' || instrumentCategory(s) === browseCat) &&
-                    (!bq || s.toUpperCase().includes(bq)))
-                  const shown = filtered.slice(0, 200)
                   const inList = new Set(symbols.map(s => s.symbol))
                   return (
                     <div className="glass-inset rounded-[12px] p-3 mt-2">
                       <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                        <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter…" className="max-w-[180px] !py-1 !min-h-0" />
-                        {BROWSE_CATS.map(c => (
-                          <button key={c} type="button" onClick={() => setBrowseCat(c)}
-                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold cursor-pointer min-h-[28px] ${browseCat === c ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
-                          >{c}</button>
-                        ))}
-                        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{filtered.length.toLocaleString()} match{filtered.length === 1 ? '' : 'es'}{filtered.length > 200 ? ' — showing first 200, refine the filter' : ''}</span>
+                        <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter symbols…" className="max-w-[180px] !py-1 !min-h-0" />
+                        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
+                          {tree.total.toLocaleString()} instruments · tick a classification to add it as ONE watchlist row
+                        </span>
                       </div>
-                      <div className="max-h-72 overflow-y-auto grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {shown.map(s => (
-                          <div key={s} className="flex items-center gap-2 border-b border-[var(--color-border)] py-1 text-[12px]">
-                            <span className="font-semibold">{s}</span>
-                            <span className="text-[var(--color-text-sub)] text-[10px]">{instrumentCategory(s)}</span>
-                            <span className="ml-auto">
-                              {inList.has(s)
-                                ? <span className="text-[11px] text-[var(--color-text-sub)]">in watchlist</span>
-                                : <Button size="sm" variant="subtle" onClick={() => pushSymbols([...symbols, { symbol: s, enabled: true }])}>Add</Button>}
-                            </span>
-                          </div>
-                        ))}
-                        {shown.length === 0 && <span className="text-[12px] text-[var(--color-text-sub)] py-2">Nothing matches.</span>}
+                      <div className="max-h-96 overflow-y-auto text-[12px]">
+                        {tree.classes.map(cls => {
+                          const clsKey = `c:${cls.name}`
+                          const clsOpen = openNodes.has(clsKey) || !!bq
+                          const cats = bq
+                            ? cls.categories
+                                .map(c => ({ ...c, symbols: c.symbols.filter(s => s.toUpperCase().includes(bq)) }))
+                                .filter(c => c.symbols.length > 0)
+                            : cls.categories
+                          if (bq && cats.length === 0) return null
+                          return (
+                            <div key={cls.name} className="border-b border-[var(--color-border)] last:border-b-0">
+                              <button
+                                type="button" onClick={() => toggleNode(clsKey)} aria-expanded={clsOpen}
+                                className="flex w-full items-center gap-2 py-1.5 min-h-[36px] cursor-pointer font-bold"
+                              >
+                                <span aria-hidden="true">{clsOpen ? '▾' : '▸'}</span>
+                                {cls.name}
+                                <span className="text-[var(--color-text-sub)] font-normal">({cls.count})</span>
+                              </button>
+                              {clsOpen && cats.map(cat => {
+                                const key = `${cls.name} / ${cat.name}`
+                                const catKey = `g:${key}`
+                                const catOpen = openNodes.has(catKey) || !!bq
+                                const selected = groupSelected(key)
+                                return (
+                                  <div key={cat.name} className="pl-5">
+                                    <div className="flex items-center gap-2 py-1 min-h-[36px]">
+                                      <button
+                                        type="button" onClick={() => toggleNode(catKey)} aria-expanded={catOpen}
+                                        className="flex items-center gap-2 cursor-pointer font-semibold"
+                                      >
+                                        <span aria-hidden="true">{catOpen ? '▾' : '▸'}</span>
+                                        {cat.name}
+                                        <span className="text-[var(--color-text-sub)] font-normal">({cat.count})</span>
+                                      </button>
+                                      <label className="ml-auto flex items-center gap-1.5 text-[11px] text-[var(--color-text-sub)] cursor-pointer pr-1">
+                                        <input
+                                          type="checkbox" checked={selected}
+                                          onChange={e => (e.target.checked ? addGroup(key, cat.symbols) : removeGroup(key))}
+                                          aria-label={`Add ${key} (${cat.count} symbols) to watchlist as one group row`}
+                                        />
+                                        whole group
+                                      </label>
+                                    </div>
+                                    {catOpen && (
+                                      <div className="grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3 pl-5 pb-1">
+                                        {cat.symbols.map(s => (
+                                          <div key={s} className="flex items-center gap-2 border-b border-[var(--color-border)] py-0.5">
+                                            <span className="font-semibold">{s}</span>
+                                            <span className="ml-auto">
+                                              {inList.has(s)
+                                                ? <span className="text-[11px] text-[var(--color-text-sub)]">in watchlist</span>
+                                                : <Button size="sm" variant="subtle" onClick={() => pushSymbols([...symbols, { symbol: s, enabled: true }])}>Add</Button>}
+                                            </span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )
@@ -729,8 +806,32 @@ export default function Tune() {
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
             {/* Two-column grid — 8 symbols fit a 2048×1280 notebook screen
                 without scrolling. Each cell carries its own hairline. */}
+            {/* Classification groups — ONE row per ticked classification. */}
+            {groupOf.size > 0 && (
+              <div className="mb-2">
+                {[...groupOf.entries()].map(([key, members]) => {
+                  const on = members.some(m => m.enabled !== false)
+                  return (
+                    <div key={key} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
+                      <span className="font-semibold">{key}</span>
+                      <span className="text-[var(--color-text-sub)]">({members.length} symbols)</span>
+                      <Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge>
+                      <span className="ml-auto flex items-center gap-2">
+                        <Button size="sm" variant="subtle" onClick={() => toggleGroupEnabled(key, !on)}>
+                          {on ? 'Disable group' : 'Enable group'}
+                        </Button>
+                        <Button size="sm" variant="subtle" onClick={() => removeGroup(key)} aria-label={`Remove ${key} group from watchlist`}>
+                          ✕ Remove
+                        </Button>
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
             <div className="grid gap-x-8 gap-y-0 lg:grid-cols-2">
-              {symbols.map((s, i) => {
+              {singles.map((s) => {
+                const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
                 return (
                   <div key={s.symbol} className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] py-1.5 text-[13px]">
