@@ -214,6 +214,64 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/exec-parity — prove the C++ sidecar matches the JS path,
+  // runnable from the UI (the agent DB and both paths live HERE, not on the
+  // owner's laptop). Read-only: health + credentials push + reconcile diff.
+  // -----------------------------------------------------------------------
+  router.post('/exec-parity', async (_req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+      const call = async (method, path, body) => {
+        const r = await fetch(base + path, {
+          method,
+          headers: {
+            authorization: `Bearer ${process.env.EXEC_SECRET || ''}`,
+            ...(body ? { 'content-type': 'application/json' } : {}),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        })
+        const text = await r.text()
+        if (!r.ok) throw new Error(`${method} ${path} ${r.status}: ${text.slice(0, 200)}`)
+        return text ? JSON.parse(text) : null
+      }
+      const steps = []
+      await call('POST', '/connect', {
+        host: creds.host, clientId: creds.clientId, clientSecret: creds.clientSecret,
+        accessToken: creds.accessToken, accountId: creds.accountId,
+      })
+      steps.push('credentials pushed to sidecar')
+      // the engine authenticates asynchronously — poll health up to ~12s
+      let health = null
+      for (let i = 0; i < 6; i++) {
+        await new Promise(r2 => setTimeout(r2, 2000))
+        health = await call('GET', '/health')
+        if (health?.connected) break
+      }
+      steps.push(`sidecar health: connected=${!!health?.connected}`)
+      if (!health?.connected) {
+        return res.json({ pass: false, steps, error: 'sidecar reached but not authenticated with cTrader after 12s — check its deploy logs' })
+      }
+      const { wsReconcile } = await import('../lib/ctrader-ws.js')
+      const [jsRec, cppRec] = await Promise.all([
+        wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId),
+        call('GET', '/positions'),
+      ])
+      const key = (p) => `${p.positionId}|${p.tradeData?.symbolId ?? p.symbolId}|${p.tradeData?.volume ?? p.volume}`
+      const jsSet = new Set((jsRec?.position || []).map(key))
+      const cppSet = new Set((cppRec?.position || []).map(key))
+      const onlyJs = [...jsSet].filter(k => !cppSet.has(k))
+      const onlyCpp = [...cppSet].filter(k => !jsSet.has(k))
+      const match = onlyJs.length === 0 && onlyCpp.length === 0
+      steps.push(`reconcile: js=${jsSet.size} cpp=${cppSet.size} positions — ${match ? 'MATCH' : 'DIFFER'}`)
+      res.json({ pass: match, steps, onlyJs, onlyCpp, ranAt: new Date().toISOString() })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
   // strategy in the scan loop (fib fade is untouched by this flag).
   // -----------------------------------------------------------------------
