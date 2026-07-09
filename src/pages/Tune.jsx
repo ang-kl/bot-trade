@@ -573,6 +573,23 @@ export default function Tune() {
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
               Confluence filters (each A/B-testable on the Backtest tab — turn one on only after it proves itself there): RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
+            <div className="mt-3 flex items-center gap-2 text-[13px]">
+              <label className="flex items-center gap-1.5">
+                Scan every
+                <Input
+                  type="number" min="1" max="60" className="w-16 !py-0.5 !min-h-0"
+                  value={config?.loop_interval_min ?? 5}
+                  aria-label="Scan interval in minutes (1 to 60)"
+                  onChange={e => setConfig(c => ({ ...c, loop_interval_min: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  onBlur={() => {
+                    const n = Number(config?.loop_interval_min)
+                    if (Number.isFinite(n) && n >= 1 && n <= 60) run(() => agentPost('/actions/loop-interval', { minutes: n }), `Scan cadence: every ${n} min`)
+                  }}
+                />
+                minutes
+              </label>
+              <span className="text-[12px] text-[var(--color-text-sub)]">— applies from the next cycle, no restart. Faster = more broker calls (still free), slower = later entries.</span>
+            </div>
             <div className="mt-3">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
                 Autotrade timeframes — add or remove any the broker supports (1m → 1 month). Scans and backtests follow this list:

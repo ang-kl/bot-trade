@@ -22,7 +22,15 @@ import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
 
-const LOOP_INTERVAL = 5 * 60 * 1000 // 5 minutes
+const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
+
+// Owner-configurable cadence, re-read every cycle so a Tune change applies
+// without a restart. Clamped 1–60 min.
+function loopIntervalMs(db) {
+  const n = Number(getState(db, 'loop_interval_min'))
+  if (Number.isFinite(n) && n >= 1 && n <= 60) return n * 60_000
+  return LOOP_INTERVAL
+}
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
@@ -538,7 +546,7 @@ async function runLoop(db) {
   // ---- Mutex: prevent overlapping iterations ----
   if (loopRunning) {
     log('Loop still running — skipping this tick')
-    setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), LOOP_INTERVAL)
+    setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), loopIntervalMs(db))
     return
   }
 
@@ -1274,7 +1282,7 @@ async function runLoop(db) {
     setState(db, 'last_error', `${new Date().toISOString()} ${err.message}`)
 
     if (consecutiveErrors >= 5) {
-      const backoff = Math.min(15 * 60_000, LOOP_INTERVAL * consecutiveErrors)
+      const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
       loopRunning = false
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
@@ -1302,7 +1310,7 @@ async function runLoop(db) {
 
   loopRunning = false
   const elapsed = Date.now() - start
-  const delay = Math.max(10_000, LOOP_INTERVAL - elapsed)
+  const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
