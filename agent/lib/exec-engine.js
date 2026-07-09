@@ -37,8 +37,26 @@ async function sidecar(method, path, body) {
   return text ? JSON.parse(text) : null
 }
 
+// The sidecar holds no broker credentials of its own — the access token and
+// account id live in the keeper's DB. Push them before the first call and
+// again whenever they change (token refresh, account switch).
+let lastPushedKey = ''
+async function ensureSidecarSession(creds) {
+  const key = `${creds.host}|${creds.accountId}|${creds.accessToken}`
+  if (key === lastPushedKey) return
+  await sidecar('POST', '/connect', {
+    host: creds.host,
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    accessToken: creds.accessToken,
+    accountId: creds.accountId,
+  })
+  lastPushedKey = key
+}
+
 export async function placeOrder(creds, orderPayload) {
   if (execEngineMode() === 'cpp') {
+    await ensureSidecarSession(creds)
     return sidecar('POST', '/order', orderPayload)
   }
   const m = await ws()
@@ -47,6 +65,7 @@ export async function placeOrder(creds, orderPayload) {
 
 export async function amendPosition(creds, args) {
   if (execEngineMode() === 'cpp') {
+    await ensureSidecarSession(creds)
     return sidecar('POST', '/amend', args)
   }
   const m = await ws()
@@ -55,6 +74,7 @@ export async function amendPosition(creds, args) {
 
 export async function closePosition(creds, args) {
   if (execEngineMode() === 'cpp') {
+    await ensureSidecarSession(creds)
     return sidecar('POST', '/close', args)
   }
   const m = await ws()
@@ -63,6 +83,7 @@ export async function closePosition(creds, args) {
 
 export async function reconcile(creds) {
   if (execEngineMode() === 'cpp') {
+    await ensureSidecarSession(creds)
     return sidecar('GET', '/positions')
   }
   const m = await ws()

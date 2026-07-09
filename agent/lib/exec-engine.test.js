@@ -45,16 +45,24 @@ test('execEngineMode: js by default, cpp only when EXEC_ENGINE=cpp', () => {
   assert.equal(execEngineMode(), 'cpp')
 })
 
-test('cpp placeOrder: POST /order with bearer auth and body passthrough', async () => {
+test('cpp placeOrder: pushes /connect once, then POST /order with bearer auth', async () => {
   nextResponse = { status: 200, body: JSON.stringify({ ok: true, positionId: 9 }) }
   const payload = { symbolId: 41, tradeSide: 'BUY', volume: 100000 }
   const out = await placeOrder(CREDS, payload)
   assert.deepEqual(out, { ok: true, positionId: 9 })
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].method, 'POST')
-  assert.equal(requests[0].url, '/order')
+  // First cpp-mode call must push credentials to the sidecar (which holds
+  // none of its own), THEN place the order. Same creds later → no re-push.
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0].url, '/connect')
   assert.equal(requests[0].auth, 'Bearer sekret')
-  assert.deepEqual(JSON.parse(requests[0].body), payload)
+  assert.deepEqual(JSON.parse(requests[0].body), {
+    host: CREDS.host, clientId: CREDS.clientId, clientSecret: CREDS.clientSecret,
+    accessToken: CREDS.accessToken, accountId: CREDS.accountId,
+  })
+  assert.equal(requests[1].method, 'POST')
+  assert.equal(requests[1].url, '/order')
+  assert.equal(requests[1].auth, 'Bearer sekret')
+  assert.deepEqual(JSON.parse(requests[1].body), payload)
 })
 
 test('cpp amendPosition: POST /amend with args passthrough', async () => {

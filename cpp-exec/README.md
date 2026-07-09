@@ -66,9 +66,11 @@ docker build -t cpp-exec .
 
 1. Railway → New Service → "Deploy from GitHub repo" → pick this repo, set
    **Root Directory = cpp-exec** (it finds the Dockerfile).
-2. Variables: `CTRADER_HOST` (demo.ctraderapi.com), `CTRADER_CLIENT_ID`,
-   `CTRADER_CLIENT_SECRET`, `CTRADER_ACCESS_TOKEN`, `CTRADER_ACCOUNT_ID`
-   (copy from the Node agent service), plus a NEW long random `EXEC_SECRET`.
+2. Variables: just `EXEC_SECRET` (a long random string — same value you set
+   on the Node agent). Broker credentials are NOT env vars here: the Node
+   keeper pushes host/clientId/secret/access token/account id to the sidecar
+   at runtime via POST /connect (they live in the keeper's DB, and survive
+   token refreshes/account switches automatically).
 3. On the **Node agent** service add: `EXEC_URL` = the sidecar's private URL,
    `EXEC_SECRET` = same value. Do NOT set `EXEC_ENGINE` yet.
 4. Parity: `node agent/scripts/exec-parity.js` (read-only), then

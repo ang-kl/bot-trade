@@ -40,6 +40,13 @@ class ExecEngine {
 public:
   ExecEngine(std::string host, std::string clientId, std::string clientSecret,
              std::string accessToken, long long accountId);
+  // Credentials arrive at runtime (POST /connect from the Node keeper —
+  // access token + account id live in the keeper's DB, not env vars).
+  ExecEngine() = default;
+  void setCredentials(std::string host, std::string clientId,
+                      std::string clientSecret, std::string accessToken,
+                      long long accountId);
+  bool hasCredentials();
 
   // Connect + authApp + authAccount. Serialized with the request methods.
   bool connectAndAuth();
