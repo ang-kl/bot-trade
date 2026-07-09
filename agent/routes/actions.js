@@ -136,7 +136,17 @@ export default function actionsRouter(db) {
           symbols[name] = { error: err.message }
         }
       }
-      res.json({ symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, ranAt: new Date().toISOString() })
+      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, ranAt: new Date().toISOString() }
+      // Persist a self-contained HTML report under backtest/results/ and hand
+      // the same document to the UI for a browser download. A write failure
+      // (read-only disk) must not sink the backtest itself.
+      try {
+        const { saveBacktestReport } = await import('../lib/backtest-report.js')
+        payload.report = saveBacktestReport(payload)
+      } catch (err) {
+        payload.report = { error: err.message }
+      }
+      res.json(payload)
     } catch (err) {
       res.status(502).json({ error: err.message })
     }

@@ -825,6 +825,24 @@ export default function Tune() {
               </>
             )}
 
+            {bt?.report?.html && (
+              <div className="mt-3">
+                <Button
+                  size="sm" variant="secondary"
+                  onClick={() => {
+                    const url = URL.createObjectURL(new Blob([bt.report.html], { type: 'text/html' }))
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = bt.report.filename
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                >
+                  Download report ({bt.report.filename})
+                </Button>
+              </div>
+            )}
+
             {bt?.symbols && (
               <div className="mt-3 space-y-4">
                 {Object.entries(bt.symbols).map(([sym, sr]) => (
