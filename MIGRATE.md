@@ -44,7 +44,7 @@ rm -rf abot-staging
 2. Import `ang-kl/bot-trade` (the new private repo)
 3. Framework preset: **Vite**
 4. Add env vars:
-   - `ANTHROPIC_MAP_KEY_API`
+   - `CLAUDE_API_KEY`
    - `CTRADER_CLIENT_ID`
    - `CTRADER_CLIENT_SECRET`
    - `X_API_BEARER_TOKEN`

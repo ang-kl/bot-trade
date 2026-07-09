@@ -31,7 +31,7 @@ cd agent && npm install && node index.js   # agent on :3001
 2. **Agent boots locally** — create `agent/.env`:
    ```
    AGENT_SECRET=pick-any-secret
-   ANTHROPIC_MAP_KEY_API=sk-ant-...   # only used for position monitoring
+   CLAUDE_API_KEY=sk-ant-...   # only used for position monitoring
    CTRADER_CLIENT_ID=...              # register an app at openapi.ctrader.com
    CTRADER_CLIENT_SECRET=...
    ```
@@ -52,7 +52,7 @@ cd agent && npm install && node index.js   # agent on :3001
 | Var | Where | Purpose |
 |---|---|---|
 | `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) |
-| `ANTHROPIC_MAP_KEY_API` | agent + Vercel | Claude API — position monitor / weekend checks |
+| `CLAUDE_API_KEY` | agent + Vercel | Claude API — position monitor / weekend checks |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
 | `VITE_AGENT_URL` / `VITE_AGENT_SECRET` | Vercel (build) | Default agent connection (overridable per-browser on the Connect tab) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_OWNER_CHAT_ID` | agent | Optional signal/trade alerts |

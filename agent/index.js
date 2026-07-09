@@ -35,7 +35,7 @@ try {
 // ---------------------------------------------------------------------------
 
 const {
-  ANTHROPIC_MAP_KEY_API,
+  CLAUDE_API_KEY,
   TELEGRAM_BOT_TOKEN,
   AGENT_SECRET,
   FRONTEND_URL,
@@ -48,7 +48,7 @@ const {
 
 if (!AGENT_SECRET) {
   console.error('[agent] FATAL: AGENT_SECRET env var is required — set it in Railway Variables')
-  console.error('[agent] Required env vars: AGENT_SECRET, ANTHROPIC_MAP_KEY_API')
+  console.error('[agent] Required env vars: AGENT_SECRET, CLAUDE_API_KEY')
   console.error('[agent] Optional: CTRADER_ACCESS_TOKEN, CTRADER_ACCOUNT_ID, CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_ID')
   process.exit(1)
 }
@@ -294,7 +294,7 @@ async function start() {
     console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
-    console.log(`[agent] ANTHROPIC_MAP_KEY_API: ${ANTHROPIC_MAP_KEY_API ? 'set' : 'MISSING'}`);
+    console.log(`[agent] CLAUDE_API_KEY: ${CLAUDE_API_KEY ? 'set' : 'MISSING'}`);
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
