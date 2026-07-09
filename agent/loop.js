@@ -32,7 +32,7 @@ let loopRunning = false               // mutex — prevents concurrent iteration
 let _anthropicClient = null
 function getAnthropicClient() {
   if (!_anthropicClient) {
-    _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_MAP_KEY_API })
+    _anthropicClient = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
   }
   return _anthropicClient
 }

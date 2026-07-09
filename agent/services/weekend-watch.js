@@ -8,7 +8,7 @@
 // is this thesis still intact? Monday gap risk?"
 // ---------------------------------------------------------------------------
 
-const MODEL = 'claude-sonnet-4-6'
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
 const MAX_TOKENS = 2048
 const WEB_SEARCH_MAX_USES = 3
 

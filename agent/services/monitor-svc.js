@@ -3,7 +3,7 @@
 
 import { getSessionContext } from '../lib/sessions.js'
 
-const MODEL = 'claude-sonnet-4-5'
+const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5'
 const MAX_TOKENS = 768
 
 function buildMonitorPrompt(position, sessionContext) {
