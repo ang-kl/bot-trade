@@ -571,7 +571,7 @@ export default function Tune() {
               }} />
             </div>
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
-              Confluence filters (each A/B-testable on the Backtest tab — turn one on only after it proves itself there): RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
+              Two STRATEGIES (Fib fade is always on; Cup &amp; Handle by toggle) + three optional FILTERS on top — the same set the Backtest tab tests, one strategy at a time. Turn a filter on live only after it proves itself there. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
             <div className="mt-3 flex items-center gap-2 text-[13px]">
               <label className="flex items-center gap-1.5">
