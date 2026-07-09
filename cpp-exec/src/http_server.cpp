@@ -127,8 +127,12 @@ void HttpServer::handleClient(int fd) {
     return;
   }
 
+  // GET /health stays open: Railway's healthcheck probes without headers,
+  // and the response carries no credentials or broker data.
+  const bool isHealth = req.method == "GET" && req.path == "/health";
   auto auth = req.headers.find("authorization");
-  if (auth == req.headers.end() || auth->second != "Bearer " + secret_) {
+  if (!isHealth &&
+      (auth == req.headers.end() || auth->second != "Bearer " + secret_)) {
     writeResponse(fd, 401, "{\"error\":\"unauthorized\"}");
     ::close(fd);
     return;
