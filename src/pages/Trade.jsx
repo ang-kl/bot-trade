@@ -63,6 +63,80 @@ function PositionRow({ p }) {
   )
 }
 
+// One closed/attempted trade row. UNCONFIRMED = the bot sent an order but
+// recorded no broker fill price — until reconciled, treat it as NOT a trade
+// (the truthful reading of a null entry on a rejected-order era row).
+function TradeRow({ t }) {
+  const [showChart, setShowChart] = useState(false)
+  const unconfirmed = t.entry_price == null
+  return (
+    <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">{t.symbol}</span>
+        <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
+        {unconfirmed
+          ? <Badge tone="warning">✗ UNCONFIRMED — no broker fill recorded</Badge>
+          : (
+            <>
+              <span className="text-[var(--color-text-sub)]">in {fmt(t.entry_price)}{t.exit_price != null ? ` → out ${fmt(t.exit_price)}` : ''}</span>
+              <Badge tone={(t.net_pnl ?? 0) >= 0 ? 'up' : 'down'}>{t.net_pnl != null ? `${t.net_pnl >= 0 ? '+' : ''}${fmt(t.net_pnl, 2)}` : t.status}</Badge>
+            </>
+          )}
+        <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
+        {t.exit_reason && <span className="text-[var(--color-text-sub)]">({t.exit_reason})</span>}
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
+          <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>
+        </span>
+      </div>
+      {unconfirmed && (
+        <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
+          The order was sent but no execution price came back from cTrader — most likely rejected (pre-v0.1.100 volume bug era). Check the account's History in cTrader; this row is not counted as a trade.
+        </p>
+      )}
+      {showChart && (
+        <div className="py-2">
+          <PositionChart
+            symbol={t.symbol}
+            timeframe={t.label_timeframe || '1h'}
+            lines={{ entry: t.entry_price, sl: t.sl_price, tp: t.tp_price }}
+          />
+        </div>
+      )}
+    </li>
+  )
+}
+
+// One risk decision row with the proposal's chart on demand — the exact
+// entry/SL/TP the gate saw, drawn on real broker bars.
+function RiskEventRow({ ev }) {
+  const [showChart, setShowChart] = useState(false)
+  let prop = null
+  try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
+  return (
+    <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
+      <div className="flex items-center gap-2">
+        <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
+        <span className="font-semibold">{ev.symbol}</span>
+        <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ev.sizing_note || ''}</span>
+        <span className="ml-auto flex items-center gap-2 shrink-0">
+          <span className="text-[var(--color-text-sub)]">{ago(ev.created_at)}</span>
+          {prop && <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>}
+        </span>
+      </div>
+      {showChart && prop && (
+        <div className="py-2">
+          <PositionChart
+            symbol={ev.symbol}
+            timeframe={prop.timeframe || '1h'}
+            lines={{ entry: prop.entry, sl: prop.sl, tp: prop.tp1 }}
+          />
+        </div>
+      )}
+    </li>
+  )
+}
+
 export default function Trade() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
@@ -338,17 +412,7 @@ export default function Trade() {
           <h2 className="text-[13px] font-semibold mb-2">Recent trades</h2>
           {trades.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
           <ul className="space-y-1 text-[13px]">
-            {trades.map(t => (
-              <li key={t.id} className="flex flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
-                <span className="font-semibold">{t.symbol}</span>
-                <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
-                <span className="text-[var(--color-text-sub)]">in {fmt(t.entry_price)}{t.exit_price != null ? ` → out ${fmt(t.exit_price)}` : ''}</span>
-                <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
-                {t.exit_reason && <span className="text-[var(--color-text-sub)]">({t.exit_reason})</span>}
-                <Badge tone={(t.net_pnl ?? 0) >= 0 ? 'up' : 'down'}>{t.net_pnl != null ? `${t.net_pnl >= 0 ? '+' : ''}${fmt(t.net_pnl, 2)}` : t.status}</Badge>
-                <span className="ml-auto text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
-              </li>
-            ))}
+            {trades.map(t => <TradeRow key={t.id} t={t} />)}
           </ul>
         </Card>
 
@@ -357,14 +421,7 @@ export default function Trade() {
           <h2 className="text-[13px] font-semibold mb-2">Risk manager decisions</h2>
           {riskEvents.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
           <ul className="space-y-1 text-[13px]">
-            {riskEvents.map(ev => (
-              <li key={ev.id} className="flex items-center gap-2 border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
-                <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
-                <span className="font-semibold">{ev.symbol}</span>
-                <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ev.sizing_note || ''}</span>
-                <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
-              </li>
-            ))}
+            {riskEvents.map(ev => <RiskEventRow key={ev.id} ev={ev} />)}
           </ul>
         </Card>
       </div>
