@@ -99,3 +99,23 @@ export function nextSessionOpening() {
   }
   return best
 }
+
+/**
+ * Prime-liquidity gate for a symbol at an arbitrary time — the backtest's
+ * session filter. Categories map to when their market actually trades well:
+ *   crypto             → always
+ *   stock/index        → its exchange window (isSymbolMarketOpen)
+ *   fx/metal/commodity → London + New York hours, Mon-Fri 08:00-21:00 UTC
+ * @param {string} symbol
+ * @param {number} t - epoch ms
+ */
+export function inPrimeSession(symbol, t) {
+  const cat = categoriseSymbol(symbol)
+  if (cat === 'crypto') return true
+  const now = new Date(t)
+  if (cat === 'stock' || cat === 'index') return isSymbolMarketOpen(symbol, now).open
+  const day = now.getUTCDay()
+  if (day === 0 || day === 6) return false
+  const h = now.getUTCHours()
+  return h >= 8 && h < 21
+}

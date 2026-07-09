@@ -274,6 +274,9 @@ export default function Tune() {
   const [btSort, setBtSort] = useState({ col: 'tf', dir: 'desc' })
   const [rsiFilter, setRsiFilter] = useState(false)
   const [vwapFilter, setVwapFilter] = useState(false)
+  // Backtest-only session filter — proves whether the edge depends on the
+  // instrument's prime-liquidity hours before any live gate exists.
+  const [btSessionFilter, setBtSessionFilter] = useState(false)
   const [fvgFilter, setFvgFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
@@ -466,6 +469,7 @@ export default function Tune() {
         bars: 1000,
         rsiFilter,
         vwapFilter,
+        sessionFilter: btSessionFilter,
         fvgFilter,
       })
       setBt(r)
@@ -921,7 +925,11 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · 0.02% cost · SL-before-TP</span>
+                  <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Only take entries during the instrument's prime-liquidity hours: exchange session for stocks/indices, London+New York (Mon–Fri 08:00–21:00 UTC) for FX/metals/commodities. Proves whether the edge is session-dependent.">
+                    <input type="checkbox" checked={btSessionFilter} onChange={e => setBtSessionFilter(e.target.checked)} />
+                    Session filter
+                  </label>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · gap-honest SL · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}

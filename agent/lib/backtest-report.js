@@ -72,7 +72,7 @@ function tfRow(tf, r) {
 
 export function renderBacktestReport(payload, filename = '') {
   const symbols = payload.symbols || {}
-  const filters = ['rsiFilter', 'vwapFilter', 'fvgFilter'].filter(k => payload[k]).map(k => k.replace('Filter', '').toUpperCase())
+  const filters = ['rsiFilter', 'vwapFilter', 'fvgFilter', 'sessionFilter'].filter(k => payload[k]).map(k => k.replace('Filter', '').toUpperCase())
   const sections = Object.entries(symbols).map(([sym, data]) => {
     if (data.error) {
       return `<section><h2>${esc(sym)}</h2><p class="v-err">✗ ${esc(data.error)}</p></section>`
