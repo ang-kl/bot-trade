@@ -1,0 +1,27 @@
+# Build + unit-test the C++ execution sidecar on every change to it —
+# proves it compiles with g++/libssl on Linux (the Railway runtime), not
+# just clang on the dev Mac.
+name: cpp-exec
+on:
+  pull_request:
+    paths: ['cpp-exec/**', 'agent/lib/exec-engine.*', '.github/workflows/cpp-exec.yml']
+  push:
+    branches: [main]
+    paths: ['cpp-exec/**', 'agent/lib/exec-engine.*']
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run C++ unit tests
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q g++ make libssl-dev
+          make -C cpp-exec CXX=g++ test
+          make -C cpp-exec CXX=g++ all
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Node delegator tests
+        run: |
+          npm ci --ignore-scripts
+          cd agent && npm ci --ignore-scripts && cd ..
+          node --test agent/lib/exec-engine.test.js

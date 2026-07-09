@@ -13,7 +13,10 @@ import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsPlaceOrder, wsAmendPosition, wsClosePosition, wsReconcile, wsGetSymbolsList } from './lib/ctrader-ws.js'
+import { wsGetSymbolsList } from './lib/ctrader-ws.js'
+// Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
+// C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
+import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
@@ -229,7 +232,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
 
   try {
-    const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+    const exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId }, orderPayload)
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
@@ -353,7 +356,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
 
   try {
     if (action === 'MOVE_SL') {
-      const res = await wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, {
+      const res = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         stopLoss: eval_.newSL,
       })
@@ -377,7 +380,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
       const meta = await volumeMeta()
       const volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
       if (volumeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
-      const res = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
+      const res = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         volume: volumeUnits,
       })
@@ -408,7 +411,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
         return { skipped: true, reason: 'partial_below_min_volume' }
       }
 
-      const closeRes = await wsClosePosition(host, clientId, clientSecret, accessToken, accountId, {
+      const closeRes = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         volume: closeUnits,
       })
@@ -428,7 +431,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
 
       // Move SL for the runner leg (skip if newSL is null / same as current).
       if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
-        const amendRes = await wsAmendPosition(host, clientId, clientSecret, accessToken, accountId, {
+        const amendRes = await execAmendPosition({ host, clientId, clientSecret, accessToken, accountId }, {
           positionId: ctx.positionId,
           stopLoss: eval_.newSL,
         })
@@ -1137,7 +1140,7 @@ async function runLoop(db) {
         if (clientId && clientSecret && accessToken && accountId) {
           setState(db, 'loop_phase', 'reconciling broker positions')
           const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-          const reconcileData = await wsReconcile(host, clientId, clientSecret, accessToken, accountId)
+          const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
 
           const allSymbolIds = [...new Set([
             ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
