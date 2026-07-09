@@ -120,16 +120,18 @@ function MonitorPositionRow({ p }) {
 // One scan result row: what was found, what the trade WOULD be (entry/SL/TP),
 // whether the bot will act on it (armed timeframe + conviction ≥8), and a
 // chart with the levels drawn.
-function ScanRow({ s, signal, armedTfs, autotradeOn }) {
+function ScanRow({ s, signal, armedTfs, matrix, autotradeOn }) {
   const [showChart, setShowChart] = useState(false)
   const found = s.bias !== 'skip'
-  const tfArmed = signal ? armedTfs.includes(signal.timeframe) : false
+  // Per-instrument arming beats the TF-wide list — mirror of loop.js gates.
+  const symArmed = matrix?.[s.symbol] ?? armedTfs
+  const tfArmed = signal ? symArmed.includes(signal.timeframe) : false
   const willTrade = found && autotradeOn && tfArmed && (s.confidence ?? 0) >= 8
   let verdict = null
   if (found) {
     if (willTrade) verdict = { tone: 'up', text: 'WILL AUTO-TRADE next loop (risk gate permitting)' }
     else if (!autotradeOn) verdict = { tone: 'neutral', text: 'autotrade off — signal only' }
-    else if (!tfArmed) verdict = { tone: 'neutral', text: `no trade: ${signal?.timeframe} not armed (armed: ${armedTfs.join(', ')})` }
+    else if (!tfArmed) verdict = { tone: 'neutral', text: `no trade: ${signal?.timeframe} not armed for ${s.symbol} (armed: ${symArmed.join(', ') || 'none'})` }
     else verdict = { tone: 'neutral', text: `no trade: conviction ${s.confidence}/10 below the 8/10 auto bar` }
   }
   return (
@@ -171,6 +173,7 @@ export default function Monitor() {
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
   const [armedTfs, setArmedTfs] = useState(cached?.armedTfs ?? ['4h', '1d'])
+  const [matrix, setMatrix] = useState(cached?.matrix ?? null)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -196,11 +199,14 @@ export default function Monitor() {
         events: (r?.rows || []),
         broker: b?.accounts?.[0] ?? null,
         scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [], signals: sc.lastResults?.signals || {} } : null,
-        armedTfs: await agentGet('/state/autotrade-timeframes').then(x => x.timeframes || ['4h', '1d']).catch(() => ['4h', '1d']),
+        atf: await agentGet('/state/autotrade-timeframes').catch(() => null),
       }
+      next.armedTfs = next.atf?.timeframes || ['4h', '1d']
+      next.matrix = next.atf?.matrix || null
       setHealth(next.health)
       setScan(next.scan)
       setArmedTfs(next.armedTfs)
+      setMatrix(next.matrix)
       setPositions(next.positions)
       setTrades(next.trades)
       setAllTrades(next.allTrades)
@@ -343,7 +349,7 @@ export default function Monitor() {
         {/* Symbols WITH a signal get full rows; the quiet ones collapse to a
             single line — a screen of "no setup" rows was pure scrolling. */}
         {scan?.rows?.filter(s => scan.signals?.[s.symbol]).map(s => (
-          <ScanRow key={s.symbol} s={s} signal={scan.signals?.[s.symbol]} armedTfs={armedTfs} autotradeOn={!!active} />
+          <ScanRow key={s.symbol} s={s} signal={scan.signals?.[s.symbol]} armedTfs={armedTfs} matrix={matrix} autotradeOn={!!active} />
         ))}
         {(() => {
           const quiet = (scan?.rows || []).filter(s => !scan.signals?.[s.symbol])

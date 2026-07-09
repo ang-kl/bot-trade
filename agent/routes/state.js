@@ -198,6 +198,22 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/action-log — the owner's audit trail (every POST /actions).
+  // ?limit=N (default 200, max 1000); ?format=text returns a plain-text file.
+  router.get('/action-log', (req, res) => {
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200))
+    let rows = []
+    try {
+      rows = db.prepare('SELECT * FROM action_log ORDER BY id DESC LIMIT ?').all(limit)
+    } catch { /* table appears on first boot after migration */ }
+    if (req.query.format === 'text') {
+      res.setHeader('content-type', 'text/plain; charset=utf-8')
+      res.setHeader('content-disposition', 'attachment; filename="action-log.txt"')
+      return res.send(rows.map(r => `${r.at}Z  ${r.method} ${r.path}  ${r.body || ''}`).join('\n'))
+    }
+    res.json({ rows })
+  })
+
   // GET /state/trades — trade journal (last 100 closed)
   // -----------------------------------------------------------------------
   router.get('/trades', (_req, res) => {
