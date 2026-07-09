@@ -176,7 +176,9 @@ export default function Monitor() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on the Connect tab.'); return }
     try {
-      const [h, p, t, r, b, sc] = await Promise.all([
+      // 7 requests need 7 slots — a missing slot shifts every response one
+      // to the left and the page dies on <shifted>.rows (undefined).
+      const [h, p, t, , r, b, sc] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
@@ -191,7 +193,7 @@ export default function Monitor() {
         positions: p.rows || p.positions || [],
         trades: fullTrades.slice(0, 5),
         allTrades: fullTrades,
-        events: (r.rows || []),
+        events: (r?.rows || []),
         broker: b?.accounts?.[0] ?? null,
         scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [], signals: sc.lastResults?.signals || {} } : null,
         armedTfs: await agentGet('/state/autotrade-timeframes').then(x => x.timeframes || ['4h', '1d']).catch(() => ['4h', '1d']),
