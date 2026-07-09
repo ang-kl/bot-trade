@@ -86,6 +86,7 @@ export default function actionsRouter(db) {
       const vwapFilter = req.body?.vwapFilter ? {} : null
       const fvgFilter = req.body?.fvgFilter ? {} : null
       const sessionFilter = !!req.body?.sessionFilter
+      const strategy = req.body?.strategy === 'cup_handle' ? 'cup_handle' : 'fib_618_fade'
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
@@ -117,6 +118,7 @@ export default function actionsRouter(db) {
               fvgFilter,
               sessionFilter,
               symbol: name,
+              strategy,
               // mirror live autotrade's conviction bar unless the caller overrides
               minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
             }
@@ -139,7 +141,7 @@ export default function actionsRouter(db) {
           symbols[name] = { error: err.message }
         }
       }
-      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, ranAt: new Date().toISOString() }
+      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, ranAt: new Date().toISOString() }
       // Persist a self-contained HTML report under backtest/results/ and hand
       // the same document to the UI for a browser download. A write failure
       // (read-only disk) must not sink the backtest itself.
@@ -150,6 +152,59 @@ export default function actionsRouter(db) {
         payload.report = { error: err.message }
       }
       res.json(payload)
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
+  // strategy in the scan loop (fib fade is untouched by this flag).
+  // -----------------------------------------------------------------------
+  router.post('/cup-handle-toggle', (req, res) => {
+    const on = !!req.body?.on
+    setState(db, 'cup_handle_enabled', on ? 'true' : 'false')
+    res.json({ on: getState(db, 'cup_handle_enabled') === 'true' })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/cup-screener — the C&H watchlist funnel on DAILY bars.
+  // Body: { minPrice=20, minAvgVolume=0, symbols?=[] (default: enabled
+  // watchlist) }. Broker-checkable filters only: price floor, avg volume,
+  // relative volume > 1, SMA 20/50/200 stack. P/E, optionable/shortable and
+  // sector rankings are NOT in cTrader data — the UI says so instead of
+  // faking them. Capped at 100 symbols per run.
+  // -----------------------------------------------------------------------
+  router.post('/cup-screener', async (req, res) => {
+    try {
+      const names = pickBacktestSymbols(
+        { symbols: req.body?.symbols },
+        getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json'),
+      ).slice(0, 100)
+      if (names.length === 0) return res.status(400).json({ error: 'No symbols to screen — watchlist is empty' })
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const map = await ensureSymbolMap(db, creds)
+      const { screenBars } = await import('../services/cup-handle.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const opts = { minPrice: Number(req.body?.minPrice ?? 20), minAvgVolume: Number(req.body?.minAvgVolume ?? 0) }
+      const rows = []
+      for (const name of names) {
+        const symbolId = map[name]
+        if (!symbolId) { rows.push({ symbol: name, error: 'not offered by this broker account' }); continue }
+        try {
+          const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1d'], 260, 60_000)
+          rows.push({ symbol: name, ...screenBars(fetched['1d'] || [], opts) })
+        } catch (err) {
+          rows.push({ symbol: name, error: err.message })
+        }
+      }
+      res.json({
+        rows,
+        passed: rows.filter(r => r.pass).map(r => r.symbol),
+        manualChecks: 'Not in broker data — check on your stock screener: P/E < 30, optionable/shortable, leading sector.',
+        ranAt: new Date().toISOString(),
+      })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
