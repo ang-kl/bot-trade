@@ -311,6 +311,7 @@ export default function stateRouter(db) {
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
     res.json({
       scan_enabled: getState(db, 'scan_enabled') !== 'false',
+      cup_handle_enabled: getState(db, 'cup_handle_enabled') === 'true',
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',
       autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',
       // Backward compat: armed = autotrade_enabled

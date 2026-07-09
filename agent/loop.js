@@ -639,6 +639,7 @@ async function runLoop(db) {
     const ctraderCreds = getCtraderCreds(db)
 
     const rsiFilterOn = getState(db, 'fib_rsi_filter') === 'true'
+    const cupHandleOn = getState(db, 'cup_handle_enabled') === 'true'
     const vwapFilterOn = getState(db, 'fib_vwap_filter') === 'true'
     const fvgFilterOn = getState(db, 'fib_fvg_filter') === 'true'
     // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
@@ -646,7 +647,7 @@ async function runLoop(db) {
     let extraTimeframes = []
     try { extraTimeframes = JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { /* keep [] */ }
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, cupHandle: cupHandleOn, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {

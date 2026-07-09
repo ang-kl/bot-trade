@@ -20,6 +20,7 @@
 
 import { pathToFileURL } from 'node:url'
 import { computeFibSignal } from '../services/fib-strategy.js'
+import { computeCupHandleSignal } from '../services/cup-handle.js'
 import { inPrimeSession } from '../lib/sessions.js'
 
 /**
@@ -94,7 +95,8 @@ export function runBacktest(bars, opts) {
     // market is in its prime-liquidity window at the entry bar's time.
     if (opts.sessionFilter && opts.symbol && !inPrimeSession(opts.symbol, next.t)) continue
 
-    const signal = computeFibSignal(bars.slice(0, i + 1), timeframe, {
+    const compute = opts.strategy === 'cup_handle' ? computeCupHandleSignal : computeFibSignal
+    const signal = compute(bars.slice(0, i + 1), timeframe, {
       rsiFilter: opts.rsiFilter || null,
       vwapFilter: opts.vwapFilter || null,
       fvgFilter: opts.fvgFilter || null,

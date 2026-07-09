@@ -34,6 +34,8 @@ export const STRATEGIES = {
   swing:      'SWING',
   news:       'NEWS',
   reversal:   'REV',
+  fib_618_fade: 'FIB',
+  cup_handle: 'CUP',
   other:      'OTH',
 }
 

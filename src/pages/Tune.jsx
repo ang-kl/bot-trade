@@ -277,6 +277,9 @@ export default function Tune() {
   // Backtest-only session filter — proves whether the edge depends on the
   // instrument's prime-liquidity hours before any live gate exists.
   const [btSessionFilter, setBtSessionFilter] = useState(false)
+  const [btStrategy, setBtStrategy] = useState('fib_618_fade')
+  const [screener, setScreener] = useState(null)     // cup-screener results
+  const [screenerBusy, setScreenerBusy] = useState(false)
   const [fvgFilter, setFvgFilter] = useState(false)
   const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
@@ -470,6 +473,7 @@ export default function Tune() {
         rsiFilter,
         vwapFilter,
         sessionFilter: btSessionFilter,
+        strategy: btStrategy,
         fvgFilter,
       })
       setBt(r)
@@ -556,6 +560,14 @@ export default function Tune() {
                 const next = !fvgFilter
                 setFvgFilter(next)
                 run(() => agentPost('/actions/fib-fvg-filter', { on: next }), `FVG confluence filter ${next ? 'enabled' : 'disabled'}`)
+              }} />
+              <Toggle on={config?.cup_handle_enabled} label="Cup & Handle" onClick={() => {
+                const next = !config?.cup_handle_enabled
+                if (next && !window.confirm('Arm the Cup & Handle strategy? The scan will also look for C&H breakouts (long-only) — signals still pass the same risk gate.')) return
+                run(async () => {
+                  await agentPost('/actions/cup-handle-toggle', { on: next })
+                  setConfig(c => ({ ...c, cup_handle_enabled: next }))
+                }, `Cup & Handle strategy ${next ? 'enabled' : 'disabled'}`)
               }} />
             </div>
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
@@ -807,6 +819,44 @@ export default function Tune() {
                 })()}
               </div>
             )}
+            {/* Cup & Handle screener — the video's funnel, broker-honest:
+                price / avg volume / RelVol>1 / SMA stack. P/E + sector are
+                manual (not in cTrader data) and the panel says so. */}
+            <div className="mb-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm" variant="subtle" disabled={screenerBusy}
+                  onClick={() => {
+                    setScreenerBusy(true)
+                    agentPost('/actions/cup-screener', {})
+                      .then(setScreener)
+                      .catch(e => setError(e.message))
+                      .finally(() => setScreenerBusy(false))
+                  }}
+                >
+                  {screenerBusy ? `Screening ${enabledSymbols.length}…` : 'Run C&H screener'}
+                </Button>
+                <span className="text-[12px] text-[var(--color-text-sub)]">
+                  daily bars · price &gt; 20 · RelVol &gt; 1 · above SMA 20/50/200 — on the enabled watchlist
+                </span>
+              </div>
+              {screener && (
+                <div className="glass-inset rounded-[12px] p-3 mt-2 text-[12px]">
+                  <p className="font-semibold mb-1">
+                    {screener.passed.length} of {screener.rows.length} passed{screener.passed.length > 0 ? `: ${screener.passed.join(', ')}` : ''}
+                  </p>
+                  <ul className="space-y-0.5">
+                    {screener.rows.filter(r => !r.pass).map(r => (
+                      <li key={r.symbol} className="text-[var(--color-text-sub)]">
+                        <span className="font-semibold">{r.symbol}</span>{' — '}
+                        {r.error || r.checks.filter(c => !c.ok).map(c => c.text).join(' · ')}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 text-[var(--color-text-sub)]">{screener.manualChecks} Then eyeball the survivors for the actual cup &amp; handle shape.</p>
+                </div>
+              )}
+            </div>
             {symbols.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
             {/* Two-column grid — 8 symbols fit a 2048×1280 notebook screen
                 without scrolling. Each cell carries its own hairline. */}
@@ -925,6 +975,15 @@ export default function Tune() {
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
+                  <span className="flex items-center gap-1 text-[12px]" role="radiogroup" aria-label="Backtest strategy">
+                    {[['fib_618_fade', 'Fib fade'], ['cup_handle', 'Cup & Handle']].map(([val, lbl]) => (
+                      <button
+                        key={val} type="button" role="radio" aria-checked={btStrategy === val}
+                        onClick={() => setBtStrategy(val)}
+                        className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                      >{lbl}</button>
+                    ))}
+                  </span>
                   <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Only take entries during the instrument's prime-liquidity hours: exchange session for stocks/indices, London+New York (Mon–Fri 08:00–21:00 UTC) for FX/metals/commodities. Proves whether the edge is session-dependent.">
                     <input type="checkbox" checked={btSessionFilter} onChange={e => setBtSessionFilter(e.target.checked)} />
                     Session filter

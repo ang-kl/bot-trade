@@ -12,6 +12,7 @@
 
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import { tfMs } from '../lib/timeframes.js'
+import { computeCupHandleSignal } from './cup-handle.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -351,6 +352,11 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
       signal = computeFibSignal(closed, timeframe, opts)
+      // Cup & Handle is a SEPARATE strategy (own module/toggle) that shares
+      // this scan's bar cache — one fetch serves both rule sets.
+      if (!signal && opts.cupHandle) {
+        signal = computeCupHandleSignal(closed, timeframe, opts)
+      }
     }
   }
   return { symbol, signal, lastPrice, error: null }
@@ -371,6 +377,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     rsiFilter: options.rsiFilter || null,
     vwapFilter: options.vwapFilter || null,
     fvgFilter: options.fvgFilter || null,
+    cupHandle: !!options.cupHandle,
     extraTimeframes: options.extraTimeframes || [],
   }
   const batch = symbols.slice(0, 15)
@@ -394,6 +401,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
       bias: sig ? sig.bias : 'skip',
       confidence: sig ? sig.conviction : 0,
       thesis: sig ? sig.thesis : (r.error ? `SCAN ERROR: ${r.error}` : 'No 61.8% reaction zone found'),
+      strategy: sig ? sig.strategy : null,
       timeframe: sig ? sig.timeframe : null,
       session_fit: 'n/a',
       trade_at: 'now',
@@ -447,11 +455,11 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
 
   return {
     symbol,
-    dispatched: ['fib_618_fade'],
+    dispatched: [signal.strategy || 'fib_618_fade'],
     reports: [{
-      minionId: 'fib_618_fade',
-      name: 'Fibonacci Fade',
-      role: 'Deterministic 61.8% retracement fade',
+      minionId: signal.strategy || 'fib_618_fade',
+      name: signal.strategy === 'cup_handle' ? 'Cup & Handle' : 'Fibonacci Fade',
+      role: signal.strategy === 'cup_handle' ? 'Deterministic cup & handle breakout' : 'Deterministic 61.8% retracement fade',
       bias: signal.bias,
       conviction: signal.conviction,
       report: signal.thesis,
