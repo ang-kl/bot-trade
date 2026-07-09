@@ -1,0 +1,223 @@
+// cpp-exec/src/engine.cpp
+#include "engine.hpp"
+
+#include <cstdio>
+#include <thread>
+
+using namespace std::chrono;
+
+static long long nowMs() {
+  return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+static void logLine(const std::string& msg) {
+  std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
+}
+
+static EngineResult errResult(const std::string& code, const std::string& desc,
+                              bool brokerError) {
+  jsn::Value body{jsn::Object{}};
+  body.set("errorCode", code);
+  body.set("description", desc);
+  EngineResult r;
+  r.ok = false;
+  r.body = body;
+  r.brokerError = brokerError;
+  return r;
+}
+
+ExecEngine::ExecEngine(std::string host, std::string clientId,
+                       std::string clientSecret, std::string accessToken,
+                       long long accountId)
+    : host_(std::move(host)),
+      clientId_(std::move(clientId)),
+      clientSecret_(std::move(clientSecret)),
+      accessToken_(std::move(accessToken)),
+      accountId_(accountId) {}
+
+bool ExecEngine::isConnected() {
+  std::lock_guard lk(mtx_);
+  return ws_.isOpen() && authed_;
+}
+
+std::string ExecEngine::lastReconcileJson() {
+  std::lock_guard lk(stateMtx_);
+  return lastReconcile_;
+}
+
+long long ExecEngine::lastReconcileAtMs() {
+  std::lock_guard lk(stateMtx_);
+  return lastReconcileAtMs_;
+}
+
+void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
+  int type = static_cast<int>(msg.get("payloadType").asNumber(-1));
+  if (type == pt::HEARTBEAT) return;
+  // Execution events arriving outside a pending request (e.g. SL hit) are
+  // logged; the Node keeper owns state reconstruction via /positions.
+  logLine("unsolicited payloadType=" + std::to_string(type));
+}
+
+void ExecEngine::maybeHeartbeatLocked() {
+  auto now = steady_clock::now();
+  if (ws_.isOpen() && now - lastSend_ >= seconds(25)) {
+    ws_.sendText("{\"payloadType\":51}");
+    lastSend_ = now;
+  }
+}
+
+EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
+                                 int expectType, int timeoutMs) {
+  if (!ws_.isOpen())
+    return errResult("NOT_CONNECTED", "websocket is not connected", false);
+
+  jsn::Value frame{jsn::Object{}};
+  frame.set("payloadType", reqType);
+  frame.set("payload", payload);
+  if (!ws_.sendText(jsn::dump(frame))) {
+    authed_ = false;
+    return errResult("SEND_FAILED", ws_.lastError(), false);
+  }
+  lastSend_ = steady_clock::now();
+
+  auto deadline = steady_clock::now() + milliseconds(timeoutMs);
+  while (steady_clock::now() < deadline) {
+    int remain = static_cast<int>(
+        duration_cast<milliseconds>(deadline - steady_clock::now()).count());
+    if (remain <= 0) break;
+    // Cap each wait so heartbeats keep flowing on long waits.
+    auto text = ws_.recvText(remain > 5000 ? 5000 : remain);
+    maybeHeartbeatLocked();
+    if (!text) {
+      if (!ws_.isOpen()) {
+        authed_ = false;
+        return errResult("DISCONNECTED", ws_.lastError(), false);
+      }
+      continue; // idle timeout slice
+    }
+    auto msg = jsn::parse(*text);
+    if (!msg || !msg->isObject()) {
+      logLine("unparseable frame dropped");
+      continue;
+    }
+    int type = static_cast<int>(msg->get("payloadType").asNumber(-1));
+    if (type == expectType) {
+      EngineResult r;
+      r.ok = true;
+      r.body = msg->get("payload");
+      return r;
+    }
+    if (type == pt::ERROR_RES || type == pt::ORDER_ERROR_EVENT) {
+      const auto& p = msg->get("payload");
+      return errResult(p.get("errorCode").asString(),
+                       p.get("description").asString(), true);
+    }
+    handleUnsolicited(*msg);
+  }
+  return errResult("TIMEOUT",
+                   "no payloadType " + std::to_string(expectType) + " within " +
+                       std::to_string(timeoutMs) + "ms",
+                   false);
+}
+
+EngineResult ExecEngine::authApp() {
+  jsn::Value p{jsn::Object{}};
+  p.set("clientId", clientId_);
+  p.set("clientSecret", clientSecret_);
+  return request(pt::APP_AUTH_REQ, p, pt::APP_AUTH_RES);
+}
+
+EngineResult ExecEngine::authAccount() {
+  jsn::Value p{jsn::Object{}};
+  p.set("ctidTraderAccountId", accountId_);
+  p.set("accessToken", accessToken_);
+  return request(pt::ACCOUNT_AUTH_REQ, p, pt::ACCOUNT_AUTH_RES);
+}
+
+bool ExecEngine::connectAndAuth() {
+  std::lock_guard lk(mtx_);
+  authed_ = false;
+  if (!ws_.connect(host_)) {
+    logLine("connect failed: " + ws_.lastError());
+    return false;
+  }
+  lastSend_ = steady_clock::now();
+  auto a = authApp();
+  if (!a.ok) {
+    logLine("app auth failed: " + jsn::dump(a.body));
+    ws_.close();
+    return false;
+  }
+  auto b = authAccount();
+  if (!b.ok) {
+    logLine("account auth failed: " + jsn::dump(b.body));
+    ws_.close();
+    return false;
+  }
+  authed_ = true;
+  logLine("connected and authenticated to " + host_);
+  return true;
+}
+
+static jsn::Value withAccountId(const jsn::Value& payload, long long accountId) {
+  jsn::Value p = payload.isObject() ? payload : jsn::Value{jsn::Object{}};
+  if (p.get("ctidTraderAccountId").isNull()) p.set("ctidTraderAccountId", accountId);
+  return p;
+}
+
+EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
+  std::lock_guard lk(mtx_);
+  return request(pt::NEW_ORDER_REQ, withAccountId(payload, accountId_),
+                 pt::EXECUTION_EVENT);
+}
+
+EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
+  std::lock_guard lk(mtx_);
+  return request(pt::AMEND_POSITION_SLTP_REQ, withAccountId(payload, accountId_),
+                 pt::EXECUTION_EVENT, 15000);
+}
+
+EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
+  std::lock_guard lk(mtx_);
+  return request(pt::CLOSE_POSITION_REQ, withAccountId(payload, accountId_),
+                 pt::EXECUTION_EVENT);
+}
+
+EngineResult ExecEngine::reconcile() {
+  std::lock_guard lk(mtx_);
+  jsn::Value p{jsn::Object{}};
+  p.set("ctidTraderAccountId", accountId_);
+  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 25000);
+  if (r.ok) {
+    std::lock_guard sk(stateMtx_);
+    lastReconcile_ = jsn::dump(r.body);
+    lastReconcileAtMs_ = nowMs();
+  }
+  return r;
+}
+
+void ExecEngine::runLoop() {
+  int backoffMs = 1000;
+  constexpr int kBackoffCapMs = 60000;
+  for (;;) {
+    if (!isConnected()) {
+      if (connectAndAuth()) {
+        backoffMs = 1000;
+      } else {
+        logLine("reconnect in " + std::to_string(backoffMs) + "ms");
+        std::this_thread::sleep_for(milliseconds(backoffMs));
+        backoffMs = backoffMs * 2 > kBackoffCapMs ? kBackoffCapMs : backoffMs * 2;
+        continue;
+      }
+    }
+    auto r = reconcile();
+    if (!r.ok && !r.brokerError)
+      continue; // transport problem — loop back into reconnect path
+    // Idle between reconcile polls; the slice keeps heartbeats within 25s.
+    for (int slept = 0; slept < 30000 && isConnected(); slept += 5000) {
+      std::this_thread::sleep_for(milliseconds(5000));
+      std::lock_guard lk(mtx_);
+      maybeHeartbeatLocked();
+    }
+  }
+}
