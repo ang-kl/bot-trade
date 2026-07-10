@@ -44,7 +44,7 @@ function marketLine(symbol) {
  *   headline → the setup in words → the numbers (clean) → what the BOT will
  *   do → what the HUMAN can do → market hours.
  */
-export function formatAnalysisAlert(db, { sym, synth, signal, armed = {} }) {
+export function formatAnalysisAlert(db, { sym, synth, signal, armed = {}, newsLines = [] }) {
   const bias = synth.consensus_bias?.toUpperCase() || '?'
   const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
   const conv = synth.overall_conviction ?? 0
@@ -76,6 +76,7 @@ export function formatAnalysisAlert(db, { sym, synth, signal, armed = {} }) {
     `🧭 Your options: do nothing (default) · /arm fib_618_fade ${sym} ${tf || '<tf>'} to arm this combo · /pause to stop the bot · /chart ${sym} ${tf || '1h'} to see it drawn.`,
     `📏 How to read conviction: 6-7 = zone touched but shallow, most fail; 8+ = deep in the zone, the only grade the bot trades.`,
     marketLine(sym),
+    ...(newsLines.length ? ['', '📰 Nearby scheduled news (ForexFactory):', ...newsLines] : []),
   ]
   return lines.filter(l => l !== undefined).join('\n')
 }

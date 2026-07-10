@@ -814,7 +814,8 @@ async function runLoop(db) {
               try {
                 const { sendMessage } = await import('./services/telegram.js')
                 const { formatAnalysisAlert } = await import('./services/alert-format.js')
-                await sendMessage(formatAnalysisAlert(db, { sym, synth, signal: sig, armed: {
+                const newsLines = await import('./services/news-calendar.js').then(m => m.newsLinesFor(db, sym)).catch(() => [])
+                await sendMessage(formatAnalysisAlert(db, { sym, synth, signal: sig, newsLines, armed: {
                   tfs: (() => { try { return JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { return [] } })(),
                   matrix: (() => { try { return JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { return null } })(),
                   autotrade: getState(db, 'autotrade_enabled') === 'true',
