@@ -813,10 +813,12 @@ async function runLoop(db) {
             if (alertSig !== getState(db, alertKey)) {
               try {
                 const { sendMessage } = await import('./services/telegram.js')
-                const emoji = synth.consensus_bias === 'long' ? '📈' : synth.consensus_bias === 'short' ? '📉' : '📊'
-                await sendMessage(
-                  `${emoji} ANALYSIS: ${sym} ${synth.consensus_bias?.toUpperCase() || '?'} (${synth.overall_conviction}/10)\n${synth.synthesis || ''}\nEntry: ${synth.entry ?? '—'} SL: ${synth.sl ?? '—'} TP: ${synth.tp1 ?? '—'}`
-                )
+                const { formatAnalysisAlert } = await import('./services/alert-format.js')
+                await sendMessage(formatAnalysisAlert(db, { sym, synth, signal: sig, armed: {
+                  tfs: (() => { try { return JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { return [] } })(),
+                  matrix: (() => { try { return JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { return null } })(),
+                  autotrade: getState(db, 'autotrade_enabled') === 'true',
+                } }))
                 setState(db, alertKey, alertSig)
               } catch { /* non-fatal */ }
             }
