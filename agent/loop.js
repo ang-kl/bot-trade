@@ -545,6 +545,14 @@ function prepareStatements(db) {
 // ---------------------------------------------------------------------------
 
 async function runLoop(db) {
+  // Owner's travel console — handle /status /pause /resume /killall from
+  // Telegram BEFORE any phase runs, so a pause lands this cycle, not next.
+  try {
+    const { pollTelegramCommands } = await import('./services/telegram-control.js')
+    const { getCtraderCreds } = await import('./lib/ctrader-creds.js')
+    const { cancelOrder } = await import('./lib/exec-engine.js')
+    await pollTelegramCommands(db, { cancelOrder, creds: getCtraderCreds(db) })
+  } catch { /* telegram trouble must never stall trading */ }
   // ---- Mutex: prevent overlapping iterations ----
   if (loopRunning) {
     log('Loop still running — skipping this tick')
@@ -937,7 +945,9 @@ async function runLoop(db) {
         try {
           const pendingCreds = getCtraderCreds(db)
           if (pendingCreds.ready) {
-            const r = await managePendingOrders(db, pendingCreds, getSymbolMap(db))
+            const r = await managePendingOrders(db, pendingCreds, getSymbolMap(db), {
+              notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+            })
             if (r?.summary) log(`Pending orders: ${r.summary}`)
             else if (r?.skipped) log(`Pending orders skipped: ${r.skipped}`)
           }

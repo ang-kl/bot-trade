@@ -125,6 +125,9 @@ function persistFilledTrade(db, row, pos) {
  * @param {object} [deps]  test injection: { exec, scan, risk, sizing }
  */
 export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
+  // Optional owner notification hook (Telegram while travelling) — must
+  // never throw into the trading path.
+  const notify = (text) => { try { deps.notify?.(text) } catch { /* best effort */ } }
   const { exec, scan, risk, sizing } = await defaultDeps(deps)
 
   let matrix = null
@@ -178,10 +181,12 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       persistFilledTrade(db, row, pos)
       adoptedIds.add(String(pos.positionId))
       updateStatus.run('filled', `filled: position ${pos.positionId}`, row.id)
+      notify(`✅ pending FILLED: ${row.symbol} ${row.timeframe} @ level ${row.level} — now a live position (${pos.positionId})`)
       summary.filled++
       log(`${row.symbol} ${row.timeframe}: order ${row.order_id} filled → position ${pos.positionId}`)
     } else {
       updateStatus.run('expired', 'gone at broker (expired or cancelled remotely)', row.id)
+      notify(`⌛ pending expired: ${row.symbol} ${row.timeframe}`)
       summary.expired++
       log(`${row.symbol} ${row.timeframe}: order ${row.order_id} gone at broker → expired`)
     }
@@ -205,6 +210,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     try {
       await exec.cancelOrder(creds, { orderId: row.order_id })
       updateStatus.run('cancelled', 'invalidated', row.id)
+      notify(`❎ pending cancelled (setup invalidated): ${row.symbol} ${row.timeframe}`)
       summary.cancelled++
       risk.persistRiskEvent(
         db,
@@ -327,6 +333,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         new Date(expiresAtMs).toISOString(),
         'pending-fib',
       )
+      notify(`⏳ pending PLACED: ${symbol} ${timeframe} — limit @ ${orderPayload.limitPrice}, SL ${signal.sl}, TP ${signal.tp1}`)
       symbolsWithWorking.add(symbol)
       summary.placed++
       risk.persistRiskEvent(db, proposal, {
