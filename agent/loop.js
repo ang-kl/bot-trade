@@ -4,6 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
+import { enabledStrategies } from './services/strategies.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
@@ -651,7 +652,9 @@ async function runLoop(db) {
     const ctraderCreds = getCtraderCreds(db)
 
     const rsiFilterOn = getState(db, 'fib_rsi_filter') === 'true'
-    const cupHandleOn = getState(db, 'cup_handle_enabled') === 'true'
+    // Enabled strategies, registry-resolved: fib is always on; legacy
+    // cup_handle_enabled is honoured inside enabledStrategies().
+    const strategies = enabledStrategies(db, getState)
     const vwapFilterOn = getState(db, 'fib_vwap_filter') === 'true'
     const fvgFilterOn = getState(db, 'fib_fvg_filter') === 'true'
     // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
@@ -661,7 +664,7 @@ async function runLoop(db) {
     let scanMatrix = null
     try { scanMatrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, cupHandle: cupHandleOn, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, strategies, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {

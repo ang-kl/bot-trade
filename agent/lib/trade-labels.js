@@ -36,6 +36,9 @@ export const STRATEGIES = {
   reversal:   'REV',
   fib_618_fade: 'FIB',
   cup_handle: 'CUP',
+  ema_pullback: 'EMA',
+  donchian_breakout: 'DON',
+  rsi_meanrev: 'RSIM',
   other:      'OTH',
 }
 

@@ -608,17 +608,42 @@ export default function Tune() {
                 setFvgFilter(next)
                 run(() => agentPost('/actions/fib-fvg-filter', { on: next }), `FVG confluence filter ${next ? 'enabled' : 'disabled'}`)
               }} />
-              <Toggle on={config?.cup_handle_enabled} label="Cup & Handle" onClick={() => {
-                const next = !config?.cup_handle_enabled
-                if (next && !window.confirm('Arm the Cup & Handle strategy? The scan will also look for C&H breakouts (long-only) — signals still pass the same risk gate.')) return
-                run(async () => {
-                  await agentPost('/actions/cup-handle-toggle', { on: next })
-                  setConfig(c => ({ ...c, cup_handle_enabled: next }))
-                }, `Cup & Handle strategy ${next ? 'enabled' : 'disabled'}`)
-              }} />
+              {/* Strategy toggles come from the registry via /state/config —
+                  no strategy names hardcoded here. Fib fade is the base
+                  strategy: the agent always scans it, so it renders as a
+                  fixed chip, not a toggle. */}
+              {(config?.strategies || []).map(s => s.key === 'fib_618_fade' ? (
+                <span
+                  key={s.key}
+                  title={`${s.name} is the base strategy — the scan always runs it. It cannot be turned off.`}
+                  className="inline-flex items-center gap-2 rounded-[7px] border border-transparent bg-[var(--color-accent)] px-3 py-1.5 text-[13px] font-semibold text-white min-h-[36px]"
+                >
+                  <span className="inline-block w-2 h-2 rounded-full bg-white" />
+                  {s.name}: always on
+                </span>
+              ) : (
+                <Toggle key={s.key} on={s.on} label={s.name} onClick={() => {
+                  const next = !s.on
+                  if (next && !window.confirm(`Arm the ${s.name} strategy? The scan will also trade ${s.name} signals — same risk gate.`)) return
+                  // Full enabled list rebuilt from current state — the agent
+                  // stores the whole set, not a per-strategy flag.
+                  const enabled = (config?.strategies || [])
+                    .filter(x => (x.key === s.key ? next : x.on))
+                    .map(x => x.key)
+                  run(async () => {
+                    await agentPost('/actions/strategies', { enabled })
+                    setConfig(c => ({
+                      ...c,
+                      strategies: (c?.strategies || []).map(x => x.key === s.key ? { ...x, on: next } : x),
+                      // keep the legacy flag in step so old readers agree
+                      ...(s.key === 'cup_handle' ? { cup_handle_enabled: next } : {}),
+                    }))
+                  }, `${s.name} strategy ${next ? 'enabled' : 'disabled'}`)
+                }} />
+              ))}
             </div>
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
-              Two STRATEGIES (Fib fade is always on; Cup &amp; Handle by toggle) + three optional FILTERS on top — the same set the Backtest tab tests, one strategy at a time. Turn a filter on live only after it proves itself there. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
+              STRATEGIES (Fib fade is the base and always on; the others arm by toggle) + three optional FILTERS on top — the same set the Backtest tab tests, one strategy at a time. Turn a filter on live only after it proves itself there. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
             {/* Pending mode is armed from the Backtest tab (evidence-gated), so
                 Pipeline only reports the state and offers the way out. */}
@@ -1074,16 +1099,23 @@ export default function Tune() {
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
                   </Button>
                   <span className="flex items-center gap-1 text-[12px]" role="radiogroup" aria-label="Backtest strategy">
-                    {[['fib_618_fade', 'Fib fade'], ['cup_handle', 'Cup & Handle']].map(([val, lbl]) => (
+                    {/* Pills come from the registry (config.strategies); the
+                        fib fallback keeps the tab usable before config loads. */}
+                    {(config?.strategies?.length ? config.strategies : [{ key: 'fib_618_fade', name: 'Fib fade' }]).map(({ key: val, name: lbl }) => (
                       <button
                         key={val} type="button" role="radio" aria-checked={btStrategy === val}
-                        onClick={() => setBtStrategy(val)}
+                        onClick={() => {
+                          setBtStrategy(val)
+                          // touch-fill is a fib-only simulation — clear it so a
+                          // stale tick can't ride along with another strategy
+                          if (val !== 'fib_618_fade') setBtTouchFill(false)
+                        }}
                         className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     ))}
                   </span>
                   <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Fib fade only: simulate a resting LIMIT order at the 61.8% level instead of a market order after a close in the zone. Fills on any touch of the level; cancelled when price closes beyond the stop first or the zone expires. A/B this against the default before asking for live pending orders.">
-                    <input type="checkbox" checked={btTouchFill} onChange={e => setBtTouchFill(e.target.checked)} disabled={btStrategy === 'cup_handle'} />
+                    <input type="checkbox" checked={btTouchFill} onChange={e => setBtTouchFill(e.target.checked)} disabled={btStrategy !== 'fib_618_fade'} />
                     Touch-fill (pending order)
                   </label>
                   <label className="flex items-center gap-1.5 text-[12px] cursor-pointer min-h-[36px]" title="Only take entries during the instrument's prime-liquidity hours: exchange session for stocks/indices, London+New York (Mon–Fri 08:00–21:00 UTC) for FX/metals/commodities. Proves whether the edge is session-dependent.">

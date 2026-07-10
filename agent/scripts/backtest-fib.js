@@ -19,8 +19,8 @@
 // ---------------------------------------------------------------------------
 
 import { pathToFileURL } from 'node:url'
-import { computeFibSignal } from '../services/fib-strategy.js'
-import { computeCupHandleSignal } from '../services/cup-handle.js'
+// Strategies resolve through the registry — any registry key is backtestable.
+import { STRATEGY_REGISTRY, strategyByKey } from '../services/strategies.js'
 import { inPrimeSession } from '../lib/sessions.js'
 
 /**
@@ -130,13 +130,16 @@ export function runBacktest(bars, opts) {
     // market is in its prime-liquidity window at the entry bar's time.
     if (opts.sessionFilter && opts.symbol && !inPrimeSession(opts.symbol, next.t)) continue
 
-    const compute = opts.strategy === 'cup_handle' ? computeCupHandleSignal : computeFibSignal
-    const signal = compute(bars.slice(0, i + 1), timeframe, {
+    // Registry-resolved strategy; unknown keys fall back to the baseline
+    // (first registry entry = fib). Touch (resting-order) mode only applies
+    // to pendingCapable strategies — others always enter at market.
+    const strat = strategyByKey(opts.strategy) || STRATEGY_REGISTRY[0]
+    const signal = strat.compute(bars.slice(0, i + 1), timeframe, {
       rsiFilter: opts.rsiFilter || null,
       vwapFilter: opts.vwapFilter || null,
       fvgFilter: opts.fvgFilter || null,
       // touch mode: fib zones are valid resting-order levels pre-touch
-      pendingSetup: touchMode && opts.strategy !== 'cup_handle',
+      pendingSetup: touchMode && strat.pendingCapable,
     })
     if (!signal || signal.rr < MIN_RR) continue
     // Fidelity with live autotrade: only take entries the bot would actually
@@ -144,7 +147,7 @@ export function runBacktest(bars, opts) {
     // Pass minConviction: 0 to test every zone touch instead.
     if (signal.conviction < (opts.minConviction ?? 8)) continue
 
-    if (touchMode && opts.strategy !== 'cup_handle') {
+    if (touchMode && strat.pendingCapable) {
       // Park a limit at the level instead of entering at market. TTL = the
       // signal's own time cap — a zone older than its trade horizon is stale.
       const capMs = signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 86_400_000

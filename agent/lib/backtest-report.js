@@ -1,6 +1,7 @@
 // Self-contained HTML report of a backtest run, saved server-side under
-// backtest/results/ and offered to the browser as a download. One file per
-// run, named by Singapore date + per-day serial: 2026-0709_00.html.
+// reportsDir() (persistent volume when DB_PATH is set, else cwd) and offered
+// to the browser as a download. One file per run, named by Singapore date +
+// per-day serial: 2026-0709_00.html.
 //
 // Verdict logic MIRRORS src/pages/Tune.jsx verdictFor() — if one changes,
 // change the other. Colours are blue/orange only (owner is red-green
@@ -117,10 +118,20 @@ ${sections}
 </body></html>`
 }
 
-// Render + write under <baseDir>/backtest/results/. Returns { filename, html }.
+// Where reports live. On Railway the app dir is EPHEMERAL (wiped every
+// redeploy) which reset the per-day serial and caused browser "-2" filename
+// collisions — so when DB_PATH points into the persistent volume we keep
+// reports next to the database. Local dev (no DB_PATH) falls back to cwd.
+// The report routes in agent/routes/state.js MUST read the same directory.
+export function reportsDir(baseDir = process.cwd()) {
+  const root = process.env.DB_PATH ? path.dirname(process.env.DB_PATH) : baseDir
+  return path.join(root, 'backtest-results')
+}
+
+// Render + write under reportsDir(). Returns { filename, html }.
 // Write failures are the caller's concern (a full disk must not sink the run).
 export function saveBacktestReport(payload, baseDir = process.cwd(), now = new Date()) {
-  const dir = path.join(baseDir, 'backtest', 'results')
+  const dir = reportsDir(baseDir)
   fs.mkdirSync(dir, { recursive: true })
   const filename = reportFilename(fs.readdirSync(dir), now)
   const html = renderBacktestReport(payload, filename)
