@@ -70,9 +70,9 @@ export default function Desk() {
   return (
     <div className="space-y-3">
       {error && <Card className="text-[13px]">{error}</Card>}
-      <div className="grid gap-3 xl:grid-cols-[2fr_1fr] items-start">
-        {/* ---- Chart column ---- */}
-        <Card>
+      <div className="grid gap-3 xl:grid-cols-3 items-start">
+        {/* ---- Chart column — the point of the page gets 2 of 3 tracks ---- */}
+        <Card className="xl:col-span-2">
           <div className="flex flex-wrap items-center gap-1 mb-2" role="tablist" aria-label="Chart symbol">
             {chartSymbols.map(sym => (
               <button
@@ -146,7 +146,9 @@ export default function Desk() {
               <div>
                 <Badge tone={health?.autotradeEnabled ? 'up' : 'neutral'}>{health?.autotradeEnabled ? 'AUTOTRADE ON' : 'autotrade off'}</Badge>
                 {' '}
-                <span className="text-[var(--color-text-sub)]">{health?.broker?.isLive ? 'LIVE ⚠' : 'demo'} {health?.broker?.accountId || '—'} · ${fmt(health?.broker?.balance, 2)}</span>
+                {/* the raw ctid number confused more than it informed — the
+                    friendly account number lives in the left-panel switcher */}
+                <span className="text-[var(--color-text-sub)]">{health?.broker?.isLive ? 'LIVE ⚠' : 'demo'} account (selected in the left panel) · ${fmt(health?.broker?.balance, 2)}</span>
               </div>
               <div className="text-[var(--color-text-sub)]">
                 Armed: {matrix
