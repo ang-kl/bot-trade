@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
 
@@ -307,7 +308,9 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       volume: sized.volume,
       // Raw fib levels carry float noise (1.33383162…) — the broker rejects
       // prices beyond the symbol's precision (owner hit INVALID_REQUEST live).
-      limitPrice: Number(signal.entry.toFixed(priceDigits)),
+      // Owner rule: friendly rounding (2-3dp, indices to tens) capped by the
+      // broker's own digits — never rejected, never falsely precise.
+      limitPrice: tradePrice(signal.entry, priceDigits),
       ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
       ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
       expirationTimestamp: expiresAtMs,
