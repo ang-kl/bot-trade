@@ -203,6 +203,12 @@ EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
                  pt::EXECUTION_EVENT);
 }
 
+EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
+  std::lock_guard lk(mtx_);
+  return request(pt::CANCEL_ORDER_REQ, withAccountId(payload, accountId_),
+                 pt::EXECUTION_EVENT);
+}
+
 EngineResult ExecEngine::reconcile() {
   std::lock_guard lk(mtx_);
   jsn::Value p{jsn::Object{}};

@@ -20,6 +20,7 @@ constexpr int APP_AUTH_RES            = 2101;
 constexpr int ACCOUNT_AUTH_REQ        = 2102;
 constexpr int ACCOUNT_AUTH_RES        = 2103;
 constexpr int NEW_ORDER_REQ           = 2106;
+constexpr int CANCEL_ORDER_REQ        = 2108;
 constexpr int AMEND_POSITION_SLTP_REQ = 2110;
 constexpr int CLOSE_POSITION_REQ      = 2111;
 constexpr int RECONCILE_REQ           = 2124;
@@ -56,6 +57,7 @@ public:
   EngineResult placeOrder(const jsn::Value& payload);
   EngineResult amendPosition(const jsn::Value& payload);
   EngineResult closePosition(const jsn::Value& payload);
+  EngineResult cancelOrder(const jsn::Value& payload);
   EngineResult reconcile();
 
   bool isConnected();

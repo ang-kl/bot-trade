@@ -155,6 +155,22 @@ const TABLES = `
     body TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS pending_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    timeframe TEXT,
+    order_id TEXT,
+    dir INTEGER,
+    level REAL,
+    sl REAL,
+    tp REAL,
+    volume REAL,
+    placed_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT,
+    status TEXT DEFAULT 'working',
+    note TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS risk_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol         TEXT,

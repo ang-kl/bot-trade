@@ -97,6 +97,11 @@ function setLeverage(db, leverage) {
   ).run(String(leverage))
 }
 
+// Tests below exercise gates that fire BEFORE the per-symbol re-entry
+// cooldown; recent EURUSD closed trades would otherwise trip the 240m
+// symbol_cooldown veto instead of the gate under test.
+const NO_SYMBOL_COOLDOWN = { ...DEFAULT_RISK_CONFIG, symbolCooldownMinutes: 0 }
+
 // Currency legs -----------------------------------------------------------
 
 test('currencyLegs — long FX splits base/quote', () => {
@@ -146,7 +151,7 @@ test('netExposure — opposite USD legs cancel', () => {
 test('daily loss limit — under threshold approves', () => {
   const db = freshDB()
   insertClosedTrade(db, -50)
-  const res = evaluateTrade(db, goodProposal())
+  const res = evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `expected approved, got veto: ${res.veto_reason}`)
 })
 
@@ -189,7 +194,7 @@ test('streak broken by win → no cooldown', () => {
   insertClosedTrade(db, 20, 3)   // win breaks streak
   insertClosedTrade(db, -10, 2)
   insertClosedTrade(db, -10, 1)
-  const res = evaluateTrade(db, goodProposal())
+  const res = evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN)
   // streak is 2 (below 3) → should approve
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
@@ -200,7 +205,7 @@ test('cooldown expires after window', () => {
   insertClosedTrade(db, -10, 125)
   insertClosedTrade(db, -10, 122)
   insertClosedTrade(db, -10, 120)
-  const res = evaluateTrade(db, goodProposal())
+  const res = evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true)
 })
 
@@ -420,7 +425,7 @@ test('equity-aware — small loss under % cap approves', () => {
   const db = freshDB()
   setBalance(db, 10000)
   insertClosedTrade(db, -100) // well under $300 cap
-  const res = evaluateTrade(db, goodProposal())
+  const res = evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
 

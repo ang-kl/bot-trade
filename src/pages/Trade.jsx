@@ -163,11 +163,14 @@ export default function Trade() {
   const [busy, setBusy] = useState('')
   const [reconcileNote, setReconcileNote] = useState('')
   const [armed, setArmed] = useState(null)  // { timeframes, matrix } — what autotrade may act on
+  const [pending, setPending] = useState(null)  // { enabled, matrix } — resting-limit pending-order mode
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [h, s, p, t, r, rc, bo, atf] = await Promise.all([
+      // Slot count matters: destructure order must mirror the array below —
+      // append new fetches at the END or every later variable shifts.
+      const [h, s, p, t, r, rc, bo, atf, cfg] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -176,6 +179,7 @@ export default function Trade() {
         agentGet('/state/risk-config').catch(() => null),
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/autotrade-timeframes').catch(() => null),
+        agentGet('/state/config').catch(() => null),
       ])
       setHealth(h)
       setScans(s.rows || s.scans || [])
@@ -185,6 +189,12 @@ export default function Trade() {
       setAccount(rc?.derived || null)
       setBroker(bo || null)
       setArmed(atf || null)
+      setPending(cfg
+        ? {
+            enabled: cfg.pending_mode_enabled === true || cfg.pending_mode_enabled === 'true',
+            matrix: cfg.pending_matrix && typeof cfg.pending_matrix === 'object' ? cfg.pending_matrix : null,
+          }
+        : null)
       setError('')
     } catch (e) {
       setError(e.message)
@@ -263,7 +273,22 @@ export default function Trade() {
               {' '}Armed{armed?.matrix && Object.keys(armed.matrix).length > 0
                 ? <> per instrument: <strong>{Object.entries(armed.matrix).map(([sym, tfs]) => `${sym} (${tfs.join(', ')})`).join(' · ')}</strong></>
                 : <> timeframes: <strong>{(armed?.timeframes || []).join(', ') || '—'}</strong> (all watchlist symbols)</>}.
-              {' '}The bot scans every 5 minutes; an order reaches cTrader only when a signal passes every gate — <strong>nothing is parked in advance</strong>, so an empty cTrader means "waiting", not "broken".
+              {' '}The bot scans every 5 minutes; an order reaches cTrader only when a signal passes every gate{pending?.enabled
+                ? <> — except where pending mode is armed (below), so an empty cTrader elsewhere means "waiting", not "broken".</>
+                : <> — <strong>nothing is parked in advance</strong>, so an empty cTrader means "waiting", not "broken".</>}
+              {/* Pending mode changes the "nothing parked" promise — say so
+                  right where the trader reads what ACTIVE means. */}
+              {pending?.enabled && (
+                <>
+                  {' '}Resting limit orders are parked at fib levels for:{' '}
+                  <strong>
+                    {pending.matrix && Object.keys(pending.matrix).length > 0
+                      ? Object.entries(pending.matrix).map(([sym, tfs]) => `${sym} (${(tfs || []).join(', ')})`).join(' · ')
+                      : '—'}
+                  </strong>
+                  {' '}— you will see them as Pending orders in cTrader.
+                </>
+              )}
             </span>
           )}
         </div>

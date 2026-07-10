@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // agent/lib/exec-engine.js — order-path delegator. Default ('js') is a thin
 // passthrough to ctrader-ws.js so behaviour stays byte-identical; EXEC_ENGINE
-// =cpp routes the same four calls to the C++ sidecar over HTTP. loop.js
+// =cpp routes the same calls to the C++ sidecar over HTTP. loop.js
 // matches on 'order rejected' and 'POSITION_NOT_FOUND' in error messages, so
 // sidecar error bodies are surfaced verbatim in thrown Error messages.
 // ---------------------------------------------------------------------------
@@ -79,6 +79,15 @@ export async function closePosition(creds, args) {
   }
   const m = await ws()
   return m.wsClosePosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
+}
+
+export async function cancelOrder(creds, { orderId }) {
+  if (execEngineMode() === 'cpp') {
+    await ensureSidecarSession(creds)
+    return sidecar('POST', '/cancel', { ctidTraderAccountId: parseInt(creds.accountId), orderId })
+  }
+  const m = await ws()
+  return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
 }
 
 export async function reconcile(creds) {

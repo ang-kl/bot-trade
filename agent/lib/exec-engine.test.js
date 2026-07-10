@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, reconcile } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -82,6 +82,19 @@ test('cpp closePosition: POST /close with args passthrough', async () => {
   assert.deepEqual(JSON.parse(requests[0].body), args)
 })
 
+test('cpp cancelOrder: POST /cancel with bearer auth, accountId + orderId body', async () => {
+  nextResponse = { status: 200, body: JSON.stringify({ executionType: 'ORDER_CANCELLED' }) }
+  const out = await cancelOrder(CREDS, { orderId: 555 })
+  assert.deepEqual(out, { executionType: 'ORDER_CANCELLED' })
+  const req = requests[requests.length - 1]
+  assert.equal(req.method, 'POST')
+  assert.equal(req.url, '/cancel')
+  assert.equal(req.auth, 'Bearer sekret')
+  // The sidecar's /cancel body carries the account explicitly — the sidecar
+  // holds no credentials of its own beyond the pushed session.
+  assert.deepEqual(JSON.parse(req.body), { ctidTraderAccountId: 123, orderId: 555 })
+})
+
 test('cpp reconcile: GET /positions, returns parsed JSON', async () => {
   nextResponse = { status: 200, body: JSON.stringify({ position: [{ positionId: 1 }] }) }
   const out = await reconcile(CREDS)
@@ -126,6 +139,16 @@ test('js mode delegates to ctrader-ws exports with identical arguments', async (
   const p = placeOrder({ ...CREDS, host: '127.0.0.1' }, { symbolId: 1 })
   // Must be a network-level failure from the ws layer (proves the call
   // reached ctrader-ws), never an error thrown by the delegator itself.
+  await assert.rejects(p, (err) => /ECONNREFUSED|ETIMEDOUT|socket|closed|handshake|connect/i.test(err.message) || /ECONNREFUSED|ETIMEDOUT/.test(err.code || ''))
+  assert.equal(requests.length, 0)
+})
+
+test('js cancelOrder delegates positionally to wsCancelOrder', async () => {
+  delete process.env.EXEC_ENGINE
+  // Same delegation-by-argument-shape technique as the js placeOrder test:
+  // a bogus host must yield a network-level ws failure, proving the call
+  // reached wsCancelOrder with our args, and nothing hit the sidecar stub.
+  const p = cancelOrder({ ...CREDS, host: '127.0.0.1' }, { orderId: 42 })
   await assert.rejects(p, (err) => /ECONNREFUSED|ETIMEDOUT|socket|closed|handshake|connect/i.test(err.message) || /ECONNREFUSED|ETIMEDOUT/.test(err.code || ''))
   assert.equal(requests.length, 0)
 })
