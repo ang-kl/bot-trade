@@ -362,6 +362,22 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/autopilot — { mode: 'off'|'suggest'|'auto', maxChanges? }
+  // The strategy autopilot's master switch. 'auto' never acts on LIVE.
+  // -----------------------------------------------------------------------
+  router.post('/autopilot', (req, res) => {
+    const mode = ['off', 'suggest', 'auto'].includes(req.body?.mode) ? req.body.mode : null
+    if (!mode) return res.status(400).json({ error: "mode must be 'off', 'suggest' or 'auto'" })
+    setState(db, 'autopilot_mode', mode)
+    if (req.body?.maxChanges != null) {
+      const n = Number(req.body.maxChanges)
+      if (Number.isFinite(n) && n >= 1 && n <= 20) setState(db, 'autopilot_max_changes', String(Math.round(n)))
+    }
+    if (req.body?.runNow) setState(db, 'autopilot_last_run_ms', '0') // next loop cycle evaluates
+    res.json({ ok: true, mode, maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4 })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/cup-handle-toggle — LEGACY arm/disarm for Cup & Handle
   // (fib fade is untouched). Superseded by POST /actions/strategies but kept
   // for older clients; enabledStrategies() honours this flag directly.

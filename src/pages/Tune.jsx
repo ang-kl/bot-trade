@@ -649,6 +649,25 @@ export default function Tune() {
                 >Disarm</Button>
               </div>
             )}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="font-semibold">Strategy Autopilot:</span>
+              {['off', 'suggest', 'auto'].map(m => (
+                <button
+                  key={m} type="button" role="radio" aria-checked={(config?.autopilot_mode || 'off') === m}
+                  onClick={() => {
+                    if (m === 'auto' && !window.confirm('AUTO mode: every ~24h the bot backtests all strategies and arms GO combos / disarms decayed ones by itself (max 4 changes per run, announced on Telegram, never on LIVE accounts). You stay in charge via /pause, Disarm and these buttons. Enable?')) return
+                    run(async () => {
+                      await agentPost('/actions/autopilot', { mode: m })
+                      setConfig(c => ({ ...c, autopilot_mode: m }))
+                    }, `Autopilot: ${m}`)
+                  }}
+                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                >{m}</button>
+              ))}
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
+              </span>
+            </div>
             <div className="mt-3 flex items-center gap-2 text-[13px]">
               <label className="flex items-center gap-1.5">
                 Scan every
