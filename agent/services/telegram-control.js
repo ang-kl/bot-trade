@@ -14,9 +14,113 @@
 //   /pending — list working pending orders
 //   /help    — this list
 
+//   /chart   — /chart <SYMBOL> [tf=1h] [+ai]: render a self-contained HTML
+//              chart (candles + default overlays) and send it as a document
+//              with a plain-words annotation caption. '+ai' adds the optional
+//              Gemini commentary (GEMINI_API_KEY only — never Anthropic).
+
+import fs from 'node:fs'
+import path from 'node:path'
 import { getState, setState } from '../db.js'
 
 const TG_API = 'https://api.telegram.org'
+
+// Telegram hard-caps document captions at 1024 chars.
+const TG_CAPTION_MAX = 1024
+
+/**
+ * Heavy lifting for /chart, split out with injectable deps so tests need no
+ * network and no sibling modules (indicators/chart-render/annotate are lazy).
+ *
+ * args: the text AFTER "/chart", e.g. "EURUSD 4h +ai".
+ * Returns { ok, reply } — reply is only set when nothing was sent (errors);
+ * on success the document itself (with caption) is the answer.
+ */
+export async function handleChartCommand(db, creds, args, deps = {}) {
+  // --- arg parsing: SYMBOL [tf] [+ai], order-tolerant for the flag ---
+  const tokens = String(args || '').trim().split(/\s+/).filter(Boolean)
+  const wantAi = tokens.some(t => t.toLowerCase() === '+ai')
+  const rest = tokens.filter(t => t.toLowerCase() !== '+ai')
+  const symbol = (rest[0] || '').toUpperCase()
+  const timeframe = rest[1] || '1h' // default per contract
+  if (!symbol) return { ok: false, reply: 'Usage: /chart <SYMBOL> [timeframe] [+ai] — e.g. /chart EURUSD 4h +ai' }
+
+  try {
+    // --- symbol resolution (polite reply on unknown, never a throw) ---
+    const getSymbolMap = deps.getSymbolMap ?? (await import('../lib/ctrader-creds.js')).getSymbolMap
+    const symbolId = getSymbolMap(db)[symbol]
+    if (!symbolId) return { ok: false, reply: `Sorry, I don't know the symbol "${symbol}". /status shows what's being watched.` }
+
+    // --- bars (300, drop nothing here — annotate uses closed bars itself) ---
+    const fetchBars = deps.fetchBars ?? (async () => {
+      const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
+      const byPeriod = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, [timeframe], 300, 60_000)
+      return byPeriod[timeframe] || []
+    })
+    const bars = await fetchBars({ symbol, symbolId, timeframe })
+    if (!bars?.length) return { ok: false, reply: `No bars came back for ${symbol} ${timeframe} — market data may be unavailable right now.` }
+
+    // --- default overlays, server-computed so the doc matches the app ---
+    const ind = deps.indicators ?? await import('../lib/indicators.js')
+    const overlays = {
+      sma20: ind.smaSeries(bars, 20),
+      sma50: ind.smaSeries(bars, 50),
+      sma200: ind.smaSeries(bars, 200),
+      vwap: ind.vwapSeries(bars, 0),
+      fvg: ind.findFvgZones(bars),
+      vp: ind.volumeProfile(bars, { type: 'session' }),
+    }
+
+    // --- annotation (deterministic plain words) + optional Gemini line ---
+    const annotateMod = deps.annotate ?? await import('./annotate.js')
+    const annotation = await annotateMod.buildAnnotation(db, { symbol, timeframe, bars, overlays })
+    let commentary = null
+    if (wantAi && process.env.GEMINI_API_KEY) {
+      commentary = await annotateMod.geminiCommentary(annotation.lines, { symbol, timeframe }) // null on any failure
+    }
+
+    // --- render + save under the persistent reports folder ---
+    const render = deps.renderChartHtml ?? (await import('../lib/chart-render.js')).renderChartHtml
+    const dirFn = deps.reportsDir ?? (await import('../lib/backtest-report.js')).reportsDir
+    const dir = dirFn()
+    fs.mkdirSync(dir, { recursive: true })
+    // serial = 1 + highest existing chart-* serial, zero-padded — stable
+    // across restarts because it is derived from the folder contents.
+    const serial = 1 + fs.readdirSync(dir)
+      .map(n => n.match(/^chart-.*-(\d+)\.html$/)?.[1])
+      .filter(Boolean)
+      .reduce((m, n) => Math.max(m, Number(n)), 0)
+    const filename = `chart-${symbol}-${timeframe}-${String(serial).padStart(3, '0')}.html`
+    const html = render({ symbol, timeframe, bars, overlays, annotation: { ...annotation, commentary }, filename })
+    fs.writeFileSync(path.join(dir, filename), html)
+
+    // --- caption: annotation lines (+ai commentary), hard-capped at 1024 ---
+    const caption = [
+      `${symbol} ${timeframe} — ${bars.length} bars`,
+      ...annotation.lines,
+      ...(commentary ? ['', `AI: ${commentary}`] : []),
+    ].join('\n').slice(0, TG_CAPTION_MAX)
+
+    const send = deps.sendDocument ?? sendTelegramDocument
+    await send({ filename, buffer: Buffer.from(html, 'utf8'), caption })
+    return { ok: true, reply: null, filename, caption }
+  } catch (err) {
+    return { ok: false, reply: `Chart failed: ${err.message}` }
+  }
+}
+
+/** Multipart upload of an HTML buffer to the owner chat via sendDocument. */
+async function sendTelegramDocument({ filename, buffer, caption }) {
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  const form = new FormData()
+  form.append('chat_id', ownerChatId())
+  form.append('caption', caption.slice(0, TG_CAPTION_MAX))
+  form.append('document', new Blob([buffer], { type: 'text/html' }), filename)
+  const res = await fetch(`${TG_API}/bot${token}/sendDocument`, { method: 'POST', body: form })
+  const data = await res.json()
+  if (!data.ok) throw new Error(data.description || 'Telegram sendDocument failed')
+  return data.result
+}
 
 async function tg(method, payload) {
   const token = process.env.TELEGRAM_BOT_TOKEN
@@ -127,8 +231,23 @@ export async function pollTelegramCommands(db, deps = {}) {
           setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))
           reply = `✅ armed ${strat} on ${sym.toUpperCase()} ${tf}. /status to review, /pause to stop everything.`
         }
+      } else if (cmd === '/chart') {
+        // /chart <SYMBOL> [tf] [+ai] — sends an HTML chart document; a text
+        // reply only comes back when something went wrong (or usage help).
+        const args = msg.text.trim().split(/\s+/).slice(1).join(' ')
+        const res = await handleChartCommand(db, deps.creds, args, deps.chartDeps || {})
+        reply = res.reply
+        if (res.ok) {
+          // Document already sent with its caption — log the action here
+          // because the shared reply path below only fires on a text reply.
+          handled++
+          try {
+            db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+              .run('TG', cmd, JSON.stringify({ from: 'telegram', filename: res.filename }))
+          } catch { /* logging never blocks */ }
+        }
       } else if (cmd === '/help' || cmd === '/start') {
-        reply = 'Commands: /status /pause /resume /pending /killall /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
+        reply = 'Commands: /status /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
       }
       if (reply) {
         handled++

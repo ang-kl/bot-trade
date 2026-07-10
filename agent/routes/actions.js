@@ -542,7 +542,12 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   // POST /actions/chart — OHLC bars for one symbol/timeframe, plus the
   // current fib read for overlay. Powers the per-position charts in the UI.
-  // Body: { symbol, timeframe='1h', bars=120 }
+  // Body: { symbol, timeframe='1h', bars=120,
+  //         indicators?: subset of ['sma20','sma50','sma200','ema20','ema50','vwap','avwap','fvg','vp'],
+  //         avwapAnchorT?: ms, vpType?: 'session'|'visible'|'fixed'|'composite',
+  //         vpFromIdx?/vpToIdx? (visible|fixed range), annotate?: bool, commentary?: bool }
+  // Overlays are computed SERVER-side (agent/lib/indicators.js) so Telegram
+  // charts match the app EXACTLY. commentary is Gemini-only and opt-in.
   // -----------------------------------------------------------------------
   router.post('/chart', async (req, res) => {
     try {
@@ -575,10 +580,54 @@ export default function actionsRouter(db) {
         fib = computeFibSignal(bars.slice(0, -1), timeframe, {})
       } catch { /* overlay optional */ }
 
+      // Requested indicator overlays — server-computed via agent/lib/indicators.js
+      // (mirror of src/lib/indicators.js) so every surface shows identical maths.
+      const wanted = Array.isArray(req.body?.indicators) ? req.body.indicators.map(String) : []
+      const overlays = {}
+      if (wanted.length) {
+        try {
+          const ind = await import('../lib/indicators.js')
+          if (wanted.includes('sma20')) overlays.sma20 = ind.smaSeries(bars, 20)
+          if (wanted.includes('sma50')) overlays.sma50 = ind.smaSeries(bars, 50)
+          if (wanted.includes('sma200')) overlays.sma200 = ind.smaSeries(bars, 200)
+          if (wanted.includes('ema20')) overlays.ema20 = ind.emaSeries(bars, 20)
+          if (wanted.includes('ema50')) overlays.ema50 = ind.emaSeries(bars, 50)
+          if (wanted.includes('vwap')) overlays.vwap = ind.vwapSeries(bars, 0)
+          if (wanted.includes('avwap')) {
+            // anchor by timestamp; default anchor = start of series
+            const anchorT = Number(req.body?.avwapAnchorT) || bars[0].t
+            overlays.avwap = ind.avwapSeries(bars, anchorT)
+          }
+          if (wanted.includes('fvg')) overlays.fvg = ind.findFvgZones(bars)
+          if (wanted.includes('vp')) {
+            const vpType = ['session', 'visible', 'fixed', 'composite'].includes(req.body?.vpType) ? req.body.vpType : 'session'
+            // visible/fixed use the caller's range when given, else the full series
+            const fromIdx = Number.isInteger(req.body?.vpFromIdx) ? req.body.vpFromIdx : 0
+            const toIdx = Number.isInteger(req.body?.vpToIdx) ? req.body.vpToIdx : bars.length - 1
+            overlays.vp = ind.volumeProfile(bars, { type: vpType, fromIdx, toIdx })
+          }
+        } catch { /* indicators module missing/broken — overlays stay partial/empty */ }
+      }
+
+      // annotate:true → deterministic plain-words read; commentary:true → the
+      // ONE optional Gemini call (null-safe; only fires with GEMINI_API_KEY).
+      let annotation = null
+      if (req.body?.annotate === true) {
+        try {
+          const { buildAnnotation, geminiCommentary } = await import('../services/annotate.js')
+          annotation = buildAnnotation(db, { symbol, timeframe, bars, overlays, getState })
+          annotation.commentary = req.body?.commentary === true
+            ? await geminiCommentary(annotation.lines, { symbol, timeframe })
+            : null
+        } catch { annotation = null }
+      }
+
       res.json({
         symbol,
         timeframe,
-        bars: bars.map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c })),
+        bars: bars.map(b => ({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v })),
+        overlays,
+        annotation,
         lastPrice: bars[bars.length - 1]?.c ?? null,
         fib: fib ? {
           bias: fib.bias,
