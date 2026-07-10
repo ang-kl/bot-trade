@@ -18,6 +18,7 @@ import { wsGetSymbolsList } from './lib/ctrader-ws.js'
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
 import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
+import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { getState, setState } from './db.js'
@@ -923,6 +924,24 @@ async function runLoop(db) {
     }
 
       } // end scanEnabled + symbols (scan+analyze branch)
+
+      // ---------------------------------------------------------------------
+      // PENDING-ORDER MODE — resting fib-61.8% LIMIT orders, armed per
+      // symbol×timeframe. Inert unless the owner enabled the flag; a failure
+      // here must never take down the scan/monitor loop.
+      // ---------------------------------------------------------------------
+      if (getState(db, 'pending_mode_enabled') === 'true') {
+        try {
+          const pendingCreds = getCtraderCreds(db)
+          if (pendingCreds.ready) {
+            const r = await managePendingOrders(db, pendingCreds, getSymbolMap(db))
+            if (r?.summary) log(`Pending orders: ${r.summary}`)
+            else if (r?.skipped) log(`Pending orders skipped: ${r.skipped}`)
+          }
+        } catch (err) {
+          log(`Pending-order phase failed (non-fatal): ${err.message}`)
+        }
+      }
 
       // ---------------------------------------------------------------------
       // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions

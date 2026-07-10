@@ -34,6 +34,7 @@ export const PT = Object.freeze({
   ACCOUNT_AUTH_REQ:        2102,
   ACCOUNT_AUTH_RES:        2103,
   NEW_ORDER_REQ:           2106,
+  CANCEL_ORDER_REQ:        2108,
   AMEND_POSITION_SLTP_REQ: 2110,
   CLOSE_POSITION_REQ:      2111,
   ASSET_LIST_REQ:          2112,
@@ -300,6 +301,44 @@ export async function wsClosePosition(host, clientId, clientSecret, accessToken,
     const msg = err.message || ''
     if (msg.includes('POSITION_NOT_FOUND') || msg.includes('Position not found')) {
       return { alreadyClosed: true, reason: 'position already closed when CLOSE_POSITION_REQ reached broker', rawError: msg }
+    }
+    throw err
+  }
+}
+
+/**
+ * Cancel a PENDING order (limit/stop) via CANCEL_ORDER_REQ. Only orders that
+ * have not filled can be cancelled — filled orders are positions and must go
+ * through wsClosePosition.
+ *
+ * Resolves with `{ executionType, order, alreadyGone? }`. An ORDER_NOT_FOUND
+ * (or already-filled/cancelled) rejection from the broker resolves with
+ * `{ alreadyGone: true, reason, rawError }` — either way the resting order no
+ * longer exists, which is all the pending-order keeper needs to know.
+ */
+export async function wsCancelOrder(host, clientId, clientSecret, accessToken, accountId, { orderId }, timeoutMs = 20_000) {
+  if (!orderId) throw new Error('wsCancelOrder: orderId required')
+
+  const payload = {
+    ctidTraderAccountId: parseInt(accountId),
+    orderId: parseInt(orderId),
+  }
+
+  try {
+    const exec = await wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      { send: { payloadType: PT.CANCEL_ORDER_REQ, payload }, expect: PT.EXECUTION_EVENT },
+    ], timeoutMs)
+    return {
+      executionType: exec.executionType,
+      order: exec.order || {},
+    }
+  } catch (err) {
+    const msg = err.message || ''
+    // Broker wordings vary (ORDER_NOT_FOUND, "Order not found", already
+    // filled/cancelled) — all mean the resting order is gone.
+    if (/ORDER_NOT_FOUND|Order not found|order not found|ALREADY_FILLED|ORDER_ALREADY/i.test(msg)) {
+      return { alreadyGone: true, reason: 'order already gone when CANCEL_ORDER_REQ reached broker', rawError: msg }
     }
     throw err
   }

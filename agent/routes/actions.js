@@ -287,6 +287,43 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/pending-mode — arm/disarm resting-limit-order mode.
+  // Body: { on: boolean, matrix?: { SYMBOL: [timeframes] } }. The mode only
+  // acts on symbol×timeframe cells present in the matrix; timeframes are
+  // canonicalized exactly like the autotrade matrix (free text accepted).
+  // -----------------------------------------------------------------------
+  router.post('/pending-mode', (req, res) => {
+    const on = !!req.body?.on
+    if ('matrix' in (req.body || {})) {
+      const rawMatrix = req.body.matrix
+      if (rawMatrix == null || (typeof rawMatrix === 'object' && Object.keys(rawMatrix).length === 0)) {
+        setState(db, 'pending_matrix_json', null)
+        console.log('[actions] pending matrix cleared')
+      } else if (typeof rawMatrix === 'object') {
+        const clean = {}
+        const bad = []
+        for (const [sym, list] of Object.entries(rawMatrix)) {
+          if (!Array.isArray(list)) continue
+          const ptfs = list.map(t => parseTimeframe(String(t)))
+          bad.push(...list.filter((_, i) => !ptfs[i]))
+          const ok = ptfs.filter(Boolean)
+          if (ok.length) clean[String(sym).toUpperCase().trim()] = [...new Set(ok.map(p => p.label))]
+        }
+        if (bad.length) {
+          return res.status(400).json({ error: `unreadable timeframe(s): ${bad.join(', ')} — use forms like 15m, 90m, 1.5h, 4h, 2d, 1w, 1M` })
+        }
+        setState(db, 'pending_matrix_json', JSON.stringify(clean))
+        console.log('[actions] pending matrix set:', Object.entries(clean).map(([k, v]) => `${k}:${v.join('/')}`).join(' '))
+      }
+    }
+    setState(db, 'pending_mode_enabled', on ? 'true' : 'false')
+    console.log(`[actions] pending-order mode ${on ? 'ENABLED' : 'disabled'}`)
+    let matrixOut = null
+    try { matrixOut = JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { /* null */ }
+    res.json({ on: getState(db, 'pending_mode_enabled') === 'true', matrix: matrixOut })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
   // strategy in the scan loop (fib fade is untouched by this flag).
   // -----------------------------------------------------------------------

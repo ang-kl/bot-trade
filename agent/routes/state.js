@@ -362,7 +362,23 @@ export default function stateRouter(db) {
       armed: getState(db, 'autotrade_enabled') === 'true',
       symbols: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
       watchlist: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
+      pending_mode_enabled: getState(db, 'pending_mode_enabled') === 'true',
+      pending_matrix: (() => { try { return JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { return null } })(),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/pending-orders — resting-limit-order lifecycle rows
+  // -----------------------------------------------------------------------
+  router.get('/pending-orders', (_req, res) => {
+    try {
+      const rows = db.prepare(
+        `SELECT * FROM pending_orders ORDER BY id DESC LIMIT 50`
+      ).all()
+      res.json({ rows })
+    } catch (e) {
+      res.json({ rows: [], error: e.message })
+    }
   })
 
   // -----------------------------------------------------------------------

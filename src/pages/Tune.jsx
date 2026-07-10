@@ -556,6 +556,23 @@ export default function Tune() {
       )
     : {}
   const matrixSummary = Object.entries(armMatrix).map(([s, tfs]) => `${s} (${tfs.join(', ')})`).join(' · ')
+  // Pending-order arming is stricter than Activate: full-GO rows only, never
+  // "arm anyway" overrides — a resting order at the broker is a live commitment.
+  const pendingGoMatrix = bt?.symbols
+    ? Object.fromEntries(
+        Object.entries(bt.symbols)
+          .map(([sym, s]) => [sym, s.results
+            ? Object.entries(s.results).filter(([, r]) => verdictFor(r)?.state === 'go').map(([tf]) => tf)
+            : []])
+          .filter(([, tfs]) => tfs.length > 0),
+      )
+    : {}
+  const pendingGoCount = Object.values(pendingGoMatrix).reduce((n, tfs) => n + tfs.length, 0)
+  const pendingGoSummary = Object.entries(pendingGoMatrix).map(([s, tfs]) => `${s} (${tfs.join(', ')})`).join(' · ')
+  const pendingArmed = config?.pending_mode_enabled === true || config?.pending_mode_enabled === 'true'
+  const pendingMatrixSummary = config?.pending_matrix && typeof config.pending_matrix === 'object'
+    ? Object.entries(config.pending_matrix).map(([s, tfs]) => `${s} (${(tfs || []).join(', ')})`).join(' · ')
+    : ''
   const matrixEq = (a, b) => {
     const norm = (m) => JSON.stringify(Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v?.length).map(([k, v]) => [k, [...v].sort()]).sort()))
     return norm(a) === norm(b)
@@ -603,6 +620,18 @@ export default function Tune() {
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
               Two STRATEGIES (Fib fade is always on; Cup &amp; Handle by toggle) + three optional FILTERS on top — the same set the Backtest tab tests, one strategy at a time. Turn a filter on live only after it proves itself there. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
+            {/* Pending mode is armed from the Backtest tab (evidence-gated), so
+                Pipeline only reports the state and offers the way out. */}
+            {pendingArmed && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+                <Badge tone="warning">⏳ PENDING ORDERS ARMED</Badge>
+                <span className="font-semibold">{pendingMatrixSummary || 'no instruments in the matrix'}</span>
+                <Button
+                  size="sm" variant="subtle"
+                  onClick={() => run(() => agentPost('/actions/pending-mode', { on: false }), 'Pending orders disarmed')}
+                >Disarm</Button>
+              </div>
+            )}
             <div className="mt-3 flex items-center gap-2 text-[13px]">
               <label className="flex items-center gap-1.5">
                 Scan every
@@ -1266,6 +1295,26 @@ export default function Tune() {
                       {forcedTfs.length
                         ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
                         : 'turns on Scan + Analyze + Autotrade and arms the GO timeframes'}
+                    </span>
+                  </div>
+                )}
+                {/* Touch-fill runs proved the resting-limit entry — offer to arm
+                    LIVE pending orders for the fully-GO combos only. */}
+                {bt?.entryMode === 'touch' && pendingGoCount > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={async () => {
+                        if (!window.confirm(`Arm PENDING orders (resting limit orders at the fib 61.8% level) for: ${pendingGoSummary}? The bot will park REAL limit orders at the broker for these combos only.`)) return
+                        try {
+                          await agentPost('/actions/pending-mode', { on: true, matrix: pendingGoMatrix })
+                          await load()
+                          flash(`Pending orders ARMED: ${pendingGoSummary}`)
+                        } catch (err) { setError(err.message) }
+                      }}
+                    >Arm pending orders ({pendingGoCount} GO combo{pendingGoCount === 1 ? '' : 's'})</Button>
+                    <span className="text-[12px] text-[var(--color-text-sub)]">
+                      full-GO rows only — resting limits will appear as Pending orders in cTrader
                     </span>
                   </div>
                 )}

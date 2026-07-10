@@ -122,6 +122,9 @@ int main() {
   server.route("POST", "/close", [&engine](const HttpRequest& req) {
     return forward(req.body, &ExecEngine::closePosition, engine);
   });
+  server.route("POST", "/cancel", [&engine](const HttpRequest& req) {
+    return forward(req.body, &ExecEngine::cancelOrder, engine);
+  });
 
   logLine("starting on port " + std::to_string(port));
   if (!server.run()) return 1;

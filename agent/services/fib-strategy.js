@@ -506,3 +506,62 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
     usage: { output_tokens: 0 },
   }
 }
+
+/**
+ * Pending-order scan: evaluate ONLY the armed symbol×timeframe cells in
+ * `pendingMatrix` ({ SYMBOL: [tfs] }) with computeFibSignal's pendingSetup
+ * mode — a setup is placeable as a resting order at the 61.8% level even
+ * when price hasn't reached the zone yet. Shares barCache with the main
+ * scan so an armed cell costs at most one extra trendbar fetch.
+ *
+ * Returns { setups: [{ symbol, timeframe, signal }], lastClose: { SYMBOL:
+ * latestClose }, errors: [msg] } — lastClose lets the caller check
+ * invalidation of already-resting orders without refetching bars.
+ */
+export async function scanPendingSetups(creds, symbolMap, pendingMatrix, opts = {}) {
+  const { host, clientId, clientSecret, accessToken, accountId } = creds
+  const setups = []
+  const lastClose = {}
+  const errors = []
+
+  for (const [rawSymbol, tfs] of Object.entries(pendingMatrix || {})) {
+    const symbol = rawSymbol.toUpperCase()
+    const symbolId = symbolMap[symbol]
+    if (!symbolId) {
+      errors.push(`${symbol}: symbolId unknown — call POST /actions/symbol-map`)
+      continue
+    }
+    const armedTfs = (Array.isArray(tfs) ? tfs : []).filter(tf => tfMs(tf) > 0)
+    if (armedTfs.length === 0) continue
+
+    const stale = armedTfs.filter(tf => !cachedBars(symbolId, tf))
+    if (stale.length > 0) {
+      try {
+        const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT)
+        const fetchedAt = Date.now()
+        for (const tf of stale) {
+          barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt })
+        }
+      } catch (err) {
+        errors.push(`${symbol}: trendbar fetch failed: ${err.message}`)
+        continue
+      }
+    }
+
+    const now = Date.now()
+    let closeT = -1
+    for (const timeframe of armedTfs) {
+      const bars = cachedBars(symbolId, timeframe) || []
+      const last = bars[bars.length - 1]
+      if (last && last.t > closeT) { lastClose[symbol] = last.c; closeT = last.t }
+      // CLOSED bars only — same forming-bar drop as scanSymbolFib; a resting
+      // order placed off a repainting mid-bar swing is the same lookahead trap.
+      const periodMs = tfMs(timeframe) || 0
+      const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
+      const signal = computeFibSignal(closed, timeframe, { ...opts, pendingSetup: true })
+      if (signal) setups.push({ symbol, timeframe, signal })
+    }
+  }
+
+  return { setups, lastClose, errors }
+}
