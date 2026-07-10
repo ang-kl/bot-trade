@@ -30,6 +30,7 @@ export default function Desk() {
   const [config, setConfig] = useState(null)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
+  const [gridN, setGridN] = useState(1)   // 1 | 4 | 9 | 16 charts
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
@@ -81,12 +82,41 @@ export default function Desk() {
               >{sym}</button>
             ))}
           </div>
-          {symbol && (
+          <div className="flex items-center gap-1 mb-1.5" role="radiogroup" aria-label="Chart grid size">
+            {[1, 4, 9, 16].map(n => (
+              <button
+                key={n} type="button" role="radio" aria-checked={gridN === n}
+                onClick={() => setGridN(n)}
+                title={`${n} chart${n > 1 ? 's' : ''} on screen`}
+                className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              >{n === 1 ? '1 chart' : `${n}`}</button>
+            ))}
+            {gridN > 1 && <span className="text-[11px] text-[var(--color-text-sub)]">grid charts refresh every 60s (no tick stream) — tap a symbol name to focus it</span>}
+          </div>
+          {gridN === 1 && symbol && (
             <PositionChart
               symbol={symbol}
               timeframe={scan?.timeframe || '1h'}
               lines={pos ? { entry: pos.entry_price, sl: pos.current_sl, tp: pos.current_tp } : {}}
             />
+          )}
+          {gridN > 1 && (
+            <div className={`grid gap-2 ${gridN === 4 ? 'sm:grid-cols-2' : gridN === 9 ? 'sm:grid-cols-3' : 'sm:grid-cols-4'}`}>
+              {chartSymbols.slice(0, gridN).map(sym => {
+                const p2 = positions.find(px => px.symbol === sym)
+                return (
+                  <div key={sym} className="min-w-0">
+                    <button type="button" className="text-[11px] font-bold cursor-pointer hover:underline" onClick={() => { setSymbol(sym); setGridN(1) }}>{sym}</button>
+                    <PositionChart
+                      grid
+                      symbol={sym}
+                      timeframe={scans.find(sc => sc.symbol === sym)?.timeframe || '1h'}
+                      lines={p2 ? { entry: p2.entry_price, sl: p2.current_sl, tp: p2.current_tp } : {}}
+                    />
+                  </div>
+                )
+              })}
+            </div>
           )}
           {/* Scan strip — one line per symbol, words not colours */}
           <div className="mt-2 border-t border-[var(--color-border)] pt-1.5 grid gap-x-6 sm:grid-cols-2 text-[12px]">

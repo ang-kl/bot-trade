@@ -25,9 +25,9 @@ test('legacy single symbol still works', () => {
   assert.deepEqual(pickBacktestSymbols({ symbol: 'eurusd' }, WATCHLIST), ['EURUSD'])
 })
 
-test('dedupes and caps at 8 symbols per run', () => {
-  const many = Array.from({ length: 12 }, (_, i) => `SYM${i}`)
-  assert.equal(pickBacktestSymbols({ symbols: [...many, 'SYM0'] }, null).length, 8)
+test('dedupes and caps at 24 symbols per run', () => {
+  const many = Array.from({ length: 30 }, (_, i) => `SYM${i}`)
+  assert.equal(pickBacktestSymbols({ symbols: [...many, 'SYM0'] }, null).length, 24)
 })
 
 test('returns [] on empty or corrupt watchlist state', () => {

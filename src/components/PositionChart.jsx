@@ -20,7 +20,9 @@ function niceFmt(v, ref) {
 // Historical mode: pass `at` (epoch ms of a past trade) — bars are fetched
 // AROUND that moment (no polling, no live ticks, no fib overlay) and
 // `markers` ({ entryT, exitT } epoch ms) pins the fill/exit on the candles.
-export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {}, at = null, markers = null }) {
+// grid: true = many-charts mode — no live tick stream (16 SSE connections
+// would hammer the agent), 60s polls, shorter canvas.
+export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {}, at = null, markers = null, grid = false }) {
   const [timeframe, setTimeframe] = useState(tf0)
   const [error, setError] = useState('')
   const [fib, setFib] = useState(null)
@@ -89,9 +91,9 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     }
     load()
     if (at) return () => { dead = true } // historical: one fetch, no polling
-    const t = setInterval(load, POLL_MS)
+    const t = setInterval(load, grid ? 60_000 : POLL_MS)
     return () => { dead = true; clearInterval(t) }
-  }, [symbol, timeframe, at])
+  }, [symbol, timeframe, at, grid])
 
   // Price lines: entry/SL/TP from the position + the scanner's 61.8% level.
   useEffect(() => {
@@ -114,7 +116,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
 
   // Live ticks: update the forming candle in place (not for past trades).
   useEffect(() => {
-    if (at) return undefined
+    if (at || grid) return undefined
     const stream = agentStreamPrices(
       [symbol],
       t => {
@@ -130,7 +132,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       () => setLive(false),
     )
     return () => stream.close()
-  }, [symbol, at])
+  }, [symbol, at, grid])
 
   return (
     <div>
@@ -154,7 +156,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         </span>
       </div>
       {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
-      <div ref={boxRef} className="w-full h-[300px]" />
+      <div ref={boxRef} className={grid ? 'w-full h-[190px]' : 'w-full h-[300px]'} />
       {fib && (
         <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
           Fib read ({timeframe}): {String(fib.bias || '').toUpperCase()} fade at 61.8% {niceFmt(fib.level618, lastClose)} — entry {niceFmt(fib.entry, lastClose)}, SL {niceFmt(fib.sl, lastClose)}, TP1 {niceFmt(fib.tp1, lastClose)}, TP2 {niceFmt(fib.tp2, lastClose)}
