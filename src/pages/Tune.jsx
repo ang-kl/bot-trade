@@ -612,19 +612,11 @@ export default function Tune() {
                   no strategy names hardcoded here. Fib fade is the base
                   strategy: the agent always scans it, so it renders as a
                   fixed chip, not a toggle. */}
-              {(config?.strategies || []).map(s => s.key === 'fib_618_fade' ? (
-                <span
-                  key={s.key}
-                  title={`${s.name} is the base strategy — the scan always runs it. It cannot be turned off.`}
-                  className="inline-flex items-center gap-2 rounded-[7px] border border-transparent bg-[var(--color-accent)] px-3 py-1.5 text-[13px] font-semibold text-white min-h-[36px]"
-                >
-                  <span className="inline-block w-2 h-2 rounded-full bg-white" />
-                  {s.name}: always on
-                </span>
-              ) : (
+              {(config?.strategies || []).map(s => (
                 <Toggle key={s.key} on={s.on} label={s.name} onClick={() => {
                   const next = !s.on
                   if (next && !window.confirm(`Arm the ${s.name} strategy? The scan will also trade ${s.name} signals — same risk gate.`)) return
+                  if (!next && s.key === 'fib_618_fade' && !window.confirm('Turn OFF the Fib 61.8% fade? It is the strategy behind your armed pending orders — with it off, NO new fib signals or pending setups are found (existing pending orders at the broker are not cancelled).')) return
                   // Full enabled list rebuilt from current state — the agent
                   // stores the whole set, not a per-strategy flag.
                   const enabled = (config?.strategies || [])

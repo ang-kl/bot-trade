@@ -345,7 +345,6 @@ export default function actionsRouter(db) {
       return res.status(400).json({ error: `unknown strategy key(s): ${unknown.join(', ')} — valid: ${STRATEGY_KEYS.join(', ')}` })
     }
     const on = new Set(requested)
-    on.add('fib_618_fade') // baseline strategy can never be switched off
     const keys = STRATEGY_KEYS.filter(k => on.has(k)) // registry order
     setState(db, 'enabled_strategies_json', JSON.stringify(keys))
     // Back-compat: the old cup-handle toggle reads this flag.
@@ -370,7 +369,7 @@ export default function actionsRouter(db) {
       if (Array.isArray(cur)) {
         const keys = new Set(cur.filter(k => STRATEGY_KEYS.includes(k)))
         if (on) keys.add('cup_handle'); else keys.delete('cup_handle')
-        keys.add('fib_618_fade')
+        // fib is a normal toggle now — do not force it back in
         setState(db, 'enabled_strategies_json', JSON.stringify(STRATEGY_KEYS.filter(k => keys.has(k))))
       }
     } catch { /* corrupt list — leave it; enabledStrategies() falls back safely */ }
