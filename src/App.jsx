@@ -145,7 +145,7 @@ export default function App() {
 
         <AgentDownBanner />
 
-        <main className="px-4 py-5 lg:pr-6 max-w-[1400px]">
+        <main className="px-4 py-5 lg:pr-6 max-w-[1720px]">
           <Routes>
             <Route path="/" element={<Navigate to="/monitor" replace />} />
             <Route path="/desk" element={<Desk />} />

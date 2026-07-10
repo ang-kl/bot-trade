@@ -254,9 +254,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
     const volLots = riskResult.adjusted_volume ?? proposal.requestedVolume
 
+    let priceDigits = 5
     let sized
     try {
       const meta = await sizing.getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      priceDigits = meta.digits ?? 5
       sized = sizing.lotsToVolume(volLots, meta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume}`
@@ -297,7 +299,9 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       orderType: 'LIMIT',
       tradeSide: side,
       volume: sized.volume,
-      limitPrice: signal.entry,
+      // Raw fib levels carry float noise (1.33383162…) — the broker rejects
+      // prices beyond the symbol's precision (owner hit INVALID_REQUEST live).
+      limitPrice: Number(signal.entry.toFixed(priceDigits)),
       ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
       ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
       expirationTimestamp: expiresAtMs,

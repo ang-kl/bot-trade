@@ -34,6 +34,9 @@ export async function getVolumeMeta(host, clientId, clientSecret, accessToken, a
     minVolume: s.minVolume != null ? Number(s.minVolume) : null,
     maxVolume: s.maxVolume != null ? Number(s.maxVolume) : null,
     stepVolume: s.stepVolume != null ? Number(s.stepVolume) : null,
+    // Price precision — the broker REJECTS order prices with more decimals
+    // than the symbol allows ("more digits than symbol allows").
+    digits: s.digits != null ? Number(s.digits) : 5,
   }
   metaCache.set(key, meta)
   return meta
