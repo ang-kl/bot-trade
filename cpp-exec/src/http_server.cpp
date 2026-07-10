@@ -46,7 +46,7 @@ bool HttpServer::run() {
   }
 }
 
-static bool readRequest(int fd, HttpRequest& req) {
+static bool readRequest(int fd, HttpRequest& req, bool& tooLarge) {
   std::string data;
   char tmp[8192];
   size_t headerEnd = std::string::npos;
@@ -89,7 +89,11 @@ static bool readRequest(int fd, HttpRequest& req) {
   size_t contentLen = 0;
   auto it = req.headers.find("content-length");
   if (it != req.headers.end()) contentLen = std::strtoul(it->second.c_str(), nullptr, 10);
-  if (contentLen > 4u << 20) return false; // 4 MiB body cap
+  // 8 MiB reader cap: above the /backtest 5MB guard so oversize-but-sane
+  // payloads reach the route's 413, while bombs (declared 100MB) are refused
+  // here WITHOUT buffering — handleClient answers 413 instead of a silent
+  // close so callers get a real 4xx.
+  if (contentLen > 8u << 20) { tooLarge = true; return false; }
   std::string body = data.substr(headerEnd + 4);
   while (body.size() < contentLen) {
     ssize_t n = ::recv(fd, tmp, sizeof tmp, 0);
@@ -106,6 +110,7 @@ static void writeResponse(int fd, int status, const std::string& body) {
                      : status == 401 ? "Unauthorized"
                      : status == 404 ? "Not Found"
                      : status == 400 ? "Bad Request"
+                     : status == 413 ? "Payload Too Large"
                      : status == 502 ? "Bad Gateway"
                      : "Error";
   std::string resp = "HTTP/1.1 " + std::to_string(status) + " " + reason +
@@ -122,7 +127,10 @@ static void writeResponse(int fd, int status, const std::string& body) {
 
 void HttpServer::handleClient(int fd) {
   HttpRequest req;
-  if (!readRequest(fd, req)) {
+  bool tooLarge = false;
+  if (!readRequest(fd, req, tooLarge)) {
+    // Best-effort 413 for oversized Content-Length (body not drained).
+    if (tooLarge) writeResponse(fd, 413, "{\"error\":\"payload too large\"}");
     ::close(fd);
     return;
   }

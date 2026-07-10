@@ -5,9 +5,12 @@
 // no config files, matching how the Node keeper is configured on Railway.
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <string>
 #include <thread>
 
+#include "backtest.hpp"
 #include "engine.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
@@ -44,7 +47,37 @@ static HttpResponse forward(const std::string& body,
   return {502, jsn::dump(r.body)};
 }
 
-int main() {
+// Shared by CLI mode and POST /backtest: JSON payload in -> JSON result out.
+static HttpResponse handleBacktest(const std::string& body) {
+  if (body.size() > 5u * 1024 * 1024)
+    return {413, "{\"error\":\"payload too large (max 5MB)\"}"};
+  auto parsed = jsn::parse(body);
+  if (!parsed || !parsed->isObject())
+    return {400, "{\"error\":\"body must be a JSON object\"}"};
+  std::string err;
+  jsn::Value out = bt::runBacktestPayload(*parsed, err);
+  if (!err.empty())
+    return {400, "{\"error\":\"" + err + "\"}"};
+  return {200, jsn::dump(out)};
+}
+
+int main(int argc, char** argv) {
+  // CLI mode: `cpp-exec --backtest` reads one JSON object from stdin and
+  // writes {trades,stats,wf} to stdout. Checked BEFORE env validation —
+  // this mode needs no EXEC_SECRET (tests / parity harness).
+  if (argc > 1 && std::strcmp(argv[1], "--backtest") == 0) {
+    std::string input((std::istreambuf_iterator<char>(std::cin)),
+                      std::istreambuf_iterator<char>());
+    HttpResponse res = handleBacktest(input);
+    if (res.status != 200) {
+      std::fprintf(stderr, "%s\n", res.body.c_str());
+      return 1;
+    }
+    std::fwrite(res.body.data(), 1, res.body.size(), stdout);
+    std::fputc('\n', stdout);
+    return 0;
+  }
+
   bool ok = true;
   // The ONLY required env var. Broker credentials are pushed at runtime by
   // the Node keeper via POST /connect — the access token and account id live
@@ -124,6 +157,13 @@ int main() {
   });
   server.route("POST", "/cancel", [&engine](const HttpRequest& req) {
     return forward(req.body, &ExecEngine::cancelOrder, engine);
+  });
+
+  // Same payload/response as `cpp-exec --backtest` (Bearer-gated like every
+  // other route). Payload guarded at 5MB in handleBacktest; note the socket
+  // reader also enforces its own 4 MiB body cap.
+  server.route("POST", "/backtest", [](const HttpRequest& req) {
+    return handleBacktest(req.body);
   });
 
   logLine("starting on port " + std::to_string(port));

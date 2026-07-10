@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -128,6 +128,43 @@ test('cpp error with empty body still throws a status-labelled error', async () 
     assert.match(err.message, /\/positions/)
     return true
   })
+})
+
+test('cpp backtestRemote: POST /backtest with bearer auth, no /connect push, parsed body back', async () => {
+  const body = {
+    trades: [{ dir: 1, entry: 1.1, exit: 1.2, entryT: 1000, exitT: 2000, pnlPct: 9.07, reason: 'tp' }],
+    stats: { trades: 1, wins: 1, losses: 0, winRatePct: 100, profitFactor: null, totalProfitPct: 9.07, maxDrawdownPct: 0 },
+    wf: { segments: [], active: 0, positive: 0, worstMddPct: 0 },
+  }
+  nextResponse = { status: 200, body: JSON.stringify(body) }
+  const payload = {
+    bars: [[1000, 1, 2, 0.5, 1.5, 10]],
+    timeframe: '4h', tfMinutes: 240, capMinutes: 4320,
+    entryMode: 'close', minConviction: 8,
+  }
+  const out = await backtestRemote(payload)
+  assert.deepEqual(out, body)
+  // The backtester needs no broker session — exactly one request, no /connect.
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'POST')
+  assert.equal(requests[0].url, '/backtest')
+  assert.equal(requests[0].auth, 'Bearer sekret')
+  assert.deepEqual(JSON.parse(requests[0].body), payload)
+})
+
+test('cpp backtestRemote: non-2xx throws with the sidecar text preserved', async () => {
+  nextResponse = { status: 413, body: 'payload too large' }
+  await assert.rejects(backtestRemote({ bars: [] }), (err) => {
+    assert.match(err.message, /payload too large/)
+    return true
+  })
+})
+
+test('js backtestRemote: returns null without any HTTP call', async () => {
+  delete process.env.EXEC_ENGINE
+  const out = await backtestRemote({ bars: [], timeframe: '4h' })
+  assert.equal(out, null)
+  assert.equal(requests.length, 0)
 })
 
 test('js mode delegates to ctrader-ws exports with identical arguments', async () => {
