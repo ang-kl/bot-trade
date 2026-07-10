@@ -51,8 +51,12 @@ export function strategyByKey(key) {
  * - 'enabled_strategies_json' holds an array of registry keys; unknown keys
  *   are dropped silently (a renamed strategy must not brick the loop).
  * - missing or corrupt state → the defaultOn set (fib only today).
- * - 'fib_618_fade' is ALWAYS included — the fib fade is the baseline the
- *   rest of the agent (pending orders, monitors) assumes exists.
+ * - every strategy, INCLUDING fib, is a normal toggle (owner decision
+ *   2026-07-10: forcing fib on made unwanted fib trades unavoidable when
+ *   running other strategies alone). Default stays fib-on. An empty list is
+ *   legal — the scan finds nothing and says so, it does not invent a base.
+ *   Pending-order mode still requires fib to be armed for its combos, but
+ *   that is enforced where pending setups are scanned, not here.
  * - legacy back-compat: 'cup_handle_enabled' === 'true' adds cup_handle even
  *   when the JSON list doesn't mention it, so old toggles keep working.
  *
@@ -70,7 +74,6 @@ export function enabledStrategies(db, getState) {
       ? STRATEGY_REGISTRY.filter(s => s.defaultOn).map(s => s.key)
       : keys.filter(k => STRATEGY_KEYS.includes(k))
   )
-  on.add('fib_618_fade') // baseline strategy can never be switched off
   if (getState(db, 'cup_handle_enabled') === 'true') on.add('cup_handle')
 
   return STRATEGY_REGISTRY.filter(s => on.has(s.key))

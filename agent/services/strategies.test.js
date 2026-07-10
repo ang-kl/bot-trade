@@ -62,9 +62,15 @@ test('enabledStrategies: explicit list is honoured, in registry order', () => {
   assert.deepEqual(keysOf(enabledStrategies(db, getState)), ['fib_618_fade', 'ema_pullback', 'rsi_meanrev'])
 })
 
-test('enabledStrategies: fib is forced on even when the list omits it', () => {
-  const { db, getState } = fakeState({ enabled_strategies_json: JSON.stringify(['donchian_breakout']) })
-  assert.deepEqual(keysOf(enabledStrategies(db, getState)), ['fib_618_fade', 'donchian_breakout'])
+test('enabledStrategies: fib is a normal toggle — an explicit list without fib excludes it', () => {
+  const state = { enabled_strategies_json: JSON.stringify(['ema_pullback']) }
+  const keys = enabledStrategies({}, (_db, k) => state[k]).map(s => s.key)
+  assert.deepEqual(keys, ['ema_pullback'])
+})
+
+test('enabledStrategies: empty list is legal — the scan idles instead of inventing a base', () => {
+  const state = { enabled_strategies_json: '[]' }
+  assert.deepEqual(enabledStrategies({}, (_db, k) => state[k]), [])
 })
 
 test('enabledStrategies: unknown keys are dropped silently', () => {
