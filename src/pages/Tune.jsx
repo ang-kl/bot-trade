@@ -257,6 +257,34 @@ function Toggle({ on, onClick, label }) {
   )
 }
 
+function SavedReports() {
+  const [names, setNames] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    agentGet('/state/backtest-reports').then(r => setNames(r.reports || [])).catch(e => setErr(e.message))
+  }, [])
+  const grab = async (name) => {
+    try {
+      const r = await agentGet(`/state/backtest-reports/${name}`)
+      const url = URL.createObjectURL(new Blob([r.html], { type: 'text/html' }))
+      const a = document.createElement('a'); a.href = url; a.download = name; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { setErr(e.message) }
+  }
+  if (err) return <p className="text-[var(--color-warning-text)] mt-1">{err}</p>
+  if (!names) return <p className="text-[var(--color-text-sub)] mt-1">Loading…</p>
+  if (names.length === 0) return <p className="text-[var(--color-text-sub)] mt-1">None on the agent right now — reports live on temporary disk and are wiped by each redeploy. The Download button after a run is the durable copy.</p>
+  return (
+    <ul className="mt-1 space-y-0.5">
+      {names.map(n => (
+        <li key={n}>
+          <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline" onClick={() => grab(n)}>{n}</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 export default function Tune() {
   const [tab, setTab] = useState(() => {
     try { return sessionStorage.getItem('tune_tab') || 'pipeline' } catch { return 'pipeline' }
@@ -1038,6 +1066,11 @@ export default function Tune() {
               </>
             )}
 
+            {/* Saved runs on the agent (ephemeral — wiped on redeploy) */}
+            <details className="mt-2 text-[12px]">
+              <summary className="cursor-pointer font-semibold text-[var(--color-accent)]">Past reports saved on the agent</summary>
+              <SavedReports />
+            </details>
             {bt?.report?.html && (
               <div className="mt-3">
                 <Button
