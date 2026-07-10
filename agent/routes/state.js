@@ -6,6 +6,7 @@ import { Router } from 'express'
 import { getState } from '../db.js'
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
+import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -214,13 +215,14 @@ export default function stateRouter(db) {
     res.json({ rows })
   })
 
-  // GET /state/backtest-reports — saved run reports (newest first). The
-  // folder is EPHEMERAL (wiped on redeploy) — the UI says so.
+  // GET /state/backtest-reports — saved run reports (newest first). Reads
+  // the SAME resolved directory saveBacktestReport writes to (persistent
+  // volume on Railway via DB_PATH, cwd in local dev).
   router.get('/backtest-reports', async (_req, res) => {
     try {
       const fs = await import('node:fs')
-      const path = await import('node:path')
-      const dir = path.join(process.cwd(), 'backtest', 'results')
+      const { reportsDir } = await import('../lib/backtest-report.js')
+      const dir = reportsDir()
       const names = fs.existsSync(dir)
         ? fs.readdirSync(dir).filter(n => /^[\w.-]+\.html$/.test(n)).sort().reverse()
         : []
@@ -234,8 +236,9 @@ export default function stateRouter(db) {
       if (!/^[\w.-]+\.html$/.test(name)) return res.status(400).json({ error: 'bad report name' })
       const fs = await import('node:fs')
       const path = await import('node:path')
-      const file = path.join(process.cwd(), 'backtest', 'results', name)
-      if (!fs.existsSync(file)) return res.status(404).json({ error: 'report not found (reports are wiped on redeploy)' })
+      const { reportsDir } = await import('../lib/backtest-report.js')
+      const file = path.join(reportsDir(), name)
+      if (!fs.existsSync(file)) return res.status(404).json({ error: 'report not found' })
       res.json({ name, html: fs.readFileSync(file, 'utf8') })
     } catch (err) { res.status(500).json({ error: err.message }) }
   })
@@ -351,9 +354,13 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/config', (_req, res) => {
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+    // Full registry with the trader's on/off choices — the UI renders this
+    // list instead of hardcoding strategy names.
+    const onKeys = new Set(enabledStrategies(db, getState).map(s => s.key))
     res.json({
       scan_enabled: getState(db, 'scan_enabled') !== 'false',
       cup_handle_enabled: getState(db, 'cup_handle_enabled') === 'true',
+      strategies: STRATEGY_REGISTRY.map(s => ({ key: s.key, name: s.name, on: onKeys.has(s.key) })),
       loop_interval_min: Number(getState(db, 'loop_interval_min')) || 5,
       selected_account_id: getState(db, 'ctrader_account_id') || null,
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',

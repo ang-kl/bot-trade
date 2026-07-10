@@ -13,6 +13,7 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume } from '../lib/lot-sizing.js'
+import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -86,7 +87,11 @@ export default function actionsRouter(db) {
       const vwapFilter = req.body?.vwapFilter ? {} : null
       const fvgFilter = req.body?.fvgFilter ? {} : null
       const sessionFilter = !!req.body?.sessionFilter
-      const strategy = req.body?.strategy === 'cup_handle' ? 'cup_handle' : 'fib_618_fade'
+      // Any registry strategy is backtestable — unknown keys are a clear 400.
+      const strategy = req.body?.strategy || 'fib_618_fade'
+      if (!STRATEGY_KEYS.includes(strategy)) {
+        return res.status(400).json({ error: `unknown strategy '${strategy}' — one of: ${STRATEGY_KEYS.join(', ')}` })
+      }
       const entryMode = req.body?.entryMode === 'touch' ? 'touch' : 'close'
 
       const creds = getCtraderCreds(db)
@@ -324,12 +329,51 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/cup-handle-toggle — arm/disarm the SEPARATE Cup & Handle
-  // strategy in the scan loop (fib fade is untouched by this flag).
+  // POST /actions/strategies — choose which strategies the scan loop runs.
+  // Body: { enabled: ['fib_618_fade', 'cup_handle', …] } — keys validated
+  // against the registry; fib is ALWAYS forced on (it is the baseline the
+  // pending-order and monitor plumbing assumes). The legacy
+  // cup_handle_enabled flag is kept in sync for older UI/toggles.
+  // -----------------------------------------------------------------------
+  router.post('/strategies', (req, res) => {
+    const requested = req.body?.enabled
+    if (!Array.isArray(requested)) {
+      return res.status(400).json({ error: 'Body must be { enabled: [strategy keys] }' })
+    }
+    const unknown = requested.filter(k => !STRATEGY_KEYS.includes(k))
+    if (unknown.length) {
+      return res.status(400).json({ error: `unknown strategy key(s): ${unknown.join(', ')} — valid: ${STRATEGY_KEYS.join(', ')}` })
+    }
+    const on = new Set(requested)
+    on.add('fib_618_fade') // baseline strategy can never be switched off
+    const keys = STRATEGY_KEYS.filter(k => on.has(k)) // registry order
+    setState(db, 'enabled_strategies_json', JSON.stringify(keys))
+    // Back-compat: the old cup-handle toggle reads this flag.
+    setState(db, 'cup_handle_enabled', on.has('cup_handle') ? 'true' : 'false')
+    console.log('[actions] enabled strategies set:', keys.join(', '))
+    res.json({
+      strategies: STRATEGY_REGISTRY.map(s => ({ key: s.key, name: s.name, on: keys.includes(s.key) })),
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/cup-handle-toggle — LEGACY arm/disarm for Cup & Handle
+  // (fib fade is untouched). Superseded by POST /actions/strategies but kept
+  // for older clients; enabledStrategies() honours this flag directly.
   // -----------------------------------------------------------------------
   router.post('/cup-handle-toggle', (req, res) => {
     const on = !!req.body?.on
     setState(db, 'cup_handle_enabled', on ? 'true' : 'false')
+    // Keep the registry-era state consistent so the two switches never fight.
+    try {
+      const cur = JSON.parse(getState(db, 'enabled_strategies_json') || 'null')
+      if (Array.isArray(cur)) {
+        const keys = new Set(cur.filter(k => STRATEGY_KEYS.includes(k)))
+        if (on) keys.add('cup_handle'); else keys.delete('cup_handle')
+        keys.add('fib_618_fade')
+        setState(db, 'enabled_strategies_json', JSON.stringify(STRATEGY_KEYS.filter(k => keys.has(k))))
+      }
+    } catch { /* corrupt list — leave it; enabledStrategies() falls back safely */ }
     res.json({ on: getState(db, 'cup_handle_enabled') === 'true' })
   })
 
@@ -564,6 +608,7 @@ export default function actionsRouter(db) {
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
         vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
         fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
+        strategies: enabledStrategies(db, getState), // same set the loop runs
       })
 
       // Persist latest results to state
@@ -624,6 +669,7 @@ export default function actionsRouter(db) {
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
         vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
         fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
+        strategies: enabledStrategies(db, getState), // same set the loop runs
       })
       // An infrastructure failure (expired token, rate limit) must surface
       // as an error, not masquerade as a "no setup" verdict.
@@ -777,6 +823,7 @@ export default function actionsRouter(db) {
         rsiFilter: getState(db, 'fib_rsi_filter') === 'true' ? {} : null,
         vwapFilter: getState(db, 'fib_vwap_filter') === 'true' ? {} : null,
         fvgFilter: getState(db, 'fib_fvg_filter') === 'true' ? {} : null,
+        strategies: enabledStrategies(db, getState), // same set the loop runs
         extraTimeframes,
       }
 

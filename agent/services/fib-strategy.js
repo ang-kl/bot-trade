@@ -320,6 +320,21 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
  * - `error` is set when the bar fetch failed outright (rate limit, expired
  *   token); callers must surface it instead of reading "no signal".
  */
+/**
+ * Normalize opts.strategies into an ordered list of compute functions.
+ * Accepts registry entries ({ compute }) or bare functions. When absent,
+ * falls back to fib-only plus the legacy opts.cupHandle boolean so old
+ * callers keep working unchanged.
+ */
+function strategyFns(opts) {
+  const list = Array.isArray(opts.strategies) && opts.strategies.length
+    ? opts.strategies
+    : [computeFibSignal, ...(opts.cupHandle ? [computeCupHandleSignal] : [])]
+  return list
+    .map(s => (typeof s === 'function' ? s : s && s.compute))
+    .filter(fn => typeof fn === 'function')
+}
+
 export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
 
@@ -362,11 +377,12 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     if (!signal || (preferred && !signal._preferred)) {
       const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-      let cand = computeFibSignal(closed, timeframe, opts)
-      // Cup & Handle is a SEPARATE strategy (own module/toggle) that shares
-      // this scan's bar cache — one fetch serves both rule sets.
-      if (!cand && opts.cupHandle) {
-        cand = computeCupHandleSignal(closed, timeframe, opts)
+      // Try every ENABLED strategy in registry order — first signal wins on
+      // this timeframe. All strategies share the one bar fetch/cache above.
+      let cand = null
+      for (const fn of strategyFns(opts)) {
+        cand = fn(closed, timeframe, opts)
+        if (cand) break
       }
       if (cand) {
         cand._preferred = isPreferred(timeframe)
@@ -392,7 +408,8 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     rsiFilter: options.rsiFilter || null,
     vwapFilter: options.vwapFilter || null,
     fvgFilter: options.fvgFilter || null,
-    cupHandle: !!options.cupHandle,
+    cupHandle: !!options.cupHandle, // legacy flag — superseded by strategies
+    strategies: options.strategies || null, // registry entries, in order
     extraTimeframes: options.extraTimeframes || [],
   }
   const batch = symbols.slice(0, 15)
@@ -452,6 +469,16 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
  * shapes a "synthesis" object matching the old LLM output so autoTrade()
  * and DB persistence in loop.js are unchanged.
  */
+// Plain-words display copy per strategy key. Kept LOCAL (not imported from
+// the registry) because the registry imports this module — no cycles.
+const STRATEGY_DISPLAY = {
+  fib_618_fade:      { name: 'Fibonacci Fade',     role: 'Deterministic 61.8% retracement fade' },
+  cup_handle:        { name: 'Cup & Handle',       role: 'Deterministic cup & handle breakout' },
+  ema_pullback:      { name: 'EMA trend-pullback', role: 'Deterministic pullback to the trend EMA' },
+  donchian_breakout: { name: 'Range breakout',     role: 'Deterministic Donchian channel breakout' },
+  rsi_meanrev:       { name: 'RSI mean-reversion', role: 'Deterministic RSI stretch snap-back' },
+}
+
 export function synthesizeFibSignal(symbol, signal, threshold = 8) {
   if (!signal) {
     return {
@@ -476,8 +503,8 @@ export function synthesizeFibSignal(symbol, signal, threshold = 8) {
     dispatched: [signal.strategy || 'fib_618_fade'],
     reports: [{
       minionId: signal.strategy || 'fib_618_fade',
-      name: signal.strategy === 'cup_handle' ? 'Cup & Handle' : 'Fibonacci Fade',
-      role: signal.strategy === 'cup_handle' ? 'Deterministic cup & handle breakout' : 'Deterministic 61.8% retracement fade',
+      name: STRATEGY_DISPLAY[signal.strategy]?.name || 'Fibonacci Fade',
+      role: STRATEGY_DISPLAY[signal.strategy]?.role || 'Deterministic 61.8% retracement fade',
       bias: signal.bias,
       conviction: signal.conviction,
       report: signal.thesis,
