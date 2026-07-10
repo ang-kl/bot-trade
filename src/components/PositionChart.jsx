@@ -2,14 +2,33 @@
 // Charts (TradingView's open-source engine, bundled locally — no CDN).
 // Shows OHLC bars for a symbol with price lines for the position's
 // entry/SL/TP and the scanner's 61.8% fib level, plus live tick updates
-// from the agent's SSE stream. Colours: blue up / red down (no green).
+// from the agent's SSE stream, plus server-computed indicator overlays
+// (SMA/EMA/VWAP/AVWAP/FVG/volume profile) so app charts match Telegram
+// charts EXACTLY. Owner is red-green colour-blind: blue (#2563eb) and
+// orange (#c2410c) ONLY — state also carried by words/shape, never hue.
 import { useEffect, useRef, useState } from 'react'
-import { createChart, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts'
+import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
 import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
+import { CHART_TF_GROUPS } from '../lib/chart-timeframes.js'
+import IndicatorPanel, { loadIndicatorPrefs } from './IndicatorPanel.jsx'
 
-const TIMEFRAMES = ['5m', '15m', '30m', '1h', '4h', '1d']
 const POLL_MS = 15_000
-const UP = '#2563eb', DOWN = '#dc2626', VIOLET = '#a855f7'
+const UP = '#2563eb'          // blue up
+const DOWN = '#c2410c'        // orange down (never red/green)
+const ORANGE = '#c2410c'
+
+// Overlay line looks: blue family only, distinguished by SHADE + LINE STYLE
+// (LineStyle: 0 solid, 1 dotted, 2 dashed, 3 large-dashed) — never a
+// red/green pair. Titles label each axis tag so colour is never the only cue.
+const OVERLAY_LINES = {
+  sma20:  { color: '#60a5fa', lineStyle: 0, lineWidth: 1, title: 'SMA20' },
+  sma50:  { color: '#3b82f6', lineStyle: 0, lineWidth: 1, title: 'SMA50' },
+  sma200: { color: '#1d4ed8', lineStyle: 0, lineWidth: 2, title: 'SMA200' },
+  ema20:  { color: '#60a5fa', lineStyle: 2, lineWidth: 1, title: 'EMA20' },
+  ema50:  { color: '#3b82f6', lineStyle: 2, lineWidth: 1, title: 'EMA50' },
+  vwap:   { color: '#2563eb', lineStyle: 1, lineWidth: 2, title: 'VWAP' },
+  avwap:  { color: '#93c5fd', lineStyle: 3, lineWidth: 2, title: 'AVWAP' },
+}
 
 function niceFmt(v, ref) {
   if (v == null) return ''
@@ -17,11 +36,45 @@ function niceFmt(v, ref) {
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
+// Right-docked volume-profile histogram. Rows are equal-width price buckets,
+// so even vertical spacing (sorted high→low price) mirrors the price axis
+// closely enough without chart-coordinate coupling. Blue bars + labelled POC
+// line (label carries the meaning — not colour).
+function VolumeProfileSvg({ vp, height }) {
+  if (!vp?.rows?.length) return null
+  const W = 72
+  const rows = [...vp.rows].sort((a, b) => b.price - a.price)
+  const rh = height / rows.length
+  const maxPct = Math.max(...rows.map(r => r.pct || 0), 1e-9)
+  const pocIdx = rows.findIndex(r => r.price === vp.pocPrice)
+  return (
+    <svg
+      width={W} height={height} aria-label="Volume profile"
+      className="absolute top-0 right-0 pointer-events-none opacity-80"
+    >
+      {rows.map((r, i) => (
+        <rect
+          key={r.price}
+          x={W - (r.pct / maxPct) * (W - 4)} y={i * rh + 0.5}
+          width={(r.pct / maxPct) * (W - 4)} height={Math.max(rh - 1, 1)}
+          fill={UP} fillOpacity={i === pocIdx ? 0.85 : 0.35}
+        />
+      ))}
+      {pocIdx >= 0 && (
+        <>
+          <line x1={0} x2={W} y1={pocIdx * rh + rh / 2} y2={pocIdx * rh + rh / 2} stroke={ORANGE} strokeWidth={1} strokeDasharray="3 2" />
+          <text x={2} y={Math.max(pocIdx * rh - 2, 9)} fontSize="9" fill={ORANGE}>POC {niceFmt(vp.pocPrice, vp.pocPrice)}</text>
+        </>
+      )}
+    </svg>
+  )
+}
+
 // Historical mode: pass `at` (epoch ms of a past trade) — bars are fetched
 // AROUND that moment (no polling, no live ticks, no fib overlay) and
 // `markers` ({ entryT, exitT } epoch ms) pins the fill/exit on the candles.
 // grid: true = many-charts mode — no live tick stream (16 SSE connections
-// would hammer the agent), 60s polls, shorter canvas.
+// would hammer the agent), 60s polls, shorter canvas, no TF ladder/panel.
 export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {}, at = null, markers = null, grid = false }) {
   const [timeframe, setTimeframe] = useState(tf0)
   const [error, setError] = useState('')
@@ -29,10 +82,17 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
   const [tick, setTick] = useState(null)
   const [live, setLive] = useState(false)
   const [lastClose, setLastClose] = useState(null)
+  const [indPrefs, setIndPrefs] = useState(() => loadIndicatorPrefs())
+  const [avwapAnchorT, setAvwapAnchorT] = useState(null)
+  const [avwapArmed, setAvwapArmed] = useState(false)
+  const [vp, setVp] = useState(null)
 
   const boxRef = useRef(null)
-  const chartRef = useRef(null)     // { chart, series, priceLines: [] }
+  const chartRef = useRef(null)     // { chart, series, priceLines: [], overlaySeries: Map, fvgLines: [] }
   const lastBarRef = useRef(null)   // forming bar, updated by live ticks
+
+  const showPanel = !grid && !at    // indicators only on the full live chart
+  const indKey = indPrefs.indicators.join(',')
 
   // Create/destroy the chart with the container.
   useEffect(() => {
@@ -55,21 +115,56 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       borderUpColor: UP, borderDownColor: DOWN,
       wickUpColor: UP, wickDownColor: DOWN,
     })
-    chartRef.current = { chart, series, priceLines: [] }
+    chartRef.current = { chart, series, priceLines: [], overlaySeries: new Map(), fvgLines: [] }
     return () => { chart.remove(); chartRef.current = null }
   }, [])
 
-  // Bars: fetch now and every 15s (the poll also keeps SL/TP overlays fresh).
+  // AVWAP anchor picking: while armed, the next chart click sets the anchor
+  // timestamp (crosshair time is in SECONDS in lightweight-charts).
+  useEffect(() => {
+    const ref = chartRef.current
+    if (!ref || !avwapArmed) return undefined
+    const onClick = (param) => {
+      if (param?.time != null) {
+        setAvwapAnchorT(Number(param.time) * 1000)
+        setAvwapArmed(false)
+      }
+    }
+    ref.chart.subscribeClick(onClick)
+    return () => { try { ref.chart.unsubscribeClick(onClick) } catch { /* chart already disposed */ } }
+  }, [avwapArmed])
+
+  // Bars + server-computed overlays: fetch now and every 15s (the poll also
+  // keeps SL/TP overlays fresh). Overlays are computed on the AGENT so the
+  // app and Telegram charts read from the same numbers.
   useEffect(() => {
     let dead = false
     const load = async () => {
       try {
-        const r = await agentPost('/actions/chart', { symbol, timeframe, bars: 200, ...(at ? { centerT: at } : {}) })
+        const body = { symbol, timeframe, bars: 200, ...(at ? { centerT: at } : {}) }
+        if (showPanel && indPrefs.indicators.length) {
+          body.indicators = indPrefs.indicators
+          if (indPrefs.indicators.includes('vp')) {
+            body.vpType = indPrefs.vpType
+            // visible/fixed profiles need the on-screen range — without it the
+            // server would compute the whole series (i.e. 'composite' mislabeled)
+            if ((indPrefs.vpType === 'visible' || indPrefs.vpType === 'fixed') && chartRef.current) {
+              const lr = chartRef.current.chart.timeScale().getVisibleLogicalRange()
+              if (lr) {
+                body.vpFromIdx = Math.max(0, Math.floor(lr.from))
+                body.vpToIdx = Math.max(body.vpFromIdx, Math.ceil(lr.to))
+              }
+            }
+          }
+          if (indPrefs.indicators.includes('avwap') && avwapAnchorT != null) body.avwapAnchorT = avwapAnchorT
+        }
+        const r = await agentPost('/actions/chart', body)
         if (dead || !chartRef.current) return
+        const ref = chartRef.current
         const bars = (r.bars || []).map(b => ({
           time: Math.floor(b.t / 1000), open: b.o, high: b.h, low: b.l, close: b.c,
         }))
-        chartRef.current.series.setData(bars)
+        ref.series.setData(bars)
         lastBarRef.current = bars[bars.length - 1] || null
         if (markers && bars.length) {
           const snap = (ms) => {
@@ -80,10 +175,53 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           }
           const defs = [
             markers.entryT && { time: snap(markers.entryT), position: 'belowBar', shape: 'arrowUp', color: UP, text: 'entry' },
-            markers.exitT && { time: snap(markers.exitT), position: 'aboveBar', shape: 'square', color: VIOLET, text: 'exit' },
+            markers.exitT && { time: snap(markers.exitT), position: 'aboveBar', shape: 'square', color: ORANGE, text: 'exit' },
           ].filter(Boolean)
-          createSeriesMarkers(chartRef.current.series, defs)
+          createSeriesMarkers(ref.series, defs)
         }
+
+        // ---- overlay line series (MAs / VWAP / AVWAP) ----
+        const overlays = r.overlays || {}
+        for (const [id, cfg] of Object.entries(OVERLAY_LINES)) {
+          const wanted = indPrefs.indicators.includes(id) && Array.isArray(overlays[id])
+          let s = ref.overlaySeries.get(id)
+          if (!wanted) {
+            if (s) { ref.chart.removeSeries(s); ref.overlaySeries.delete(id) }
+            continue
+          }
+          if (!s) {
+            s = ref.chart.addSeries(LineSeries, {
+              ...cfg, priceLineVisible: false, lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            })
+            ref.overlaySeries.set(id, s)
+          }
+          s.setData(overlays[id]
+            .map((v, i) => (v == null || !bars[i]) ? null : { time: bars[i].time, value: v })
+            .filter(Boolean))
+        }
+
+        // ---- FVG zones: top/bottom price lines, orange dotted, unfilled
+        // only, capped at the 3 nearest to last price ----
+        for (const pl of ref.fvgLines) ref.series.removePriceLine(pl)
+        ref.fvgLines = []
+        if (indPrefs.indicators.includes('fvg') && Array.isArray(overlays.fvg)) {
+          const px = r.lastPrice ?? bars[bars.length - 1]?.close ?? 0
+          const zones = overlays.fvg
+            .filter(z => z.filledIdx == null)
+            .sort((a, b) => Math.abs((a.top + a.bottom) / 2 - px) - Math.abs((b.top + b.bottom) / 2 - px))
+            .slice(0, 3)
+          for (const z of zones) {
+            for (const [price, edge] of [[z.top, 'top'], [z.bottom, 'bot']]) {
+              ref.fvgLines.push(ref.series.createPriceLine({
+                price, color: ORANGE, lineWidth: 1, lineStyle: 1,
+                axisLabelVisible: false, title: `FVG ${z.dir} ${edge}`,
+              }))
+            }
+          }
+        }
+
+        setVp(indPrefs.indicators.includes('vp') ? (overlays.vp || null) : null)
         setLastClose(r.lastPrice ?? null)
         setFib(r.fib || null)
         setError('')
@@ -93,9 +231,10 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     if (at) return () => { dead = true } // historical: one fetch, no polling
     const t = setInterval(load, grid ? 60_000 : POLL_MS)
     return () => { dead = true; clearInterval(t) }
-  }, [symbol, timeframe, at, grid])
+  }, [symbol, timeframe, at, grid, showPanel, indKey, indPrefs.vpType, avwapAnchorT]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Price lines: entry/SL/TP from the position + the scanner's 61.8% level.
+  // SL is orange + labelled "SL", TP blue + "TP" — words carry the meaning.
   useEffect(() => {
     const ref = chartRef.current
     if (!ref) return
@@ -105,7 +244,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       lines.entry != null && { price: Number(lines.entry), color: '#94a3b8', title: 'entry' },
       lines.sl != null && { price: Number(lines.sl), color: DOWN, title: 'SL' },
       lines.tp != null && { price: Number(lines.tp), color: UP, title: 'TP' },
-      fib?.level618 != null && { price: Number(fib.level618), color: VIOLET, title: '61.8%' },
+      fib?.level618 != null && { price: Number(fib.level618), color: ORANGE, title: '61.8%' },
     ].filter(Boolean)
     for (const d of defs) {
       ref.priceLines.push(ref.series.createPriceLine({
@@ -134,29 +273,65 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     return () => stream.close()
   }, [symbol, at, grid])
 
+  const chartHeight = grid ? 190 : 300
+
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-1.5">
-        {TIMEFRAMES.map(t => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTimeframe(t)}
-            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold cursor-pointer ${
-              t === timeframe ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
-            }`}
-          >{t}</button>
-        ))}
-        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-          {at
-            ? <>historical — window around {new Date(at).toLocaleString()}</>
-            : live && tick
-              ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
-              : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
-        </span>
-      </div>
+      {grid ? (
+        // Grid mode: 16 mini charts — just name the current TF, no 20-button ladder.
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <span className="text-[11px] font-semibold text-[var(--color-text-sub)]">{timeframe}</span>
+          <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
+        </div>
+      ) : (
+        <div className="mb-1.5">
+          {CHART_TF_GROUPS.map(g => (
+            <div key={g.label} className="flex items-center gap-1.5 mb-1">
+              <span className="w-10 shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-sub)]">{g.label}</span>
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label={`${g.label} timeframes`}>
+                {g.tfs.map(t => (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={t === timeframe}
+                    onClick={() => setTimeframe(t)}
+                    className={`rounded-full px-2 min-h-[28px] text-[11px] font-semibold cursor-pointer ${
+                      t === timeframe ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
+                    }`}
+                  >{t}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="text-right text-[11px] text-[var(--color-text-sub)]">
+            {at
+              ? <>historical — window around {new Date(at).toLocaleString()}</>
+              : live && tick
+                ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
+                : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
+          </div>
+        </div>
+      )}
+      {showPanel && (
+        <IndicatorPanel
+          value={indPrefs}
+          onChange={setIndPrefs}
+          avwapArmed={avwapArmed}
+          onArmAvwap={() => setAvwapArmed(a => !a)}
+        />
+      )}
       {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
-      <div ref={boxRef} className={grid ? 'w-full h-[190px]' : 'w-full h-[300px]'} />
+      <div className="relative">
+        <div ref={boxRef} className={grid ? 'w-full h-[190px]' : 'w-full h-[300px]'} />
+        {showPanel && vp && <VolumeProfileSvg vp={vp} height={chartHeight} />}
+      </div>
+      {showPanel && avwapAnchorT != null && indPrefs.indicators.includes('avwap') && (
+        <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
+          AVWAP anchored at {new Date(avwapAnchorT).toLocaleString()}
+          {' · '}
+          <button type="button" className="underline cursor-pointer" onClick={() => setAvwapAnchorT(null)}>clear</button>
+        </div>
+      )}
       {fib && (
         <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
           Fib read ({timeframe}): {String(fib.bias || '').toUpperCase()} fade at 61.8% {niceFmt(fib.level618, lastClose)} — entry {niceFmt(fib.entry, lastClose)}, SL {niceFmt(fib.sl, lastClose)}, TP1 {niceFmt(fib.tp1, lastClose)}, TP2 {niceFmt(fib.tp2, lastClose)}
