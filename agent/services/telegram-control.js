@@ -246,6 +246,13 @@ export async function pollTelegramCommands(db, deps = {}) {
               .run('TG', cmd, JSON.stringify({ from: 'telegram', filename: res.filename }))
           } catch { /* logging never blocks */ }
         }
+      } else if (cmd === '/news') {
+        const symArg = msg.text.trim().split(/\s+/)[1]
+        const { newsLinesFor } = await import('./news-calendar.js')
+        const lines = await newsLinesFor(db, symArg || 'EURUSD')
+        reply = lines.length
+          ? `📰 ${symArg ? symArg.toUpperCase() : 'EURUSD'} — scheduled news (±24h):\n${lines.join('\n')}`
+          : 'No high/medium-impact scheduled news in the window (or the feed is unreachable).'
       } else if (cmd === '/help' || cmd === '/start') {
         reply = 'Commands: /status /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
       }
