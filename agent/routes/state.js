@@ -214,6 +214,32 @@ export default function stateRouter(db) {
     res.json({ rows })
   })
 
+  // GET /state/backtest-reports — saved run reports (newest first). The
+  // folder is EPHEMERAL (wiped on redeploy) — the UI says so.
+  router.get('/backtest-reports', async (_req, res) => {
+    try {
+      const fs = await import('node:fs')
+      const path = await import('node:path')
+      const dir = path.join(process.cwd(), 'backtest', 'results')
+      const names = fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter(n => /^[\w.-]+\.html$/.test(n)).sort().reverse()
+        : []
+      res.json({ reports: names })
+    } catch (err) { res.status(500).json({ error: err.message }) }
+  })
+
+  router.get('/backtest-reports/:name', async (req, res) => {
+    try {
+      const name = String(req.params.name)
+      if (!/^[\w.-]+\.html$/.test(name)) return res.status(400).json({ error: 'bad report name' })
+      const fs = await import('node:fs')
+      const path = await import('node:path')
+      const file = path.join(process.cwd(), 'backtest', 'results', name)
+      if (!fs.existsSync(file)) return res.status(404).json({ error: 'report not found (reports are wiped on redeploy)' })
+      res.json({ name, html: fs.readFileSync(file, 'utf8') })
+    } catch (err) { res.status(500).json({ error: err.message }) }
+  })
+
   // GET /state/trades — trade journal (last 100 closed)
   // -----------------------------------------------------------------------
   router.get('/trades', (_req, res) => {

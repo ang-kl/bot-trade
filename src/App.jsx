@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import { getAgentConn, agentConfigured } from './lib/agent-api.js'
 import Monitor from './pages/Monitor.jsx'
+import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
@@ -15,7 +16,7 @@ const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
 // Grouped left navigation (desktop) — compliance-dashboard style.
 const NAV_GROUPS = [
-  { title: 'Overview', items: [{ to: '/monitor', label: 'Monitor', icon: '👁️' }] },
+  { title: 'Overview', items: [{ to: '/desk', label: 'Desk', icon: '🖥️' }, { to: '/monitor', label: 'Monitor', icon: '👁️' }] },
   {
     title: 'Trading',
     items: [
@@ -147,6 +148,7 @@ export default function App() {
         <main className="px-4 py-5 lg:pr-6 max-w-[1400px]">
           <Routes>
             <Route path="/" element={<Navigate to="/monitor" replace />} />
+            <Route path="/desk" element={<Desk />} />
             <Route path="/monitor" element={<Monitor />} />
             <Route path="/trade" element={<Trade />} />
             <Route path="/accounts" element={<Accounts />} />
