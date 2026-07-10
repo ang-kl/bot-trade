@@ -38,7 +38,9 @@ export function pickBacktestSymbols(body, watchlistJson) {
         .map(s => s.symbol)
     } catch { names = [] }
   }
-  return [...new Set(names.map(s => String(s).toUpperCase().trim()).filter(Boolean))].slice(0, 8)
+  // Cap raised from 8 (sequential-fetch era) — fetches now run 3-wide.
+  // Anything beyond the cap must be reported by the caller, never silent.
+  return [...new Set(names.map(s => String(s).toUpperCase().trim()).filter(Boolean))].slice(0, 24)
 }
 
 /**
@@ -102,11 +104,11 @@ export default function actionsRouter(db) {
       const { host, clientId, clientSecret, accessToken, accountId } = creds
 
       const symbols = {}
-      for (const name of names) {
+      const testOne = async (name) => {
         const symbolId = map[name]
         if (!symbolId) {
           symbols[name] = { error: 'not offered by this broker account' }
-          continue
+          return
         }
         try {
           const byPeriod = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, timeframes, count, 60_000)
@@ -147,6 +149,10 @@ export default function actionsRouter(db) {
           // one symbol failing (ws timeout, thin data) must not sink the rest
           symbols[name] = { error: err.message }
         }
+      }
+      // 3 symbols in flight — same concurrency the screener proved safe.
+      for (let bi = 0; bi < names.length; bi += 3) {
+        await Promise.all(names.slice(bi, bi + 3).map(testOne))
       }
       const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, entryMode, ranAt: new Date().toISOString() }
       // Persist a self-contained HTML report under backtest/results/ and hand
