@@ -54,6 +54,16 @@ async function ensureSidecarSession(creds) {
   lastPushedKey = key
 }
 
+// Backtest fast-path: cpp mode POSTs the payload to the sidecar's /backtest
+// (no /connect push — the backtester needs no broker session) and returns the
+// parsed {trades, stats, wf} body; a non-2xx response throws so the caller
+// can decide. js mode returns null WITHOUT any HTTP call — the caller falls
+// back to the JS engine.
+export async function backtestRemote(payload) {
+  if (execEngineMode() !== 'cpp') return null
+  return sidecar('POST', '/backtest', payload)
+}
+
 export async function placeOrder(creds, orderPayload) {
   if (execEngineMode() === 'cpp') {
     await ensureSidecarSession(creds)

@@ -6,9 +6,10 @@
 // mantissa, and the Node side of this project already lives with that.
 #pragma once
 
+#include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cctype>
 #include <map>
 #include <memory>
 #include <optional>
@@ -101,6 +102,9 @@ inline void dumpInto(const Value& v, std::string& out) {
     case Value::Type::Bool:   out += v.asBool() ? "true" : "false"; break;
     case Value::Type::Number: {
       double d = v.asNumber();
+      // JSON has no NaN/Infinity — mirror JSON.stringify and emit null so
+      // output stays parseable (e.g. Inf pnlPct from a zero-price bar).
+      if (!std::isfinite(d)) { out += "null"; break; }
       // Integral values print without a fraction — payloadType etc. must be
       // plain ints on the wire.
       if (d == static_cast<double>(static_cast<long long>(d)) &&

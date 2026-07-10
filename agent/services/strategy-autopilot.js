@@ -17,6 +17,8 @@
 
 import { getState, setState } from '../db.js'
 import { verdictFor } from '../lib/backtest-report.js'
+import { backtestRemote } from '../lib/exec-engine.js'
+import { tfMs } from '../lib/timeframes.js'
 import { STRATEGY_REGISTRY } from './strategies.js'
 
 const RUN_EVERY_MS = 22 * 3600_000 // ~nightly, drift-tolerant
@@ -97,6 +99,37 @@ export function decideChanges(verdicts, current, opts = {}) {
   }
 }
 
+// Replica of fib-strategy.js timeCapFor (not exported there): fixed table for
+// the classic set, else 24× the bar duration clamped to the table's range.
+// Must stay in lockstep — the C++ sidecar receives this as capMinutes and has
+// to match what the JS engine would have used.
+const TIME_CAP_MINUTES = {
+  '5m': 240, '15m': 480, '30m': 720, '1h': 1440, '4h': 4320, '1d': 20160,
+  '1w': 60480, '1mo': 259200,
+}
+function timeCapFor(timeframe) {
+  return TIME_CAP_MINUTES[timeframe]
+    ?? Math.min(Math.max(Math.round((tfMs(timeframe) / 60_000) * 24), 240), 259_200)
+}
+
+// Fib fast-path: try the C++ sidecar's /backtest (one call returns trades,
+// stats AND wf). Returns null when the sidecar is unavailable, disabled
+// (js mode), or replies with a malformed body — caller falls back to JS.
+async function tryRemoteFibBacktest(bars, tf, entryMode, remote) {
+  try {
+    const r = await remote({
+      bars: bars.map(b => [b.t, b.o, b.h, b.l, b.c, b.v]),
+      timeframe: tf,
+      tfMinutes: tfMs(tf) / 60_000,
+      capMinutes: timeCapFor(tf) ?? null,
+      entryMode,
+      minConviction: 8,
+    })
+    if (r && r.stats && Array.isArray(r.trades) && r.wf) return r
+    return null
+  } catch { return null }
+}
+
 async function evaluateAll(db, creds, deps) {
   const { wsGetTrendbarsBatch } = deps.ws ?? await import('../lib/ctrader-ws.js')
   const { runBacktest, walkForward } = deps.bt ?? await import('../scripts/backtest-fib.js')
@@ -125,8 +158,14 @@ async function evaluateAll(db, creds, deps) {
         for (const entryMode of modes) {
           try {
             const opts = { timeframe: tf, strategy: strat.key, entryMode, symbol }
-            const { stats, trades } = runBacktest(bars, opts)
-            const wf = walkForward(bars, opts, 4)
+            // Fib fast-path: the C++ sidecar runs the identical arithmetic
+            // (parity-tested); null/throw falls back to the JS engine below.
+            // deps.remote lets tests force the JS path (e.g. async () => null).
+            const remoteResult = strat.key === 'fib_618_fade'
+              ? await tryRemoteFibBacktest(bars, tf, entryMode, deps.remote ?? backtestRemote)
+              : null
+            const { stats, trades } = remoteResult ?? runBacktest(bars, opts)
+            const wf = remoteResult ? remoteResult.wf : walkForward(bars, opts, 4)
             const row = { ...stats, wfActive: wf.active, wfPositive: wf.positive, wfWorstMddPct: wf.worstMddPct }
             const v = verdictFor(row)
             verdicts.push({
