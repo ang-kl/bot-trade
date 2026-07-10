@@ -362,6 +362,8 @@ export default function stateRouter(db) {
       cup_handle_enabled: getState(db, 'cup_handle_enabled') === 'true',
       strategies: STRATEGY_REGISTRY.map(s => ({ key: s.key, name: s.name, on: onKeys.has(s.key) })),
       loop_interval_min: Number(getState(db, 'loop_interval_min')) || 5,
+      autopilot_mode: (() => { const m = getState(db, 'autopilot_mode'); return m === 'auto' || m === 'suggest' ? m : 'off' })(),
+      autopilot_last_run_ms: Number(getState(db, 'autopilot_last_run_ms')) || null,
       selected_account_id: getState(db, 'ctrader_account_id') || null,
       analyze_enabled: getState(db, 'analyze_enabled') !== 'false',
       autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',

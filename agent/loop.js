@@ -956,6 +956,16 @@ async function runLoop(db) {
         }
       }
 
+      // Strategy Autopilot — nightly evidence loop (mode-gated inside;
+      // failures must never touch the trading phases).
+      try {
+        const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
+        const r = await maybeRunAutopilot(db, ctraderCreds)
+        if (r && !r.skipped) log(`Autopilot: ${JSON.stringify(r)}`)
+      } catch (err) {
+        log(`Autopilot failed (non-fatal): ${err.message}`)
+      }
+
       // ---------------------------------------------------------------------
       // 3. WEEKEND WATCH — hourly Opus pass on non-crypto open positions
       // when market is closed (and we're not already in pre-open warm-up,

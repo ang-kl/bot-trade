@@ -104,8 +104,31 @@ export async function pollTelegramCommands(db, deps = {}) {
           }
         }
         reply = `🛑 Killed — paused everything, cancelled ${cancelled}/${rows.length} pending order(s). Open POSITIONS are untouched (close those in cTrader or the app).`
+      } else if (cmd === '/autopilot') {
+        const arg = msg.text.trim().split(/\s+/)[1]?.toLowerCase()
+        if (['off', 'suggest', 'auto'].includes(arg)) {
+          setState(db, 'autopilot_mode', arg)
+          reply = `🧭 Autopilot mode: ${arg}${arg === 'auto' ? ' — arms/disarms within the daily change cap; LIVE accounts get suggestions only.' : ''}`
+        } else {
+          reply = `Autopilot is ${getState(db, 'autopilot_mode') || 'off'}. Use: /autopilot off | suggest | auto`
+        }
+      } else if (cmd === '/arm') {
+        // /arm <strategy> <SYMBOL> <tf> — accept an autopilot suggestion by thumb
+        const [, strat, sym, tf] = msg.text.trim().split(/\s+/)
+        if (!strat || !sym || !tf) {
+          reply = 'Usage: /arm <strategy> <SYMBOL> <timeframe> — e.g. /arm ema_pullback GBPUSD 12h'
+        } else {
+          const read = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
+          const enabled = new Set(read('enabled_strategies_json') || ['fib_618_fade'])
+          enabled.add(strat)
+          setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
+          const matrix = read('autotrade_matrix_json') || {}
+          matrix[sym.toUpperCase()] = [...new Set([...(matrix[sym.toUpperCase()] || []), tf])]
+          setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))
+          reply = `✅ armed ${strat} on ${sym.toUpperCase()} ${tf}. /status to review, /pause to stop everything.`
+        }
       } else if (cmd === '/help' || cmd === '/start') {
-        reply = 'Commands: /status /pause /resume /pending /killall /help'
+        reply = 'Commands: /status /pause /resume /pending /killall /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
       }
       if (reply) {
         handled++

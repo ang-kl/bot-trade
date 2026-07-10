@@ -89,10 +89,11 @@ export function decideChanges(verdicts, current, opts = {}) {
   const changes = [...disarm.map(d => ({ ...d, action: 'disarm' })), ...arm.map(a => ({ ...a, action: 'arm' }))]
   const applied = changes.slice(0, maxChanges)
   const overflow = changes.slice(maxChanges)
+  const strip = ({ action, ...rest }) => rest
   return {
-    arm: applied.filter(c => c.action === 'arm'),
-    disarm: applied.filter(c => c.action === 'disarm'),
-    suggestions: overflow,
+    arm: applied.filter(c => c.action === 'arm').map(strip),
+    disarm: applied.filter(c => c.action === 'disarm').map(strip),
+    suggestions: overflow, // keeps `action` — the suggestion text needs it
   }
 }
 
