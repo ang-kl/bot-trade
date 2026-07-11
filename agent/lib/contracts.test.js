@@ -65,6 +65,33 @@ test('usdLossPerLot — negative distance treated as absolute', () => {
   assert.equal(usdLossPerLot('EURUSD', -0.003), 300)
 })
 
+test('usdLossPerLot — USDJPY converts quote-ccy loss to USD via price', () => {
+  // 0.50 JPY distance × 100k = ¥50,000 → at 147.50, $338.98/lot — NOT $50,000
+  const out = usdLossPerLot('USDJPY', 0.5, 147.5)
+  assert.ok(Math.abs(out - 50000 / 147.5) < 0.01, `got ${out}`)
+})
+
+test('usdLossPerLot — USDCHF converts via price', () => {
+  // 30 pip × 100k = 300 CHF → at 0.90, $333.33/lot
+  const out = usdLossPerLot('USDCHF', 0.003, 0.9)
+  assert.ok(Math.abs(out - 300 / 0.9) < 0.01, `got ${out}`)
+})
+
+test('usdLossPerLot — USD-base without a price is unknown (NaN), not mis-sized', () => {
+  assert.ok(Number.isNaN(usdLossPerLot('USDJPY', 0.5)))
+  assert.ok(Number.isNaN(usdLossPerLot('USDJPY', 0.5, 0)))
+})
+
+test('usdLossPerLot — cross with no USD leg is unknown (NaN)', () => {
+  assert.ok(Number.isNaN(usdLossPerLot('EURJPY', 0.5, 160)))
+  assert.ok(Number.isNaN(usdLossPerLot('EURGBP', 0.003, 0.85)))
+})
+
+test('usdLossPerLot — USD-quoted unaffected by price argument', () => {
+  assert.equal(usdLossPerLot('EURUSD', 0.003, 1.1), 300)
+  assert.equal(usdLossPerLot('NAS100', 50, 20000), 50)
+})
+
 // notionalUsd -----------------------------------------------------------
 
 test('notionalUsd — EURUSD 0.01 lot at 1.10 = $1100', () => {
@@ -86,6 +113,15 @@ test('notionalUsd — US30 0.5 lot at 40000 = $20000', () => {
 test('notionalUsd — NATGAS 0.01 lot at $2.50 = $250', () => {
   // 0.01 × 10000 × 2.50 = $250
   assert.equal(notionalUsd('NATGAS', 0.01, 2.50), 250)
+})
+
+test('notionalUsd — USDJPY 0.1 lot = $10,000 (base is USD, no price term)', () => {
+  // Previously 0.1 × 100k × 147.5 = "¥1.475M read as USD" — 147× overstated.
+  assert.equal(notionalUsd('USDJPY', 0.1, 147.5), 10_000)
+})
+
+test('notionalUsd — cross falls back to quote-ccy approximation', () => {
+  assert.equal(notionalUsd('EURGBP', 0.1, 0.85), 8500)
 })
 
 // Tier resolution --------------------------------------------------------

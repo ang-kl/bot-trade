@@ -6,9 +6,11 @@
 // risk-based position sizing.
 //
 // For USD-quoted instruments, USD loss per lot = priceDistance * contractSize.
-// For USD-base crosses (USDJPY, USDCHF etc) the exact formula needs the current
-// price, but for risk *budgeting* the approximation is fine — we oversize
-// marginally which is the conservative direction.
+// For USD-base pairs (USDJPY, USDCHF etc) the loss lands in the quote currency,
+// so it must be divided by the current price to express it in USD — without
+// that conversion a JPY-quoted distance overstates the loss ~150× and sizing
+// collapses to zero. Crosses (neither leg USD) have no conversion rate
+// available here and report unknown, which the risk manager vetoes.
 //
 // There is NO hardcoded instrument universe. The risk manager decides whether
 // a trade is affordable on the user's balance + leverage. The tier label is
@@ -58,22 +60,50 @@ export function contractSize(symbol) {
 }
 
 /**
- * Estimate USD loss per lot given a price-level distance. Exact for USD-quoted
- * symbols (XXXUSD) and indices, approximate for USD-base (USDXXX) and crosses.
+ * The quote currency of a 6-letter FX pair, or null for anything else
+ * (indices, commodities, single names — all treated as USD-denominated).
  */
-export function usdLossPerLot(symbol, priceDistance) {
-  return Math.abs(priceDistance) * contractSize(symbol)
+function fxQuoteCurrency(symbol) {
+  const s = (symbol || '').toUpperCase()
+  if (s.length === 6 && /^[A-Z]{6}$/.test(s)) return s.slice(3)
+  return null
+}
+
+/**
+ * USD loss per lot given a price-level distance. Exact for USD-quoted symbols
+ * (XXXUSD, indices, commodities). For USD-base pairs (USDJPY, USDCHF …) the
+ * raw loss is in the quote currency; pass the current `price` so it can be
+ * converted back to USD (loss ÷ price). Returns NaN when the conversion is
+ * impossible — USD-base without a price, or a cross with no USD leg — so the
+ * risk manager vetoes instead of mis-sizing.
+ */
+export function usdLossPerLot(symbol, priceDistance, price) {
+  const quote = fxQuoteCurrency(symbol)
+  const lossInQuote = Math.abs(priceDistance) * contractSize(symbol)
+  if (quote == null || quote === 'USD') return lossInQuote
+  const base = symbol.toUpperCase().slice(0, 3)
+  if (base === 'USD' && Number.isFinite(price) && price > 0) {
+    return lossInQuote / price
+  }
+  return NaN
 }
 
 /**
  * Notional exposure (USD) for a position. Used to compute margin required:
  *   margin = notional / leverage
  *
- * Exact for USD-quoted (EURUSD, XAUUSD, BTCUSD, US30, etc).
- * For non-USD quote (USDJPY, crosses) this is expressed in the quote currency
- * — good enough for a conservative margin headroom check.
+ * Exact for USD-quoted (EURUSD, XAUUSD, BTCUSD, US30, etc) and for USD-base
+ * pairs (USDJPY etc — notional is simply volume × contract size in USD).
+ * Crosses (no USD leg) fall back to quote-currency notional, which is only
+ * an approximation for the margin headroom check.
  */
 export function notionalUsd(symbol, volumeLots, price) {
+  const quote = fxQuoteCurrency(symbol)
+  if (quote != null && quote !== 'USD') {
+    const base = symbol.toUpperCase().slice(0, 3)
+    // 1 lot of USDXXX = contractSize USD of notional, no price term needed.
+    if (base === 'USD') return Math.abs(volumeLots) * contractSize(symbol)
+  }
   return Math.abs(volumeLots) * contractSize(symbol) * Math.abs(price)
 }
 

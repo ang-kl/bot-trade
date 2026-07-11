@@ -66,11 +66,16 @@ reasoning), and pings you. Reports: Tune → Backtest → Past reports.
 - **First real C++ fill still unobserved** — parity is proven on flat
   accounts; the first live fill is the true test. Watch Risk decisions for
   an `OK` line.
-- **USDJPY sizing veto** showed a suspect `usd_per_lot` for JPY quotes —
-  it blocks (safe), never mis-sizes. Needs an audit.
+- ~~**USDJPY sizing veto** showed a suspect `usd_per_lot` for JPY quotes~~
+  **Fixed (v0.1.142)**: `usd_per_lot` now converts quote-currency loss to
+  USD via the entry price for USD-base pairs (USDJPY, USDCHF …); crosses
+  with no USD leg report unknown and veto instead of mis-sizing. Margin
+  notional for USD-base pairs corrected too.
 - **News is informational only** — shown on alerts, never gates a trade.
-- **monitored_positions not account-scoped** — after an account switch the
-  bot's old positions can still gate briefly until they close.
+- ~~**monitored_positions not account-scoped**~~ **Fixed (v0.1.142)**:
+  rows are stamped with the broker `account_id` at insert, and switching
+  accounts sweeps stale rows to closed immediately so they never gate the
+  new account.
 
 ---
 

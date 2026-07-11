@@ -384,6 +384,18 @@ test('computeRiskBasedVolume — XAUUSD at $500, $3 SL, 1% risk = 0.01 lot', () 
   assert.equal(out.volume, 0.01)
 })
 
+test('computeRiskBasedVolume — USDJPY converts JPY loss to USD via entry price', () => {
+  // budget = $100; 0.50 JPY SL × 100k = ¥50,000 → at 147.50 = $338.98/lot → 0.29 lot
+  const out = computeRiskBasedVolume(10000, 'USDJPY', 0.5, 0.01, 147.5)
+  assert.equal(out.volume, 0.29)
+})
+
+test('computeRiskBasedVolume — USDJPY without entry price vetoes as unknown', () => {
+  const out = computeRiskBasedVolume(10000, 'USDJPY', 0.5, 0.01)
+  assert.equal(out.volume, 0)
+  assert.equal(out.note, 'usd_per_lot_unknown')
+})
+
 test('computeRiskBasedVolume — tiny balance rounds to 0', () => {
   // $50 balance × 1% = $0.50 budget; EURUSD 30 pip = $300/lot → 0.00166 → 0
   const out = computeRiskBasedVolume(50, 'EURUSD', 0.003, 0.01)

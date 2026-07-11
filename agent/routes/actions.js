@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
-import { getState, setState } from '../db.js'
+import { getState, setState, sweepMonitoredPositionsForAccount } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
@@ -1306,6 +1306,17 @@ export default function actionsRouter(db) {
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
 
+      // On a genuine account change, close local monitor rows from the old
+      // account so they stop gating risk checks immediately — the reconciler
+      // would only catch them on its next pass against the new account.
+      const previousAccountId = getState(db, 'ctrader_account_id')
+      if (previousAccountId && String(previousAccountId) !== String(accountId)) {
+        const swept = sweepMonitoredPositionsForAccount(db, accountId)
+        if (swept > 0) {
+          console.log(`[actions] account switch ${previousAccountId} → ${accountId}: swept ${swept} stale monitored position(s)`)
+        }
+      }
+
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
       setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
@@ -1730,12 +1741,13 @@ export default function actionsRouter(db) {
 
         db.prepare(`
           INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-            thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, 'active')
+            thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, 'active')
         `).run(analysis.symbol, tradeId, side, entryP, sl, tp1,
           analysis.consensus_summary || '', initialRisk,
           synth.invalidation_trigger || analysis.invalidation_trigger || null,
-          timeCap, analysis.strategy, structuredLabel)
+          timeCap, analysis.strategy, structuredLabel,
+          accountId != null ? String(accountId) : null)
       })()
 
       console.log(`[actions] Manual trade executed: ${side} ${analysis.symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
@@ -1830,10 +1842,11 @@ export default function actionsRouter(db) {
           parsedLabel?.strategy, parsedLabel?.conviction, parsedLabel?.session)
         db.prepare(`
           INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-            thesis, initial_risk, strategy, source, label_raw, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'manual', ?, 'active')
+            thesis, initial_risk, strategy, source, label_raw, account_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'manual', ?, ?, 'active')
         `).run(symbol, tradeInsert.lastInsertRowid, side, entryP, proposal.sl, proposal.tp1,
-          'Manual order via UI', Math.abs(entryP - proposal.sl), structuredLabel)
+          'Manual order via UI', Math.abs(entryP - proposal.sl), structuredLabel,
+          creds.accountId != null ? String(creds.accountId) : null)
       })()
 
       console.log(`[actions] Manual UI order: ${side} ${symbol} vol=${volLots} @ ${executionPrice || 'mkt'}`)
