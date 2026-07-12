@@ -91,8 +91,8 @@ function persistFilledTrade(db, row, pos) {
     const tradeId = tradeInsert.lastInsertRowid
 
     db.prepare(`
-      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       row.symbol,
       tradeId,
@@ -107,6 +107,7 @@ function persistFilledTrade(db, row, pos) {
       'fib_618_fade',
       parsedLabel.source,
       parsedLabel.raw,
+      getState(db, 'ctrader_account_id'),
     )
 
     return tradeId

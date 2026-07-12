@@ -123,6 +123,10 @@ const TABLES = `
     -- strictly to autopilot-placed positions.
     source                TEXT,
     label_raw             TEXT,
+    -- Broker account the position belongs to (ctrader_account_id at insert
+    -- time). Rows from another account are swept to 'closed' on account
+    -- switch so they never gate risk checks for the new account.
+    account_id            TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -254,6 +258,7 @@ export function initDB(dbPath) {
     ['strategy',             'TEXT'],
     ['source',               'TEXT'],
     ['label_raw',            'TEXT'],
+    ['account_id',           'TEXT'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {
@@ -339,4 +344,30 @@ export function setState(db, key, value) {
   db.prepare(
     'INSERT INTO agent_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(key, value);
+}
+
+/**
+ * Close active monitored positions that belong to a different broker account
+ * than the one just selected, so they stop gating risk checks (open-position
+ * cap, currency exposure) the moment the user switches accounts. Rows with a
+ * NULL account_id predate account stamping and were created under the
+ * previously selected account, so they are swept too.
+ *
+ * Broker state is untouched — this only clears the local monitor/gating view.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} newAccountId
+ * @returns {number} count of rows swept
+ */
+export function sweepMonitoredPositionsForAccount(db, newAccountId) {
+  const res = db.prepare(
+    `UPDATE monitored_positions
+     SET status = 'closed',
+         last_check_action = 'closed_account_switch',
+         last_check_reasoning = 'Account switched — position belongs to a different broker account',
+         last_check_at = datetime('now')
+     WHERE status = 'active'
+       AND (account_id IS NULL OR account_id != ?)`,
+  ).run(String(newAccountId));
+  return res.changes;
 }

@@ -1,4 +1,5 @@
 import { isOurs } from '../lib/trade-labels.js'
+import { getState } from '../db.js'
 
 /**
  * Reconcile the agent's local DB against live broker positions/orders.
@@ -54,9 +55,10 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
 
       db.prepare(`
         INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-          thesis, initial_risk, source, label_raw, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'External position — reconciliation import', ?, 'external', ?, 'active')
-      `).run(symbolName, tradeId, side, entry, sl, tp, initialRisk, label || null)
+          thesis, initial_risk, source, label_raw, account_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'External position — reconciliation import', ?, 'external', ?, ?, 'active')
+      `).run(symbolName, tradeId, side, entry, sl, tp, initialRisk, label || null,
+        getState(db, 'ctrader_account_id'))
 
       return tradeId
     })()

@@ -159,9 +159,9 @@ export function netExposure(positions, proposal) {
  * Returns { volume, usdRisk, note }. `volume` is rounded down to 2dp; callers
  * should veto if it falls below the minimum lot size.
  */
-export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct) {
+export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, entryPrice) {
   const budget = balance * riskPct
-  const usdPerLot = usdLossPerLot(symbol, slDistance)
+  const usdPerLot = usdLossPerLot(symbol, slDistance, entryPrice)
   if (!Number.isFinite(usdPerLot) || usdPerLot <= 0) {
     return { volume: 0, usdRisk: 0, note: 'usd_per_lot_unknown' }
   }
@@ -372,7 +372,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   let sizingFloor = proposal.requestedVolume
   let sizingNote = null
   if (balance != null) {
-    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct)
+    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct, entry)
     checks.risk_budget = Number((balance * config.perTradeRiskPct).toFixed(2))
     checks.risk_based_volume = risked.volume
     checks.risk_based_usd = risked.usdRisk

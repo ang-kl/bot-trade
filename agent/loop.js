@@ -281,8 +281,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const tradeId = tradeInsert.lastInsertRowid
 
       db.prepare(`
-        INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
       `).run(
         symbol,
         tradeId,
@@ -297,6 +297,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         synth.strategy || null,
         parsedLabel.source,
         parsedLabel.raw,
+        accountId != null ? String(accountId) : null,
       )
 
       return tradeId

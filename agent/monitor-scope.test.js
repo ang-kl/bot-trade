@@ -7,7 +7,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB } from './db.js'
+import { initDB, sweepMonitoredPositionsForAccount } from './db.js'
 
 function mkDb() {
   const db = initDB(':memory:')
@@ -21,13 +21,13 @@ const SELECT_ACTIVE = `
     AND (source IS NULL OR source IN ('autopilot', 'external'))
 `
 
-function insertPosition(db, { symbol, source, label_raw, paused = 0, status = 'active' }) {
+function insertPosition(db, { symbol, source, label_raw, paused = 0, status = 'active', account_id = null }) {
   return db.prepare(`
     INSERT INTO monitored_positions
       (symbol, side, entry_price, current_sl, current_tp, thesis, initial_risk,
-       source, label_raw, paused, status)
-    VALUES (?, 'long', 100, 99, 110, 'x', 1, ?, ?, ?, ?)
-  `).run(symbol, source ?? null, label_raw ?? null, paused, status).lastInsertRowid
+       source, label_raw, paused, status, account_id)
+    VALUES (?, 'long', 100, 99, 110, 'x', 1, ?, ?, ?, ?, ?)
+  `).run(symbol, source ?? null, label_raw ?? null, paused, status, account_id).lastInsertRowid
 }
 
 test('schema: monitored_positions has source + label_raw columns', () => {
@@ -104,4 +104,39 @@ test('mixed fleet: autopilot + external + legacy rows come back, copilot/manual 
   const rows = db.prepare(SELECT_ACTIVE).all('active')
   const symbols = rows.map(r => r.symbol).sort()
   assert.deepEqual(symbols, ['BTCUSD', 'GBPUSD', 'XAUUSD'])
+})
+
+// Account scoping — after a broker account switch, rows from the previous
+// account (including legacy NULL account_id rows) must stop gating.
+
+test('schema: monitored_positions has account_id column', () => {
+  const db = mkDb()
+  const cols = new Set(
+    db.prepare('PRAGMA table_info(monitored_positions)').all().map(c => c.name),
+  )
+  assert.ok(cols.has('account_id'), 'account_id column should exist')
+})
+
+test('account sweep closes other-account and legacy rows, keeps new-account rows', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot', account_id: '111' })  // old acct
+  insertPosition(db, { symbol: 'GBPUSD', source: 'autopilot', account_id: null })   // legacy
+  insertPosition(db, { symbol: 'EURUSD', source: 'autopilot', account_id: '222' })  // new acct
+  const swept = sweepMonitoredPositionsForAccount(db, '222')
+  assert.equal(swept, 2)
+  const active = db.prepare("SELECT symbol FROM monitored_positions WHERE status = 'active'").all()
+  assert.deepEqual(active.map(r => r.symbol), ['EURUSD'])
+  const closed = db.prepare(
+    "SELECT last_check_action FROM monitored_positions WHERE status = 'closed'",
+  ).all()
+  assert.ok(closed.every(r => r.last_check_action === 'closed_account_switch'))
+})
+
+test('account sweep leaves already-closed rows untouched', () => {
+  const db = mkDb()
+  const id = insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot', account_id: '111', status: 'closed' })
+  const swept = sweepMonitoredPositionsForAccount(db, '222')
+  assert.equal(swept, 0)
+  const row = db.prepare('SELECT last_check_action FROM monitored_positions WHERE id = ?').get(id)
+  assert.equal(row.last_check_action, null)
 })
