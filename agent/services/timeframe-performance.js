@@ -29,7 +29,7 @@ export function timeframePerformance(db) {
   // and as ISO-with-T in older rows — datetime() normalises either form so
   // the window comparison is format-proof.
   const stmt = db.prepare(
-    `SELECT COALESCE(label_timeframe, '?') AS tf,
+    `SELECT COALESCE(label_timeframe, 'unlabelled') AS tf,
             COUNT(*) AS trades,
             SUM(CASE WHEN COALESCE(net_pnl, 0) > 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN COALESCE(net_pnl, 0) < 0 THEN 1 ELSE 0 END) AS losses,

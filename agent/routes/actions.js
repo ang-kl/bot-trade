@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
-import { getState, setState, sweepMonitoredPositionsForAccount } from '../db.js'
+import { getState, setState, sweepMonitoredPositionsForAccount, sweepMonitoredPositionsForAccounts } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
@@ -1370,9 +1370,24 @@ export default function actionsRouter(db) {
         const cp = accounts.filter(a => a.copilot)
         console.log(`[actions] cTrader config updated — ${ap.length} autopilot, ${cp.length} copilot accounts`)
 
+        // Stale-position sweep, multi-account aware: rows belonging to ANY
+        // account still in the pushed config stay active (the loop trades
+        // every autopilot account); only rows from accounts that dropped out
+        // of the config are closed. Legacy NULL-account rows were created
+        // under the previously selected account, so they are swept only when
+        // that account is itself gone from the config. An invalid/empty
+        // account list sweeps nothing.
+        const keepIds = accounts.map(a => a?.accountId).filter(id => id != null)
+        const previousAccountId = getState(db, 'ctrader_account_id')
+        const sweepNull = previousAccountId != null && !keepIds.map(String).includes(String(previousAccountId))
+        const swept = sweepMonitoredPositionsForAccounts(db, keepIds, { sweepNull })
+        if (swept > 0) {
+          console.log(`[actions] ctrader-config: swept ${swept} monitored position(s) from accounts no longer configured`)
+        }
+
         // Backward compat: keep legacy single-account keys in sync with
         // the first autopilot account so old code paths don't break.
-        if (ap.length > 0) {
+        if (ap.length > 0 && ap[0].accountId != null) {
           setState(db, 'ctrader_account_id', String(ap[0].accountId))
           setState(db, 'ctrader_is_live', ap[0].isLive ? 'true' : 'false')
         }

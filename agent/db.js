@@ -347,19 +347,28 @@ export function setState(db, key, value) {
 }
 
 /**
- * Close active monitored positions that belong to a different broker account
- * than the one just selected, so they stop gating risk checks (open-position
- * cap, currency exposure) the moment the user switches accounts. Rows with a
- * NULL account_id predate account stamping and were created under the
- * previously selected account, so they are swept too.
+ * Close active monitored positions that belong to none of the given broker
+ * accounts, so they stop gating risk checks (open-position cap, currency
+ * exposure) the moment the account configuration changes. Rows with a NULL
+ * account_id predate account stamping; they are swept only when
+ * `sweepNull` is true (i.e. the account they were created under is no
+ * longer part of the configuration).
+ *
+ * An empty or entirely-invalid keep list sweeps NOTHING — a malformed
+ * request must never mass-close the monitor view.
  *
  * Broker state is untouched — this only clears the local monitor/gating view.
  *
  * @param {import('better-sqlite3').Database} db
- * @param {string} newAccountId
+ * @param {Array<string|number>} keepAccountIds accounts whose rows stay active
+ * @param {{sweepNull?: boolean}} [opts]
  * @returns {number} count of rows swept
  */
-export function sweepMonitoredPositionsForAccount(db, newAccountId) {
+export function sweepMonitoredPositionsForAccounts(db, keepAccountIds, { sweepNull = true } = {}) {
+  const keep = [...new Set((keepAccountIds || []).filter(id => id != null).map(String))];
+  if (keep.length === 0) return 0;
+  const placeholders = keep.map(() => '?').join(', ');
+  const nullClause = sweepNull ? 'account_id IS NULL OR' : 'account_id IS NOT NULL AND';
   const res = db.prepare(
     `UPDATE monitored_positions
      SET status = 'closed',
@@ -367,7 +376,16 @@ export function sweepMonitoredPositionsForAccount(db, newAccountId) {
          last_check_reasoning = 'Account switched — position belongs to a different broker account',
          last_check_at = datetime('now')
      WHERE status = 'active'
-       AND (account_id IS NULL OR account_id != ?)`,
-  ).run(String(newAccountId));
+       AND (${nullClause} account_id NOT IN (${placeholders}))`,
+  ).run(...keep);
   return res.changes;
+}
+
+/**
+ * Single-account convenience wrapper: everything not belonging to
+ * `newAccountId` (including legacy NULL rows) is swept. Used by
+ * /actions/ctrader-select-account, which collapses roles to one account.
+ */
+export function sweepMonitoredPositionsForAccount(db, newAccountId) {
+  return sweepMonitoredPositionsForAccounts(db, [newAccountId]);
 }
