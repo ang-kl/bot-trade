@@ -171,6 +171,7 @@ export default function Monitor() {
   const [benchmarks, setBenchmarks] = useState(null)   // {"SYM|tf": {profitFactor,...}} stored at Apply time
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
+  const [brokerHistory, setBrokerHistory] = useState(cached?.brokerHistory ?? null) // broker's closed deals, last 7 days
   const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
   const [armedTfs, setArmedTfs] = useState(cached?.armedTfs ?? ['4h', '1d'])
   const [matrix, setMatrix] = useState(cached?.matrix ?? null)
@@ -181,7 +182,7 @@ export default function Monitor() {
     try {
       // 7 requests need 7 slots — a missing slot shifts every response one
       // to the left and the page dies on <shifted>.rows (undefined).
-      const [h, p, t, , r, b, sc] = await Promise.all([
+      const [h, p, t, , r, b, sc, bh] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
@@ -189,6 +190,7 @@ export default function Monitor() {
         agentGet('/state/risk-events?limit=200'),
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
         agentGet('/state/scans').catch(() => null),
+        agentPost('/actions/broker-history', { days: 7 }).catch(() => null),
       ])
       const fullTrades = t.rows || t.trades || []
       const next = {
@@ -198,6 +200,7 @@ export default function Monitor() {
         allTrades: fullTrades,
         events: (r?.rows || []),
         broker: b?.accounts?.[0] ?? null,
+        brokerHistory: bh?.ok ? bh : null,
         scan: sc ? { at: sc.lastScanAt, rows: sc.lastResults?.scans || [], signals: sc.lastResults?.signals || {} } : null,
         atf: await agentGet('/state/autotrade-timeframes').catch(() => null),
       }
@@ -212,6 +215,7 @@ export default function Monitor() {
       setAllTrades(next.allTrades)
       setEvents(next.events)
       setBroker(next.broker)
+      setBrokerHistory(next.brokerHistory)
       writeCache(next)
       setError('')
     } catch (e) { setError(e.message) }
@@ -370,16 +374,29 @@ export default function Monitor() {
           At the broker — live positions ({broker?.positions?.length ?? '…'}) & set orders ({broker?.orders?.length ?? '…'})
         </h2>
         {!broker && <div className="text-[13px] text-[var(--color-text-sub)]">Fetching the account snapshot from the broker…</div>}
-        {broker?.positions?.map(p => (
-          <div key={p.positionId} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
-            <span className="font-semibold">{p.symbol}</span>
-            <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
-            <span>{p.lots != null ? `${fmt(p.lots, 2)} lots` : ''}</span>
-            <span>in {fmt(p.entry)} → now {fmt(p.currentPrice)}</span>
-            {p.estPnlQuote != null && <span className={p.estPnlQuote >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{p.estPnlQuote >= 0 ? '+' : ''}{fmt(p.estPnlQuote, 2)}</span>}
-            <span className="text-[var(--color-text-sub)]">SL {fmt(p.sl)} · TP {fmt(p.tp)}</span>
-          </div>
-        ))}
+        {broker?.positions?.map(p => {
+          // Net (incl. swap + commission) is what cTrader's Positions tab
+          // shows — lead with it; fall back to price-only gross (marked *).
+          const net = p.estNetPnl ?? p.estPnlQuote
+          const hasCosts = (p.swap != null && p.swap !== 0) || (p.commission != null && p.commission !== 0)
+          return (
+            <div key={p.positionId} className="border-t border-[var(--color-border)] py-1.5 text-[13px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">{p.symbol}</span>
+                <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
+                <span>{p.lots != null ? `${fmt(p.lots, 2)} lots` : ''}</span>
+                <span>in {fmt(p.entry)} → now {fmt(p.currentPrice)}</span>
+                {net != null && <span className={net >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{net >= 0 ? '+' : ''}{fmt(net, 2)}{p.estNetPnl == null ? '*' : ''}</span>}
+                <span className="text-[var(--color-text-sub)]">SL {fmt(p.sl)} · TP {fmt(p.tp)}</span>
+              </div>
+              {(p.estNetPnl != null && hasCosts) && (
+                <div className="mt-0.5 text-[12px] text-[var(--color-text-sub)]">
+                  price {p.estPnlQuote >= 0 ? '+' : ''}{fmt(p.estPnlQuote, 2)} · swap {fmt(p.swap ?? 0, 2)} · commission {fmt(p.commission ?? 0, 2)}
+                </div>
+              )}
+            </div>
+          )
+        })}
         {broker?.orders?.map(o => (
           <div key={o.orderId} className="border-t border-[var(--color-border)] py-1.5 text-[13px] flex flex-wrap items-center gap-2">
             <span className="font-semibold">{o.symbol}</span>
@@ -393,6 +410,43 @@ export default function Monitor() {
         {broker && broker.positions?.length === 0 && broker.orders?.length === 0 && (
           <div className="text-[13px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders on the bot's account.</div>
         )}
+      </Card>
+
+      {/* THE BROKER'S CLOSED-TRADE RECORD — every closing deal (bot-placed or
+          manual) with realised net P&L, mirroring cTrader's History tab. */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-1 flex flex-wrap items-center gap-2">
+          Closed at the broker — last 7 days ({brokerHistory?.rows?.length ?? '…'})
+          {brokerHistory?.realized != null && (
+            <span className={brokerHistory.realized >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>
+              realised {brokerHistory.realized >= 0 ? '+' : ''}{fmt(brokerHistory.realized, 2)}
+            </span>
+          )}
+        </h2>
+        {!brokerHistory && <div className="text-[13px] text-[var(--color-text-sub)]">Fetching the broker's deal history…</div>}
+        {brokerHistory?.rows?.map(d => (
+          <div key={d.dealId ?? `${d.positionId}-${d.closedAt}`} className="border-t border-[var(--color-border)] py-1.5 text-[13px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[var(--color-text-sub)]">{d.closedAt ? ago(new Date(d.closedAt).toISOString()) : ''}</span>
+              <span className="font-semibold">{d.symbol}</span>
+              <Badge tone={d.side === 'BUY' ? 'up' : 'down'}>{d.side}</Badge>
+              <span>{d.lots != null ? `${fmt(d.lots, 2)} lots` : ''}</span>
+              <span className="text-[var(--color-text-sub)]">in {fmt(d.entryPrice)} → out {fmt(d.closePrice)}</span>
+              <span className={d.netPnl >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{d.netPnl >= 0 ? '+' : ''}{fmt(d.netPnl, 2)}</span>
+            </div>
+            {((d.swap != null && d.swap !== 0) || (d.commission != null && d.commission !== 0)) && (
+              <div className="mt-0.5 text-[12px] text-[var(--color-text-sub)]">
+                price {d.grossProfit >= 0 ? '+' : ''}{fmt(d.grossProfit, 2)} · swap {fmt(d.swap ?? 0, 2)} · commission {fmt(d.commission ?? 0, 2)}
+              </div>
+            )}
+          </div>
+        ))}
+        {brokerHistory && brokerHistory.rows?.length === 0 && (
+          <div className="text-[13px] text-[var(--color-text-sub)]">No positions closed at the broker in the last 7 days.</div>
+        )}
+        <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
+          Straight from the broker's deal ledger — includes manual trades the bot never placed. Net = price P&L + swap + commission, the same figure as cTrader's History tab.
+        </p>
       </Card>
 
       {/* Bot-managed positions (with charts) */}

@@ -36,9 +36,10 @@ function PositionRow({ p }) {
         <span>{p.lots != null ? `${fmt(p.lots, 2)} lots` : ''}</span>
         <span>in {fmt(p.entry)} → now {fmt(p.currentPrice)}</span>
         {p.deltaPips != null && <Badge tone={p.deltaPips >= 0 ? 'up' : 'down'}>{p.deltaPips >= 0 ? '+' : ''}{fmt(p.deltaPips, 1)} pips</Badge>}
-        {p.estPnlQuote != null && (
-          <span className={`font-semibold ${p.estPnlQuote >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(p.estPnlQuote)}*</span>
-        )}
+        {(p.estNetPnl ?? p.estPnlQuote) != null && (() => {
+          const v = p.estNetPnl ?? p.estPnlQuote
+          return <span className={`font-semibold ${v >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(v)}{p.estNetPnl == null ? '*' : ''}</span>
+        })()}
         <span className="ml-auto">
           <Button size="sm" variant="ghost" onClick={() => setChart(c => !c)}>{chart ? 'Hide' : 'Chart'}</Button>
         </span>

@@ -227,6 +227,118 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/broker-history — the broker's own closed-trade record
+  // (every closing deal, bot-placed or manual), with realised NET P&L
+  // (gross + swap + commission) exactly as cTrader's History tab shows it.
+  // Body: { days? } (default 7, max 30). Side effect: backfills net_pnl /
+  // gross_pnl / exit_price onto local trades rows matched by positionId, so
+  // performance stats and the Tune timeframe table use broker-true numbers.
+  // -----------------------------------------------------------------------
+  router.post('/broker-history', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const days = Math.min(30, Math.max(1, Number(req.body?.days) || 7))
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList } = await import('../lib/ctrader-ws.js')
+
+      const WEEK = 7 * 24 * 3_600_000
+      const from = Date.now() - days * 24 * 3_600_000
+      const deals = []
+      for (let t0 = from; t0 < Date.now(); t0 += WEEK) {
+        const chunk = await wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, Math.min(t0 + WEEK, Date.now()))
+        deals.push(...(chunk.deal || []))
+      }
+
+      // Only deals that CLOSE (part of) a position carry realised P&L.
+      const closing = deals.filter(d => d.closePositionDetail)
+
+      const symbolIds = [...new Set(closing.map(d => d.symbolId).filter(Boolean))]
+      const symMeta = {}
+      if (symbolIds.length > 0) {
+        try {
+          const [symData, lightData] = await Promise.all([
+            wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, symbolIds),
+            wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId),
+          ])
+          for (const s of (symData.symbol || [])) symMeta[s.symbolId] = { ...s }
+          for (const s of (lightData.symbol || [])) {
+            if (s.symbolName && symbolIds.includes(s.symbolId)) {
+              symMeta[s.symbolId] = { ...(symMeta[s.symbolId] || {}), symbolName: s.symbolName }
+            }
+          }
+        } catch { /* rows fall back to #symbolId */ }
+      }
+
+      const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
+      const rows = closing.map(d => {
+        const cpd = d.closePositionDetail
+        const m = (v) => (v == null ? null : v / Math.pow(10, cpd.moneyDigits ?? 2))
+        const meta = symMeta[d.symbolId] || {}
+        const lots = meta.lotSize ? Math.round((d.volume / meta.lotSize) * 100) / 100 : null
+        const grossProfit = m(cpd.grossProfit)
+        const swap = m(cpd.swap)
+        const commission = m(cpd.commission)
+        const netPnl = Math.round(((grossProfit || 0) + (swap || 0) + (commission || 0)) * 100) / 100
+        // The deal's tradeSide is the CLOSING side — the position was the opposite.
+        const closeSide = SIDE_NAME[d.tradeSide] || String(d.tradeSide || '')
+        const side = closeSide === 'BUY' ? 'SELL' : closeSide === 'SELL' ? 'BUY' : closeSide
+        return {
+          dealId: d.dealId ?? null,
+          positionId: d.positionId != null ? String(d.positionId) : null,
+          closedAt: d.executionTimestamp ?? null,
+          symbol: meta.symbolName || `#${d.symbolId}`,
+          side,
+          lots,
+          entryPrice: cpd.entryPrice ?? null,
+          closePrice: d.executionPrice ?? null,
+          grossProfit,
+          swap,
+          commission,
+          netPnl,
+        }
+      }).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+
+      // Backfill broker-true realised P&L onto local trades rows. Partial
+      // closes aggregate per position. Only rows the reconciler has already
+      // marked closed are touched — a partially-closed position stays open.
+      const byPosition = new Map()
+      for (const r of rows) {
+        if (!r.positionId) continue
+        const agg = byPosition.get(r.positionId) || { net: 0, gross: 0, last: r }
+        agg.net += r.netPnl || 0
+        agg.gross += r.grossProfit || 0
+        if ((r.closedAt || 0) >= (agg.last.closedAt || 0)) agg.last = r
+        byPosition.set(r.positionId, agg)
+      }
+      const upd = db.prepare(
+        `UPDATE trades
+         SET net_pnl = ?, gross_pnl = ?,
+             exit_price = COALESCE(exit_price, ?),
+             closed_at = COALESCE(closed_at, ?)
+         WHERE ctrader_position_id = ? AND status = 'closed'`
+      )
+      let backfilled = 0
+      for (const [positionId, agg] of byPosition) {
+        const r = upd.run(
+          Math.round(agg.net * 100) / 100,
+          Math.round(agg.gross * 100) / 100,
+          agg.last.closePrice,
+          agg.last.closedAt ? new Date(agg.last.closedAt).toISOString() : null,
+          positionId,
+        )
+        backfilled += r.changes
+      }
+
+      const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
+      res.json({ ok: true, days, rows, realized, backfilled, fetchedAt: new Date().toISOString() })
+    } catch (err) {
+      console.error('[actions/broker-history] error:', err.message)
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/exec-parity — prove the C++ sidecar matches the JS path,
   // runnable from the UI (the agent DB and both paths live HERE, not on the
   // owner's laptop). Read-only: health + credentials push + reconcile diff.
@@ -1191,6 +1303,23 @@ export default function actionsRouter(db) {
             const estPnlQuote = now != null && p.price != null && lots != null && unitsPerLot != null
               ? Math.round((now - p.price) * dir * lots * unitsPerLot * 100) / 100
               : null
+            // Net estimate in the deposit currency — what cTrader's own
+            // Positions tab shows. Price P&L is in the QUOTE currency: exact
+            // for USD-quoted symbols, ÷price for USD-base pairs (USDJPY),
+            // unknown for crosses (net omitted rather than mis-stated).
+            const symName = String(meta.symbolName || '').toUpperCase()
+            const isFxPair = symName.length === 6 && /^[A-Z]{6}$/.test(symName)
+            const quoteCcy = isFxPair ? symName.slice(3) : 'USD'
+            let estPnlDeposit = null
+            if (estPnlQuote != null) {
+              if (quoteCcy === 'USD') estPnlDeposit = estPnlQuote
+              else if (isFxPair && symName.startsWith('USD') && now > 0) estPnlDeposit = estPnlQuote / now
+            }
+            const swapMoney = money(p.swap)
+            const commissionMoney = money(p.commission)
+            const estNetPnl = estPnlDeposit != null
+              ? Math.round((estPnlDeposit + (swapMoney || 0) + (commissionMoney || 0)) * 100) / 100
+              : null
             return {
               positionId: p.positionId,
               symbol: meta.symbolName || `#${td.symbolId}`,
@@ -1202,10 +1331,11 @@ export default function actionsRouter(db) {
               currentPrice: now,
               deltaPips,
               estPnlQuote, // in the symbol's QUOTE currency, price-move only (excludes swap/commission)
+              estNetPnl,   // deposit-ccy estimate incl. swap + commission — matches cTrader's Net P&L
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
-              swap: money(p.swap),
-              commission: money(p.commission),
+              swap: swapMoney,
+              commission: commissionMoney,
               usedMargin: money(p.usedMargin),
               openedAt: td.openTimestamp ?? null,
               label: td.label || null,
