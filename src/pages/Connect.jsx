@@ -242,9 +242,10 @@ export default function Connect() {
                 const b = broker[a.accountId]
                 const positions = b?.positions || []
                 const orders = b?.orders || []
-                const floating = positions.reduce((s, p) => s + (Number(p.estPnlQuote) || 0), 0)
-                const winners = positions.filter(p => Number(p.estPnlQuote) > 0).length
-                const losers = positions.filter(p => Number(p.estPnlQuote) < 0).length
+                const pnlOf = (p) => Number(p.estNetPnl ?? p.estPnlQuote) || 0
+                const floating = positions.reduce((s, p) => s + pnlOf(p), 0)
+                const winners = positions.filter(p => pnlOf(p) > 0).length
+                const losers = positions.filter(p => pnlOf(p) < 0).length
                 const detailOpen = openDetail === a.accountId
                 return (
                 <div key={a.accountId} className={`rounded-[7px] border ${linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}>
