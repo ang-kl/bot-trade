@@ -7,7 +7,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB, sweepMonitoredPositionsForAccount } from './db.js'
+import { initDB, sweepMonitoredPositionsForAccount, sweepMonitoredPositionsForAccounts } from './db.js'
 
 function mkDb() {
   const db = initDB(':memory:')
@@ -139,4 +139,42 @@ test('account sweep leaves already-closed rows untouched', () => {
   assert.equal(swept, 0)
   const row = db.prepare('SELECT last_check_action FROM monitored_positions WHERE id = ?').get(id)
   assert.equal(row.last_check_action, null)
+})
+
+test('multi-account sweep keeps every configured account, sweeps dropped ones', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot', account_id: '111' }) // still configured
+  insertPosition(db, { symbol: 'EURUSD', source: 'autopilot', account_id: '222' }) // still configured
+  insertPosition(db, { symbol: 'GBPUSD', source: 'autopilot', account_id: '333' }) // dropped
+  const swept = sweepMonitoredPositionsForAccounts(db, ['111', 222]) // mixed string/number ids
+  assert.equal(swept, 1)
+  const active = db.prepare("SELECT symbol FROM monitored_positions WHERE status = 'active' ORDER BY symbol").all()
+  assert.deepEqual(active.map(r => r.symbol), ['EURUSD', 'XAUUSD'])
+})
+
+test('multi-account sweep: sweepNull=false preserves legacy NULL rows', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'GBPUSD', source: 'autopilot', account_id: null })
+  insertPosition(db, { symbol: 'USDJPY', source: 'autopilot', account_id: '999' })
+  const swept = sweepMonitoredPositionsForAccounts(db, ['111'], { sweepNull: false })
+  assert.equal(swept, 1)
+  const active = db.prepare("SELECT symbol FROM monitored_positions WHERE status = 'active'").all()
+  assert.deepEqual(active.map(r => r.symbol), ['GBPUSD'])
+})
+
+test('multi-account sweep: empty or invalid keep list sweeps NOTHING', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot', account_id: '111' })
+  insertPosition(db, { symbol: 'GBPUSD', source: 'autopilot', account_id: null })
+  assert.equal(sweepMonitoredPositionsForAccounts(db, []), 0)
+  assert.equal(sweepMonitoredPositionsForAccounts(db, [undefined, null]), 0)
+  assert.equal(sweepMonitoredPositionsForAccounts(db, undefined), 0)
+  const active = db.prepare("SELECT COUNT(*) AS c FROM monitored_positions WHERE status = 'active'").get()
+  assert.equal(active.c, 2)
+})
+
+test('single-account wrapper with an undefined id sweeps nothing', () => {
+  const db = mkDb()
+  insertPosition(db, { symbol: 'XAUUSD', source: 'autopilot', account_id: '111' })
+  assert.equal(sweepMonitoredPositionsForAccount(db, undefined), 0)
 })

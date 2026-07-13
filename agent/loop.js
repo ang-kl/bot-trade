@@ -964,7 +964,7 @@ async function runLoop(db) {
       // failures must never touch the trading phases).
       try {
         const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
-        const r = await maybeRunAutopilot(db, ctraderCreds)
+        const r = await maybeRunAutopilot(db, getCtraderCreds(db))
         if (r && !r.skipped) log(`Autopilot: ${JSON.stringify(r)}`)
       } catch (err) {
         log(`Autopilot failed (non-fatal): ${err.message}`)
