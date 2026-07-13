@@ -7,6 +7,7 @@ import { getState } from '../db.js'
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
+import { timeframePerformance } from '../services/timeframe-performance.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -574,6 +575,18 @@ export default function stateRouter(db) {
     let matrix = null
     try { matrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
     res.json({ timeframes, matrix })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/timeframe-performance — win/loss/no-trade per autotrade
+  // timeframe over rolling windows (Tune → Pipeline table)
+  // -----------------------------------------------------------------------
+  router.get('/timeframe-performance', (_req, res) => {
+    try {
+      res.json(timeframePerformance(db))
+    } catch (e) {
+      res.json({ windows: [], rows: [], error: e.message })
+    }
   })
 
   // -----------------------------------------------------------------------

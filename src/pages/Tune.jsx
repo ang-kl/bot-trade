@@ -25,6 +25,105 @@ const TABS = [
   { id: 'presets', label: 'Presets' },
 ]
 
+// ---------------------------------------------------------------------------
+// Timeframe performance — under the Pipeline timeframe chips: one row per
+// timeframe, one column per rolling window (2h/4h/1d/5d/1w), each cell the
+// net outcome of trades CLOSED in that window: WIN (blue) / LOSS (red) /
+// flat / — (no trade). Collapsed/expanded state persists in localStorage so
+// the page reopens the way it was left; data refetches on every visit.
+// ---------------------------------------------------------------------------
+const TF_PERF_OPEN_KEY = 'tune_tf_perf_open'
+
+function TfPerfCell({ cell }) {
+  if (!cell || cell.outcome === 'no_trade') {
+    return <span className="text-[var(--color-text-sub)]">—</span>
+  }
+  const money = (v) => `${v > 0 ? '+' : ''}${Number(v).toFixed(2)}`
+  if (cell.outcome === 'flat') {
+    return <Badge tone="neutral">FLAT 0.00 · {cell.trades}</Badge>
+  }
+  return (
+    <Badge tone={cell.outcome === 'win' ? 'up' : 'down'}>
+      {cell.outcome === 'win' ? 'WIN' : 'LOSS'} {money(cell.pnl)} · {cell.trades}
+    </Badge>
+  )
+}
+
+function TimeframePerformance({ timeframes }) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(TF_PERF_OPEN_KEY) !== '0' } catch { return true }
+  })
+  const [perf, setPerf] = useState(null)
+  const [perfError, setPerfError] = useState(null)
+
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    agentGet('/state/timeframe-performance')
+      .then(d => { if (alive) { setPerf(d); setPerfError(d?.error || null) } })
+      .catch(e => { if (alive) setPerfError(e.message) })
+    return () => { alive = false }
+    // Refetch whenever the page is (re)visited, the section is opened, or
+    // the armed timeframe list changes — always the latest picture.
+  }, [open, timeframes.join('|')]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleOpen = () => setOpen(o => {
+    const next = !o
+    try { localStorage.setItem(TF_PERF_OPEN_KEY, next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
+
+  const armedRows = (perf?.rows || []).filter(r => r.armed).sort((a, b) => byTfDesc(a.timeframe, b.timeframe))
+  const removedRows = (perf?.rows || []).filter(r => !r.armed).sort((a, b) => byTfDesc(a.timeframe, b.timeframe))
+  const rows = [...armedRows, ...removedRows]
+  const windows = perf?.windows || ['2h', '4h', '1d', '5d', '1w']
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button" onClick={toggleOpen} aria-expanded={open}
+        className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
+      >
+        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        Timeframe performance
+        <span className="font-normal">— net outcome of trades closed in the last 2h / 4h / 1d / 5d / 1w</span>
+      </button>
+      {open && (
+        <div className="mt-1.5 overflow-x-auto">
+          {perfError && <div className="text-[12px] text-[var(--color-down)]">Could not load: {perfError}</div>}
+          {!perfError && !perf && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
+          {!perfError && perf && (
+            <table className="min-w-full text-[12px]">
+              <thead>
+                <tr className="text-left text-[var(--color-text-sub)]">
+                  <th className="py-1 pr-3 font-semibold">Timeframe</th>
+                  {windows.map(w => <th key={w} className="py-1 pr-3 font-semibold">{w}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.timeframe} className="border-t border-[var(--color-border)]">
+                    <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">
+                      {r.timeframe}
+                      {!r.armed && <span className="ml-1.5 font-normal text-[11px] text-[var(--color-text-sub)]">(removed)</span>}
+                    </td>
+                    {windows.map(w => (
+                      <td key={w} className="py-1.5 pr-3 whitespace-nowrap"><TfPerfCell cell={r.cells?.[w]} /></td>
+                    ))}
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr><td className="py-1.5 text-[var(--color-text-sub)]" colSpan={windows.length + 1}>No timeframes configured.</td></tr>
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Risk fields exposed for editing: [key, label, hint]
 const RISK_FIELDS = [
   ['perTradeRiskPct', 'Risk per trade', 'fraction of balance, e.g. 0.01 = 1%'],
@@ -733,6 +832,7 @@ export default function Tune() {
                   )}
                 </span>
               </div>
+              <TimeframePerformance timeframes={timeframes} />
             </div>
           </div>
         )}
