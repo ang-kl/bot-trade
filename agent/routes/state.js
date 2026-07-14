@@ -87,6 +87,10 @@ export default function stateRouter(db) {
       scanEnabled: getState(db, 'scan_enabled') !== 'false',
       analyzeEnabled: getState(db, 'analyze_enabled') !== 'false',
       autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
+      pendingModeEnabled: getState(db, 'pending_mode_enabled') === 'true',
+      // Set when the daily equity stop auto-disarmed autotrade — the UI must
+      // show WHY autotrade turned itself off, not just that it did.
+      equityStopTrippedAt: getState(db, 'equity_stop_tripped_at') || null,
     })
   })
 

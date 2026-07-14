@@ -479,6 +479,31 @@ export default function Tune() {
 
   useEffect(() => { load() }, [load])
 
+  // Live-refresh the PIPELINE FLAGS only — autotrade can be flipped in the
+  // background (equity stop, /killall, Telegram /pause, autopilot auto mode)
+  // and a once-on-mount snapshot left this page contradicting Desk/Trade.
+  // Only toggle-ish keys are merged so in-progress form edits are never
+  // clobbered.
+  useEffect(() => {
+    if (!agentConfigured()) return undefined
+    const t = setInterval(async () => {
+      try {
+        const c = await agentGet('/state/config')
+        setConfig(prev => prev ? {
+          ...prev,
+          scan_enabled: c.scan_enabled,
+          analyze_enabled: c.analyze_enabled,
+          autotrade_enabled: c.autotrade_enabled,
+          autopilot_mode: c.autopilot_mode,
+          strategies: c.strategies,
+          pending_mode_enabled: c.pending_mode_enabled,
+          pending_matrix: c.pending_matrix,
+        } : c)
+      } catch { /* transient — next tick retries */ }
+    }, 20_000)
+    return () => clearInterval(t)
+  }, [])
+
   // Latest scan snapshot — live price + signal per watchlist symbol.
   useEffect(() => {
     if (tab !== 'watchlist' || !agentConfigured()) return

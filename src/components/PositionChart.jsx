@@ -6,10 +6,11 @@
 // (SMA/EMA/VWAP/AVWAP/FVG/volume profile) so app charts match Telegram
 // charts EXACTLY. Owner is red-green colour-blind: blue (#2563eb) and
 // orange (#c2410c) ONLY — state also carried by words/shape, never hue.
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
 import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
 import { CHART_TF_GROUPS } from '../lib/chart-timeframes.js'
+import { tfMs } from '../lib/timeframes.js'
 import IndicatorPanel, { loadIndicatorPrefs } from './IndicatorPanel.jsx'
 
 const POLL_MS = 15_000
@@ -88,8 +89,46 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
   const [vp, setVp] = useState(null)
 
   const boxRef = useRef(null)
-  const chartRef = useRef(null)     // { chart, series, priceLines: [], overlaySeries: Map, fvgLines: [] }
+  const chartRef = useRef(null)     // { chart, series, priceLines: [], overlaySeries: Map, fvgLines: [], liveLine }
   const lastBarRef = useRef(null)   // forming bar, updated by live ticks
+  const [dot, setDot] = useState(null)      // { x, y, fresh } — pulsing marker on the last bar
+  const positionDotRef = useRef(() => {})   // latest closure, callable from subscriptions
+
+  // Pin the live dot to the forming bar's close. `fresh` = the bar is recent
+  // for its timeframe → the dot pulses; a stale bar (market closed / feed
+  // stalled) renders it static grey — the blink itself is the live signal.
+  // The ref is (re)assigned in an every-render effect so subscriptions always
+  // call the closure with the current timeframe.
+  useEffect(() => {
+    positionDotRef.current = () => {
+      const ref = chartRef.current
+      const bar = lastBarRef.current
+      if (!ref || !bar) { setDot(null); return }
+      let x = null; let y = null
+      try {
+        x = ref.chart.timeScale().timeToCoordinate(bar.time)
+        y = ref.series.priceToCoordinate(bar.close)
+      } catch { /* chart mid-teardown */ }
+      if (x == null || y == null) { setDot(null); return }
+      const tfSec = (tfMs(timeframe) || 3_600_000) / 1000
+      const fresh = (Date.now() / 1000 - Number(bar.time)) < Math.max(3 * tfSec, 180)
+      setDot({ x, y, fresh })
+    }
+  })
+
+  // Keep the live price line (solid, labelled "live") on the latest price.
+  const updateLiveLine = useCallback((price) => {
+    const ref = chartRef.current
+    if (!ref || price == null || at) return
+    if (!ref.liveLine) {
+      ref.liveLine = ref.series.createPriceLine({
+        price: Number(price), color: UP, lineWidth: 1, lineStyle: 0,
+        axisLabelVisible: true, title: 'live',
+      })
+    } else {
+      ref.liveLine.applyOptions({ price: Number(price) })
+    }
+  }, [at])
 
   const showPanel = !grid && !at    // indicators only on the full live chart
   const indKey = indPrefs.indicators.join(',')
@@ -118,6 +157,16 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     chartRef.current = { chart, series, priceLines: [], overlaySeries: new Map(), fvgLines: [] }
     return () => { chart.remove(); chartRef.current = null }
   }, [])
+
+  // Re-pin the live dot on every pan/zoom/resize — coordinates shift with
+  // the visible range (autoSize resizes also fire this).
+  useEffect(() => {
+    const ref = chartRef.current
+    if (!ref) return undefined
+    const onRange = () => positionDotRef.current()
+    ref.chart.timeScale().subscribeVisibleLogicalRangeChange(onRange)
+    return () => { try { ref.chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange) } catch { /* chart disposed */ } }
+  }, [symbol, timeframe])
 
   // AVWAP anchor picking: while armed, the next chart click sets the anchor
   // timestamp (crosshair time is in SECONDS in lightweight-charts).
@@ -223,6 +272,8 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
 
         setVp(indPrefs.indicators.includes('vp') ? (overlays.vp || null) : null)
         setLastClose(r.lastPrice ?? null)
+        updateLiveLine(r.lastPrice ?? bars[bars.length - 1]?.close)
+        positionDotRef.current()
         setFib(r.fib || null)
         setError('')
       } catch (e) { if (!dead) setError(e.message) }
@@ -266,12 +317,14 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           const next = { ...bar, close: mid, high: Math.max(bar.high, mid), low: Math.min(bar.low, mid) }
           lastBarRef.current = next
           chartRef.current.series.update(next)
+          updateLiveLine(mid)
+          positionDotRef.current()
         }
       },
       () => setLive(false),
     )
     return () => stream.close()
-  }, [symbol, at, grid])
+  }, [symbol, at, grid, updateLiveLine])
 
   const chartHeight = grid ? 190 : 300
 
@@ -324,6 +377,21 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       <div className="relative">
         <div ref={boxRef} className={grid ? 'w-full h-[190px]' : 'w-full h-[300px]'} />
         {showPanel && vp && <VolumeProfileSvg vp={vp} height={chartHeight} />}
+        {/* Live dot on the forming bar — pulses while the feed is fresh,
+            static grey when the market is closed / the feed stalls. */}
+        {dot && !at && (
+          <span
+            aria-hidden="true"
+            className="absolute pointer-events-none z-10"
+            style={{ left: dot.x - 4, top: dot.y - 4 }}
+            title={dot.fresh ? 'live' : 'stale'}
+          >
+            {dot.fresh && (
+              <span className="absolute inline-flex h-2 w-2 rounded-full animate-ping" style={{ backgroundColor: UP, opacity: 0.7 }} />
+            )}
+            <span className="relative inline-flex h-2 w-2 rounded-full" style={{ backgroundColor: dot.fresh ? UP : '#94a3b8' }} />
+          </span>
+        )}
       </div>
       {showPanel && avwapAnchorT != null && indPrefs.indicators.includes('avwap') && (
         <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
