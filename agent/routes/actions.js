@@ -13,6 +13,7 @@ import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume } from '../lib/lot-sizing.js'
+import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 
 /**
@@ -335,6 +336,166 @@ export default function actionsRouter(db) {
     } catch (err) {
       console.error('[actions/broker-history] error:', err.message)
       res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // Per-position trade management (cTrader-style Modify/Protect, per trade).
+  // All owner-initiated: they act directly at the broker (the user outranks
+  // the bot), are logged to action_log by the /actions middleware, and go
+  // through the exec engine so EXEC_ENGINE=cpp parity holds.
+  // -----------------------------------------------------------------------
+
+  // Find one live position at the broker by id (fresh reconcile every call —
+  // stale ids must fail loudly, not act on a ghost).
+  async function findLivePosition(creds, positionId) {
+    const rec = await execReconcile(creds)
+    return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
+  }
+
+  // POST /actions/position-protect — set/replace the broker-native SL and/or
+  // TP on ONE position. Body: { positionId, sl?, tp? } (absolute prices).
+  router.post('/position-protect', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { positionId, sl, tp } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const args = { positionId: parseInt(positionId) }
+      if (Number(sl) > 0) args.stopLoss = Number(sl)
+      if (Number(tp) > 0) args.takeProfit = Number(tp)
+      if (args.stopLoss == null && args.takeProfit == null) {
+        return res.status(400).json({ error: 'sl or tp (absolute price) is required' })
+      }
+      await execAmendPosition(creds, args)
+      db.prepare("UPDATE monitored_positions SET current_sl = COALESCE(?, current_sl), current_tp = COALESCE(?, current_tp) WHERE trade_id IN (SELECT id FROM trades WHERE ctrader_position_id = ?) AND status = 'active'")
+        .run(args.stopLoss ?? null, args.takeProfit ?? null, String(positionId))
+      res.json({ ok: true, positionId, sl: args.stopLoss ?? null, tp: args.takeProfit ?? null })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/position-close — close ONE position, fully or partially.
+  // Body: { positionId, lots? } (omit lots → full close).
+  router.post('/position-close', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { positionId, lots } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const pos = await findLivePosition(creds, positionId)
+      if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker (already closed?)` })
+      let volume = pos.tradeData?.volume
+      if (Number(lots) > 0) {
+        const meta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, pos.tradeData?.symbolId)
+        volume = Math.min(volume, Math.round(Number(lots) * meta.lotSize))
+      }
+      const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
+      res.json({ ok: true, positionId, closedVolume: volume, partial: volume < (pos.tradeData?.volume ?? volume), deal: exec.deal ?? null })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/position-double — open a second market position, same
+  // symbol/side/size as the given one. Body: { positionId }
+  router.post('/position-double', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { positionId } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const pos = await findLivePosition(creds, positionId)
+      if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker` })
+      const td = pos.tradeData || {}
+      const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
+      const exec = await execPlaceOrder(creds, {
+        ctidTraderAccountId: parseInt(creds.accountId),
+        symbolId: parseInt(td.symbolId),
+        orderType: 'MARKET',
+        tradeSide: td.tradeSide === 2 || td.tradeSide === 'SELL' ? 'SELL' : 'BUY',
+        volume: td.volume,
+        comment: 'abot-double',
+        label,
+      })
+      res.json({ ok: true, doubledFrom: positionId, newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/position-reverse — close the position and open the same
+  // size in the OPPOSITE direction. Body: { positionId }
+  router.post('/position-reverse', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { positionId } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const pos = await findLivePosition(creds, positionId)
+      if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker` })
+      const td = pos.tradeData || {}
+      const wasSell = td.tradeSide === 2 || td.tradeSide === 'SELL'
+      await execClosePosition(creds, { positionId: parseInt(positionId), volume: td.volume })
+      const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
+      const exec = await execPlaceOrder(creds, {
+        ctidTraderAccountId: parseInt(creds.accountId),
+        symbolId: parseInt(td.symbolId),
+        orderType: 'MARKET',
+        tradeSide: wasSell ? 'BUY' : 'SELL',
+        volume: td.volume,
+        comment: 'abot-reverse',
+        label,
+      })
+      res.json({ ok: true, reversedFrom: positionId, newSide: wasSell ? 'BUY' : 'SELL', newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/position-guard — store the bot-enforced rules for ONE
+  // position (break-even / trailing / partial TPs). Body:
+  //   { positionId, guard: { breakEven?, trailing?, takeProfits? } | null }
+  // null clears the rules. The loop's trade-guard pass enforces them.
+  router.post('/position-guard', async (req, res) => {
+    try {
+      const { positionId, guard } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const row = db.prepare(
+        `SELECT mp.id FROM monitored_positions mp
+         JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId))
+      if (!row) {
+        return res.status(404).json({
+          error: `position ${positionId} is not in the monitor yet — it is adopted on the next reconcile pass (within one loop cycle); retry shortly`,
+        })
+      }
+      const json = guard == null ? null : JSON.stringify(guard)
+      db.prepare('UPDATE monitored_positions SET guard_json = ? WHERE id = ?').run(json, row.id)
+      res.json({ ok: true, positionId, guard: guard ?? null })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET-equivalent: current guard rules for the UI (POST for parity with the
+  // actions router's logging middleware). Body: { positionId }
+  router.post('/position-guard-get', (req, res) => {
+    try {
+      const { positionId } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const row = db.prepare(
+        `SELECT mp.guard_json, mp.be_moved FROM monitored_positions mp
+         JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId))
+      let guard = null
+      try { guard = row?.guard_json ? JSON.parse(row.guard_json) : null } catch { /* corrupt → null */ }
+      res.json({ ok: true, positionId, guard, beMoved: !!row?.be_moved, monitored: !!row })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
     }
   })
 
@@ -1332,6 +1493,8 @@ export default function actionsRouter(db) {
               deltaPips,
               estPnlQuote, // in the symbol's QUOTE currency, price-move only (excludes swap/commission)
               estNetPnl,   // deposit-ccy estimate incl. swap + commission — matches cTrader's Net P&L
+              pipSize: meta.pipPosition != null ? Math.pow(10, -meta.pipPosition) : null,
+              digits: meta.digits ?? null,
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
               swap: swapMoney,

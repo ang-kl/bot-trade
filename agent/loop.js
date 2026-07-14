@@ -960,6 +960,23 @@ async function runLoop(db) {
         }
       }
 
+      // Per-position trade guards — break-even / trailing / partial TPs the
+      // owner armed on individual positions. Inert when no position has
+      // rules; a failure must never take down the loop.
+      try {
+        const guardCreds = getCtraderCreds(db)
+        if (guardCreds.ready) {
+          const { runTradeGuards } = await import('./services/trade-guard.js')
+          const g = await runTradeGuards(db, guardCreds, {
+            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+          })
+          if (g.slMoves || g.partialCloses) log(`Trade guards: ${g.slMoves} SL move(s), ${g.partialCloses} partial close(s)`)
+          if (g.errors.length) log(`Trade guards errors: ${g.errors.join(' · ')}`)
+        }
+      } catch (err) {
+        log(`Trade guards failed (non-fatal): ${err.message}`)
+      }
+
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {
