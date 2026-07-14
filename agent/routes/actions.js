@@ -1709,10 +1709,14 @@ export default function actionsRouter(db) {
         if (typeof s === 'string') {
           return { symbol: s.toUpperCase().trim(), enabled: true }
         }
+        // Max lots is a CAP on the risk-based size — it must be a positive
+        // number (a stored -0.02 silently degraded sizing to broker minimum).
+        const cap = Number(s.maxVolume)
         return {
           ...s,
           symbol: (s.symbol || '').toUpperCase().trim(),
           enabled: s.enabled !== false,
+          maxVolume: Number.isFinite(cap) && cap > 0 ? Math.round(cap * 100) / 100 : undefined,
         }
       })
 

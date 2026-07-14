@@ -94,7 +94,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-  const requestedVol = watchlistItem?.maxVolume || 0.01
+  // Guard against legacy stored junk (e.g. a negative cap saved before
+  // validation existed) — a bad cap must never reach the risk gate.
+  const requestedVol = Number(watchlistItem?.maxVolume) > 0 ? Number(watchlistItem.maxVolume) : 0.01
 
   // Market-hours gate: a MARKET order into a closed market is a guaranteed
   // broker rejection — stocks/indices trade the NY session only, FX/metals

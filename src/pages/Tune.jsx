@@ -425,6 +425,7 @@ export default function Tune() {
     return next
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
+  const [sizingPrev, setSizingPrev] = useState(null) // dynamic lot preview per symbol — same math as the risk gate
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -512,6 +513,8 @@ export default function Tune() {
       for (const s of r?.lastResults?.scans || []) by[s.symbol] = s
       setScanInfo({ at: r?.lastScanAt || null, by })
     }).catch(() => {})
+    // Dynamic per-symbol lot sizing — same math as the live risk gate.
+    agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
   }, [tab])
 
   // Broker instrument list (once) — powers the add-symbol autocomplete.
@@ -1121,19 +1124,24 @@ export default function Tune() {
                 })}
               </div>
             )}
-            {/* Two labelled half-tables side by side — headers say what every
-                cell means; the right half is visibly separated by a rule. */}
+            {/* ONE table, ONE header — the old side-by-side half-tables
+                stacked on narrow screens and repeated the header mid-page.
+                Wide content scrolls inside the card instead. */}
             {(() => {
+              const prevBy = {}
+              for (const r of (sizingPrev?.rows || [])) prevBy[r.symbol] = r
               const renderRow = (s) => {
                 const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
                 const scan = scanInfo?.by?.[s.symbol]
+                const prev = prevBy[String(s.symbol).toUpperCase()]
                 const on = s.enabled !== false
                 return (
                   <tr key={s.symbol} className="border-t border-[var(--color-border)]">
-                    <td className="pr-2 py-1 font-semibold">{s.symbol}</td>
+                    <td className="pr-2 py-1 font-semibold whitespace-nowrap">{s.symbol}</td>
+                    <td className="pr-2 text-[11px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
                     <td className="pr-2"><Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge></td>
-                    <td className="pr-2 text-[12px] tabular-nums truncate max-w-[9rem]">
+                    <td className="pr-2 text-[12px] tabular-nums whitespace-nowrap">
                       {scan
                         ? <>
                             {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
@@ -1147,16 +1155,40 @@ export default function Tune() {
                         : <span className="text-[var(--color-text-sub)]">—</span>}
                     </td>
                     <td className="pr-2 text-[12px] tabular-nums text-center">{tested != null ? tested : '—'}</td>
+                    <td
+                      className="pr-2 text-[12px] tabular-nums whitespace-nowrap"
+                      title={prev?.usdPerLot != null
+                        ? `risk budget $${sizingPrev?.budget ?? '?'} ÷ $${prev.usdPerLot}/lot at the tightest allowed stop (${sizingPrev?.minSLDistancePct}% of price) — wider stops size smaller automatically`
+                        : prev?.note || ''}
+                    >
+                      {prev?.autoLots != null
+                        ? <span className="font-semibold">{prev.autoLots.toFixed(2)}</span>
+                        : <span className="text-[var(--color-text-sub)]">{prev?.note ? '—' : '…'}</span>}
+                      {prev?.maxCap != null && prev?.autoLots != null && prev.maxCap < prev.autoLots && (
+                        <span className="text-[var(--color-text-sub)]"> → {prev.maxCap.toFixed(2)} (capped)</span>
+                      )}
+                    </td>
                     <td className="pr-2">
                       <Input
-                        type="number" step="0.01" className="w-16 !py-0.5 !min-h-0 text-[12px]" value={s.maxVolume ?? ''}
-                        placeholder="0.01" aria-label={`Max lots for ${s.symbol}`}
+                        type="number" step="0.01" min="0.01" className="w-16 !py-0.5 !min-h-0 text-[12px]" value={s.maxVolume ?? ''}
+                        placeholder="auto" aria-label={`Max lots cap for ${s.symbol}`}
                         onChange={e => {
                           const next = [...symbols]
                           next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
                           setConfig(c => ({ ...c, symbols: next }))
                         }}
-                        onBlur={() => pushSymbols(symbols)}
+                        onBlur={() => {
+                          // Cap must be a positive number ≥ broker minimum —
+                          // a negative/zero cap silently broke sizing before.
+                          const n = Number(s.maxVolume)
+                          const clean = Number.isFinite(n) && n > 0 ? Math.max(0.01, Math.round(n * 100) / 100) : undefined
+                          if (clean !== s.maxVolume && !(clean === undefined && (s.maxVolume === undefined || s.maxVolume === ''))) {
+                            setError(clean === undefined ? `Max lots for ${s.symbol} must be a positive number — cleared (auto sizing applies)` : '')
+                          }
+                          const next = symbols.map((x, j) => j === i ? { ...x, maxVolume: clean } : x)
+                          setConfig(c => ({ ...c, symbols: next }))
+                          pushSymbols(next)
+                        }}
                       />
                     </td>
                     <td className="whitespace-nowrap">
@@ -1169,34 +1201,30 @@ export default function Tune() {
                   </tr>
                 )
               }
-              const header = (
-                <thead>
-                  <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
-                    <th className="pr-2 pb-1 font-semibold">Symbol</th>
-                    <th className="pr-2 pb-1 font-semibold">Scanned</th>
-                    <th className="pr-2 pb-1 font-semibold">Live signal</th>
-                    <th className="pr-2 pb-1 font-semibold text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
-                    <th className="pr-2 pb-1 font-semibold">Max lots</th>
-                    <th className="pb-1 font-semibold">Actions</th>
-                  </tr>
-                </thead>
-              )
-              const half = Math.ceil(singles.length / 2)
-              const halves = [singles.slice(0, half), singles.slice(half)].filter(h => h.length)
               return (
-                <div className="grid gap-x-0 lg:grid-cols-2">
-                  {halves.map((rows, hi) => (
-                    <div key={hi} className={hi === 1 ? 'lg:border-l lg:border-[var(--color-border)] lg:pl-6' : 'lg:pr-6'}>
-                      <table className="w-full text-[13px]">
-                        {header}
-                        <tbody>{rows.map(renderRow)}</tbody>
-                      </table>
-                    </div>
-                  ))}
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-[13px]">
+                    <thead>
+                      <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
+                        <th className="pr-2 pb-1 font-semibold">Symbol</th>
+                        <th className="pr-2 pb-1 font-semibold">Type</th>
+                        <th className="pr-2 pb-1 font-semibold">Scanned</th>
+                        <th className="pr-2 pb-1 font-semibold">Live signal</th>
+                        <th className="pr-2 pb-1 font-semibold text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
+                        <th className="pr-2 pb-1 font-semibold" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
+                        <th className="pr-2 pb-1 font-semibold" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
+                        <th className="pb-1 font-semibold">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>{singles.map(renderRow)}</tbody>
+                  </table>
                 </div>
               )
             })()}
             <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+              {sizingPrev?.balance != null && (
+                <>Sizing: each trade risks {Math.round((sizingPrev.riskPct || 0) * 10000) / 100}% of ${Number(sizingPrev.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })} = ${sizingPrev.budget} — lots = budget ÷ $-per-lot, computed per instrument (contract size × stop distance). Max lots is only a cap; leave it empty for pure risk-based sizing. </>
+              )}
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
             </p>
           </div>
