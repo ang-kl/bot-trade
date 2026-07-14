@@ -339,6 +339,25 @@ function sortBtRows(entries, { col, dir }) {
 // (The old regex-based instrumentCategory browser was replaced by the
 // broker-truth classification tree from GET /actions/instrument-tree.)
 
+// Quick-group presets — market-standard buckets. Every list is intersected
+// with the broker's actual instrument names before adding, so unavailable
+// tickers are silently dropped and the chip shows the true count. Broker
+// naming varies for single equities (suffix conventions) — the counts make
+// gaps visible instead of failing silently.
+const PRESET_GROUPS = [
+  { key: 'FX majors', names: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'] },
+  { key: 'FX minors (crosses)', names: ['EURGBP', 'EURJPY', 'EURCHF', 'EURAUD', 'EURCAD', 'EURNZD', 'GBPJPY', 'GBPCHF', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'AUDJPY', 'AUDCAD', 'AUDCHF', 'AUDNZD', 'CADJPY', 'CADCHF', 'CHFJPY', 'NZDJPY', 'NZDCAD', 'NZDCHF'] },
+  { key: 'Asian indices', names: ['JPN225', 'HK50', 'CN50', 'AUS200', 'SGP30', 'INDIA50', 'CHINAH', 'TWIX'] },
+  { key: 'European indices', names: ['GER40', 'UK100', 'FRA40', 'SPA35', 'EU50', 'EUSTX50', 'SWI20', 'NETH25', 'IT40'] },
+  { key: 'US indices', names: ['US30', 'US500', 'NAS100', 'US2000', 'VIX'] },
+  { key: 'Metals', names: ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD', 'COPPER'] },
+  { key: 'Energies', names: ['SPOTCRUDE', 'WTI', 'BRENT', 'NATGAS'] },
+  { key: 'Softs & agri', names: ['COCOA', 'COFFEE', 'SUGAR', 'COTTON', 'WHEAT', 'CORN', 'SOYBEAN'] },
+  { key: 'Crypto majors', names: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD'] },
+  { key: 'US mega-cap 10', names: ['AAPL.US', 'MSFT.US', 'NVDA.US', 'GOOGL.US', 'AMZN.US', 'META.US', 'TSLA.US', 'AVGO.US', 'LLY.US', 'JPM.US'] },
+  { key: 'FTSE 100 top 20', names: ['AZN.UK', 'SHEL.UK', 'HSBA.UK', 'ULVR.UK', 'BP.UK', 'GSK.UK', 'RIO.UK', 'DGE.UK', 'REL.UK', 'BATS.UK', 'AAL.UK', 'LSEG.UK', 'BARC.UK', 'NG.UK', 'VOD.UK', 'PRU.UK', 'LLOY.UK', 'TSCO.UK', 'CPG.UK', 'RR.UK'] },
+]
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -956,6 +975,48 @@ export default function Tune() {
             {q.length >= 2 && allSymbols.length > 0 && !allSymbols.includes(q) && suggestions.length === 0 && (
               <p className="text-[12px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
             )}
+
+            {/* Quick groups — market-standard buckets, one tap to add the
+                whole set as ONE watchlist row. Each preset is intersected
+                with the instruments THIS broker account actually offers, so
+                a chip never adds a symbol that cannot trade. */}
+            {allSymbols.length > 0 && (() => {
+              const have = new Set(allSymbols.map(s => s.toUpperCase()))
+              const presets = PRESET_GROUPS.map(g => ({
+                ...g,
+                avail: g.names.filter(n => have.has(n.toUpperCase())),
+              }))
+              return (
+                <div className="mb-3">
+                  <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
+                    Quick groups — tap to add every available instrument of a type as one row (Max lots still sizes per instrument):
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {presets.map(g => {
+                      const selected = groupSelected(g.key)
+                      const empty = g.avail.length === 0
+                      return (
+                        <button
+                          key={g.key} type="button" disabled={empty && !selected}
+                          title={empty
+                            ? 'None of these tickers exist on this broker account — use Browse below for broker-truth categories'
+                            : selected ? 'In the watchlist — tap to remove the group' : g.avail.join(' · ')}
+                          onClick={() => selected ? removeGroup(g.key) : addGroup(g.key, g.avail)}
+                          className={`rounded-full px-2.5 py-1 min-h-[32px] text-[12px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-default ${
+                            selected ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)] hover:text-[var(--color-text)]'
+                          }`}
+                        >
+                          {selected ? '✓ ' : '+ '}{g.key} ({g.avail.length})
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                    Per-country equity lists (top 10 per country, full FTSE/DAX membership) live under Browse below — that tree is the broker's own classification, always complete.
+                  </p>
+                </div>
+              )
+            })()}
 
             {/* Full catalogue browser — every instrument the broker offers,
                 searchable + category-filtered, one tap to add. */}
