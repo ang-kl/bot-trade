@@ -37,6 +37,8 @@ export async function getVolumeMeta(host, clientId, clientSecret, accessToken, a
     // Price precision — the broker REJECTS order prices with more decimals
     // than the symbol allows ("more digits than symbol allows").
     digits: s.digits != null ? Number(s.digits) : 5,
+    // Pip position → pip size = 10^-pipPosition (trade-guard pip math).
+    pipPosition: s.pipPosition != null ? Number(s.pipPosition) : null,
   }
   metaCache.set(key, meta)
   return meta

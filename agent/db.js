@@ -127,6 +127,9 @@ const TABLES = `
     -- time). Rows from another account are swept to 'closed' on account
     -- switch so they never gate risk checks for the new account.
     account_id            TEXT,
+    -- Per-position trade-management rules (break-even / trailing / partial
+    -- TPs) enforced by services/trade-guard.js each loop cycle.
+    guard_json            TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -259,6 +262,7 @@ export function initDB(dbPath) {
     ['source',               'TEXT'],
     ['label_raw',            'TEXT'],
     ['account_id',           'TEXT'],
+    ['guard_json',           'TEXT'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

@@ -8,6 +8,7 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import PositionChart from '../components/PositionChart.jsx'
+import PositionManager from '../components/PositionManager.jsx'
 import ReportChart from '../components/ReportChart.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
@@ -172,6 +173,7 @@ export default function Monitor() {
   const [events, setEvents] = useState(cached?.events ?? [])
   const [broker, setBroker] = useState(cached?.broker ?? null)  // selected account at the BROKER: live + pending
   const [brokerHistory, setBrokerHistory] = useState(cached?.brokerHistory ?? null) // broker's closed deals, last 7 days
+  const [managedId, setManagedId] = useState(null) // positionId with the manage sheet open
   const [scan, setScan] = useState(cached?.scan ?? null)        // last fib scan: proof of life
   const [armedTfs, setArmedTfs] = useState(cached?.armedTfs ?? ['4h', '1d'])
   const [matrix, setMatrix] = useState(cached?.matrix ?? null)
@@ -388,11 +390,18 @@ export default function Monitor() {
                 <span>in {fmt(p.entry)} → now {fmt(p.currentPrice)}</span>
                 {net != null && <span className={net >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{net >= 0 ? '+' : ''}{fmt(net, 2)}{p.estNetPnl == null ? '*' : ''}</span>}
                 <span className="text-[var(--color-text-sub)]">SL {fmt(p.sl)} · TP {fmt(p.tp)}</span>
+                <Button size="sm" variant="ghost" className="ml-auto"
+                  onClick={() => setManagedId(id => id === p.positionId ? null : p.positionId)}>
+                  {managedId === p.positionId ? 'Hide' : 'Manage'}
+                </Button>
               </div>
               {(p.estNetPnl != null && hasCosts) && (
                 <div className="mt-0.5 text-[12px] text-[var(--color-text-sub)]">
                   price {p.estPnlQuote >= 0 ? '+' : ''}{fmt(p.estPnlQuote, 2)} · swap {fmt(p.swap ?? 0, 2)} · commission {fmt(p.commission ?? 0, 2)}
                 </div>
+              )}
+              {managedId === p.positionId && (
+                <PositionManager p={p} onDone={() => { setManagedId(null); load() }} />
               )}
             </div>
           )
