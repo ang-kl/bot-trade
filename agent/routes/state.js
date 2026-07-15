@@ -8,6 +8,7 @@ import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLever
 import { tierForBalance } from '../lib/contracts.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
+import { sizingPreview } from '../services/sizing-preview.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -590,6 +591,18 @@ export default function stateRouter(db) {
       res.json(timeframePerformance(db))
     } catch (e) {
       res.json({ windows: [], rows: [], error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/sizing-preview — dynamic per-symbol lot sizing for the
+  // Watchlist table (same math as the live risk gate)
+  // -----------------------------------------------------------------------
+  router.get('/sizing-preview', (_req, res) => {
+    try {
+      res.json(sizingPreview(db))
+    } catch (e) {
+      res.json({ rows: [], error: e.message })
     }
   })
 

@@ -48,6 +48,38 @@ const CONTRACT_SIZE = {
 
 const DEFAULT_FX_CONTRACT = 100_000 // 1 lot = 100k units base ccy
 
+// Instrument classification — drives the dynamic-sizing display (each type
+// has a wildly different $-per-lot, which is WHY lots must be computed per
+// instrument, never set as one global number).
+const TYPE_BY_SYMBOL = {
+  XAUUSD: 'metal', XAGUSD: 'metal', XPTUSD: 'metal', XPDUSD: 'metal',
+  SPOTCRUDE: 'energy', WTI: 'energy', BRENT: 'energy', NATGAS: 'energy',
+  COCOA: 'agri', COFFEE: 'agri', SUGAR: 'agri', COTTON: 'agri',
+  WHEAT: 'agri', CORN: 'agri', SOYBEAN: 'agri',
+  COPPER: 'metal',
+  US30: 'index', US500: 'index', NAS100: 'index', GER40: 'index',
+  UK100: 'index', JPN225: 'index', FRA40: 'index', SPA35: 'index',
+  CN50: 'index', VIX: 'index', SDY: 'index', HK50: 'index', AUS200: 'index',
+  BTCUSD: 'crypto', ETHUSD: 'crypto', XRPUSD: 'crypto', SOLUSD: 'crypto',
+  LTCUSD: 'crypto', ADAUSD: 'crypto', DOGEUSD: 'crypto', BNBUSD: 'crypto',
+}
+
+/**
+ * Classify a symbol: metal / energy / agri / index / crypto / equity
+ * (broker ".US" suffix) / fx / fx (USD-base) / fx cross / other.
+ */
+export function instrumentType(symbol) {
+  const s = (symbol || '').toUpperCase()
+  if (TYPE_BY_SYMBOL[s]) return TYPE_BY_SYMBOL[s]
+  if (/\.[A-Z]{2,3}$/.test(s)) return 'equity'
+  if (s.length === 6 && /^[A-Z]{6}$/.test(s)) {
+    if (s.endsWith('USD')) return 'fx'
+    if (s.startsWith('USD')) return 'fx (USD-base)'
+    return 'fx cross'
+  }
+  return 'other'
+}
+
 /**
  * Lookup the contract size for a symbol. Returns the default FX size for
  * any 6-letter pair not explicitly listed; otherwise 1.
