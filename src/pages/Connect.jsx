@@ -133,7 +133,7 @@ export default function Connect() {
     }
     setLinking(true)
     try {
-      const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive })
+      const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive, traderLogin: a.traderLogin ?? null })
       setLinked(r)
       setSymbolCount(r.symbolsMapped)
       setToken('')

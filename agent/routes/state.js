@@ -83,6 +83,9 @@ export default function stateRouter(db) {
       broker: {
         linked: !!getState(db, 'ctrader_account_id'),
         accountId: getState(db, 'ctrader_account_id') || null,
+        // Human account number (e.g. 5306502) — accountId is cTrader's
+        // internal id; the UI shows traderLogin when available.
+        traderLogin: getState(db, 'ctrader_trader_login') || null,
         isLive: getState(db, 'ctrader_is_live') === 'true',
         symbolsMapped: (() => { try { return Object.keys(JSON.parse(getState(db, 'symbol_id_map') || '{}')).length } catch { return 0 } })(),
         balance: Number(getState(db, 'account_balance_usd')) || null,

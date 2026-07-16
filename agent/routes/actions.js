@@ -653,18 +653,28 @@ export default function actionsRouter(db) {
     const symbol = String(req.body?.symbol || '').toUpperCase().trim()
     if (!symbol) return res.status(400).json({ error: 'Body must include { symbol }' })
     const bias = req.body?.side === 'short' ? 'short' : 'long'
+    // EVERY refusal — even before the risk gate — lands in risk_events, so
+    // the Order log answers "I tapped it and nothing happened, why?" without
+    // needing the Railway logs (owner requirement: track ALL attempts).
+    const side = bias === 'short' ? 'SELL' : 'BUY'
+    const refuse = (status, reason, humanError) => {
+      try {
+        persistRiskEvent(db, { symbol, side, requestedVolume: 0.01, source: 'validation_fill' }, { approved: false, veto_reason: reason })
+      } catch { /* the log must never block the answer */ }
+      return res.status(status).json({ error: humanError || reason })
+    }
     try {
       if (getState(db, 'ctrader_is_live') === 'true') {
-        return res.status(400).json({ error: 'validation fill refuses to run on a LIVE account — select the demo account first' })
+        return refuse(400, 'live_account: validation fill refuses to run on a LIVE account', 'validation fill refuses to run on a LIVE account — select the demo account first')
       }
       const creds = getCtraderCreds(db)
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured — link an account on Connect' })
+      if (!creds.ready) return refuse(400, 'no_credentials: cTrader not configured', 'cTrader credentials not configured — link an account on Connect')
       const map = getSymbolMap(db)
       const symbolId = map[symbol]
-      if (!symbolId) return res.status(400).json({ error: `symbolId unknown for ${symbol} — call POST /actions/symbol-map first` })
+      if (!symbolId) return refuse(400, `symbol_unknown: no symbolId for ${symbol}`, `symbolId unknown for ${symbol} — call POST /actions/symbol-map first`)
 
       const q = await wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
-      if (!q?.bid || !q?.ask) return res.status(400).json({ error: 'no live quote — market closed or price feed unavailable' })
+      if (!q?.bid || !q?.ask) return refuse(400, 'no_live_quote: market closed or price feed unavailable', 'no live quote — market closed or price feed unavailable')
       const mid = (q.bid + q.ask) / 2
       const dir = bias === 'long' ? 1 : -1
 
@@ -681,6 +691,7 @@ export default function actionsRouter(db) {
         time_cap_minutes: 240,
         synthesis: 'VALIDATION FILL — deliberate end-to-end test of the auto-trade path (owner-fired, 0.01 lot).',
         invalidation_trigger: null,
+        source: 'validation_fill',
       }
 
       // Dynamic import keeps route wiring free of load-order surprises.
@@ -706,7 +717,7 @@ export default function actionsRouter(db) {
         note: 'The gate refused honestly — that is the same refusal a live signal would get. Fix the reason and fire again.',
       })
     } catch (e) {
-      res.status(500).json({ error: e.message })
+      return refuse(500, `error: ${e.message}`, e.message)
     }
   })
 
@@ -1741,6 +1752,18 @@ export default function actionsRouter(db) {
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
       setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
+      // The human-facing account number (traderLogin, e.g. 5306502) — the
+      // ctidTraderAccountId above is cTrader's internal id and confused the
+      // owner when the health strip showed it. Stored best-effort at select
+      // time; resolved from the account list when the UI didn't send it.
+      let traderLogin = req.body?.traderLogin ?? null
+      if (traderLogin == null) {
+        try {
+          const accounts = await listCtraderAccounts(accessToken)
+          traderLogin = accounts.find(a => String(a.accountId) === String(accountId))?.traderLogin ?? null
+        } catch { /* cosmetic — the internal id still shows */ }
+      }
+      setState(db, 'ctrader_trader_login', traderLogin != null ? String(traderLogin) : null)
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
@@ -2110,7 +2133,7 @@ export default function actionsRouter(db) {
       const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
       const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
 
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction }
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction, source: 'execute_analysis' }
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
       persistRiskEvent(db, proposal, riskResult)
 
@@ -2125,7 +2148,9 @@ export default function actionsRouter(db) {
       const volMeta = await getVolumeMeta(metaHost, clientId, clientSecret, accessToken, accountId, symbolId)
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
-        return res.json({ ok: false, vetoed: true, reason: `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)` })
+        const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        return res.json({ ok: false, vetoed: true, reason })
       }
       const volume = sized.volume
       const slDistance = sl && entry ? Math.abs(entry - sl) : null
@@ -2232,6 +2257,7 @@ export default function actionsRouter(db) {
         requestedVolume: Number(lots) > 0 ? Number(lots) : 0.01,
         strategy: 'manual',
         conviction: null,
+        source: 'manual',
       }
       const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
       persistRiskEvent(db, proposal, riskResult)
@@ -2243,7 +2269,9 @@ export default function actionsRouter(db) {
       const volMeta = await getVolumeMeta(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
       const sized = lotsToVolume(volLots, volMeta)
       if (sized.belowMin) {
-        return res.json({ ok: false, vetoed: true, reason: `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)` })
+        const reason = `below_min_volume: ${volLots} lots < broker minimum (${volMeta.minVolume / volMeta.lotSize} lots)`
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        return res.json({ ok: false, vetoed: true, reason })
       }
       const POINTS = 100000
       const slDistance = Math.abs(entry - proposal.sl)

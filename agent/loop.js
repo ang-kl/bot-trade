@@ -105,7 +105,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const { isSymbolMarketOpen } = await import('./lib/sessions.js')
   const marketGate = isSymbolMarketOpen(symbol)
   if (!marketGate.open) {
-    persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+    persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol, source: synth.source || 'auto_signal' }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
     log(`Auto-trade deferred — ${marketGate.reason}`)
     return null
   }
@@ -124,6 +124,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     requestedVolume: requestedVol,
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
+    // Provenance for the order log: who fired this attempt (auto_signal |
+    // validation_fill | …). Rides inside proposal_json — no schema change.
+    source: synth.source || 'auto_signal',
   }
   const riskCfg = loadRiskConfig(db)
   const riskResult = evaluateTrade(db, proposal, riskCfg)
