@@ -1,4 +1,4 @@
-/* global __APP_VERSION__ */
+/* global __APP_VERSION__, __GIT_COMMIT__ */
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import { getAgentConn, agentConfigured } from './lib/agent-api.js'
@@ -86,7 +86,7 @@ export default function App() {
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full">
           <div className="flex items-baseline gap-2 mb-4">
             <span className="text-[15px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent">bot-trade</span>
-            <span className="text-[11px] text-[var(--color-text-sub)]" title="App version">v{__APP_VERSION__}</span>
+            <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
           </div>
           <nav className="flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
@@ -119,7 +119,7 @@ export default function App() {
             <span className="text-[14px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent shrink-0">
               bot-trade
             </span>
-            <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title="App version">v{__APP_VERSION__}</span>
+            <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
             <nav className="flex gap-1">
               {ALL_TABS.map(t => (
                 <NavLink
@@ -161,7 +161,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
           <footer className="mt-8 pt-4 border-t border-[var(--color-border)] text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
-            <span>bot-trade v{__APP_VERSION__}</span>
+            <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
             <span>fib 61.8% strategy · deterministic, no LLM in trade decisions</span>
             <span>trading involves risk — demo first, never money you can't lose</span>
           </footer>
