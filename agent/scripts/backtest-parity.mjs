@@ -170,7 +170,7 @@ function runCpp(binary, bars, entryMode) {
 
 export function runParity(binary = DEFAULT_BINARY) {
   if (!existsSync(binary)) {
-    console.error(`cpp binary not found at ${binary} — build cpp-exec first (make -C cpp-exec)`) // eslint-disable-line
+    console.error(`cpp binary not found at ${binary} — build cpp-exec first (make -C cpp-exec)`)
     return 2
   }
 

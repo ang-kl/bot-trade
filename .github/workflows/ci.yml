@@ -1,5 +1,8 @@
 name: CI
 
+# The full quality gate on every PR and push to main. Nothing merges on a
+# Vercel deploy alone: the agent test suite (risk gate, sizing, guards,
+# keeper — the code that touches real money) runs here.
 on:
   pull_request:
   push:
@@ -15,12 +18,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install agent dependencies (better-sqlite3 et al.)
+        run: cd agent && npm ci
+      - name: Lint (zero errors, zero warnings)
+        run: npx eslint . --max-warnings 0
+      - name: Agent test suite (node:test — risk, sizing, guards, keeper)
+        run: node --test "agent/**/*.test.js"
+      - name: Frontend test suite (vitest)
+        run: npx vitest run
+      - run: npm run build
+      - name: No-green colour gate (owner is red/green colourblind)
+        run: bash scripts/check-no-green.sh
       - name: Syntax-check agent entry points
         run: |
           for f in agent/index.js agent/loop.js agent/routes/actions.js agent/routes/state.js agent/lib/ctrader-ws.js agent/lib/ctrader-auth.js agent/services/fib-strategy.js agent/services/risk.js; do
             node --check "$f"
           done
-      - run: npm run build
-      - run: npx vitest run
-      - name: No-green colour gate (owner is red/green colourblind)
-        run: bash scripts/check-no-green.sh

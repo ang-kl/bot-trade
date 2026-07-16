@@ -605,7 +605,7 @@ export default async function handler(req, res) {
           for (const s of (symResults[2]?.symbol || [])) {
             symbolNameMap[s.symbolId] = s.symbolName
           }
-        } catch {}
+        } catch { /* symbol names stay numeric */ }
       }
 
       // Each position has tradeData with symbolId, volume, tradeSide, etc.
