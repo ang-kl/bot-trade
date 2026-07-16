@@ -1259,11 +1259,22 @@ export default function actionsRouter(db) {
       const current = loadProfitKeeperConfig(db)
       const b = req.body || {}
       const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null)
+      const clamp = (v, lo, hi, fallback) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : fallback)
       const next = {
         on: b.on != null ? b.on === true : current.on,
         scope: b.scope === 'all' ? 'all' : b.scope === 'external' ? 'external' : current.scope,
+        mode: b.mode === 'fixed' ? 'fixed' : b.mode === 'adaptive' ? 'adaptive' : current.mode,
+        // adaptive
+        atrTimeframe: typeof b.atrTimeframe === 'string' && b.atrTimeframe.trim() ? b.atrTimeframe.trim() : current.atrTimeframe,
+        atrPeriod: b.atrPeriod !== undefined ? Math.round(clamp(b.atrPeriod, 5, 50, current.atrPeriod)) : current.atrPeriod,
+        armAtrMult: b.armAtrMult !== undefined ? clamp(b.armAtrMult, 0.1, 10, current.armAtrMult) : current.armAtrMult,
+        armBalancePct: b.armBalancePct !== undefined ? clamp(b.armBalancePct, 0.01, 5, current.armBalancePct) : current.armBalancePct,
+        trailAtrMult: b.trailAtrMult !== undefined ? clamp(b.trailAtrMult, 0.5, 10, current.trailAtrMult) : current.trailAtrMult,
+        scaleOutFrac: b.scaleOutFrac !== undefined ? clamp(b.scaleOutFrac, 0, 0.9, current.scaleOutFrac) : current.scaleOutFrac,
+        // fixed
         armProfitUsd: b.armProfitUsd !== undefined ? (num(b.armProfitUsd) ?? current.armProfitUsd) : current.armProfitUsd,
         givebackPct: b.givebackPct !== undefined ? Math.min(95, Math.max(5, Number(b.givebackPct) || current.givebackPct)) : current.givebackPct,
+        // both
         takeProfitUsd: b.takeProfitUsd !== undefined ? num(b.takeProfitUsd) : current.takeProfitUsd,
       }
       setState(db, 'profit_keeper_json', JSON.stringify(next))
