@@ -15,7 +15,11 @@ export default function Badge({ children, tone = 'neutral', pill = false, classN
   const pad = pill ? 'px-2.5 py-0.5' : 'px-1.5 py-0.5'
   const cls = [
     'inline-flex items-center gap-1 border font-semibold',
-    'backdrop-blur-sm',
+    // transform-gpu + isolate force the pill onto its own compositing
+    // layer: iOS Safari ghost-paints backdrop-filter elements at stale
+    // positions on reflow (the pill was seen painted OVER neighbouring
+    // text in a wrapped flex row) — an own layer pins it in place.
+    'backdrop-blur-sm transform-gpu isolate',
     'text-[10px] leading-none whitespace-nowrap shrink-0',
     radius, pad,
     TONES[tone] || TONES.neutral,
