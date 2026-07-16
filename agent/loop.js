@@ -159,9 +159,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // per-lot constant sent every order ~1000× too small → TRADING_BAD_VOLUME).
   const hostForMeta = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
   let sized
+  let symbolDigits = 5 // price precision for relative SL/TP snapping below
+  const { getVolumeMeta, lotsToVolume, relativePoints } = await import('./lib/lot-sizing.js')
   try {
-    const { getVolumeMeta, lotsToVolume } = await import('./lib/lot-sizing.js')
     const meta = await getVolumeMeta(hostForMeta, clientId, clientSecret, accessToken, accountId, symbolId)
+    symbolDigits = meta.digits ?? 5
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`
@@ -184,7 +186,6 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
   const slDistance = synth.sl && synth.entry ? Math.abs(synth.entry - synth.sl) : null
   const tpDistance = synth.tp1 && synth.entry ? Math.abs(synth.tp1 - synth.entry) : null
-  const POINTS = 100000
 
   // Build the structured attribution label — visible in the native cTrader
   // Orders/History columns and used for per-strategy / per-regime analytics.
@@ -210,8 +211,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     volume,
     comment: 'abot-auto',
     label: structuredLabel,
-    ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
-    ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+    // Snapped to the symbol's digits — raw 1/100000 rounding is finer than
+    // 2-3 digit symbols allow and the broker rejects it (INVALID_REQUEST).
+    ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, symbolDigits) } : {}),
+    ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, symbolDigits) } : {}),
   }
 
   const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
@@ -474,8 +477,8 @@ function prepareStatements(db) {
 
   stmts = {
     insertScan: db.prepare(`
-      INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, scanned_at, loop_id)
-      VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @scanned_at, @loop_id)
+      INSERT INTO scans (symbol, bias, confidence, thesis, timeframe, session_fit, trade_at, price, trade_grade, desk_note, strategy, scanned_at, loop_id)
+      VALUES (@symbol, @bias, @confidence, @thesis, @timeframe, @session_fit, @trade_at, @price, @trade_grade, @desk_note, @strategy, @scanned_at, @loop_id)
     `),
 
     insertAnalysis: db.prepare(`
@@ -721,6 +724,7 @@ async function runLoop(db) {
         price: scan.price ?? null,
         trade_grade: scan.trade_grade || null,
         desk_note: scanResult.desk_note || null,
+        strategy: scan.strategy || null,
         scanned_at: now,
         loop_id: loopCount,
       })

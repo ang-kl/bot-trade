@@ -313,8 +313,12 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // Owner rule: friendly rounding (2-3dp, indices to tens) capped by the
       // broker's own digits — never rejected, never falsely precise.
       limitPrice: tradePrice(signal.entry, priceDigits),
-      ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
-      ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+      // Snapped to the symbol's digits, same as limitPrice above — raw
+      // 1/100000 rounding is finer than 2-3 digit symbols allow and the
+      // broker rejects it. Fallback keeps old behaviour for injected test
+      // sizing mocks that don't provide relativePoints.
+      ...(slDistance ? { relativeStopLoss: (sizing.relativePoints ?? ((d) => Math.round(d * POINTS)))(slDistance, priceDigits) } : {}),
+      ...(tpDistance ? { relativeTakeProfit: (sizing.relativePoints ?? ((d) => Math.round(d * POINTS)))(tpDistance, priceDigits) } : {}),
       expirationTimestamp: expiresAtMs,
       label,
       comment: 'pending-fib',

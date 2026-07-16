@@ -12,7 +12,7 @@ import { wsPlaceOrder, wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader
 import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
-import { getVolumeMeta, lotsToVolume } from '../lib/lot-sizing.js'
+import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
@@ -105,6 +105,11 @@ export default function actionsRouter(db) {
       const { runBacktest, walkForward } = await import('../scripts/backtest-fib.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
 
+      // Background job: the run belongs to the AGENT, not the browser tab
+      // that fired it — navigating away no longer loses the results. The UI
+      // polls GET /state/backtest-job to collect them.
+      const { startBacktestJob, jobMeta } = await import('../services/backtest-job.js')
+      const runWork = async () => {
       const symbols = {}
       const testOne = async (name) => {
         const symbolId = map[name]
@@ -166,7 +171,18 @@ export default function actionsRouter(db) {
       } catch (err) {
         payload.report = { error: err.message }
       }
-      res.json(payload)
+      return payload
+      } // end runWork
+
+      const started = startBacktestJob(
+        { symbols: names, timeframes, bars: count, strategy, entryMode },
+        runWork,
+      )
+      if (started.conflict) {
+        return res.status(409).json({ error: 'a backtest is already running — its results will appear when it finishes', job: jobMeta(started.conflict) })
+      }
+      console.log(`[actions] backtest job ${started.job.id} started: ${names.join(', ')} × ${timeframes.join('/')} (${strategy}/${entryMode})`)
+      res.json({ ok: true, job: jobMeta(started.job) })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -808,16 +824,26 @@ export default function actionsRouter(db) {
           return { symbol: name, error: err.message }
         }
       }
-      const rows = []
-      for (let i = 0; i < names.length; i += 3) {
-        rows.push(...await Promise.all(names.slice(i, i + 3).map(screenOne)))
-      }
-      res.json({
-        rows,
-        passed: rows.filter(r => r.pass).map(r => r.symbol),
-        manualChecks: 'Not in broker data — check on your stock screener: P/E < 30, optionable/shortable, leading sector.',
-        ranAt: new Date().toISOString(),
+      // Background job (same contract as the backtest): results wait on the
+      // agent in GET /state/job/cup-screener — leaving the page mid-run no
+      // longer throws them away.
+      const { startJob, jobMeta } = await import('../services/backtest-job.js')
+      const started = startJob('cup-screener', { symbols: names, ...opts }, async () => {
+        const rows = []
+        for (let i = 0; i < names.length; i += 3) {
+          rows.push(...await Promise.all(names.slice(i, i + 3).map(screenOne)))
+        }
+        return {
+          rows,
+          passed: rows.filter(r => r.pass).map(r => r.symbol),
+          manualChecks: 'Not in broker data — check on your stock screener: P/E < 30, optionable/shortable, leading sector.',
+          ranAt: new Date().toISOString(),
+        }
       })
+      if (started.conflict) {
+        return res.status(409).json({ error: 'a screener run is already in flight — its results will appear when it finishes', job: jobMeta(started.conflict) })
+      }
+      res.json({ ok: true, job: jobMeta(started.job) })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -2155,7 +2181,6 @@ export default function actionsRouter(db) {
       const volume = sized.volume
       const slDistance = sl && entry ? Math.abs(entry - sl) : null
       const tpDistance = tp1 && entry ? Math.abs(tp1 - entry) : null
-      const POINTS = 100000
 
       const sessionNow = getActiveSessions()[0]?.label || 'Off'
       const regimeRow = db.prepare('SELECT regime FROM regimes WHERE symbol = ? ORDER BY computed_at DESC LIMIT 1').get(analysis.symbol)
@@ -2176,8 +2201,10 @@ export default function actionsRouter(db) {
         volume,
         comment: 'abot-manual',
         label: structuredLabel,
-        ...(slDistance ? { relativeStopLoss: Math.round(slDistance * POINTS) } : {}),
-        ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+        // Snapped to the symbol's digits — finer precision is rejected by
+        // the broker (INVALID_REQUEST on 2-3 digit symbols like BTCUSD).
+        ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, volMeta.digits) } : {}),
+        ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
       }
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
@@ -2273,7 +2300,6 @@ export default function actionsRouter(db) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
         return res.json({ ok: false, vetoed: true, reason })
       }
-      const POINTS = 100000
       const slDistance = Math.abs(entry - proposal.sl)
       const tpDistance = proposal.tp1 != null ? Math.abs(proposal.tp1 - entry) : null
 
@@ -2290,8 +2316,10 @@ export default function actionsRouter(db) {
         volume: sized.volume,
         comment: 'abot-manual-ui',
         label: structuredLabel,
-        relativeStopLoss: Math.round(slDistance * POINTS),
-        ...(tpDistance ? { relativeTakeProfit: Math.round(tpDistance * POINTS) } : {}),
+        // Snapped to the symbol's digits — finer precision is rejected by
+        // the broker (INVALID_REQUEST on 2-3 digit symbols like BTCUSD).
+        relativeStopLoss: relativePoints(slDistance, volMeta.digits),
+        ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
       }
 
       const exec = await wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)

@@ -337,32 +337,33 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
         </div>
       ) : (
-        <div className="mb-1.5">
-          {CHART_TF_GROUPS.map(g => (
-            <div key={g.label} className="flex items-center gap-1.5 mb-1">
-              <span className="w-10 shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-sub)]">{g.label}</span>
-              <div className="flex flex-wrap gap-1.5" role="group" aria-label={`${g.label} timeframes`}>
-                {g.tfs.map(t => (
-                  <button
-                    key={t}
-                    type="button"
-                    aria-pressed={t === timeframe}
-                    onClick={() => setTimeframe(t)}
-                    className={`rounded-full px-2 min-h-[28px] text-[11px] font-semibold cursor-pointer ${
-                      t === timeframe ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
-                    }`}
-                  >{t}</button>
-                ))}
-              </div>
-            </div>
+        // One wrapped row for the whole TF ladder (was 5 labelled rows —
+        // owner: "spacing wasteful"). Groups separated by a middot; the
+        // price/tick status rides on the same line, right-aligned.
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-1" role="group" aria-label="Chart timeframe">
+          {CHART_TF_GROUPS.map((g, gi) => (
+            <span key={g.label} className="flex items-center gap-1" role="group" aria-label={`${g.label} timeframes`}>
+              {gi > 0 && <span aria-hidden="true" className="px-0.5 text-[10px] text-[var(--color-text-sub)]">·</span>}
+              {g.tfs.map(t => (
+                <button
+                  key={t}
+                  type="button"
+                  aria-pressed={t === timeframe}
+                  onClick={() => setTimeframe(t)}
+                  className={`rounded-full px-1.5 min-h-[26px] text-[11px] font-semibold cursor-pointer ${
+                    t === timeframe ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
+                  }`}
+                >{t}</button>
+              ))}
+            </span>
           ))}
-          <div className="text-right text-[11px] text-[var(--color-text-sub)]">
+          <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
             {at
               ? <>historical — window around {new Date(at).toLocaleString()}</>
               : live && tick
                 ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
                 : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
-          </div>
+          </span>
         </div>
       )}
       {showPanel && (

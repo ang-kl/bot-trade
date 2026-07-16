@@ -176,12 +176,14 @@ export default function Desk() {
         </div>
         {gridN === 1 && (
           <>
-            <div className="flex flex-wrap items-center gap-1 mb-2" role="tablist" aria-label="Chart symbol">
+            {/* Single scrollable row (was 2-3 wrapped rows of chips —
+                owner: "spacing wasteful"); swipe sideways for the rest. */}
+            <div className="flex items-center gap-1 mb-1.5 overflow-x-auto scrollbar-none" role="tablist" aria-label="Chart symbol">
               {chartSymbols.map(sym => (
                 <button
                   key={sym} type="button" role="tab" aria-selected={sym === symbol}
                   onClick={() => setSymbol(sym)}
-                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${sym === symbol ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`shrink-0 rounded-full px-2 py-0.5 min-h-[26px] text-[11px] font-semibold cursor-pointer ${sym === symbol ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
                 >{sym}</button>
               ))}
             </div>

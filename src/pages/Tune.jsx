@@ -1,7 +1,7 @@
 // Tune — every knob a trader can turn, in one place:
 // pipeline toggles, autotrade timeframes, risk limits + account, watchlist,
 // backtest, presets. Folio tabs (one panel at a time) — no long scroll.
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -284,6 +284,25 @@ function StageMatrix({ mx, onUpdated, onError }) {
       )}
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Typed-field draft persistence — owner requirement: "when I type in the
+// field and switch pages, keep it". Money-critical fields (risk %, balance)
+// must NOT auto-commit half-typed numbers ("0.0" mid-keystroke would become
+// live risk), so Save stays the commit point — but the DRAFT now survives
+// page switches in sessionStorage and is restored on return.
+// ---------------------------------------------------------------------------
+const TUNE_DRAFTS_KEY = 'tune_drafts_v1'
+const readDrafts = () => {
+  try { return JSON.parse(sessionStorage.getItem(TUNE_DRAFTS_KEY)) || {} } catch { return {} }
+}
+const writeDraft = (key, value) => {
+  try {
+    const d = readDrafts()
+    if (value == null) delete d[key]; else d[key] = value
+    sessionStorage.setItem(TUNE_DRAFTS_KEY, JSON.stringify(d))
+  } catch { /* private mode — drafts just don't persist */ }
 }
 
 // Risk fields exposed for editing: [key, label, hint]
@@ -648,22 +667,35 @@ export default function Tune() {
       ])
       setConfig(c)
       setRisk(r)
-      setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
+      // Restore any unsaved typed drafts from a previous visit — a page
+      // switch must not throw away what the owner typed. A draft counts
+      // only when it differs from the server's values; Save clears it.
+      const drafts = readDrafts()
+      const serverRisk = Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? '']))
+      const riskRestored = drafts.risk && JSON.stringify(drafts.risk) !== JSON.stringify(serverRisk)
+      setRiskDraft(riskRestored ? drafts.risk : serverRisk)
       if (tf?.timeframes) setTimeframes(tf.timeframes)
       setArmedMatrix(tf?.matrix && typeof tf.matrix === 'object' ? tf.matrix : null)
       if (rf) setRsiFilter(!!rf.on)
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
       if (sm) setStageMx(sm)
-      setBalanceDraft({
-        balance: r.derived?.balance ?? '',
-        leverage: r.derived?.leverage ?? '',
-      })
+      const serverBal = { balance: r.derived?.balance ?? '', leverage: r.derived?.leverage ?? '' }
+      const balRestored = drafts.balance && JSON.stringify(drafts.balance) !== JSON.stringify(serverBal)
+      setBalanceDraft(balRestored ? drafts.balance : serverBal)
+      if (riskRestored || balRestored) {
+        setStatus('Restored your unsaved edits from the last visit — tap Save to apply them, or Reset to discard.')
+      }
       setError('')
     } catch (e) { setError(e.message) }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // Deferred a tick: react-hooks/set-state-in-effect forbids state writes
+  // synchronously inside an effect body.
+  useEffect(() => {
+    const t = setTimeout(load, 0)
+    return () => clearTimeout(t)
+  }, [load])
 
   // Live-refresh the PIPELINE FLAGS only — autotrade can be flipped in the
   // background (equity stop, /killall, Telegram /pause, autopilot auto mode)
@@ -762,15 +794,23 @@ export default function Tune() {
       const v = Number(riskDraft[k])
       if (Number.isFinite(v)) body[k] = v
     }
-    run(() => agentPost('/actions/risk-config', body), 'Risk config saved')
+    run(async () => { await agentPost('/actions/risk-config', body); writeDraft('risk', null) }, 'Risk config saved')
   }
 
   const saveBalance = () => {
     const body = {}
     if (balanceDraft.balance !== '') body.balance = Number(balanceDraft.balance)
     if (balanceDraft.leverage !== '') body.leverage = Number(balanceDraft.leverage)
-    run(() => agentPost('/actions/balance', body), 'Account saved')
+    run(async () => { await agentPost('/actions/balance', body); writeDraft('balance', null) }, 'Account saved')
   }
+
+  // Persist typed drafts as they change — a page switch keeps them.
+  useEffect(() => {
+    if (Object.keys(riskDraft).length) writeDraft('risk', riskDraft)
+  }, [riskDraft])
+  useEffect(() => {
+    if (balanceDraft.balance !== '' || balanceDraft.leverage !== '') writeDraft('balance', balanceDraft)
+  }, [balanceDraft])
 
   const symbols = config?.symbols || []
   const enabledSymbols = symbols.filter(s => s.enabled !== false).map(s => s.symbol)
@@ -815,13 +855,16 @@ export default function Tune() {
   const mxBtFilter = (k) => !!stageMx?.filters?.find(f => f.key === k)?.stages?.backtest
   const mxBtFilterNames = ['rsi', 'vwap', 'fvg'].filter(mxBtFilter).map(k => k.toUpperCase())
 
+  // The backtest runs as a BACKGROUND JOB on the agent: POST starts it and
+  // returns a ticket; results wait server-side in /state/backtest-job.
+  // Leaving this page mid-run no longer loses them — come back any time.
   const runBacktest = async () => {
     if (btSymbols.length === 0) { setBtError('No symbols selected — enable some on the Watchlist tab.'); return }
     setBtRunning(true)
     setBtError('')
     setBt(null)
     try {
-      const r = await agentPost('/actions/backtest', {
+      await agentPost('/actions/backtest', {
         symbols: btSymbols,
         // Test exactly what Pipeline arms — one source of truth for timeframes.
         timeframes,
@@ -833,10 +876,62 @@ export default function Tune() {
         entryMode: btTouchFill ? 'touch' : 'close',
         fvgFilter: mxBtFilter('fvg'),
       })
-      setBt(r)
-      try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(r)) } catch { /* quota — skip */ }
-    } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
+      // btRunning stays true — the poll effect below collects the results.
+    } catch (e) {
+      // 409 = a run is already in flight; keep polling instead of erroring.
+      if (!/already running/i.test(e.message)) { setBtError(e.message); setBtRunning(false) }
+    }
   }
+
+  // Poll the job while the Backtest tab is open. Applies a finished job's
+  // results exactly once (keyed by job id) so revisits pick up runs that
+  // completed while the page was elsewhere.
+  const btAppliedJobRef = useRef(null)
+  useEffect(() => {
+    if (tab !== 'backtest' || !agentConfigured()) return undefined
+    let alive = true
+    const tick = async () => {
+      try {
+        const j = await agentGet('/state/backtest-job')
+        if (!alive || !j?.job) return
+        if (j.job.status === 'running') { setBtRunning(true); return }
+        setBtRunning(false)
+        if (btAppliedJobRef.current === j.job.id) return
+        btAppliedJobRef.current = j.job.id
+        if (j.job.status === 'error') { setBtError(j.job.error || 'backtest failed'); return }
+        if (j.result) {
+          setBt(j.result)
+          setBtError('')
+          try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(j.result)) } catch { /* quota — skip */ }
+        }
+      } catch { /* transient — next tick retries */ }
+    }
+    tick()
+    const iv = setInterval(tick, 4000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [tab])
+
+  // Same collection loop for the C&H screener job (Watchlist tab).
+  const screenerAppliedJobRef = useRef(null)
+  useEffect(() => {
+    if (tab !== 'watchlist' || !agentConfigured()) return undefined
+    let alive = true
+    const tick = async () => {
+      try {
+        const j = await agentGet('/state/job/cup-screener')
+        if (!alive || !j?.job) return
+        if (j.job.status === 'running') { setScreenerBusy(true); return }
+        setScreenerBusy(false)
+        if (screenerAppliedJobRef.current === j.job.id) return
+        screenerAppliedJobRef.current = j.job.id
+        if (j.job.status === 'error') { setError(j.job.error || 'screener failed'); return }
+        if (j.result) setScreener(j.result)
+      } catch { /* transient — next tick retries */ }
+    }
+    tick()
+    const iv = setInterval(tick, 4000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [tab])
 
   // Trades per symbol in the last backtest (all timeframes summed) — surfaced
   // on the Watchlist so each instrument shows how much it actually traded.
@@ -1171,7 +1266,7 @@ export default function Tune() {
               <Button size="sm" onClick={saveRisk} disabled={!dirty}>{dirty ? 'Save risk config' : 'Saved'}</Button>
               {dirty && <span className="text-[12px] font-semibold text-[var(--color-warning-text)]">Unsaved changes — the bot still uses the old values.</span>}
               <span className="ml-auto">
-                <Button size="sm" variant="subtle" onClick={() => run(() => agentPost('/actions/risk-config', { reset: true }), 'Risk config reset to defaults')}>Reset to defaults</Button>
+                <Button size="sm" variant="subtle" onClick={() => run(async () => { await agentPost('/actions/risk-config', { reset: true }); writeDraft('risk', null) }, 'Risk config reset to defaults')}>Reset to defaults</Button>
               </span>
             </div>
 
@@ -1363,11 +1458,11 @@ export default function Tune() {
                 <Button
                   size="sm" variant="subtle" disabled={screenerBusy}
                   onClick={() => {
+                    // Background job on the agent — switching pages mid-run
+                    // no longer loses the results (poll effect collects them).
                     setScreenerBusy(true)
                     agentPost('/actions/cup-screener', {})
-                      .then(setScreener)
-                      .catch(e => setError(e.message))
-                      .finally(() => setScreenerBusy(false))
+                      .catch(e => { if (!/already/i.test(e.message)) { setError(e.message); setScreenerBusy(false) } })
                   }}
                 >
                   {screenerBusy ? `Screening ${enabledSymbols.length}…` : 'Run C&H screener'}

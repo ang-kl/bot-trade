@@ -17,6 +17,7 @@ const TABLES = `
     price       REAL,
     trade_grade TEXT,
     desk_note   TEXT,
+    strategy    TEXT,
     scanned_at  TEXT NOT NULL DEFAULT (datetime('now')),
     loop_id     INTEGER
   );
@@ -298,6 +299,14 @@ export function initDB(dbPath) {
   const sColNames = new Set(sCols.map(c => c.name));
   if (!sColNames.has('source')) {
     db.exec("ALTER TABLE signals ADD COLUMN source TEXT");
+  }
+
+  // Scans table migration — which strategy produced the signal (the scan
+  // covers 5 registry strategies now; the UI must not imply fib-only).
+  const scCols = db.prepare("PRAGMA table_info(scans)").all();
+  const scColNames = new Set(scCols.map(c => c.name));
+  if (!scColNames.has('strategy')) {
+    db.exec("ALTER TABLE scans ADD COLUMN strategy TEXT");
   }
 
   const aCols = db.prepare("PRAGMA table_info(analyses)").all();

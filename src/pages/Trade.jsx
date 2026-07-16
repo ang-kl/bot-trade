@@ -119,6 +119,15 @@ function TradeRow({ t }) {
   )
 }
 
+// Plain-words strategy names for signal rows (scans.strategy).
+const STRATEGY_NAMES = {
+  fib_618_fade: 'Fib 61.8% fade',
+  cup_handle: 'Cup & Handle',
+  ema_pullback: 'EMA pullback',
+  donchian_breakout: 'Range breakout',
+  rsi_meanrev: 'RSI mean-rev',
+}
+
 // Plain-words provenance labels for order-log rows (proposal_json.source).
 const ATTEMPT_SOURCE = {
   validation_fill: 'TEST FILL',
@@ -230,11 +239,17 @@ export default function Trade() {
   // auto-trade path (risk gate included). Closes the C++ first-fill watch.
   const [vfillMsg, setVfillMsg] = useState('')
   const validationFill = async () => {
+    // Default BTCUSD: crypto quotes 24/7, so the test never dies on the
+    // FX dead window (owner hit "no live quote" at 21:20 UTC on EURUSD).
+    // Remembers the last symbol used.
+    let lastSym = 'BTCUSD'
+    try { lastSym = localStorage.getItem('vfill_symbol') || 'BTCUSD' } catch { /* private mode */ }
     const sym = window.prompt(
-      'Validation fill: places ONE REAL 0.01-lot market order through the full auto-trade path (market-hours gate, risk gate, sizing, exec engine). The risk gate may veto — that veto is real too.\n\nSymbol:',
-      'EURUSD'
+      'Validation fill: places ONE REAL 0.01-lot market order through the full auto-trade path (market-hours gate, risk gate, sizing, exec engine). The risk gate may veto — that veto is real too.\n\nBTCUSD works 24/7; FX symbols need their market open.\n\nSymbol:',
+      lastSym
     )
     if (!sym) return
+    try { localStorage.setItem('vfill_symbol', sym.toUpperCase().trim()) } catch { /* private mode */ }
     if (!window.confirm(`Fire a REAL 0.01 ${sym.toUpperCase()} market order on the ${health?.broker?.isLive ? 'LIVE ⚠' : 'DEMO'} account now? SL 0.5% · TP 0.8% ride broker-side. This is the deliberate close of the "C++ first-fill watch".`)) return
     setBusy('vfill')
     setVfillMsg('')
@@ -368,20 +383,22 @@ export default function Trade() {
         {vfillMsg && <div className="mt-2 text-[13px] font-semibold" role="status">{vfillMsg}</div>}
       </Card>
 
-      {/* Signals */}
+      {/* Signals — all 5 registry strategies scan (stage matrix), so every
+          row names WHICH strategy fired; the old fib-only heading lied. */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-2">Fib 61.8% signals</h2>
-        {signalScans.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No active signals. {skipScans.length > 0 ? `${skipScans.length} symbols scanned without a zone.` : ''}</div>}
+        <h2 className="text-[13px] font-semibold mb-2">Signals — all scanned strategies</h2>
+        {signalScans.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No active signals. {skipScans.length > 0 ? `${skipScans.length} symbols scanned without a setup on any strategy.` : ''}</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
               <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Bias</th><th className="pr-3">TF</th><th className="pr-3">Conviction</th><th className="pr-3">Price</th><th>Thesis</th></tr>
+                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Strategy</th><th className="pr-3">Bias</th><th className="pr-3">TF</th><th className="pr-3">Conviction</th><th className="pr-3">Price</th><th>Thesis</th></tr>
               </thead>
               <tbody>
                 {signalScans.map(sc => (
                   <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
                     <td className="pr-3 py-1.5 font-semibold">{sc.symbol}</td>
+                    <td className="pr-3 whitespace-nowrap">{STRATEGY_NAMES[sc.strategy] || sc.strategy || 'Fib 61.8% fade'}</td>
                     <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'up' : 'down'}>{sc.bias?.toUpperCase()}</Badge></td>
                     <td className="pr-3">{sc.timeframe || '—'}</td>
                     <td className="pr-3">{fmt(sc.confidence, 0)}/10</td>
