@@ -54,9 +54,12 @@ every feature earns a ✅ only from a REAL observation on the demo account
 - [ ] Autopilot (if mode ≠ off): tonight's run produces a report under
       Past reports — first evidence the revived engine works end to end.
 - [ ] EURUSD pending limit still resting at the broker with correct params.
-- [ ] **C++ first-fill watch** (open since the handover): if ANY bot order
-      fills today, check Risk decisions for the `OK` line and cTrader for
-      the position — that closes the oldest open item.
+- [ ] **C++ first-fill watch** (open since the handover): close it
+      DELIBERATELY — Trade → "Test fill 0.01" fires one real 0.01-lot order
+      through the exact auto-trade path (risk gate, sizing, spread gate,
+      exec engine). Fill visible in cTrader + `OK` line in Risk decisions
+      = item closed. A veto is a real veto — fix the reason, fire again.
+      (Organic route still counts: any bot order filling today closes it too.)
 
 ## Recording
 

@@ -8,7 +8,7 @@ import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
-import { wsPlaceOrder, wsGetTrendbarsBatch } from '../lib/ctrader-ws.js'
+import { wsPlaceOrder, wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
@@ -633,6 +633,81 @@ export default function actionsRouter(db) {
     res.json({
       strategies: STRATEGY_REGISTRY.map(s => ({ key: s.key, name: s.name, on: keys.includes(s.key) })),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/validation-fill — supervised end-to-end proof of the REAL
+  // auto-trade path. Body: { symbol, side?: 'long'|'short' }.
+  //
+  // Exists to close the "C++ first-fill watch" (open since the travel
+  // handover): rather than waiting weeks for an organic conviction-8 signal,
+  // the owner fires ONE deliberate 0.01-lot market order through the exact
+  // code a signal would take — loop.js autoTrade(): market-hours gate → risk
+  // gate (persisted to risk_events) → broker-min sizing → spread gate →
+  // exec engine (C++ sidecar when EXEC_ENGINE=cpp) → structured label →
+  // trades + monitored_positions. Nothing is mocked; a veto is a real veto.
+  // SL 0.5% / TP 0.8% (RR 1.6) ride as broker-side protection and the
+  // monitor manages the position like any bot trade. DEMO ONLY by design.
+  // -----------------------------------------------------------------------
+  router.post('/validation-fill', async (req, res) => {
+    const symbol = String(req.body?.symbol || '').toUpperCase().trim()
+    if (!symbol) return res.status(400).json({ error: 'Body must include { symbol }' })
+    const bias = req.body?.side === 'short' ? 'short' : 'long'
+    try {
+      if (getState(db, 'ctrader_is_live') === 'true') {
+        return res.status(400).json({ error: 'validation fill refuses to run on a LIVE account — select the demo account first' })
+      }
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader credentials not configured — link an account on Connect' })
+      const map = getSymbolMap(db)
+      const symbolId = map[symbol]
+      if (!symbolId) return res.status(400).json({ error: `symbolId unknown for ${symbol} — call POST /actions/symbol-map first` })
+
+      const q = await wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+      if (!q?.bid || !q?.ask) return res.status(400).json({ error: 'no live quote — market closed or price feed unavailable' })
+      const mid = (q.bid + q.ask) / 2
+      const dir = bias === 'long' ? 1 : -1
+
+      // Synthetic conviction-8 proposal at minimal risk. SL 0.5% clears the
+      // minSLDistancePct floor (0.15%); TP 0.8% clears minRR 1.5 at RR 1.6.
+      const synth = {
+        consensus_bias: bias,
+        entry: mid,
+        sl: mid * (1 - dir * 0.005),
+        tp1: mid * (1 + dir * 0.008),
+        strategy: 'fib_618_fade',
+        overall_conviction: 8,
+        timeframe: null,
+        time_cap_minutes: 240,
+        synthesis: 'VALIDATION FILL — deliberate end-to-end test of the auto-trade path (owner-fired, 0.01 lot).',
+        invalidation_trigger: null,
+      }
+
+      // Dynamic import keeps route wiring free of load-order surprises.
+      const { autoTrade } = await import('../loop.js')
+      const result = await autoTrade(db, symbol, synth, { maxVolume: 0.01 }, null)
+      const lastEvent = db.prepare(
+        `SELECT approved, veto_reason, created_at FROM risk_events WHERE symbol = ? ORDER BY id DESC LIMIT 1`
+      ).get(symbol)
+
+      if (result) {
+        console.log(`[actions] VALIDATION FILL: ${result.side} ${symbol} @ ${result.executionPrice} posId=${result.positionId}`)
+        return res.json({
+          ok: true,
+          filled: result,
+          riskEvent: lastEvent || null,
+          note: 'C++ first-fill watch: CLOSED — the auto-trade path filled at the broker. Check the position in cTrader, then close it whenever you like (the SL/TP protect it meanwhile).',
+        })
+      }
+      res.json({
+        ok: false,
+        veto: lastEvent?.veto_reason || 'order not placed — no risk event recorded; check agent logs',
+        riskEvent: lastEvent || null,
+        note: 'The gate refused honestly — that is the same refusal a live signal would get. Fix the reason and fire again.',
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
   })
 
   // -----------------------------------------------------------------------

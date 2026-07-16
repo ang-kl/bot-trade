@@ -212,6 +212,27 @@ export default function Trade() {
     try { await agentPost(path); await load() } catch (e) { setError(e.message) } finally { setBusy('') }
   }
 
+  // Validation fill — one deliberate 0.01-lot order through the REAL
+  // auto-trade path (risk gate included). Closes the C++ first-fill watch.
+  const [vfillMsg, setVfillMsg] = useState('')
+  const validationFill = async () => {
+    const sym = window.prompt(
+      'Validation fill: places ONE REAL 0.01-lot market order through the full auto-trade path (market-hours gate, risk gate, sizing, exec engine). The risk gate may veto — that veto is real too.\n\nSymbol:',
+      'EURUSD'
+    )
+    if (!sym) return
+    if (!window.confirm(`Fire a REAL 0.01 ${sym.toUpperCase()} market order on the ${health?.broker?.isLive ? 'LIVE ⚠' : 'DEMO'} account now? SL 0.5% · TP 0.8% ride broker-side. This is the deliberate close of the "C++ first-fill watch".`)) return
+    setBusy('vfill')
+    setVfillMsg('')
+    try {
+      const r = await agentPost('/actions/validation-fill', { symbol: sym })
+      setVfillMsg(r.ok
+        ? `✅ FILLED: ${r.filled.side} ${sym.toUpperCase()} @ ${r.filled.executionPrice ?? 'mkt'} (position ${r.filled.positionId ?? '?'}) — ${r.note}`
+        : `🛑 NOT FILLED — ${r.veto}. ${r.note || ''}`)
+      await load()
+    } catch (e) { setVfillMsg(`🛑 ${e.message}`) } finally { setBusy('') }
+  }
+
   const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
   const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
 
@@ -317,6 +338,10 @@ export default function Trade() {
             <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={() => act('scan', '/actions/scan')}>
               {busy === 'scan' ? 'Scanning…' : 'Scan now'}
             </Button>
+            <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={validationFill}
+              title="Fire ONE deliberate 0.01-lot market order through the real auto-trade path (risk gate included) — the supervised close of the C++ first-fill watch">
+              {busy === 'vfill' ? 'Firing…' : 'Test fill 0.01'}
+            </Button>
             {health?.circuitBreaker && (
               <Button size="sm" variant="ghost" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
             )}
@@ -326,6 +351,7 @@ export default function Trade() {
             >Kill all</Button>
           </span>
         </div>
+        {vfillMsg && <div className="mt-2 text-[13px] font-semibold" role="status">{vfillMsg}</div>}
       </Card>
 
       {/* Signals */}

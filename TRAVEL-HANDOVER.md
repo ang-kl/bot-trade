@@ -64,8 +64,11 @@ reasoning), and pings you. Reports: Tune → Backtest → Past reports.
 ## 5. Honest open items (not blocking, logged)
 
 - **First real C++ fill still unobserved** — parity is proven on flat
-  accounts; the first live fill is the true test. Watch Risk decisions for
-  an `OK` line.
+  accounts; the first live fill is the true test. **Closer shipped
+  (v0.1.155)**: Trade → "Test fill 0.01" fires one deliberate 0.01-lot
+  order through the exact auto-trade path (risk gate → sizing → spread
+  gate → exec engine, demo only). Item closes the moment that fill shows
+  in cTrader with its `OK` line in Risk decisions.
 - ~~**USDJPY sizing veto** showed a suspect `usd_per_lot` for JPY quotes~~
   **Fixed (v0.1.142)**: `usd_per_lot` now converts quote-currency loss to
   USD via the entry price for USD-base pairs (USDJPY, USDCHF …); crosses
