@@ -130,6 +130,9 @@ const TABLES = `
     -- Per-position trade-management rules (break-even / trailing / partial
     -- TPs) enforced by services/trade-guard.js each loop cycle.
     guard_json            TEXT,
+    -- Peak floating profit (USD) seen by the Profit Keeper — drives the
+    -- ratchet/giveback policy on manual/external positions.
+    peak_profit_usd       REAL,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -263,6 +266,7 @@ export function initDB(dbPath) {
     ['label_raw',            'TEXT'],
     ['account_id',           'TEXT'],
     ['guard_json',           'TEXT'],
+    ['peak_profit_usd',      'REAL'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

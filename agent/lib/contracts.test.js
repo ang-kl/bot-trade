@@ -92,6 +92,15 @@ test('usdLossPerLot — USD-quoted unaffected by price argument', () => {
   assert.equal(usdLossPerLot('NAS100', 50, 20000), 50)
 })
 
+test('usdLossPerLot — 6-letter COMMODITIES are not FX pairs (NATGAS/COFFEE/COTTON)', () => {
+  // Regression: these matched the 6-letter FX pattern and were vetoed as
+  // usd_per_lot_unknown crosses. They are USD-denominated commodities.
+  assert.equal(usdLossPerLot('NATGAS', 0.1), 1000)   // 0.1 × 10,000
+  assert.equal(usdLossPerLot('COFFEE', 0.01), 375)   // 0.01 × 37,500
+  assert.equal(usdLossPerLot('COTTON', 0.01), 500)   // 0.01 × 50,000
+  assert.equal(usdLossPerLot('COPPER', 0.01), 250)   // 0.01 × 25,000
+})
+
 // notionalUsd -----------------------------------------------------------
 
 test('notionalUsd — EURUSD 0.01 lot at 1.10 = $1100', () => {
