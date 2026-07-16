@@ -54,12 +54,12 @@ every feature earns a ✅ only from a REAL observation on the demo account
 - [ ] Autopilot (if mode ≠ off): tonight's run produces a report under
       Past reports — first evidence the revived engine works end to end.
 - [ ] EURUSD pending limit still resting at the broker with correct params.
-- [ ] **C++ first-fill watch** (open since the handover): close it
-      DELIBERATELY — Trade → "Test fill 0.01" fires one real 0.01-lot order
-      through the exact auto-trade path (risk gate, sizing, spread gate,
-      exec engine). Fill visible in cTrader + `OK` line in Risk decisions
-      = item closed. A veto is a real veto — fix the reason, fire again.
-      (Organic route still counts: any bot order filling today closes it too.)
+- [x] **C++ first-fill watch — CLOSED 2026-07-16**: deliberate validation
+      fill BUY BTCUSD 0.01 FILLED at the broker (position 232111125, SL/TP
+      resting broker-side) through the full auto-trade path. En route it
+      caught and fixed a real order-builder bug: relative SL/TP precision
+      on 2-3 digit symbols was rejected by the broker (INVALID_REQUEST) —
+      fixed in v0.1.159 (`relativePoints`, regression-tested).
 
 ## Recording
 
