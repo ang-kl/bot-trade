@@ -15,6 +15,7 @@ import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume } from '../lib/lot-sizing.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
+import { setStage } from '../services/stage-matrix.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -632,6 +633,23 @@ export default function actionsRouter(db) {
     res.json({
       strategies: STRATEGY_REGISTRY.map(s => ({ key: s.key, name: s.name, on: keys.includes(s.key) })),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/stage-matrix — flip one cell of the strategy × stage table.
+  // Body: { kind: 'strategy'|'filter', key, stage: 'scan'|'backtest'|'trade'|
+  // 'manage', on: boolean }. Trade-stage writes route through the legacy keys
+  // (enabled_strategies_json / fib_*_filter) so every older reader agrees.
+  // -----------------------------------------------------------------------
+  router.post('/stage-matrix', (req, res) => {
+    const { kind, key, stage, on } = req.body || {}
+    try {
+      const matrix = setStage(db, { kind, key, stage, on: on === true }, { getState, setState })
+      console.log(`[actions] stage-matrix: ${kind} ${key} × ${stage} → ${on === true ? 'on' : 'off'}`)
+      res.json({ ok: true, ...matrix })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
   })
 
   // -----------------------------------------------------------------------

@@ -124,6 +124,168 @@ function TimeframePerformance({ timeframes }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Strategy × stage matrix — the Pipeline control table. Columns are the four
+// pipeline stages (Scan / Back Test / Auto Trade & Open / Live Tweak & Close);
+// rows are the registry strategies with the fib confluence filters beneath.
+// Each cell shows ✓/✗ plus its last-30-day usage counts. Changing a cell:
+// click it, then use the editor that opens BELOW the table, separated by a
+// hollow line — the tick itself never flips on the first tap (owner spec).
+// Trade-column edits write through the legacy keys on the agent, so Telegram
+// /pause, autopilot and the old toggles all stay in agreement.
+// ---------------------------------------------------------------------------
+const STAGE_MX_OPEN_KEY = 'tune_stage_mx_open'
+
+function MxCell({ on, counts, selected, na, onClick }) {
+  if (na) {
+    return <td className="py-1.5 px-1 text-center text-[var(--color-text-sub)]">—</td>
+  }
+  return (
+    <td className="py-1 px-1 text-center">
+      <button
+        type="button" aria-pressed={!!on} onClick={onClick}
+        className={`w-full rounded-md px-2 py-1 cursor-pointer border ${
+          selected
+            ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft,rgba(37,99,235,0.12))]'
+            : 'border-transparent hover:border-[var(--color-border)]'
+        }`}
+      >
+        <span className={`block text-[15px] font-bold leading-tight ${on ? 'text-[var(--color-accent)]' : 'text-[var(--color-down)]'}`}>
+          {on ? '✓' : '✗'}
+        </span>
+        <span className="block text-[10px] leading-tight text-[var(--color-text-sub)] whitespace-nowrap">
+          {counts ? `${counts.ok} ✓ · ${counts.fail} ✗` : '—'}
+        </span>
+      </button>
+    </td>
+  )
+}
+
+function StageMatrix({ mx, onUpdated, onError }) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(STAGE_MX_OPEN_KEY) !== '0' } catch { return true }
+  })
+  const [sel, setSel] = useState(null)   // { kind, key, name, stage }
+  const [busy, setBusy] = useState(false)
+
+  const toggleOpen = () => setOpen(o => {
+    const next = !o
+    try { localStorage.setItem(STAGE_MX_OPEN_KEY, next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
+
+  if (!mx) {
+    return <div className="mt-3 text-[12px] text-[var(--color-text-sub)]">Loading strategy × stage matrix…</div>
+  }
+
+  const columns = mx.columns || []
+  const counts = (kind, key, stage) => mx.stats?.[`${kind}|${key}|${stage}`] || null
+  const selRow = sel
+    ? (sel.kind === 'strategy' ? mx.strategies : mx.filters)?.find(r => r.key === sel.key)
+    : null
+  const selOn = selRow ? selRow.stages[sel.stage] : null
+  const selCol = sel ? columns.find(c => c.key === sel.stage) : null
+
+  const pick = (kind, row, stage) => {
+    if (kind === 'filter' && stage === 'manage') return // no such cell
+    setSel({ kind, key: row.key, name: row.name, stage })
+  }
+
+  const apply = async (on) => {
+    if (!sel) return
+    if (sel.stage === 'trade' && on && sel.kind === 'strategy' &&
+        !window.confirm(`Arm ${sel.name} for Auto Trade & Open? The agent will place REAL orders on its signals — same risk gate.`)) return
+    if (sel.stage === 'trade' && !on && sel.key === 'fib_618_fade' && sel.kind === 'strategy' &&
+        !window.confirm('Turn the Fib 61.8% fade OFF for Auto Trade & Open? It is the strategy behind your armed pending orders — no new fib orders will open (scanning continues; existing pending orders are not cancelled).')) return
+    setBusy(true)
+    try {
+      const r = await agentPost('/actions/stage-matrix', { kind: sel.kind, key: sel.key, stage: sel.stage, on })
+      onUpdated?.(r)
+    } catch (e) { onError?.(e.message) } finally { setBusy(false) }
+  }
+
+  const renderRow = (kind, row) => (
+    <tr key={`${kind}|${row.key}`} className="border-t border-[var(--color-border)]">
+      <td className={`py-1.5 pr-3 whitespace-nowrap ${kind === 'strategy' ? 'font-semibold' : 'pl-4 text-[var(--color-text-sub)]'}`}>
+        {row.name}
+      </td>
+      {columns.map(c => (
+        <MxCell
+          key={c.key}
+          na={row.stages[c.key] === null}
+          on={row.stages[c.key]}
+          counts={counts(kind, row.key, c.key)}
+          selected={sel?.kind === kind && sel?.key === row.key && sel?.stage === c.key}
+          onClick={() => pick(kind, row, c.key)}
+        />
+      ))}
+    </tr>
+  )
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button" onClick={toggleOpen} aria-expanded={open}
+        className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
+      >
+        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        Strategy × stage matrix
+        <span className="font-normal">— what runs at each pipeline stage; counts are the last {mx.windowDays || 30} days</span>
+      </button>
+      {open && (
+        <>
+          <div className="mt-1.5 overflow-x-auto">
+            <table className="min-w-full text-[12px]">
+              <thead>
+                <tr className="text-left text-[var(--color-text-sub)]">
+                  <th className="py-1 pr-3 font-semibold">Strategy</th>
+                  {columns.map(c => (
+                    <th key={c.key} className="py-1 px-1 font-semibold text-center whitespace-nowrap">{c.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(mx.strategies || []).map(row => renderRow('strategy', row))}
+                <tr className="border-t border-[var(--color-border)]">
+                  <td colSpan={columns.length + 1} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                    Filters (fib confluence — annotate the scan, gate the trade)
+                  </td>
+                </tr>
+                {(mx.filters || []).map(row => renderRow('filter', row))}
+              </tbody>
+            </table>
+          </div>
+          {/* Hollow separator line + the editor for the selected cell — the
+              ONLY place a cell's value changes (owner spec: click the cell,
+              then edit below the line). */}
+          <hr className="my-3 border-0 border-t border-[var(--color-border)]" />
+          {!sel && (
+            <p className="text-[12px] text-[var(--color-text-sub)]">
+              Tap any ✓/✗ cell above to change it here. Scan is wide by default — every strategy is analysed and filters only annotate (a failed filter no longer hides a conviction; it blocks the order at Auto Trade &amp; Open instead).
+            </p>
+          )}
+          {sel && (
+            <div className="flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="font-semibold">{sel.name}</span>
+              <span className="text-[var(--color-text-sub)]">× {selCol?.label || sel.stage} — currently</span>
+              <Badge tone={selOn ? 'up' : 'down'}>{selOn ? 'ON ✓' : 'OFF ✗'}</Badge>
+              <Button size="sm" disabled={busy || selOn === true} onClick={() => apply(true)}>Turn ON</Button>
+              <Button size="sm" variant="subtle" disabled={busy || selOn === false} onClick={() => apply(false)}>Turn OFF</Button>
+              <Button size="sm" variant="subtle" onClick={() => setSel(null)}>Close</Button>
+              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+                {sel.stage === 'scan' && 'Scan: whether the 5-minute scan computes this at all. Filters ON here gate the scan the old strict way; OFF means analyse everything and let Auto Trade & Open decide.'}
+                {sel.stage === 'backtest' && 'Back Test: whether the nightly autopilot sweep tests this strategy / the manual Backtest tab applies this filter.'}
+                {sel.stage === 'trade' && 'Auto Trade & Open: the live gate. Writes the same agent key the old toggles used — Telegram and autopilot stay in sync.'}
+                {sel.stage === 'manage' && 'Live Tweak & Close: whether the monitor may move stops / close positions opened by this strategy. Broker-side SL/TP and your per-position guards always stay active.'}
+              </span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // Risk fields exposed for editing: [key, label, hint]
 const RISK_FIELDS = [
   ['perTradeRiskPct', 'Risk per trade', 'fraction of balance, e.g. 0.01 = 1%'],
@@ -444,6 +606,7 @@ export default function Tune() {
     return next
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
+  const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [sizingPrev, setSizingPrev] = useState(null) // dynamic lot preview per symbol — same math as the risk gate
   const [keeper, setKeeper] = useState(null)         // Profit Keeper policy (manual/external position protection)
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
@@ -474,13 +637,14 @@ export default function Tune() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [c, r, tf, rf, vf, ff] = await Promise.all([
+      const [c, r, tf, rf, vf, ff, sm] = await Promise.all([
         agentGet('/state/config'),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/fib-rsi-filter').catch(() => null),
         agentGet('/state/fib-vwap-filter').catch(() => null),
         agentGet('/state/fib-fvg-filter').catch(() => null),
+        agentGet('/state/stage-matrix').catch(() => null),
       ])
       setConfig(c)
       setRisk(r)
@@ -490,6 +654,7 @@ export default function Tune() {
       if (rf) setRsiFilter(!!rf.on)
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
+      if (sm) setStageMx(sm)
       setBalanceDraft({
         balance: r.derived?.balance ?? '',
         leverage: r.derived?.leverage ?? '',
@@ -520,6 +685,10 @@ export default function Tune() {
           pending_mode_enabled: c.pending_mode_enabled,
           pending_matrix: c.pending_matrix,
         } : c)
+        // Trade column of the stage matrix can flip in the background too
+        // (autopilot arm/disarm, Telegram) — refresh the whole table.
+        const sm = await agentGet('/state/stage-matrix')
+        if (sm?.strategies) setStageMx(sm)
       } catch { /* transient — next tick retries */ }
     }, 20_000)
     return () => clearInterval(t)
@@ -641,6 +810,11 @@ export default function Tune() {
   const toggleGroupEnabled = (key, on) =>
     pushSymbols(symbols.map(s => (s.group === key ? { ...s, enabled: on } : s)))
 
+  // Backtest filters come from the stage matrix's "Back Test" column — the
+  // owner's point: backtest setups are tuned separately from live trading.
+  const mxBtFilter = (k) => !!stageMx?.filters?.find(f => f.key === k)?.stages?.backtest
+  const mxBtFilterNames = ['rsi', 'vwap', 'fvg'].filter(mxBtFilter).map(k => k.toUpperCase())
+
   const runBacktest = async () => {
     if (btSymbols.length === 0) { setBtError('No symbols selected — enable some on the Watchlist tab.'); return }
     setBtRunning(true)
@@ -652,12 +826,12 @@ export default function Tune() {
         // Test exactly what Pipeline arms — one source of truth for timeframes.
         timeframes,
         bars: 1000,
-        rsiFilter,
-        vwapFilter,
+        rsiFilter: mxBtFilter('rsi'),
+        vwapFilter: mxBtFilter('vwap'),
         sessionFilter: btSessionFilter,
         strategy: btStrategy,
         entryMode: btTouchFill ? 'touch' : 'close',
-        fvgFilter,
+        fvgFilter: mxBtFilter('fvg'),
       })
       setBt(r)
       try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(r)) } catch { /* quota — skip */ }
@@ -746,49 +920,36 @@ export default function Tune() {
                 if (!config?.autotrade_enabled && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
                 toggle('/actions/autotrade-toggle', 'Autotrade', config?.autotrade_enabled)
               }} />
-              <Toggle on={rsiFilter} label="RSI filter" onClick={() => {
-                const next = !rsiFilter
-                setRsiFilter(next)
-                run(() => agentPost('/actions/fib-rsi-filter', { on: next }), `RSI confluence filter ${next ? 'enabled' : 'disabled'}`)
-              }} />
-              <Toggle on={vwapFilter} label="VWAP filter" onClick={() => {
-                const next = !vwapFilter
-                setVwapFilter(next)
-                run(() => agentPost('/actions/fib-vwap-filter', { on: next }), `VWAP confluence filter ${next ? 'enabled' : 'disabled'}`)
-              }} />
-              <Toggle on={fvgFilter} label="FVG filter" onClick={() => {
-                const next = !fvgFilter
-                setFvgFilter(next)
-                run(() => agentPost('/actions/fib-fvg-filter', { on: next }), `FVG confluence filter ${next ? 'enabled' : 'disabled'}`)
-              }} />
-              {/* Strategy toggles come from the registry via /state/config —
-                  no strategy names hardcoded here. Fib fade is the base
-                  strategy: the agent always scans it, so it renders as a
-                  fixed chip, not a toggle. */}
-              {(config?.strategies || []).map(s => (
-                <Toggle key={s.key} on={s.on} label={s.name} onClick={() => {
-                  const next = !s.on
-                  if (next && !window.confirm(`Arm the ${s.name} strategy? The scan will also trade ${s.name} signals — same risk gate.`)) return
-                  if (!next && s.key === 'fib_618_fade' && !window.confirm('Turn OFF the Fib 61.8% fade? It is the strategy behind your armed pending orders — with it off, NO new fib signals or pending setups are found (existing pending orders at the broker are not cancelled).')) return
-                  // Full enabled list rebuilt from current state — the agent
-                  // stores the whole set, not a per-strategy flag.
-                  const enabled = (config?.strategies || [])
-                    .filter(x => (x.key === s.key ? next : x.on))
-                    .map(x => x.key)
-                  run(async () => {
-                    await agentPost('/actions/strategies', { enabled })
-                    setConfig(c => ({
-                      ...c,
-                      strategies: (c?.strategies || []).map(x => x.key === s.key ? { ...x, on: next } : x),
-                      // keep the legacy flag in step so old readers agree
-                      ...(s.key === 'cup_handle' ? { cup_handle_enabled: next } : {}),
-                    }))
-                  }, `${s.name} strategy ${next ? 'enabled' : 'disabled'}`)
-                }} />
-              ))}
             </div>
+            {/* Strategy × stage matrix replaces the old strategy/filter chips:
+                every strategy and filter is set PER PIPELINE STAGE. Trade
+                edits write the same legacy keys the chips used. */}
+            <StageMatrix
+              mx={stageMx}
+              onError={setError}
+              onUpdated={(r) => {
+                setStageMx(prev => (prev ? { ...prev, strategies: r.strategies, filters: r.filters } : prev))
+                // Keep the config/strategy + filter mirrors in step so the
+                // Backtest tab pills and Presets export stay truthful.
+                if (r.strategies) {
+                  setConfig(c => c ? {
+                    ...c,
+                    strategies: (c.strategies || []).map(x => {
+                      const row = r.strategies.find(s => s.key === x.key)
+                      return row ? { ...x, on: row.stages.trade } : x
+                    }),
+                    cup_handle_enabled: !!r.strategies.find(s => s.key === 'cup_handle')?.stages.trade,
+                  } : c)
+                }
+                if (r.filters) {
+                  setRsiFilter(!!r.filters.find(f => f.key === 'rsi')?.stages.trade)
+                  setVwapFilter(!!r.filters.find(f => f.key === 'vwap')?.stages.trade)
+                  setFvgFilter(!!r.filters.find(f => f.key === 'fvg')?.stages.trade)
+                }
+              }}
+            />
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
-              STRATEGIES (Fib fade is the base and always on; the others arm by toggle) + three optional FILTERS on top — the same set the Backtest tab tests, one strategy at a time. Turn a filter on live only after it proves itself there. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
+              Scan analyses EVERY conviction — strategies scan wide and filters only annotate what failed; the Auto Trade &amp; Open column is where anything is actually blocked. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
             {/* Pending mode is armed from the Backtest tab (evidence-gated), so
                 Pipeline only reports the state and offers the way out. */}
@@ -1421,7 +1582,7 @@ export default function Tune() {
                     <input type="checkbox" checked={btSessionFilter} onChange={e => setBtSessionFilter(e.target.checked)} />
                     Session filter
                   </label>
-                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · gap-honest SL · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[12px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · filters: {mxBtFilterNames.length ? mxBtFilterNames.join(' + ') : 'none'} (Back Test column of the Pipeline matrix) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · gap-honest SL · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}
