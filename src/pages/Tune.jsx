@@ -1,7 +1,7 @@
 // Tune — every knob a trader can turn, in one place:
 // pipeline toggles, autotrade timeframes, risk limits + account, watchlist,
 // backtest, presets. Folio tabs (one panel at a time) — no long scroll.
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -663,7 +663,12 @@ export default function Tune() {
     } catch (e) { setError(e.message) }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // Deferred a tick: react-hooks/set-state-in-effect forbids state writes
+  // synchronously inside an effect body.
+  useEffect(() => {
+    const t = setTimeout(load, 0)
+    return () => clearTimeout(t)
+  }, [load])
 
   // Live-refresh the PIPELINE FLAGS only — autotrade can be flipped in the
   // background (equity stop, /killall, Telegram /pause, autopilot auto mode)
@@ -815,13 +820,16 @@ export default function Tune() {
   const mxBtFilter = (k) => !!stageMx?.filters?.find(f => f.key === k)?.stages?.backtest
   const mxBtFilterNames = ['rsi', 'vwap', 'fvg'].filter(mxBtFilter).map(k => k.toUpperCase())
 
+  // The backtest runs as a BACKGROUND JOB on the agent: POST starts it and
+  // returns a ticket; results wait server-side in /state/backtest-job.
+  // Leaving this page mid-run no longer loses them — come back any time.
   const runBacktest = async () => {
     if (btSymbols.length === 0) { setBtError('No symbols selected — enable some on the Watchlist tab.'); return }
     setBtRunning(true)
     setBtError('')
     setBt(null)
     try {
-      const r = await agentPost('/actions/backtest', {
+      await agentPost('/actions/backtest', {
         symbols: btSymbols,
         // Test exactly what Pipeline arms — one source of truth for timeframes.
         timeframes,
@@ -833,10 +841,40 @@ export default function Tune() {
         entryMode: btTouchFill ? 'touch' : 'close',
         fvgFilter: mxBtFilter('fvg'),
       })
-      setBt(r)
-      try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(r)) } catch { /* quota — skip */ }
-    } catch (e) { setBtError(e.message) } finally { setBtRunning(false) }
+      // btRunning stays true — the poll effect below collects the results.
+    } catch (e) {
+      // 409 = a run is already in flight; keep polling instead of erroring.
+      if (!/already running/i.test(e.message)) { setBtError(e.message); setBtRunning(false) }
+    }
   }
+
+  // Poll the job while the Backtest tab is open. Applies a finished job's
+  // results exactly once (keyed by job id) so revisits pick up runs that
+  // completed while the page was elsewhere.
+  const btAppliedJobRef = useRef(null)
+  useEffect(() => {
+    if (tab !== 'backtest' || !agentConfigured()) return undefined
+    let alive = true
+    const tick = async () => {
+      try {
+        const j = await agentGet('/state/backtest-job')
+        if (!alive || !j?.job) return
+        if (j.job.status === 'running') { setBtRunning(true); return }
+        setBtRunning(false)
+        if (btAppliedJobRef.current === j.job.id) return
+        btAppliedJobRef.current = j.job.id
+        if (j.job.status === 'error') { setBtError(j.job.error || 'backtest failed'); return }
+        if (j.result) {
+          setBt(j.result)
+          setBtError('')
+          try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(j.result)) } catch { /* quota — skip */ }
+        }
+      } catch { /* transient — next tick retries */ }
+    }
+    tick()
+    const iv = setInterval(tick, 4000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [tab])
 
   // Trades per symbol in the last backtest (all timeframes summed) — surfaced
   // on the Watchlist so each instrument shows how much it actually traded.

@@ -105,6 +105,11 @@ export default function actionsRouter(db) {
       const { runBacktest, walkForward } = await import('../scripts/backtest-fib.js')
       const { host, clientId, clientSecret, accessToken, accountId } = creds
 
+      // Background job: the run belongs to the AGENT, not the browser tab
+      // that fired it — navigating away no longer loses the results. The UI
+      // polls GET /state/backtest-job to collect them.
+      const { startBacktestJob, jobMeta } = await import('../services/backtest-job.js')
+      const runWork = async () => {
       const symbols = {}
       const testOne = async (name) => {
         const symbolId = map[name]
@@ -166,7 +171,18 @@ export default function actionsRouter(db) {
       } catch (err) {
         payload.report = { error: err.message }
       }
-      res.json(payload)
+      return payload
+      } // end runWork
+
+      const started = startBacktestJob(
+        { symbols: names, timeframes, bars: count, strategy, entryMode },
+        runWork,
+      )
+      if (started.conflict) {
+        return res.status(409).json({ error: 'a backtest is already running — its results will appear when it finishes', job: jobMeta(started.conflict) })
+      }
+      console.log(`[actions] backtest job ${started.job.id} started: ${names.join(', ')} × ${timeframes.join('/')} (${strategy}/${entryMode})`)
+      res.json({ ok: true, job: jobMeta(started.job) })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }

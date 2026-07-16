@@ -230,11 +230,17 @@ export default function Trade() {
   // auto-trade path (risk gate included). Closes the C++ first-fill watch.
   const [vfillMsg, setVfillMsg] = useState('')
   const validationFill = async () => {
+    // Default BTCUSD: crypto quotes 24/7, so the test never dies on the
+    // FX dead window (owner hit "no live quote" at 21:20 UTC on EURUSD).
+    // Remembers the last symbol used.
+    let lastSym = 'BTCUSD'
+    try { lastSym = localStorage.getItem('vfill_symbol') || 'BTCUSD' } catch { /* private mode */ }
     const sym = window.prompt(
-      'Validation fill: places ONE REAL 0.01-lot market order through the full auto-trade path (market-hours gate, risk gate, sizing, exec engine). The risk gate may veto — that veto is real too.\n\nSymbol:',
-      'EURUSD'
+      'Validation fill: places ONE REAL 0.01-lot market order through the full auto-trade path (market-hours gate, risk gate, sizing, exec engine). The risk gate may veto — that veto is real too.\n\nBTCUSD works 24/7; FX symbols need their market open.\n\nSymbol:',
+      lastSym
     )
     if (!sym) return
+    try { localStorage.setItem('vfill_symbol', sym.toUpperCase().trim()) } catch { /* private mode */ }
     if (!window.confirm(`Fire a REAL 0.01 ${sym.toUpperCase()} market order on the ${health?.broker?.isLive ? 'LIVE ⚠' : 'DEMO'} account now? SL 0.5% · TP 0.8% ride broker-side. This is the deliberate close of the "C++ first-fill watch".`)) return
     setBusy('vfill')
     setVfillMsg('')
