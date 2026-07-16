@@ -40,7 +40,7 @@ export default function AccountSwitcher() {
     setBusy(true)
     setErr('')
     try {
-      await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive })
+      await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive, traderLogin: a.traderLogin ?? null })
       await load()
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }

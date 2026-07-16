@@ -119,17 +119,31 @@ function TradeRow({ t }) {
   )
 }
 
-// One risk decision row with the proposal's chart on demand — the exact
-// entry/SL/TP the gate saw, drawn on real broker bars.
+// Plain-words provenance labels for order-log rows (proposal_json.source).
+const ATTEMPT_SOURCE = {
+  validation_fill: 'TEST FILL',
+  manual: 'MANUAL',
+  execute_analysis: 'EXECUTE',
+  pending: 'PENDING',
+  auto_signal: 'AUTO',
+}
+
+// One order-log row (risk_events) with the proposal's chart on demand — the
+// exact entry/SL/TP the gate saw, drawn on real broker bars. Every attempt
+// lands here: auto signals, test fills, manual orders, pending arms — fills
+// AND refusals, with who fired it and why it was refused.
 function RiskEventRow({ ev }) {
   const [showChart, setShowChart] = useState(false)
   let prop = null
   try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
+  const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
   return (
     <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
       <div className="flex items-center gap-2">
         <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
+        <Badge tone={prop?.source === 'validation_fill' ? 'special' : 'neutral'}>{src}</Badge>
         <span className="font-semibold">{ev.symbol}</span>
+        {ev.side && <span className="text-[var(--color-text-sub)]">{ev.side}</span>}
         <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ev.sizing_note || ''}</span>
         <span className="ml-auto flex items-center gap-2 shrink-0">
           <span className="text-[var(--color-text-sub)]">{ago(ev.created_at)}</span>
@@ -175,7 +189,7 @@ export default function Trade() {
         agentGet('/state/scans'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
-        agentGet('/state/risk-events?limit=15'),
+        agentGet('/state/risk-events?limit=30'),
         agentGet('/state/risk-config').catch(() => null),
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/autotrade-timeframes').catch(() => null),
@@ -320,7 +334,7 @@ export default function Trade() {
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
           {health?.broker?.accountId && (
             <span className="font-semibold" title="Every number on this page belongs to this account — switch on the left panel">
-              Account: {health.broker.isLive ? 'LIVE ⚠' : 'DEMO'} {health.broker.accountId}
+              Account: {health.broker.isLive ? 'LIVE ⚠' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}
             </span>
           )}
           <Badge tone={health?.status === 'ok' ? 'up' : health ? 'down' : 'neutral'} pill>
@@ -512,10 +526,13 @@ export default function Trade() {
           </ul>
         </Card>
 
-        {/* Risk decisions */}
+        {/* Order log — the audit trail the owner asked for: EVERY order
+            attempt (auto signal, test fill, manual, pending), fill or veto,
+            with source and reason. Backed by risk_events; pre-gate refusals
+            (no quote, market closed, no creds) are persisted there too. */}
         <Card>
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-[13px] font-semibold">Risk manager decisions</h2>
+            <h2 className="text-[13px] font-semibold">Order log — every attempt, fill or veto</h2>
             <Button
               size="sm" variant="subtle" className="ml-auto"
               title="Prove the C++ execution engine matches the JS path: credentials push, broker login, open-position diff. Read-only."

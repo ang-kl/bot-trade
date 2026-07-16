@@ -253,6 +253,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       strategy: 'fib_618_fade',
       conviction: signal.conviction ?? null,
       timeframe,
+      source: 'pending',
     }
     const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
     risk.persistRiskEvent(db, proposal, riskResult)
