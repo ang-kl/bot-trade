@@ -1250,6 +1250,30 @@ export default function actionsRouter(db) {
     res.json({ ok: true, on })
   })
 
+  // POST /actions/profit-keeper — configure automatic profit protection for
+  // manual/external positions. Body: { on, scope, armProfitUsd, givebackPct,
+  // takeProfitUsd } (partial updates merge over the stored config).
+  router.post('/profit-keeper', async (req, res) => {
+    try {
+      const { loadProfitKeeperConfig } = await import('../services/profit-keeper.js')
+      const current = loadProfitKeeperConfig(db)
+      const b = req.body || {}
+      const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null)
+      const next = {
+        on: b.on != null ? b.on === true : current.on,
+        scope: b.scope === 'all' ? 'all' : b.scope === 'external' ? 'external' : current.scope,
+        armProfitUsd: b.armProfitUsd !== undefined ? (num(b.armProfitUsd) ?? current.armProfitUsd) : current.armProfitUsd,
+        givebackPct: b.givebackPct !== undefined ? Math.min(95, Math.max(5, Number(b.givebackPct) || current.givebackPct)) : current.givebackPct,
+        takeProfitUsd: b.takeProfitUsd !== undefined ? num(b.takeProfitUsd) : current.takeProfitUsd,
+      }
+      setState(db, 'profit_keeper_json', JSON.stringify(next))
+      console.log(`[actions] Profit Keeper ${next.on ? 'ON' : 'off'} — scope=${next.scope} arm=$${next.armProfitUsd} giveback=${next.givebackPct}%${next.takeProfitUsd ? ` tp=$${next.takeProfitUsd}` : ''}`)
+      res.json({ ok: true, config: next })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/autotrade-toggle', (req, res) => {
     const on = req.body?.on === true
     setState(db, 'autotrade_enabled', on ? 'true' : 'false')

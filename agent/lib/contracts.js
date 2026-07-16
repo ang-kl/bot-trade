@@ -94,9 +94,13 @@ export function contractSize(symbol) {
 /**
  * The quote currency of a 6-letter FX pair, or null for anything else
  * (indices, commodities, single names — all treated as USD-denominated).
+ * Known non-FX symbols take priority over the 6-letter pattern — NATGAS,
+ * COFFEE and COTTON are 6 uppercase letters but are NOT currency pairs
+ * (treating them as crosses vetoed their sizing as usd_per_lot_unknown).
  */
 function fxQuoteCurrency(symbol) {
   const s = (symbol || '').toUpperCase()
+  if (CONTRACT_SIZE[s] != null) return null
   if (s.length === 6 && /^[A-Z]{6}$/.test(s)) return s.slice(3)
   return null
 }

@@ -9,6 +9,7 @@ import { tierForBalance } from '../lib/contracts.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
+import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -592,6 +593,13 @@ export default function stateRouter(db) {
     } catch (e) {
       res.json({ windows: [], rows: [], error: e.message })
     }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/profit-keeper — the automatic profit-protection policy
+  // -----------------------------------------------------------------------
+  router.get('/profit-keeper', (_req, res) => {
+    res.json({ config: loadProfitKeeperConfig(db) })
   })
 
   // -----------------------------------------------------------------------

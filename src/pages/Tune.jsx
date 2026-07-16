@@ -445,6 +445,7 @@ export default function Tune() {
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   const [sizingPrev, setSizingPrev] = useState(null) // dynamic lot preview per symbol — same math as the risk gate
+  const [keeper, setKeeper] = useState(null)         // Profit Keeper policy (manual/external position protection)
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -535,6 +536,12 @@ export default function Tune() {
     // Dynamic per-symbol lot sizing — same math as the live risk gate.
     agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
   }, [tab])
+
+  // Profit Keeper policy — loaded once; updates flow through the POST replies.
+  useEffect(() => {
+    if (!agentConfigured()) return
+    agentGet('/state/profit-keeper').then(r => setKeeper(r?.config || null)).catch(() => {})
+  }, [])
 
   // Broker instrument list (once) — powers the add-symbol autocomplete.
   useEffect(() => {
@@ -812,6 +819,55 @@ export default function Tune() {
               ))}
               <span className="text-[12px] text-[var(--color-text-sub)]">
                 nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
+              </span>
+            </div>
+            {/* Profit Keeper — automatic protection for MANUAL/external
+                positions: ratchets a broker-side SL once peak profit arms,
+                closes on giveback. Stops only ever tighten. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={keeper?.on} label="Profit Keeper" onClick={() => {
+                const next = !keeper?.on
+                if (next && !window.confirm('Arm the Profit Keeper? It will place REAL stop-loss amendments and market closes on your MANUAL/external positions once they reach the arm threshold. Stops only ever tighten; it never adds risk.')) return
+                run(async () => {
+                  const r = await agentPost('/actions/profit-keeper', { on: next })
+                  setKeeper(r.config)
+                }, `Profit Keeper ${next ? 'armed' : 'off'}`)
+              }} />
+              {keeper?.on && (
+                <>
+                  <label className="flex items-center gap-1">arm at +$
+                    <Input type="number" min="1" className="w-16 !py-0.5 !min-h-0" value={keeper.armProfitUsd ?? ''}
+                      aria-label="Profit Keeper arm threshold in USD"
+                      onChange={e => setKeeper(k => ({ ...k, armProfitUsd: e.target.value }))}
+                      onBlur={() => run(async () => {
+                        const r = await agentPost('/actions/profit-keeper', { armProfitUsd: Number(keeper.armProfitUsd) })
+                        setKeeper(r.config)
+                      }, 'Profit Keeper updated')} />
+                  </label>
+                  <label className="flex items-center gap-1">giveback
+                    <Input type="number" min="5" max="95" className="w-14 !py-0.5 !min-h-0" value={keeper.givebackPct ?? ''}
+                      aria-label="Profit Keeper giveback percent"
+                      onChange={e => setKeeper(k => ({ ...k, givebackPct: e.target.value }))}
+                      onBlur={() => run(async () => {
+                        const r = await agentPost('/actions/profit-keeper', { givebackPct: Number(keeper.givebackPct) })
+                        setKeeper(r.config)
+                      }, 'Profit Keeper updated')} />%
+                  </label>
+                  <span role="radiogroup" aria-label="Profit Keeper scope" className="flex items-center gap-1">
+                    {['external', 'all'].map(sc => (
+                      <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
+                        onClick={() => run(async () => {
+                          const r = await agentPost('/actions/profit-keeper', { scope: sc })
+                          setKeeper(r.config)
+                        }, `Profit Keeper scope: ${sc}`)}
+                        className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                      >{sc === 'external' ? 'manual only' : 'all positions'}</button>
+                    ))}
+                  </span>
+                </>
+              )}
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                protects manual/external positions: once floating profit peaks past the arm level, a broker-side SL ratchets up to lock {keeper?.on ? 100 - (Number(keeper.givebackPct) || 40) : 60}% of the peak — the SL sits at the broker, so protection is tick-level between scan cycles. Positions with their own Manage-sheet rules are left alone.
               </span>
             </div>
             <div className="mt-3 flex items-center gap-2 text-[13px]">

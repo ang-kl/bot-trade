@@ -979,6 +979,23 @@ async function runLoop(db) {
         log(`Trade guards failed (non-fatal): ${err.message}`)
       }
 
+      // Profit Keeper — opt-in profit protection for manual/external
+      // positions (ratchets broker-side SLs, closes on giveback). Inert
+      // when off; a failure must never take down the loop.
+      try {
+        const keeperCreds = getCtraderCreds(db)
+        if (keeperCreds.ready) {
+          const { runProfitKeeper } = await import('./services/profit-keeper.js')
+          const k = await runProfitKeeper(db, keeperCreds, {
+            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+          })
+          if (k.slMoves || k.closes) log(`Profit Keeper: ${k.slMoves} lock(s), ${k.closes} close(s)`)
+          if (k.errors.length) log(`Profit Keeper errors: ${k.errors.join(' · ')}`)
+        }
+      } catch (err) {
+        log(`Profit Keeper failed (non-fatal): ${err.message}`)
+      }
+
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {
