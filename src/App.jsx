@@ -162,7 +162,10 @@ export default function App() {
           </Routes>
           <footer className="mt-8 pt-4 border-t border-[var(--color-border)] text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
             <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
-            <span>fib 61.8% strategy · deterministic, no LLM in trade decisions</span>
+            {/* Keep this line TRUE: 5 registry strategies armed per-stage in
+                Tune; entries/risk gate are deterministic, but the position
+                monitor has an LLM fallback — never claim "no LLM" outright. */}
+            <span>5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
             <span>trading involves risk — demo first, never money you can't lose</span>
           </footer>
         </main>
