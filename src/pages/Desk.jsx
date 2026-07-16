@@ -16,6 +16,16 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 
 const REFRESH_MS = 20_000
+
+// Short strategy tags for signal rows — the scan covers 5 registry
+// strategies (stage matrix); Desk must never read as fib-only.
+const STRAT_SHORT = {
+  fib_618_fade: 'FIB',
+  cup_handle: 'C&H',
+  ema_pullback: 'EMA',
+  donchian_breakout: 'BRK',
+  rsi_meanrev: 'RSI',
+}
 const fmt = (v, d = 5) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d }))
 
 function ago(iso) {
@@ -227,8 +237,8 @@ export default function Desk() {
               <span className="font-semibold w-16 shrink-0">{sc.symbol}</span>
               <span className={`truncate ${sc.bias && sc.bias !== 'skip' ? 'font-semibold' : 'text-[var(--color-text-sub)]'}`}>
                 {sc.bias && sc.bias !== 'skip'
-                  ? `${sc.bias.toUpperCase()} ${sc.timeframe || ''} ${sc.confidence ?? '?'}/10`
-                  : 'no setup'}
+                  ? `${STRAT_SHORT[sc.strategy] || 'FIB'} ${sc.bias.toUpperCase()} ${sc.timeframe || ''} ${sc.confidence ?? '?'}/10`
+                  : 'no setup (any strategy)'}
               </span>
             </button>
           ))}
@@ -342,8 +352,8 @@ export default function Desk() {
               const noZone = scans.length - found.length
               return (
                 <>
-                  {noZone > 0 && <li>{noZone} of {scans.length} watchlist symbols have no price at a 61.8% retracement zone right now — no setup exists to trade.</li>}
-                  {found.map(r => <li key={r.symbol}>{r.symbol}: {String(r.bias).toUpperCase()} signal on {r.timeframe || '?'} at {r.confidence ?? '?'}/10 — waiting on the armed-timeframe and risk gates.</li>)}
+                  {noZone > 0 && <li>{noZone} of {scans.length} watchlist symbols have no setup on ANY scanned strategy right now (fib zone, cup &amp; handle, EMA pullback, breakout, RSI stretch) — nothing exists to trade.</li>}
+                  {found.map(r => <li key={r.symbol}>{r.symbol}: {STRAT_SHORT[r.strategy] || 'FIB'} {String(r.bias).toUpperCase()} signal on {r.timeframe || '?'} at {r.confidence ?? '?'}/10 — waiting on the armed-timeframe and risk gates.</li>)}
                   <li className="text-[var(--color-text-sub)]">
                     Expected pace on {(armed?.timeframes || []).join('/') || 'the armed timeframes'}: roughly 1–2 qualifying trades per month per symbol — a quiet screen for days is the strategy working, not failing. Telegram announces the moment anything changes.
                   </li>

@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
 import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
-import { CHART_TF_GROUPS } from '../lib/chart-timeframes.js'
+import { CHART_TF_ROWS } from '../lib/chart-timeframes.js'
+import { parseTimeframe } from '../lib/timeframes.js'
 import { tfMs } from '../lib/timeframes.js'
 import IndicatorPanel, { loadIndicatorPrefs } from './IndicatorPanel.jsx'
 
@@ -79,6 +80,12 @@ function VolumeProfileSvg({ vp, height }) {
 export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {}, at = null, markers = null, grid = false }) {
   const [timeframe, setTimeframe] = useState(tf0)
   const [error, setError] = useState('')
+  const [tfCustom, setTfCustom] = useState('')       // refined free-text TF entry
+  const [tfCustomErr, setTfCustomErr] = useState('')
+  // "please wait" while a symbol×timeframe's bars are in flight — set by the
+  // async fetch below, compared against the current key at render time.
+  const [loadedKey, setLoadedKey] = useState('')
+  const chartKey = `${symbol}|${timeframe}|${at || ''}`
   const [fib, setFib] = useState(null)
   const [tick, setTick] = useState(null)
   const [live, setLive] = useState(false)
@@ -276,6 +283,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         positionDotRef.current()
         setFib(r.fib || null)
         setError('')
+        setLoadedKey(`${symbol}|${timeframe}|${at || ''}`)
       } catch (e) { if (!dead) setError(e.message) }
     }
     load()
@@ -337,14 +345,15 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
         </div>
       ) : (
-        // One wrapped row for the whole TF ladder (was 5 labelled rows —
-        // owner: "spacing wasteful"). Groups separated by a middot; the
-        // price/tick status rides on the same line, right-aligned.
-        <div className="mb-1.5 flex flex-wrap items-center gap-x-1 gap-y-1" role="group" aria-label="Chart timeframe">
-          {CHART_TF_GROUPS.map((g, gi) => (
-            <span key={g.label} className="flex items-center gap-1" role="group" aria-label={`${g.label} timeframes`}>
-              {gi > 0 && <span aria-hidden="true" className="px-0.5 text-[10px] text-[var(--color-text-sub)]">·</span>}
-              {g.tfs.map(t => (
+        // Two rows exactly (owner spec): TIME (intraday) and DATE (daily+),
+        // plus a refined free-text field for custom timeframes (1.5h, 90m…)
+        // validated by the same parser the agent uses. Price/tick status
+        // rides on the date row, right-aligned.
+        <div className="mb-1.5" role="group" aria-label="Chart timeframe">
+          {CHART_TF_ROWS.map((row, ri) => (
+            <div key={row.label} className="flex flex-wrap items-center gap-1 mb-1" role="group" aria-label={`${row.label} timeframes`}>
+              <span className="w-9 shrink-0 text-[10px] uppercase tracking-wide text-[var(--color-text-sub)]">{row.label}</span>
+              {row.tfs.map(t => (
                 <button
                   key={t}
                   type="button"
@@ -355,15 +364,43 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
                   }`}
                 >{t}</button>
               ))}
-            </span>
+              {/* Custom TF (not on either row) shows as an active chip */}
+              {ri === 0 && !CHART_TF_ROWS.some(r2 => r2.tfs.includes(timeframe)) && (
+                <span className="rounded-full px-1.5 min-h-[26px] inline-flex items-center text-[11px] font-semibold bg-[var(--color-accent)] text-white">{timeframe}</span>
+              )}
+              {ri === 0 && (
+                <form
+                  className="flex items-center gap-1"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const parsed = parseTimeframe(tfCustom.trim())
+                    if (!parsed) { setTfCustomErr(`can't read "${tfCustom}" — try 90m, 1.5h, 2d`); return }
+                    setTfCustomErr('')
+                    setTfCustom('')
+                    setTimeframe(parsed.label)
+                  }}
+                >
+                  <input
+                    value={tfCustom}
+                    onChange={(e) => { setTfCustom(e.target.value); if (tfCustomErr) setTfCustomErr('') }}
+                    placeholder="custom · 1.5h"
+                    aria-label="Custom timeframe"
+                    className="w-24 glass-inset rounded-full px-2 min-h-[26px] text-[11px] text-[var(--color-text)] placeholder:text-[var(--color-text-sub)] outline-none"
+                  />
+                  {tfCustomErr && <span className="text-[10px] text-[var(--color-warning-text)]">{tfCustomErr}</span>}
+                </form>
+              )}
+              {ri === CHART_TF_ROWS.length - 1 && (
+                <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
+                  {at
+                    ? <>historical — window around {new Date(at).toLocaleString()}</>
+                    : live && tick
+                      ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
+                      : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
+                </span>
+              )}
+            </div>
           ))}
-          <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-            {at
-              ? <>historical — window around {new Date(at).toLocaleString()}</>
-              : live && tick
-                ? <>bid {niceFmt(tick.bid, lastClose)} / ask {niceFmt(tick.ask, lastClose)} · <span className="text-[var(--color-accent)] font-semibold">LIVE ticks</span></>
-                : <>{niceFmt(lastClose, lastClose)} · bars refresh 15s</>}
-          </span>
         </div>
       )}
       {showPanel && (
@@ -375,6 +412,11 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         />
       )}
       {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
+      {!error && loadedKey !== chartKey && (
+        <div className="text-[12px] text-[var(--color-text-sub)] py-1" role="status">
+          Loading {symbol} {timeframe} — one moment, fetching bars from the broker…
+        </div>
+      )}
       <div className="relative">
         <div ref={boxRef} className={grid ? 'w-full h-[190px]' : 'w-full h-[300px]'} />
         {showPanel && vp && <VolumeProfileSvg vp={vp} height={chartHeight} />}
