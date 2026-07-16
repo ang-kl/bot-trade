@@ -1,7 +1,7 @@
 // node --test agent/lib/lot-sizing.test.js
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { lotsToVolume, volumeToLots } from './lot-sizing.js'
+import { lotsToVolume, volumeToLots, relativePoints } from './lot-sizing.js'
 
 // Real Pepperstone-style FX meta: 1 lot = 100,000 units = 10,000,000 cents.
 const FX = { lotSize: 10_000_000, minVolume: 100_000, maxVolume: 10_000_000_000, stepVolume: 100_000 }
@@ -40,4 +40,31 @@ test('maxVolume clamps and flags', () => {
   const r = lotsToVolume(99_999, XAU)
   assert.equal(r.aboveMax, true)
   assert.equal(r.volume, XAU.maxVolume)
+})
+
+// relativePoints: cTrader wants relative SL/TP in 1/100000-of-price units,
+// SNAPPED to the symbol's digits — finer precision is rejected with
+// "Relative stop loss has invalid precision" (hit live on the BTCUSD
+// validation fill, digits=2).
+
+test('relativePoints: 5-digit FX passes through unchanged (step 1)', () => {
+  assert.equal(relativePoints(0.0057739, 5), 577)
+  assert.equal(relativePoints(0.005, 5), 500)
+})
+
+test('relativePoints: 2-digit symbols snap to whole cents — BTCUSD regression', () => {
+  // BTC ~67,000: 0.5% SL = 335.27891. Raw rounding gives 33_527_891 — NOT
+  // divisible by 10^(5-2)=1000 → broker INVALID_REQUEST. Snapped:
+  assert.equal(relativePoints(335.27891, 2), 33_528_000)
+  assert.equal(relativePoints(335.27891, 2) % 1000, 0)
+})
+
+test('relativePoints: never collapses to zero — a tiny real stop keeps one step', () => {
+  assert.equal(relativePoints(0.000004, 5), 1)
+  assert.equal(relativePoints(0.004, 2), 1000)
+})
+
+test('relativePoints: missing/garbage digits default to 5', () => {
+  assert.equal(relativePoints(0.005, undefined), 500)
+  assert.equal(relativePoints(0.005, 'nope'), 500)
 })

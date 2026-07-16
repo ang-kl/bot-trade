@@ -64,5 +64,22 @@ export function volumeToLots(volume, meta) {
   return Number(volume) / meta.lotSize
 }
 
+/**
+ * Relative SL/TP distance in cTrader's 1/100000-of-price units, SNAPPED to
+ * the symbol's price precision. The broker rejects relative values finer
+ * than the symbol's digits — "Relative stop loss has invalid precision",
+ * hit live on the BTCUSD validation fill (digits=2: a raw 0.5% distance
+ * like 335.27891 leaves sub-cent noise in the low decimals). One snap step
+ * = 10^(5 - digits); the result is never below one step, so a tiny-but-real
+ * stop can't collapse to zero (which the broker also rejects).
+ * Pure function — unit-testable.
+ */
+export function relativePoints(priceDistance, digits = 5) {
+  const d = Number.isFinite(Number(digits)) ? Math.min(5, Math.max(0, Number(digits))) : 5
+  const step = 10 ** (5 - d)
+  const snapped = Math.round((Number(priceDistance) * 100_000) / step) * step
+  return Math.max(step, snapped)
+}
+
 // Exposed for tests.
 export const _cache = metaCache

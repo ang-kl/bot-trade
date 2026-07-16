@@ -876,6 +876,28 @@ export default function Tune() {
     return () => { alive = false; clearInterval(iv) }
   }, [tab])
 
+  // Same collection loop for the C&H screener job (Watchlist tab).
+  const screenerAppliedJobRef = useRef(null)
+  useEffect(() => {
+    if (tab !== 'watchlist' || !agentConfigured()) return undefined
+    let alive = true
+    const tick = async () => {
+      try {
+        const j = await agentGet('/state/job/cup-screener')
+        if (!alive || !j?.job) return
+        if (j.job.status === 'running') { setScreenerBusy(true); return }
+        setScreenerBusy(false)
+        if (screenerAppliedJobRef.current === j.job.id) return
+        screenerAppliedJobRef.current = j.job.id
+        if (j.job.status === 'error') { setError(j.job.error || 'screener failed'); return }
+        if (j.result) setScreener(j.result)
+      } catch { /* transient — next tick retries */ }
+    }
+    tick()
+    const iv = setInterval(tick, 4000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [tab])
+
   // Trades per symbol in the last backtest (all timeframes summed) — surfaced
   // on the Watchlist so each instrument shows how much it actually traded.
   const btTradeCount = (sym) => {
@@ -1401,11 +1423,11 @@ export default function Tune() {
                 <Button
                   size="sm" variant="subtle" disabled={screenerBusy}
                   onClick={() => {
+                    // Background job on the agent — switching pages mid-run
+                    // no longer loses the results (poll effect collects them).
                     setScreenerBusy(true)
                     agentPost('/actions/cup-screener', {})
-                      .then(setScreener)
-                      .catch(e => setError(e.message))
-                      .finally(() => setScreenerBusy(false))
+                      .catch(e => { if (!/already/i.test(e.message)) { setError(e.message); setScreenerBusy(false) } })
                   }}
                 >
                   {screenerBusy ? `Screening ${enabledSymbols.length}…` : 'Run C&H screener'}

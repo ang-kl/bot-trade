@@ -11,7 +11,7 @@ import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
-import { currentJob, jobMeta } from '../services/backtest-job.js'
+import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -237,6 +237,18 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/backtest-job', (_req, res) => {
     const job = currentJob()
+    res.json({
+      job: jobMeta(job),
+      result: job?.status === 'done' ? job.result : null,
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/job/:kind — generic background-job status/result (screener,
+  // future slow actions). Same contract as /state/backtest-job.
+  // -----------------------------------------------------------------------
+  router.get('/job/:kind', (req, res) => {
+    const job = getJob(String(req.params.kind || ''))
     res.json({
       job: jobMeta(job),
       result: job?.status === 'done' ? job.result : null,
