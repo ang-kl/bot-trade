@@ -139,9 +139,15 @@ export default function Desk() {
       {/* ---- Status strip — the whole live picture in one row of chips ---- */}
       <Card>
         <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
-          <Badge tone={health?.autotradeEnabled ? 'up' : 'neutral'}>{health?.autotradeEnabled ? 'AUTOTRADE ON' : 'AUTOTRADE OFF'}</Badge>
+          {/* Tri-state, honestly: "no data yet" must never read as OFF — a
+              loading page and a disarmed bot are different facts. */}
+          {!health && <Badge tone="neutral">AUTOTRADE: NO DATA YET</Badge>}
+          {health && <Badge tone={health.autotradeEnabled ? 'up' : 'neutral'}>{health.autotradeEnabled ? 'AUTOTRADE ON' : 'AUTOTRADE OFF'}</Badge>}
           {health?.pendingModeEnabled && <Badge tone="warning">⏳ PENDING ARMED</Badge>}
           {equityStopToday && <Badge tone="down">EQUITY STOP TRIPPED — autotrade auto-disarmed today</Badge>}
+          {health && !health.broker?.linked && (
+            <Badge tone="warning">NO ACCOUNT LINKED — fresh agent state? Re-link on Connect (set DB_PATH on a Railway Volume so redeploys stop wiping it)</Badge>
+          )}
           <Badge tone={health?.broker?.isLive ? 'down' : 'info'}>{health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}</Badge>
           <span className="text-[var(--color-text-sub)]">${fmt(health?.broker?.balance, 2)}</span>
           <span className="text-[var(--color-text-sub)]">·</span>
