@@ -833,41 +833,59 @@ export default function Tune() {
                   setKeeper(r.config)
                 }, `Profit Keeper ${next ? 'armed' : 'off'}`)
               }} />
-              {keeper?.on && (
-                <>
-                  <label className="flex items-center gap-1">arm at +$
-                    <Input type="number" min="1" className="w-16 !py-0.5 !min-h-0" value={keeper.armProfitUsd ?? ''}
-                      aria-label="Profit Keeper arm threshold in USD"
-                      onChange={e => setKeeper(k => ({ ...k, armProfitUsd: e.target.value }))}
-                      onBlur={() => run(async () => {
-                        const r = await agentPost('/actions/profit-keeper', { armProfitUsd: Number(keeper.armProfitUsd) })
-                        setKeeper(r.config)
-                      }, 'Profit Keeper updated')} />
+              {keeper?.on && (() => {
+                const post = (patch, msg = 'Profit Keeper updated') => run(async () => {
+                  const r = await agentPost('/actions/profit-keeper', patch)
+                  setKeeper(r.config)
+                }, msg)
+                const numField = (label, key, opts = {}) => (
+                  <label key={key} className="flex items-center gap-1">{label}
+                    <Input type="number" className={`${opts.wide ? 'w-16' : 'w-14'} !py-0.5 !min-h-0`} value={keeper[key] ?? ''}
+                      min={opts.min} max={opts.max} step={opts.step || 'any'}
+                      aria-label={`Profit Keeper ${label}`}
+                      onChange={e => setKeeper(k => ({ ...k, [key]: e.target.value }))}
+                      onBlur={() => post({ [key]: Number(keeper[key]) })} />{opts.suffix || ''}
                   </label>
-                  <label className="flex items-center gap-1">giveback
-                    <Input type="number" min="5" max="95" className="w-14 !py-0.5 !min-h-0" value={keeper.givebackPct ?? ''}
-                      aria-label="Profit Keeper giveback percent"
-                      onChange={e => setKeeper(k => ({ ...k, givebackPct: e.target.value }))}
-                      onBlur={() => run(async () => {
-                        const r = await agentPost('/actions/profit-keeper', { givebackPct: Number(keeper.givebackPct) })
-                        setKeeper(r.config)
-                      }, 'Profit Keeper updated')} />%
-                  </label>
-                  <span role="radiogroup" aria-label="Profit Keeper scope" className="flex items-center gap-1">
-                    {['external', 'all'].map(sc => (
-                      <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
-                        onClick={() => run(async () => {
-                          const r = await agentPost('/actions/profit-keeper', { scope: sc })
-                          setKeeper(r.config)
-                        }, `Profit Keeper scope: ${sc}`)}
-                        className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                      >{sc === 'external' ? 'manual only' : 'all positions'}</button>
-                    ))}
-                  </span>
-                </>
-              )}
+                )
+                return (
+                  <>
+                    <span role="radiogroup" aria-label="Profit Keeper mode" className="flex items-center gap-1">
+                      {['adaptive', 'fixed'].map(m => (
+                        <button key={m} type="button" role="radio" aria-checked={keeper.mode === m}
+                          onClick={() => post({ mode: m }, `Profit Keeper mode: ${m}`)}
+                          className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        >{m}</button>
+                      ))}
+                    </span>
+                    {keeper.mode === 'adaptive' ? (
+                      <>
+                        {numField('arm ×ATR', 'armAtrMult', { min: 0.1, max: 10, step: 0.1 })}
+                        {numField('floor', 'armBalancePct', { min: 0.01, max: 5, step: 0.05, suffix: '% bal' })}
+                        {numField('trail ×ATR', 'trailAtrMult', { min: 0.5, max: 10, step: 0.5 })}
+                        {numField('bank at arm', 'scaleOutFrac', { min: 0, max: 0.9, step: 0.1, suffix: ' frac' })}
+                      </>
+                    ) : (
+                      <>
+                        {numField('arm at +$', 'armProfitUsd', { min: 1, wide: true })}
+                        {numField('giveback', 'givebackPct', { min: 5, max: 95, suffix: '%' })}
+                      </>
+                    )}
+                    <span role="radiogroup" aria-label="Profit Keeper scope" className="flex items-center gap-1">
+                      {['external', 'all'].map(sc => (
+                        <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
+                          onClick={() => post({ scope: sc }, `Profit Keeper scope: ${sc}`)}
+                          className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        >{sc === 'external' ? 'manual only' : 'all positions'}</button>
+                      ))}
+                    </span>
+                  </>
+                )
+              })()}
               <span className="text-[12px] text-[var(--color-text-sub)]">
-                protects manual/external positions: once floating profit peaks past the arm level, a broker-side SL ratchets up to lock {keeper?.on ? 100 - (Number(keeper.givebackPct) || 40) : 60}% of the peak — the SL sits at the broker, so protection is tick-level between scan cycles. Positions with their own Manage-sheet rules are left alone.
+                {keeper?.mode === 'fixed'
+                  ? <>fixed mode: once floating profit peaks past the arm level, a broker-side SL locks {100 - (Number(keeper?.givebackPct) || 40)}% of the peak; a retrace past the lock closes at market.</>
+                  : <>adaptive mode (recommended): arms once profit exceeds {keeper?.armAtrMult ?? 1}× the instrument's ATR (min {keeper?.armBalancePct ?? 0.1}% of balance), then a broker-side SL trails {keeper?.trailAtrMult ?? 2.5}×ATR behind the peak — volatility-scaled per instrument, so winners get room to run and noise never arms it.{Number(keeper?.scaleOutFrac) > 0 ? ` Banks ${Math.round(keeper.scaleOutFrac * 100)}% when it arms; the rest runs.` : ''}</>}
+                {' '}The SL sits at the broker (tick-level between scan cycles). Losing positions are untouched; positions with their own Manage-sheet rules are left alone.
               </span>
             </div>
             <div className="mt-3 flex items-center gap-2 text-[13px]">
