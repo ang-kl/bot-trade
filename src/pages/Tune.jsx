@@ -286,6 +286,25 @@ function StageMatrix({ mx, onUpdated, onError }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Typed-field draft persistence — owner requirement: "when I type in the
+// field and switch pages, keep it". Money-critical fields (risk %, balance)
+// must NOT auto-commit half-typed numbers ("0.0" mid-keystroke would become
+// live risk), so Save stays the commit point — but the DRAFT now survives
+// page switches in sessionStorage and is restored on return.
+// ---------------------------------------------------------------------------
+const TUNE_DRAFTS_KEY = 'tune_drafts_v1'
+const readDrafts = () => {
+  try { return JSON.parse(sessionStorage.getItem(TUNE_DRAFTS_KEY)) || {} } catch { return {} }
+}
+const writeDraft = (key, value) => {
+  try {
+    const d = readDrafts()
+    if (value == null) delete d[key]; else d[key] = value
+    sessionStorage.setItem(TUNE_DRAFTS_KEY, JSON.stringify(d))
+  } catch { /* private mode — drafts just don't persist */ }
+}
+
 // Risk fields exposed for editing: [key, label, hint]
 const RISK_FIELDS = [
   ['perTradeRiskPct', 'Risk per trade', 'fraction of balance, e.g. 0.01 = 1%'],
@@ -648,17 +667,25 @@ export default function Tune() {
       ])
       setConfig(c)
       setRisk(r)
-      setRiskDraft(Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? ''])))
+      // Restore any unsaved typed drafts from a previous visit — a page
+      // switch must not throw away what the owner typed. A draft counts
+      // only when it differs from the server's values; Save clears it.
+      const drafts = readDrafts()
+      const serverRisk = Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? '']))
+      const riskRestored = drafts.risk && JSON.stringify(drafts.risk) !== JSON.stringify(serverRisk)
+      setRiskDraft(riskRestored ? drafts.risk : serverRisk)
       if (tf?.timeframes) setTimeframes(tf.timeframes)
       setArmedMatrix(tf?.matrix && typeof tf.matrix === 'object' ? tf.matrix : null)
       if (rf) setRsiFilter(!!rf.on)
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
       if (sm) setStageMx(sm)
-      setBalanceDraft({
-        balance: r.derived?.balance ?? '',
-        leverage: r.derived?.leverage ?? '',
-      })
+      const serverBal = { balance: r.derived?.balance ?? '', leverage: r.derived?.leverage ?? '' }
+      const balRestored = drafts.balance && JSON.stringify(drafts.balance) !== JSON.stringify(serverBal)
+      setBalanceDraft(balRestored ? drafts.balance : serverBal)
+      if (riskRestored || balRestored) {
+        setStatus('Restored your unsaved edits from the last visit — tap Save to apply them, or Reset to discard.')
+      }
       setError('')
     } catch (e) { setError(e.message) }
   }, [])
@@ -767,15 +794,23 @@ export default function Tune() {
       const v = Number(riskDraft[k])
       if (Number.isFinite(v)) body[k] = v
     }
-    run(() => agentPost('/actions/risk-config', body), 'Risk config saved')
+    run(async () => { await agentPost('/actions/risk-config', body); writeDraft('risk', null) }, 'Risk config saved')
   }
 
   const saveBalance = () => {
     const body = {}
     if (balanceDraft.balance !== '') body.balance = Number(balanceDraft.balance)
     if (balanceDraft.leverage !== '') body.leverage = Number(balanceDraft.leverage)
-    run(() => agentPost('/actions/balance', body), 'Account saved')
+    run(async () => { await agentPost('/actions/balance', body); writeDraft('balance', null) }, 'Account saved')
   }
+
+  // Persist typed drafts as they change — a page switch keeps them.
+  useEffect(() => {
+    if (Object.keys(riskDraft).length) writeDraft('risk', riskDraft)
+  }, [riskDraft])
+  useEffect(() => {
+    if (balanceDraft.balance !== '' || balanceDraft.leverage !== '') writeDraft('balance', balanceDraft)
+  }, [balanceDraft])
 
   const symbols = config?.symbols || []
   const enabledSymbols = symbols.filter(s => s.enabled !== false).map(s => s.symbol)
@@ -1231,7 +1266,7 @@ export default function Tune() {
               <Button size="sm" onClick={saveRisk} disabled={!dirty}>{dirty ? 'Save risk config' : 'Saved'}</Button>
               {dirty && <span className="text-[12px] font-semibold text-[var(--color-warning-text)]">Unsaved changes — the bot still uses the old values.</span>}
               <span className="ml-auto">
-                <Button size="sm" variant="subtle" onClick={() => run(() => agentPost('/actions/risk-config', { reset: true }), 'Risk config reset to defaults')}>Reset to defaults</Button>
+                <Button size="sm" variant="subtle" onClick={() => run(async () => { await agentPost('/actions/risk-config', { reset: true }); writeDraft('risk', null) }, 'Risk config reset to defaults')}>Reset to defaults</Button>
               </span>
             </div>
 
