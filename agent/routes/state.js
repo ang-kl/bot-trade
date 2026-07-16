@@ -10,6 +10,7 @@ import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
+import { stageMatrixView } from '../services/stage-matrix.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -619,6 +620,19 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/fib-rsi-filter', (_req, res) => {
     res.json({ on: getState(db, 'fib_rsi_filter') === 'true' })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/stage-matrix — the Tune Pipeline strategy × stage table:
+  // per-cell on/off (trade column derived live from the legacy keys) plus
+  // 30-day usage counts per cell.
+  // -----------------------------------------------------------------------
+  router.get('/stage-matrix', (_req, res) => {
+    try {
+      res.json(stageMatrixView(db, getState))
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
   })
 
   // GET /state/arm-benchmarks — backtest stats stored at Apply time

@@ -19,7 +19,7 @@ import { getState, setState } from '../db.js'
 import { verdictFor } from '../lib/backtest-report.js'
 import { backtestRemote } from '../lib/exec-engine.js'
 import { tfMs } from '../lib/timeframes.js'
-import { STRATEGY_REGISTRY } from './strategies.js'
+import { backtestStageStrategies } from './stage-matrix.js'
 
 const RUN_EVERY_MS = 22 * 3600_000 // ~nightly, drift-tolerant
 const BARS = 1000
@@ -140,6 +140,10 @@ async function evaluateAll(db, creds, deps) {
   try { const t = JSON.parse(getState(db, 'autotrade_timeframes') || '[]'); if (t.length) tfs = t } catch { /* default */ }
   const map = getSymbolMap(db)
 
+  // Stage matrix "Back Test" column: the owner picks which strategies the
+  // nightly sweep evaluates (all of them by default).
+  const strategiesToTest = backtestStageStrategies(db, getState)
+
   const verdicts = []
   const errors = []
   for (const symbol of watch.slice(0, 24)) {
@@ -152,7 +156,7 @@ async function evaluateAll(db, creds, deps) {
     for (const tf of tfs) {
       const bars = (byPeriod[tf] || []).slice(0, -1)
       if (bars.length < 300) continue
-      for (const strat of STRATEGY_REGISTRY) {
+      for (const strat of strategiesToTest) {
         const modes = strat.pendingCapable ? ['close', 'touch'] : ['close']
         for (const entryMode of modes) {
           try {

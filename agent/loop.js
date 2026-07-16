@@ -4,7 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
-import { enabledStrategies } from './services/strategies.js'
+import { scanStageStrategies, scanFilterOptions, tradeStageGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
@@ -662,12 +662,13 @@ async function runLoop(db) {
     const symbolMap = getSymbolMap(db)
     const ctraderCreds = getCtraderCreds(db)
 
-    const rsiFilterOn = getState(db, 'fib_rsi_filter') === 'true'
-    // Enabled strategies, registry-resolved: fib is always on; legacy
-    // cup_handle_enabled is honoured inside enabledStrategies().
-    const strategies = enabledStrategies(db, getState)
-    const vwapFilterOn = getState(db, 'fib_vwap_filter') === 'true'
-    const fvgFilterOn = getState(db, 'fib_fvg_filter') === 'true'
+    // Stage matrix (Tune → Pipeline): the SCAN column decides what gets
+    // computed — wide by default, so every conviction is analysed. Filters
+    // resolve to strict (scan cell on), annotate (trade cell on — signal
+    // survives, failure recorded in filters_failed for the trade gate), or
+    // off. The trade column is enforced later, at Auto Trade & Open.
+    const strategies = scanStageStrategies(db, getState)
+    const stageFilterOpts = scanFilterOptions(db, getState)
     // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
     // classic scan set only covers the native ladder.
     let extraTimeframes = []
@@ -675,7 +676,7 @@ async function runLoop(db) {
     let scanMatrix = null
     try { scanMatrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, rsiFilter: rsiFilterOn ? {} : null, strategies, vwapFilter: vwapFilterOn ? {} : null, fvgFilter: fvgFilterOn ? {} : null, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
 
     if (!ctraderCreds.ready) {
@@ -865,6 +866,22 @@ async function runLoop(db) {
                     }
                   }
                 } catch { /* corrupt matrix — fall back to TF-wide */ }
+              }
+            }
+
+            // Stage-matrix gate (Tune → Pipeline table): the scan now covers
+            // MORE than what may trade — the strategy's "Auto Trade & Open"
+            // cell must be on, and no trade-armed filter may have failed at
+            // scan time (filters run in annotate mode there).
+            if (synth.auto_trade) {
+              const sig = scanResult.signals[sym]
+              const gate = tradeStageGate(db, getState, {
+                strategy: synth.strategy,
+                filtersFailed: sig?.filters_failed || [],
+              })
+              if (!gate.ok) {
+                log(`Stage gate: ${sym} blocked — ${gate.reason}`)
+                synth.auto_trade = false
               }
             }
           }
@@ -1107,6 +1124,21 @@ async function runLoop(db) {
               log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
               continue
             }
+            // Stage-matrix "Live Tweak & Close" gate: when the position's
+            // strategy has that cell off, the monitor records intent but
+            // never touches the broker. Broker-resident SL/TP and any
+            // owner-armed per-position guards still protect the position.
+            if (!manageStageAllows(db, getState, pos.strategy)) {
+              s.updatePositionCheck.run(
+                `MGMT-OFF:${eval_.action}`,
+                `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
+                new Date().toISOString(),
+                eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+                pos.id
+              )
+              log(`PM ${pos.symbol}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
+              continue
+            }
             const outcome = await executeBrokerAction(db, s, pos, eval_)
             let reasoning = eval_.reason
             let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
@@ -1133,6 +1165,10 @@ async function runLoop(db) {
 
           // External positions: skip LLM monitor — just update metrics, no token spend
           if (pos.source === 'external') continue
+
+          // Live Tweak & Close off for this strategy → no LLM monitor either
+          // (its EXIT would close the DB record while the broker still holds).
+          if (!manageStageAllows(db, getState, pos.strategy)) continue
 
           // Fallback: free-text theses and ambiguous cases → LLM Monitor.
           const check = await runMonitorCheck(client, {

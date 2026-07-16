@@ -234,38 +234,56 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
 
   const bias = upLeg ? 'long' : 'short'
 
-  // Optional RSI confluence (off by default): a fade should enter longs
-  // into weakness and shorts into strength — fib alone has no documented
-  // standalone edge, so this is the standard "combine with another
-  // indicator" gate, A/B-testable via the backtest harness.
+  // Confluence filters. Each runs in one of two modes:
+  // - strict (default, and the ONLY mode the backtest/C++ parity path uses):
+  //   a failed filter kills the signal, exactly as before.
+  // - annotate ({ mode: 'annotate' }): the signal survives with the failure
+  //   recorded in filters_failed — the scan analyses every conviction and the
+  //   Auto Trade & Open stage decides whether the failure vetoes the order.
+  const filtersFailed = []
+
+  // Optional RSI confluence: a fade should enter longs into weakness and
+  // shorts into strength — fib alone has no documented standalone edge, so
+  // this is the standard "combine with another indicator" gate.
   if (opts.rsiFilter) {
     const { longMax, shortMin } = { ...RSI_FILTER_DEFAULTS, ...opts.rsiFilter }
     const r = rsi(bars)
-    if (r == null) return null
-    if (bias === 'long' && r > longMax) return null
-    if (bias === 'short' && r < shortMin) return null
+    const fail = r == null
+      || (bias === 'long' && r > longMax)
+      || (bias === 'short' && r < shortMin)
+    if (fail) {
+      if (opts.rsiFilter.mode === 'annotate') filtersFailed.push('rsi')
+      else return null
+    }
   }
 
-  // Optional VWAP confluence (off by default): anchored to the swing leg's
-  // origin — long fades only below value (entry ≤ VWAP), shorts only above.
+  // Optional VWAP confluence: anchored to the swing leg's origin — long
+  // fades only below value (entry ≤ VWAP), shorts only above.
   if (opts.vwapFilter) {
     const anchorIdx = Math.min(swingA.idx, swingB.idx)
     const vw = vwap(bars, anchorIdx)
-    if (vw == null) return null
-    if (bias === 'long' && lastClose > vw) return null
-    if (bias === 'short' && lastClose < vw) return null
+    const fail = vw == null
+      || (bias === 'long' && lastClose > vw)
+      || (bias === 'short' && lastClose < vw)
+    if (fail) {
+      if (opts.vwapFilter.mode === 'annotate') filtersFailed.push('vwap')
+      else return null
+    }
   }
 
-  // Optional FVG confluence (off by default): require an unfilled fair value
-  // gap in the signal's direction overlapping the 61.8% zone — the fib level
-  // and the imbalance agree on where price should react.
+  // Optional FVG confluence: require an unfilled fair value gap in the
+  // signal's direction overlapping the 61.8% zone — the fib level and the
+  // imbalance agree on where price should react.
   if (opts.fvgFilter) {
     const zoneTop = level618 + tolerance
     const zoneBottom = level618 - tolerance
     const wantDir = bias === 'long' ? 'bull' : 'bear'
     const overlap = findFVGs(bars).some(g =>
       g.dir === wantDir && g.bottom <= zoneTop && g.top >= zoneBottom)
-    if (!overlap) return null
+    if (!overlap) {
+      if (opts.fvgFilter.mode === 'annotate') filtersFailed.push('fvg')
+      else return null
+    }
   }
 
   const entry = pendingMode ? level618 : lastClose
@@ -305,7 +323,8 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
     timeframe,
     time_cap_minutes: timeCapFor(timeframe) || null,
     strategy: 'fib_618_fade',
-    thesis: `61.8% Fib fade — swing ${upLeg ? 'up' : 'down'} ${swingA.price} → ${swingB.price}, reacting at ${roundedLevel} on ${timeframe}. Targeting return to ${tp1}.`,
+    filters_failed: filtersFailed,
+    thesis: `61.8% Fib fade — swing ${upLeg ? 'up' : 'down'} ${swingA.price} → ${swingB.price}, reacting at ${roundedLevel} on ${timeframe}. Targeting return to ${tp1}.${filtersFailed.length ? ` Filters failed: ${filtersFailed.join(', ').toUpperCase()}.` : ''}`,
   }
 }
 
