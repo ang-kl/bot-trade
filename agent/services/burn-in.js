@@ -153,12 +153,16 @@ export async function runBurnIn(db, creds, deps = {}) {
   const symbolMapJson = getState(db, 'symbol_id_map')
   const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
 
-  // Candidates: no open position, mapped, and (volume-scaled) cooled off.
-  // The exact cooldown is plan-dependent, so pre-filter with the SHORTEST
-  // possible cooldown and re-check per symbol after the plan is known.
+  // Candidates: MARKET OPEN (a closed exchange must not produce a veto row
+  // every cycle — owner saw CORN/COCOA flooding the Order log), no open
+  // position, mapped, and (volume-scaled) cooled off. The exact cooldown is
+  // plan-dependent, so pre-filter with the SHORTEST possible cooldown and
+  // re-check per symbol after the plan is known.
+  const marketOpen = deps.isSymbolMarketOpen ?? (await import('../lib/sessions.js')).isSymbolMarketOpen
   const minCooldownMs = 20 * 60_000 * pace.cooldownScale
   const queue = watch
     .filter(s => !open.has(s) && symbolMap[String(s).toUpperCase()])
+    .filter(s => marketOpen(s).open)
     .filter(s => now() - (Number(last[s]) || 0) >= minCooldownMs)
     .slice(0, pace.maxPerCycle * 2) // headroom: plan cooldowns may drop some
 
