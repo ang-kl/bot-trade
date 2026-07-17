@@ -249,20 +249,25 @@ export function evaluateTrade(db, proposal, configOverride) {
   }
 
   // ---- 2. Consecutive-loss cooldown --------------------------------------
-  const recentClosed = db
-    .prepare(
-      `SELECT net_pnl, closed_at FROM trades
-       WHERE status = 'closed' AND closed_at IS NOT NULL
-       ORDER BY closed_at DESC LIMIT ?`
-    )
-    .all(config.maxConsecutiveLosses)
+  // maxConsecutiveLosses 0 = breaker OFF (owner 2026-07-17: "cooldown pause
+  // is for humans"). The daily loss cap remains the hard machine backstop.
+  const streakLimit = Number(config.maxConsecutiveLosses) || 0
+  const recentClosed = streakLimit > 0
+    ? db
+        .prepare(
+          `SELECT net_pnl, closed_at FROM trades
+           WHERE status = 'closed' AND closed_at IS NOT NULL
+           ORDER BY closed_at DESC LIMIT ?`
+        )
+        .all(streakLimit)
+    : []
   let streak = 0
   for (const t of recentClosed) {
     if ((t.net_pnl || 0) < 0) streak++
     else break
   }
   checks.loss_streak = streak
-  if (streak >= config.maxConsecutiveLosses) {
+  if (streakLimit > 0 && streak >= streakLimit) {
     const lastCloseAt = recentClosed[0]?.closed_at
     const cooldownEndsAt = lastCloseAt
       ? new Date(new Date(lastCloseAt).getTime() + config.cooldownMinutes * 60_000)
