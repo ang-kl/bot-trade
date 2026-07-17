@@ -10,6 +10,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { tpLadder } from '../lib/tp-ladder.js'
 import PositionChart from '../components/PositionChart.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
+import OrderManager from '../components/OrderManager.jsx'
 import { toMs } from '../lib/std-trade-rows.js'
 
 // Inline tab link used by the "Next:" guide line
@@ -86,6 +87,8 @@ function pendingOrderRows(orders) {
       timeframe: '1h',
       lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp },
     },
+    panel: o.orderId != null,
+    raw: { ...o, symbol: o.symbolName || '?', type: typeof o.orderType === 'string' ? o.orderType : null },
   }))
 }
 
@@ -534,7 +537,12 @@ export default function Trade() {
           {(broker.pendingOrders?.length || 0) > 0 && (
             <div className="mb-2">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
-              <StdTradeTable rows={pendingOrderRows(broker.pendingOrders)} countLabel="pending orders" marketHours={marketHours} />
+              <StdTradeTable
+                rows={pendingOrderRows(broker.pendingOrders)}
+                countLabel="pending orders"
+                marketHours={marketHours}
+                panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
+              />
               <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
                 Qty is in broker UNITS (not lots). Stop Loss / Take Profit showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
               </p>

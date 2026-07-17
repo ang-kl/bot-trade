@@ -8,6 +8,8 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
+import PositionManager from '../components/PositionManager.jsx'
+import OrderManager from '../components/OrderManager.jsx'
 import { brokerPositionRows, brokerOrderRows } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
@@ -18,7 +20,11 @@ function fmt(n, digits = 5) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
-function AccountCard({ acct, defaultOpen, marketHours }) {
+function AccountCard({ acct, defaultOpen, marketHours, onChanged }) {
+  // Manage pop-ups only on the SELECTED account — the position/order action
+  // endpoints act through the bot's creds on that account, so offering
+  // Manage on other accounts would hit the wrong one.
+  const manageable = !!acct.selected
   const busyCount = (acct.positions?.length ?? 0) + (acct.orders?.length ?? 0)
   const [open, setOpen] = useState(defaultOpen || busyCount > 0)
   return (
@@ -42,13 +48,23 @@ function AccountCard({ acct, defaultOpen, marketHours }) {
           {acct.positions?.length > 0 && (
             <>
               <div className="text-[12px] font-semibold mt-1 mb-1">Live positions</div>
-              <StdTradeTable rows={brokerPositionRows(acct.positions)} countLabel="open positions" marketHours={marketHours} />
+              <StdTradeTable
+                rows={brokerPositionRows(acct.positions, { manageable })}
+                countLabel="open positions"
+                marketHours={marketHours}
+                panel={manageable ? { label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); onChanged?.() }} /> } : null}
+              />
             </>
           )}
           {acct.orders?.length > 0 && (
             <>
               <div className="text-[12px] font-semibold mt-2 mb-1">Pending (set) orders</div>
-              <StdTradeTable rows={brokerOrderRows(acct.orders)} countLabel="pending orders" marketHours={marketHours} />
+              <StdTradeTable
+                rows={brokerOrderRows(acct.orders, { manageable })}
+                countLabel="pending orders"
+                marketHours={marketHours}
+                panel={manageable ? { label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); onChanged?.() }} /> } : null}
+              />
             </>
           )}
           {!acct.error && !acct.positions?.length && !acct.orders?.length && (
@@ -114,7 +130,7 @@ export default function Accounts() {
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {!bot && !error && <Card className="text-[13px] text-[var(--color-text-sub)]">Loading the bot's account from the broker…</Card>}
-      {bot && <AccountCard acct={bot} defaultOpen marketHours={marketHours} />}
+      {bot && <AccountCard acct={bot} defaultOpen marketHours={marketHours} onChanged={loadBot} />}
 
       {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}
       {others && others.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}

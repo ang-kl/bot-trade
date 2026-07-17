@@ -3,6 +3,8 @@
 // TradingView-style: fixed header, right-aligned tabular numerics,
 // Long/Short coloured, sideways scroll with the first two columns
 // (date/time, symbol) FROZEN, 8-row pagination, expandable chart row.
+// The Manage panel opens as a POP-UP modal (cTrader-style sheet), not an
+// inline row — owner: "pop-up window and not within the table like the chart".
 //
 // Callers map their rows to the shared shape:
 // { id, at, symbol, result:{text,tone}, source:{text,tone}, side ('BUY'|
@@ -10,8 +12,8 @@
 //   chart?, panel? (bool — enables the host page's expandable panel), raw? }
 //
 // Optional props: onSymbolClick(symbol) makes the frozen symbol cell a
-// button (Desk uses it to focus the chart wall); panel {label, render(row)}
-// adds a second expandable row (Desk's Manage → PositionManager).
+// button (Desk uses it to focus the chart wall); panel {label, render(row,
+// close)} opens the pop-up (Manage → PositionManager / OrderManager).
 import { Fragment, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
@@ -25,6 +27,10 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null)
   const [panelFor, setPanelFor] = useState(null)
+
+  // The Manage sheet is a pop-up over the page, not an inline row — if the
+  // row vanishes on a refresh (closed/cancelled) the modal closes itself.
+  const panelRow = panelFor == null ? null : rows.find(r => r.id === panelFor) ?? null
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE))
   const p = Math.min(page, pages - 1)
@@ -146,8 +152,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         </Button>
                       )}
                       {panel && r.panel && (
-                        <Button size="sm" variant="ghost" onClick={() => setPanelFor(panelFor === r.id ? null : r.id)}>
-                          {panelFor === r.id ? 'Hide' : panel.label}
+                        <Button size="sm" variant="ghost" onClick={() => setPanelFor(r.id)}>
+                          {panel.label}
                         </Button>
                       )}
                     </td>
@@ -165,13 +171,6 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       </td>
                     </tr>
                   )}
-                  {panel && r.panel && panelFor === r.id && (
-                    <tr className="border-b border-[var(--color-border)]">
-                      <td colSpan={13} className="py-2">
-                        {panel.render(r, () => setPanelFor(null))}
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
               )
             })}
@@ -184,6 +183,20 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
         <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>
       </div>
+      {/* Manage POP-UP — the cTrader-style sheet floats over the page (owner:
+          "pop-up window and not within the table"). Backdrop click closes. */}
+      {panel && panelRow && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setPanelFor(null)}
+        >
+          <div className="w-full max-w-xl my-auto" onClick={e => e.stopPropagation()}>
+            {panel.render(panelRow, () => setPanelFor(null))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

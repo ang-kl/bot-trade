@@ -71,8 +71,8 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
   })
 }
 
-/** Resting (set) broker orders → standard rows. */
-export function brokerOrderRows(orders) {
+/** Resting (set) broker orders → standard rows. manageable=true arms the panel. */
+export function brokerOrderRows(orders, { manageable = false } = {}) {
   return (orders || []).map(o => ({
     id: `bo-${o.orderId}`,
     at: null,
@@ -88,6 +88,7 @@ export function brokerOrderRows(orders) {
     reason: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.expiresAt ? ` · expires ${dateTimeParts(o.expiresAt)?.day ?? ''} ${dateTimeParts(o.expiresAt)?.time ?? ''}` : ''}`,
     reasonTitle: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.label || o.comment ? ` · ${o.label || o.comment}` : ''}`,
     chart: { symbol: o.symbol, timeframe: '1h', lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp } },
+    panel: manageable,
     raw: o,
   }))
 }
