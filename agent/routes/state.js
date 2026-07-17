@@ -193,9 +193,10 @@ export default function stateRouter(db) {
     // standard order-log columns).
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at
+        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
+         LEFT JOIN analyses a ON a.id = t.analysis_id
          WHERE mp.status = 'active' ORDER BY mp.created_at DESC`
       )
       .all()

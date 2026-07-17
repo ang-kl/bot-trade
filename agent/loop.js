@@ -143,6 +143,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     entry: synth.entry ?? null,
     sl: synth.sl ?? null,
     tp1: synth.tp1 ?? null,
+    // Second ladder level (runner target) — display-only for the order log's
+    // TP cell; the broker order carries tp1, the manager banks the partial.
+    tp2: synth.tp2 ?? null,
     requestedVolume: requestedVol,
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
