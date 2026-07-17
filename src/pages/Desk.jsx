@@ -397,9 +397,9 @@ export default function Desk() {
         {llmSpend && (
           <>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums mb-2">
-              <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(4)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
-              <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(4)}</span></span>
-              <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(4)}</span></span>
+              <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
+              <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(2)}</span></span>
+              <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
               <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
             </div>
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
@@ -423,7 +423,7 @@ export default function Desk() {
                         <td className="py-1 pr-3 text-right">{p2.calls.toLocaleString()}</td>
                         <td className="py-1 pr-3 text-right">{p2.input_tokens.toLocaleString()}</td>
                         <td className="py-1 pr-3 text-right">{p2.output_tokens.toLocaleString()}</td>
-                        <td className="py-1 text-right">${p2.cost_usd.toFixed(4)}</td>
+                        <td className="py-1 text-right">${p2.cost_usd.toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -454,67 +454,146 @@ export default function Desk() {
         )}
       </Section>
 
-      {/* Edge health — alpha decay: rolling expectancy per strategy (recent
-          window vs prior) and expectancy by entry lag. Decaying edges get
-          cut on evidence, not vibes. */}
+      {/* Edge health — banded perspectives: the auto-bot's live edge,
+          signal decay, the owner's backtest baseline, and the advisory/
+          committed response list — every verdict evidential, every action
+          one link from its setting. No "unknown": unlabelled trades are
+          explained by source. */}
       <Section
         id="alphadecay"
-        title="Edge health — alpha decay"
+        title="Edge health"
         summary={(() => {
           if (!alphaDecay) return null
           const bad = (alphaDecay.strategies || []).filter(s2 => s2.trend === 'decaying').length
-          return bad ? `${bad} strategy(ies) DECAYING` : `${alphaDecay.total_closed ?? 0} closed trades analysed`
+          const adv = (alphaDecay.advisories || []).length
+          return bad ? `${bad} DECAYING · ${adv} advisories` : `${alphaDecay.total_closed ?? 0} trades · ${adv} advisories`
         })()}
         defaultOpen={false}
       >
         {!alphaDecay && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
-        {alphaDecay && (alphaDecay.strategies?.length ?? 0) === 0 && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results, so this fills as the bot trades.</p>
-        )}
-        {alphaDecay && (alphaDecay.strategies?.length ?? 0) > 0 && (
+        {alphaDecay && (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-[12px] tabular-nums">
-                <thead className="text-left text-[var(--color-text-sub)]">
-                  <tr className="border-b border-[var(--color-border)]">
-                    <th className="py-1 pr-3 font-semibold">Strategy</th>
-                    <th className="py-1 pr-3 font-semibold">Trend</th>
-                    <th className="py-1 pr-3 font-semibold text-right">Trades</th>
-                    <th className="py-1 pr-3 font-semibold text-right">Recent exp.</th>
-                    <th className="py-1 pr-3 font-semibold text-right">Prior exp.</th>
-                    <th className="py-1 font-semibold text-right">Δ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {alphaDecay.strategies.map(s2 => (
-                    <tr key={s2.strategy} className="border-b border-[var(--color-border)]">
-                      <td className="py-1 pr-3 font-semibold">{s2.strategy}</td>
-                      <td className="py-1 pr-3">
-                        <Badge tone={s2.trend === 'improving' ? 'up' : s2.trend === 'decaying' ? 'down' : 'neutral'}>
-                          {s2.trend === 'insufficient' ? 'TOO FEW' : s2.trend.toUpperCase()}
-                        </Badge>
-                      </td>
-                      <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
-                      <td className="py-1 pr-3 text-right">{s2.recent?.expectancy != null ? `$${s2.recent.expectancy.toFixed(2)}` : '—'}</td>
-                      <td className="py-1 pr-3 text-right">{s2.prior?.expectancy != null ? `$${s2.prior.expectancy.toFixed(2)}` : '—'}</td>
-                      <td className={`py-1 text-right font-semibold ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                        {s2.delta != null ? `${s2.delta >= 0 ? '+' : ''}${s2.delta.toFixed(2)}` : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {(alphaDecay.lag_sampled ?? 0) > 0 && (
-              <p className="mt-2 text-[12px] tabular-nums">
-                <span className="text-[var(--color-text-sub)]">Signal decay (expectancy by entry lag, {alphaDecay.lag_sampled} trades): </span>
-                {alphaDecay.entry_lag.map(b2 => (
-                  <span key={b2.key} className="mr-3">{b2.label}: <span className="font-semibold">{b2.expectancy != null ? `$${b2.expectancy.toFixed(2)}` : '—'}</span> ({b2.n})</span>
-                ))}
-              </p>
+            {/* Band 1 — the auto-bot's LIVE edge */}
+            <div className="text-[12px] font-semibold mb-1">Live edge — auto-bot</div>
+            {(alphaDecay.strategies?.length ?? 0) === 0 && (
+              <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
             )}
-            <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
-              Expectancy = average net PnL per trade. "Recent vs prior" compares the last {alphaDecay.window} trades against the {alphaDecay.window} before them, per strategy — a falling number is the edge eroding. Entry lag compares fills made quickly after their signal vs slow fills: if slow fills underperform, we're consuming the decayed tail of our own signals.
+            {(alphaDecay.strategies?.length ?? 0) > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px] tabular-nums">
+                  <thead className="text-left text-[var(--color-text-sub)]">
+                    <tr className="border-b border-[var(--color-border)]">
+                      <th className="py-1 pr-3 font-semibold">Strategy</th>
+                      <th className="py-1 pr-3 font-semibold">Trend</th>
+                      <th className="py-1 pr-3 font-semibold">Streak</th>
+                      <th className="py-1 pr-3 font-semibold text-right">Trades</th>
+                      <th className="py-1 pr-3 font-semibold text-right">Recent exp.</th>
+                      <th className="py-1 pr-3 font-semibold text-right">Prior exp.</th>
+                      <th className="py-1 font-semibold text-right">Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alphaDecay.strategies.map(s2 => {
+                      const un = s2.strategy === 'unlabelled'
+                      const srcNote = un && alphaDecay.unlabelled
+                        ? Object.entries(alphaDecay.unlabelled.sources).map(([k, v]) => `${k}: ${v}`).join(' · ')
+                        : null
+                      return (
+                        <tr key={s2.strategy} className="border-b border-[var(--color-border)]">
+                          <td className="py-1 pr-3 font-semibold">
+                            {un
+                              ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>unlabelled <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
+                              : <Link to="/tune" className="underline underline-offset-2" title="Open Tune — pipeline stage matrix for this strategy">{s2.strategy}</Link>}
+                          </td>
+                          <td className="py-1 pr-3">
+                            <Badge tone={s2.trend === 'improving' ? 'up' : s2.trend === 'decaying' ? 'down' : 'neutral'}>
+                              {s2.trend === 'insufficient' ? `NEED ${alphaDecay.window}+` : s2.trend.toUpperCase()}
+                            </Badge>
+                          </td>
+                          <td className={`py-1 pr-3 font-semibold ${s2.streak?.kind === 'win' ? 'text-[var(--color-up)]' : s2.streak?.kind === 'loss' ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+                            {s2.streak?.n ? `${s2.streak.n} ${s2.streak.kind}${s2.streak.n > 1 ? 's' : ''}` : '—'}
+                          </td>
+                          <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
+                          <td className="py-1 pr-3 text-right">{s2.recent?.expectancy != null ? `$${s2.recent.expectancy.toFixed(2)}` : '—'}</td>
+                          <td className="py-1 pr-3 text-right">{s2.prior?.expectancy != null ? `$${s2.prior.expectancy.toFixed(2)}` : '—'}</td>
+                          <td className={`py-1 text-right font-semibold ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                            {s2.delta != null ? `${s2.delta >= 0 ? '+' : ''}${s2.delta.toFixed(2)}` : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Band 2 — signal decay */}
+            <div className="text-[12px] font-semibold mt-3 mb-1">Signal decay — fills vs their signals</div>
+            {(alphaDecay.lag_sampled ?? 0) > 0
+              ? (
+                <p className="text-[12px] tabular-nums">
+                  {alphaDecay.entry_lag.map(b2 => (
+                    <span key={b2.key} className="mr-3">{b2.label}: <span className="font-semibold">{b2.expectancy != null ? `$${b2.expectancy.toFixed(2)}` : '—'}</span> ({b2.n})</span>
+                  ))}
+                  <span className="text-[var(--color-text-sub)]"> — if slow fills earn less, tighten the <Link to="/tune" className="text-[var(--color-accent)] underline">monitor cadence in Tune</Link>.</span>
+                </p>
+              )
+              : <p className="text-[12px] text-[var(--color-text-sub)]">Needs trades that carry their signal timestamp — fills from scanned signals populate this automatically.</p>}
+
+            {/* Band 3 — the OWNER's edge as backtested */}
+            <div className="text-[12px] font-semibold mt-3 mb-1">Your edge — backtest baseline</div>
+            {alphaDecay.backtest
+              ? (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[12px] tabular-nums">
+                      <thead className="text-left text-[var(--color-text-sub)]">
+                        <tr className="border-b border-[var(--color-border)]">
+                          <th className="py-1 pr-3 font-semibold">Combo</th>
+                          <th className="py-1 pr-3 font-semibold text-right">Trades</th>
+                          <th className="py-1 pr-3 font-semibold text-right">PF</th>
+                          <th className="py-1 pr-3 font-semibold text-right">Win %</th>
+                          <th className="py-1 font-semibold text-right">Total %</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {alphaDecay.backtest.combos.slice(0, 10).map(c2 => (
+                          <tr key={`${c2.symbol}|${c2.tf}`} className="border-b border-[var(--color-border)]">
+                            <td className="py-1 pr-3 font-semibold">{c2.symbol} · {c2.tf}</td>
+                            <td className="py-1 pr-3 text-right">{c2.trades}</td>
+                            <td className={`py-1 pr-3 text-right font-semibold ${(c2.profitFactor ?? 0) > 1 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{c2.profitFactor != null ? c2.profitFactor.toFixed(2) : '∞'}</td>
+                            <td className="py-1 pr-3 text-right">{c2.winRatePct != null ? `${c2.winRatePct.toFixed(0)}%` : '—'}</td>
+                            <td className={`py-1 text-right ${(c2.totalProfitPct ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{c2.totalProfitPct != null ? `${c2.totalProfitPct.toFixed(1)}%` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                    {alphaDecay.backtest.strategy} · tested {ago(alphaDecay.backtest.ranAt)} ago{alphaDecay.backtest.combos.length > 10 ? ` · showing 10 of ${alphaDecay.backtest.combos.length} combos` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
+                  </p>
+                </>
+              )
+              : <p className="text-[12px] text-[var(--color-text-sub)]">No baseline stored yet — <Link to="/tune" className="text-[var(--color-accent)] underline">run a backtest in Tune</Link> and your tested edge will appear here for live-vs-tested comparison.</p>}
+
+            {/* Band 4 — advisory vs committed: what YOU should look at, and
+                what the machine will do on its own. AI trading = evidential
+                response to streaks, not hope. */}
+            <div className="text-[12px] font-semibold mt-3 mb-1">
+              Advisories &amp; committed automation
+              <span className="ml-2 font-normal text-[var(--color-text-sub)]">breaker {alphaDecay.breaker?.on ? `ARMED at ${alphaDecay.breaker.streak} straight losses` : 'OFF'} · <Link to="/tune" className="text-[var(--color-accent)] underline">change</Link></span>
+            </div>
+            {(alphaDecay.advisories?.length ?? 0) === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">Nothing needs attention — edges holding, automation armed.</p>}
+            <ul className="text-[12px] space-y-1">
+              {(alphaDecay.advisories || []).map((a, i) => (
+                <li key={i} className="flex items-start gap-1.5">
+                  <Badge tone={a.level === 'committed' ? 'info' : 'warning'}>{a.level === 'committed' ? 'COMMITTED' : 'ADVISORY'}</Badge>
+                  <span className="min-w-0">{a.text} {a.link && <Link to={a.link} className="text-[var(--color-accent)] underline whitespace-nowrap">open {a.link === '/trade' ? 'Trade' : 'Tune'} →</Link>}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[11px] text-[var(--color-text-sub)]">
+              Expectancy = average net PnL per trade; "recent vs prior" compares the last {alphaDecay.window} trades against the {alphaDecay.window} before them, per strategy. ADVISORY = your call, with the evidence. COMMITTED = the adaptive breaker acts on its own at the stated threshold.
             </p>
           </>
         )}
@@ -545,7 +624,56 @@ export default function Desk() {
         </Section>
       )}
 
-      <Section id="performance" title="Performance" defaultOpen={false}>
+      {/* Performance — stat tiles first (they work from trade #1, no
+          3-day chart warm-up), the decisions/equity chart below. */}
+      <Section
+        id="performance"
+        title="Performance"
+        summary={(() => {
+          const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
+          if (closed.length === 0) return null
+          const total = closed.reduce((s2, t2) => s2 + Number(t2.net_pnl), 0)
+          return `${closed.length} closed · ${total >= 0 ? '+' : ''}${total.toFixed(2)}`
+        })()}
+        defaultOpen={false}
+      >
+        {(() => {
+          const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
+          if (closed.length === 0) {
+            return <p className="text-[12px] text-[var(--color-text-sub)] mb-2">No closed trades yet — tiles and chart fill from the first completed round-trip.</p>
+          }
+          const pnls = closed.map(t2 => Number(t2.net_pnl))
+          const wins = pnls.filter(v => v > 0)
+          const losses = pnls.filter(v => v <= 0)
+          const total = pnls.reduce((s2, v) => s2 + v, 0)
+          const grossWin = wins.reduce((s2, v) => s2 + v, 0)
+          const grossLoss = Math.abs(losses.reduce((s2, v) => s2 + v, 0))
+          const pf = grossLoss > 0 ? grossWin / grossLoss : null
+          // Max drawdown on the cumulative closed-trade equity curve.
+          let peak = 0; let equity = 0; let mdd = 0
+          for (const v of pnls) { equity += v; peak = Math.max(peak, equity); mdd = Math.max(mdd, peak - equity) }
+          const tile = (label, value, tone) => (
+            <div key={label} className="glass-inset rounded-[9px] px-2.5 py-1.5 min-w-[92px]">
+              <div className="text-[10px] text-[var(--color-text-sub)]">{label}</div>
+              <div className={`text-[13px] font-bold tabular-nums ${tone ?? ''}`}>{value}</div>
+            </div>
+          )
+          const up = 'text-[var(--color-up)]'
+          const down = 'text-[var(--color-down)]'
+          return (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {tile('Net P&L', `${total >= 0 ? '+' : ''}${total.toFixed(2)}`, total >= 0 ? up : down)}
+              {tile('Trades', String(closed.length))}
+              {tile('Win rate', `${((wins.length / closed.length) * 100).toFixed(0)}%`)}
+              {tile('Profit factor', pf != null ? pf.toFixed(2) : wins.length ? '∞' : '—', pf == null || pf >= 1 ? up : down)}
+              {tile('Expectancy', `${(total / closed.length).toFixed(2)}/trade`, total >= 0 ? up : down)}
+              {tile('Avg win', wins.length ? `+${(grossWin / wins.length).toFixed(2)}` : '—', up)}
+              {tile('Avg loss', losses.length ? `−${(grossLoss / losses.length).toFixed(2)}` : '—', down)}
+              {tile('Max drawdown', mdd > 0 ? `−${mdd.toFixed(2)}` : '—', down)}
+              {tile('Best / worst', `${Math.max(...pnls).toFixed(2)} / ${Math.min(...pnls).toFixed(2)}`)}
+            </div>
+          )
+        })()}
         <ReportChart allTrades={allTrades} events={events} />
       </Section>
     </div>

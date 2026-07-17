@@ -171,6 +171,27 @@ export default function actionsRouter(db) {
       } catch (err) {
         payload.report = { error: err.message }
       }
+      // Persist the owner's backtest BASELINE so Edge health can compare
+      // live results against "your edge as tested" (combo-level PF/win%).
+      try {
+        const combos = []
+        for (const [symName, data] of Object.entries(symbols)) {
+          for (const [tf, r] of Object.entries(data.results || {})) {
+            if (r && !r.error) {
+              combos.push({
+                symbol: symName, tf,
+                trades: r.trades ?? 0,
+                profitFactor: r.profitFactor ?? null,
+                totalProfitPct: r.totalProfitPct ?? null,
+                winRatePct: r.winRatePct ?? null,
+                wfPositive: r.wfPositive ?? null,
+                wfActive: r.wfActive ?? null,
+              })
+            }
+          }
+        }
+        setState(db, 'backtest_baseline_json', JSON.stringify({ ranAt: payload.ranAt, strategy, entryMode, bars: count, combos }))
+      } catch { /* baseline is best-effort */ }
       return payload
       } // end runWork
 
