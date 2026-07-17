@@ -270,6 +270,26 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/llm-budget — { dailyCapUsd } arms the once-a-day Telegram
+  // alert when estimated Anthropic spend crosses the cap. 0/null disarms.
+  // -----------------------------------------------------------------------
+  router.post('/llm-budget', (req, res) => {
+    const raw = req.body?.dailyCapUsd
+    if (raw == null || raw === '' || Number(raw) === 0) {
+      setState(db, 'llm_daily_cost_alert_usd', null)
+      return res.json({ ok: true, dailyCapUsd: null })
+    }
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < 0.1 || n > 1000) {
+      return res.status(400).json({ error: 'dailyCapUsd must be between 0.10 and 1000 (or 0 to disarm)' })
+    }
+    setState(db, 'llm_daily_cost_alert_usd', String(n))
+    setState(db, 'llm_spend_alerted_day', null) // re-arm today under the new cap
+    console.log(`[actions] LLM daily cost alert cap: $${n}`)
+    res.json({ ok: true, dailyCapUsd: n })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/monitor-interval — { minutes: 1..5 } base cadence for the
   // fast position monitor (volume scales it 1×/2×/3× automatically).
   // -----------------------------------------------------------------------

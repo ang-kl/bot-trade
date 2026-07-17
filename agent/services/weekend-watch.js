@@ -136,6 +136,8 @@ export async function runWeekendPositionCheck(client, position) {
       citations,
       searches_used: searchesUsed,
       tokens: resp.usage?.output_tokens || 0,
+      usage: resp.usage || null,
+      model: MODEL,
       ms: Date.now() - startedAt,
     }
   } catch (e) {
