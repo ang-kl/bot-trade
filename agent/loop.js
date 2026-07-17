@@ -1411,15 +1411,25 @@ async function runLoop(db) {
           // cTrader app (reverse / volume / SL / TP). Alert loudly, audit it,
           // and let the monitor manage the adopted broker truth.
           for (const mc of result.manualChanges || []) {
+            // Re-strategize: verify the changed trade against the market and
+            // recalibrate (reversal → fresh ATR-based SL/TP amended at the
+            // broker; volume/level edits → risk audit). Never fatal.
+            let outcome = null
+            let tail = ''
+            try {
+              const rs = await import('./services/restrategize.js')
+              outcome = await rs.restrategizeAfterTamper(db, { host, clientId, clientSecret, accessToken, accountId }, mc)
+              tail = rs.summarize(outcome)
+            } catch { /* verdict optional */ }
             const text = mc.kind === 'reversed'
-              ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} was REVERSED at the broker (${mc.from}→${mc.to}). The monitor now manages the new direction on technicals — the original thesis no longer applies.`
+              ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} was REVERSED at the broker (${mc.from}→${mc.to}). Original thesis no longer applies.${tail}`
               : mc.kind === 'volume'
-                ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} volume changed at the broker (${mc.from}→${mc.to} units) outside the bot.`
-                : `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} ${mc.kind === 'sl_moved' ? 'stop loss' : 'take profit'} moved at the broker (${mc.from ?? '—'}→${mc.to ?? '—'}) outside the bot. Adopted as the managed level.`
+                ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} volume changed at the broker (${mc.from}→${mc.to} units) outside the bot.${tail}`
+                : `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} ${mc.kind === 'sl_moved' ? 'stop loss' : 'take profit'} moved at the broker (${mc.from ?? '—'}→${mc.to ?? '—'}) outside the bot. Adopted as the managed level.${tail}`
             log(text)
             try {
               db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
-                .run('TAMPER', '/reconcile', JSON.stringify(mc).slice(0, 2000))
+                .run('TAMPER', '/reconcile', JSON.stringify({ ...mc, outcome }).slice(0, 2000))
             } catch { /* audit best-effort */ }
             try {
               const { notifyOwner } = await import('./services/telegram-control.js')
