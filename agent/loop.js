@@ -12,7 +12,7 @@ import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance } fr
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
-import { getActiveSessions, categoriseSymbol } from './lib/sessions.js'
+import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
 import { wsGetSymbolsList } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
@@ -104,7 +104,6 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // broker rejection — stocks/indices trade the NY session only, FX/metals
   // close on weekends. The signal isn't lost: if the zone still holds when
   // the market reopens, the scan will fire it again.
-  const { isSymbolMarketOpen } = await import('./lib/sessions.js')
   const marketGate = isSymbolMarketOpen(symbol)
   if (!marketGate.open) {
     // A persisting signal re-attempts every 5-minute cycle for the whole
@@ -1061,9 +1060,17 @@ async function runLoop(db) {
       // which will run the full Analyst instead). Catches weekend catalysts
       // (Fed speak, OPEC, geopolitics) that break thesis before Monday gap.
       // ---------------------------------------------------------------------
-      if (marketClosed && tradPositions.length > 0 && loopCount % 12 === 1) {
-        log(`Weekend watch — reviewing ${tradPositions.length} non-crypto position(s)`)
-        for (const pos of tradPositions) {
+      // Only during the ACTUAL weekend (Fri 21:00→Sun 22:00 UTC), and only
+      // for positions whose OWN market is closed — not the ~1h daily NY→Sydney
+      // lull that getActiveSessions() reports as "no session" (owner: NatGas
+      // was stamped WEEKEND:HOLD on a weekday while NYMEX had its own hours).
+      const weekendNow = isWeekend()
+      const weekendPositions = weekendNow
+        ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
+        : []
+      if (weekendPositions.length > 0 && loopCount % 12 === 1) {
+        log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
+        for (const pos of weekendPositions) {
           try {
             const check = await runWeekendPositionCheck(client, pos)
             recordAnthropicUsage(db, { output_tokens: check.tokens || 0 })

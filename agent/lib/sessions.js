@@ -17,6 +17,21 @@ export function getActiveSessions() {
   })
 }
 
+/**
+ * The FX/CFD WEEKEND — Fri 21:00 UTC → Sun 22:00 UTC. This is a real
+ * multi-day close (gap-risk territory), NOT the ~1-hour daily lull between
+ * NY close and Sydney open that getActiveSessions() reads as "no session".
+ * The weekend watch must key on THIS, or it fires (and mislabels
+ * "WEEKEND:HOLD") every weekday night. Owner-reported 2026-07-17.
+ */
+export function isWeekend(now = new Date()) {
+  const day = now.getUTCDay()          // 0 Sun … 6 Sat
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes()
+  return day === 6 ||
+    (day === 5 && mins >= 21 * 60) ||
+    (day === 0 && mins < 22 * 60)
+}
+
 export function getSessionContext() {
   const active = getActiveSessions()
   if (active.length === 0) return 'Off-hours - thin liquidity, wide spreads. Careful with entries.'
