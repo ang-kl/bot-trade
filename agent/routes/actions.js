@@ -562,6 +562,27 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/order-cancel — cancel ONE resting order at the broker
+  // (the Manage pop-up's Cancel). Marks any matching pending_orders ledger
+  // row cancelled so the pending manager doesn't chase a ghost.
+  router.post('/order-cancel', async (req, res) => {
+    try {
+      const orderId = req.body?.orderId
+      if (!orderId) return res.status(400).json({ error: 'orderId required' })
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { cancelOrder } = await import('../lib/exec-engine.js')
+      const r = await cancelOrder(creds, { orderId })
+      try {
+        db.prepare(`UPDATE pending_orders SET status = 'cancelled', note = COALESCE(note, '') || ' | cancelled via Manage' WHERE order_id = ?`).run(String(orderId))
+      } catch { /* ledger row optional */ }
+      console.log(`[actions] order ${orderId} cancelled via Manage`)
+      res.json({ ok: true, alreadyGone: !!r?.alreadyGone })
+    } catch (e) {
+      res.status(502).json({ error: e.message })
+    }
+  })
+
   // POST /actions/position-close — close ONE position, fully or partially.
   // Body: { positionId, lots? } (omit lots → full close).
   router.post('/position-close', async (req, res) => {

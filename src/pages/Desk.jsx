@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
 import PositionManager from '../components/PositionManager.jsx'
+import OrderManager from '../components/OrderManager.jsx'
 import ReportChart from '../components/ReportChart.jsx'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -293,10 +294,11 @@ export default function Desk() {
           <div className="mt-2">
             <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
             <StdTradeTable
-              rows={brokerOrderRows(broker.orders)}
+              rows={brokerOrderRows(broker.orders, { manageable: true })}
               countLabel="pending orders"
               marketHours={marketHours}
               onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
+              panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
             />
           </div>
         )}
