@@ -104,7 +104,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // broker rejection — stocks/indices trade the NY session only, FX/metals
   // close on weekends. The signal isn't lost: if the zone still holds when
   // the market reopens, the scan will fire it again.
-  const marketGate = isSymbolMarketOpen(symbol)
+  // Broker-truth schedule (symbol_hours table) when cached; the sessions.js
+  // heuristic is the fallback for symbols not yet refreshed.
+  const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
+  const marketGate = isSymbolOpenCached(db, symbol)
   if (!marketGate.open) {
     // A persisting signal re-attempts every 5-minute cycle for the whole
     // closed session — log the veto ONCE per closure, not 100+ times
@@ -1042,6 +1045,23 @@ async function runLoop(db) {
         }
       } catch (err) {
         log(`Profit Keeper failed (non-fatal): ${err.message}`)
+      }
+
+      // Periodic broker-truth market-hours refresh — pull each mapped
+      // symbol's real trading schedule from cTrader into symbol_hours so the
+      // open/closed gate scales to 1,900+ instruments without hardcoded
+      // categories. Roughly once a day (every ~288 five-min loops), and once
+      // shortly after boot when the table is empty. Non-fatal.
+      try {
+        const creds = getCtraderCreds(db)
+        const haveHours = db.prepare('SELECT COUNT(*) AS n FROM symbol_hours').get().n
+        if (creds.ready && (loopCount % 288 === 5 || haveHours === 0)) {
+          const { refreshSymbolHours } = await import('./services/symbol-hours.js')
+          const r = await refreshSymbolHours(db, creds)
+          if (r.updated) log(`Market hours refreshed: ${r.updated} symbols${r.errors.length ? `, ${r.errors.length} batch error(s)` : ''}`)
+        }
+      } catch (err) {
+        log(`Market-hours refresh failed (non-fatal): ${err.message}`)
       }
 
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
