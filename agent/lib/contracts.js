@@ -106,14 +106,32 @@ function fxQuoteCurrency(symbol) {
 }
 
 /**
+ * Currency → USD conversion from a live rates map ({ SYMBOL: price } — the
+ * scan's freshest closes). GBP via GBPUSD (multiply), JPY via USDJPY
+ * (divide). Returns NaN when no usable pair is in the map — callers veto,
+ * never guess.
+ */
+export function usdRate(currency, rates) {
+  const c = (currency || '').toUpperCase()
+  if (c === 'USD') return 1
+  if (!rates || typeof rates !== 'object') return NaN
+  const direct = Number(rates[`${c}USD`])
+  if (Number.isFinite(direct) && direct > 0) return direct
+  const inverse = Number(rates[`USD${c}`])
+  if (Number.isFinite(inverse) && inverse > 0) return 1 / inverse
+  return NaN
+}
+
+/**
  * USD loss per lot given a price-level distance. Exact for USD-quoted symbols
  * (XXXUSD, indices, commodities). For USD-base pairs (USDJPY, USDCHF …) the
  * raw loss is in the quote currency; pass the current `price` so it can be
- * converted back to USD (loss ÷ price). Returns NaN when the conversion is
- * impossible — USD-base without a price, or a cross with no USD leg — so the
- * risk manager vetoes instead of mis-sizing.
+ * converted back to USD (loss ÷ price). CROSSES (EURGBP, GBPJPY …) convert
+ * their quote-currency loss through `rates` — the scan's live closes of the
+ * USD majors (GBP via GBPUSD, JPY via USDJPY …). Returns NaN only when no
+ * conversion path exists, so the risk manager vetoes instead of mis-sizing.
  */
-export function usdLossPerLot(symbol, priceDistance, price) {
+export function usdLossPerLot(symbol, priceDistance, price, rates = null) {
   const quote = fxQuoteCurrency(symbol)
   const lossInQuote = Math.abs(priceDistance) * contractSize(symbol)
   if (quote == null || quote === 'USD') return lossInQuote
@@ -121,6 +139,10 @@ export function usdLossPerLot(symbol, priceDistance, price) {
   if (base === 'USD' && Number.isFinite(price) && price > 0) {
     return lossInQuote / price
   }
+  // Cross (or USD-base without a price): convert the quote currency to USD
+  // via the live rates map.
+  const rate = usdRate(quote, rates)
+  if (Number.isFinite(rate)) return lossInQuote * rate
   return NaN
 }
 
@@ -133,12 +155,20 @@ export function usdLossPerLot(symbol, priceDistance, price) {
  * Crosses (no USD leg) fall back to quote-currency notional, which is only
  * an approximation for the margin headroom check.
  */
-export function notionalUsd(symbol, volumeLots, price) {
+export function notionalUsd(symbol, volumeLots, price, rates = null) {
   const quote = fxQuoteCurrency(symbol)
   if (quote != null && quote !== 'USD') {
     const base = symbol.toUpperCase().slice(0, 3)
     // 1 lot of USDXXX = contractSize USD of notional, no price term needed.
     if (base === 'USD') return Math.abs(volumeLots) * contractSize(symbol)
+    // Cross: the price term yields QUOTE-currency notional (GBPJPY → JPY);
+    // convert to USD via the live rates or the margin gate overstates a
+    // JPY-quoted position ~150× and falsely vetoes on margin.
+    const rate = usdRate(quote, rates)
+    if (Number.isFinite(rate)) {
+      return Math.abs(volumeLots) * contractSize(symbol) * Math.abs(price) * rate
+    }
+    // No rate — fall through to the quote-notional approximation (legacy).
   }
   return Math.abs(volumeLots) * contractSize(symbol) * Math.abs(price)
 }

@@ -33,7 +33,10 @@ export default function Button({ children, variant = 'primary', size = 'md', cla
   const cls = [
     'inline-flex items-center justify-center gap-1',
     'rounded-full border font-semibold',
-    'transition-all cursor-pointer',
+    // transform-gpu isolate: own compositing layer — iOS Safari ghost-paints
+    // gradient/glow elements at stale positions on reflow (owner saw a blue
+    // smear behind the "Saved" state; same family as the Badge/slider fixes).
+    'transition-all cursor-pointer transform-gpu isolate',
     'disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none',
     'focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/50',
     'active:scale-[0.98]',

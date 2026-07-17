@@ -102,8 +102,8 @@ export function getAccountLeverage(db, config) {
  * Compute margin required for a proposed position (in the account's deposit
  * currency, approximated as USD). Returns { notional, marginRequired }.
  */
-export function requiredMargin(symbol, volumeLots, price, leverage) {
-  const notional = notionalUsd(symbol, volumeLots, price)
+export function requiredMargin(symbol, volumeLots, price, leverage, rates = null) {
+  const notional = notionalUsd(symbol, volumeLots, price, rates)
   const marginRequired = notional / Math.max(1, leverage)
   return { notional, marginRequired }
 }
@@ -159,9 +159,9 @@ export function netExposure(positions, proposal) {
  * Returns { volume, usdRisk, note }. `volume` is rounded down to 2dp; callers
  * should veto if it falls below the minimum lot size.
  */
-export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, entryPrice) {
+export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, entryPrice, rates = null) {
   const budget = balance * riskPct
-  const usdPerLot = usdLossPerLot(symbol, slDistance, entryPrice)
+  const usdPerLot = usdLossPerLot(symbol, slDistance, entryPrice, rates)
   if (!Number.isFinite(usdPerLot) || usdPerLot <= 0) {
     return { volume: 0, usdRisk: 0, note: 'usd_per_lot_unknown' }
   }
@@ -174,6 +174,24 @@ export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, ent
     usdRisk: Number(usdRisk.toFixed(2)),
     note: `risk_budget=$${budget.toFixed(2)} usd_per_lot=$${usdPerLot.toFixed(2)}`,
   }
+}
+
+/**
+ * Live conversion table from the scan's freshest closes: { SYMBOL: price }.
+ * The USD majors on the watchlist double as cross-pair conversion rates
+ * (GBPUSD → GBP→USD, USDJPY → JPY→USD …). Empty when no scan has run yet —
+ * crosses then veto honestly until the first scan lands (≤5 minutes).
+ */
+export function scanRates(db) {
+  try {
+    const parsed = JSON.parse(getState(db, 'last_scan_results') || 'null')
+    const rates = {}
+    for (const sc of parsed?.scans || []) {
+      const p = Number(sc?.price)
+      if (Number.isFinite(p) && p > 0 && sc?.symbol) rates[String(sc.symbol).toUpperCase()] = p
+    }
+    return rates
+  } catch { return {} }
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +402,10 @@ export function evaluateTrade(db, proposal, configOverride) {
   let sizingFloor = hasCap ? reqVol : config.minLotSize
   let sizingNote = null
   if (balance != null) {
-    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct, entry)
+    // Live rates for cross-pair sizing (GBPJPY loss is in JPY; convert via
+    // USDJPY from the scan's freshest closes) — the whole watchlist of USD
+    // majors doubles as the conversion table.
+    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct, entry, scanRates(db))
     checks.risk_budget = Number((balance * config.perTradeRiskPct).toFixed(2))
     checks.risk_based_volume = risked.volume
     checks.risk_based_usd = risked.usdRisk
@@ -420,7 +441,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   // `maxMarginUsagePct` of balance. Only enforced when balance is set.
   if (balance != null) {
     const { notional, marginRequired } = requiredMargin(
-      proposal.symbol, finalVolume, entry, leverage,
+      proposal.symbol, finalVolume, entry, leverage, scanRates(db),
     )
     checks.notional_usd = Number(notional.toFixed(2))
     checks.margin_required_usd = Number(marginRequired.toFixed(2))

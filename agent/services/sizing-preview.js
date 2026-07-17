@@ -47,8 +47,10 @@ export function sizingPreview(db) {
     if (price == null) return { ...base, autoLots: null, usdPerLot: null, note: 'no scan price yet' }
 
     const slDistance = price * (cfg.minSLDistancePct / 100)
-    const sized = computeRiskBasedVolume(balance, symbol, slDistance, cfg.perTradeRiskPct, price)
-    const usdPerLot = usdLossPerLot(symbol, slDistance, price)
+    // `prices` doubles as the cross-conversion table (GBP via GBPUSD, JPY
+    // via USDJPY …) — same rates the live risk gate uses.
+    const sized = computeRiskBasedVolume(balance, symbol, slDistance, cfg.perTradeRiskPct, price, prices)
+    const usdPerLot = usdLossPerLot(symbol, slDistance, price, prices)
     const autoLots = sized.volume
     const effectiveLots = autoLots != null && maxCap != null ? Math.min(autoLots, maxCap) : autoLots
     return {

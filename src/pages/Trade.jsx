@@ -21,6 +21,18 @@ function fmt(n, digits = 5) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
+// SQLite datetimes are UTC without a zone marker — normalise before Date().
+function dateTimeParts(iso) {
+  if (!iso) return null
+  const s = String(iso)
+  const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
+  if (!Number.isFinite(d.getTime())) return null
+  return {
+    day: d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }),
+    time: d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+  }
+}
+
 function ago(iso) {
   if (!iso) return '—'
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -49,7 +61,19 @@ function PositionRow({ p }) {
         <td className="pr-3">{fmt(p.entry_price)}</td>
         <td className="pr-3">{fmt(p.current_sl)}</td>
         <td className="pr-3">{fmt(p.current_tp)}</td>
-        <td className="pr-3">{ago(p.opened_at)}</td>
+        {/* monitored_positions stamps created_at (opened_at was a field this
+            table never had — the column showed "—" forever; owner: "a lie"). */}
+        <td className="pr-3 whitespace-nowrap">
+          {(() => {
+            const w = dateTimeParts(p.opened_at || p.created_at)
+            return w
+              ? <>
+                  <span className="block leading-tight">{w.day}</span>
+                  <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
+                </>
+              : '—'
+          })()}
+        </td>
         <td className="pr-3 text-[var(--color-text-sub)]">{p.last_check_action || '—'} {p.last_checked_at ? `(${ago(p.last_checked_at)})` : ''}</td>
         <td>
           <Button size="sm" variant="ghost" onClick={() => setShowChart(s => !s)}>{showChart ? 'Hide' : 'Chart'}</Button>
@@ -580,16 +604,24 @@ export default function Trade() {
             <div className="mb-2">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
               <ul className="space-y-1 text-[13px]">
-                {broker.pendingOrders.map((o, i) => (
-                  <li key={o.orderId || i} className="flex items-center gap-2">
-                    <Badge tone={String(o.tradeData?.tradeSide || o.tradeSide).toUpperCase() === 'BUY' ? 'up' : 'down'}>
-                      {String(o.tradeData?.tradeSide || o.tradeSide || '?').toUpperCase()}
-                    </Badge>
-                    <span className="font-semibold">{o.symbolName || o.tradeData?.symbolId}</span>
-                    <span className="text-[var(--color-text-sub)]">{o.orderType || 'order'} @ {fmt(o.limitPrice ?? o.stopPrice)}</span>
-                  </li>
-                ))}
+                {broker.pendingOrders.map((o, i) => {
+                  const side = String(o.side || o.tradeData?.tradeSide || '').toUpperCase()
+                  return (
+                    <li key={o.orderId || i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <Badge tone={side === 'BUY' ? 'up' : side === 'SELL' ? 'down' : 'neutral'}>{side || '?'}</Badge>
+                      <Badge tone={o.bot ? 'special' : 'neutral'}>{o.bot ? 'BOT' : 'MANUAL'}</Badge>
+                      <span className="font-semibold">{o.symbolName || o.tradeData?.symbolId}</span>
+                      <span className="text-[var(--color-text-sub)]">{typeof o.orderType === 'string' ? o.orderType : 'LIMIT'} @ <span className="font-semibold text-[var(--color-text)] tabular-nums">{fmt(o.limitPrice ?? o.stopPrice)}</span></span>
+                      {o.volumeUnits != null && <span className="text-[var(--color-text-sub)] tabular-nums">{Number(o.volumeUnits).toLocaleString()} units</span>}
+                      <span className="tabular-nums">SL {o.sl != null ? fmt(o.sl) : '—'} · TP {o.tp != null ? fmt(o.tp) : '—'}</span>
+                      {o.expiresAt && <span className="text-[var(--color-text-sub)]">expires {new Date(o.expiresAt).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
+                    </li>
+                  )
+                })}
               </ul>
+              <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                SL/TP showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
+              </p>
             </div>
           )}
           {(broker.externalPositions?.length || 0) > 0 && (
