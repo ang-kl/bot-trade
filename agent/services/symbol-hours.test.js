@@ -89,3 +89,25 @@ test('isSymbolOpenCached: uses broker table when present, heuristic when not', (
   assert.equal(btc.open, true)
   assert.equal(btc.source, 'heuristic')
 })
+
+test('nextOpenInfo: open symbol → open:true; closed → next interval start projected to real time', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Open Mon 00:00 → Fri 21:00 (UTC)
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('EURUSD', 1, ?, 'UTC')`)
+    .run(JSON.stringify([{ start: 1 * DAY, end: 5 * DAY + 21 * HOUR }]))
+
+  const openRead = nextOpenInfo(db, 'EURUSD', wed(14, 0))
+  assert.equal(openRead.open, true)
+  assert.equal(openRead.next_open_at, null)
+
+  // Saturday 12:00 UTC → next open is Monday 00:00 UTC (36h later)
+  const sat = new Date(Date.UTC(2026, 6, 18, 12))
+  const closedRead = nextOpenInfo(db, 'EURUSD', sat)
+  assert.equal(closedRead.open, false)
+  assert.equal(closedRead.next_open_at, new Date(sat.getTime() + 36 * 3600 * 1000).toISOString())
+
+  // Heuristic symbol (no schedule row): honest null next_open_at
+  const btc = nextOpenInfo(db, 'BTCUSD', sat)
+  assert.equal(btc.next_open_at, null)
+})

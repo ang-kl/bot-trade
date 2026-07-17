@@ -9,7 +9,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import { brokerPositionRows, brokerOrderRows } from '../lib/std-trade-rows.js'
-import { agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 30_000
 
@@ -18,7 +18,7 @@ function fmt(n, digits = 5) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
-function AccountCard({ acct, defaultOpen }) {
+function AccountCard({ acct, defaultOpen, marketHours }) {
   const busyCount = (acct.positions?.length ?? 0) + (acct.orders?.length ?? 0)
   const [open, setOpen] = useState(defaultOpen || busyCount > 0)
   return (
@@ -42,13 +42,13 @@ function AccountCard({ acct, defaultOpen }) {
           {acct.positions?.length > 0 && (
             <>
               <div className="text-[12px] font-semibold mt-1 mb-1">Live positions</div>
-              <StdTradeTable rows={brokerPositionRows(acct.positions)} countLabel="open positions" />
+              <StdTradeTable rows={brokerPositionRows(acct.positions)} countLabel="open positions" marketHours={marketHours} />
             </>
           )}
           {acct.orders?.length > 0 && (
             <>
               <div className="text-[12px] font-semibold mt-2 mb-1">Pending (set) orders</div>
-              <StdTradeTable rows={brokerOrderRows(acct.orders)} countLabel="pending orders" />
+              <StdTradeTable rows={brokerOrderRows(acct.orders)} countLabel="pending orders" marketHours={marketHours} />
             </>
           )}
           {!acct.error && !acct.positions?.length && !acct.orders?.length && (
@@ -65,6 +65,7 @@ export default function Accounts() {
   const [others, setOthers] = useState(null)   // remaining accounts (on demand)
   const [loadingAll, setLoadingAll] = useState(false)
   const [updatedAt, setUpdatedAt] = useState(null)
+  const [marketHours, setMarketHours] = useState(null)
   const [error, setError] = useState('')
   const timer = useRef(null)
 
@@ -73,6 +74,7 @@ export default function Accounts() {
     try {
       const r = await agentPost('/actions/broker-positions', { selectedOnly: true })
       setBot(r.accounts?.[0] ?? null)
+      agentGet('/state/market-hours').then(x => setMarketHours(x?.hours || null)).catch(() => {})
       setUpdatedAt(new Date())
       setError('')
     } catch (e) { setError(e.message) }
@@ -112,9 +114,9 @@ export default function Accounts() {
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {!bot && !error && <Card className="text-[13px] text-[var(--color-text-sub)]">Loading the bot's account from the broker…</Card>}
-      {bot && <AccountCard acct={bot} defaultOpen />}
+      {bot && <AccountCard acct={bot} defaultOpen marketHours={marketHours} />}
 
-      {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} />)}
+      {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}
       {others && others.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
 
       <p className="text-[12px] text-[var(--color-text-sub)]">

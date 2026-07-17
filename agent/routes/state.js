@@ -417,6 +417,7 @@ export default function stateRouter(db) {
       watchlist: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
       pending_mode_enabled: getState(db, 'pending_mode_enabled') === 'true',
       pending_matrix: (() => { try { return JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { return null } })(),
+      autotrade_scope: getState(db, 'autotrade_scope') || 'all',
       burn_in: (() => { try { const p = JSON.parse(getState(db, 'burn_in_json') || 'null'); return p && typeof p === 'object' ? p : { on: false } } catch { return { on: false } } })(),
       adaptive_breaker: (() => { try { const p = JSON.parse(getState(db, 'adaptive_breaker_json') || 'null'); return p && typeof p === 'object' ? { on: p.on !== false, streak: p.streak ?? 3 } : { on: true, streak: 3 } } catch { return { on: true, streak: 3 } } })(),
       monitor_interval_min: Number(getState(db, 'monitor_interval_min')) || 1,
@@ -684,6 +685,30 @@ export default function stateRouter(db) {
     try {
       const { heartbeatView } = await import('../services/heartbeat.js')
       res.json({ controllers: heartbeatView(db) })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/market-hours?symbols=A,B — open/closed per symbol plus WHEN
+  // a closed market next opens (broker schedule when cached; heuristic
+  // symbols report open/closed only). Default scope: watchlist + active
+  // positions.
+  // -----------------------------------------------------------------------
+  router.get('/market-hours', async (req, res) => {
+    try {
+      const { nextOpenInfo } = await import('../services/symbol-hours.js')
+      let symbols = String(req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+      if (symbols.length === 0) {
+        const wl = (() => { try { return JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]') } catch { return [] } })()
+        const wlSyms = (Array.isArray(wl) ? wl : []).map(w => (typeof w === 'string' ? w : w.symbol)).filter(Boolean)
+        const posSyms = db.prepare(`SELECT DISTINCT symbol FROM monitored_positions WHERE status = 'active'`).all().map(r => r.symbol)
+        symbols = [...new Set([...wlSyms, ...posSyms].map(s => String(s).toUpperCase()))]
+      }
+      const hours = {}
+      for (const sym of symbols.slice(0, 300)) hours[sym] = nextOpenInfo(db, sym)
+      res.json({ hours })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
