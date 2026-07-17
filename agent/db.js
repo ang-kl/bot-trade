@@ -307,6 +307,11 @@ export function initDB(dbPath) {
     ['account_id',           'TEXT'],
     ['guard_json',           'TEXT'],
     ['peak_profit_usd',      'REAL'],
+    // Tamper watch — last-seen broker truth for change detection (manual
+    // reversals, volume edits, hand-moved SL/TP in the cTrader app).
+    ['broker_volume_units',  'REAL'],
+    ['broker_sl',            'REAL'],
+    ['broker_tp',            'REAL'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {

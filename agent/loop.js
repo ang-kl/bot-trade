@@ -477,6 +477,11 @@ export async function executeBrokerAction(db, s, pos, eval_) {
       const remainingUnits = totalUnits - closeUnits
       const remainingLots = remainingUnits / meta.lotSize
       if (pos.trade_id) s.reduceTradeVolume.run(remainingLots, pos.trade_id)
+      // Re-baseline the tamper watch: this volume change is OURS, so the
+      // next reconcile must stamp fresh instead of flagging it as manual.
+      try {
+        db.prepare('UPDATE monitored_positions SET broker_volume_units = NULL WHERE id = ?').run(pos.id)
+      } catch { /* watch column optional */ }
 
       // Move SL for the runner leg (skip if newSL is null / same as current).
       if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
@@ -1400,7 +1405,27 @@ async function runLoop(db) {
 
           const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${result.pendingOrders.length} pending orders`)
+          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
+
+          // Tamper watch — the owner changed a bot-tracked position in the
+          // cTrader app (reverse / volume / SL / TP). Alert loudly, audit it,
+          // and let the monitor manage the adopted broker truth.
+          for (const mc of result.manualChanges || []) {
+            const text = mc.kind === 'reversed'
+              ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} was REVERSED at the broker (${mc.from}→${mc.to}). The monitor now manages the new direction on technicals — the original thesis no longer applies.`
+              : mc.kind === 'volume'
+                ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} volume changed at the broker (${mc.from}→${mc.to} units) outside the bot.`
+                : `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} ${mc.kind === 'sl_moved' ? 'stop loss' : 'take profit'} moved at the broker (${mc.from ?? '—'}→${mc.to ?? '—'}) outside the bot. Adopted as the managed level.`
+            log(text)
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TAMPER', '/reconcile', JSON.stringify(mc).slice(0, 2000))
+            } catch { /* audit best-effort */ }
+            try {
+              const { notifyOwner } = await import('./services/telegram-control.js')
+              await notifyOwner(text)
+            } catch { /* non-fatal */ }
+          }
 
           // Refresh the real account balance so risk sizing tracks equity as
           // trades close (linking set it once; this keeps it live).
