@@ -36,11 +36,19 @@ export function categoriseSymbol(symbol) {
   const crypto = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD']
   const indices = ['US500', 'US30', 'NAS100', 'GER40', 'JPN225', 'VIX', 'CN50', 'SDY']
   const metals = ['XAUUSD', 'XAGUSD', 'XPTUSD', 'USDX']
-  const commodities = ['NATGAS', 'COCOA', 'COFFEE', 'COPPER', 'ALUMINIUM', 'SOYBEANS', 'SPOTCRUDE']
+  // ICE softs — London/NY daytime exchange windows, NOT 24/5.
+  const softs = ['COCOA', 'COFFEE', 'SUGAR', 'COTTON', 'OJUICE']
+  // CBOT grains — overnight + daytime sessions with a midday break. CORN was
+  // MISSING entirely and fell through to 'stock' → falsely vetoed all night
+  // (owner report 2026-07-17).
+  const grains = ['CORN', 'WHEAT', 'SOYBEAN', 'SOYBEANS', 'OATS', 'RICE']
+  const commodities = ['NATGAS', 'COPPER', 'ALUMINIUM', 'SPOTCRUDE', 'WTI', 'BRENT']
   if (fx.includes(s)) return 'fx'
   if (crypto.includes(s)) return 'crypto'
   if (indices.includes(s)) return 'index'
   if (metals.includes(s)) return 'metal'
+  if (softs.includes(s)) return 'soft'
+  if (grains.includes(s)) return 'grain'
   if (commodities.includes(s)) return 'commodity'
   return 'stock'
 }
@@ -52,9 +60,15 @@ export function categoriseSymbol(symbol) {
  * weekends, crypto never closes.
  *
  * Conservative approximations (UTC):
- *   stock/index  → NYSE cash-ish window, Mon–Fri 14:30–20:55
- *   fx/metal/commodity → Sun 22:00 → Fri 21:00
- *   crypto       → always
+ *   stock/index        → NYSE cash-ish window, Mon–Fri 14:30–20:55
+ *   soft (ICE)         → Mon–Fri 09:00–17:15 (cocoa/coffee/sugar/cotton
+ *                        daytime exchange window — they were treated as 24/5
+ *                        and the BROKER rejected the overnight orders)
+ *   grain (CBOT)       → Mon–Fri 00:05–12:40 and 13:35–18:15 (overnight +
+ *                        daytime electronic sessions, midday break honoured)
+ *   commodity (energy) → 24/5 minus the daily 21:00–22:00 settlement break
+ *   fx/metal           → Sun 22:00 → Fri 21:00
+ *   crypto             → always
  *
  * @returns {{open: boolean, reason?: string}}
  */
@@ -72,14 +86,35 @@ export function isSymbolMarketOpen(symbol, now = new Date()) {
       : { open: false, reason: `${symbol} trades the New York session only (Mon–Fri 14:30–20:55 UTC) — signal skipped until the market opens` }
   }
 
+  if (cat === 'soft') {
+    const inSession = day >= 1 && day <= 5 && mins >= 9 * 60 && mins <= 17 * 60 + 15
+    return inSession
+      ? { open: true }
+      : { open: false, reason: `${symbol} trades the ICE daytime window only (Mon–Fri 09:00–17:15 UTC) — signal skipped until the market opens` }
+  }
+
+  if (cat === 'grain') {
+    const overnight = mins >= 5 && mins <= 12 * 60 + 40
+    const daytime = mins >= 13 * 60 + 35 && mins <= 18 * 60 + 15
+    const inSession = day >= 1 && day <= 5 && (overnight || daytime)
+    return inSession
+      ? { open: true }
+      : { open: false, reason: `${symbol} trades CBOT sessions only (Mon–Fri 00:05–12:40 & 13:35–18:15 UTC) — signal skipped until the market opens` }
+  }
+
   // fx / metal / commodity: closed from Fri 21:00 UTC to Sun 22:00 UTC
   const weekendClosed =
     day === 6 ||
     (day === 5 && mins >= 21 * 60) ||
     (day === 0 && mins < 22 * 60)
-  return weekendClosed
-    ? { open: false, reason: `${symbol}: FX/CFD market is closed for the weekend (reopens Sun 22:00 UTC)` }
-    : { open: true }
+  if (weekendClosed) {
+    return { open: false, reason: `${symbol}: FX/CFD market is closed for the weekend (reopens Sun 22:00 UTC)` }
+  }
+  // Energies observe a daily 21:00–22:00 UTC settlement break.
+  if (cat === 'commodity' && mins >= 21 * 60 && mins < 22 * 60) {
+    return { open: false, reason: `${symbol}: daily settlement break (21:00–22:00 UTC) — reopens at 22:00` }
+  }
+  return { open: true }
 }
 
 // Next session opening — returns { label, minsUntil } or null.
@@ -113,7 +148,7 @@ export function inPrimeSession(symbol, t) {
   const cat = categoriseSymbol(symbol)
   if (cat === 'crypto') return true
   const now = new Date(t)
-  if (cat === 'stock' || cat === 'index') return isSymbolMarketOpen(symbol, now).open
+  if (cat === 'stock' || cat === 'index' || cat === 'soft' || cat === 'grain') return isSymbolMarketOpen(symbol, now).open
   const day = now.getUTCDay()
   if (day === 0 || day === 6) return false
   const h = now.getUTCHours()

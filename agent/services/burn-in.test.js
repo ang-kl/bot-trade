@@ -45,6 +45,7 @@ function deps(placed, { oneMinVol } = {}) {
       '5m': bars(), '15m': bars(), '30m': bars(), '1h': bars(),
     }),
     risk: { loadRiskConfig: () => ({ minSLDistancePct: 0.0015 }) },
+    isSymbolMarketOpen: () => ({ open: true }), // tests run at arbitrary wall-clock times
     now: () => 1_000_000_000_000,
   }
 }
@@ -158,6 +159,16 @@ test('pacing: behind schedule raises the per-cycle cap; completed counts from st
   assert.equal(out.expected, 100)
   assert.equal(out.maxPerCycle, 7)
   assert.equal(out.placed, 7)
+})
+
+test('closed-market symbols are filtered BEFORE any attempt (no veto spam)', async () => {
+  const db = mkDb({ watch: ['CORNX1', 'EURUSD'] })
+  const placed = []
+  const d = deps(placed)
+  d.isSymbolMarketOpen = (s) => (s === 'CORNX1' ? { open: false, reason: 'exchange closed' } : { open: true })
+  const out = await runBurnIn(db, CREDS, d)
+  assert.equal(out.placed, 1)
+  assert.ok(!placed.some(p => p.symbol === 'CORNX1'), 'closed market never reaches autoTrade')
 })
 
 test('symbols with an open bot position are skipped', async () => {

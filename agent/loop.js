@@ -107,10 +107,18 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const { isSymbolMarketOpen } = await import('./lib/sessions.js')
   const marketGate = isSymbolMarketOpen(symbol)
   if (!marketGate.open) {
-    persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol, source: synth.source || 'auto_signal' }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+    // A persisting signal re-attempts every 5-minute cycle for the whole
+    // closed session — log the veto ONCE per closure, not 100+ times
+    // (owner: the Order log drowned in repeat market_closed rows).
+    const dedupeKey = `mkt_closed_logged_${symbol}`
+    if (getState(db, dedupeKey) !== 'y') {
+      persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol, source: synth.source || 'auto_signal' }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+      setState(db, dedupeKey, 'y')
+    }
     log(`Auto-trade deferred — ${marketGate.reason}`)
     return null
   }
+  setState(db, `mkt_closed_logged_${symbol}`, null) // market open again — re-arm the one-shot
 
   // -------------------------------------------------------------------------
   // Risk Manager pre-trade gate — deterministic veto + Kelly volume scaling.
