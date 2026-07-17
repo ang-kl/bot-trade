@@ -83,5 +83,6 @@ export async function runMonitorCheck(client, position) {
     thesis_status: parsed.thesis_status,
     urgency: parsed.urgency,
     usage: resp.usage || null,
+    model: MODEL,
   }
 }

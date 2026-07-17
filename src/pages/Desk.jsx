@@ -14,6 +14,7 @@ import ReportChart from '../components/ReportChart.jsx'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
+import Input from '../components/common/Input.jsx'
 
 const REFRESH_MS = 20_000
 
@@ -72,6 +73,10 @@ export default function Desk() {
   const [broker, setBroker] = useState(null)             // selected account at the BROKER
   const [brokerHistory, setBrokerHistory] = useState(null) // broker's closed deals, 7d
   const [heartbeats, setHeartbeats] = useState(null)       // controller reliability
+  const [llmSpend, setLlmSpend] = useState(null)           // token usage + est cost
+  const [alphaDecay, setAlphaDecay] = useState(null)       // edge-erosion read
+  const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
+  const [capNote, setCapNote] = useState('')
   const [managedId, setManagedId] = useState(null)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
@@ -87,7 +92,7 @@ export default function Desk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     try {
-      const [h, s, p, r, atf, c, t, b, bh, hb] = await Promise.all([
+      const [h, s, p, r, atf, c, t, b, bh, hb, ls, ad] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -98,6 +103,8 @@ export default function Desk() {
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
         agentPost('/actions/broker-history', { days: 7 }).catch(() => null),
         agentGet('/state/heartbeats').catch(() => null),
+        agentGet('/state/llm-spend').catch(() => null),
+        agentGet('/state/alpha-decay').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -110,6 +117,8 @@ export default function Desk() {
       setBroker(b?.accounts?.[0] ?? null)
       setBrokerHistory(bh?.ok ? bh : null)
       setHeartbeats(hb?.controllers ?? null)
+      setLlmSpend(ls)
+      setAlphaDecay(ad)
       setError('')
       setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
     } catch (e) { setError(e.message) }
@@ -381,6 +390,142 @@ export default function Desk() {
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
           A beat means the controller's code ran (even if it chose to do nothing). Stalls alert on Telegram once, and once again on recovery.
         </p>
+      </Section>
+
+      {/* LLM spend — the no-bill-shock dashboard: real token usage priced
+          in USD (today/7d/30d + projection), with an owner-set daily cap
+          that alerts on Telegram once per day when crossed. */}
+      <Section
+        id="llmspend"
+        title="LLM spend"
+        summary={llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null}
+        defaultOpen={false}
+      >
+        {!llmSpend && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {llmSpend && (
+          <>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums mb-2">
+              <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(4)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
+              <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(4)}</span></span>
+              <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(4)}</span></span>
+              <span>Projected month <span className="font-semibold">${(llmSpend.projected_month_usd ?? 0).toFixed(2)}</span></span>
+            </div>
+            {(llmSpend.by_purpose?.length ?? 0) > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-[12px] tabular-nums">
+                  <thead className="text-left text-[var(--color-text-sub)]">
+                    <tr className="border-b border-[var(--color-border)]">
+                      <th className="py-1 pr-3 font-semibold">Purpose</th>
+                      <th className="py-1 pr-3 font-semibold">Model</th>
+                      <th className="py-1 pr-3 font-semibold text-right">Calls</th>
+                      <th className="py-1 pr-3 font-semibold text-right">In</th>
+                      <th className="py-1 pr-3 font-semibold text-right">Out</th>
+                      <th className="py-1 font-semibold text-right">Est. cost (30d)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {llmSpend.by_purpose.map(p2 => (
+                      <tr key={`${p2.purpose}|${p2.model}`} className="border-b border-[var(--color-border)]">
+                        <td className="py-1 pr-3">{p2.purpose}</td>
+                        <td className="py-1 pr-3 text-[var(--color-text-sub)]">{p2.model}</td>
+                        <td className="py-1 pr-3 text-right">{p2.calls.toLocaleString()}</td>
+                        <td className="py-1 pr-3 text-right">{p2.input_tokens.toLocaleString()}</td>
+                        <td className="py-1 pr-3 text-right">{p2.output_tokens.toLocaleString()}</td>
+                        <td className="py-1 text-right">${p2.cost_usd.toFixed(4)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="mt-2 flex flex-wrap items-end gap-2">
+              <label className="block text-[12px]">
+                <span className="text-[var(--color-text-sub)]">Daily cost alert (USD, 0 = off) — currently {llmSpend.daily_cap_usd ? `$${llmSpend.daily_cap_usd}` : 'off'}</span>
+                <Input type="number" step="0.1" min="0" value={capDraft} onChange={e => setCapDraft(e.target.value)} placeholder={llmSpend.daily_cap_usd ? String(llmSpend.daily_cap_usd) : 'e.g. 1.00'} className="w-28" />
+              </label>
+              <Button
+                size="sm" variant="subtle"
+                onClick={async () => {
+                  try {
+                    const r = await agentPost('/actions/llm-budget', { dailyCapUsd: capDraft === '' ? 0 : Number(capDraft) })
+                    setCapNote(r.dailyCapUsd ? `Alert armed at $${r.dailyCapUsd}/day.` : 'Alert disarmed.')
+                    await load()
+                  } catch (e) { setCapNote(e.message) }
+                }}
+              >Save cap</Button>
+              {capNote && <span className="text-[12px] text-[var(--color-text-sub)]">{capNote}</span>}
+            </div>
+            <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+              Scanning, backtests, and all trading decisions are deterministic — zero tokens. The only LLM consumers are the position monitor and the weekend watch, priced at published per-model rates (estimates, not the invoice).
+            </p>
+          </>
+        )}
+      </Section>
+
+      {/* Edge health — alpha decay: rolling expectancy per strategy (recent
+          window vs prior) and expectancy by entry lag. Decaying edges get
+          cut on evidence, not vibes. */}
+      <Section
+        id="alphadecay"
+        title="Edge health — alpha decay"
+        summary={(() => {
+          if (!alphaDecay) return null
+          const bad = (alphaDecay.strategies || []).filter(s2 => s2.trend === 'decaying').length
+          return bad ? `${bad} strategy(ies) DECAYING` : `${alphaDecay.total_closed ?? 0} closed trades analysed`
+        })()}
+        defaultOpen={false}
+      >
+        {!alphaDecay && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {alphaDecay && (alphaDecay.strategies?.length ?? 0) === 0 && (
+          <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results, so this fills as the bot trades.</p>
+        )}
+        {alphaDecay && (alphaDecay.strategies?.length ?? 0) > 0 && (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[12px] tabular-nums">
+                <thead className="text-left text-[var(--color-text-sub)]">
+                  <tr className="border-b border-[var(--color-border)]">
+                    <th className="py-1 pr-3 font-semibold">Strategy</th>
+                    <th className="py-1 pr-3 font-semibold">Trend</th>
+                    <th className="py-1 pr-3 font-semibold text-right">Trades</th>
+                    <th className="py-1 pr-3 font-semibold text-right">Recent exp.</th>
+                    <th className="py-1 pr-3 font-semibold text-right">Prior exp.</th>
+                    <th className="py-1 font-semibold text-right">Δ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alphaDecay.strategies.map(s2 => (
+                    <tr key={s2.strategy} className="border-b border-[var(--color-border)]">
+                      <td className="py-1 pr-3 font-semibold">{s2.strategy}</td>
+                      <td className="py-1 pr-3">
+                        <Badge tone={s2.trend === 'improving' ? 'up' : s2.trend === 'decaying' ? 'down' : 'neutral'}>
+                          {s2.trend === 'insufficient' ? 'TOO FEW' : s2.trend.toUpperCase()}
+                        </Badge>
+                      </td>
+                      <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
+                      <td className="py-1 pr-3 text-right">{s2.recent?.expectancy != null ? `$${s2.recent.expectancy.toFixed(2)}` : '—'}</td>
+                      <td className="py-1 pr-3 text-right">{s2.prior?.expectancy != null ? `$${s2.prior.expectancy.toFixed(2)}` : '—'}</td>
+                      <td className={`py-1 text-right font-semibold ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {s2.delta != null ? `${s2.delta >= 0 ? '+' : ''}${s2.delta.toFixed(2)}` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {(alphaDecay.lag_sampled ?? 0) > 0 && (
+              <p className="mt-2 text-[12px] tabular-nums">
+                <span className="text-[var(--color-text-sub)]">Signal decay (expectancy by entry lag, {alphaDecay.lag_sampled} trades): </span>
+                {alphaDecay.entry_lag.map(b2 => (
+                  <span key={b2.key} className="mr-3">{b2.label}: <span className="font-semibold">{b2.expectancy != null ? `$${b2.expectancy.toFixed(2)}` : '—'}</span> ({b2.n})</span>
+                ))}
+              </p>
+            )}
+            <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+              Expectancy = average net PnL per trade. "Recent vs prior" compares the last {alphaDecay.window} trades against the {alphaDecay.window} before them, per strategy — a falling number is the edge eroding. Entry lag compares fills made quickly after their signal vs slow fills: if slow fills underperform, we're consuming the decayed tail of our own signals.
+            </p>
+          </>
+        )}
       </Section>
 
       {/* Why no trades — only when genuinely flat; the product explains

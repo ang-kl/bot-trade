@@ -690,6 +690,33 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/llm-spend — token usage + estimated USD (today/7d/30d,
+  // per purpose×model, monthly projection). The no-bill-shock dashboard.
+  // -----------------------------------------------------------------------
+  router.get('/llm-spend', async (_req, res) => {
+    try {
+      const { spendView } = await import('../services/llm-spend.js')
+      res.json(spendView(db))
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/alpha-decay?window=30 — edge-erosion read: rolling expectancy
+  // per strategy (recent window vs prior) + expectancy by entry lag.
+  // -----------------------------------------------------------------------
+  router.get('/alpha-decay', async (req, res) => {
+    try {
+      const window = Math.min(100, Math.max(10, parseInt(req.query.window || '30', 10)))
+      const { alphaDecayView } = await import('../services/alpha-decay.js')
+      res.json(alphaDecayView(db, { window }))
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/veto-breakdown?days=30 — WHY trades were vetoed, grouped by
   // reason family (symbol_cooldown, market_closed, spread…). The stage
   // matrix shows how many; this shows what actually blocked them.

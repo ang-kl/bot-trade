@@ -63,13 +63,18 @@ function getAnthropicClient() {
 // Count monitor/weekend LLM usage against the daily budget and stamp the
 // Anthropic health key — these are the only remaining Anthropic call sites,
 // so they own the health signal (the scan must not stamp it).
-function recordAnthropicUsage(db, usage) {
+function recordAnthropicUsage(db, usage, purpose = 'monitor', model = null) {
   const tokens = usage?.output_tokens || 0
   if (tokens > 0) {
     const prev = parseInt(getState(db, 'daily_tokens_used') || '0')
     setState(db, 'daily_tokens_used', String(prev + tokens))
   }
   setState(db, 'api_anthropic_last_ok', new Date().toISOString())
+  // Persist the FULL usage (input + output + cache) to token_usage so the
+  // owner sees real dollars, not just an output-token counter. Non-fatal.
+  import('./services/llm-spend.js')
+    .then(m => m.recordTokenUsage(db, { purpose, model, usage }))
+    .catch(() => { /* cost accounting must never break trading */ })
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,7 +1123,7 @@ async function runLoop(db) {
         for (const pos of weekendPositions) {
           try {
             const check = await runWeekendPositionCheck(client, pos)
-            recordAnthropicUsage(db, { output_tokens: check.tokens || 0 })
+            recordAnthropicUsage(db, check.usage || { output_tokens: check.tokens || 0 }, 'weekend_watch', check.model)
             // Store the full payload (citations, searches_used, watch_events)
             // in last_check_reasoning as JSON so Workshop can render the audit
             // trail — user sees WHICH headlines triggered the call.
@@ -1267,7 +1272,7 @@ async function runLoop(db) {
               ? `${Math.round(eval_.metrics.minutesInTrade)}m`
               : null,
           })
-          recordAnthropicUsage(db, check.usage)
+          recordAnthropicUsage(db, check.usage, 'position_monitor', check.model)
 
           s.updatePositionCheck.run(
             check.action,
@@ -1493,6 +1498,15 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     setState(db, 'loop_count', String(loopCount))
     setState(db, 'last_loop_ms', String(Date.now() - start))
+
+    // LLM daily cost cap — owner-armed, alerts once per day when crossed.
+    try {
+      const { checkSpendAlert } = await import('./services/llm-spend.js')
+      checkSpendAlert(db, {
+        notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+      })
+    } catch { /* non-fatal */ }
+
     await hbeat(db, 'main_loop')
   } catch (err) {
     console.error('[loop] error:', err.message)

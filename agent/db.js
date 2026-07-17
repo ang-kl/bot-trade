@@ -91,6 +91,18 @@ const TABLES = `
     updated_at           TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS token_usage (
+    day                TEXT NOT NULL,
+    purpose            TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    calls              INTEGER NOT NULL DEFAULT 0,
+    input_tokens       INTEGER NOT NULL DEFAULT 0,
+    output_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, purpose, model)
+  );
+
   CREATE TABLE IF NOT EXISTS trades (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol                TEXT NOT NULL,
