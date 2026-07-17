@@ -33,6 +33,16 @@ function loopIntervalMs(db) {
   if (Number.isFinite(n) && n >= 1 && n <= 60) return n * 60_000
   return LOOP_INTERVAL
 }
+// Controller heartbeat: every background controller stamps a beat per run so
+// the watchdog (on the fast-monitor ticker) can flag silent stalls. Must
+// never take a controller down, hence the swallow-all wrapper.
+async function hbeat(db, name, ok = true, error = null) {
+  try {
+    const { beat } = await import('./services/heartbeat.js')
+    beat(db, name, { ok, error: error ? String(error) : null })
+  } catch { /* heartbeat is observability — never fatal */ }
+}
+
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
@@ -983,8 +993,8 @@ async function runLoop(db) {
       // symbol×timeframe. Inert unless the owner enabled the flag; a failure
       // here must never take down the scan/monitor loop.
       // ---------------------------------------------------------------------
-      if (getState(db, 'pending_mode_enabled') === 'true') {
-        try {
+      try {
+        if (getState(db, 'pending_mode_enabled') === 'true') {
           const pendingCreds = getCtraderCreds(db)
           if (pendingCreds.ready) {
             const r = await managePendingOrders(db, pendingCreds, getSymbolMap(db), {
@@ -993,9 +1003,11 @@ async function runLoop(db) {
             if (r?.summary) log(`Pending orders: ${r.summary}`)
             else if (r?.skipped) log(`Pending orders skipped: ${r.skipped}`)
           }
-        } catch (err) {
-          log(`Pending-order phase failed (non-fatal): ${err.message}`)
         }
+        await hbeat(db, 'pending_orders')
+      } catch (err) {
+        log(`Pending-order phase failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'pending_orders', false, err.message)
       }
 
       // BURN-IN MODE — track-record trades (owner-armed): min-size positions
@@ -1009,8 +1021,10 @@ async function runLoop(db) {
           const b = await runBurnIn(db, biCreds)
           if (b?.placed || b?.attempted) log(`Burn-in: ${b.summary}`)
         }
+        await hbeat(db, 'burn_in')
       } catch (err) {
         log(`Burn-in failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'burn_in', false, err.message)
       }
 
       // Per-position trade guards — break-even / trailing / partial TPs the
@@ -1026,8 +1040,10 @@ async function runLoop(db) {
           if (g.slMoves || g.partialCloses) log(`Trade guards: ${g.slMoves} SL move(s), ${g.partialCloses} partial close(s)`)
           if (g.errors.length) log(`Trade guards errors: ${g.errors.join(' · ')}`)
         }
+        await hbeat(db, 'trade_guards')
       } catch (err) {
         log(`Trade guards failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'trade_guards', false, err.message)
       }
 
       // Profit Keeper — opt-in profit protection for manual/external
@@ -1043,8 +1059,10 @@ async function runLoop(db) {
           if (k.slMoves || k.closes) log(`Profit Keeper: ${k.slMoves} lock(s), ${k.closes} close(s)`)
           if (k.errors.length) log(`Profit Keeper errors: ${k.errors.join(' · ')}`)
         }
+        await hbeat(db, 'profit_keeper')
       } catch (err) {
         log(`Profit Keeper failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'profit_keeper', false, err.message)
       }
 
       // Periodic broker-truth market-hours refresh — pull each mapped
@@ -1059,9 +1077,11 @@ async function runLoop(db) {
           const { refreshSymbolHours } = await import('./services/symbol-hours.js')
           const r = await refreshSymbolHours(db, creds)
           if (r.updated) log(`Market hours refreshed: ${r.updated} symbols${r.errors.length ? `, ${r.errors.length} batch error(s)` : ''}`)
+          await hbeat(db, 'hours_refresh')
         }
       } catch (err) {
         log(`Market-hours refresh failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'hours_refresh', false, err.message)
       }
 
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
@@ -1070,8 +1090,10 @@ async function runLoop(db) {
         const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
         const r = await maybeRunAutopilot(db, getCtraderCreds(db))
         if (r && !r.skipped) log(`Autopilot: ${JSON.stringify(r)}`)
+        await hbeat(db, 'autopilot')
       } catch (err) {
         log(`Autopilot failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'autopilot', false, err.message)
       }
 
       // ---------------------------------------------------------------------
@@ -1272,8 +1294,10 @@ async function runLoop(db) {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
         if (ab.actions?.length) log(`Adaptive breaker: ${ab.actions.map(a => `${a.strategy}→${a.did}`).join(', ')}`)
+        await hbeat(db, 'adaptive_breaker')
       } catch (err) {
         log(`Adaptive breaker failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'adaptive_breaker', false, err.message)
       }
 
       // ---------------------------------------------------------------------
@@ -1466,8 +1490,10 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     setState(db, 'loop_count', String(loopCount))
     setState(db, 'last_loop_ms', String(Date.now() - start))
+    await hbeat(db, 'main_loop')
   } catch (err) {
     console.error('[loop] error:', err.message)
+    await hbeat(db, 'main_loop', false, err.message)
     consecutiveErrors++
     const errCount = parseInt(getState(db, 'errors_today') || '0') + 1
     setState(db, 'errors_today', String(errCount))

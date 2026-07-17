@@ -79,6 +79,18 @@ const TABLES = `
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS controller_heartbeats (
+    name                 TEXT PRIMARY KEY,
+    last_run_at          TEXT,
+    last_ok_at           TEXT,
+    last_error           TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    runs                 INTEGER NOT NULL DEFAULT 0,
+    stalled              INTEGER NOT NULL DEFAULT 0,
+    fail_alerted         INTEGER NOT NULL DEFAULT 0,
+    updated_at           TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS trades (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol                TEXT NOT NULL,

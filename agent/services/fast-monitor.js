@@ -166,14 +166,38 @@ export async function runFastMonitor(db, creds, deps = {}) {
   }
 }
 
-/** Start the 30s ticker. Returns a stop() handle (tests, shutdown). */
+/**
+ * Start the 30s ticker. Returns a stop() handle (tests, shutdown).
+ *
+ * The ticker doubles as the reliability watchdog — deliberately independent
+ * of the main loop so a silently dead main loop is still detected: every
+ * tick beats the fast_monitor heartbeat, every 2nd tick runs the stall
+ * check (checkHeartbeats → Telegram alert), every 4th tick actively probes
+ * the C++ exec engine's GET /health when EXEC_ENGINE=cpp.
+ */
 export function startFastMonitor(db, getCreds, deps = {}) {
+  let tick = 0
   const t = setInterval(async () => {
+    tick++
+    let tickErr = null
     try {
       const creds = getCreds(db)
       await runFastMonitor(db, creds, deps)
     } catch (err) {
+      tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
+    }
+    try {
+      const hb = deps.heartbeat ?? await import('./heartbeat.js')
+      hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
+      if (tick % 4 === 0) await hb.probeCppExec(db)
+      if (tick % 2 === 0) {
+        hb.checkHeartbeats(db, {
+          notify: (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+        })
+      }
+    } catch (err) {
+      console.error('[fast-monitor] watchdog failed:', err.message)
     }
   }, deps.tickMs ?? 30_000)
   t.unref?.()

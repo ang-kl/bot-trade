@@ -71,6 +71,7 @@ export default function Desk() {
   const [config, setConfig] = useState(null)
   const [broker, setBroker] = useState(null)             // selected account at the BROKER
   const [brokerHistory, setBrokerHistory] = useState(null) // broker's closed deals, 7d
+  const [heartbeats, setHeartbeats] = useState(null)       // controller reliability
   const [managedId, setManagedId] = useState(null)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
@@ -86,7 +87,7 @@ export default function Desk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     try {
-      const [h, s, p, r, atf, c, t, b, bh] = await Promise.all([
+      const [h, s, p, r, atf, c, t, b, bh, hb] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -96,6 +97,7 @@ export default function Desk() {
         agentGet('/state/trades').catch(() => null),
         agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
         agentPost('/actions/broker-history', { days: 7 }).catch(() => null),
+        agentGet('/state/heartbeats').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -107,6 +109,7 @@ export default function Desk() {
       setConfig(c)
       setBroker(b?.accounts?.[0] ?? null)
       setBrokerHistory(bh?.ok ? bh : null)
+      setHeartbeats(hb?.controllers ?? null)
       setError('')
       setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
     } catch (e) { setError(e.message) }
@@ -336,6 +339,47 @@ export default function Desk() {
         </ul>
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
+        </p>
+      </Section>
+
+      {/* Controllers — heartbeat reliability: every background controller's
+          last beat, plus the C++ exec engine's probed liveness. A stalled
+          controller is a positions-unmanaged incident, so it also alerts on
+          Telegram; this panel is the always-on visual. */}
+      <Section
+        id="controllers"
+        title="Controllers — heartbeats"
+        summary={(() => {
+          if (!heartbeats) return null
+          const bad = heartbeats.filter(c => c.status === 'stalled' || c.status === 'error').length
+          const live = heartbeats.filter(c => c.status === 'ok' || c.status === 'warn').length
+          return bad ? `${bad} STALLED/FAILING` : `${live} beating`
+        })()}
+        defaultOpen={false}
+      >
+        {!heartbeats && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {heartbeats && (
+          <ul className="text-[12px] space-y-0.5">
+            {heartbeats.map(c => (
+              <li key={c.name} className="flex items-center gap-1.5 min-w-0">
+                <Badge tone={c.status === 'ok' ? 'up' : c.status === 'warn' ? 'warning' : c.status === 'idle' ? 'neutral' : 'down'}>
+                  {c.status === 'idle' ? 'IDLE' : c.status.toUpperCase()}
+                </Badge>
+                <span className="font-semibold shrink-0">{c.label}</span>
+                {c.status === 'idle'
+                  ? <span className="text-[var(--color-text-sub)] truncate">never ran (not armed / not applicable)</span>
+                  : <span className="text-[var(--color-text-sub)] truncate">
+                      {c.runs} run{c.runs === 1 ? '' : 's'}
+                      {c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}
+                      {c.last_error && c.consecutive_failures > 0 ? ` · ${c.last_error}` : ''}
+                    </span>}
+                {c.last_run_at && <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(c.last_run_at)}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+          A beat means the controller's code ran (even if it chose to do nothing). Stalls alert on Telegram once, and once again on recovery.
         </p>
       </Section>
 
