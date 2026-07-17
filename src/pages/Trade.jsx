@@ -49,49 +49,74 @@ function toMs(v) {
   return Number.isFinite(t) ? t : null
 }
 
-// One open-position row with an expandable live chart (entry/SL/TP overlaid).
-function PositionRow({ p }) {
-  const [showChart, setShowChart] = useState(false)
-  const side = String(p.side).toUpperCase()
-  return (
-    <>
-      <tr className="border-t border-[var(--color-border)]">
-        <td className="pr-3 py-1.5 font-semibold">{p.symbol}</td>
-        <td className="pr-3"><Badge tone={side === 'BUY' ? 'up' : 'down'}>{side}</Badge></td>
-        <td className="pr-3">{fmt(p.entry_price)}</td>
-        <td className="pr-3">{fmt(p.current_sl)}</td>
-        <td className="pr-3">{fmt(p.current_tp)}</td>
-        {/* monitored_positions stamps created_at (opened_at was a field this
-            table never had — the column showed "—" forever; owner: "a lie"). */}
-        <td className="pr-3 whitespace-nowrap">
-          {(() => {
-            const w = dateTimeParts(p.opened_at || p.created_at)
-            return w
-              ? <>
-                  <span className="block leading-tight">{w.day}</span>
-                  <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
-                </>
-              : '—'
-          })()}
-        </td>
-        <td className="pr-3 text-[var(--color-text-sub)]">{p.last_check_action || '—'} {p.last_checked_at ? `(${ago(p.last_checked_at)})` : ''}</td>
-        <td>
-          <Button size="sm" variant="ghost" onClick={() => setShowChart(s => !s)}>{showChart ? 'Hide' : 'Chart'}</Button>
-        </td>
-      </tr>
-      {showChart && (
-        <tr className="border-t border-[var(--color-border)]">
-          <td colSpan={8} className="py-2">
-            <PositionChart
-              symbol={p.symbol}
-              timeframe="1h"
-              lines={{ entry: p.entry_price, sl: p.current_sl, tp: p.current_tp }}
-            />
-          </td>
-        </tr>
-      )}
-    </>
-  )
+// Open (monitored) positions → the standard shape. Time = the broker fill
+// time when known (trades.opened_at via the join), else the row's created_at.
+function openPositionRows(positions) {
+  return positions.map(p => {
+    const src = p.source || 'autopilot'
+    const checkedAt = p.last_check_at || p.last_checked_at
+    return {
+      id: `pos-${p.id}`,
+      at: p.opened_at || p.created_at,
+      symbol: p.symbol,
+      result: { text: 'OPEN', tone: 'info' },
+      source: { text: ATTEMPT_SOURCE[src] || String(src).toUpperCase(), tone: src === 'validation_fill' ? 'special' : 'neutral' },
+      side: String(p.side || '').toUpperCase() || null,
+      qty: p.volume,
+      entry: p.entry_price,
+      sl: p.current_sl,
+      tp: p.current_tp,
+      reason: `${p.last_check_action || 'not checked yet'}${checkedAt ? ` (${ago(checkedAt)})` : ''}`,
+      chart: {
+        symbol: p.symbol,
+        timeframe: '1h',
+        lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp },
+      },
+    }
+  })
+}
+
+// Broker resting orders → the standard shape. They carry no creation
+// timestamp in the reconcile snapshot, so Time is honestly '—' and the
+// expiry lives in Reason. Qty is in UNITS at the broker (not lots) — kept
+// explicit with a 'u' suffix rather than guessing a contract size.
+function pendingOrderRows(orders) {
+  return orders.map((o, i) => ({
+    id: `po-${o.orderId || i}`,
+    at: null,
+    symbol: o.symbolName || '?',
+    result: { text: 'PENDING', tone: 'warning' },
+    source: { text: o.bot ? 'BOT' : 'MANUAL', tone: o.bot ? 'special' : 'neutral' },
+    side: o.side || null,
+    qtyText: o.volumeUnits != null ? `${Number(o.volumeUnits).toLocaleString()} u` : '—',
+    entry: o.limitPrice ?? o.stopPrice,
+    sl: o.sl,
+    tp: o.tp,
+    reason: `${typeof o.orderType === 'string' ? o.orderType : 'LIMIT'}${o.expiresAt ? ` · expires ${new Date(o.expiresAt).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}`,
+    chart: {
+      symbol: o.symbolName,
+      timeframe: '1h',
+      lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp },
+    },
+  }))
+}
+
+// External (non-bot) broker positions → the standard shape; observed only.
+function externalPositionRows(positions) {
+  return positions.map(p => ({
+    id: `ext-${p.id}`,
+    at: p.opened_at || p.created_at || null,
+    symbol: p.symbol,
+    result: { text: 'OPEN', tone: 'info' },
+    source: { text: 'EXTERNAL', tone: 'neutral' },
+    side: String(p.side || '').toUpperCase() || null,
+    qty: p.volume ?? null,
+    entry: p.entry_price,
+    sl: p.current_sl ?? null,
+    tp: p.current_tp ?? null,
+    reason: 'observed, not managed',
+    chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price } },
+  }))
 }
 
 // One closed/attempted trade row. UNCONFIRMED = the bot sent an order but
@@ -160,16 +185,21 @@ const ATTEMPT_SOURCE = {
   pending: 'PENDING',
   auto_signal: 'AUTO',
   burnin: 'BURN-IN',
+  autopilot: 'AUTO',
+  external: 'EXTERNAL',
 }
 
-// Order log as a TradingView-style table (owner spec): fixed header row,
-// numerics right-aligned in tabular figures, Long/Short coloured, sideways
-// scroll with the first two columns (date/time, symbol) FROZEN, and
-// pagination so the panel stays the same height as Recent trades.
+// THE standard trade table (owner: "use the order log table and its columns
+// as the standard for opened trades and pending trades"). TradingView-style:
+// fixed header, numerics right-aligned in tabular figures, Long/Short
+// coloured, sideways scroll with the first two columns (date/time, symbol)
+// FROZEN, and 8-row pagination. Callers map their rows to the shared shape:
+// { id, at, symbol, result:{text,tone}, source:{text,tone}, side ('BUY'|
+//   'SELL'|null), qty | qtyText, entry, sl, tp, reason, reasonTitle?, chart? }
 const OL_PAGE = 8
 const OL_COL1_W = 76  // px — frozen date/time column; col 2 offset builds on it
 
-function OrderLogTable({ rows }) {
+function StdTradeTable({ rows, countLabel = 'rows' }) {
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null) // row id with the chart open
 
@@ -180,12 +210,6 @@ function OrderLogTable({ rows }) {
   if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
 
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 5 }))
-  const when = (iso) => {
-    const d = new Date(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
-    return Number.isFinite(d.getTime())
-      ? { day: d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }), time: d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }
-      : { day: '—', time: '' }
-  }
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -210,49 +234,50 @@ function OrderLogTable({ rows }) {
             </tr>
           </thead>
           <tbody>
-            {slice.map(ev => {
-              let prop = null
-              try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
-              const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
-              const w = when(ev.created_at)
-              const long = ev.side === 'BUY'
+            {slice.map(r => {
+              const w = r.at ? dateTimeParts(r.at) : null
+              const long = r.side === 'BUY'
               return (
-                <Fragment key={ev.id}>
+                <Fragment key={r.id}>
                   <tr className="border-b border-[var(--color-border)] align-middle">
                     <td className={`py-1.5 pr-2 whitespace-nowrap ${stick1}`} style={{ minWidth: OL_COL1_W }}>
-                      <span className="block leading-tight">{w.day}</span>
-                      <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
+                      {w
+                        ? <>
+                            <span className="block leading-tight">{w.day}</span>
+                            <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
+                          </>
+                        : '—'}
                     </td>
-                    <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: OL_COL1_W }}>{ev.symbol}</td>
-                    <td className="py-1.5 pr-3"><Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge></td>
-                    <td className="py-1.5 pr-3"><Badge tone={prop?.source === 'validation_fill' ? 'special' : 'neutral'}>{src}</Badge></td>
+                    <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: OL_COL1_W }}>{r.symbol}</td>
+                    <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
+                    <td className="py-1.5 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
                     <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                      {ev.side ? (long ? 'Long' : 'Short') : '—'}
+                      {r.side ? (long ? 'Long' : 'Short') : '—'}
                     </td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.requestedVolume)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.entry)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.sl)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.tp1)}</td>
-                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={ev.veto_reason || ev.sizing_note || ''}>
-                      {ev.veto_reason || ev.sizing_note || '—'}
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.sl)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.tp)}</td>
+                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
+                      {r.reason || '—'}
                     </td>
                     <td className="py-1.5 whitespace-nowrap">
-                      {prop && (
-                        <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === ev.id ? null : ev.id)}>
-                          {chartFor === ev.id ? 'Hide' : 'Chart'}
+                      {r.chart && (
+                        <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
+                          {chartFor === r.id ? 'Hide' : 'Chart'}
                         </Button>
                       )}
                     </td>
                   </tr>
-                  {chartFor === ev.id && prop && (
+                  {chartFor === r.id && r.chart && (
                     <tr className="border-b border-[var(--color-border)]">
                       <td colSpan={11} className="py-2">
                         <PositionChart
-                          symbol={ev.symbol}
-                          timeframe={prop.timeframe || '1h'}
-                          lines={{ entry: prop.entry, sl: prop.sl, tp: prop.tp1 }}
-                          at={toMs(ev.created_at)}
-                          markers={{ entryT: toMs(ev.created_at) }}
+                          symbol={r.chart.symbol}
+                          timeframe={r.chart.timeframe || '1h'}
+                          lines={r.chart.lines}
+                          at={r.chart.at}
+                          markers={r.chart.markers}
                         />
                       </td>
                     </tr>
@@ -263,14 +288,46 @@ function OrderLogTable({ rows }) {
           </tbody>
         </table>
       </div>
-      {/* Pagination — keeps the panel the same height as Recent trades */}
+      {/* Pagination — keeps every panel the same height */}
       <div className="mt-2 flex items-center gap-2 text-[12px] text-[var(--color-text-sub)]">
         <Button size="sm" variant="subtle" disabled={p === 0} onClick={() => setPage(p - 1)}>‹ Newer</Button>
-        <span>page {p + 1} / {pages} · {rows.length} attempts</span>
+        <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
         <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>
       </div>
     </div>
   )
+}
+
+// Order log rows (risk_events) → the standard shape.
+function OrderLogTable({ rows }) {
+  const mapped = rows.map(ev => {
+    let prop = null
+    try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
+    const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
+    return {
+      id: `ol-${ev.id}`,
+      at: ev.created_at,
+      symbol: ev.symbol,
+      result: { text: ev.approved ? 'OK' : 'VETO', tone: ev.approved ? 'up' : 'warning' },
+      source: { text: src, tone: prop?.source === 'validation_fill' ? 'special' : 'neutral' },
+      side: ev.side || null,
+      qty: prop?.requestedVolume,
+      entry: prop?.entry,
+      sl: prop?.sl,
+      tp: prop?.tp1,
+      reason: ev.veto_reason || ev.sizing_note || '',
+      chart: prop
+        ? {
+            symbol: ev.symbol,
+            timeframe: prop.timeframe || '1h',
+            lines: { entry: prop.entry, sl: prop.sl, tp: prop.tp1 },
+            at: toMs(ev.created_at),
+            markers: { entryT: toMs(ev.created_at) },
+          }
+        : null,
+    }
+  })
+  return <StdTradeTable rows={mapped} countLabel="attempts" />
 }
 
 export default function Trade() {
@@ -515,20 +572,7 @@ export default function Trade() {
       <Card>
         <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[13px]">
-              <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Side</th><th className="pr-3">Entry</th><th className="pr-3">SL</th><th className="pr-3">TP</th><th className="pr-3">Opened</th><th className="pr-3">Last check</th><th>Chart</th></tr>
-              </thead>
-              <tbody>
-                {positions.map(p => (
-                  <PositionRow key={p.id} p={p} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions)} countLabel="open positions" />}
       </Card>
 
       {/* Manual order — goes through the same risk gate as autopilot trades */}
@@ -603,39 +647,16 @@ export default function Trade() {
           {(broker.pendingOrders?.length || 0) > 0 && (
             <div className="mb-2">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
-              <ul className="space-y-1 text-[13px]">
-                {broker.pendingOrders.map((o, i) => {
-                  const side = String(o.side || o.tradeData?.tradeSide || '').toUpperCase()
-                  return (
-                    <li key={o.orderId || i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <Badge tone={side === 'BUY' ? 'up' : side === 'SELL' ? 'down' : 'neutral'}>{side || '?'}</Badge>
-                      <Badge tone={o.bot ? 'special' : 'neutral'}>{o.bot ? 'BOT' : 'MANUAL'}</Badge>
-                      <span className="font-semibold">{o.symbolName || o.tradeData?.symbolId}</span>
-                      <span className="text-[var(--color-text-sub)]">{typeof o.orderType === 'string' ? o.orderType : 'LIMIT'} @ <span className="font-semibold text-[var(--color-text)] tabular-nums">{fmt(o.limitPrice ?? o.stopPrice)}</span></span>
-                      {o.volumeUnits != null && <span className="text-[var(--color-text-sub)] tabular-nums">{Number(o.volumeUnits).toLocaleString()} units</span>}
-                      <span className="tabular-nums">SL {o.sl != null ? fmt(o.sl) : '—'} · TP {o.tp != null ? fmt(o.tp) : '—'}</span>
-                      {o.expiresAt && <span className="text-[var(--color-text-sub)]">expires {new Date(o.expiresAt).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>}
-                    </li>
-                  )
-                })}
-              </ul>
+              <StdTradeTable rows={pendingOrderRows(broker.pendingOrders)} countLabel="pending orders" />
               <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
-                SL/TP showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
+                Qty is in broker UNITS (not lots). Stop Loss / Take Profit showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
               </p>
             </div>
           )}
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <ul className="space-y-1 text-[13px]">
-                {broker.externalPositions.map(p => (
-                  <li key={p.id} className="flex items-center gap-2">
-                    <Badge tone={String(p.side).toUpperCase() === 'BUY' ? 'up' : 'down'}>{String(p.side).toUpperCase()}</Badge>
-                    <span className="font-semibold">{p.symbol}</span>
-                    <span className="text-[var(--color-text-sub)]">entry {fmt(p.entry_price)}</span>
-                  </li>
-                ))}
-              </ul>
+              <StdTradeTable rows={externalPositionRows(broker.externalPositions)} countLabel="external positions" />
             </div>
           )}
         </Card>

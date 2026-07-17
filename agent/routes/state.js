@@ -188,9 +188,15 @@ export default function stateRouter(db) {
   // GET /state/positions — active monitored positions
   // -----------------------------------------------------------------------
   router.get('/positions', (_req, res) => {
+    // Volume + broker fill time live on the linked trades row — joined in so
+    // the Open positions table can show Qty and the real opened time (the
+    // standard order-log columns).
     const rows = db
       .prepare(
-        "SELECT * FROM monitored_positions WHERE status = 'active' ORDER BY created_at DESC"
+        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at
+         FROM monitored_positions mp
+         LEFT JOIN trades t ON t.id = mp.trade_id
+         WHERE mp.status = 'active' ORDER BY mp.created_at DESC`
       )
       .all()
 
