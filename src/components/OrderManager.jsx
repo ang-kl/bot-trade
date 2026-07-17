@@ -110,6 +110,7 @@ export default function OrderManager({ o, onDone }) {
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Stop loss</span><span>{fmt(o.sl, o.digits ?? 5)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Take profit</span><span>{fmt(o.tp, o.digits ?? 5)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Expires</span><span>{o.expiresAt ? new Date(o.expiresAt).toLocaleString() : 'Good till cancelled'}</span></div>
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Last modified</span><span>{o.updatedAt ? new Date(o.updatedAt).toLocaleString() : '—'}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Source</span><Badge tone={(o.label || o.bot) ? 'special' : 'neutral'}>{(o.label || o.bot) ? 'BOT' : 'MANUAL'}</Badge></div>
           {o.label && <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Label</span><span className="truncate max-w-[200px]">{o.label}</span></div>}
         </div>

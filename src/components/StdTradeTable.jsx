@@ -8,8 +8,9 @@
 //
 // Callers map their rows to the shared shape:
 // { id, at, symbol, result:{text,tone}, source:{text,tone}, side ('BUY'|
-//   'SELL'|null), qty | qtyText, entry, sl, tp, tps?, reason, reasonTitle?,
-//   chart?, panel? (bool — enables the host page's expandable panel), raw? }
+//   'SELL'|null), qty | qtyText, entry, sl, slAt?, tp, tps?, tpAt?, reason,
+//   reasonTitle?, chart?, panel? (bool — arms the Manage pop-up), raw? }
+// slAt/tpAt render as a small last-set time under the SL / TP cells.
 //
 // Optional props: onSymbolClick(symbol) makes the frozen symbol cell a
 // button (Desk uses it to focus the chart wall); panel {label, render(row,
@@ -113,7 +114,13 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     </td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.sl)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {num(r.sl)}
+                      {r.slAt && (() => {
+                        const s = dateTimeParts(r.slAt)
+                        return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
+                      })()}
+                    </td>
                     {/* Take Profit — cTrader supports laddered TPs, so the
                         cell holds the whole ladder: numero · price · lot. */}
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">
@@ -127,6 +134,10 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                             </span>
                           ))
                         : num(r.tp)}
+                      {r.tpAt && (() => {
+                        const s = dateTimeParts(r.tpAt)
+                        return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
+                      })()}
                     </td>
                     <td className={`py-1.5 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.pnl != null ? `${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}

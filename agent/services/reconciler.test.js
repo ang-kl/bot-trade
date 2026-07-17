@@ -30,13 +30,14 @@ function makeBrokerPosition({ positionId, symbolName, tradeSide = 'BUY', openPri
   }
 }
 
-function makeBrokerOrder({ orderId, symbolName, tradeSide = 'BUY', orderType = 'LIMIT', limitPrice = 100, volume = 10000 }) {
+function makeBrokerOrder({ orderId, symbolName, tradeSide = 'BUY', orderType = 'LIMIT', limitPrice = 100, volume = 10000, ...rest }) {
   return {
     orderId,
     tradeData: { orderId, symbolId: 1, tradeSide, volume },
     orderType,
     limitPrice,
     symbolName,
+    ...rest,
   }
 }
 
@@ -162,6 +163,39 @@ test('pending orders stored in agent_state', () => {
   const stored = JSON.parse(getState(db, 'broker_pending_orders_json'))
   assert.equal(stored.length, 2)
   assert.equal(stored[0].symbolName, 'XAUUSD')
+})
+
+test('pending orders: relative SL/TP decoded, closers excluded, updatedAt kept', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const orders = [
+    // App-placed BUY LIMIT @ 1.10 with SL 50 pips below, TP 100 pips above,
+    // expressed the way cTrader sends them: relative 1/100000-price units.
+    makeBrokerOrder({
+      orderId: '201', symbolName: 'EURUSD', limitPrice: 1.10,
+      relativeStopLoss: 0.005 * 100000, relativeTakeProfit: 0.010 * 100000,
+      utcLastUpdateTimestamp: Date.parse('2026-07-17T12:00:00Z'),
+    }),
+    // Absolute fields win over relative when both are present.
+    makeBrokerOrder({
+      orderId: '202', symbolName: 'XAUUSD', limitPrice: 3300,
+      stopLoss: 3280, takeProfit: 3350, relativeStopLoss: 999,
+    }),
+    // A closing order (a live position's TP level) is NOT a pending entry.
+    makeBrokerOrder({ orderId: '203', symbolName: 'NATGAS', limitPrice: 3.0, closingOrder: true, positionId: 55 }),
+  ]
+
+  const result = reconcilePositions(db, [], orders, setState)
+
+  assert.equal(result.pendingOrders.length, 2)
+  const eur = result.pendingOrders.find(o => o.orderId === '201')
+  assert.equal(eur.sl, 1.095)
+  assert.equal(eur.tp, 1.11)
+  assert.equal(eur.updatedAt, '2026-07-17T12:00:00.000Z')
+  const gold = result.pendingOrders.find(o => o.orderId === '202')
+  assert.equal(gold.sl, 3280)
+  assert.equal(gold.tp, 3350)
+  assert.ok(!result.pendingOrders.some(o => o.orderId === '203'))
 })
 
 test('external position with SL computes initial_risk', () => {

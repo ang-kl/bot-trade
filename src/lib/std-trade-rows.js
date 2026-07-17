@@ -59,7 +59,10 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       qty: p2.lots,
       entry: p2.entry,
       sl: p2.sl,
+      slAt: p2.sl != null ? p2.lastModifiedAt ?? null : null,
       tp: p2.tp,
+      tps: p2.tps?.length ? p2.tps : undefined,
+      tpAt: (p2.tps?.length || p2.tp != null) ? (p2.tps?.[0]?.at ?? p2.lastModifiedAt ?? null) : null,
       current: p2.currentPrice ?? null,
       pnl: net ?? null,
       reason: `now ${px(p2.currentPrice)}${p2.estNetPnl == null && net != null ? ' (P&L est*)' : ''}`,
@@ -75,7 +78,7 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
 export function brokerOrderRows(orders, { manageable = false } = {}) {
   return (orders || []).map(o => ({
     id: `bo-${o.orderId}`,
-    at: null,
+    at: o.updatedAt ?? null, // last time the order (incl. its SL/TP) was set
     symbol: o.symbol,
     result: { text: 'PENDING', tone: 'warning' },
     source: { text: o.label ? 'BOT' : 'MANUAL', tone: o.label ? 'special' : 'neutral' },
