@@ -356,7 +356,7 @@ function log(...args) {
 // pre-existing log-only behaviour so local/offline runs still function.
 // ---------------------------------------------------------------------------
 
-async function executeBrokerAction(db, s, pos, eval_) {
+export async function executeBrokerAction(db, s, pos, eval_) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -474,7 +474,7 @@ async function executeBrokerAction(db, s, pos, eval_) {
 
 let stmts = null
 
-function prepareStatements(db) {
+export function prepareStatements(db) {
   if (stmts) return stmts
 
   stmts = {
@@ -1227,6 +1227,21 @@ async function runLoop(db) {
       }
 
       // ---------------------------------------------------------------------
+      // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
+      // change strategy/filters via the stage matrix instead of pausing
+      // (owner: cooldown pauses are for humans). Non-fatal by construction.
+      // ---------------------------------------------------------------------
+      try {
+        const { runAdaptiveBreaker } = await import('./services/adaptive-breaker.js')
+        const ab = runAdaptiveBreaker(db, {
+          notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+        })
+        if (ab.actions?.length) log(`Adaptive breaker: ${ab.actions.map(a => `${a.strategy}→${a.did}`).join(', ')}`)
+      } catch (err) {
+        log(`Adaptive breaker failed (non-fatal): ${err.message}`)
+      }
+
+      // ---------------------------------------------------------------------
       // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions.
       // risk.js's dailyLossPct only vetoes NEW trades; this closes everything
       // and disarms autotrade when today's realized PnL breaches the cap.
@@ -1465,5 +1480,10 @@ async function runLoop(db) {
 export function startLoop(db) {
   log('Agent loop starting...')
   setTimeout(() => runLoop(db), 5000) // 5s delay on startup
+  // Fast position monitor — 30s ticker, volume-aware cadence per open
+  // position (owner: active positions are watched in ~1 minute, not 5).
+  import('./services/fast-monitor.js')
+    .then(m => m.startFastMonitor(db, getCtraderCreds))
+    .catch(err => log('fast-monitor failed to start:', err.message))
   return { getLoopCount: () => loopCount }
 }

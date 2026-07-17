@@ -1,0 +1,154 @@
+// ---------------------------------------------------------------------------
+// agent/services/fast-monitor.js — fast, volume-aware monitoring of OPEN
+// positions between the 5-minute main-loop cycles.
+//
+// Owner (2026-07-17): "for an active position, monitoring for that
+// instrument reduces from 5 minutes to # minutes — and is also based on
+// active market volume." So:
+//
+// - A dedicated 30s ticker (startFastMonitor) runs alongside the main loop.
+// - Each ACTIVE bot position gets its own cadence:
+//     cadence = base (`monitor_interval_min`, default 1m) scaled by the
+//     instrument's relative 1-minute volume — busy market → base interval,
+//     average → 2×, quiet → 3×. cadenceMs() is the pure, tested policy.
+// - A due position is re-priced from a live spot quote and run through the
+//   SAME deterministic rules the main loop uses (evaluatePosition →
+//   executeBrokerAction): time caps, SL/TP breaches, invalidations now act
+//   within about a minute instead of five.
+// - External positions stay observe-only; Live Tweak & Close (stage matrix)
+//   is honoured; the broker-resident SL/TP remains the tick-level backstop.
+//
+// Relative volume is refreshed lazily (at most once per 5 minutes per
+// symbol, 20×1m bars) so the fast path stays light on the broker API.
+// ---------------------------------------------------------------------------
+
+import { getState } from '../db.js'
+import { evaluatePosition } from './position-manager.js'
+import { manageStageAllows } from './stage-matrix.js'
+
+/**
+ * Pure cadence policy: milliseconds between checks for one position.
+ * relVol = latest 1m volume ÷ average of the previous bars (NaN = unknown).
+ */
+export function cadenceMs(relVol, baseMinutes) {
+  const base = Math.max(0.5, Number(baseMinutes) || 1) * 60_000
+  if (!Number.isFinite(relVol)) return base * 2 // unknown volume → middle pace
+  if (relVol >= 1.5) return base                // busy market → fastest
+  if (relVol >= 0.75) return base * 2
+  return base * 3                               // quiet market → slowest
+}
+
+/** relVol from 1m bars: last CLOSED bar's volume vs the average before it. */
+export function relVolFromBars(bars) {
+  if (!Array.isArray(bars) || bars.length < 6) return NaN
+  const closed = bars.slice(0, -1) // drop the forming bar
+  const last = closed[closed.length - 1]
+  const prior = closed.slice(0, -1)
+  const avg = prior.reduce((n, b) => n + (b.v || 0), 0) / prior.length
+  if (!(avg > 0)) return NaN
+  return (last.v || 0) / avg
+}
+
+// Per-position pacing + per-symbol volume cache. In-memory: a restart just
+// re-checks everything once, which is safe.
+const lastCheckAt = new Map()  // position id → ms
+const volCache = new Map()     // symbol → { relVol, at }
+const VOL_TTL_MS = 5 * 60_000
+
+let running = false
+
+/** One tick. Deps injectable for tests: { ws, exec: {executeBrokerAction, prepareStatements}, now }. */
+export async function runFastMonitor(db, creds, deps = {}) {
+  if (running) return { skipped: 'busy' }
+  running = true
+  try {
+    if (!creds?.ready) return { skipped: 'no creds' }
+    const now = deps.now ?? (() => Date.now())
+    const baseMin = Number(getState(db, 'monitor_interval_min')) || 1
+
+    const loopMod = deps.loop ?? await import('../loop.js')
+    const s = loopMod.prepareStatements(db)
+    const positions = db.prepare(
+      `SELECT * FROM monitored_positions WHERE status = 'active' AND paused IS NOT 1`
+    ).all()
+    if (positions.length === 0) return { skipped: 'no positions', checked: 0 }
+
+    const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
+    const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
+
+    let checked = 0
+    let acted = 0
+    for (const pos of positions) {
+      try {
+        if (pos.source === 'external') continue            // observe-only
+        if (!manageStageAllows(db, getState, pos.strategy)) continue
+        const symbolId = symbolMap[String(pos.symbol).toUpperCase()]
+        if (!symbolId) continue
+
+        // Volume-aware cadence (cached per symbol for 5 minutes).
+        let vc = volCache.get(pos.symbol)
+        if (!vc || now() - vc.at > VOL_TTL_MS) {
+          let relVol = NaN
+          try {
+            const byTf = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 21, 15_000)
+            relVol = relVolFromBars(byTf['1m'] || [])
+          } catch { /* unknown volume → middle pace */ }
+          vc = { relVol, at: now() }
+          volCache.set(pos.symbol, vc)
+        }
+        const due = now() - (lastCheckAt.get(pos.id) || 0) >= cadenceMs(vc.relVol, baseMin)
+        if (!due) continue
+        lastCheckAt.set(pos.id, now())
+
+        const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
+        const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
+        if (mid == null) continue // market closed / no feed — main loop's problem
+
+        checked++
+        const eval_ = evaluatePosition(pos, { currentPrice: mid })
+        s.updatePositionMetrics.run(
+          eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+          eval_.updates.mae_r ?? pos.mae_r ?? 0,
+          eval_.updates.be_moved ?? pos.be_moved ?? 0,
+          eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+          pos.id,
+        )
+        if (eval_.action === 'HOLD') continue
+        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_)
+        acted++
+        const summary = outcome.error
+          ? `${eval_.reason} | broker_error: ${outcome.error}`
+          : outcome.skipped
+            ? `${eval_.reason} | intent_only: ${outcome.reason}`
+            : `${eval_.reason} | broker: ${outcome.summary}`
+        s.updatePositionCheck.run(
+          `FAST:${eval_.action}`,
+          summary,
+          new Date().toISOString(),
+          eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+          pos.id,
+        )
+        console.log(`[fast-monitor] ${pos.symbol}: ${eval_.action} — ${summary}`)
+      } catch (err) {
+        console.error('[fast-monitor]', pos.symbol, err.message)
+      }
+    }
+    return { checked, acted, positions: positions.length }
+  } finally {
+    running = false
+  }
+}
+
+/** Start the 30s ticker. Returns a stop() handle (tests, shutdown). */
+export function startFastMonitor(db, getCreds, deps = {}) {
+  const t = setInterval(async () => {
+    try {
+      const creds = getCreds(db)
+      await runFastMonitor(db, creds, deps)
+    } catch (err) {
+      console.error('[fast-monitor] tick failed:', err.message)
+    }
+  }, deps.tickMs ?? 30_000)
+  t.unref?.()
+  return () => clearInterval(t)
+}
