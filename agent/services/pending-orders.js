@@ -361,3 +361,50 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   summary.summary = `placed=${summary.placed} cancelled=${summary.cancelled} filled=${summary.filled} expired=${summary.expired}${summary.skipped.length ? ` skipped=${summary.skipped.length}` : ''}`
   return summary
 }
+
+/**
+ * Owner-triggered broker cleanup: cancel BOT-placed resting orders the local
+ * ledger no longer recognises. The pre-volume DB wipes left the broker
+ * holding duplicated 'pending-fib' limit orders (owner saw 21 resting vs 9
+ * armed combos) that no pending_orders row tracks — nothing would ever
+ * cancel or adopt them.
+ *
+ * Safety rules, in order:
+ * - ONLY orders whose label/comment carries PENDING_MARKER are candidates —
+ *   the owner's own manual cTrader orders are untouchable by construction.
+ * - An order referenced by a local status='working' row is KEPT (that is
+ *   the live, managed set).
+ * - Everything else bot-marked is cancelled, one by one; per-order failures
+ *   are reported, never thrown.
+ *
+ * @returns {{brokerOrders:number, botMarked:number, kept:number,
+ *            manual:number, cancelled:Array, failures:Array}}
+ */
+export async function reconcileBrokerPendingOrders(db, creds, deps = {}) {
+  const { exec } = await defaultDeps(deps)
+  const rec = await exec.reconcile(creds)
+  const brokerOrders = rec?.order || []
+
+  const known = new Set(
+    db.prepare(`SELECT order_id FROM pending_orders WHERE status = 'working' AND order_id IS NOT NULL`)
+      .all().map(r => String(r.order_id)),
+  )
+
+  const out = { brokerOrders: brokerOrders.length, botMarked: 0, kept: 0, manual: 0, cancelled: [], failures: [] }
+  for (const o of brokerOrders) {
+    const orderId = o?.orderId ?? posField(o, 'orderId')
+    const label = String(posField(o, 'label') || posField(o, 'comment') || o?.comment || '')
+    if (!label.includes(PENDING_MARKER)) { out.manual++; continue }
+    out.botMarked++
+    if (orderId != null && known.has(String(orderId))) { out.kept++; continue }
+    try {
+      await exec.cancelOrder(creds, { orderId })
+      out.cancelled.push({ orderId: orderId != null ? String(orderId) : null, symbolId: posField(o, 'symbolId') ?? null })
+      log(`broker cleanup: cancelled stale pending order ${orderId} (not in local ledger)`)
+    } catch (err) {
+      out.failures.push({ orderId: orderId != null ? String(orderId) : null, error: err.message })
+      log(`broker cleanup: cancel FAILED for ${orderId} — ${err.message}`)
+    }
+  }
+  return out
+}

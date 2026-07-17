@@ -200,3 +200,52 @@ test('full lifecycle: place → invalidate-cancel → new setup places again', a
   const statuses = db.prepare(`SELECT status FROM pending_orders ORDER BY id`).all().map(r => r.status)
   assert.deepEqual(statuses, ['cancelled', 'working'])
 })
+
+// ---------------------------------------------------------------------------
+// reconcileBrokerPendingOrders — the owner-triggered broker cleanup: cancel
+// bot-marked resting orders the ledger no longer tracks; never touch the
+// owner's manual orders or the actively-managed set.
+// ---------------------------------------------------------------------------
+
+test('broker cleanup cancels only stale bot-marked orders', async () => {
+  const db = freshDb()
+  // one actively-managed row → its order must be KEPT
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
+    VALUES ('EURUSD', '4h', '111', 1, 1.1, 1.09, 1.12, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib')
+  `).run()
+  const { deps, calls } = makeDeps({
+    reconcile: {
+      position: [],
+      order: [
+        { orderId: 111, tradeData: { label: 'abot|pending-fib', symbolId: 1 } },   // managed → keep
+        { orderId: 222, tradeData: { label: 'abot|pending-fib', symbolId: 1 } },   // stale bot → cancel
+        { orderId: 333, tradeData: { label: 'abot|pending-fib', symbolId: 41 } },  // stale bot → cancel
+        { orderId: 444, tradeData: { label: 'my-own-manual-order', symbolId: 1 } }, // manual → untouchable
+        { orderId: 555, tradeData: {} },                                            // unlabelled manual → untouchable
+      ],
+    },
+  })
+  const { reconcileBrokerPendingOrders } = await import('./pending-orders.js')
+  const out = await reconcileBrokerPendingOrders(db, CREDS, deps)
+  assert.equal(out.brokerOrders, 5)
+  assert.equal(out.botMarked, 3)
+  assert.equal(out.kept, 1)
+  assert.equal(out.manual, 2)
+  assert.deepEqual(out.cancelled.map(c => c.orderId).sort(), ['222', '333'])
+  assert.deepEqual(calls.cancelled.sort(), [222, 333])
+  assert.equal(out.failures.length, 0)
+})
+
+test('broker cleanup reports per-order cancel failures without throwing', async () => {
+  const db = freshDb()
+  const { deps } = makeDeps({
+    reconcile: { position: [], order: [{ orderId: 777, tradeData: { label: 'pending-fib' } }] },
+  })
+  deps.exec.cancelOrder = async () => { throw new Error('ORDER_LOCKED') }
+  const { reconcileBrokerPendingOrders } = await import('./pending-orders.js')
+  const out = await reconcileBrokerPendingOrders(db, CREDS, deps)
+  assert.equal(out.cancelled.length, 0)
+  assert.equal(out.failures.length, 1)
+  assert.match(out.failures[0].error, /ORDER_LOCKED/)
+})

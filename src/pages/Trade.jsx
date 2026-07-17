@@ -554,10 +554,27 @@ export default function Trade() {
       {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}
       {broker && ((broker.pendingOrders?.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
         <Card>
-          <h2 className="text-[13px] font-semibold mb-2">
-            At the broker
-            {broker.lastReconcileAt && <span className="ml-2 font-normal text-[var(--color-text-sub)]">synced {ago(broker.lastReconcileAt)}</span>}
-          </h2>
+          <div className="flex items-center gap-2 mb-2">
+            <h2 className="text-[13px] font-semibold">
+              At the broker
+              {broker.lastReconcileAt && <span className="ml-2 font-normal text-[var(--color-text-sub)]">synced {ago(broker.lastReconcileAt)}</span>}
+            </h2>
+            {(broker.pendingOrders?.length || 0) > 0 && (
+              <Button
+                size="sm" variant="subtle" className="ml-auto" disabled={busy === 'pclean'}
+                title="Cancel BOT-placed resting orders that the bot's ledger no longer tracks (stale duplicates from before the permanent database). Your own manual cTrader orders are never touched."
+                onClick={async () => {
+                  if (!window.confirm('Clean up stale pending orders? This cancels BOT-placed resting limit orders that the bot no longer recognises (leftovers from the old database wipes). Orders the bot is actively managing, and ALL of your manual cTrader orders, are kept.')) return
+                  setBusy('pclean')
+                  try {
+                    const r = await agentPost('/actions/reconcile-pending')
+                    setReconcileNote(`Pending cleanup: ${r.cancelled.length} stale bot order(s) cancelled · ${r.kept} managed kept · ${r.manual} manual untouched${r.failures?.length ? ` · ${r.failures.length} failed` : ''}.`)
+                    await load()
+                  } catch (e) { setError(e.message) } finally { setBusy('') }
+                }}
+              >{busy === 'pclean' ? 'Cleaning…' : 'Clean up stale pending orders'}</Button>
+            )}
+          </div>
           {(broker.pendingOrders?.length || 0) > 0 && (
             <div className="mb-2">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
