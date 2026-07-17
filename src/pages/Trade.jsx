@@ -1,6 +1,6 @@
 // Trade — the single live view: agent health, current fib signals, open
 // positions, recent trades, and the risk manager's latest decisions.
-import { useEffect, useState, useCallback } from 'react'
+import { Fragment, useEffect, useState, useCallback } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -93,7 +93,7 @@ function TradeRow({ t }) {
             </>
           )}
         <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
-        {t.exit_reason && <span className="text-[var(--color-text-sub)]">({t.exit_reason})</span>}
+        {t.close_reason && <span className="text-[var(--color-text-sub)]">({t.close_reason})</span>}
         <span className="ml-auto flex items-center gap-2">
           <span className="text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
           <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>
@@ -137,40 +137,114 @@ const ATTEMPT_SOURCE = {
   auto_signal: 'AUTO',
 }
 
-// One order-log row (risk_events) with the proposal's chart on demand — the
-// exact entry/SL/TP the gate saw, drawn on real broker bars. Every attempt
-// lands here: auto signals, test fills, manual orders, pending arms — fills
-// AND refusals, with who fired it and why it was refused.
-function RiskEventRow({ ev }) {
-  const [showChart, setShowChart] = useState(false)
-  let prop = null
-  try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
-  const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
+// Order log as a TradingView-style table (owner spec): fixed header row,
+// numerics right-aligned in tabular figures, Long/Short coloured, sideways
+// scroll with the first two columns (date/time, symbol) FROZEN, and
+// pagination so the panel stays the same height as Recent trades.
+const OL_PAGE = 8
+const OL_COL1_W = 76  // px — frozen date/time column; col 2 offset builds on it
+
+function OrderLogTable({ rows }) {
+  const [page, setPage] = useState(0)
+  const [chartFor, setChartFor] = useState(null) // row id with the chart open
+
+  const pages = Math.max(1, Math.ceil(rows.length / OL_PAGE))
+  const p = Math.min(page, pages - 1)
+  const slice = rows.slice(p * OL_PAGE, p * OL_PAGE + OL_PAGE)
+
+  if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
+
+  const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 5 }))
+  const when = (iso) => {
+    const d = new Date(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
+    return Number.isFinite(d.getTime())
+      ? { day: d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }), time: d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) }
+      : { day: '—', time: '' }
+  }
+  // Frozen columns need a SOLID background or scrolled cells show through.
+  const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
+  const stick2 = `sticky z-10 bg-[var(--color-bg)]`
+
   return (
-    <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
-      <div className="flex items-center gap-2">
-        <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
-        <Badge tone={prop?.source === 'validation_fill' ? 'special' : 'neutral'}>{src}</Badge>
-        <span className="font-semibold">{ev.symbol}</span>
-        {ev.side && <span className="text-[var(--color-text-sub)]">{ev.side}</span>}
-        <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ev.sizing_note || ''}</span>
-        <span className="ml-auto flex items-center gap-2 shrink-0">
-          <span className="text-[var(--color-text-sub)]">{ago(ev.created_at)}</span>
-          {prop && <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>}
-        </span>
+    <div>
+      <div className="overflow-x-auto">
+        <table className="min-w-[880px] w-full text-[12px] tabular-nums">
+          <thead className="text-left text-[var(--color-text-sub)]">
+            <tr className="border-b border-[var(--color-border)]">
+              <th className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: OL_COL1_W }}>Time</th>
+              <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: OL_COL1_W }}>Symbol</th>
+              <th className="py-1.5 pr-3 font-semibold">Result</th>
+              <th className="py-1.5 pr-3 font-semibold">Source</th>
+              <th className="py-1.5 pr-3 font-semibold">Side</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">Qty</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">Entry</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">Stop Loss</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
+              <th className="py-1.5 pr-3 font-semibold">Reason</th>
+              <th className="py-1.5 font-semibold" aria-label="Chart" />
+            </tr>
+          </thead>
+          <tbody>
+            {slice.map(ev => {
+              let prop = null
+              try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
+              const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
+              const w = when(ev.created_at)
+              const long = ev.side === 'BUY'
+              return (
+                <Fragment key={ev.id}>
+                  <tr className="border-b border-[var(--color-border)] align-middle">
+                    <td className={`py-1.5 pr-2 whitespace-nowrap ${stick1}`} style={{ minWidth: OL_COL1_W }}>
+                      <span className="block leading-tight">{w.day}</span>
+                      <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
+                    </td>
+                    <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: OL_COL1_W }}>{ev.symbol}</td>
+                    <td className="py-1.5 pr-3"><Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge></td>
+                    <td className="py-1.5 pr-3"><Badge tone={prop?.source === 'validation_fill' ? 'special' : 'neutral'}>{src}</Badge></td>
+                    <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {ev.side ? (long ? 'Long' : 'Short') : '—'}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.requestedVolume)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.entry)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.sl)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(prop?.tp1)}</td>
+                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={ev.veto_reason || ev.sizing_note || ''}>
+                      {ev.veto_reason || ev.sizing_note || '—'}
+                    </td>
+                    <td className="py-1.5 whitespace-nowrap">
+                      {prop && (
+                        <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === ev.id ? null : ev.id)}>
+                          {chartFor === ev.id ? 'Hide' : 'Chart'}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                  {chartFor === ev.id && prop && (
+                    <tr className="border-b border-[var(--color-border)]">
+                      <td colSpan={11} className="py-2">
+                        <PositionChart
+                          symbol={ev.symbol}
+                          timeframe={prop.timeframe || '1h'}
+                          lines={{ entry: prop.entry, sl: prop.sl, tp: prop.tp1 }}
+                          at={toMs(ev.created_at)}
+                          markers={{ entryT: toMs(ev.created_at) }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
-      {showChart && prop && (
-        <div className="py-2">
-          <PositionChart
-            symbol={ev.symbol}
-            timeframe={prop.timeframe || '1h'}
-            lines={{ entry: prop.entry, sl: prop.sl, tp: prop.tp1 }}
-            at={toMs(ev.created_at)}
-            markers={{ entryT: toMs(ev.created_at) }}
-          />
-        </div>
-      )}
-    </li>
+      {/* Pagination — keeps the panel the same height as Recent trades */}
+      <div className="mt-2 flex items-center gap-2 text-[12px] text-[var(--color-text-sub)]">
+        <Button size="sm" variant="subtle" disabled={p === 0} onClick={() => setPage(p - 1)}>‹ Newer</Button>
+        <span>page {p + 1} / {pages} · {rows.length} attempts</span>
+        <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>
+      </div>
+    </div>
   )
 }
 
@@ -198,7 +272,7 @@ export default function Trade() {
         agentGet('/state/scans'),
         agentGet('/state/positions'),
         agentGet('/state/trades'),
-        agentGet('/state/risk-events?limit=30'),
+        agentGet('/state/risk-events?limit=200'),
         agentGet('/state/risk-config').catch(() => null),
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/autotrade-timeframes').catch(() => null),
@@ -581,10 +655,7 @@ export default function Trade() {
               Download my action log
             </Button>
           </div>
-          {riskEvents.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
-          <ul className="space-y-1 text-[13px]">
-            {riskEvents.map(ev => <RiskEventRow key={ev.id} ev={ev} />)}
-          </ul>
+          <OrderLogTable rows={riskEvents} />
         </Card>
       </div>
     </div>

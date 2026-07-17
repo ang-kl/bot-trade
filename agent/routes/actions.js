@@ -221,7 +221,9 @@ export default function actionsRouter(db) {
       const details = []
       let confirmed = 0; let repaired = 0; let rejected = 0
       const upEntry = db.prepare('UPDATE trades SET entry_price = ? WHERE id = ?')
-      const upStatus = db.prepare("UPDATE trades SET status = 'rejected', exit_reason = 'no broker fill (reconciled)' WHERE id = ?")
+      // trades schema calls it close_reason — exit_reason crashed the whole
+      // reconcile ("no such column"), leaving fills stuck UNCONFIRMED.
+      const upStatus = db.prepare("UPDATE trades SET status = 'rejected', close_reason = 'no broker fill (reconciled)' WHERE id = ?")
       for (const r of rows) {
         const symbolId = map[String(r.symbol).toUpperCase()]
         const t = toMs(r.opened_at)
