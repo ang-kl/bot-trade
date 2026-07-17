@@ -65,14 +65,14 @@ function openPositionRows(positions, prices = {}) {
   })
 }
 
-// Broker resting orders → the standard shape. They carry no creation
-// timestamp in the reconcile snapshot, so Time is honestly '—' and the
+// Broker resting orders → the standard shape. Time is the broker's
+// last-update stamp (when the order or its SL/TP was last set); the
 // expiry lives in Reason. Qty is in UNITS at the broker (not lots) — kept
 // explicit with a 'u' suffix rather than guessing a contract size.
 function pendingOrderRows(orders) {
   return orders.map((o, i) => ({
     id: `po-${o.orderId || i}`,
-    at: null,
+    at: o.updatedAt ?? null, // last time the order (incl. its SL/TP) was set
     symbol: o.symbolName || '?',
     result: { text: 'PENDING', tone: 'warning' },
     source: { text: o.bot ? 'BOT' : 'MANUAL', tone: o.bot ? 'special' : 'neutral' },

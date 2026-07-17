@@ -1804,6 +1804,20 @@ export default function actionsRouter(db) {
           const sideOf = (v) => SIDE_NAME[v] || String(v || '').toUpperCase()
           const ORDER_TYPE_NAME = { 1: 'MARKET', 2: 'LIMIT', 3: 'STOP', 4: 'SL/TP', 5: 'MARKET RANGE', 6: 'STOP LIMIT' }
           const orderTypeOf = (v) => ORDER_TYPE_NAME[v] || String(v || 'ORDER').toUpperCase()
+          const round5 = (v) => Math.round(v * 100000) / 100000
+
+          // cTrader stores a live position's EXTRA TP levels (the app's
+          // "Take profit 2/3…", each with its own quantity) as CLOSING
+          // limit orders bound to the positionId — they are not standalone
+          // pending entries. Group them onto their position as the TP
+          // ladder; only true entry orders stay in the orders list.
+          const isCloser = (o) => o.closingOrder === true || Number(o.positionId) > 0
+          const closersByPos = {}
+          for (const o of rawOrders.filter(isCloser)) {
+            const pid = String(o.positionId ?? '')
+            ;(closersByPos[pid] ??= []).push(o)
+          }
+          const entryOrders = rawOrders.filter(o => !isCloser(o))
 
           out.positions = rawPositions.map(p => {
             const td = p.tradeData || {}
@@ -1836,6 +1850,25 @@ export default function actionsRouter(db) {
             const estNetPnl = estPnlDeposit != null
               ? Math.round((estPnlDeposit + (swapMoney || 0) + (commissionMoney || 0)) * 100) / 100
               : null
+            // TP ladder: closing limit orders carry the app's TP2/TP3 with
+            // their per-level quantity; the position's native TP covers the
+            // leftover volume. Sorted nearest-first in the profit direction.
+            const closerTps = (closersByPos[String(p.positionId)] || [])
+              .filter(o => o.limitPrice != null)
+              .map(o => ({
+                price: o.limitPrice,
+                lots: toLots(o.tradeData?.volume, meta),
+                at: o.utcLastUpdateTimestamp ?? null,
+              }))
+            const closerLots = closerTps.reduce((s, t) => s + (t.lots || 0), 0)
+            const ladder = [
+              ...(p.takeProfit != null
+                ? [{ price: p.takeProfit, lots: lots != null ? Math.max(0, Math.round((lots - closerLots) * 100) / 100) : null, at: p.utcLastUpdateTimestamp ?? null }]
+                : []),
+              ...closerTps,
+            ]
+              .sort((a, b) => dir === 1 ? a.price - b.price : b.price - a.price)
+              .map((t, i) => ({ n: i + 1, ...t }))
             return {
               positionId: p.positionId,
               symbol: meta.symbolName || `#${td.symbolId}`,
@@ -1852,32 +1885,42 @@ export default function actionsRouter(db) {
               digits: meta.digits ?? null,
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
+              tps: ladder.length ? ladder : null,
               swap: swapMoney,
               commission: commissionMoney,
               usedMargin: money(p.usedMargin),
               openedAt: td.openTimestamp ?? null,
+              lastModifiedAt: p.utcLastUpdateTimestamp ?? null,
               label: td.label || null,
               comment: td.comment || null,
               guaranteedSl: !!p.guaranteedStopLoss,
             }
           })
 
-          out.orders = rawOrders.map(o => {
+          out.orders = entryOrders.map(o => {
             const td = o.tradeData || {}
             const meta = symMeta[td.symbolId] || {}
+            const side = sideOf(td.tradeSide)
+            const trigger = o.limitPrice ?? o.stopPrice ?? null
+            const oDir = side === 'SELL' ? -1 : 1
+            // The app places SL/TP on pending orders as RELATIVE distances
+            // (1/100000-price units); absolute fields win when present.
+            const relSl = Number(o.relativeStopLoss)
+            const relTp = Number(o.relativeTakeProfit)
             return {
               orderId: o.orderId,
               type: orderTypeOf(o.orderType),
               symbol: meta.symbolName || `#${td.symbolId}`,
-              side: sideOf(td.tradeSide),
+              side,
               lots: toLots(td.volume, meta),
               minLot: toLots(meta.minVolume, meta),
               limitPrice: o.limitPrice ?? null,
               stopPrice: o.stopPrice ?? null,
               currentPrice: lastCloses[td.symbolId] ?? null,
-              sl: o.stopLoss ?? null,
-              tp: o.takeProfit ?? null,
+              sl: o.stopLoss ?? (trigger != null && Number.isFinite(relSl) && relSl > 0 ? round5(trigger - oDir * relSl / 100000) : null),
+              tp: o.takeProfit ?? (trigger != null && Number.isFinite(relTp) && relTp > 0 ? round5(trigger + oDir * relTp / 100000) : null),
               expiresAt: o.expirationTimestamp ?? null,
+              updatedAt: o.utcLastUpdateTimestamp ?? null,
               label: td.label || null,
               comment: td.comment || null,
             }

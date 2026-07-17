@@ -280,6 +280,13 @@ export default function PositionManager({ p, onDone }) {
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Commission</span><span>{money(p.commission)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Used margin</span><span>{money(p.usedMargin)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Opened</span><span>{p.openedAt ? new Date(p.openedAt).toLocaleString() : '—'}</span></div>
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Last modified</span><span>{p.lastModifiedAt ? new Date(p.lastModifiedAt).toLocaleString() : '—'}</span></div>
+          {p.tps?.length > 0 && p.tps.map(t => (
+            <div key={t.n} className="flex justify-between border-t border-[var(--color-border)] py-1">
+              <span>Take profit {t.n}</span>
+              <span>{fmt(t.price, p.digits ?? 5)}{t.lots != null ? ` · ${fmt(t.lots, 2)} lots` : ''}{t.at ? ` · ${new Date(t.at).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}</span>
+            </div>
+          ))}
           {p.label && <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Label</span><span className="truncate max-w-[200px]">{p.label}</span></div>}
         </div>
       )}
