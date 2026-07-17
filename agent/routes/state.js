@@ -410,6 +410,7 @@ export default function stateRouter(db) {
       watchlist: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
       pending_mode_enabled: getState(db, 'pending_mode_enabled') === 'true',
       pending_matrix: (() => { try { return JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { return null } })(),
+      burn_in: (() => { try { const p = JSON.parse(getState(db, 'burn_in_json') || 'null'); return p && typeof p === 'object' ? p : { on: false } } catch { return { on: false } } })(),
     })
   })
 

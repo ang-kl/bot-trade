@@ -247,6 +247,32 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/burn-in — arm/disarm track-record burn-in mode.
+  // Body: { on: boolean, lots?, timeCapMinutes?, maxPerCycle?, cooldownMinutes? }
+  // Values are clamped in loadBurnInConfig; size is pinned 0.01–0.05.
+  // -----------------------------------------------------------------------
+  router.post('/burn-in', async (req, res) => {
+    try {
+      const { loadBurnInConfig } = await import('../services/burn-in.js')
+      const current = loadBurnInConfig(db)
+      const next = {
+        ...current,
+        ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
+        ...(req.body?.lots != null ? { lots: Number(req.body.lots) } : {}),
+        ...(req.body?.timeCapMinutes != null ? { timeCapMinutes: Number(req.body.timeCapMinutes) } : {}),
+        ...(req.body?.maxPerCycle != null ? { maxPerCycle: Number(req.body.maxPerCycle) } : {}),
+        ...(req.body?.cooldownMinutes != null ? { cooldownMinutes: Number(req.body.cooldownMinutes) } : {}),
+      }
+      setState(db, 'burn_in_json', JSON.stringify(next))
+      const clamped = loadBurnInConfig(db)
+      console.log(`[actions] burn-in ${clamped.on ? 'ARMED' : 'disarmed'} — lots=${clamped.lots} timeCap=${clamped.timeCapMinutes}m maxPerCycle=${clamped.maxPerCycle}`)
+      res.json({ ok: true, config: clamped })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/reconcile-pending — cancel BOT-placed resting orders the
   // local ledger no longer recognises (stale duplicates from the pre-volume
   // DB wipes). Manual cTrader orders are never touched (marker-gated).

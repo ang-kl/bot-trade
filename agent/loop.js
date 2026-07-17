@@ -94,9 +94,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
 
   const side = synth.consensus_bias === 'short' ? 'SELL' : 'BUY'
-  // Guard against legacy stored junk (e.g. a negative cap saved before
-  // validation existed) — a bad cap must never reach the risk gate.
-  const requestedVol = Number(watchlistItem?.maxVolume) > 0 ? Number(watchlistItem.maxVolume) : 0.01
+  // Per-symbol Max lots is an OPTIONAL cap. No cap → null → the risk gate
+  // sizes purely from balance × risk% (the owner's dynamic sizing). The old
+  // 0.01 fallback silently compressed every uncapped trade. Legacy junk
+  // (negative caps) still never reaches the gate.
+  const requestedVol = Number(watchlistItem?.maxVolume) > 0 ? Number(watchlistItem.maxVolume) : null
 
   // Market-hours gate: a MARKET order into a closed market is a guaranteed
   // broker rejection — stocks/indices trade the NY session only, FX/metals
@@ -984,6 +986,21 @@ async function runLoop(db) {
         } catch (err) {
           log(`Pending-order phase failed (non-fatal): ${err.message}`)
         }
+      }
+
+      // BURN-IN MODE — track-record trades (owner-armed): min-size positions
+      // through the full auto-trade path with tight time caps, so completed
+      // round-trips accumulate fast. Inert unless burn_in_json.on AND
+      // autotrade armed; a failure must never take down the loop.
+      try {
+        const biCreds = getCtraderCreds(db)
+        if (biCreds.ready) {
+          const { runBurnIn } = await import('./services/burn-in.js')
+          const b = await runBurnIn(db, biCreds)
+          if (b?.placed || b?.attempted) log(`Burn-in: ${b.summary}`)
+        }
+      } catch (err) {
+        log(`Burn-in failed (non-fatal): ${err.message}`)
       }
 
       // Per-position trade guards — break-even / trailing / partial TPs the
