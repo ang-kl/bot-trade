@@ -369,7 +369,14 @@ export function evaluateTrade(db, proposal, configOverride) {
   // ---- 9. Equity-aware position sizing -----------------------------------
   // When balance is known, derive the lot size from the per-trade risk
   // budget; veto when even the minimum lot size would exceed that budget.
-  let sizingFloor = proposal.requestedVolume
+  // requestedVolume is an OPTIONAL per-symbol cap (watchlist "Max lots"):
+  // absent/null means UNCAPPED — the dynamic risk-based size IS the size
+  // (owner 2026-07-17: the old hardcoded 0.01 fallback was silently
+  // compressing every trade below the configured risk budget). Without a
+  // balance the risk formula can't run, so no-cap falls back to minLotSize.
+  const reqVol = Number(proposal.requestedVolume)
+  const hasCap = Number.isFinite(reqVol) && reqVol > 0
+  let sizingFloor = hasCap ? reqVol : config.minLotSize
   let sizingNote = null
   if (balance != null) {
     const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct, entry)
@@ -382,9 +389,9 @@ export function evaluateTrade(db, proposal, configOverride) {
         checks, proposal,
       )
     }
-    // Use the smaller of the risk-based volume and the requested (watchlist) cap.
-    sizingFloor = Math.min(risked.volume, proposal.requestedVolume)
-    sizingNote = risked.note
+    // Risk-based size, reduced by the per-symbol cap only when one is set.
+    sizingFloor = hasCap ? Math.min(risked.volume, reqVol) : risked.volume
+    sizingNote = hasCap && reqVol < risked.volume ? `${risked.note} · capped_at_max_lots=${reqVol}` : risked.note
   }
 
   // ---- 10. Kelly sizing --------------------------------------------------

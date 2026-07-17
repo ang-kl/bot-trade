@@ -649,3 +649,30 @@ test('no balance → no tier gate, crypto approves', () => {
   }))
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
+
+// Uncapped sizing (owner 2026-07-17): requestedVolume is an OPTIONAL cap.
+// Absent → the dynamic risk-based size IS the size; the old hardcoded 0.01
+// fallback silently compressed every trade. Explicit caps still reduce.
+
+test('no Max lots cap → adjusted volume is the full risk-based size', () => {
+  const db = freshDB()
+  setBalance(db, 50_000)
+  setLeverage(db, 200)
+  // EURUSD, 50-pip stop: risk budget 1% = $500; usd/lot = 100000×0.005 = $500 → 1 lot
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: null }
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  assert.equal(r.approved, true, r.veto_reason)
+  assert.ok(r.adjusted_volume >= 0.9, `expected ~1 lot risk-based size, got ${r.adjusted_volume}`)
+  assert.equal(r.checks.risk_based_volume, r.adjusted_volume)
+})
+
+test('explicit Max lots cap still reduces the risk-based size', () => {
+  const db = freshDB()
+  setBalance(db, 50_000)
+  setLeverage(db, 200)
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: 0.05 }
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  assert.equal(r.approved, true, r.veto_reason)
+  assert.equal(r.adjusted_volume, 0.05)
+  assert.match(r.sizing_note || '', /capped_at_max_lots/)
+})

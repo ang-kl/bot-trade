@@ -135,6 +135,7 @@ const ATTEMPT_SOURCE = {
   execute_analysis: 'EXECUTE',
   pending: 'PENDING',
   auto_signal: 'AUTO',
+  burnin: 'BURN-IN',
 }
 
 // Order log as a TradingView-style table (owner spec): fixed header row,
