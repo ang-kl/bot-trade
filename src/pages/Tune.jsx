@@ -342,7 +342,7 @@ const RISK_CONTROLS = {
   perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.03, step: 0.0025, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
   dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fraction: true, fmt: v => `${(v * 100).toFixed(1)}%` },
   minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
-  maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10].map(n => [n, String(n)]) },
+  maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10, 15, 25, 50, 100, 200].map(n => [n, String(n)]) },
   symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
   maxConsecutiveLosses: { type: 'select', options: [[0, 'off — no streak breaker'], ...[2, 3, 4, 5, 6].map(n => [n, String(n)])] },
   cooldownMinutes: { type: 'select', options: [[0, 'off — resume next cycle'], [30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
@@ -1151,14 +1151,14 @@ export default function Tune() {
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
               <Toggle on={config?.burn_in?.on} label="Burn-in (track record)" onClick={() => {
                 const next = !config?.burn_in?.on
-                if (next && !window.confirm('Arm BURN-IN mode? Every 5 minutes the bot opens up to 3 REAL 0.01-lot positions across the enabled watchlist (1h momentum entry, 1×ATR stop, RR 1.6) and the monitor closes each within ~20 minutes. Purpose: mass-produce completed trades for the track record. Runs only while Autotrade is armed; /pause, Kill all and the equity stop all stop it.')) return
+                if (next && !window.confirm(`Arm BURN-IN (micro-quant)? Every 5 minutes the bot opens REAL 0.01-lot positions across the enabled watchlist. The operating timeframe is chosen PER SYMBOL from live volume & condition — hot tape → 5m scalps (~12m cap), active → 15m (~30m), trending-quiet → 1h (~2h) — and the pace steers itself toward ${config?.burn_in?.targetTrades ?? 200} completed trades in ${config?.burn_in?.windowDays ?? 2} days. Runs only while Autotrade is armed; /pause, Kill all and the equity stop all stop it.`)) return
                 run(async () => {
                   await agentPost('/actions/burn-in', { on: next })
                   setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), on: next } }))
                 }, `Burn-in ${next ? 'ARMED' : 'disarmed'}`)
               }} />
               <span className="text-[12px] text-[var(--color-text-sub)]">
-                min-size (0.01) trades, ~20-min time caps, whole enabled watchlist — builds the 30+ trade evidence base fast; every attempt lands in the Order log (BURN-IN badge). Raise "Max open positions" on the Risk tab for more throughput.
+                micro-quant: min-size (0.01) trades whose timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Every attempt lands in the Order log (BURN-IN badge). Set "Max open positions" ≥ 15 on the Risk tab for full throughput.
               </span>
             </div>
             {/* Profit Keeper — automatic protection for MANUAL/external
