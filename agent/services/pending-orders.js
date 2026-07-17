@@ -243,13 +243,25 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
 
     const side = signal.bias === 'short' ? 'SELL' : 'BUY'
+    // Dynamic sizing: a resting order sizes exactly like a market order —
+    // pure risk-based (uncapped) unless the watchlist pins a per-symbol
+    // Max lots. The old hardcoded requestedVolume=minLotSize acted as a CAP
+    // in the sizing rule, baking every pending order to 0.01 (owner: "why
+    // is my lot still baked 0.01 … where is the dynamic sizing?").
+    let wlCap = null
+    try {
+      const wl = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
+      const item = (Array.isArray(wl) ? wl : []).find(w => (typeof w === 'string' ? w : w.symbol) === symbol)
+      const mv = Number(item?.maxVolume)
+      if (Number.isFinite(mv) && mv > 0) wlCap = mv
+    } catch { /* no watchlist cap */ }
     const proposal = {
       symbol,
       side,
       entry: signal.entry,
       sl: signal.sl,
       tp1: signal.tp1,
-      requestedVolume: riskCfg.minLotSize || 0.01,
+      requestedVolume: wlCap,
       strategy: 'fib_618_fade',
       conviction: signal.conviction ?? null,
       timeframe,
@@ -261,7 +273,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       summary.skipped.push(`${symbol}: risk veto — ${riskResult.veto_reason}`)
       continue
     }
-    const volLots = riskResult.adjusted_volume ?? proposal.requestedVolume
+    const volLots = riskResult.adjusted_volume ?? proposal.requestedVolume ?? riskCfg.minLotSize ?? 0.01
 
     let priceDigits = 5
     let sized

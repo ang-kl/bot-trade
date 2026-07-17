@@ -23,9 +23,9 @@ function bars(vol = () => 100) {
   return out
 }
 
-function mkDb({ on = true, watch = ['EURUSD', 'GBPUSD'], autotrade = true, startedAt = null } = {}) {
+function mkDb({ on = true, watch = ['EURUSD', 'GBPUSD'], autotrade = true, startedAt = null, sizeMode } = {}) {
   const db = initDB(':memory:')
-  setState(db, 'burn_in_json', JSON.stringify({ on, startedAt }))
+  setState(db, 'burn_in_json', JSON.stringify({ on, startedAt, ...(sizeMode ? { sizeMode } : {}) }))
   setState(db, 'autotrade_enabled', autotrade ? 'true' : 'false')
   setState(db, 'autopilot_symbols_json', JSON.stringify(watch.map(s => ({ symbol: s, enabled: true }))))
   setState(db, 'symbol_id_map', JSON.stringify(Object.fromEntries(watch.map((s, i) => [s, i + 1]))))
@@ -109,13 +109,21 @@ test('off / autotrade-off / no creds → skipped, nothing placed', async () => {
   assert.equal(placed.length, 0)
 })
 
-test('places pinned-size trades on the PLAN timeframe with the plan time cap', async () => {
+test('fixed size mode pins burn-in lots via maxVolume', async () => {
+  const db = mkDb({ watch: ['EURUSD'], sizeMode: 'fixed' })
+  const placed = []
+  await runBurnIn(db, CREDS, deps(placed))
+  assert.equal(placed.length, 1)
+  assert.equal(placed[0].wItem.maxVolume, 0.01, 'size pinned to burn-in lots')
+})
+
+test('places auto-sized trades (default) on the PLAN timeframe with the plan time cap', async () => {
   const db = mkDb({})
   const placed = []
   const out = await runBurnIn(db, CREDS, deps(placed))
   assert.equal(out.placed, 2)
   for (const p of placed) {
-    assert.equal(p.wItem.maxVolume, 0.01, 'size pinned to burn-in lots')
+    assert.equal(p.wItem.maxVolume, null, 'auto mode → uncapped risk-based sizing')
     assert.equal(p.synth.source, 'burnin')
     assert.equal(p.synth.strategy, 'burnin')
     // flat 1m volume → relVol ≈ 1 → 'active' regime → 15m plan, 30m cap

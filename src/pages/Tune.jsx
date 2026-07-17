@@ -1191,14 +1191,28 @@ export default function Tune() {
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
               <Toggle on={config?.burn_in?.on} label="Burn-in (track record)" onClick={() => {
                 const next = !config?.burn_in?.on
-                if (next && !window.confirm(`Arm BURN-IN (micro-quant)? Every 5 minutes the bot opens REAL 0.01-lot positions across the enabled watchlist. The operating timeframe is chosen PER SYMBOL from live volume & condition — hot tape → 5m scalps (~12m cap), active → 15m (~30m), trending-quiet → 1h (~2h) — and the pace steers itself toward ${config?.burn_in?.targetTrades ?? 200} completed trades in ${config?.burn_in?.windowDays ?? 2} days. Runs only while Autotrade is armed; /pause, Kill all and the equity stop all stop it.`)) return
+                const sizeWord = (config?.burn_in?.sizeMode ?? 'auto') === 'fixed' ? `fixed ${config?.burn_in?.lots ?? 0.01}-lot` : 'risk-sized (auto)'
+                if (next && !window.confirm(`Arm BURN-IN (micro-quant)? Every 5 minutes the bot opens REAL ${sizeWord} positions across the enabled watchlist. The operating timeframe is chosen PER SYMBOL from live volume & condition — hot tape → 5m scalps (~12m cap), active → 15m (~30m), trending-quiet → 1h (~2h) — and the pace steers itself toward ${config?.burn_in?.targetTrades ?? 200} completed trades in ${config?.burn_in?.windowDays ?? 2} days. Runs only while Autotrade is armed; /pause, Kill all and the equity stop all stop it.`)) return
                 run(async () => {
                   await agentPost('/actions/burn-in', { on: next })
                   setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), on: next } }))
                 }, `Burn-in ${next ? 'ARMED' : 'disarmed'}`)
               }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">Sizing:</span>
+              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Burn-in sizing">
+                {[['auto', 'Auto (risk-based)'], ['fixed', 'Fixed 0.01–0.05']].map(([mode, lbl]) => (
+                  <button key={mode} type="button" role="radio" aria-checked={(config?.burn_in?.sizeMode ?? 'auto') === mode}
+                    onClick={() => run(async () => {
+                      await agentPost('/actions/burn-in', { sizeMode: mode })
+                      setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
+                    }, `Burn-in sizing → ${lbl}`)}
+                    className={`px-2 py-1 text-[12px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
               <span className="text-[12px] text-[var(--color-text-sub)]">
-                micro-quant: min-size (0.01) trades whose timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Every attempt lands in the Order log (BURN-IN badge). Set "Max open positions" ≥ 15 on the Risk tab for full throughput.
+                micro-quant: timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Auto sizing uses the SAME uncapped risk-based lot as auto signals; Fixed pins a cheap 0.01–0.05 sample. Every attempt lands in the Order log (BURN-IN badge).
               </span>
             </div>
             {/* Profit Keeper — automatic protection for MANUAL/external

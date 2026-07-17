@@ -249,3 +249,26 @@ test('broker cleanup reports per-order cancel failures without throwing', async 
   assert.equal(out.failures.length, 1)
   assert.match(out.failures[0].error, /ORDER_LOCKED/)
 })
+
+test('pending orders size DYNAMICALLY: uncapped by default, watchlist Max lots caps', async () => {
+  // Default: no watchlist cap → requestedVolume null → risk gate sizes free.
+  const db = freshDb()
+  const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  deps.risk.evaluateTrade = (_db, proposal) => {
+    calls.riskEvents.push({ proposal, result: null })
+    return { approved: true, adjusted_volume: 0.37 } // risk-based size, not min lot
+  }
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  const prop = calls.riskEvents.find(e => e.proposal.symbol === 'EURUSD').proposal
+  assert.equal(prop.requestedVolume, null, 'no hardcoded min-lot cap')
+  assert.equal(calls.placed[0].volume, 37000, '0.37 lots × 100000 units')
+
+  // Watchlist Max lots present → passes through as the cap.
+  const db2 = freshDb()
+  setState(db2, 'autopilot_symbols_json', JSON.stringify([{ symbol: 'EURUSD', enabled: true, maxVolume: 0.05 }]))
+  const h2 = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  const seen = []
+  h2.deps.risk.evaluateTrade = (_db, proposal) => { seen.push(proposal); return { approved: true, adjusted_volume: 0.05 } }
+  await managePendingOrders(db2, CREDS, SYMBOL_MAP, h2.deps)
+  assert.equal(seen[0].requestedVolume, 0.05)
+})
