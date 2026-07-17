@@ -96,6 +96,39 @@ test('known autopilot position NOT duplicated', () => {
   assert.equal(trades.length, 1, 'still just one trade row')
 })
 
+test('ours-labelled broker orphan (no local row) is ADOPTED as a bot position', () => {
+  // The bug: a bot fill whose local monitored_positions row was never
+  // written (exec returned no positionId) was skipped forever because the
+  // label said "ours" — owner saw 4 at the broker, 1 shown.
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const brokerPos = [makeBrokerPosition({
+    positionId: '900', symbolName: 'USDJPY', tradeSide: 'BUY', openPrice: 150,
+    label: 'AP|v1|FIB|HI|LDN|12h|REGT', volume: 1000,
+  })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  assert.equal(result.newExternal.length, 1)
+  assert.equal(result.newExternal[0].adopted, true)
+  assert.equal(result.newExternal[0].source, 'autopilot')
+  const mp = db.prepare(`SELECT * FROM monitored_positions WHERE symbol = 'USDJPY' AND status = 'active'`).get()
+  assert.ok(mp, 'adopted position is now tracked')
+  assert.equal(mp.source, 'autopilot')       // a BOT position, not observe-only 'external'
+  assert.equal(mp.strategy, 'fib_618_fade')
+  const trade = db.prepare(`SELECT * FROM trades WHERE ctrader_position_id = '900'`).get()
+  assert.equal(trade.source, 'autopilot')
+})
+
+test('foreign-labelled broker position is imported observe-only (external)', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const brokerPos = [makeBrokerPosition({ positionId: '901', symbolName: 'NATGAS', label: 'hand-placed', volume: 50000 })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+  assert.equal(result.newExternal[0].adopted, false)
+  const mp = db.prepare(`SELECT source FROM monitored_positions WHERE symbol = 'NATGAS'`).get()
+  assert.equal(mp.source, 'external')
+})
+
 test('closed position detection marks status=closed', () => {
   const db = mkDb()
   const setState = mkSetState(db)

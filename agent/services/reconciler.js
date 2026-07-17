@@ -1,4 +1,4 @@
-import { isOurs } from '../lib/trade-labels.js'
+import { isOurs, parseLabel } from '../lib/trade-labels.js'
 import { getState } from '../db.js'
 
 /**
@@ -34,8 +34,21 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
 
     if (knownIds.has(posId)) continue
 
+    // A broker position with no local active row is ADOPTED so the bot's
+    // view matches the broker (owner saw 4 at the broker, 1 shown). Two
+    // kinds:
+    //  · ours-labelled but untracked → a bot fill whose local row was never
+    //    written (the exec response lacked a positionId). Adopt as a BOT
+    //    position (source from the label) and MANAGE it — previously this
+    //    was `continue`, so those fills stayed invisible forever.
+    //  · foreign label → a manual/external position: import observe-only.
     const label = bp.tradeData?.label || bp.label || ''
-    if (isOurs(label)) continue
+    const ours = isOurs(label)
+    const parsed = parseLabel(label)
+    const adoptedSource = ours ? (parsed.source || 'autopilot') : 'external'
+    const thesis = ours
+      ? `Adopted bot position — label ${adoptedSource}${parsed.strategy ? `/${parsed.strategy}` : ''} (reconciled; local row was missing)`
+      : 'External position — reconciliation import'
 
     const side = bp.tradeData?.tradeSide === 'BUY' || bp.tradeData?.tradeSide === 1 ? 'long' : 'short'
     const entry = bp.tradeData?.openPrice ?? bp.price ?? null
@@ -48,22 +61,23 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     const inserted = db.transaction(() => {
       const tradeInsert = db.prepare(`
         INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-          ctrader_position_id, source, status)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, 'external', 'open')
-      `).run(symbolName, side === 'long' ? 'BUY' : 'SELL', entry, sl, tp, volume, posId)
+          ctrader_position_id, source, label_raw, label_strategy, status)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, 'open')
+      `).run(symbolName, side === 'long' ? 'BUY' : 'SELL', entry, sl, tp, volume, posId,
+        adoptedSource, label || null, parsed.strategy || null)
       const tradeId = tradeInsert.lastInsertRowid
 
       db.prepare(`
         INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
-          thesis, initial_risk, source, label_raw, account_id, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'External position — reconciliation import', ?, 'external', ?, ?, 'active')
-      `).run(symbolName, tradeId, side, entry, sl, tp, initialRisk, label || null,
-        getState(db, 'ctrader_account_id'))
+          thesis, initial_risk, source, strategy, label_raw, account_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+      `).run(symbolName, tradeId, side, entry, sl, tp, thesis, initialRisk,
+        adoptedSource, parsed.strategy || null, label || null, getState(db, 'ctrader_account_id'))
 
       return tradeId
     })()
 
-    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, tradeId: inserted })
+    newExternal.push({ symbol: symbolName, side, entry, positionId: posId, adopted: ours, source: adoptedSource, tradeId: inserted })
   }
 
   const closedDetected = []
