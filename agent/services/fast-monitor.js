@@ -38,6 +38,26 @@ export function cadenceMs(relVol, baseMinutes) {
   return base * 3                               // quiet market → slowest
 }
 
+/**
+ * Owner override map (agent_state monitor_overrides_json): SYMBOL → minutes.
+ * An override REPLACES the volume-adaptive cadence for that symbol — the
+ * owner's word beats the volume read (faster ticker for some, throttle for
+ * others). Cleared symbols fall back to auto.
+ */
+export function loadMonitorOverrides(db) {
+  try {
+    const parsed = JSON.parse(getState(db, 'monitor_overrides_json') || '{}')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch { return {} }
+}
+
+/** Effective cadence: owner override (minutes) wins; otherwise volume-adaptive. */
+export function effectiveCadenceMs(overrideMin, relVol, baseMin) {
+  const ov = Number(overrideMin)
+  if (Number.isFinite(ov) && ov > 0) return Math.max(15_000, ov * 60_000)
+  return cadenceMs(relVol, baseMin)
+}
+
 /** relVol from 1m bars: last CLOSED bar's volume vs the average before it. */
 export function relVolFromBars(bars) {
   if (!Array.isArray(bars) || bars.length < 6) return NaN
@@ -75,6 +95,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
 
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
     const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
+    const overrides = loadMonitorOverrides(db)
 
     let checked = 0
     let acted = 0
@@ -85,18 +106,24 @@ export async function runFastMonitor(db, creds, deps = {}) {
         const symbolId = symbolMap[String(pos.symbol).toUpperCase()]
         if (!symbolId) continue
 
-        // Volume-aware cadence (cached per symbol for 5 minutes).
-        let vc = volCache.get(pos.symbol)
-        if (!vc || now() - vc.at > VOL_TTL_MS) {
-          let relVol = NaN
-          try {
-            const byTf = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 21, 15_000)
-            relVol = relVolFromBars(byTf['1m'] || [])
-          } catch { /* unknown volume → middle pace */ }
-          vc = { relVol, at: now() }
-          volCache.set(pos.symbol, vc)
+        // Cadence: owner per-symbol override wins; otherwise volume-aware
+        // (relVol cached per symbol for 5 minutes — skipped entirely when an
+        // override pins the pace, sparing the bar fetch).
+        const overrideMin = overrides[String(pos.symbol).toUpperCase()]
+        let relVol = NaN
+        if (!(Number(overrideMin) > 0)) {
+          let vc = volCache.get(pos.symbol)
+          if (!vc || now() - vc.at > VOL_TTL_MS) {
+            try {
+              const byTf = await ws.wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 21, 15_000)
+              relVol = relVolFromBars(byTf['1m'] || [])
+            } catch { /* unknown volume → middle pace */ }
+            vc = { relVol, at: now() }
+            volCache.set(pos.symbol, vc)
+          }
+          relVol = vc.relVol
         }
-        const due = now() - (lastCheckAt.get(pos.id) || 0) >= cadenceMs(vc.relVol, baseMin)
+        const due = now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
         if (!due) continue
         lastCheckAt.set(pos.id, now())
 

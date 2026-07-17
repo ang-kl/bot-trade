@@ -633,6 +633,7 @@ export default function Tune() {
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
+  const [monOvDraft, setMonOvDraft] = useState({ symbol: '', minutes: '' }) // per-symbol monitor override editor
   // Excel-style bands in the active watchlist: which group bands are OPEN.
   // Groups default COLLAPSED (100s of instruments must not overwhelm the
   // page); the Singles band starts open. Persisted per device.
@@ -1144,6 +1145,45 @@ export default function Tune() {
               <span className="text-[12px] text-[var(--color-text-sub)]">
                 base cadence per OPEN position (scan stays 5m) — busy market checks at base speed, average 2×, quiet 3×; broker-side SL/TP covers every tick in between
               </span>
+            </div>
+            {/* Per-symbol cadence overrides — owner's word beats the volume
+                logic: pin one symbol faster (0.25m) or throttle it (30m). */}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]">
+              <span className="text-[var(--color-text-sub)]">Per-symbol override:</span>
+              <form
+                className="flex items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const sym = monOvDraft.symbol.toUpperCase().trim()
+                  const mins = monOvDraft.minutes === '' ? null : Number(monOvDraft.minutes)
+                  if (!sym) { setError('Override needs a symbol'); return }
+                  run(async () => {
+                    const r = await agentPost('/actions/monitor-override', { symbol: sym, minutes: mins })
+                    setConfig(c => ({ ...c, monitor_overrides: r.overrides }))
+                    setMonOvDraft({ symbol: '', minutes: '' })
+                  }, mins == null ? `${sym} monitor cadence → auto` : `${sym} monitor cadence pinned to ${mins}m`)
+                }}
+              >
+                <Input value={monOvDraft.symbol} onChange={e => setMonOvDraft(d => ({ ...d, symbol: e.target.value }))} placeholder="SYMBOL" className="w-24 !py-0.5 !min-h-0 text-[12px]" aria-label="Override symbol" />
+                <Input type="number" step="0.25" min="0.25" max="30" value={monOvDraft.minutes} onChange={e => setMonOvDraft(d => ({ ...d, minutes: e.target.value }))} placeholder="min (empty=auto)" className="w-32 !py-0.5 !min-h-0 text-[12px]" aria-label="Override minutes" />
+                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[11px]">Set</Button>
+              </form>
+              {Object.entries(config?.monitor_overrides || {}).map(([sym, m]) => (
+                <span key={sym} className="glass-inset rounded-full px-2 py-0.5 inline-flex items-center gap-1.5 font-semibold">
+                  {sym} {m}m
+                  <button
+                    type="button" aria-label={`Clear ${sym} override`}
+                    className="cursor-pointer text-[var(--color-text-sub)] hover:text-[var(--color-down)]"
+                    onClick={() => run(async () => {
+                      const r = await agentPost('/actions/monitor-override', { symbol: sym, minutes: null })
+                      setConfig(c => ({ ...c, monitor_overrides: r.overrides }))
+                    }, `${sym} monitor cadence → auto`)}
+                  >✕</button>
+                </span>
+              ))}
+              {Object.keys(config?.monitor_overrides || {}).length === 0 && (
+                <span className="text-[var(--color-text-sub)]">none — all symbols on auto (volume-adaptive)</span>
+              )}
             </div>
             {/* Burn-in — the track-record builder: min-size trades with
                 tight time caps across the enabled watchlist, mass-producing
