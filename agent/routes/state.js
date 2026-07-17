@@ -667,6 +667,37 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/veto-breakdown?days=30 — WHY trades were vetoed, grouped by
+  // reason family (symbol_cooldown, market_closed, spread…). The stage
+  // matrix shows how many; this shows what actually blocked them.
+  // -----------------------------------------------------------------------
+  router.get('/veto-breakdown', (req, res) => {
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days || '30', 10)))
+    try {
+      const rows = db.prepare(
+        `SELECT approved, veto_reason FROM risk_events
+          WHERE datetime(created_at) >= datetime('now', ?)`
+      ).all(`-${days} days`)
+      const byReason = {}
+      let ok = 0
+      for (const r of rows) {
+        if (r.approved) { ok++; continue }
+        const key = String(r.veto_reason || 'unknown').split(/[:\s]/)[0] || 'unknown'
+        byReason[key] = (byReason[key] || 0) + 1
+      }
+      res.json({
+        days,
+        ok,
+        vetoes: Object.entries(byReason)
+          .map(([reason, count]) => ({ reason, count }))
+          .sort((a, b) => b.count - a.count),
+      })
+    } catch (e) {
+      res.json({ days, ok: 0, vetoes: [], error: e.message })
+    }
+  })
+
   // GET /state/arm-benchmarks — backtest stats stored at Apply time
   router.get('/arm-benchmarks', (_req, res) => {
     let benchmarks = null

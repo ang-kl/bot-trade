@@ -632,6 +632,7 @@ export default function Tune() {
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
+  const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
   // Excel-style bands in the active watchlist: which group bands are OPEN.
   // Groups default COLLAPSED (100s of instruments must not overwhelm the
   // page); the Singles band starts open. Persisted per device.
@@ -677,7 +678,7 @@ export default function Tune() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const [c, r, tf, rf, vf, ff, sm] = await Promise.all([
+      const [c, r, tf, rf, vf, ff, sm, vm] = await Promise.all([
         agentGet('/state/config'),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
@@ -685,6 +686,7 @@ export default function Tune() {
         agentGet('/state/fib-vwap-filter').catch(() => null),
         agentGet('/state/fib-fvg-filter').catch(() => null),
         agentGet('/state/stage-matrix').catch(() => null),
+        agentGet('/state/veto-breakdown?days=30').catch(() => null),
       ])
       setConfig(c)
       setRisk(r)
@@ -701,6 +703,7 @@ export default function Tune() {
       if (vf) setVwapFilter(!!vf.on)
       if (ff) setFvgFilter(!!ff.on)
       if (sm) setStageMx(sm)
+      if (vm) setVetoMix(vm)
       const serverBal = { balance: r.derived?.balance ?? '', leverage: r.derived?.leverage ?? '' }
       const balRestored = drafts.balance && JSON.stringify(drafts.balance) !== JSON.stringify(serverBal)
       setBalanceDraft(balRestored ? drafts.balance : serverBal)
@@ -1067,6 +1070,18 @@ export default function Tune() {
             <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
               Scan analyses EVERY conviction — strategies scan wide and filters only annotate what failed; the Auto Trade &amp; Open column is where anything is actually blocked. RSI = long fades only when RSI(14) ≤ 45, shorts ≥ 55. VWAP = longs only below the leg-anchored volume-weighted average price, shorts only above. FVG = the 61.8% zone must overlap an unfilled 3-bar fair value gap in the trade's direction.
             </p>
+            {/* WHY the trade-column vetoes happened — reason families, 30d.
+                A persisting signal retries every 5-min cycle, so one blocked
+                setup can log hundreds of repeat vetoes; this shows the mix. */}
+            {vetoMix && (vetoMix.vetoes?.length || 0) > 0 && (
+              <p className="mt-1 text-[12px]">
+                <span className="font-semibold">Why vetoed (last {vetoMix.days}d):</span>{' '}
+                {vetoMix.vetoes.slice(0, 8).map((v, i) => (
+                  <span key={v.reason}>{i > 0 && ' · '}{v.reason} <span className="font-semibold tabular-nums">{v.count.toLocaleString()}</span></span>
+                ))}
+                <span className="text-[var(--color-text-sub)]"> — repeats included: a waiting setup re-tries every 5-minute cycle.</span>
+              </p>
+            )}
             {/* Pending mode is armed from the Backtest tab (evidence-gated), so
                 Pipeline only reports the state and offers the way out. */}
             {pendingArmed && (
