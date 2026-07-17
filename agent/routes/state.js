@@ -669,6 +669,20 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/heartbeats — controller reliability: every background
+  // controller's last beat, failure streak, and OK/STALLED/ERROR status,
+  // plus the C++ exec engine's probed liveness when EXEC_ENGINE=cpp.
+  // -----------------------------------------------------------------------
+  router.get('/heartbeats', async (_req, res) => {
+    try {
+      const { heartbeatView } = await import('../services/heartbeat.js')
+      res.json({ controllers: heartbeatView(db) })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/veto-breakdown?days=30 — WHY trades were vetoed, grouped by
   // reason family (symbol_cooldown, market_closed, spread…). The stage
   // matrix shows how many; this shows what actually blocked them.

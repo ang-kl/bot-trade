@@ -64,6 +64,32 @@ export async function backtestRemote(payload) {
   return sidecar('POST', '/backtest', payload)
 }
 
+// Liveness probe of the C++ engine for the heartbeat monitor. js mode is
+// trivially "alive" (execution happens in-process); cpp mode polls the
+// sidecar's unauthenticated GET /health, which also reports whether its
+// broker session is up and when it last reconciled.
+export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
+  if (execEngineMode() !== 'cpp') return { ok: true, mode: 'js' }
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(execBase() + '/health', { signal: ctrl.signal })
+    const body = await res.json().catch(() => null)
+    return {
+      ok: res.ok && body?.ok === true,
+      mode: 'cpp',
+      connected: body?.connected ?? null,
+      hasCredentials: body?.hasCredentials ?? null,
+      lastReconcileAt: body?.lastReconcileAt ?? null,
+      ...(res.ok ? {} : { error: `health ${res.status}` }),
+    }
+  } catch (e) {
+    return { ok: false, mode: 'cpp', error: String(e?.message || e) }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 export async function placeOrder(creds, orderPayload) {
   if (execEngineMode() === 'cpp') {
     await ensureSidecarSession(creds)

@@ -158,11 +158,17 @@ export async function runBurnIn(db, creds, deps = {}) {
   // position, mapped, and (volume-scaled) cooled off. The exact cooldown is
   // plan-dependent, so pre-filter with the SHORTEST possible cooldown and
   // re-check per symbol after the plan is known.
-  const marketOpen = deps.isSymbolMarketOpen ?? (await import('../lib/sessions.js')).isSymbolMarketOpen
+  // Market-open gate: broker-truth schedule (symbol_hours) with the
+  // sessions.js heuristic as fallback; tests may inject their own.
+  let isOpen = deps.isSymbolMarketOpen
+  if (!isOpen) {
+    const { isSymbolOpenCached } = await import('./symbol-hours.js')
+    isOpen = (s) => isSymbolOpenCached(db, s)
+  }
   const minCooldownMs = 20 * 60_000 * pace.cooldownScale
   const queue = watch
     .filter(s => !open.has(s) && symbolMap[String(s).toUpperCase()])
-    .filter(s => marketOpen(s).open)
+    .filter(s => isOpen(s).open)
     .filter(s => now() - (Number(last[s]) || 0) >= minCooldownMs)
     .slice(0, pace.maxPerCycle * 2) // headroom: plan cooldowns may drop some
 

@@ -493,6 +493,21 @@ export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, acco
 }
 
 /**
+ * Full symbol details (incl. the trading `schedule` — the authoritative
+ * per-symbol open/closed intervals) for a batch of symbolIds via
+ * SYMBOL_BY_ID_REQ. Returns `{ symbol: [ProtoOASymbol...] }`, each with
+ * `schedule: [{ startSecond, endSecond }]` measured from the week start in
+ * the symbol's schedule timezone, plus `scheduleTimeZone`.
+ */
+export function wsGetSymbolById(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+  const ids = (Array.isArray(symbolIds) ? symbolIds : [symbolIds]).map(Number).filter(Number.isFinite)
+  return withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.SYMBOL_BY_ID_REQ, payload: { ctidTraderAccountId: parseInt(accountId), symbolId: ids } }, expect: PT.SYMBOL_BY_ID_RES },
+  ], timeoutMs), 2, 'wsGetSymbolById')
+}
+
+/**
  * Asset classes (Forex, Metals, Indices, …) and symbol categories (the
  * broker's sub-classification under each class). Together with the light
  * symbol list these build the instrument tree: class → category → symbols.

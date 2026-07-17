@@ -64,6 +64,33 @@ const TABLES = `
     computed_at     TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Broker-truth market hours per symbol: the trading schedule pulled from
+  -- cTrader (SYMBOL_BY_ID) so the open/closed gate scales to 1,900+ symbols
+  -- without hardcoded category heuristics. schedule_json = array of
+  -- {start,end} SECONDS from the week's start in tz_seconds offset; refreshed
+  -- periodically by the loop. The heuristic (sessions.js) remains the
+  -- fallback for symbols not yet cached.
+  CREATE TABLE IF NOT EXISTS symbol_hours (
+    symbol        TEXT PRIMARY KEY,
+    symbol_id     INTEGER,
+    schedule_json TEXT,
+    tz            TEXT DEFAULT 'UTC',
+    source        TEXT DEFAULT 'ctrader',
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS controller_heartbeats (
+    name                 TEXT PRIMARY KEY,
+    last_run_at          TEXT,
+    last_ok_at           TEXT,
+    last_error           TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    runs                 INTEGER NOT NULL DEFAULT 0,
+    stalled              INTEGER NOT NULL DEFAULT 0,
+    fail_alerted         INTEGER NOT NULL DEFAULT 0,
+    updated_at           TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS trades (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol                TEXT NOT NULL,
