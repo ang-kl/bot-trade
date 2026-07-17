@@ -247,6 +247,24 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/reconcile-pending — cancel BOT-placed resting orders the
+  // local ledger no longer recognises (stale duplicates from the pre-volume
+  // DB wipes). Manual cTrader orders are never touched (marker-gated).
+  // -----------------------------------------------------------------------
+  router.post('/reconcile-pending', async (_req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { reconcileBrokerPendingOrders } = await import('../services/pending-orders.js')
+      const out = await reconcileBrokerPendingOrders(db, creds)
+      console.log(`[actions] reconcile-pending: ${out.cancelled.length} cancelled, ${out.kept} kept, ${out.manual} manual untouched${out.failures.length ? `, ${out.failures.length} failures` : ''}`)
+      res.json({ ok: true, ...out, ranAt: new Date().toISOString() })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/broker-history — the broker's own closed-trade record
   // (every closing deal, bot-placed or manual), with realised NET P&L
   // (gross + swap + commission) exactly as cTrader's History tab shows it.
