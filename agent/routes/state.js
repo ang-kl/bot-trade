@@ -413,6 +413,7 @@ export default function stateRouter(db) {
       burn_in: (() => { try { const p = JSON.parse(getState(db, 'burn_in_json') || 'null'); return p && typeof p === 'object' ? p : { on: false } } catch { return { on: false } } })(),
       adaptive_breaker: (() => { try { const p = JSON.parse(getState(db, 'adaptive_breaker_json') || 'null'); return p && typeof p === 'object' ? { on: p.on !== false, streak: p.streak ?? 3 } : { on: true, streak: 3 } } catch { return { on: true, streak: 3 } } })(),
       monitor_interval_min: Number(getState(db, 'monitor_interval_min')) || 1,
+      monitor_overrides: (() => { try { const p = JSON.parse(getState(db, 'monitor_overrides_json') || '{}'); return p && typeof p === 'object' ? p : {} } catch { return {} } })(),
     })
   })
 

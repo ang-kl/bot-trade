@@ -284,6 +284,31 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/monitor-override — { symbol, minutes } pins one symbol's
+  // monitor cadence (0.25–30 min), beating the volume-adaptive pace;
+  // { symbol, minutes: null } clears it back to auto.
+  // -----------------------------------------------------------------------
+  router.post('/monitor-override', (req, res) => {
+    const symbol = String(req.body?.symbol || '').toUpperCase().trim()
+    if (!symbol) return res.status(400).json({ error: 'symbol required' })
+    let overrides = {}
+    try { overrides = JSON.parse(getState(db, 'monitor_overrides_json') || '{}') || {} } catch { overrides = {} }
+    const minutes = req.body?.minutes
+    if (minutes == null || minutes === '') {
+      delete overrides[symbol]
+    } else {
+      const n = Number(minutes)
+      if (!Number.isFinite(n) || n < 0.25 || n > 30) {
+        return res.status(400).json({ error: 'minutes must be between 0.25 and 30 (or null to clear back to auto)' })
+      }
+      overrides[symbol] = n
+    }
+    setState(db, 'monitor_overrides_json', JSON.stringify(overrides))
+    console.log(`[actions] monitor override: ${symbol} → ${overrides[symbol] != null ? `${overrides[symbol]}m` : 'auto'}`)
+    res.json({ ok: true, overrides })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/burn-in — arm/disarm track-record burn-in mode.
   // Body: { on: boolean, lots?, timeCapMinutes?, maxPerCycle?, cooldownMinutes? }
   // Values are clamped in loadBurnInConfig; size is pinned 0.01–0.05.
