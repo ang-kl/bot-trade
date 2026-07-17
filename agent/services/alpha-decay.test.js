@@ -93,3 +93,64 @@ test('alphaDecayView: groups by strategy and computes lag from the analyses join
   assert.equal(v.lag_sampled, 12)
   assert.equal(v.entry_lag[0].n, 12) // all lags = 30s → fast bucket
 })
+
+test('streakOf: counts the newest same-sign run', async () => {
+  const { streakOf } = await import('./alpha-decay.js')
+  assert.deepEqual(streakOf([]), { kind: null, n: 0 })
+  const t = (pnl, i) => ({ net_pnl: pnl, closed_at: `2026-07-10 ${String(i).padStart(2, '0')}:00:00` })
+  assert.deepEqual(streakOf([t(-1, 1), t(2, 2), t(3, 3)]), { kind: 'win', n: 2 })
+  assert.deepEqual(streakOf([t(5, 1), t(-1, 2), t(-2, 3), t(-3, 4)]), { kind: 'loss', n: 3 })
+})
+
+test('view: no "unknown" — unlabelled bucket carries the source breakdown', async () => {
+  const { alphaDecayView } = await import('./alpha-decay.js')
+  const { setState } = await import('../db.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO trades (symbol, net_pnl, status, source, closed_at) VALUES ('EURUSD', -5, 'closed', 'manual', '2026-07-10 01:00:00')`).run()
+  db.prepare(`INSERT INTO trades (symbol, net_pnl, status, source, closed_at) VALUES ('BTCUSD', 2, 'closed', 'validation_fill', '2026-07-10 02:00:00')`).run()
+  setState(db, 'adaptive_breaker_json', JSON.stringify({ on: false, streak: 3 }))
+
+  const v = alphaDecayView(db)
+  assert.ok(!v.strategies.some(s => s.strategy === 'unknown'))
+  assert.equal(v.unlabelled.n, 2)
+  assert.deepEqual(v.unlabelled.sources, { manual: 1, validation_fill: 1 })
+  assert.equal(v.breaker.on, false)
+  assert.equal(v.backtest, null)
+  // Advisories: baseline missing + insufficient-samples guidance both present
+  assert.ok(v.advisories.some(a => /backtest baseline/.test(a.text)))
+  assert.ok(v.advisories.some(a => /burn-in builds the sample/.test(a.text)))
+})
+
+test('view: loss streak → COMMITTED advisory when breaker armed, plain advisory when off', async () => {
+  const { alphaDecayView } = await import('./alpha-decay.js')
+  const { setState } = await import('../db.js')
+  const mk = (breakerOn) => {
+    const db = initDB(':memory:')
+    for (let i = 0; i < 12; i++) {
+      db.prepare(`INSERT INTO trades (symbol, net_pnl, status, label_strategy, closed_at) VALUES ('EURUSD', ?, 'closed', 'fib_618_fade', ?)`)
+        .run(i < 9 ? 1 : -2, `2026-07-10 ${String(i).padStart(2, '0')}:00:00`)
+    }
+    setState(db, 'adaptive_breaker_json', JSON.stringify({ on: breakerOn, streak: 3 }))
+    return alphaDecayView(db, { window: 10 })
+  }
+  const armed = mk(true)
+  const fib = armed.strategies.find(s => s.strategy === 'fib_618_fade')
+  assert.deepEqual(fib.streak, { kind: 'loss', n: 3 })
+  assert.ok(armed.advisories.some(a => a.level === 'committed' && /adaptive breaker WILL rotate/.test(a.text)))
+  const off = mk(false)
+  assert.ok(off.advisories.some(a => a.level === 'advisory' && /breaker is OFF/.test(a.text)))
+})
+
+test('view: stored backtest baseline surfaces, reality-gap advisory fires on live-negative', async () => {
+  const { alphaDecayView } = await import('./alpha-decay.js')
+  const { setState } = await import('../db.js')
+  const db = initDB(':memory:')
+  for (let i = 0; i < 12; i++) {
+    db.prepare(`INSERT INTO trades (symbol, net_pnl, status, label_strategy, closed_at) VALUES ('EURUSD', -1, 'closed', 'fib_618_fade', ?)`)
+      .run(`2026-07-10 ${String(i).padStart(2, '0')}:00:00`)
+  }
+  setState(db, 'backtest_baseline_json', JSON.stringify({ ranAt: '2026-07-17T00:00:00Z', strategy: 'fib_618_fade', combos: [{ symbol: 'EURUSD', tf: '4h', trades: 20, profitFactor: 1.6, winRatePct: 60 }] }))
+  const v = alphaDecayView(db, { window: 10 })
+  assert.equal(v.backtest.combos.length, 1)
+  assert.ok(v.advisories.some(a => /Reality gap/.test(a.text)))
+})
