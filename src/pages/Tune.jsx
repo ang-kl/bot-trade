@@ -1568,7 +1568,7 @@ export default function Tune() {
                     <td className="pr-2 text-[12px] tabular-nums whitespace-nowrap">
                       {scan
                         ? <>
-                            {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 5 })}</span>}
+                            {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>}
                             {' '}
                             {scan.bias && scan.bias !== 'skip'
                               ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>

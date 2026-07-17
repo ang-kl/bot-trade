@@ -43,7 +43,9 @@ export function nextOpenLabel(iso, now = new Date()) {
 // is unmistakable even inside the muted Reason column.
 // ---------------------------------------------------------------------------
 const money = (n) => (n == null ? '—' : `${Number(n) >= 0 ? '+' : '−'}${Math.abs(Number(n)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
-const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 5 }))
+// Canonical price display precision (owner): 4 decimal places, everywhere.
+export const PRICE_DP = 4
+const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: PRICE_DP }))
 
 /** Live broker positions → standard rows. manageable=true arms the panel. */
 export function brokerPositionRows(positions, { manageable = false } = {}) {

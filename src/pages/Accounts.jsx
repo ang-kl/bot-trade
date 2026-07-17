@@ -15,7 +15,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 30_000
 
-function fmt(n, digits = 5) {
+function fmt(n, digits = 4) {
   if (n == null || Number.isNaN(Number(n))) return '—'
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
