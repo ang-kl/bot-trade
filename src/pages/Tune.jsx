@@ -138,24 +138,28 @@ const STAGE_MX_OPEN_KEY = 'tune_stage_mx_open'
 
 function MxCell({ on, counts, selected, na, onClick }) {
   if (na) {
-    return <td className="py-1.5 px-1 text-center text-[var(--color-text-sub)]">—</td>
+    return <td className="py-0.5 px-1 text-center text-[var(--color-text-sub)]">—</td>
   }
+  // Tick and counts on ONE line, full-strength text — the stacked pale
+  // sublines were unreadable and doubled the row height (owner report).
   return (
-    <td className="py-1 px-1 text-center">
+    <td className="py-0.5 px-1 text-center">
       <button
         type="button" aria-pressed={!!on} onClick={onClick}
-        className={`w-full rounded-md px-2 py-1 cursor-pointer border ${
+        className={`w-full rounded-md px-1.5 py-0.5 cursor-pointer border whitespace-nowrap ${
           selected
             ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft,rgba(37,99,235,0.12))]'
             : 'border-transparent hover:border-[var(--color-border)]'
         }`}
       >
-        <span className={`block text-[15px] font-bold leading-tight ${on ? 'text-[var(--color-accent)]' : 'text-[var(--color-down)]'}`}>
+        <span className={`text-[13px] font-bold ${on ? 'text-[var(--color-accent)]' : 'text-[var(--color-down)]'}`}>
           {on ? '✓' : '✗'}
         </span>
-        <span className="block text-[10px] leading-tight text-[var(--color-text-sub)] whitespace-nowrap">
-          {counts ? `${counts.ok} ✓ · ${counts.fail} ✗` : '—'}
-        </span>
+        {counts && (
+          <span className="ml-1 text-[11px] font-semibold text-[var(--color-text)] tabular-nums">
+            {counts.ok}<span className="text-[var(--color-accent)]">✓</span>/{counts.fail}<span className="text-[var(--color-down)]">✗</span>
+          </span>
+        )}
       </button>
     </td>
   )
@@ -206,7 +210,7 @@ function StageMatrix({ mx, onUpdated, onError }) {
 
   const renderRow = (kind, row) => (
     <tr key={`${kind}|${row.key}`} className="border-t border-[var(--color-border)]">
-      <td className={`py-1.5 pr-3 whitespace-nowrap ${kind === 'strategy' ? 'font-semibold' : 'pl-4 text-[var(--color-text-sub)]'}`}>
+      <td className={`py-0.5 pr-3 whitespace-nowrap ${kind === 'strategy' ? 'font-semibold' : 'pl-4 text-[var(--color-text-sub)]'}`}>
         {row.name}
       </td>
       {columns.map(c => (
@@ -235,19 +239,21 @@ function StageMatrix({ mx, onUpdated, onError }) {
       {open && (
         <>
           <div className="mt-1.5 overflow-x-auto">
-            <table className="min-w-full text-[12px]">
+            {/* w-auto: columns hug their content instead of spreading across
+                the page (owner: "too much white space, squeeze rows/columns"). */}
+            <table className="w-auto text-[12px]">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
-                  <th className="py-1 pr-3 font-semibold">Strategy</th>
+                  <th className="py-0.5 pr-3 font-semibold">Strategy</th>
                   {columns.map(c => (
-                    <th key={c.key} className="py-1 px-1 font-semibold text-center whitespace-nowrap">{c.label}</th>
+                    <th key={c.key} className="py-0.5 px-2 font-semibold text-center whitespace-nowrap">{c.label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {(mx.strategies || []).map(row => renderRow('strategy', row))}
                 <tr className="border-t border-[var(--color-border)]">
-                  <td colSpan={columns.length + 1} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                  <td colSpan={columns.length + 1} className="py-0.5 text-[11px] font-semibold text-[var(--color-text-sub)]">
                     Filters (fib confluence — annotate the scan, gate the trade)
                   </td>
                 </tr>
@@ -1726,9 +1732,25 @@ export default function Tune() {
               <p className="text-[13px] text-[var(--color-text-sub)]">No enabled symbols — add instruments on the Watchlist tab first.</p>
             ) : (
               <>
-                <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tests your enabled watchlist — tap a symbol to skip it this run:</div>
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {enabledSymbols.map(sym => {
+                <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tests your enabled watchlist — expand a group to skip individual symbols this run:</div>
+                {/* Banded like the watchlist (owner spec): one collapsed row
+                    per group with skip/include-all; expand for symbol chips. */}
+                {(() => {
+                  const groups = new Map()
+                  const singleNames = []
+                  for (const s of symbols) {
+                    if (s.enabled === false) continue
+                    if (s.group) {
+                      if (!groups.has(s.group)) groups.set(s.group, [])
+                      groups.get(s.group).push(s.symbol)
+                    } else singleNames.push(s.symbol)
+                  }
+                  const setGroupSkip = (names, skip) => setBtSkip(prev => {
+                    const next = new Set(prev)
+                    for (const n of names) { if (skip) next.add(n); else next.delete(n) }
+                    return next
+                  })
+                  const chip = (sym) => {
                     const on = !btSkip.has(sym)
                     return (
                       <button
@@ -1738,15 +1760,47 @@ export default function Tune() {
                           if (next.has(sym)) next.delete(sym); else next.add(sym)
                           return next
                         })}
-                        className={`rounded-[20px] border px-3 py-1 text-[12px] font-semibold cursor-pointer min-h-[36px] ${
+                        className={`rounded-[20px] border px-2 py-0.5 text-[11px] font-semibold cursor-pointer min-h-[28px] ${
                           on
                             ? 'bg-[var(--color-accent)] text-white border-transparent'
                             : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)] line-through'
                         }`}
                       >{sym}</button>
                     )
-                  })}
-                </div>
+                  }
+                  const band = (key, names) => {
+                    const open = openBands.has(`bt:${key}`)
+                    const testing = names.filter(n => !btSkip.has(n)).length
+                    return (
+                      <div key={key} className="border-b border-[var(--color-border)] py-1">
+                        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                          <button
+                            type="button" onClick={() => toggleBand(`bt:${key}`)} aria-expanded={open}
+                            className="flex items-center gap-1.5 font-bold cursor-pointer min-h-[28px]"
+                          >
+                            <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+                            {key}
+                            <span className="font-normal text-[var(--color-text-sub)]">testing {testing} of {names.length}</span>
+                          </button>
+                          <span className="ml-auto">
+                            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => setGroupSkip(names, testing > 0)}>
+                              {testing > 0 ? 'Skip group' : 'Include group'}
+                            </Button>
+                          </span>
+                        </div>
+                        {open && <div className="mt-1 flex flex-wrap gap-1">{names.map(chip)}</div>}
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="mb-2">
+                      {[...groups.entries()].map(([key, names]) => band(key, names))}
+                      {singleNames.length > 0 && (groups.size > 0
+                        ? band('Singles', singleNames)
+                        : <div className="flex flex-wrap gap-1 py-1">{singleNames.map(chip)}</div>)}
+                    </div>
+                  )
+                })()}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
                     {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}

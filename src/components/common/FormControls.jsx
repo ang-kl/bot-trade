@@ -36,11 +36,14 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
           {unit && <span className="text-[12px]">{unit}</span>}
         </span>
       </span>
+      {/* transform-gpu: own compositing layer — iOS Safari ghost-paints the
+          native track at stale positions on scroll (owner saw a full-width
+          dark line across the Risk tab; same family as the Badge fix). */}
       <input
         type="range" min={min} max={max} step={step}
         value={Number.isFinite(num) ? num : min}
         onChange={e => { setText(null); onChange(Number(e.target.value)) }}
-        className="w-full accent-[var(--color-accent)] cursor-pointer mt-2"
+        className="w-full accent-[var(--color-accent)] cursor-pointer mt-2 transform-gpu"
       />
       <span className="flex justify-between text-[10px] text-[var(--color-text-sub)]">
         <span>{display(min)}</span><span>{display(max)}</span>
