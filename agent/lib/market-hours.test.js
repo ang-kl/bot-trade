@@ -7,7 +7,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { categoriseSymbol, isSymbolMarketOpen } from './sessions.js'
+import { categoriseSymbol, isSymbolMarketOpen, isWeekend } from './sessions.js'
 
 // Wed 2026-07-15 at hh:mm UTC.
 const wed = (h, m = 0) => new Date(Date.UTC(2026, 6, 15, h, m))
@@ -46,6 +46,17 @@ test('NATGAS: daily 21:00–22:00 settlement break, otherwise 24/5', () => {
   assert.equal(isSymbolMarketOpen('NATGAS', wed(21, 30)).open, false)
   assert.equal(isSymbolMarketOpen('NATGAS', wed(20, 30)).open, true)
   assert.equal(isSymbolMarketOpen('NATGAS', wed(2, 0)).open, true)
+})
+
+test('isWeekend: true only Fri 21:00 → Sun 22:00 UTC, NOT the weekday NY→Sydney lull', () => {
+  // The bug: the ~1h gap between NY close (21:00) and Sydney open (22:00)
+  // on a WEEKDAY read as "market closed" → NatGas got WEEKEND:HOLD midweek.
+  assert.equal(isWeekend(wed(21, 30)), false, 'Wed 21:30 is a weekday lull, NOT the weekend')
+  assert.equal(isWeekend(new Date(Date.UTC(2026, 6, 17, 20, 0))), false) // Fri 20:00 — still open
+  assert.equal(isWeekend(new Date(Date.UTC(2026, 6, 17, 21, 30))), true)  // Fri 21:30 — weekend begun
+  assert.equal(isWeekend(sat(12)), true)                                  // Saturday
+  assert.equal(isWeekend(new Date(Date.UTC(2026, 6, 19, 21, 0))), true)   // Sun 21:00 — still closed
+  assert.equal(isWeekend(new Date(Date.UTC(2026, 6, 19, 22, 30))), false) // Sun 22:30 — reopened
 })
 
 test('unchanged behaviour: FX 24/5, indices NYSE window, crypto always', () => {
