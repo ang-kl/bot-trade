@@ -270,6 +270,22 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/autotrade-scope — { scope: 'all' | 'armed' }. 'all'
+  // (default) lets every enabled watchlist symbol trade on any scanned
+  // timeframe (armed combos stay as micro-tuning); 'armed' restores the
+  // narrow armed-TF/matrix gating.
+  // -----------------------------------------------------------------------
+  router.post('/autotrade-scope', (req, res) => {
+    const scope = String(req.body?.scope || '')
+    if (scope !== 'all' && scope !== 'armed') {
+      return res.status(400).json({ error: "scope must be 'all' or 'armed'" })
+    }
+    setState(db, 'autotrade_scope', scope)
+    console.log(`[actions] autotrade scope → ${scope}`)
+    res.json({ ok: true, scope })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/llm-budget — { dailyCapUsd } arms the once-a-day Telegram
   // alert when estimated Anthropic spend crosses the cap. 0/null disarms.
   // -----------------------------------------------------------------------

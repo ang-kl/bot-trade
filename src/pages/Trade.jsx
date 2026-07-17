@@ -36,10 +36,11 @@ function ago(iso) {
 
 // Open (monitored) positions → the standard shape. Time = the broker fill
 // time when known (trades.opened_at via the join), else the row's created_at.
-function openPositionRows(positions) {
+function openPositionRows(positions, prices = {}) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
+    const current = Number(prices[String(p.symbol).toUpperCase()]) || null
     return {
       id: `pos-${p.id}`,
       at: p.opened_at || p.created_at,
@@ -52,6 +53,7 @@ function openPositionRows(positions) {
       sl: p.current_sl,
       tp: p.current_tp,
       tps: tpLadder(p.current_tp, p.tp2_price, p.volume, { scaledOut: !!p.scaled_out }),
+      current,
       reason: `${p.last_check_action || 'not checked yet'}${checkedAt ? ` (${ago(checkedAt)})` : ''}`,
       chart: {
         symbol: p.symbol,
@@ -176,7 +178,7 @@ const ATTEMPT_SOURCE = {
 }
 
 // Order log rows (risk_events) → the standard shape.
-function OrderLogTable({ rows }) {
+function OrderLogTable({ rows, marketHours = null }) {
   const mapped = rows.map(ev => {
     let prop = null
     try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
@@ -205,7 +207,7 @@ function OrderLogTable({ rows }) {
         : null,
     }
   })
-  return <StdTradeTable rows={mapped} countLabel="attempts" />
+  return <StdTradeTable rows={mapped} countLabel="attempts" marketHours={marketHours} />
 }
 
 export default function Trade() {
@@ -221,13 +223,15 @@ export default function Trade() {
   const [reconcileNote, setReconcileNote] = useState('')
   const [armed, setArmed] = useState(null)  // { timeframes, matrix } — what autotrade may act on
   const [pending, setPending] = useState(null)  // { enabled, matrix } — resting-limit pending-order mode
+  const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
+  const [marketHours, setMarketHours] = useState(null) // { SYM: { open, next_open_at } }
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
-      const [h, s, p, t, r, rc, bo, atf, cfg] = await Promise.all([
+      const [h, s, p, t, r, rc, bo, atf, cfg, mh] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -237,6 +241,7 @@ export default function Trade() {
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
+        agentGet('/state/market-hours').catch(() => null),
       ])
       setHealth(h)
       setScans(s.rows || s.scans || [])
@@ -252,6 +257,8 @@ export default function Trade() {
             matrix: cfg.pending_matrix && typeof cfg.pending_matrix === 'object' ? cfg.pending_matrix : null,
           }
         : null)
+      setScope(cfg?.autotrade_scope || 'all')
+      setMarketHours(mh?.hours || null)
       setError('')
     } catch (e) {
       setError(e.message)
@@ -354,9 +361,11 @@ export default function Trade() {
           {health && health.broker?.linked && health.autotradeEnabled && (
             <span>
               <span className="font-semibold">Quant trading is ACTIVE on the {health.broker.isLive ? 'LIVE ⚠' : 'demo'} account.</span>
-              {' '}Armed{armed?.matrix && Object.keys(armed.matrix).length > 0
-                ? <> per instrument: <strong>{Object.entries(armed.matrix).map(([sym, tfs]) => `${sym} (${tfs.join(', ')})`).join(' · ')}</strong></>
-                : <> timeframes: <strong>{(armed?.timeframes || []).join(', ') || '—'}</strong> (all watchlist symbols)</>}.
+              {scope === 'all'
+                ? <>{' '}Scope: <strong>the FULL watchlist</strong> — every enabled symbol may trade on any scanned timeframe with every armed strategy; the risk gate, stage matrix and market hours decide what executes.{armed?.matrix && Object.keys(armed.matrix).length > 0 && <> Backtest-armed combos micro-tune preferred timeframes for <strong>{Object.keys(armed.matrix).length}</strong> symbols.</>}</>
+                : <>{' '}Scope: <strong>armed combos only</strong>{armed?.matrix && Object.keys(armed.matrix).length > 0
+                    ? <> — <strong>{Object.entries(armed.matrix).map(([sym, tfs]) => `${sym} (${tfs.join(', ')})`).join(' · ')}</strong></>
+                    : <> — timeframes: <strong>{(armed?.timeframes || []).join(', ') || '—'}</strong></>} (switch to full-watchlist scope in Tune).</>}
               {' '}The bot scans every 5 minutes; an order reaches cTrader only when a signal passes every gate{pending?.enabled
                 ? <> — except where pending mode is armed (below), so an empty cTrader elsewhere means "waiting", not "broken".</>
                 : <> — <strong>nothing is parked in advance</strong>, so an empty cTrader means "waiting", not "broken".</>}
@@ -450,7 +459,7 @@ export default function Trade() {
       <Card>
         <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions)} countLabel="open positions" />}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — goes through the same risk gate as autopilot trades */}
@@ -525,7 +534,7 @@ export default function Trade() {
           {(broker.pendingOrders?.length || 0) > 0 && (
             <div className="mb-2">
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
-              <StdTradeTable rows={pendingOrderRows(broker.pendingOrders)} countLabel="pending orders" />
+              <StdTradeTable rows={pendingOrderRows(broker.pendingOrders)} countLabel="pending orders" marketHours={marketHours} />
               <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
                 Qty is in broker UNITS (not lots). Stop Loss / Take Profit showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
               </p>
@@ -534,7 +543,7 @@ export default function Trade() {
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <StdTradeTable rows={externalPositionRows(broker.externalPositions)} countLabel="external positions" />
+              <StdTradeTable rows={externalPositionRows(broker.externalPositions)} countLabel="external positions" marketHours={marketHours} />
             </div>
           )}
         </Card>
@@ -604,7 +613,7 @@ export default function Trade() {
               Download my action log
             </Button>
           </div>
-          <OrderLogTable rows={riskEvents} />
+          <OrderLogTable rows={riskEvents} marketHours={marketHours} />
         </Card>
       </div>
     </div>

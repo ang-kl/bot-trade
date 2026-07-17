@@ -1041,6 +1041,28 @@ export default function Tune() {
                 toggle('/actions/autotrade-toggle', 'Autotrade', config?.autotrade_enabled)
               }} />
             </div>
+            {/* Autotrade scope (owner): the backtest arms combos, but the
+                DEFAULT trader covers the whole watchlist — every enabled
+                symbol × armed strategies × any scanned timeframe. 'Armed
+                combos only' restores the narrow gate. */}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="text-[12px] text-[var(--color-text-sub)]">Autotrade scope:</span>
+              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Autotrade scope">
+                {[['all', 'Full watchlist (default)'], ['armed', 'Armed combos only']].map(([sc, lbl]) => (
+                  <button key={sc} type="button" role="radio" aria-checked={(config?.autotrade_scope ?? 'all') === sc}
+                    onClick={() => run(async () => {
+                      await agentPost('/actions/autotrade-scope', { scope: sc })
+                      setConfig(c => ({ ...c, autotrade_scope: sc }))
+                    }, `Autotrade scope → ${lbl}`)}
+                    className={`px-2 py-1 text-[12px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                Full watchlist = every enabled symbol may trade on any scanned timeframe with every armed strategy; backtest-armed combos stay as micro-tuning. The risk gate, stage matrix, market hours and equity stop still veto every order.
+              </span>
+            </div>
             {/* Strategy × stage matrix replaces the old strategy/filter chips:
                 every strategy and filter is set PER PIPELINE STAGE. Trade
                 edits write the same legacy keys the chips used. */}

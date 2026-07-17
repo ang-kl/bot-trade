@@ -16,12 +16,12 @@ import { Fragment, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
-import { dateTimeParts } from '../lib/std-trade-rows.js'
+import { dateTimeParts, nextOpenLabel } from '../lib/std-trade-rows.js'
 
 const PAGE = 8
 const COL1_W = 76 // px — frozen date/time column; col 2 offset builds on it
 
-export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null }) {
+export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null, marketHours = null }) {
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null)
   const [panelFor, setPanelFor] = useState(null)
@@ -52,6 +52,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th className="py-1.5 pr-3 font-semibold text-right">Entry</th>
               <th className="py-1.5 pr-3 font-semibold text-right">Stop Loss</th>
               <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">P&amp;L</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">To TP/SL</th>
               <th className="py-1.5 pr-3 font-semibold">Reason</th>
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
@@ -60,6 +62,20 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             {slice.map(r => {
               const w = r.at ? dateTimeParts(r.at) : null
               const long = r.side === 'BUY'
+              const mh = marketHours?.[String(r.symbol || '').toUpperCase()]
+              // Progress read: in profit → remaining distance to each TP
+              // ladder level (nearest, 2nd, 3rd); in loss → distance left
+              // before the stop. Needs a live price on the row.
+              const dir = long ? 1 : -1
+              const hasLive = r.current != null && r.entry != null && r.side
+              const inProfit = !hasLive ? null : r.pnl != null ? r.pnl >= 0 : (r.current - r.entry) * dir >= 0
+              const tpDists = hasLive && inProfit
+                ? (r.tps?.length ? r.tps : (r.tp != null ? [{ n: 1, price: r.tp }] : []))
+                    .slice(0, 3)
+                    .map(t => ({ n: t.n, d: (Number(t.price) - r.current) * dir }))
+                    .filter(x => Number.isFinite(x.d))
+                : []
+              const slDist = hasLive && inProfit === false && r.sl != null ? (r.current - r.sl) * dir : null
               return (
                 <Fragment key={r.id}>
                   <tr className="border-b border-[var(--color-border)] align-middle">
@@ -72,9 +88,17 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         : '—'}
                     </td>
                     <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
+                      {mh && mh.open === false && (
+                        <span className="block text-[9px] leading-none" title="market closed" aria-label="market closed">🔒</span>
+                      )}
                       {onSymbolClick
                         ? <button type="button" className="font-bold cursor-pointer underline-offset-2 hover:underline" onClick={() => onSymbolClick(r.symbol)}>{r.symbol}</button>
                         : r.symbol}
+                      {mh && mh.open === false && mh.next_open_at && (
+                        <span className="block text-[10px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
+                          {nextOpenLabel(mh.next_open_at)}
+                        </span>
+                      )}
                     </td>
                     <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
                     <td className="py-1.5 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
@@ -98,6 +122,20 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           ))
                         : num(r.tp)}
                     </td>
+                    <td className={`py-1.5 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {r.pnl != null ? `${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {tpDists.length > 0
+                        ? tpDists.map(x => (
+                            <span key={x.n} className="block leading-tight">
+                              <span className="text-[var(--color-text-sub)]">#{x.n}</span> {num(Math.abs(x.d))}{x.d < 0 ? ' ✓' : ''}
+                            </span>
+                          ))
+                        : slDist != null
+                          ? <span className="text-[var(--color-down)]">SL {num(Math.max(0, slDist))}</span>
+                          : '—'}
+                    </td>
                     <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
                       {r.reason || '—'}
                     </td>
@@ -116,7 +154,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   </tr>
                   {chartFor === r.id && r.chart && (
                     <tr className="border-b border-[var(--color-border)]">
-                      <td colSpan={11} className="py-2">
+                      <td colSpan={13} className="py-2">
                         <PositionChart
                           symbol={r.chart.symbol}
                           timeframe={r.chart.timeframe || '1h'}
@@ -129,7 +167,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   )}
                   {panel && r.panel && panelFor === r.id && (
                     <tr className="border-b border-[var(--color-border)]">
-                      <td colSpan={11} className="py-2">
+                      <td colSpan={13} className="py-2">
                         {panel.render(r, () => setPanelFor(null))}
                       </td>
                     </tr>

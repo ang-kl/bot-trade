@@ -146,3 +146,37 @@ export function isSymbolOpenCached(db, symbol, now = new Date()) {
     ? { open: true, source: 'broker' }
     : { open: false, reason: `${symbol}: closed per broker trading schedule (${row.tz || 'UTC'})`, source: 'broker' }
 }
+
+const WEEK_SECONDS_TOTAL = 7 * 24 * 3600
+
+/**
+ * Open/closed + WHEN the market next opens (for the UI's closed-symbol
+ * marker). next_open_at is derived from the broker schedule: the nearest
+ * upcoming interval start in seconds-into-week, projected onto real time.
+ * Heuristic-only symbols (not yet refreshed) report next_open_at: null —
+ * we don't fake a timestamp we don't have.
+ */
+export function nextOpenInfo(db, symbol, now = new Date()) {
+  const base = isSymbolOpenCached(db, symbol, now)
+  if (base.open || base.source !== 'broker') {
+    return { open: base.open, next_open_at: null, source: base.source }
+  }
+  const s = String(symbol || '').toUpperCase()
+  let row = null
+  try { row = db.prepare(`SELECT schedule_json, tz FROM symbol_hours WHERE symbol = ?`).get(s) } catch { row = null }
+  let schedule = []
+  try { schedule = JSON.parse(row?.schedule_json || '[]') } catch { schedule = [] }
+  const sow = secondsIntoWeek(now, row?.tz || 'UTC')
+  let best = null
+  for (const iv of schedule) {
+    const a = Number(iv.startSecond ?? iv.start)
+    if (!Number.isFinite(a)) continue
+    const delta = ((a - sow) % WEEK_SECONDS_TOTAL + WEEK_SECONDS_TOTAL) % WEEK_SECONDS_TOTAL
+    if (delta > 0 && (best == null || delta < best)) best = delta
+  }
+  return {
+    open: false,
+    next_open_at: best != null ? new Date(now.getTime() + best * 1000).toISOString() : null,
+    source: 'broker',
+  }
+}

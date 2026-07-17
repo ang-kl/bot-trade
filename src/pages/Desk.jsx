@@ -79,6 +79,7 @@ export default function Desk() {
   const [alphaDecay, setAlphaDecay] = useState(null)       // edge-erosion read
   const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
   const [capNote, setCapNote] = useState('')
+  const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
   const [gridN, setGridN] = useState(() => {
@@ -93,7 +94,7 @@ export default function Desk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
     try {
-      const [h, s, p, r, atf, c, t, b, bh, hb, ls, ad] = await Promise.all([
+      const [h, s, p, r, atf, c, t, b, bh, hb, ls, ad, mh] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -106,6 +107,7 @@ export default function Desk() {
         agentGet('/state/heartbeats').catch(() => null),
         agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
+        agentGet('/state/market-hours').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -120,6 +122,7 @@ export default function Desk() {
       setHeartbeats(hb?.controllers ?? null)
       setLlmSpend(ls)
       setAlphaDecay(ad)
+      setMarketHours(mh?.hours || null)
       setError('')
       setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
     } catch (e) { setError(e.message) }
@@ -180,6 +183,17 @@ export default function Desk() {
             <span key={chip} className="glass-inset rounded-full px-2 py-0.5 font-semibold whitespace-nowrap">{chip}</span>
           ))}
         </div>
+        {/* The bot's GOAL, stated where the owner trades — derived live from
+            config, never hardcoded to yesterday's setup. */}
+        <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
+          <span className="font-semibold text-[var(--color-text)]">Goal:</span>{' '}
+          {(config?.autotrade_scope ?? 'all') === 'all'
+            ? <>trade the FULL watchlist — {watch.length || '…'} enabled symbols × every armed strategy × any scanned timeframe{matrix ? ` (backtest micro-tunes ${Object.keys(matrix).length} symbols)` : ''}</>
+            : <>trade the {armedChips.length} backtest-armed combos only (full-watchlist scope available in Tune)</>}
+          {' '}· sizing {(config?.burn_in?.sizeMode ?? 'auto') === 'fixed' && config?.burn_in?.on ? `fixed ${config?.burn_in?.lots ?? 0.01} (burn-in)` : 'risk-based, uncapped unless a symbol pins Max lots'}
+          {config?.burn_in?.on ? <> · burn-in pacing {config?.burn_in?.targetTrades ?? 200} trades in {config?.burn_in?.windowDays ?? 2}d</> : null}
+          {' '}· every order still passes the risk gate, stage matrix, market hours and equity stop.
+        </p>
       </Card>
 
       {/* ---- Chart wall — full width; 30 = 3 columns × 10 rows ---- */}
@@ -270,6 +284,7 @@ export default function Desk() {
           <StdTradeTable
             rows={brokerPositionRows(broker.positions, { manageable: true })}
             countLabel="open positions"
+            marketHours={marketHours}
             onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
             panel={{ label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); load() }} /> }}
           />
@@ -280,6 +295,7 @@ export default function Desk() {
             <StdTradeTable
               rows={brokerOrderRows(broker.orders)}
               countLabel="pending orders"
+              marketHours={marketHours}
               onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
             />
           </div>
@@ -297,7 +313,7 @@ export default function Desk() {
       >
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
-          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }} />
+          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last 7 days.</p>

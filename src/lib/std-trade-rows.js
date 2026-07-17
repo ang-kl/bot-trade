@@ -23,6 +23,20 @@ export function toMs(v) {
   return Number.isFinite(t) ? t : null
 }
 
+/**
+ * Next-market-open label in the DEVICE timezone (owner spec): same month →
+ * "(dd hh:mm)", different month → "(dd-m hh:mm)".
+ */
+export function nextOpenLabel(iso, now = new Date()) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return null
+  const pad = (n) => String(n).padStart(2, '0')
+  const sameMonth = d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
+  const stamp = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return sameMonth ? `(${pad(d.getDate())} ${stamp})` : `(${pad(d.getDate())}-${d.getMonth() + 1} ${stamp})`
+}
+
 // ---------------------------------------------------------------------------
 // Broker-snapshot adapters (the /actions/broker-positions and broker-history
 // shapes used by Desk and Accounts). Money strings keep their sign so a loss
@@ -46,7 +60,9 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       entry: p2.entry,
       sl: p2.sl,
       tp: p2.tp,
-      reason: `now ${px(p2.currentPrice)} · P&L ${money(net)}${p2.estNetPnl == null && net != null ? '*' : ''}`,
+      current: p2.currentPrice ?? null,
+      pnl: net ?? null,
+      reason: `now ${px(p2.currentPrice)}${p2.estNetPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,
       chart: { symbol: p2.symbol, timeframe: '1h', lines: { entry: p2.entry, sl: p2.sl, tp: p2.tp } },
       panel: manageable,
@@ -68,6 +84,7 @@ export function brokerOrderRows(orders) {
     entry: o.limitPrice ?? o.stopPrice,
     sl: o.sl,
     tp: o.tp,
+    current: o.currentPrice ?? null,
     reason: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.expiresAt ? ` · expires ${dateTimeParts(o.expiresAt)?.day ?? ''} ${dateTimeParts(o.expiresAt)?.time ?? ''}` : ''}`,
     reasonTitle: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.label || o.comment ? ` · ${o.label || o.comment}` : ''}`,
     chart: { symbol: o.symbol, timeframe: '1h', lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp } },
@@ -88,6 +105,7 @@ export function brokerDealRows(deals) {
     entry: d.entryPrice,
     sl: null,
     tp: null,
+    pnl: d.netPnl ?? null,
     reason: `out ${px(d.closePrice)} · net ${money(d.netPnl)}`,
     chart: {
       symbol: d.symbol,

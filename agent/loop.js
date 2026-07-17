@@ -871,12 +871,16 @@ async function runLoop(db) {
             }
           }
 
-          // Autotrade timeframe gate — only timeframes with demonstrated edge
-          // may auto-trade (default 4h/1d per the reference backtest; lower
-          // TFs were net-negative there even before spread). Scans and alerts
-          // still cover every timeframe. Widen via agent state:
-          //   autotrade_timeframes = '["1h","4h","1d"]'
-          if (synth.auto_trade) {
+          // Autotrade SCOPE (owner 2026-07-17): the backtest arms combos, but
+          // auto-trade is the intelligent full-watchlist trader. Default
+          // scope 'all' = every enabled watchlist symbol × every scanned
+          // timeframe may trade (backtest-armed combos remain micro-tuning:
+          // the scan prefers them where present). scope 'armed' restores the
+          // narrow behaviour: only the armed TF list / per-symbol matrix.
+          // Either way the risk gate, stage matrix, market hours, exposure
+          // caps and equity stop still veto — scope decides what is
+          // CONSIDERED, the gates decide what EXECUTES.
+          if (synth.auto_trade && (getState(db, 'autotrade_scope') || 'all') === 'armed') {
             let allowedTfs = ['4h', '1d']
             const tfJson = getState(db, 'autotrade_timeframes')
             if (tfJson) {
@@ -910,6 +914,8 @@ async function runLoop(db) {
                 } catch { /* corrupt matrix — fall back to TF-wide */ }
               }
             }
+          }
+          if (synth.auto_trade) {
 
             // Stage-matrix gate (Tune → Pipeline table): the scan now covers
             // MORE than what may trade — the strategy's "Auto Trade & Open"
