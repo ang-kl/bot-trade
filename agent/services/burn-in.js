@@ -34,7 +34,12 @@ import { relVolFromBars } from './fast-monitor.js'
 
 export const DEFAULT_BURN_IN = {
   on: false,
-  lots: 0.01,          // hard size pin — the sample must be cheap
+  // Sizing (owner 2026-07-17: "I already uncapped … where is the dynamic
+  // sizing?"): 'auto' sends each burn-in trade through the SAME uncapped
+  // risk-based sizing as auto signals (balance × per-trade % ÷ $-per-lot);
+  // 'fixed' pins `lots` (0.01–0.05) for a deliberately cheap sample.
+  sizeMode: 'auto',
+  lots: 0.01,          // fixed-mode pin — the sample must be cheap
   maxPerCycle: 4,      // base new positions per 5-min loop (pacing adjusts)
   targetTrades: 200,   // completed round-trips the pacing steers toward…
   windowDays: 2,       // …within this window from arming
@@ -46,6 +51,7 @@ export function loadBurnInConfig(db) {
     const parsed = JSON.parse(getState(db, 'burn_in_json') || 'null')
     if (parsed && typeof parsed === 'object') {
       const cfg = { ...DEFAULT_BURN_IN, ...parsed }
+      cfg.sizeMode = cfg.sizeMode === 'fixed' ? 'fixed' : 'auto'
       cfg.lots = Math.min(0.05, Math.max(0.01, Number(cfg.lots) || 0.01))
       cfg.maxPerCycle = Math.min(8, Math.max(1, Math.round(Number(cfg.maxPerCycle) || 4)))
       cfg.targetTrades = Math.min(500, Math.max(10, Math.round(Number(cfg.targetTrades) || 200)))
@@ -233,10 +239,12 @@ export async function runBurnIn(db, creds, deps = {}) {
         invalidation_trigger: null,
         source: 'burnin',
       }
-      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.lots }, null)
+      // auto → maxVolume null: the risk gate sizes uncapped (balance ×
+      // per-trade risk); fixed → pinned cheap-sample lots.
+      const result = await autoTrade(db, symbol, synth, { maxVolume: cfg.sizeMode === 'fixed' ? cfg.lots : null }, null)
       if (result) {
         placed++
-        log(`${symbol}: ${result.side} ${cfg.lots} [${plan.regime}/${plan.tf}] cap ${plan.capMin}m (pace ${completed}/${pace.expected} of ${cfg.targetTrades})`)
+        log(`${symbol}: ${result.side} ${cfg.sizeMode === 'fixed' ? cfg.lots : 'auto-sized'} [${plan.regime}/${plan.tf}] cap ${plan.capMin}m (pace ${completed}/${pace.expected} of ${cfg.targetTrades})`)
       }
     } catch (err) {
       notes.push(`${symbol}: ${err.message}`)
