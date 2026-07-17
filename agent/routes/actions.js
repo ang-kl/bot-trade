@@ -296,13 +296,15 @@ export default function actionsRouter(db) {
         ...current,
         ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
         ...(req.body?.lots != null ? { lots: Number(req.body.lots) } : {}),
-        ...(req.body?.timeCapMinutes != null ? { timeCapMinutes: Number(req.body.timeCapMinutes) } : {}),
         ...(req.body?.maxPerCycle != null ? { maxPerCycle: Number(req.body.maxPerCycle) } : {}),
-        ...(req.body?.cooldownMinutes != null ? { cooldownMinutes: Number(req.body.cooldownMinutes) } : {}),
+        ...(req.body?.targetTrades != null ? { targetTrades: Number(req.body.targetTrades) } : {}),
+        ...(req.body?.windowDays != null ? { windowDays: Number(req.body.windowDays) } : {}),
       }
+      // Arming (off → on) starts the pacing clock toward targetTrades.
+      if (next.on && !current.on) next.startedAt = new Date().toISOString()
       setState(db, 'burn_in_json', JSON.stringify(next))
       const clamped = loadBurnInConfig(db)
-      console.log(`[actions] burn-in ${clamped.on ? 'ARMED' : 'disarmed'} — lots=${clamped.lots} timeCap=${clamped.timeCapMinutes}m maxPerCycle=${clamped.maxPerCycle}`)
+      console.log(`[actions] burn-in ${clamped.on ? 'ARMED' : 'disarmed'} — lots=${clamped.lots} target=${clamped.targetTrades} in ${clamped.windowDays}d mpc=${clamped.maxPerCycle}`)
       res.json({ ok: true, config: clamped })
     } catch (e) {
       res.status(400).json({ error: e.message })
