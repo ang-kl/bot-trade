@@ -693,3 +693,40 @@ test('maxConsecutiveLosses 0 disables the streak breaker entirely', () => {
   assert.equal(on.approved, false)
   assert.match(on.veto_reason, /loss_streak_cooldown/)
 })
+
+// Cross-pair sizing (owner 2026-07-17: burn-in on 25 crosses flooded
+// "insufficient_equity … usd_per_lot_unknown"). The quote-currency loss now
+// converts to USD through the scan's live majors; no rate → honest veto.
+
+test('cross sizing: GBPJPY loss converts to USD via USDJPY', () => {
+  // 1 lot GBPJPY, 0.5 JPY stop → 50,000 JPY loss; USDJPY 150 → $333.33/lot.
+  const r = computeRiskBasedVolume(50_000, 'GBPJPY', 0.5, 0.01, 195, { USDJPY: 150 })
+  assert.notEqual(r.note, 'usd_per_lot_unknown')
+  // budget $500 ÷ $333.33 = 1.4999 → FLOORS to 1.49 (never exceed budget)
+  assert.equal(r.volume, 1.49)
+})
+
+test('cross sizing: EURGBP converts via GBPUSD (direct multiply)', () => {
+  // 0.005 GBP stop × 100k = 500 GBP; GBPUSD 1.25 → $625/lot; $500 budget → 0.8 lots
+  const r = computeRiskBasedVolume(50_000, 'EURGBP', 0.005, 0.01, 0.86, { GBPUSD: 1.25 })
+  assert.ok(Math.abs(r.volume - 0.8) < 0.01, `got ${r.volume}`)
+})
+
+test('cross sizing: no conversion rate available → still an honest veto', () => {
+  const r = computeRiskBasedVolume(50_000, 'GBPJPY', 0.5, 0.01, 195, {})
+  assert.equal(r.volume, 0)
+  assert.equal(r.note, 'usd_per_lot_unknown')
+})
+
+test('evaluateTrade sizes a cross end-to-end using scan rates from state', () => {
+  const db = freshDB()
+  setBalance(db, 50_000)
+  setLeverage(db, 200)
+  db.prepare(
+    `INSERT INTO agent_state (key, value) VALUES ('last_scan_results', ?)`
+  ).run(JSON.stringify({ scans: [{ symbol: 'USDJPY', price: 150 }] }))
+  const proposal = { symbol: 'GBPJPY', side: 'BUY', entry: 195, sl: 194.5, tp1: 195.9, requestedVolume: null }
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  assert.equal(r.approved, true, r.veto_reason)
+  assert.ok(r.adjusted_volume >= 1.4, `expected ~1.5 lots, got ${r.adjusted_volume}`)
+})

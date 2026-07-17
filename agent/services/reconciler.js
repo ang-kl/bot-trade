@@ -77,16 +77,35 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     }
   }
 
-  const pendingOrders = (brokerOrders || []).map(o => ({
-    orderId: o.orderId ?? o.tradeData?.orderId,
-    symbolName: o.symbolName || `ID:${o.tradeData?.symbolId || '?'}`,
-    side: o.tradeData?.tradeSide,
-    orderType: o.orderType,
-    limitPrice: o.limitPrice ?? null,
-    stopPrice: o.stopPrice ?? null,
-    volume: o.tradeData?.volume ? o.tradeData.volume / 100 : null,
-    label: o.tradeData?.label || '',
-  }))
+  // Human-readable snapshot: the raw broker order carries NUMERIC enums
+  // (tradeSide 1/2, orderType 2=LIMIT) and RELATIVE SL/TP distances in
+  // 1/100000-price units — the UI showed "? … 2 @ 1.15477" (owner: "so
+  // bare"). Decode everything here so every reader gets honest fields.
+  const SIDE_STR = (v) => (v === 1 || v === 'BUY') ? 'BUY' : (v === 2 || v === 'SELL') ? 'SELL' : null
+  const TYPE_STR = (v) => ({ 1: 'MARKET', 2: 'LIMIT', 3: 'STOP', 4: 'STOP_LIMIT', 5: 'MARKET_RANGE' })[v] || (typeof v === 'string' ? v : 'ORDER')
+  const pendingOrders = (brokerOrders || []).map(o => {
+    const side = SIDE_STR(o.tradeData?.tradeSide)
+    const px = o.limitPrice ?? o.stopPrice ?? null
+    const dir = side === 'SELL' ? -1 : 1
+    const relSl = Number(o.relativeStopLoss)
+    const relTp = Number(o.relativeTakeProfit)
+    const round5 = (v) => Math.round(v * 100000) / 100000
+    return {
+      orderId: o.orderId ?? o.tradeData?.orderId,
+      symbolName: o.symbolName || `ID:${o.tradeData?.symbolId || '?'}`,
+      side,
+      orderType: TYPE_STR(o.orderType),
+      limitPrice: o.limitPrice ?? null,
+      stopPrice: o.stopPrice ?? null,
+      sl: px != null && Number.isFinite(relSl) && relSl > 0 ? round5(px - dir * relSl / 100000) : null,
+      tp: px != null && Number.isFinite(relTp) && relTp > 0 ? round5(px + dir * relTp / 100000) : null,
+      volumeUnits: o.tradeData?.volume ? o.tradeData.volume / 100 : null,
+      volume: o.tradeData?.volume ? o.tradeData.volume / 100 : null, // legacy readers
+      expiresAt: o.expirationTimestamp ? new Date(Number(o.expirationTimestamp)).toISOString() : null,
+      label: o.tradeData?.label || '',
+      bot: String(o.tradeData?.label || '').includes('pending-fib'),
+    }
+  })
 
   setState('broker_pending_orders_json', JSON.stringify(pendingOrders))
   setState('last_reconcile_at', new Date().toISOString())
