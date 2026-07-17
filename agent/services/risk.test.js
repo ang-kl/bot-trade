@@ -676,3 +676,20 @@ test('explicit Max lots cap still reduces the risk-based size', () => {
   assert.equal(r.adjusted_volume, 0.05)
   assert.match(r.sizing_note || '', /capped_at_max_lots/)
 })
+
+test('maxConsecutiveLosses 0 disables the streak breaker entirely', () => {
+  const db = freshDB()
+  // 5 consecutive losses closed just now — with the breaker on this vetoes.
+  for (let i = 0; i < 5; i++) {
+    db.prepare(
+      `INSERT INTO trades (symbol, side, status, net_pnl, opened_at, closed_at)
+       VALUES ('US30', 'BUY', 'closed', -10, datetime('now', '-1 hour'), datetime('now'))`
+    ).run()
+  }
+  const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1, sl: 1.09, tp1: 1.12, requestedVolume: 0.01 }
+  const off = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, maxConsecutiveLosses: 0 })
+  assert.equal(off.approved, true, off.veto_reason)
+  const on = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, maxConsecutiveLosses: 3, cooldownMinutes: 60 })
+  assert.equal(on.approved, false)
+  assert.match(on.veto_reason, /loss_streak_cooldown/)
+})

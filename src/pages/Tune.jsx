@@ -338,8 +338,8 @@ const RISK_CONTROLS = {
   minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
   maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10].map(n => [n, String(n)]) },
   symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
-  maxConsecutiveLosses: { type: 'select', options: [2, 3, 4, 5, 6].map(n => [n, String(n)]) },
-  cooldownMinutes: { type: 'select', options: [[30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
+  maxConsecutiveLosses: { type: 'select', options: [[0, 'off — no streak breaker'], ...[2, 3, 4, 5, 6].map(n => [n, String(n)])] },
+  cooldownMinutes: { type: 'select', options: [[0, 'off — resume next cycle'], [30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
   minSLDistancePct: { type: 'slider', min: 0.05, max: 0.5, step: 0.05, fmt: v => `${Number(v).toFixed(2)}%` },
   maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
@@ -1090,6 +1090,38 @@ export default function Tune() {
               ))}
               <span className="text-[12px] text-[var(--color-text-sub)]">
                 nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
+              </span>
+            </div>
+            {/* Adaptive breaker + fast monitor cadence — the owner's "no
+                human pauses" doctrine: a loss streak CHANGES strategy/
+                filters; open positions are watched every ~minute, scaled
+                by live market volume. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.adaptive_breaker?.on !== false} label="Adaptive breaker" onClick={() => {
+                const next = !(config?.adaptive_breaker?.on !== false)
+                run(async () => {
+                  await agentPost('/actions/adaptive-breaker', { on: next })
+                  setConfig(c => ({ ...c, adaptive_breaker: { ...(c?.adaptive_breaker || {}), on: next } }))
+                }, `Adaptive breaker ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                {config?.adaptive_breaker?.streak ?? 3} losses in a row on a strategy → it is disarmed (or, if it's the last one, the next filter is armed) — the bot adapts instead of pausing
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="font-semibold">Position monitor:</span>
+              {[1, 2, 3, 5].map(m => (
+                <button
+                  key={m} type="button" role="radio" aria-checked={(config?.monitor_interval_min ?? 1) === m}
+                  onClick={() => run(async () => {
+                    await agentPost('/actions/monitor-interval', { minutes: m })
+                    setConfig(c => ({ ...c, monitor_interval_min: m }))
+                  }, `Position monitor every ${m}m (volume-scaled)`)}
+                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${(config?.monitor_interval_min ?? 1) === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                >{m}m</button>
+              ))}
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                base cadence per OPEN position (scan stays 5m) — busy market checks at base speed, average 2×, quiet 3×; broker-side SL/TP covers every tick in between
               </span>
             </div>
             {/* Burn-in — the track-record builder: min-size trades with

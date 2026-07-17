@@ -247,6 +247,43 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/adaptive-breaker — { on: boolean, streak?: 2..10 }.
+  // Loss-streak response: adapt strategy/filters via the stage matrix
+  // instead of pausing (the human-style cooldown is a separate dial).
+  // -----------------------------------------------------------------------
+  router.post('/adaptive-breaker', async (req, res) => {
+    try {
+      const { loadAdaptiveBreakerConfig } = await import('../services/adaptive-breaker.js')
+      const current = loadAdaptiveBreakerConfig(db)
+      const next = {
+        ...current,
+        ...(typeof req.body?.on === 'boolean' ? { on: req.body.on } : {}),
+        ...(req.body?.streak != null ? { streak: Number(req.body.streak) } : {}),
+      }
+      setState(db, 'adaptive_breaker_json', JSON.stringify(next))
+      const clamped = loadAdaptiveBreakerConfig(db)
+      console.log(`[actions] adaptive breaker ${clamped.on ? 'ON' : 'off'} at streak=${clamped.streak}`)
+      res.json({ ok: true, config: clamped })
+    } catch (e) {
+      res.status(400).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/monitor-interval — { minutes: 1..5 } base cadence for the
+  // fast position monitor (volume scales it 1×/2×/3× automatically).
+  // -----------------------------------------------------------------------
+  router.post('/monitor-interval', (req, res) => {
+    const n = Number(req.body?.minutes)
+    if (!Number.isFinite(n) || n < 0.5 || n > 5) {
+      return res.status(400).json({ error: 'minutes must be between 0.5 and 5' })
+    }
+    setState(db, 'monitor_interval_min', String(n))
+    console.log(`[actions] fast position monitor base interval: ${n}m`)
+    res.json({ ok: true, minutes: n })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/burn-in — arm/disarm track-record burn-in mode.
   // Body: { on: boolean, lots?, timeCapMinutes?, maxPerCycle?, cooldownMinutes? }
   // Values are clamped in loadBurnInConfig; size is pinned 0.01–0.05.
