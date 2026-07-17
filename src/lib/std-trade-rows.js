@@ -43,9 +43,15 @@ export function nextOpenLabel(iso, now = new Date()) {
 // is unmistakable even inside the muted Reason column.
 // ---------------------------------------------------------------------------
 const money = (n) => (n == null ? '—' : `${Number(n) >= 0 ? '+' : '−'}${Math.abs(Number(n)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
-// Canonical price display precision (owner): 4 decimal places, everywhere.
-export const PRICE_DP = 4
-const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: PRICE_DP }))
+// Canonical price display precision (owner): scale-aware — 4 dp normally,
+// 2 dp for quotes in the hundreds/thousands (USDJPY, XAUUSD), none for
+// five-figure quotes and beyond (JPN225, US30, BTCUSD).
+export const priceDp = (v) => {
+  const a = Math.abs(Number(v))
+  if (!Number.isFinite(a)) return 4
+  return a >= 10000 ? 0 : a >= 100 ? 2 : 4
+}
+const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: priceDp(n) }))
 
 /** Live broker positions → standard rows. manageable=true arms the panel. */
 export function brokerPositionRows(positions, { manageable = false } = {}) {

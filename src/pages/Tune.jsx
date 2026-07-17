@@ -10,6 +10,7 @@ import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
+import { priceDp } from '../lib/std-trade-rows.js'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -1568,7 +1569,7 @@ export default function Tune() {
                     <td className="pr-2 text-[12px] tabular-nums whitespace-nowrap">
                       {scan
                         ? <>
-                            {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>}
+                            {scan.price != null && <span className="font-semibold">{Number(scan.price).toLocaleString(undefined, { maximumFractionDigits: priceDp(scan.price) })}</span>}
                             {' '}
                             {scan.bias && scan.bias !== 'skip'
                               ? <span className={scan.bias === 'long' ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>
