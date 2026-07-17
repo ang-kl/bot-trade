@@ -7,6 +7,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { tpLadder } from '../lib/tp-ladder.js'
 import PositionChart from '../components/PositionChart.jsx'
 
 // Inline tab link used by the "Next:" guide line
@@ -66,6 +67,7 @@ function openPositionRows(positions) {
       entry: p.entry_price,
       sl: p.current_sl,
       tp: p.current_tp,
+      tps: tpLadder(p.current_tp, p.tp2_price, p.volume, { scaledOut: !!p.scaled_out }),
       reason: `${p.last_check_action || 'not checked yet'}${checkedAt ? ` (${ago(checkedAt)})` : ''}`,
       chart: {
         symbol: p.symbol,
@@ -257,7 +259,20 @@ function StdTradeTable({ rows, countLabel = 'rows' }) {
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}</td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.sl)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.tp)}</td>
+                    {/* Take Profit — cTrader supports laddered TPs, so the
+                        cell holds the whole ladder: numero · price · lot. */}
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {r.tps?.length
+                        ? r.tps.map(t => (
+                            <span key={t.n} className="block leading-tight">
+                              <span className="text-[var(--color-text-sub)]">#{t.n}</span>
+                              {' '}{num(t.price)}
+                              {t.lots != null && <span className="text-[var(--color-text-sub)]"> · {num(t.lots)}</span>}
+                              {t.done && <span title="partial already taken"> ✓</span>}
+                            </span>
+                          ))
+                        : num(r.tp)}
+                    </td>
                     <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
                       {r.reason || '—'}
                     </td>
@@ -315,6 +330,7 @@ function OrderLogTable({ rows }) {
       entry: prop?.entry,
       sl: prop?.sl,
       tp: prop?.tp1,
+      tps: tpLadder(prop?.tp1, prop?.tp2, prop?.requestedVolume),
       reason: ev.veto_reason || ev.sizing_note || '',
       chart: prop
         ? {
