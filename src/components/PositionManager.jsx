@@ -20,7 +20,8 @@ import { agentPost } from '../lib/agent-api.js'
 
 const TABS = ['Modify', 'Protect', 'Chart', 'Details']
 
-const fmt = (v, d = 5) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(Math.min(d, 8)))
+// Canonical price display = 4 dp (owner); symbol digits below 4 keep their own.
+const fmt = (v, d = 4) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(Math.min(d, 4)))
 const money = (v) => (v == null ? '—' : `$ ${Number(v).toFixed(2)}`)
 
 // Pips ⇄ price for a given side: SL sits BEHIND entry (negative pips), TP in

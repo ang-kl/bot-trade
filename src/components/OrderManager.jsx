@@ -16,7 +16,8 @@ import { agentPost } from '../lib/agent-api.js'
 
 const TABS = ['Modify', 'Chart', 'Details']
 
-const fmt = (v, d = 5) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(Math.min(d, 8)))
+// Canonical price display = 4 dp (owner); symbol digits below 4 keep their own.
+const fmt = (v, d = 4) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(Math.min(d, 4)))
 
 export default function OrderManager({ o, onDone }) {
   const [tab, setTab] = useState('Modify')

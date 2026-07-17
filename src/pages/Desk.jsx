@@ -30,7 +30,7 @@ const STRAT_SHORT = {
   donchian_breakout: 'BRK',
   rsi_meanrev: 'RSI',
 }
-const fmt = (v, d = 5) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d }))
+const fmt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d }))
 
 function ago(iso) {
   if (!iso) return ''

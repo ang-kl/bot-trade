@@ -34,7 +34,7 @@ const OVERLAY_LINES = {
 
 function niceFmt(v, ref) {
   if (v == null) return ''
-  const digits = ref >= 1000 ? 1 : ref >= 10 ? 2 : 5
+  const digits = ref >= 1000 ? 1 : ref >= 10 ? 2 : 4
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
