@@ -192,3 +192,80 @@ test('reconcile timestamp stored', () => {
   assert.ok(ts, 'last_reconcile_at should be set')
   assert.ok(new Date(ts).getTime() > 0, 'should be a valid ISO timestamp')
 })
+
+// ---------------------------------------------------------------------------
+// Tamper watch — owner manual changes to tracked positions
+// ---------------------------------------------------------------------------
+
+test('tamper watch: first reconcile stamps the baseline without alerting', () => {
+  const db = mkDb()
+  seedKnownPosition(db, { positionId: '42' })
+  const bp = [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })]
+
+  const result = reconcilePositions(db, bp, [], mkSetState(db))
+  assert.equal(result.manualChanges.length, 0)
+  const row = db.prepare(`SELECT * FROM monitored_positions`).get()
+  assert.equal(row.broker_volume_units, 10) // 1000/100
+  assert.equal(row.broker_sl, 99)
+  assert.equal(row.broker_tp, 110)
+})
+
+test('tamper watch: manual volume change is flagged after a baseline exists', () => {
+  const db = mkDb()
+  seedKnownPosition(db, { positionId: '42' })
+  const setState = mkSetState(db)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })], [], setState)
+
+  // Owner bumps the position from 10 to 50 units in the cTrader app.
+  const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 5000, stopLoss: 99, takeProfit: 110 })], [], setState)
+  assert.equal(result.manualChanges.length, 1)
+  assert.deepEqual(result.manualChanges[0], { kind: 'volume', symbol: 'XAUUSD', positionId: '42', from: 10, to: 50 })
+})
+
+test('tamper watch: manual SL/TP move is flagged and ADOPTED as the managed level', () => {
+  const db = mkDb()
+  seedKnownPosition(db, { positionId: '42' })
+  const setState = mkSetState(db)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })], [], setState)
+
+  const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 95, takeProfit: 120 })], [], setState)
+  assert.equal(result.manualChanges.length, 2)
+  assert.equal(result.manualChanges.find(c => c.kind === 'sl_moved').to, 95)
+  assert.equal(result.manualChanges.find(c => c.kind === 'tp_moved').to, 120)
+  const row = db.prepare(`SELECT * FROM monitored_positions`).get()
+  assert.equal(row.current_sl, 95)  // monitor now manages the owner's level
+  assert.equal(row.current_tp, 120)
+})
+
+test('tamper watch: a BOT amend does not false-alert (broker catches up to current_sl)', () => {
+  const db = mkDb()
+  seedKnownPosition(db, { positionId: '42' })
+  const setState = mkSetState(db)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })], [], setState)
+
+  // Bot amends SL to 101 and records it locally FIRST (as executeBrokerAction does)…
+  db.prepare(`UPDATE monitored_positions SET current_sl = 101`).run()
+  // …then the next reconcile sees the broker at 101 too.
+  const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 101, takeProfit: 110 })], [], setState)
+  assert.equal(result.manualChanges.length, 0)
+})
+
+test('tamper watch: a manual REVERSAL flips the managed side and rewrites the thesis', () => {
+  const db = mkDb()
+  seedKnownPosition(db, { positionId: '42' })
+  const setState = mkSetState(db)
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', volume: 1000, stopLoss: 99, takeProfit: 110 })], [], setState)
+
+  // Owner reverses: netting account flips the same position to SELL at 102.
+  const result = reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'XAUUSD', tradeSide: 'SELL', openPrice: 102, volume: 1000, stopLoss: 104, takeProfit: 96 })], [], setState)
+  const rev = result.manualChanges.find(c => c.kind === 'reversed')
+  assert.ok(rev)
+  assert.equal(rev.from, 'long')
+  assert.equal(rev.to, 'short')
+  const row = db.prepare(`SELECT * FROM monitored_positions`).get()
+  assert.equal(row.side, 'short')
+  assert.equal(row.entry_price, 102)
+  assert.equal(row.current_sl, 104)
+  assert.equal(row.current_tp, 96)
+  assert.match(row.thesis, /MANUAL REVERSAL/)
+})

@@ -15,6 +15,8 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
+import StdTradeTable from '../components/StdTradeTable.jsx'
+import { brokerPositionRows, brokerOrderRows, brokerDealRows } from '../lib/std-trade-rows.js'
 
 const REFRESH_MS = 20_000
 
@@ -77,7 +79,6 @@ export default function Desk() {
   const [alphaDecay, setAlphaDecay] = useState(null)       // edge-erosion read
   const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
   const [capNote, setCapNote] = useState('')
-  const [managedId, setManagedId] = useState(null)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
   const [gridN, setGridN] = useState(() => {
@@ -265,42 +266,24 @@ export default function Desk() {
         summary={broker?.positions?.length ? `floating ${floating >= 0 ? '+' : ''}${fmt(floating, 2)}` : null}
       >
         {!broker && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
-        {broker?.positions?.map(p => {
-          const net = p.estNetPnl ?? p.estPnlQuote
-          return (
-            <div key={p.positionId} className="border-t border-[var(--color-border)] py-1.5 text-[12px]">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <button type="button" className="font-semibold cursor-pointer underline-offset-2 hover:underline" onClick={() => { setSymbol(p.symbol); pickGrid(1) }}>{p.symbol}</button>
-                <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
-                <span className="text-[var(--color-text-sub)]">{p.lots != null ? `${fmt(p.lots, 2)}` : ''}</span>
-                {net != null && <span className={`font-semibold ${net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{net >= 0 ? '+' : ''}{fmt(net, 2)}{p.estNetPnl == null ? '*' : ''}</span>}
-                <Button size="sm" variant="ghost" className="ml-auto"
-                  onClick={() => setManagedId(id => id === p.positionId ? null : p.positionId)}>
-                  {managedId === p.positionId ? 'Hide' : 'Manage'}
-                </Button>
-              </div>
-              <div className="mt-0.5 text-[var(--color-text-sub)]">
-                in {fmt(p.entry)} → {fmt(p.currentPrice)} · SL {fmt(p.sl)} · TP {fmt(p.tp)}
-              </div>
-              {managedId === p.positionId && (
-                <PositionManager p={p} onDone={() => { setManagedId(null); load() }} />
-              )}
-            </div>
-          )
-        })}
-        {broker?.orders?.map(o => (
-          <div key={o.orderId} className="border-t border-[var(--color-border)] py-1.5 text-[12px]">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button type="button" className="font-semibold cursor-pointer underline-offset-2 hover:underline" onClick={() => { setSymbol(o.symbol); pickGrid(1) }}>{o.symbol}</button>
-              <Badge tone="info">{o.type}</Badge>
-              <Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge>
-              <span className="text-[var(--color-text-sub)]">{o.lots != null ? fmt(o.lots, 2) : ''}</span>
-            </div>
-            <div className="mt-0.5 text-[var(--color-text-sub)]">
-              trigger {fmt(o.limitPrice ?? o.stopPrice)} · now {fmt(o.currentPrice)} · SL {fmt(o.sl)} · TP {fmt(o.tp)}
-            </div>
+        {(broker?.positions?.length ?? 0) > 0 && (
+          <StdTradeTable
+            rows={brokerPositionRows(broker.positions, { manageable: true })}
+            countLabel="open positions"
+            onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
+            panel={{ label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); load() }} /> }}
+          />
+        )}
+        {(broker?.orders?.length ?? 0) > 0 && (
+          <div className="mt-2">
+            <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
+            <StdTradeTable
+              rows={brokerOrderRows(broker.orders)}
+              countLabel="pending orders"
+              onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
+            />
           </div>
-        ))}
+        )}
         {broker && brokerFlat && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
         )}
@@ -313,16 +296,9 @@ export default function Desk() {
         defaultOpen={false}
       >
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
-        {brokerHistory?.rows?.map(d => (
-          <div key={d.dealId ?? `${d.positionId}-${d.closedAt}`} className="border-t border-[var(--color-border)] py-1 text-[12px] flex items-center gap-1.5 min-w-0">
-            <span className="text-[var(--color-text-sub)] shrink-0">{d.closedAt ? ago(new Date(d.closedAt).toISOString()) : ''}</span>
-            <span className="font-semibold shrink-0">{d.symbol}</span>
-            <Badge tone={d.side === 'BUY' ? 'up' : 'down'}>{d.side}</Badge>
-            <span className="text-[var(--color-text-sub)] shrink-0">{d.lots != null ? fmt(d.lots, 2) : ''}</span>
-            <span className="text-[var(--color-text-sub)] truncate">in {fmt(d.entryPrice)} → out {fmt(d.closePrice)}</span>
-            <span className={`ml-auto font-semibold shrink-0 ${d.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{d.netPnl >= 0 ? '+' : ''}{fmt(d.netPnl, 2)}</span>
-          </div>
-        ))}
+        {(brokerHistory?.rows?.length ?? 0) > 0 && (
+          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }} />
+        )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last 7 days.</p>
         )}

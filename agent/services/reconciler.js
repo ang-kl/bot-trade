@@ -6,33 +6,104 @@ import { getState } from '../db.js'
  *
  * - Detects externally-placed positions and imports them (source='external')
  * - Detects positions closed at the broker and marks them locally
+ * - Detects MANUAL CHANGES to tracked positions (owner tampering in the
+ *   cTrader app: reversed side, changed volume, hand-moved SL/TP) — alerts
+ *   and adopts the broker truth so the monitor manages reality
  * - Stores pending orders snapshot for the frontend
  *
  * @param {import('better-sqlite3').Database} db
  * @param {Array} brokerPositions — from RECONCILE_RES, enriched with symbolName
  * @param {Array} brokerOrders — pending limit/stop orders from RECONCILE_RES
  * @param {(key: string, value: string) => void} setState
- * @returns {{ newExternal: Array, closedDetected: Array, pendingOrders: Array }}
+ * @returns {{ newExternal: Array, closedDetected: Array, manualChanges: Array, pendingOrders: Array }}
  */
 export function reconcilePositions(db, brokerPositions, brokerOrders, setState) {
   const knownRows = db.prepare(
-    `SELECT mp.id, mp.symbol, mp.source, t.ctrader_position_id
+    `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
+            mp.broker_volume_units, mp.broker_sl, mp.broker_tp, t.ctrader_position_id
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL`
   ).all()
 
   const knownIds = new Set(knownRows.map(r => String(r.ctrader_position_id)))
+  const knownById = new Map(knownRows.map(r => [String(r.ctrader_position_id), r]))
   const brokerIds = new Set()
 
   const newExternal = []
+  const manualChanges = []
+
+  // Price-scale-aware "did it really change" — null↔value counts as a change.
+  const differs = (a, b) => {
+    if (a == null && b == null) return false
+    if (a == null || b == null) return true
+    return Math.abs(Number(a) - Number(b)) > Math.max(1e-9, Math.abs(Number(b)) * 1e-6)
+  }
 
   for (const bp of brokerPositions) {
     const posId = String(bp.tradeData?.positionId ?? bp.positionId ?? '')
     if (!posId) continue
     brokerIds.add(posId)
 
-    if (knownIds.has(posId)) continue
+    if (knownIds.has(posId)) {
+      // -----------------------------------------------------------------
+      // TAMPER WATCH — the position is OURS and still open; compare the
+      // broker's live shape against what we last saw / what we manage.
+      // Bot-initiated changes don't trip this: bot amends update
+      // current_sl/current_tp first (so the broker matches us), and bot
+      // partial closes NULL the broker_volume_units baseline before the
+      // next reconcile.
+      // -----------------------------------------------------------------
+      const row = knownById.get(posId)
+      const bSide = (bp.tradeData?.tradeSide === 'BUY' || bp.tradeData?.tradeSide === 1) ? 'long' : 'short'
+      const bVol = bp.tradeData?.volume ? bp.tradeData.volume / 100 : null
+      const bSl = bp.stopLoss ?? null
+      const bTp = bp.takeProfit ?? null
+      const bPrice = bp.price ?? bp.tradeData?.openPrice ?? null
+      const updates = {}
+
+      if (row.side && bSide !== row.side) {
+        manualChanges.push({ kind: 'reversed', symbol: row.symbol, positionId: posId, from: row.side, to: bSide })
+        updates.side = bSide
+        updates.entry_price = bPrice ?? row.entry_price
+        updates.current_sl = bSl
+        updates.current_tp = bTp
+        updates.thesis_note = `MANUAL REVERSAL detected at broker (${row.side}→${bSide}) — monitor now manages the new direction on technicals`
+      }
+      if (row.broker_volume_units != null && bVol != null && differs(bVol, row.broker_volume_units)) {
+        manualChanges.push({ kind: 'volume', symbol: row.symbol, positionId: posId, from: row.broker_volume_units, to: bVol })
+      }
+      if (!updates.side) { // side flip already adopts SL/TP wholesale
+        if (row.broker_sl != null && differs(bSl, row.broker_sl) && differs(bSl, row.current_sl)) {
+          manualChanges.push({ kind: 'sl_moved', symbol: row.symbol, positionId: posId, from: row.broker_sl, to: bSl })
+          updates.current_sl = bSl
+        }
+        if (row.broker_tp != null && differs(bTp, row.broker_tp) && differs(bTp, row.current_tp)) {
+          manualChanges.push({ kind: 'tp_moved', symbol: row.symbol, positionId: posId, from: row.broker_tp, to: bTp })
+          updates.current_tp = bTp
+        }
+      }
+
+      db.prepare(
+        `UPDATE monitored_positions SET
+           side = COALESCE(?, side),
+           entry_price = COALESCE(?, entry_price),
+           current_sl = CASE WHEN ? = 1 THEN ? ELSE current_sl END,
+           current_tp = CASE WHEN ? = 1 THEN ? ELSE current_tp END,
+           thesis = CASE WHEN ? IS NOT NULL THEN (COALESCE(thesis, '') || ' | ' || ?) ELSE thesis END,
+           broker_volume_units = ?, broker_sl = ?, broker_tp = ?
+         WHERE id = ?`
+      ).run(
+        updates.side ?? null,
+        updates.entry_price ?? null,
+        'current_sl' in updates ? 1 : 0, updates.current_sl ?? null,
+        'current_tp' in updates ? 1 : 0, updates.current_tp ?? null,
+        updates.thesis_note ?? null, updates.thesis_note ?? null,
+        bVol, bSl, bTp,
+        row.id,
+      )
+      continue
+    }
 
     // A broker position with no local active row is ADOPTED so the bot's
     // view matches the broker (owner saw 4 at the broker, 1 shown). Two
@@ -124,5 +195,5 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   setState('broker_pending_orders_json', JSON.stringify(pendingOrders))
   setState('last_reconcile_at', new Date().toISOString())
 
-  return { newExternal, closedDetected, pendingOrders }
+  return { newExternal, closedDetected, manualChanges, pendingOrders }
 }

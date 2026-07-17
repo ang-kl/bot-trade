@@ -9,6 +9,8 @@ import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { tpLadder } from '../lib/tp-ladder.js'
 import PositionChart from '../components/PositionChart.jsx'
+import StdTradeTable from '../components/StdTradeTable.jsx'
+import { toMs } from '../lib/std-trade-rows.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -22,18 +24,6 @@ function fmt(n, digits = 5) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
 }
 
-// SQLite datetimes are UTC without a zone marker — normalise before Date().
-function dateTimeParts(iso) {
-  if (!iso) return null
-  const s = String(iso)
-  const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
-  if (!Number.isFinite(d.getTime())) return null
-  return {
-    day: d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }),
-    time: d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
-  }
-}
-
 function ago(iso) {
   if (!iso) return '—'
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -43,12 +33,6 @@ function ago(iso) {
   return `${Math.round(mins / 1440)}d ago`
 }
 
-// sqlite writes "YYYY-MM-DD HH:MM:SS" (UTC, no zone marker) — parse as UTC.
-function toMs(v) {
-  if (!v) return null
-  const t = Date.parse(String(v).includes('T') ? v : v.replace(' ', 'T') + 'Z')
-  return Number.isFinite(t) ? t : null
-}
 
 // Open (monitored) positions → the standard shape. Time = the broker fill
 // time when known (trades.opened_at via the join), else the row's created_at.
@@ -189,128 +173,6 @@ const ATTEMPT_SOURCE = {
   burnin: 'BURN-IN',
   autopilot: 'AUTO',
   external: 'EXTERNAL',
-}
-
-// THE standard trade table (owner: "use the order log table and its columns
-// as the standard for opened trades and pending trades"). TradingView-style:
-// fixed header, numerics right-aligned in tabular figures, Long/Short
-// coloured, sideways scroll with the first two columns (date/time, symbol)
-// FROZEN, and 8-row pagination. Callers map their rows to the shared shape:
-// { id, at, symbol, result:{text,tone}, source:{text,tone}, side ('BUY'|
-//   'SELL'|null), qty | qtyText, entry, sl, tp, reason, reasonTitle?, chart? }
-const OL_PAGE = 8
-const OL_COL1_W = 76  // px — frozen date/time column; col 2 offset builds on it
-
-function StdTradeTable({ rows, countLabel = 'rows' }) {
-  const [page, setPage] = useState(0)
-  const [chartFor, setChartFor] = useState(null) // row id with the chart open
-
-  const pages = Math.max(1, Math.ceil(rows.length / OL_PAGE))
-  const p = Math.min(page, pages - 1)
-  const slice = rows.slice(p * OL_PAGE, p * OL_PAGE + OL_PAGE)
-
-  if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
-
-  const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 5 }))
-  // Frozen columns need a SOLID background or scrolled cells show through.
-  const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
-  const stick2 = `sticky z-10 bg-[var(--color-bg)]`
-
-  return (
-    <div>
-      <div className="overflow-x-auto">
-        <table className="min-w-[880px] w-full text-[12px] tabular-nums">
-          <thead className="text-left text-[var(--color-text-sub)]">
-            <tr className="border-b border-[var(--color-border)]">
-              <th className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: OL_COL1_W }}>Time</th>
-              <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: OL_COL1_W }}>Symbol</th>
-              <th className="py-1.5 pr-3 font-semibold">Result</th>
-              <th className="py-1.5 pr-3 font-semibold">Source</th>
-              <th className="py-1.5 pr-3 font-semibold">Side</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Qty</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Entry</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Stop Loss</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
-              <th className="py-1.5 pr-3 font-semibold">Reason</th>
-              <th className="py-1.5 font-semibold" aria-label="Chart" />
-            </tr>
-          </thead>
-          <tbody>
-            {slice.map(r => {
-              const w = r.at ? dateTimeParts(r.at) : null
-              const long = r.side === 'BUY'
-              return (
-                <Fragment key={r.id}>
-                  <tr className="border-b border-[var(--color-border)] align-middle">
-                    <td className={`py-1.5 pr-2 whitespace-nowrap ${stick1}`} style={{ minWidth: OL_COL1_W }}>
-                      {w
-                        ? <>
-                            <span className="block leading-tight">{w.day}</span>
-                            <span className="block leading-tight text-[var(--color-text-sub)]">{w.time}</span>
-                          </>
-                        : '—'}
-                    </td>
-                    <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: OL_COL1_W }}>{r.symbol}</td>
-                    <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
-                    <td className="py-1.5 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
-                    <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                      {r.side ? (long ? 'Long' : 'Short') : '—'}
-                    </td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.sl)}</td>
-                    {/* Take Profit — cTrader supports laddered TPs, so the
-                        cell holds the whole ladder: numero · price · lot. */}
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                      {r.tps?.length
-                        ? r.tps.map(t => (
-                            <span key={t.n} className="block leading-tight">
-                              <span className="text-[var(--color-text-sub)]">#{t.n}</span>
-                              {' '}{num(t.price)}
-                              {t.lots != null && <span className="text-[var(--color-text-sub)]"> · {num(t.lots)}</span>}
-                              {t.done && <span title="partial already taken"> ✓</span>}
-                            </span>
-                          ))
-                        : num(r.tp)}
-                    </td>
-                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
-                      {r.reason || '—'}
-                    </td>
-                    <td className="py-1.5 whitespace-nowrap">
-                      {r.chart && (
-                        <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
-                          {chartFor === r.id ? 'Hide' : 'Chart'}
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                  {chartFor === r.id && r.chart && (
-                    <tr className="border-b border-[var(--color-border)]">
-                      <td colSpan={11} className="py-2">
-                        <PositionChart
-                          symbol={r.chart.symbol}
-                          timeframe={r.chart.timeframe || '1h'}
-                          lines={r.chart.lines}
-                          at={r.chart.at}
-                          markers={r.chart.markers}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      {/* Pagination — keeps every panel the same height */}
-      <div className="mt-2 flex items-center gap-2 text-[12px] text-[var(--color-text-sub)]">
-        <Button size="sm" variant="subtle" disabled={p === 0} onClick={() => setPage(p - 1)}>‹ Newer</Button>
-        <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
-        <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>
-      </div>
-    </div>
-  )
 }
 
 // Order log rows (risk_events) → the standard shape.
