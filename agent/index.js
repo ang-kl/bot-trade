@@ -374,9 +374,18 @@ async function start() {
       console.log('[agent] goodbye');
       process.exit(0);
     });
+    // Drop keep-alive sockets (the monitor UI polls every 30s and holds
+    // them open) so server.close() can actually complete.
+    try { server.closeAllConnections?.(); } catch { /* Node < 18.2 */ }
 
-    // Force exit after 10 s if connections linger
-    setTimeout(() => process.exit(1), 10_000).unref();
+    // If something still lingers, force-quit — but with exit code 0: a
+    // SIGTERM-initiated shutdown is intentional, and a non-zero code here
+    // made Railway flag EVERY deploy handover as "Deploy Crashed!".
+    setTimeout(() => {
+      try { db.close(); } catch { /* already closed */ }
+      console.log('[agent] forced exit after drain timeout');
+      process.exit(0);
+    }, 10_000).unref();
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
