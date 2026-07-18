@@ -87,7 +87,7 @@ function TimeframePerformance({ timeframes }) {
       >
         <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
         Timeframe performance
-        <span className="font-normal">— net outcome of trades closed in the last 2h / 4h / 1d / 5d / 1w</span>
+        <span className="font-normal">— trades CLOSED in the last 2h/4h/1d/5d/1w, grouped by TIMEFRAME. The stage-matrix counts are a different cut (per STRATEGY, 30-day usage incl. open trades) — the totals are not meant to match.</span>
       </button>
       {open && (
         <div className="mt-1.5 overflow-x-auto">
@@ -1387,7 +1387,7 @@ export default function Tune() {
           <div>
             {/* Live impact strip — recomputes from the DRAFT values as you drag,
                 so the money consequence is visible before saving. */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
               {[
                 ['Balance', bal ? `$${bal.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'not set'],
                 ['Risk per trade', usd(riskDraft.perTradeRiskPct)],
@@ -1403,14 +1403,15 @@ export default function Tune() {
               ))}
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
+            {/* Tight 2-col groups — the whole tab should fit ~one screen. */}
+            <div className="grid gap-2.5 lg:grid-cols-2">
               {RISK_GROUPS.map(g => (
-                <div key={g.title} className="glass-inset rounded-[12px] p-3.5">
-                  <div className="flex items-baseline justify-between mb-2.5">
+                <div key={g.title} className="glass-inset rounded-[12px] p-2.5">
+                  <div className="flex items-baseline justify-between mb-1.5">
                     <h3 className="text-[13px] font-semibold">{g.title}</h3>
                     <span className="text-[11px] text-[var(--color-text-sub)]">{g.blurb}</span>
                   </div>
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {g.keys.map(k => (
                       <RiskControl
                         key={k} k={k} label={labels[k].label} hint={labels[k].hint}
@@ -1423,7 +1424,7 @@ export default function Tune() {
               ))}
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-2">
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={saveRisk} disabled={!dirty}>{dirty ? 'Save risk config' : 'Saved'}</Button>
               {dirty && <span className="text-[12px] font-semibold text-[var(--color-warning-text)]">Unsaved changes — the bot still uses the old values.</span>}
               <span className="ml-auto">
@@ -1431,8 +1432,8 @@ export default function Tune() {
               </span>
             </div>
 
-            <h2 className="text-[13px] font-semibold mt-5 mb-1 pt-4 border-t border-[var(--color-border)]">Account</h2>
-            <p className="text-[12px] text-[var(--color-text-sub)] mb-2">These feed every $ figure above. Balance auto-syncs from the broker when linked; set it manually only if you want a smaller working budget.</p>
+            <h2 className="text-[13px] font-semibold mt-3 mb-1 pt-2.5 border-t border-[var(--color-border)]">Account</h2>
+            <p className="text-[12px] text-[var(--color-text-sub)] mb-1.5">These feed every $ figure above. Balance auto-syncs from the broker when linked.</p>
             <div className="flex flex-wrap items-end gap-3">
               <label className="block text-[12px]">
                 <span className="text-[var(--color-text-sub)]">Balance (USD)</span>

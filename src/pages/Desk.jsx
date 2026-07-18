@@ -97,8 +97,22 @@ export default function Desk() {
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
+    // TWO-TIER LOAD (owner: "30s to load — make it 3"). The broker snapshot
+    // and deal history are live cTrader WebSocket round-trips (slow, tens of
+    // seconds on a cold link); everything else is a SQLite read (<100ms).
+    // Paint from the fast tier immediately; the broker sections say
+    // "fetching…" and fill in whenever the WS answers.
+    agentPost('/actions/broker-positions', { selectedOnly: true })
+      .then(b => {
+        setBroker(b?.accounts?.[0] ?? null)
+        setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || '')
+      })
+      .catch(() => {})
+    agentPost('/actions/broker-history', { days: 7 })
+      .then(bh => setBrokerHistory(bh?.ok ? bh : null))
+      .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, b, bh, hb, ls, ad, mh] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -106,8 +120,6 @@ export default function Desk() {
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
         agentGet('/state/trades').catch(() => null),
-        agentPost('/actions/broker-positions', { selectedOnly: true }).catch(() => null),
-        agentPost('/actions/broker-history', { days: 7 }).catch(() => null),
         agentGet('/state/heartbeats').catch(() => null),
         agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
@@ -121,14 +133,12 @@ export default function Desk() {
       setAllTrades(t?.rows || t?.trades || [])
       setArmed(atf)
       setConfig(c)
-      setBroker(b?.accounts?.[0] ?? null)
-      setBrokerHistory(bh?.ok ? bh : null)
       setHeartbeats(hb?.controllers ?? null)
       setLlmSpend(ls)
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
       setError('')
-      setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
+      setSymbol(prev => prev || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
     } catch (e) { setError(e.message) }
   }, [])
 

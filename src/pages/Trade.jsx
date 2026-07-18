@@ -226,7 +226,6 @@ export default function Trade() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [reconcileNote, setReconcileNote] = useState('')
-  const [armed, setArmed] = useState(null)  // { timeframes, matrix } — what autotrade may act on
   const [pending, setPending] = useState(null)  // { enabled, matrix } — resting-limit pending-order mode
   const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
   const [marketHours, setMarketHours] = useState(null) // { SYM: { open, next_open_at } }
@@ -236,7 +235,7 @@ export default function Trade() {
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
-      const [h, s, p, t, r, rc, bo, atf, cfg, mh] = await Promise.all([
+      const [h, s, p, t, r, rc, bo, cfg, mh] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -244,18 +243,16 @@ export default function Trade() {
         agentGet('/state/risk-events?limit=200'),
         agentGet('/state/risk-config').catch(() => null),
         agentGet('/state/broker-orders').catch(() => null),
-        agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
       ])
       setHealth(h)
       setScans(s.rows || s.scans || [])
       setPositions(p.rows || p.positions || [])
-      setTrades((t.rows || t.trades || []).slice(0, 15))
+      setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])
       setAccount(rc?.derived || null)
       setBroker(bo || null)
-      setArmed(atf || null)
       setPending(cfg
         ? {
             enabled: cfg.pending_mode_enabled === true || cfg.pending_mode_enabled === 'true',
@@ -344,79 +341,35 @@ export default function Trade() {
     <div className="space-y-4">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
-      {/* Readiness — answers "can this thing trade for me right now?" at a glance */}
+      {/* ONE status strip (owner: Desk's first section said the same thing
+          twice). Desk owns the goal/scope prose; Trade keeps a dot-text line
+          plus the page's ACTIONS. Guidance appears only when NOT ready. */}
       <Card>
-        <div className="flex flex-wrap items-center gap-2 text-[13px]">
-          <Badge tone={health ? 'up' : 'down'} pill>{health ? '1 · AGENT CONNECTED' : '1 · AGENT OFFLINE'}</Badge>
-          <Badge tone={health?.broker?.linked ? (health.broker.isLive ? 'down' : 'up') : 'neutral'} pill>
-            {health?.broker?.linked
-              ? `2 · ${health.broker.isLive ? '⚠ LIVE' : 'DEMO'} ACCOUNT LINKED · ${fmt(health.broker.symbolsMapped, 0)} symbols`
-              : '2 · NO ACCOUNT — tap one on Connect'}
-          </Badge>
-          <Badge tone={health?.scanEnabled ? 'up' : 'neutral'} pill>{`3 · SCAN ${health?.scanEnabled ? 'ON' : 'OFF'}`}</Badge>
-          <Badge tone={health?.autotradeEnabled ? 'up' : 'neutral'} pill>{`4 · AUTOTRADE ${health?.autotradeEnabled ? 'ARMED' : 'OFF'}`}</Badge>
-        </div>
-        {/* One-line guide: always name the single next action */}
-        <div className="mt-2 text-[13px]">
-          {!health && <>Next: connect the agent on the <NavTab to="/connect">Connect</NavTab> tab (or redeploy Railway if it was working before).</>}
-          {health && !health.broker?.linked && <>Next: tap your <strong>DEMO</strong> account on the <NavTab to="/connect">Connect</NavTab> tab — one tap links it and downloads the symbol list.</>}
-          {health && health.broker?.linked && !health.autotradeEnabled && (
-            <>Next: run the <strong>backtest</strong> on the <NavTab to="/tune">Tune</NavTab> tab — if a timeframe shows GO, an "Activate quant trading" button appears right under the results.</>
-          )}
-          {health && health.broker?.linked && health.autotradeEnabled && (
-            <span>
-              <span className="font-semibold">Quant trading is ACTIVE on the {health.broker.isLive ? 'LIVE ⚠' : 'demo'} account.</span>
-              {scope === 'all'
-                ? <>{' '}Scope: <strong>the FULL watchlist</strong> — every enabled symbol may trade on any scanned timeframe with every armed strategy; the risk gate, stage matrix and market hours decide what executes.{armed?.matrix && Object.keys(armed.matrix).length > 0 && <> Backtest-armed combos micro-tune preferred timeframes for <strong>{Object.keys(armed.matrix).length}</strong> symbols.</>}</>
-                : <>{' '}Scope: <strong>armed combos only</strong>{armed?.matrix && Object.keys(armed.matrix).length > 0
-                    ? <> — <strong>{Object.entries(armed.matrix).map(([sym, tfs]) => `${sym} (${tfs.join(', ')})`).join(' · ')}</strong></>
-                    : <> — timeframes: <strong>{(armed?.timeframes || []).join(', ') || '—'}</strong></>} (switch to full-watchlist scope in Tune).</>}
-              {' '}The bot scans every 5 minutes; an order reaches cTrader only when a signal passes every gate{pending?.enabled
-                ? <> — except where pending mode is armed (below), so an empty cTrader elsewhere means "waiting", not "broken".</>
-                : <> — <strong>nothing is parked in advance</strong>, so an empty cTrader means "waiting", not "broken".</>}
-              {/* Pending mode changes the "nothing parked" promise — say so
-                  right where the trader reads what ACTIVE means. */}
-              {pending?.enabled && (
-                <>
-                  {' '}Resting limit orders are parked at fib levels for:{' '}
-                  <strong>
-                    {pending.matrix && Object.keys(pending.matrix).length > 0
-                      ? Object.entries(pending.matrix).map(([sym, tfs]) => `${sym} (${(tfs || []).join(', ')})`).join(' · ')
-                      : '—'}
-                  </strong>
-                  {' '}— you will see them as Pending orders in cTrader.
-                </>
-              )}
-            </span>
-          )}
-        </div>
-      </Card>
-
-      {/* Health strip */}
-      <Card>
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+          <span className="font-semibold whitespace-nowrap">
+            <span aria-hidden="true" style={{ color: !health ? 'var(--color-down)' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
+            {!health ? 'Agent offline' : health.autotradeEnabled ? 'Quant trading ACTIVE' : 'Autotrade OFF'}
+          </span>
           {health?.broker?.accountId && (
-            <span className="font-semibold" title="Every number on this page belongs to this account — switch on the left panel">
-              Account: {health.broker.isLive ? 'LIVE ⚠' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}
+            <span className={`font-semibold whitespace-nowrap ${health.broker.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+              {health.broker.isLive ? '⚠ LIVE' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}
             </span>
           )}
-          <Badge tone={health?.status === 'ok' ? 'up' : health ? 'down' : 'neutral'} pill>
-            {health ? (health.status === 'ok' ? 'AGENT OK' : health.status.toUpperCase()) : 'NO DATA'}
-          </Badge>
-          {account?.balance != null && (
-            <span className="font-semibold">${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}</span>
+          {account?.balance != null && <span className="font-semibold whitespace-nowrap">${fmt(account.balance, 2)}</span>}
+          {health?.autotradeEnabled && (
+            <span className="text-[var(--color-text-sub)] whitespace-nowrap">
+              scope: {scope === 'all' ? 'full watchlist' : 'armed combos'}{pending?.enabled ? ' · pending armed' : ''} — goal on <NavTab to="/">Desk</NavTab>
+            </span>
           )}
-          <span>loop #{fmt(health?.loopCount, 0)}</span>
-          <span>phase: {health?.loopPhase || '—'}</span>
-          <span>last scan: {ago(health?.lastScanAt)}</span>
-          <span>errors today: {fmt(health?.errorsToday, 0)}</span>
-          {health?.circuitBreaker && <Badge tone="down">BREAKER TRIPPED</Badge>}
+          <span className="text-[var(--color-text-sub)] whitespace-nowrap">scan {ago(health?.lastScanAt)}</span>
+          {Number(health?.errorsToday) > 0 && <span className="text-[var(--color-warning-text)] whitespace-nowrap">{fmt(health.errorsToday, 0)} errors today</span>}
+          {health?.circuitBreaker && <span className="text-[var(--color-down)] font-semibold">BREAKER TRIPPED</span>}
           <span className="ml-auto flex gap-2">
             <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={() => act('scan', '/actions/scan')}>
               {busy === 'scan' ? 'Scanning…' : 'Scan now'}
             </Button>
             <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={validationFill}
-              title="Fire ONE deliberate 0.01-lot market order through the real auto-trade path (risk gate included) — the supervised close of the C++ first-fill watch">
+              title="Fire ONE deliberate 0.01-lot market order through the real auto-trade path (risk gate included)">
               {busy === 'vfill' ? 'Firing…' : 'Test fill 0.01'}
             </Button>
             {health?.circuitBreaker && (
@@ -428,14 +381,28 @@ export default function Trade() {
             >Kill all</Button>
           </span>
         </div>
-        {vfillMsg && <div className="mt-2 text-[13px] font-semibold" role="status">{vfillMsg}</div>}
+        {/* Next-step guide ONLY while something is missing */}
+        {(!health || !health.broker?.linked || !health.autotradeEnabled) && (
+          <div className="mt-1.5 text-[13px]">
+            {!health && <>Next: connect the agent on the <NavTab to="/connect">Connect</NavTab> tab (or redeploy Railway if it was working before).</>}
+            {health && !health.broker?.linked && <>Next: tap your <strong>DEMO</strong> account on the <NavTab to="/connect">Connect</NavTab> tab — one tap links it and downloads the symbol list.</>}
+            {health && health.broker?.linked && !health.autotradeEnabled && (
+              <>Next: run the <strong>backtest</strong> on the <NavTab to="/tune">Tune</NavTab> tab — if a timeframe shows GO, an "Activate quant trading" button appears right under the results.</>
+            )}
+          </div>
+        )}
+        {vfillMsg && <div className="mt-1.5 text-[13px] font-semibold" role="status">{vfillMsg}</div>}
       </Card>
 
-      {/* Signals — all 5 registry strategies scan (stage matrix), so every
-          row names WHICH strategy fired; the old fib-only heading lied. */}
+      {/* Signals — folded by default (owner: "still needed?"). The Desk scan
+          strip carries the live read; this stays as the detail table for the
+          full thesis text, one tap away instead of a page of rows. */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-2">Signals — all scanned strategies</h2>
-        {signalScans.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">No active signals. {skipScans.length > 0 ? `${skipScans.length} symbols scanned without a setup on any strategy.` : ''}</div>}
+        <details open={signalScans.length > 0 && signalScans.length <= 4}>
+          <summary className="cursor-pointer select-none text-[13px] font-semibold">
+            Signals — {signalScans.length} active{skipScans.length > 0 ? ` · ${skipScans.length} scanned flat` : ''}
+          </summary>
+        {signalScans.length === 0 && <div className="mt-1 text-[13px] text-[var(--color-text-sub)]">No active signals right now.</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
@@ -458,6 +425,7 @@ export default function Trade() {
             </table>
           </div>
         )}
+        </details>
       </Card>
 
       {/* Open positions */}
@@ -467,49 +435,42 @@ export default function Trade() {
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
-      {/* Manual order — goes through the same risk gate as autopilot trades */}
+      {/* Manual order — ONE compact row (owner): placeholders instead of
+          stacked labels, tight side toggle. Same risk gate as the bot. */}
       <Card>
-        <h2 className="text-[13px] font-semibold mb-2">Manual order</h2>
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">Symbol</span>
-            <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))} placeholder="EURUSD" className="w-28" />
-          </label>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <h2 className="text-[13px] font-semibold mr-1 whitespace-nowrap">Manual order</h2>
+          <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))}
+            placeholder="Symbol" aria-label="Symbol" className="w-24 text-[12px]" />
           <datalist id="watchlist-symbols">
             {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
           </datalist>
-          <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]">
+          <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
             {['BUY', 'SELL'].map(s => (
-              <button key={s} type="button" onClick={() => setOrder(o => ({ ...o, side: s }))}
-                className={`px-3 py-2 text-[13px] font-semibold cursor-pointer ${
+              <button key={s} type="button" role="radio" aria-checked={order.side === s} onClick={() => setOrder(o => ({ ...o, side: s }))}
+                className={`px-2.5 py-1.5 text-[12px] font-semibold cursor-pointer ${
                   order.side === s
                     ? (s === 'BUY' ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-down)] text-white')
                     : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
                 }`}>{s}</button>
             ))}
           </div>
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">Lots</span>
-            <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))} placeholder="0.01" className="w-20" />
-          </label>
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">Stop-loss (required)</span>
-            <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))} placeholder="price" className="w-28" />
-          </label>
-          <label className="block text-[12px]">
-            <span className="text-[var(--color-text-sub)]">Take-profit</span>
-            <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))} placeholder="optional" className="w-28" />
-          </label>
-          <Button size="md" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}>
+          <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))}
+            placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-24 text-[12px]" />
+          <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))}
+            placeholder="SL — required" aria-label="Stop loss price (required)" className="w-28 text-[12px]" />
+          <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
+            placeholder="TP" aria-label="Take profit price (optional)" className="w-24 text-[12px]" />
+          <Button size="sm" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}
+            title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
             {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
           </Button>
         </div>
         {orderResult && (
-          <div className="mt-2"><Badge tone={orderResult.ok ? 'up' : 'warning'}>{orderResult.ok ? `FILLED — ${orderResult.text}` : orderResult.text}</Badge></div>
+          <div className={`mt-1.5 text-[12px] font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
+            {orderResult.ok ? `Filled — ${orderResult.text}` : orderResult.text}
+          </div>
         )}
-        <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
-          Manual orders pass the same risk gate as the bot's (sizing, R:R floor, cooldowns) and are then managed by the position monitor.
-        </p>
       </Card>
 
       {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}
@@ -559,7 +520,9 @@ export default function Trade() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 items-start">
+      {/* Recent trades and Order log STACKED full-width (owner: both carry
+          too many columns to share a row) with matching row counts. */}
+      <div className="space-y-4">
         {/* Recent trades */}
         <Card>
           <div className="flex items-center gap-2 mb-2">
