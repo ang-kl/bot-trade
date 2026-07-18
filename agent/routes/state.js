@@ -638,6 +638,20 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/broker-cache — the LAST broker snapshot + 7d history, served
+  // from SQLite in milliseconds. The live WS fetches refresh these caches
+  // (and the monitor refreshes the snapshot every ~30s), so the Desk paints
+  // instantly with data at most a few loops old, then swaps in live truth.
+  // -----------------------------------------------------------------------
+  router.get('/broker-cache', (_req, res) => {
+    const parse = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
+    res.json({
+      snapshot: parse('broker_snapshot_cache_json'),
+      history: parse('broker_history_cache_json'),
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/watchlist-stats — LIVE per-symbol results for the Watchlist
   // table: closed trades, net P&L, win rate, and a loser flag once a symbol
   // has enough sample (n >= min_n) and is net negative. The watchlist stays

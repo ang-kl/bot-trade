@@ -518,7 +518,11 @@ export default function actionsRouter(db) {
       }
 
       const realized = Math.round(rows.reduce((s, r) => s + (r.netPnl || 0), 0) * 100) / 100
-      res.json({ ok: true, days, rows, realized, backfilled, fetchedAt: new Date().toISOString() })
+      const payload = { ok: true, days, rows, realized, backfilled, fetchedAt: new Date().toISOString() }
+      // Cache the latest history so the Desk can paint instantly next visit
+      // (GET /state/broker-cache) while the live fetch refreshes behind.
+      try { setState(db, 'broker_history_cache_json', JSON.stringify(payload)) } catch { /* cache is best-effort */ }
+      res.json(payload)
     } catch (err) {
       console.error('[actions/broker-history] error:', err.message)
       res.status(502).json({ error: err.message })
@@ -1936,7 +1940,15 @@ export default function actionsRouter(db) {
       for (let i = 0; i < accounts.length; i += 3) {
         results.push(...await Promise.all(accounts.slice(i, i + 3).map(snapshotAccount)))
       }
-      res.json({ ok: true, accounts: results, fetchedAt: new Date().toISOString() })
+      const fetchedAt = new Date().toISOString()
+      // Cache the SELECTED account's snapshot — the monitor hits this route
+      // every ~30s, so the cache stays fresh; the Desk paints from it
+      // instantly (GET /state/broker-cache) while the live call refreshes.
+      try {
+        const sel = results.find(a => a.selected && !a.error)
+        if (sel) setState(db, 'broker_snapshot_cache_json', JSON.stringify({ account: sel, fetchedAt }))
+      } catch { /* cache is best-effort */ }
+      res.json({ ok: true, accounts: results, fetchedAt })
     } catch (err) {
       console.error('[actions/broker-positions] error:', err.message)
       res.status(502).json({ error: err.message })
