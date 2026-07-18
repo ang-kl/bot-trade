@@ -18,6 +18,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
+import { humanVeto } from '../lib/veto-words.js'
 
 const REFRESH_MS = 20_000
 
@@ -165,38 +166,48 @@ export default function Desk() {
     <div className="space-y-3">
       {error && <Card className="text-[13px]">{error}</Card>}
 
-      {/* ---- Status strip — the whole live picture in one row of chips ---- */}
+      {/* ---- Status strip — desk-style: dots + text, no pill clutter.
+           Pills are for controls; status is DATA, so it reads as a line. ---- */}
       <Card>
-        <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]">
           {/* Tri-state, honestly: "no data yet" must never read as OFF — a
               loading page and a disarmed bot are different facts. */}
-          {!health && <Badge tone="neutral">AUTOTRADE: NO DATA YET</Badge>}
-          {health && <Badge tone={health.autotradeEnabled ? 'up' : 'neutral'}>{health.autotradeEnabled ? 'AUTOTRADE ON' : 'AUTOTRADE OFF'}</Badge>}
-          {health?.pendingModeEnabled && <Badge tone="warning">⏳ PENDING ARMED</Badge>}
-          {equityStopToday && <Badge tone="down">EQUITY STOP TRIPPED — autotrade auto-disarmed today</Badge>}
+          <span className="font-semibold whitespace-nowrap">
+            <span aria-hidden="true" style={{ color: !health ? '#94a3b8' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
+            {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Autotrade ON' : 'Autotrade OFF'}
+          </span>
+          {health?.pendingModeEnabled && <span className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold">⏳ pending armed</span>}
+          <span className={`font-semibold whitespace-nowrap ${health?.broker?.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+            {health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}
+          </span>
+          <span className="font-semibold whitespace-nowrap">${fmt(health?.broker?.balance, 2)}</span>
+          <span className="text-[var(--color-text-sub)] whitespace-nowrap">
+            micro-tuned: {armedChips.length || 0} combos ·{' '}
+            <Link to="/tune" className="text-[var(--color-accent)] underline underline-offset-2">Tune ›</Link>
+          </span>
+          {equityStopToday && <span className="text-[var(--color-down)] font-semibold">EQUITY STOP TRIPPED — auto-disarmed today</span>}
           {health && !health.broker?.linked && (
-            <Badge tone="warning">NO ACCOUNT LINKED — fresh agent state? Re-link on Connect (set DB_PATH on a Railway Volume so redeploys stop wiping it)</Badge>
+            <span className="text-[var(--color-warning-text)]">No account linked — re-link on Connect (keep DB_PATH on a Railway Volume)</span>
           )}
-          <Badge tone={health?.broker?.isLive ? 'down' : 'info'}>{health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}</Badge>
-          <span className="text-[var(--color-text-sub)]">${fmt(health?.broker?.balance, 2)}</span>
-          <span className="text-[var(--color-text-sub)]">·</span>
-          <span className="text-[var(--color-text-sub)]">armed:</span>
-          {armedChips.length === 0 && <span className="text-[var(--color-text-sub)]">—</span>}
-          {armedChips.map(chip => (
-            <span key={chip} className="glass-inset rounded-full px-2 py-0.5 font-semibold whitespace-nowrap">{chip}</span>
-          ))}
         </div>
-        {/* The bot's GOAL, stated where the owner trades — derived live from
-            config, never hardcoded to yesterday's setup. */}
-        <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
+        {/* The bot's GOAL, one line, derived live from config. The armed
+            combo list lives behind a disclosure — useful on demand, not as
+            a 17-chip wall. */}
+        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
           <span className="font-semibold text-[var(--color-text)]">Goal:</span>{' '}
           {(config?.autotrade_scope ?? 'all') === 'all'
-            ? <>trade the FULL watchlist — {watch.length || '…'} enabled symbols × every armed strategy × any scanned timeframe{matrix ? ` (backtest micro-tunes ${Object.keys(matrix).length} symbols)` : ''}</>
-            : <>trade the {armedChips.length} backtest-armed combos only (full-watchlist scope available in Tune)</>}
-          {' '}· sizing {(config?.burn_in?.sizeMode ?? 'auto') === 'fixed' && config?.burn_in?.on ? `fixed ${config?.burn_in?.lots ?? 0.01} (burn-in)` : 'risk-based, uncapped unless a symbol pins Max lots'}
-          {config?.burn_in?.on ? <> · burn-in pacing {config?.burn_in?.targetTrades ?? 200} trades in {config?.burn_in?.windowDays ?? 2}d</> : null}
-          {' '}· every order still passes the risk gate, stage matrix, market hours and equity stop.
+            ? <>full watchlist — {watch.length || '…'} symbols × armed strategies × any scanned TF</>
+            : <>the {armedChips.length} backtest-armed combos only (widen in Tune)</>}
+          {' '}· sizing {(config?.burn_in?.sizeMode ?? 'auto') === 'fixed' && config?.burn_in?.on ? `fixed ${config?.burn_in?.lots ?? 0.01} lots (burn-in)` : 'risk-based'}
+          {config?.burn_in?.on ? <> · pacing {config?.burn_in?.targetTrades ?? 200} trades/{config?.burn_in?.windowDays ?? 2}d</> : null}
+          {' '}· guardrails: risk gate · stage matrix · market hours · equity stop
         </p>
+        {armedChips.length > 0 && (
+          <details className="mt-0.5 text-[12px]">
+            <summary className="cursor-pointer text-[var(--color-text-sub)] select-none">armed combos ({armedChips.length})</summary>
+            <p className="mt-0.5 text-[var(--color-text-sub)] leading-relaxed">{armedChips.join(' · ')}</p>
+          </details>
+        )}
       </Card>
 
       {/* ---- Chart wall — full width; 30 = 3 columns × 10 rows ---- */}
@@ -210,23 +221,24 @@ export default function Desk() {
               className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : n === 30 ? '30 wall' : `${n}`}</button>
           ))}
+          {/* Symbol picker: a dropdown, not 52 chips — one control, no row
+              of pills to swipe through (owner: "so many UI controls"). */}
+          {gridN === 1 && chartSymbols.length > 0 && (
+            <select
+              aria-label="Chart symbol"
+              value={symbol || ''}
+              onChange={e => setSymbol(e.target.value)}
+              className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[12px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
+            >
+              {chartSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
+            </select>
+          )}
           <span className="text-[11px] text-[var(--color-text-sub)]">
-            positions first, then watchlist{gridN > 1 ? ' · grid charts refresh every 60s — tap a symbol to focus it' : ''}
+            positions first{gridN > 1 ? ' · 60s refresh — tap a symbol to focus' : ''}
           </span>
         </div>
         {gridN === 1 && (
           <>
-            {/* Single scrollable row (was 2-3 wrapped rows of chips —
-                owner: "spacing wasteful"); swipe sideways for the rest. */}
-            <div className="flex items-center gap-1 mb-1.5 overflow-x-auto scrollbar-none" role="tablist" aria-label="Chart symbol">
-              {chartSymbols.map(sym => (
-                <button
-                  key={sym} type="button" role="tab" aria-selected={sym === symbol}
-                  onClick={() => setSymbol(sym)}
-                  className={`shrink-0 rounded-full px-2 py-0.5 min-h-[26px] text-[11px] font-semibold cursor-pointer ${sym === symbol ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                >{sym}</button>
-              ))}
-            </div>
             {symbol && (
               <PositionChart
                 symbol={symbol}
@@ -332,12 +344,16 @@ export default function Desk() {
         defaultOpen={false}
       >
         {events.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">None yet.</p>}
-        <ul className="text-[12px] space-y-0.5">
+        {/* Plain rows, trader words — status is text with colour, not a pill;
+            the raw machine code stays in the tooltip. */}
+        <ul className="text-[12px]">
           {events.slice(0, 10).map(ev => (
-            <li key={ev.id} className="flex items-center gap-1.5 min-w-0">
-              <Badge tone={ev.approved ? 'up' : 'warning'}>{ev.approved ? 'OK' : 'VETO'}</Badge>
+            <li key={ev.id} className="flex items-baseline gap-1.5 min-w-0 py-px" title={ev.veto_reason || ''}>
+              <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+                {ev.approved ? 'OK' : 'VETO'}
+              </span>
               <span className="font-semibold shrink-0">{ev.symbol}</span>
-              <span className="text-[var(--color-text-sub)] truncate">{ev.veto_reason || ''}</span>
+              <span className="text-[var(--color-text-sub)] truncate">{humanVeto(ev.veto_reason)}</span>
               <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
             </li>
           ))}
@@ -364,23 +380,24 @@ export default function Desk() {
       >
         {!heartbeats && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
         {heartbeats && (
-          <ul className="text-[12px] space-y-0.5">
-            {heartbeats.map(c => (
-              <li key={c.name} className="flex items-center gap-1.5 min-w-0">
-                <Badge tone={c.status === 'ok' ? 'up' : c.status === 'warn' ? 'warning' : c.status === 'idle' ? 'neutral' : 'down'}>
-                  {c.status === 'idle' ? 'IDLE' : c.status.toUpperCase()}
-                </Badge>
-                <span className="font-semibold shrink-0">{c.label}</span>
-                {c.status === 'idle'
-                  ? <span className="text-[var(--color-text-sub)] truncate">never ran (not armed / not applicable)</span>
-                  : <span className="text-[var(--color-text-sub)] truncate">
-                      {c.runs} run{c.runs === 1 ? '' : 's'}
-                      {c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}
-                      {c.last_error && c.consecutive_failures > 0 ? ` · ${c.last_error}` : ''}
-                    </span>}
-                {c.last_run_at && <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(c.last_run_at)}</span>}
-              </li>
-            ))}
+          // Two-column dot grid — half the height of the old pill list; a
+          // healthy controller earns a dot, only trouble earns words.
+          <ul className="text-[12px] grid gap-x-6 sm:grid-cols-2">
+            {heartbeats.map(c => {
+              const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
+              return (
+                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · ${c.runs} runs`}>
+                  <span aria-hidden="true" style={{ color: dot }}>●</span>
+                  <span className="font-semibold shrink-0">{c.label}</span>
+                  {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (
+                    <span className="text-[var(--color-down)] truncate">
+                      {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? ` · ${c.last_error}` : ''}
+                    </span>
+                  )}
+                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{c.status === 'idle' ? 'idle' : ago(c.last_run_at)}</span>
+                </li>
+              )
+            })}
           </ul>
         )}
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
