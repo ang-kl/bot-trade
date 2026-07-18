@@ -111,6 +111,19 @@ export default function Desk() {
     agentPost('/actions/broker-history', { days: 7 })
       .then(bh => setBrokerHistory(bh?.ok ? bh : null))
       .catch(() => {})
+    // Instant paint: the agent's cached snapshot (refreshed ~every 30s by
+    // the monitor) fills the broker sections in milliseconds; the live
+    // fetches above overwrite it the moment the WS answers. `prev ??` makes
+    // sure cache never clobbers live data that already landed.
+    agentGet('/state/broker-cache')
+      .then(bc => {
+        if (bc?.snapshot?.account) {
+          setBroker(prev => prev ?? { ...bc.snapshot.account, _cachedAt: bc.snapshot.fetchedAt })
+          setSymbol(prev => prev || bc.snapshot.account.positions?.[0]?.symbol || '')
+        }
+        if (bc?.history?.ok) setBrokerHistory(prev => prev ?? { ...bc.history, _cachedAt: bc.history.fetchedAt })
+      })
+      .catch(() => {})
     try {
       const [h, s, p, r, atf, c, t, hb, ls, ad, mh] = await Promise.all([
         agentGet('/state/health'),
@@ -305,6 +318,9 @@ export default function Desk() {
         summary={broker?.positions?.length ? `floating ${floating >= 0 ? '+' : ''}${fmt(floating, 2)}` : null}
       >
         {!broker && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
+        {broker?._cachedAt && (
+          <p className="text-[11px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
+        )}
         {(broker?.positions?.length ?? 0) > 0 && (
           <StdTradeTable
             rows={brokerPositionRows(broker.positions, { manageable: true })}
@@ -349,6 +365,9 @@ export default function Desk() {
         defaultOpen={false}
       >
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
+        {brokerHistory?._cachedAt && (
+          <p className="text-[11px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
+        )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
           <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }} />
         )}
