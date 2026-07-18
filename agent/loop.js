@@ -129,7 +129,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // (owner: the Order log drowned in repeat market_closed rows).
     const dedupeKey = `mkt_closed_logged_${symbol}`
     if (getState(db, dedupeKey) !== 'y') {
-      persistRiskEvent(db, { symbol, side, requestedVolume: requestedVol, source: synth.source || 'auto_signal' }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+      // Carry the would-be levels so the order log shows WHAT was refused,
+      // not just why (owner: "where are the TP calculations even in veto").
+      persistRiskEvent(db, {
+        symbol, side,
+        entry: synth.entry ?? null, sl: synth.sl ?? null,
+        tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
+        requestedVolume: requestedVol,
+        strategy: synth.strategy || null,
+        source: synth.source || 'auto_signal',
+      }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
       setState(db, dedupeKey, 'y')
     }
     log(`Auto-trade deferred — ${marketGate.reason}`)

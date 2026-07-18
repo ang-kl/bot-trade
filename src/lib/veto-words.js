@@ -4,15 +4,18 @@
 // stays available for tooltips/debugging.
 
 const RULES = [
-  { re: /^sl_too_tight\s+([\d.]+%)<([\d.]+%)/, out: (m) => `Stop too tight — ${m[1]} vs ${m[2]} min` },
-  { re: /^duplicate_symbol\s+existing_side=(\w+)/, out: (m) => `Already ${m[1]} — one position per symbol` },
-  { re: /^max_positions=(\d+)\/(\d+)/, out: (m) => `Position cap reached (${m[1]}/${m[2]})` },
-  { re: /^loss_streak_cooldown\s+streak=(\d+)\s+wait=(\w+)/, out: (m) => `Cooling off after ${m[1]} straight losses — ${m[2]} left` },
-  { re: /^symbol_cooldown\s+wait=(\w+)/, out: (m) => `Re-entry cooldown — ${m[1]} left` },
+  // Detail groups are OPTIONAL so bare family keys (from the veto-breakdown
+  // endpoint) translate too — "sl_too_tight" alone still reads as words.
+  { re: /^sl_too_tight(?:\s+([\d.]+%)<([\d.]+%))?/, out: (m) => m[1] ? `Stop too tight — ${m[1]} vs ${m[2]} min` : 'Stop too tight' },
+  { re: /^duplicate_symbol(?:\s+existing_side=(\w+))?/, out: (m) => m[1] ? `Already ${m[1]} — one position per symbol` : 'Already in this symbol' },
+  { re: /^max_positions(?:=(\d+)\/(\d+))?/, out: (m) => m[1] ? `Position cap reached (${m[1]}/${m[2]})` : 'Position cap reached' },
+  { re: /^loss_streak_cooldown(?:\s+streak=(\d+)\s+wait=(\w+))?/, out: (m) => m[1] ? `Cooling off after ${m[1]} straight losses — ${m[2]} left` : 'Loss-streak cooldown' },
+  { re: /^symbol_cooldown(?:\s+wait=(\w+))?/, out: (m) => m[1] ? `Re-entry cooldown — ${m[1]} left` : 'Re-entry cooldown' },
+  { re: /^below_min_volume/, out: () => 'Sized below the broker minimum lot' },
   { re: /^symbol_blocked/, out: () => 'Symbol blocked by owner' },
   { re: /^missing_entry_or_sl/, out: () => 'Signal missing entry or stop' },
   { re: /^sl_at_entry/, out: () => 'Stop equals entry — no risk distance' },
-  { re: /^bad_rr\s+([\d.]+)<([\d.]+)/, out: (m) => `Reward:risk ${m[1]} below the ${m[2]} floor` },
+  { re: /^bad_rr(?:\s+([\d.]+)<([\d.]+))?/, out: (m) => m[1] ? `Reward:risk ${m[1]} below the ${m[2]} floor` : 'Reward:risk below the floor' },
   { re: /^overexposed_(\w+)/, out: (m) => `Currency exposure cap hit (${m[1]})` },
   { re: /^insufficient_equity/, out: () => 'Sized below the broker minimum lot' },
   { re: /^negative_expectancy/, out: () => 'Negative expectancy — Kelly says no' },
