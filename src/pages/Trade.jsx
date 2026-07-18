@@ -334,27 +334,23 @@ export default function Trade() {
     <div className="space-y-4">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
-      {/* ONE status strip (owner: Desk's first section said the same thing
-          twice). Desk owns the goal/scope prose; Trade keeps a dot-text line
-          plus the page's ACTIONS. Guidance appears only when NOT ready. */}
+      {/* ONE card, ACCOUNT line first (owner spec): row 1 = who/where the
+          money is + agent vitals + the page's actions; row 2 = trading
+          status/scope. Guidance appears only when NOT ready. */}
       <Card>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
-          <span className="font-semibold whitespace-nowrap">
-            <span aria-hidden="true" style={{ color: !health ? 'var(--color-down)' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
-            {!health ? 'Agent offline' : health.autotradeEnabled ? 'Quant trading ACTIVE' : 'Autotrade OFF'}
+          {health?.broker?.accountId
+            ? <span className="font-semibold whitespace-nowrap">
+                Account: <span className={health.broker.isLive ? 'text-[var(--color-down)]' : ''}>{health.broker.isLive ? '⚠ LIVE' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}</span>
+              </span>
+            : <span className="font-semibold whitespace-nowrap text-[var(--color-text-sub)]">No account linked</span>}
+          {account?.balance != null && (
+            <span className="font-semibold whitespace-nowrap">${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}</span>
+          )}
+          <span className="text-[var(--color-text-sub)] whitespace-nowrap">
+            <span aria-hidden="true" style={{ color: health ? 'var(--color-accent)' : 'var(--color-down)' }}>● </span>
+            {health ? `agent ok · loop #${fmt(health.loopCount, 0)} · scan ${ago(health.lastScanAt)}` : 'agent offline'}
           </span>
-          {health?.broker?.accountId && (
-            <span className={`font-semibold whitespace-nowrap ${health.broker.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
-              {health.broker.isLive ? '⚠ LIVE' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}
-            </span>
-          )}
-          {account?.balance != null && <span className="font-semibold whitespace-nowrap">${fmt(account.balance, 2)}</span>}
-          {health?.autotradeEnabled && (
-            <span className="text-[var(--color-text-sub)] whitespace-nowrap">
-              scope: {scope === 'all' ? 'full watchlist' : 'armed combos'}{pending?.enabled ? ' · pending armed' : ''} — goal on <NavTab to="/">Desk</NavTab>
-            </span>
-          )}
-          <span className="text-[var(--color-text-sub)] whitespace-nowrap">scan {ago(health?.lastScanAt)}</span>
           {Number(health?.errorsToday) > 0 && <span className="text-[var(--color-warning-text)] whitespace-nowrap">{fmt(health.errorsToday, 0)} errors today</span>}
           {health?.circuitBreaker && <span className="text-[var(--color-down)] font-semibold">BREAKER TRIPPED</span>}
           <span className="ml-auto flex gap-2">
@@ -373,6 +369,18 @@ export default function Trade() {
               onClick={() => { if (window.confirm('Close ALL open positions at market?')) act('kill', '/actions/kill-all') }}
             >Kill all</Button>
           </span>
+        </div>
+        {/* Row 2 — trading status/scope under the account line */}
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+          <span className="font-semibold whitespace-nowrap">
+            <span aria-hidden="true" style={{ color: !health ? '#94a3b8' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
+            {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Quant trading ACTIVE' : 'Autotrade OFF'}
+          </span>
+          {health?.autotradeEnabled && (
+            <span className="text-[var(--color-text-sub)] whitespace-nowrap">
+              scope: {scope === 'all' ? 'full watchlist' : 'armed combos'}{pending?.enabled ? ' · pending armed' : ''} — goal on <NavTab to="/">Desk</NavTab>
+            </span>
+          )}
         </div>
         {/* Next-step guide ONLY while something is missing */}
         {(!health || !health.broker?.linked || !health.autotradeEnabled) && (
