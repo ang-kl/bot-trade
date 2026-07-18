@@ -334,7 +334,18 @@ export default function Desk() {
       <Section
         id="closed7d"
         title="Closed at the broker — 7 days"
-        summary={brokerHistory?.realized != null ? `realised ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals` : null}
+        summary={(() => {
+          if (brokerHistory?.realized == null) return null
+          let s2 = `realised ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
+          // Best/worst contributor — the read a CTO wants before the rows.
+          const rows2 = (brokerHistory.rows || []).filter(d => d.netPnl != null)
+          if (rows2.length >= 2) {
+            const best = rows2.reduce((a, b) => (b.netPnl > a.netPnl ? b : a))
+            const worst = rows2.reduce((a, b) => (b.netPnl < a.netPnl ? b : a))
+            s2 += ` · best ${best.symbol} +${fmt(Math.abs(best.netPnl), 2)} · worst ${worst.symbol} −${fmt(Math.abs(worst.netPnl), 2)}`
+          }
+          return s2
+        })()}
         defaultOpen={false}
       >
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}

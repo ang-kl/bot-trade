@@ -126,6 +126,95 @@ function TimeframePerformance({ timeframes }) {
 }
 
 // ---------------------------------------------------------------------------
+// Strategy × timeframe performance — the RECONCILED grid (owner: "timeframe
+// performance doesn't tally with the stage matrix"): ONE shared window,
+// closed trades only, strategy rows × timeframe columns, so every number in
+// the grid sums to the same total. Unlabelled/unknown get their own bucket.
+// ---------------------------------------------------------------------------
+function StrategyTfPerformance() {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem('tune_stf_open') === '1' } catch { return false }
+  })
+  const [grid, setGrid] = useState(null)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    agentGet('/state/strategy-tf-performance?days=30')
+      .then(d => { if (alive) { setGrid(d); setErr(d?.error || null) } })
+      .catch(e => { if (alive) setErr(e.message) })
+    return () => { alive = false }
+  }, [open])
+
+  const toggle = () => setOpen(o => {
+    const next = !o
+    try { localStorage.setItem('tune_stf_open', next ? '1' : '0') } catch { /* private mode */ }
+    return next
+  })
+  const money = (v) => `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}`
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button" onClick={toggle} aria-expanded={open}
+        className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
+      >
+        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        Strategy × timeframe performance
+        <span className="font-normal">— closed trades, ONE 30-day window on both axes: the reconciled view</span>
+      </button>
+      {open && (
+        <div className="mt-1.5 overflow-x-auto">
+          {err && <div className="text-[12px] text-[var(--color-down)]">Could not load: {err}</div>}
+          {!err && !grid && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
+          {!err && grid && (
+            <>
+              <table className="w-auto text-[12px] tabular-nums">
+                <thead>
+                  <tr className="text-left text-[var(--color-text-sub)]">
+                    <th className="py-0.5 pr-3 font-semibold">Strategy</th>
+                    {grid.timeframes.map(tf => <th key={tf} className="py-0.5 px-2 font-semibold text-right whitespace-nowrap">{tf}</th>)}
+                    <th className="py-0.5 pl-3 font-semibold text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {grid.strategies.map(s => (
+                    <tr key={s.strategy} className="border-t border-[var(--color-border)]">
+                      <td className="py-1 pr-3 font-semibold whitespace-nowrap">{s.strategy}</td>
+                      {grid.timeframes.map(tf => {
+                        const c = s.cells[tf]
+                        return (
+                          <td key={tf} className="py-1 px-2 text-right whitespace-nowrap" title={c ? `${c.n} trades · ${c.winRate}% wins` : ''}>
+                            {c
+                              ? <><span className="text-[var(--color-text-sub)]">{c.n}·</span><span className={`font-semibold ${c.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(c.net)}</span></>
+                              : <span className="text-[var(--color-text-sub)]">—</span>}
+                          </td>
+                        )
+                      })}
+                      <td className="py-1 pl-3 text-right whitespace-nowrap">
+                        <span className="text-[var(--color-text-sub)]">{s.total.n}·</span>
+                        <span className={`font-semibold ${s.total.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(s.total.net)}</span>
+                      </td>
+                    </tr>
+                  ))}
+                  {grid.strategies.length === 0 && (
+                    <tr><td className="py-1.5 text-[var(--color-text-sub)]" colSpan={grid.timeframes.length + 2}>No closed trades in the last {grid.days} days.</td></tr>
+                  )}
+                </tbody>
+              </table>
+              <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                Cell = trades · net P&L, {grid.days}d window, hover for win rate. Grid total {grid.total_closed} = every closed trade once — nothing double-counted or dropped.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Strategy × stage matrix — the Pipeline control table. Columns are the four
 // pipeline stages (Scan / Back Test / Auto Trade & Open / Live Tweak & Close);
 // rows are the registry strategies with the fib confluence filters beneath.
@@ -632,6 +721,7 @@ export default function Tune() {
     return next
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
+  const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
   const [monOvDraft, setMonOvDraft] = useState({ symbol: '', minutes: '' }) // per-symbol monitor override editor
@@ -762,6 +852,8 @@ export default function Tune() {
     }).catch(() => {})
     // Dynamic per-symbol lot sizing — same math as the live risk gate.
     agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
+    // Live per-symbol results — evidence beside the config (owner order).
+    agentGet('/state/watchlist-stats').then(r => setWlStats(r || null)).catch(() => {})
   }, [tab])
 
   // Profit Keeper policy — loaded once; updates flow through the POST replies.
@@ -1371,6 +1463,7 @@ export default function Tune() {
                 </span>
               </div>
               <TimeframePerformance timeframes={timeframes} />
+              <StrategyTfPerformance />
             </div>
           </div>
         )}
@@ -1581,6 +1674,20 @@ export default function Tune() {
                         : <span className="text-[var(--color-text-sub)]">—</span>}
                     </td>
                     <td className="pr-2 text-[12px] tabular-nums text-center">{tested != null ? tested : '—'}</td>
+                    {/* Live results — closed trades · net · win rate; LOSER
+                        flag once the sample is big enough and net < 0. */}
+                    <td className="pr-2 text-[12px] tabular-nums whitespace-nowrap">
+                      {(() => {
+                        const st = wlStats?.by?.[String(s.symbol).toUpperCase()]
+                        if (!st) return <span className="text-[var(--color-text-sub)]">—</span>
+                        return (
+                          <span title={`${st.n} closed trades · net ${st.net >= 0 ? '+' : ''}${st.net} · ${st.winRate}% wins${st.loser ? ` — net negative after ${wlStats.min_n}+ trades` : ''}`}>
+                            {st.n} · <span className={`font-semibold ${st.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{st.net >= 0 ? '+' : ''}{st.net}</span> · {st.winRate}%
+                            {st.loser && <span className="ml-1 text-[10px] font-bold text-[var(--color-down)]">LOSER</span>}
+                          </span>
+                        )
+                      })()}
+                    </td>
                     <td
                       className="pr-2 text-[12px] tabular-nums whitespace-nowrap"
                       title={prev?.usdPerLot != null
@@ -1637,6 +1744,7 @@ export default function Tune() {
                         <th className="pr-2 pb-1 font-semibold">Scanned</th>
                         <th className="pr-2 pb-1 font-semibold">Live signal</th>
                         <th className="pr-2 pb-1 font-semibold text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
+                        <th className="pr-2 pb-1 font-semibold" title="LIVE closed trades on this account: count · net P&L · win rate. LOSER = net negative after enough sample — consider disabling">Live results</th>
                         <th className="pr-2 pb-1 font-semibold" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
                         <th className="pr-2 pb-1 font-semibold" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
                         <th className="pb-1 font-semibold">Actions</th>
@@ -1654,7 +1762,7 @@ export default function Tune() {
                         return (
                           <Fragment key={`band:${key}`}>
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={8} className="py-1.5">
+                              <td colSpan={9} className="py-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
                                     type="button" onClick={() => toggleBand(key)} aria-expanded={bandOpen}
@@ -1684,7 +1792,7 @@ export default function Tune() {
                         <Fragment key="band:__singles__">
                           {groupOf.size > 0 && (
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={8} className="py-1.5">
+                              <td colSpan={9} className="py-1.5">
                                 <button
                                   type="button" onClick={() => toggleBand('__singles__')} aria-expanded={openBands.has('__singles__')}
                                   className="flex items-center gap-1.5 font-bold cursor-pointer"
