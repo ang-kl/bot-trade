@@ -95,7 +95,9 @@ function pendingOrderRows(orders) {
 }
 
 // External (non-bot) broker positions → the standard shape; observed only.
-function externalPositionRows(positions) {
+// prices (latest scan close per symbol) light up the To TP/SL distance —
+// the owner's own trades deserve the same live protection read.
+function externalPositionRows(positions, prices = {}) {
   return positions.map(p => ({
     id: `ext-${p.id}`,
     at: p.opened_at || p.created_at || null,
@@ -107,8 +109,9 @@ function externalPositionRows(positions) {
     entry: p.entry_price,
     sl: p.current_sl ?? null,
     tp: p.current_tp ?? null,
+    current: Number(prices[String(p.symbol).toUpperCase()]) || null,
     reason: 'observed, not managed',
-    chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price } },
+    chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp } },
   }))
 }
 
@@ -301,6 +304,7 @@ export default function Trade() {
   const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
   const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
 
+  const [orderOpen, setOrderOpen] = useState(false)
   const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
   const [orderResult, setOrderResult] = useState(null)
   const [placing, setPlacing] = useState(false)
@@ -436,43 +440,60 @@ export default function Trade() {
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
-      {/* Manual order — ONE compact row (owner): placeholders instead of
-          stacked labels, tight side toggle. Same risk gate as the bot. */}
-      <Card>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <h2 className="text-[13px] font-semibold mr-1 whitespace-nowrap">Manual order</h2>
-          <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))}
-            placeholder="Symbol" aria-label="Symbol" className="w-24 text-[12px]" />
-          <datalist id="watchlist-symbols">
-            {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
-          </datalist>
-          <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
-            {['BUY', 'SELL'].map(s => (
-              <button key={s} type="button" role="radio" aria-checked={order.side === s} onClick={() => setOrder(o => ({ ...o, side: s }))}
-                className={`px-2.5 py-1.5 text-[12px] font-semibold cursor-pointer ${
-                  order.side === s
-                    ? (s === 'BUY' ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-down)] text-white')
-                    : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
-                }`}>{s}</button>
-            ))}
-          </div>
-          <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))}
-            placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-24 text-[12px]" />
-          <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))}
-            placeholder="SL — required" aria-label="Stop loss price (required)" className="w-28 text-[12px]" />
-          <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
-            placeholder="TP" aria-label="Take profit price (optional)" className="w-24 text-[12px]" />
-          <Button size="sm" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}
-            title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
-            {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
-          </Button>
-        </div>
-        {orderResult && (
-          <div className={`mt-1.5 text-[12px] font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
-            {orderResult.ok ? `Filled — ${orderResult.text}` : orderResult.text}
+      {/* Manual order — a FAB bottom-left (owner spec): the form floats
+          above the button on demand instead of occupying a page section. */}
+      <div className="fixed bottom-4 left-4 z-40">
+        {orderOpen && (
+          <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] shadow-xl">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-[13px] font-semibold">Manual order</h2>
+              <Button size="sm" variant="ghost" onClick={() => setOrderOpen(false)}>✕</Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))}
+                placeholder="Symbol" aria-label="Symbol" className="w-[120px] text-[12px]" />
+              <datalist id="watchlist-symbols">
+                {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
+              </datalist>
+              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
+                {['BUY', 'SELL'].map(s => (
+                  <button key={s} type="button" role="radio" aria-checked={order.side === s} onClick={() => setOrder(o => ({ ...o, side: s }))}
+                    className={`px-2.5 py-1.5 text-[12px] font-semibold cursor-pointer ${
+                      order.side === s
+                        ? (s === 'BUY' ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-down)] text-white')
+                        : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
+                    }`}>{s}</button>
+                ))}
+              </div>
+              <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))}
+                placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-[120px] text-[12px]" />
+              <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))}
+                placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-[12px]" />
+              <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
+                placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-[12px]" />
+              <Button size="sm" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}
+                className="w-full" title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
+                {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
+              </Button>
+            </div>
+            {orderResult && (
+              <div className={`mt-1.5 text-[12px] font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
+                {orderResult.ok ? `Filled — ${orderResult.text}` : orderResult.text}
+              </div>
+            )}
           </div>
         )}
-      </Card>
+        <button
+          type="button"
+          aria-expanded={orderOpen}
+          aria-label="Manual order"
+          title="Manual order — same risk gate as the bot"
+          onClick={() => setOrderOpen(o => !o)}
+          className="h-12 w-12 rounded-full bg-[var(--color-accent)] text-white text-[22px] font-bold shadow-lg cursor-pointer flex items-center justify-center"
+        >
+          {orderOpen ? '×' : '+'}
+        </button>
+      </div>
 
       {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}
       {broker && ((broker.pendingOrders?.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
@@ -515,7 +536,7 @@ export default function Trade() {
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <StdTradeTable rows={externalPositionRows(broker.externalPositions)} countLabel="external positions" marketHours={marketHours} />
+              <StdTradeTable rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="external positions" marketHours={marketHours} />
             </div>
           )}
         </Card>
