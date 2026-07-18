@@ -17,7 +17,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
-import { brokerPositionRows, brokerOrderRows, brokerDealRows } from '../lib/std-trade-rows.js'
+import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 
 const REFRESH_MS = 20_000
 
@@ -30,7 +30,9 @@ const STRAT_SHORT = {
   donchian_breakout: 'BRK',
   rsi_meanrev: 'RSI',
 }
-const fmt = (v, d = 4) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d }))
+// No-digits calls are PRICES (scale-aware canonical dp); explicit digits
+// are money/counts and keep exactly what the caller asked for.
+const fmt = (v, d) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d ?? priceDp(v) }))
 
 function ago(iso) {
   if (!iso) return ''

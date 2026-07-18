@@ -10,14 +10,16 @@ import Button from '../components/common/Button.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
-import { brokerPositionRows, brokerOrderRows } from '../lib/std-trade-rows.js'
+import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 30_000
 
-function fmt(n, digits = 4) {
+// No-digits calls are PRICES (scale-aware canonical dp); explicit digits
+// are money/counts and keep exactly what the caller asked for.
+function fmt(n, digits) {
   if (n == null || Number.isNaN(Number(n))) return '—'
-  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits })
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits ?? priceDp(n) })
 }
 
 function AccountCard({ acct, defaultOpen, marketHours, onChanged }) {

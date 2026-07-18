@@ -19,7 +19,7 @@ import { Fragment, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
-import { dateTimeParts, nextOpenLabel, PRICE_DP } from '../lib/std-trade-rows.js'
+import { dateTimeParts, nextOpenLabel, priceDp } from '../lib/std-trade-rows.js'
 
 const PAGE = 8
 const COL1_W = 76 // px — frozen date/time column; col 2 offset builds on it
@@ -39,7 +39,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
 
   if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
 
-  const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: PRICE_DP }))
+  const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
