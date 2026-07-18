@@ -1,5 +1,8 @@
 // THE standard trade table (owner: the Order log's table and columns are the
 // standard for every trade/pending-trade list — Trade, Desk, and Accounts).
+// Columns: Time | Symbol | Result | Reason | Source | Side | Qty | Entry |
+// Stop Loss | Take Profit | P&L | To TP/SL | Actions — the Reason (the WHY)
+// sits right beside the Result verdict (owner spec).
 // TradingView-style: fixed header, right-aligned tabular numerics,
 // Long/Short coloured, sideways scroll with the first two columns
 // (date/time, symbol) FROZEN, 8-row pagination, expandable chart row.
@@ -53,6 +56,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>Time</th>
               <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>Symbol</th>
               <th className="py-1.5 pr-3 font-semibold">Result</th>
+              <th className="py-1.5 pr-3 font-semibold">Reason</th>
               <th className="py-1.5 pr-3 font-semibold">Source</th>
               <th className="py-1.5 pr-3 font-semibold">Side</th>
               <th className="py-1.5 pr-3 font-semibold text-right">Qty</th>
@@ -61,7 +65,6 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
               <th className="py-1.5 pr-3 font-semibold text-right">P&amp;L</th>
               <th className="py-1.5 pr-3 font-semibold text-right">To TP/SL</th>
-              <th className="py-1.5 pr-3 font-semibold">Reason</th>
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
           </thead>
@@ -108,6 +111,11 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       )}
                     </td>
                     <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
+                    {/* Reason rides right after the result (owner: the WHY
+                        belongs beside the verdict, not at the far end). */}
+                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
+                      {r.reason || '—'}
+                    </td>
                     <td className="py-1.5 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
                     <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.side ? (long ? 'Long' : 'Short') : '—'}
@@ -152,9 +160,6 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         : slDist != null
                           ? <span className="text-[var(--color-down)]">SL {num(Math.max(0, slDist))}</span>
                           : '—'}
-                    </td>
-                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
-                      {r.reason || '—'}
                     </td>
                     <td className="py-1.5 whitespace-nowrap">
                       {r.chart && (

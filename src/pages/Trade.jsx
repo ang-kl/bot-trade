@@ -8,10 +8,10 @@ import Input from '../components/common/Input.jsx'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { tpLadder } from '../lib/tp-ladder.js'
-import PositionChart from '../components/PositionChart.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import { toMs, priceDp } from '../lib/std-trade-rows.js'
+import { humanVeto } from '../lib/veto-words.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -112,53 +112,41 @@ function externalPositionRows(positions) {
   }))
 }
 
-// One closed/attempted trade row. UNCONFIRMED = the bot sent an order but
-// recorded no broker fill price — until reconciled, treat it as NOT a trade
-// (the truthful reading of a null entry on a rejected-order era row).
-function TradeRow({ t }) {
-  const [showChart, setShowChart] = useState(false)
-  const rejected = t.status === 'rejected'
-  const unconfirmed = !rejected && t.entry_price == null
-  return (
-    <li className="border-t border-[var(--color-border)] pt-1 first:border-t-0 first:pt-0">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold">{t.symbol}</span>
-        <span className="text-[var(--color-text-sub)]">{String(t.side || '').toUpperCase()}</span>
-        {rejected
-          ? <Badge tone="warning">✗ REJECTED — broker has no record (reconciled)</Badge>
-          : unconfirmed
-          ? <Badge tone="warning">✗ UNCONFIRMED — no broker fill recorded</Badge>
-          : (
-            <>
-              <span className="text-[var(--color-text-sub)]">in {fmt(t.entry_price)}{t.exit_price != null ? ` → out ${fmt(t.exit_price)}` : ''}</span>
-              <Badge tone={(t.net_pnl ?? 0) >= 0 ? 'up' : 'down'}>{t.net_pnl != null ? `${t.net_pnl >= 0 ? '+' : ''}${fmt(t.net_pnl, 2)}` : t.status}</Badge>
-            </>
-          )}
-        <span className="text-[var(--color-text-sub)]">SL {fmt(t.sl_price)} · TP {fmt(t.tp_price)}</span>
-        {t.close_reason && <span className="text-[var(--color-text-sub)]">({t.close_reason})</span>}
-        <span className="ml-auto flex items-center gap-2">
-          <span className="text-[var(--color-text-sub)]">{ago(t.closed_at || t.opened_at)}</span>
-          <Button size="sm" variant="ghost" onClick={() => setShowChart(v => !v)}>{showChart ? 'Hide' : 'Chart'}</Button>
-        </span>
-      </div>
-      {unconfirmed && (
-        <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
-          The order was sent but no execution price came back from cTrader — tap "Reconcile with broker" above to settle it against the broker's deal history.
-        </p>
-      )}
-      {showChart && (
-        <div className="py-2">
-          <PositionChart
-            symbol={t.symbol}
-            timeframe={t.label_timeframe || '1h'}
-            lines={{ entry: t.entry_price, sl: t.sl_price, tp: t.tp_price }}
-            at={toMs(t.closed_at || t.opened_at)}
-            markers={{ entryT: toMs(t.opened_at), exitT: toMs(t.closed_at) }}
-          />
-        </div>
-      )}
-    </li>
-  )
+// Recent BOT trades → the standard shape (owner: "Recent trades follows the
+// same table structure as the order log"). REJECTED = broker has no record
+// (reconciled); UNCONFIRMED = order sent but no fill recorded yet.
+function closedTradeRows(trades) {
+  return trades.map(t => {
+    const rejected = t.status === 'rejected'
+    const unconfirmed = !rejected && t.entry_price == null
+    return {
+      id: `tr-${t.id}`,
+      at: t.closed_at || t.opened_at,
+      symbol: t.symbol,
+      result: rejected ? { text: 'REJECTED', tone: 'warning' }
+        : unconfirmed ? { text: 'UNCONFIRMED', tone: 'warning' }
+        : t.status === 'open' ? { text: 'OPEN', tone: 'info' }
+        : { text: 'CLOSED', tone: (Number(t.net_pnl) || 0) >= 0 ? 'up' : 'down' },
+      source: { text: ATTEMPT_SOURCE[t.source] || (t.source ? String(t.source).toUpperCase() : 'AUTO'), tone: t.source === 'validation_fill' ? 'special' : 'neutral' },
+      side: String(t.side || '').toUpperCase() || null,
+      qty: t.volume,
+      entry: t.entry_price,
+      sl: t.sl_price,
+      tp: t.tp_price,
+      tps: tpLadder(t.tp_price, t.tp2_price, t.volume, { scaledOut: !!t.scaled_out }),
+      pnl: rejected || unconfirmed ? null : t.net_pnl ?? null,
+      reason: rejected ? 'broker has no record (reconciled)'
+        : unconfirmed ? 'no broker fill recorded — tap Reconcile above'
+        : [t.exit_price != null ? `out ${fmt(t.exit_price)}` : null, t.close_reason || null].filter(Boolean).join(' · '),
+      chart: {
+        symbol: t.symbol,
+        timeframe: t.label_timeframe || '1h',
+        lines: { entry: t.entry_price, sl: t.sl_price, tp: t.tp_price },
+        at: toMs(t.closed_at || t.opened_at),
+        markers: { entryT: toMs(t.opened_at), exitT: toMs(t.closed_at) },
+      },
+    }
+  })
 }
 
 // Plain-words strategy names for signal rows (scans.strategy).
@@ -200,7 +188,9 @@ function OrderLogTable({ rows, marketHours = null }) {
       sl: prop?.sl,
       tp: prop?.tp1,
       tps: tpLadder(prop?.tp1, prop?.tp2, prop?.requestedVolume),
-      reason: ev.veto_reason || ev.sizing_note || '',
+      // Trader words up front; the raw machine code stays in the tooltip.
+      reason: humanVeto(ev.veto_reason) || ev.sizing_note || '',
+      reasonTitle: ev.veto_reason || ev.sizing_note || '',
       chart: prop
         ? {
             symbol: ev.symbol,
@@ -229,6 +219,7 @@ export default function Trade() {
   const [pending, setPending] = useState(null)  // { enabled, matrix } — resting-limit pending-order mode
   const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
   const [marketHours, setMarketHours] = useState(null) // { SYM: { open, next_open_at } }
+  const [vetoBd, setVetoBd] = useState(null)    // veto-reason breakdown for the order-log insight
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -265,6 +256,8 @@ export default function Trade() {
     } catch (e) {
       setError(e.message)
     }
+    // Order-log insight: WHY the vetoes, grouped — non-blocking.
+    agentGet('/state/veto-breakdown?days=7').then(setVetoBd).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -543,9 +536,7 @@ export default function Trade() {
           </div>
           {reconcileNote && <p className="text-[12px] text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
           {trades.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>}
-          <ul className="space-y-1 text-[13px]">
-            {trades.map(t => <TradeRow key={t.id} t={t} />)}
-          </ul>
+          {trades.length > 0 && <StdTradeTable rows={closedTradeRows(trades)} countLabel="trades" marketHours={marketHours} />}
         </Card>
 
         {/* Order log — the audit trail the owner asked for: EVERY order
@@ -586,6 +577,17 @@ export default function Trade() {
               Download my action log
             </Button>
           </div>
+          {/* WHY the vetoes — the insight before the rows. Every veto is the
+              AUTO-SCAN proposing a trade and the risk gate refusing it: that
+              is the system protecting the account, not failing. */}
+          {vetoBd && (vetoBd.vetoes?.length > 0 || vetoBd.ok > 0) && (
+            <p className="mb-2 text-[12px] text-[var(--color-text-sub)]">
+              Last {vetoBd.days}d: {vetoBd.ok} approved · {vetoBd.vetoes.reduce((s, v) => s + v.count, 0)} vetoed.
+              Vetoes are the auto-scan's proposals refused by the risk gate — top reasons:{' '}
+              {vetoBd.vetoes.slice(0, 3).map(v => `${humanVeto(v.reason)} ×${v.count}`).join(' · ') || '—'}.
+              {vetoBd.vetoes[0]?.reason === 'market_closed' && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
+            </p>
+          )}
           <OrderLogTable rows={riskEvents} marketHours={marketHours} />
         </Card>
       </div>
