@@ -638,6 +638,67 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/watchlist-stats — LIVE per-symbol results for the Watchlist
+  // table: closed trades, net P&L, win rate, and a loser flag once a symbol
+  // has enough sample (n >= min_n) and is net negative. The watchlist stays
+  // configuration — this is the evidence beside it.
+  // -----------------------------------------------------------------------
+  router.get('/watchlist-stats', (_req, res) => {
+    try {
+      const MIN_N = 10
+      const rows = db.prepare(
+        `SELECT UPPER(symbol) AS sym, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
+         FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL GROUP BY UPPER(symbol)`
+      ).all()
+      const by = {}
+      for (const r of rows) {
+        by[r.sym] = {
+          n: r.n,
+          net: r.net,
+          winRate: r.n ? Math.round((r.wins / r.n) * 100) : null,
+          loser: r.n >= MIN_N && r.net < 0,
+        }
+      }
+      res.json({ min_n: MIN_N, by })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/strategy-tf-performance?days=30 — the RECONCILED grid the
+  // owner asked for: strategy × timeframe, ONE shared window, closed trades
+  // only. Unlabelled trades and unknown timeframes get their own row/column
+  // instead of vanishing, so the grid total always equals the trade count.
+  // -----------------------------------------------------------------------
+  router.get('/strategy-tf-performance', (req, res) => {
+    try {
+      const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30))
+      const rows = db.prepare(
+        `SELECT COALESCE(label_strategy, strategy, 'unlabelled') AS strat,
+                COALESCE(label_timeframe, '—') AS tf,
+                COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
+         FROM trades
+         WHERE status = 'closed' AND net_pnl IS NOT NULL AND closed_at >= datetime('now', ?)
+         GROUP BY strat, tf`
+      ).all(`-${days} days`)
+      const tfSet = new Set()
+      const byStrat = {}
+      let total = 0
+      for (const r of rows) {
+        tfSet.add(r.tf)
+        total += r.n
+        const s = (byStrat[r.strat] ??= { strategy: r.strat, cells: {}, total: { n: 0, net: 0 } })
+        s.cells[r.tf] = { n: r.n, net: r.net, winRate: r.n ? Math.round((r.wins / r.n) * 100) : null }
+        s.total.n += r.n
+        s.total.net = Math.round((s.total.net + r.net) * 100) / 100
+      }
+      const ms = (tf) => { const m = String(tf).match(/^(\d+(?:\.\d+)?)(m|h|d|w|mo)$/); return m ? Number(m[1]) * { m: 1, h: 60, d: 1440, w: 10080, mo: 43200 }[m[2]] : Infinity }
+      const timeframes = [...tfSet].sort((a, b) => ms(a) - ms(b))
+      const strategies = Object.values(byStrat).sort((a, b) => b.total.n - a.total.n)
+      res.json({ days, total_closed: total, timeframes, strategies })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/profit-keeper — the automatic profit-protection policy
   // -----------------------------------------------------------------------
   router.get('/profit-keeper', (_req, res) => {
