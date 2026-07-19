@@ -43,6 +43,29 @@ async function hbeat(db, name, ok = true, error = null) {
   } catch { /* heartbeat is observability — never fatal */ }
 }
 
+// Telegram veto alerts, deduped: the scan re-proposes the same trade every
+// loop, so an unchanged veto (same symbol+side+reason family) would ping the
+// owner every 5 minutes (owner hit this at Monday open: duplicate_symbol ×3
+// symbols × every loop). Alert once per family, re-alert after 6h or when
+// the reason changes. Text goes through the shared trader-word humanizer —
+// also fixes Telegram's markdown eating snake_case underscores.
+const VETO_ALERT_MUTE_MS = 6 * 3600_000
+async function alertVetoOnce(db, symbol, side, reason, textOverride = null) {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return
+  const family = String(reason || 'veto').split(/[:\s]/)[0] || 'veto'
+  const key = `veto_tg_${symbol}_${side}`
+  try {
+    const prev = JSON.parse(getState(db, key) || 'null')
+    if (prev && prev.family === family && Date.now() - prev.at < VETO_ALERT_MUTE_MS) return
+  } catch { /* treat as fresh */ }
+  setState(db, key, JSON.stringify({ family, at: Date.now() }))
+  try {
+    const { sendMessage } = await import('./services/telegram.js')
+    const { humanVeto } = await import('../src/lib/veto-words.js')
+    await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — ${textOverride || humanVeto(reason)} (repeats muted 6h)`)
+  } catch { /* non-fatal */ }
+}
+
 const MAX_CONSECUTIVE_ERRORS = 10     // hard circuit breaker — loop stops entirely
 const CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000 // 30 min manual reset window
 const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens exceed this
@@ -172,12 +195,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   persistRiskEvent(db, proposal, riskResult)
   if (!riskResult.approved) {
     log(`RISK VETO ${symbol} ${side}: ${riskResult.veto_reason}`)
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-      try {
-        const { sendMessage } = await import('./services/telegram.js')
-        await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — ${riskResult.veto_reason}`)
-      } catch { /* non-fatal */ }
-    }
+    await alertVetoOnce(db, symbol, side, riskResult.veto_reason)
     return null
   }
   const volLots = riskResult.adjusted_volume
@@ -208,12 +226,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`
       persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
       log(`RISK VETO ${symbol} ${side}: ${reason}`)
-      if (process.env.TELEGRAM_BOT_TOKEN) {
-        try {
-          const { sendMessage } = await import('./services/telegram.js')
-          await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — sized volume is below the broker's minimum lot. Raise risk per trade or skip this symbol.`)
-        } catch { /* non-fatal */ }
-      }
+      await alertVetoOnce(db, symbol, side, reason, "sized volume is below the broker's minimum lot. Raise risk per trade or skip this symbol.")
       return null
     }
   } catch (err) {
@@ -272,12 +285,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           const reason = `spread_too_wide: ${spread.toFixed(5)} > ${(riskCfg.maxSpreadFracOfSL * 100).toFixed(0)}% of SL distance ${slDistance.toFixed(5)}`
           persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
           log(`RISK VETO ${symbol} ${side}: ${reason}`)
-          if (process.env.TELEGRAM_BOT_TOKEN) {
-            try {
-              const { sendMessage } = await import('./services/telegram.js')
-              await sendMessage(`🛑 RISK VETO: ${symbol} ${side} — spread too wide (${spread.toFixed(5)} vs SL ${slDistance.toFixed(5)}). Likely off-hours/rollover — the signal stays; it can fire next loop when the spread normalises.`)
-            } catch { /* non-fatal */ }
-          }
+          await alertVetoOnce(db, symbol, side, reason, `spread too wide (${spread.toFixed(5)} vs SL ${slDistance.toFixed(5)}). Likely off-hours/rollover — the signal stays; it can fire next loop when the spread normalises.`)
           return null
         }
       }
