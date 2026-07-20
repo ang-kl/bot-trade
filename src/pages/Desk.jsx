@@ -701,13 +701,13 @@ export default function Desk() {
                 <table className="std-cols w-full text-[12px] tabular-nums">
                   <thead className="text-left text-[var(--color-text-sub)]">
                     <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
-                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
-                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
-                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
-                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
-                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('prior', 'Prior exp.')}</th>
-                      <th className="py-1 font-semibold text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
+                      <th aria-sort={edgeSort.ariaSort('strategy')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
+                      <th aria-sort={edgeSort.ariaSort('trend')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
+                      <th aria-sort={edgeSort.ariaSort('streak')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
+                      <th aria-sort={edgeSort.ariaSort('trades')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
+                      <th aria-sort={edgeSort.ariaSort('recent')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
+                      <th aria-sort={edgeSort.ariaSort('prior')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('prior', 'Prior exp.')}</th>
+                      <th aria-sort={edgeSort.ariaSort('delta')} className="py-1 font-semibold text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -767,11 +767,11 @@ export default function Desk() {
                     <table className="std-cols w-full text-[12px] tabular-nums">
                       <thead className="text-left text-[var(--color-text-sub)]">
                         <tr className="border-b border-[var(--color-border)]">
-                          <th className="py-1 pr-3 font-semibold">{baseSort.sortBtn('combo', 'Combo')}</th>
-                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('trades', 'Trades')}</th>
-                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('pf', 'PF')}</th>
-                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('win', 'Win %')}</th>
-                          <th className="py-1 font-semibold text-right">{baseSort.sortBtn('total', 'Total %')}</th>
+                          <th aria-sort={baseSort.ariaSort('combo')} className="py-1 pr-3 font-semibold">{baseSort.sortBtn('combo', 'Combo')}</th>
+                          <th aria-sort={baseSort.ariaSort('trades')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('trades', 'Trades')}</th>
+                          <th aria-sort={baseSort.ariaSort('pf')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('pf', 'PF')}</th>
+                          <th aria-sort={baseSort.ariaSort('win')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('win', 'Win %')}</th>
+                          <th aria-sort={baseSort.ariaSort('total')} className="py-1 font-semibold text-right">{baseSort.sortBtn('total', 'Total %')}</th>
                         </tr>
                       </thead>
                       <tbody>

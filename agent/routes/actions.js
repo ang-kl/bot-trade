@@ -319,6 +319,25 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/guardian-move-pct — { pct } sets the tick guardian's
+  // significant-move threshold (% of price) that triggers an immediate
+  // position sweep between the normal 30s ticks, instead of the 0.05%
+  // default only ever being changeable via a raw agent_state write. Audit
+  // finding (owner: "audit the last 20 PRs, did you do what I want") — the
+  // guardian's backend logic was always correct, this control just never
+  // had a route/UI in front of it.
+  // -----------------------------------------------------------------------
+  router.post('/guardian-move-pct', (req, res) => {
+    const pct = Number(req.body?.pct)
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 5) {
+      return res.status(400).json({ error: 'pct must be a number between 0 and 5 (percent)' })
+    }
+    setState(db, 'guardian_move_pct', String(pct))
+    console.log(`[actions] guardian move threshold → ${pct}%`)
+    res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/llm-budget — { dailyCapUsd } arms the once-a-day Telegram
   // alert when estimated Anthropic spend crosses the cap. 0/null disarms.
   // -----------------------------------------------------------------------
@@ -1586,9 +1605,23 @@ export default function actionsRouter(db) {
         extraTimeframes,
       }
 
-      // Scan every enabled symbol for a live setup, then rank by conviction.
+      // Scan a batch of enabled symbols, then rank by conviction. Bounded at
+      // 15 per call — this is a synchronous HTTP request, not the
+      // background loop, so scanning a 1900+ symbol watchlist in one shot
+      // would time out the request. A ROTATING batch (own cursor, separate
+      // from the main loop's scan_cursor so a manual burst never perturbs
+      // the loop's own rotation progress) means repeated clicks eventually
+      // cover the whole watchlist instead of always re-scanning the same
+      // first 15 forever — the exact class of bug PR #201 fixed in the main
+      // loop's own scan, audited into this route too (owner: "audit the
+      // last 20 PRs, did you do what I want").
+      const batchSize = 15
+      const cursor = watchlist.length ? Math.max(0, Number(getState(db, 'trade_now_cursor')) || 0) % watchlist.length : 0
+      const batch = [...watchlist.slice(cursor), ...watchlist.slice(0, cursor)].slice(0, batchSize)
+      setState(db, 'trade_now_cursor', String(watchlist.length ? (cursor + batch.length) % watchlist.length : 0))
+
       const candidates = []
-      for (const w of watchlist.slice(0, 15)) {
+      for (const w of batch) {
         const symbolId = map[w.symbol.toUpperCase()]
         if (!symbolId) continue
         try {
