@@ -94,7 +94,7 @@ function TimeframePerformance({ timeframes }) {
           {perfError && <div className="text-[12px] text-[var(--color-down)]">Could not load: {perfError}</div>}
           {!perfError && !perf && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
           {!perfError && perf && (
-            <table className="min-w-full text-[12px]">
+            <table className="std-cols min-w-full text-[12px]">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
                   <th className="py-1 pr-3 font-semibold">Timeframe</th>
@@ -170,7 +170,7 @@ function StrategyTfPerformance() {
           {!err && !grid && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
           {!err && grid && (
             <>
-              <table className="w-auto text-[12px] tabular-nums">
+              <table className="std-cols w-auto text-[12px] tabular-nums">
                 <thead>
                   <tr className="text-left text-[var(--color-text-sub)]">
                     <th className="py-0.5 pr-3 font-semibold">Strategy</th>
@@ -331,7 +331,7 @@ function StageMatrix({ mx, onUpdated, onError }) {
           <div className="mt-1.5 overflow-x-auto">
             {/* w-auto: columns hug their content instead of spreading across
                 the page (owner: "too much white space, squeeze rows/columns"). */}
-            <table className="w-auto text-[12px]">
+            <table className="std-cols w-auto text-[12px]">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
                   <th className="py-0.5 pr-3 font-semibold">Strategy</th>
@@ -1749,7 +1749,7 @@ export default function Tune() {
               }
               return (
                 <div className="overflow-x-auto">
-                  <table className="min-w-full text-[13px]">
+                  <table className="std-cols min-w-full text-[13px]">
                     <thead>
                       <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
                         <th className="pr-2 pb-1 font-semibold">Symbol</th>
@@ -2086,7 +2086,7 @@ export default function Tune() {
                       ? <p className="text-[13px] text-[var(--color-warning-text)]">{sr.error}</p>
                       : (
                         <div className="overflow-x-auto">
-                          <table className="w-full text-[13px]">
+                          <table className="std-cols w-full text-[13px]">
                             <thead className="text-left text-[var(--color-text-sub)]">
                               <tr>
                                 {BT_COLS.map(c => (

@@ -12,6 +12,7 @@ import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import { toMs, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { useSort } from '../lib/use-sort.jsx'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -317,6 +318,10 @@ export default function Trade() {
 
   const signalScans = scans.filter(sc => sc.bias && sc.bias !== 'skip')
   const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
+  // Signals table sorts like every other table — conviction first by default.
+  const sigSort = useSort(signalScans, { key: 'confidence', dir: 'desc' }, {
+    strategy: sc => STRATEGY_NAMES[sc.strategy] || sc.strategy || '',
+  })
 
   const [orderOpen, setOrderOpen] = useState(false)
   const [order, setOrder] = useState({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
@@ -424,12 +429,20 @@ export default function Trade() {
         {signalScans.length === 0 && <div className="mt-1 text-[13px] text-[var(--color-text-sub)]">No active signals right now.</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full text-[13px]">
+            <table className="std-cols w-full text-[13px]">
               <thead className="text-left text-[var(--color-text-sub)]">
-                <tr><th className="pr-3 py-1">Symbol</th><th className="pr-3">Strategy</th><th className="pr-3">Bias</th><th className="pr-3">TF</th><th className="pr-3">Conviction</th><th className="pr-3">Price</th><th>Thesis</th></tr>
+                <tr>
+                  <th className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
+                  <th className="pr-3">{sigSort.sortBtn('strategy', 'Strategy')}</th>
+                  <th className="pr-3">{sigSort.sortBtn('bias', 'Bias')}</th>
+                  <th className="pr-3">{sigSort.sortBtn('timeframe', 'TF')}</th>
+                  <th className="pr-3">{sigSort.sortBtn('confidence', 'Conviction')}</th>
+                  <th className="pr-3">{sigSort.sortBtn('price', 'Price')}</th>
+                  <th>Thesis</th>
+                </tr>
               </thead>
               <tbody>
-                {signalScans.map(sc => (
+                {sigSort.sorted.map(sc => (
                   <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
                     <td className="pr-3 py-1.5 font-semibold">{sc.symbol}</td>
                     <td className="pr-3 whitespace-nowrap">{STRATEGY_NAMES[sc.strategy] || sc.strategy || 'Fib 61.8% fade'}</td>
