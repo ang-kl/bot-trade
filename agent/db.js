@@ -380,6 +380,14 @@ export function initDB(dbPath) {
       ];
       const oldCols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
       const copyCols = TRADES_COLS.filter(c => oldCols.has(c));
+      // legacy_alter_table: modern RENAME rewrites FOREIGN KEY references in
+      // OTHER tables' stored schemas to follow the rename — so renaming
+      // trades away pointed monitored_positions.trade_id at the temp table,
+      // and dropping the temp left the FK dangling ("no such table:
+      // main.trades_pre_rejected_status_migration" on every insert; owner
+      // hit it live via the pending-order manager). Legacy mode renames
+      // ONLY the table itself — exactly right for a rename-as-rebuild.
+      db.pragma('legacy_alter_table = ON');
       db.transaction(() => {
         db.exec('DROP TABLE IF EXISTS trades_pre_rejected_status_migration');
         db.exec('ALTER TABLE trades RENAME TO trades_pre_rejected_status_migration');
@@ -387,6 +395,7 @@ export function initDB(dbPath) {
         db.exec(`INSERT INTO trades (${copyCols.join(', ')}) SELECT ${copyCols.join(', ')} FROM trades_pre_rejected_status_migration`);
         db.exec('DROP TABLE trades_pre_rejected_status_migration');
       })();
+      db.pragma('legacy_alter_table = OFF');
       if (fkWasOn) db.pragma('foreign_keys = ON');
     } catch (err) {
       // Never let a migration failure take the whole server down — the app
@@ -395,6 +404,46 @@ export function initDB(dbPath) {
       // this migration existed) rather than crash-looping on every boot.
       console.error('[db] trades CHECK-constraint migration failed, continuing on existing schema:', err.message);
     }
+  }
+
+  // Repair dangling FK references left by the PRE-legacy_alter_table version
+  // of the migration above: renaming `trades` away rewrote referencing FKs
+  // (monitored_positions.trade_id) to point at the temp table, and dropping
+  // the temp left them dangling — every INSERT into a referencing table then
+  // failed with "no such table: main.trades_pre_rejected_status_migration"
+  // (owner hit 24 straight pending-order-manager failures live). The temp
+  // table never holds anything but a moment-in-time copy of trades, so any
+  // surviving reference to it MEANS trades — rewrite the stored schema text
+  // back. Direct sqlite_master surgery needs defensive mode off (unsafeMode)
+  // and writable_schema; RESET reloads the schema so this connection sees
+  // the fix immediately. Verified by integrity_check before continuing.
+  try {
+    const dangling = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table'
+        AND name != 'trades_pre_rejected_status_migration'
+        AND sql LIKE '%trades_pre_rejected_status_migration%'`
+    ).all();
+    const tempExists = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trades_pre_rejected_status_migration'`
+    ).get();
+    if (dangling.length > 0 && !tempExists) {
+      const fkWasOn = db.pragma('foreign_keys', { simple: true });
+      db.pragma('foreign_keys = OFF');
+      db.unsafeMode(true);
+      db.pragma('writable_schema = ON');
+      db.prepare(
+        `UPDATE sqlite_master
+           SET sql = replace(replace(sql, '"trades_pre_rejected_status_migration"', 'trades'), 'trades_pre_rejected_status_migration', 'trades')
+         WHERE type = 'table' AND sql LIKE '%trades_pre_rejected_status_migration%'`
+      ).run();
+      db.pragma('writable_schema = RESET');
+      db.unsafeMode(false);
+      if (fkWasOn) db.pragma('foreign_keys = ON');
+      const integrity = db.pragma('integrity_check', { simple: true });
+      console.log(`[db] repaired dangling trades-migration FK reference in: ${dangling.map(d => d.name).join(', ')} (integrity: ${integrity})`);
+    }
+  } catch (err) {
+    console.error('[db] dangling-FK repair failed, continuing:', err.message);
   }
 
   // In-place migrations for pre-existing DBs

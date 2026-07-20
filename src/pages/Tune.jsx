@@ -1284,6 +1284,21 @@ export default function Tune() {
                 }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
               }} />
             </div>
+            {/* Session-open guard — owner: "when markets open, XAUUSD went
+                from profit to loss $333" → lock breakeven on open-window
+                profit the normal +0.7R ladder hasn't reached yet. */}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.session_open_guard?.on !== false} label="Session-open guard" onClick={() => {
+                const next = !(config?.session_open_guard?.on !== false)
+                run(async () => {
+                  const r = await agentPost('/actions/session-open-guard', { on: next })
+                  setConfig(c => ({ ...c, session_open_guard: r }))
+                }, `Session-open guard ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                first {config?.session_open_guard?.windowMin ?? 30}m after a major session opens (Tokyo/London/NY…), any bot position already up ≥ {config?.session_open_guard?.minR ?? 0.3}R gets its SL locked to breakeven — opens are where reversals hit hardest
+              </span>
+            </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
               <span className="font-semibold">Position monitor:</span>
               {[1, 2, 3, 5].map(m => (
