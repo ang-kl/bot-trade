@@ -84,6 +84,7 @@ export default function Desk() {
   const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
   const [capNote, setCapNote] = useState('')
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
+  const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
   const [gridN, setGridN] = useState(() => {
@@ -105,9 +106,13 @@ export default function Desk() {
     agentPost('/actions/broker-positions', { selectedOnly: true })
       .then(b => {
         setBroker(b?.accounts?.[0] ?? null)
+        setBrokerErr('')
         setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || '')
       })
-      .catch(() => {})
+      // A failed LIVE refresh must be loud — silently keeping the cached
+      // snapshot made the Desk look current while showing Friday's data
+      // (owner hit this Monday morning). The interval retries every cycle.
+      .catch(e => setBrokerErr(`live broker refresh failed: ${e.message} — retrying`))
     agentPost('/actions/broker-history', { days: 7 })
       .then(bh => setBrokerHistory(bh?.ok ? bh : null))
       .catch(() => {})
@@ -321,6 +326,7 @@ export default function Desk() {
         {broker?._cachedAt && (
           <p className="text-[11px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
+        {brokerErr && <p className="text-[11px] text-[var(--color-warning-text)]">{brokerErr}</p>}
         {(broker?.positions?.length ?? 0) > 0 && (
           <StdTradeTable
             rows={brokerPositionRows(broker.positions, { manageable: true })}
