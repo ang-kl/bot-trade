@@ -24,6 +24,7 @@ import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
 
 const REFRESH_MS = 20_000
+const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
 
 // Short strategy tags for signal rows — the scan covers 5 registry
 // strategies (stage matrix); Desk must never read as fib-only.
@@ -186,11 +187,12 @@ export default function Desk() {
     } catch (e) { setError(e.message) }
   }, [historyDays])
 
+  const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
   useEffect(() => {
     const kick = setTimeout(load, 0) // async kick keeps the effect render-clean
-    const t = setInterval(load, REFRESH_MS)
+    const t = setInterval(load, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
-  }, [load])
+  }, [load, hasActivity])
 
   const watch = (config?.symbols || []).filter(w => w.enabled !== false).map(w => w.symbol)
   // Chart wall order: live broker positions first, then bot-tracked, then

@@ -4,6 +4,48 @@ import Database from 'better-sqlite3';
 // Schema DDL
 // ---------------------------------------------------------------------------
 
+// Extracted so the in-place migration below (SQLite can't ALTER a CHECK
+// constraint) can rebuild the table with the exact same shape it's created
+// with fresh, instead of a second, driftable copy of the DDL.
+const TRADES_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS trades (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol                TEXT NOT NULL,
+    side                  TEXT,
+    entry_price           REAL,
+    exit_price            REAL,
+    sl_price              REAL,
+    tp_price              REAL,
+    volume                REAL,
+    opened_at             TEXT,
+    closed_at             TEXT,
+    hold_duration_ms      INTEGER,
+    gross_pnl             REAL,
+    net_pnl               REAL,
+    -- 'rejected' = order sent, no broker fill found on reconcile (owner hit
+    -- "CHECK constraint failed" — this value was already written by
+    -- reconcile-trades and already queried by /state/trades, but never
+    -- allowed here until now).
+    status                TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled','rejected')),
+    close_reason          TEXT,
+    thesis                TEXT,
+    strategy              TEXT,
+    conviction            REAL,
+    ctrader_position_id   TEXT,
+    analysis_id           INTEGER REFERENCES analyses(id),
+    -- Trade provenance — parsed from the cTrader label so attribution
+    -- queries can GROUP BY without re-parsing on every read.
+    label_raw             TEXT,
+    source                TEXT,          -- 'autopilot' | 'copilot' | 'manual'
+    label_version         TEXT,
+    label_strategy        TEXT,
+    label_conviction      TEXT,          -- 'high' | 'medium' | 'low'
+    label_session         TEXT,
+    label_timeframe       TEXT,
+    label_regime          TEXT
+  );
+`;
+
 const TABLES = `
   CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,38 +145,7 @@ const TABLES = `
     PRIMARY KEY (day, purpose, model)
   );
 
-  CREATE TABLE IF NOT EXISTS trades (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol                TEXT NOT NULL,
-    side                  TEXT,
-    entry_price           REAL,
-    exit_price            REAL,
-    sl_price              REAL,
-    tp_price              REAL,
-    volume                REAL,
-    opened_at             TEXT,
-    closed_at             TEXT,
-    hold_duration_ms      INTEGER,
-    gross_pnl             REAL,
-    net_pnl               REAL,
-    status                TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled')),
-    close_reason          TEXT,
-    thesis                TEXT,
-    strategy              TEXT,
-    conviction            REAL,
-    ctrader_position_id   TEXT,
-    analysis_id           INTEGER REFERENCES analyses(id),
-    -- Trade provenance — parsed from the cTrader label so attribution
-    -- queries can GROUP BY without re-parsing on every read.
-    label_raw             TEXT,
-    source                TEXT,          -- 'autopilot' | 'copilot' | 'manual'
-    label_version         TEXT,
-    label_strategy        TEXT,
-    label_conviction      TEXT,          -- 'high' | 'medium' | 'low'
-    label_session         TEXT,
-    label_timeframe       TEXT,
-    label_regime          TEXT
-  );
+  ${TRADES_TABLE_SQL}
 
   CREATE TABLE IF NOT EXISTS monitored_positions (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,6 +326,39 @@ export function initDB(dbPath) {
   // Create schema (indexes created after migrations to avoid referencing
   // columns that don't exist yet on pre-existing DBs)
   db.exec(TABLES);
+
+  // One-time rebuild: 'rejected' was always a valid trades.status value in
+  // the APP (reconcile-trades writes it, /state/trades queries for it) but
+  // the CHECK constraint on pre-existing databases never allowed it — every
+  // reconcile pass that found an order with no broker fill crashed with
+  // "CHECK constraint failed: status IN ('open','closed','cancelled')"
+  // instead of recording the rejection (owner hit this live). SQLite can't
+  // ALTER a CHECK constraint in place, so this rebuilds the table exactly
+  // once, preserving every row — a fresh DB already gets the fixed
+  // constraint from TABLES above and skips this entirely.
+  const tradesSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'trades'`).get()?.sql || '';
+  if (tradesSql && !tradesSql.includes("'rejected'")) {
+    const fkWasOn = db.pragma('foreign_keys', { simple: true });
+    db.pragma('foreign_keys = OFF');
+    // Explicit column list on both sides — never rely on physical column
+    // order matching between the old table (columns appended over time via
+    // ALTER TABLE ADD COLUMN) and the freshly-declared one.
+    const TRADES_COLS = [
+      'id', 'symbol', 'side', 'entry_price', 'exit_price', 'sl_price', 'tp_price', 'volume',
+      'opened_at', 'closed_at', 'hold_duration_ms', 'gross_pnl', 'net_pnl', 'status', 'close_reason',
+      'thesis', 'strategy', 'conviction', 'ctrader_position_id', 'analysis_id', 'label_raw', 'source',
+      'label_version', 'label_strategy', 'label_conviction', 'label_session', 'label_timeframe', 'label_regime',
+    ];
+    const oldCols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    const copyCols = TRADES_COLS.filter(c => oldCols.has(c));
+    db.transaction(() => {
+      db.exec('ALTER TABLE trades RENAME TO trades_pre_rejected_status_migration');
+      db.exec(TRADES_TABLE_SQL);
+      db.exec(`INSERT INTO trades (${copyCols.join(', ')}) SELECT ${copyCols.join(', ')} FROM trades_pre_rejected_status_migration`);
+      db.exec('DROP TABLE trades_pre_rejected_status_migration');
+    })();
+    if (fkWasOn) db.pragma('foreign_keys = ON');
+  }
 
   // In-place migrations for pre-existing DBs
   const mpCols = db.prepare("PRAGMA table_info(monitored_positions)").all();
