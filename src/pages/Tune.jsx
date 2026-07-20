@@ -1748,9 +1748,14 @@ export default function Tune() {
                 )
               }
               return (
-                <div className="overflow-x-auto">
+                // Bounded + internally scrollable (owner: "shifting the screen up
+                // and down whenever I tap the group") — expanding a band with 100s
+                // of members used to reflow the whole page around your tap; now the
+                // scroll stays INSIDE this box and everything below the card is
+                // rock-still. Sticky header keeps column names visible mid-scroll.
+                <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
                   <table className="std-cols min-w-full text-[13px]">
-                    <thead>
+                    <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
                       <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
                         <th className="pr-2 pb-1 font-semibold">Symbol</th>
                         <th className="pr-2 pb-1 font-semibold">Type</th>
@@ -1860,10 +1865,19 @@ export default function Tune() {
                       <div className="flex flex-wrap items-center gap-1.5 mb-2">
                         <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter symbols…" className="max-w-[180px] !py-1 !min-h-0" />
                         <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-                          {tree.total.toLocaleString()} instruments · tick a classification to add it as ONE watchlist row
+                          {tree.total.toLocaleString()} instruments · tick "whole class"/"whole group" to add hundreds at once as ONE watchlist band
                         </span>
                       </div>
-                      <div className="max-h-96 overflow-y-auto text-[12px]">
+                      {/* One card per asset class in a responsive grid — 1900+
+                          instruments used to be ONE long vertical accordion (owner:
+                          "segment them and use up one screen, not scroll to multiple
+                          paging"). Desktop now shows several classes side by side;
+                          each card scrolls its OWN categories, so opening one never
+                          reflows its neighbours or the page below. A class-level
+                          "whole class" tick covers everything in it (e.g. all of
+                          Forex, hundreds of pairs) in one action — the fastest way
+                          to get from 0 to all 1900+. */}
+                      <div className="max-h-[70vh] overflow-y-auto grid gap-2 sm:grid-cols-2 xl:grid-cols-3 items-start text-[12px]">
                         {tree.classes.map(cls => {
                           const clsKey = `c:${cls.name}`
                           const clsOpen = openNodes.has(clsKey) || !!bq
@@ -1873,60 +1887,76 @@ export default function Tune() {
                                 .filter(c => c.symbols.length > 0)
                             : cls.categories
                           if (bq && cats.length === 0) return null
+                          const classSelected = groupSelected(cls.name)
+                          const classSymbols = cls.categories.flatMap(c => c.symbols)
                           return (
-                            <div key={cls.name} className="border-b border-[var(--color-border)] last:border-b-0">
-                              <button
-                                type="button" onClick={() => toggleNode(clsKey)} aria-expanded={clsOpen}
-                                className="flex w-full items-center gap-2 py-1.5 min-h-[36px] cursor-pointer font-bold"
-                              >
-                                <span aria-hidden="true">{clsOpen ? '▾' : '▸'}</span>
-                                {cls.name}
-                                <span className="text-[var(--color-text-sub)] font-normal">({cls.count})</span>
-                              </button>
-                              {clsOpen && cats.map(cat => {
-                                const key = `${cls.name} / ${cat.name}`
-                                const catKey = `g:${key}`
-                                const catOpen = openNodes.has(catKey) || !!bq
-                                const selected = groupSelected(key)
-                                return (
-                                  <div key={cat.name} className="pl-5">
-                                    <div className="flex items-center gap-2 py-1 min-h-[36px]">
-                                      <button
-                                        type="button" onClick={() => toggleNode(catKey)} aria-expanded={catOpen}
-                                        className="flex items-center gap-2 cursor-pointer font-semibold"
-                                      >
-                                        <span aria-hidden="true">{catOpen ? '▾' : '▸'}</span>
-                                        {cat.name}
-                                        <span className="text-[var(--color-text-sub)] font-normal">({cat.count})</span>
-                                      </button>
-                                      <label className="ml-auto flex items-center gap-1.5 text-[11px] text-[var(--color-text-sub)] cursor-pointer pr-1">
-                                        <input
-                                          type="checkbox" checked={selected}
-                                          onChange={e => (e.target.checked ? addGroup(key, cat.symbols) : removeGroup(key))}
-                                          aria-label={`Add ${key} (${cat.count} symbols) to watchlist as one group row`}
-                                        />
-                                        whole group
-                                      </label>
-                                    </div>
-                                    {catOpen && (
-                                      <div className="grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3 pl-5 pb-1">
-                                        {cat.symbols.map(s => (
-                                          <label key={s} className="flex items-center gap-2 border-b border-[var(--color-border)] py-0.5 cursor-pointer">
+                            <div key={cls.name} className="glass-inset rounded-[8px] border border-[var(--color-border)] p-1.5 min-w-0">
+                              <div className="flex items-center gap-2 min-h-[32px]">
+                                <button
+                                  type="button" onClick={() => toggleNode(clsKey)} aria-expanded={clsOpen}
+                                  className="flex items-center gap-1.5 cursor-pointer font-bold min-w-0 truncate"
+                                >
+                                  <span aria-hidden="true">{clsOpen ? '▾' : '▸'}</span>
+                                  {cls.name}
+                                  <span className="text-[var(--color-text-sub)] font-normal shrink-0">({cls.count})</span>
+                                </button>
+                                <label className="ml-auto flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer shrink-0" title={`Add every instrument in ${cls.name} (${cls.count}) as one watchlist band`}>
+                                  <input
+                                    type="checkbox" checked={classSelected}
+                                    onChange={e => (e.target.checked ? addGroup(cls.name, classSymbols) : removeGroup(cls.name))}
+                                    aria-label={`Add whole ${cls.name} class (${cls.count} symbols) to watchlist as one group row`}
+                                  />
+                                  whole class
+                                </label>
+                              </div>
+                              {clsOpen && (
+                                <div className="max-h-56 overflow-y-auto mt-1 pl-1">
+                                  {cats.map(cat => {
+                                    const key = `${cls.name} / ${cat.name}`
+                                    const catKey = `g:${key}`
+                                    const catOpen = openNodes.has(catKey) || !!bq
+                                    const selected = groupSelected(key)
+                                    return (
+                                      <div key={cat.name} className="border-t border-[var(--color-border)] first:border-t-0">
+                                        <div className="flex items-center gap-2 py-1 min-h-[32px]">
+                                          <button
+                                            type="button" onClick={() => toggleNode(catKey)} aria-expanded={catOpen}
+                                            className="flex items-center gap-1.5 cursor-pointer font-semibold min-w-0 truncate"
+                                          >
+                                            <span aria-hidden="true">{catOpen ? '▾' : '▸'}</span>
+                                            {cat.name}
+                                            <span className="text-[var(--color-text-sub)] font-normal shrink-0">({cat.count})</span>
+                                          </button>
+                                          <label className="ml-auto flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer shrink-0 pr-1">
                                             <input
-                                              type="checkbox" checked={inList.has(s)}
-                                              aria-label={`${inList.has(s) ? 'Remove' : 'Add'} ${s}`}
-                                              onChange={e => e.target.checked
-                                                ? pushSymbols([...symbols, { symbol: s, enabled: true }])
-                                                : pushSymbols(symbols.filter(x => x.symbol !== s))}
+                                              type="checkbox" checked={selected}
+                                              onChange={e => (e.target.checked ? addGroup(key, cat.symbols) : removeGroup(key))}
+                                              aria-label={`Add ${key} (${cat.count} symbols) to watchlist as one group row`}
                                             />
-                                            <span className="font-semibold">{s}</span>
+                                            group
                                           </label>
-                                        ))}
+                                        </div>
+                                        {catOpen && (
+                                          <div className="max-h-40 overflow-y-auto pb-1">
+                                            {cat.symbols.map(s => (
+                                              <label key={s} className="flex items-center gap-2 border-t border-[var(--color-border)] first:border-t-0 py-0.5 cursor-pointer">
+                                                <input
+                                                  type="checkbox" checked={inList.has(s)}
+                                                  aria-label={`${inList.has(s) ? 'Remove' : 'Add'} ${s}`}
+                                                  onChange={e => e.target.checked
+                                                    ? pushSymbols([...symbols, { symbol: s, enabled: true }])
+                                                    : pushSymbols(symbols.filter(x => x.symbol !== s))}
+                                                />
+                                                <span className="font-semibold">{s}</span>
+                                              </label>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
-                                    )}
-                                  </div>
-                                )
-                              })}
+                                    )
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )
                         })}
