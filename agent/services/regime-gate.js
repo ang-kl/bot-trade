@@ -30,9 +30,11 @@ export const DEFAULT_REGIME_GATE = { on: true }
 export const STRATEGY_KIND = {
   fib_618_fade: 'meanrev',
   rsi_meanrev: 'meanrev',
+  vp_value: 'meanrev',      // value-area edge fade — wants rotation, dies in trends
   ema_pullback: 'trend',
   donchian_breakout: 'trend',
   cup_handle: 'trend',
+  vwap_trend: 'trend',      // VWAP pullback in a trend — dies in quiet chop
 }
 
 export function loadRegimeGateConfig(db) {

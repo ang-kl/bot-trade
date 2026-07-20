@@ -24,6 +24,7 @@
 
 import { getState } from '../db.js'
 import { evaluatePosition } from './position-manager.js'
+import { rulesForSymbol } from './asset-controllers.js'
 import { manageStageAllows } from './stage-matrix.js'
 
 /**
@@ -164,7 +165,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
         lastPriceAt.set(pos.id, { mid, at: now() })
 
         checked++
-        const eval_ = evaluatePosition(pos, { currentPrice: mid })
+        const eval_ = evaluatePosition(pos, { currentPrice: mid, rules: rulesForSymbol(db, pos.symbol) })
         s.updatePositionMetrics.run(
           eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
           eval_.updates.mae_r ?? pos.mae_r ?? 0,

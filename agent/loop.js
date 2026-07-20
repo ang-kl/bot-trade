@@ -7,6 +7,7 @@ import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
+import { rulesForSymbol } from './services/asset-controllers.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
@@ -1398,7 +1399,7 @@ async function runLoop(db) {
           const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
           const currentPrice = scanRow?.price ?? null
 
-          const eval_ = evaluatePosition(pos, { currentPrice })
+          const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
 
           // Persist MFE/MAE and any flag flips every loop, regardless of action.
           s.updatePositionMetrics.run(
