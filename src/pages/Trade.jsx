@@ -20,6 +20,7 @@ function NavTab({ to, children }) {
 }
 
 const REFRESH_MS = 30_000
+const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
 
 // No-digits calls are PRICES (scale-aware canonical dp); explicit digits
 // are money/counts and keep exactly what the caller asked for.
@@ -70,8 +71,16 @@ function openPositionRows(positions, prices = {}, enrichById = {}) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
-    const current = Number(prices[String(p.symbol).toUpperCase()]) || null
     const enr = enrichById[String(p.ctrader_position_id)] || {}
+    // Live broker bid/ask (from the SAME enrichment join) beats the scan
+    // snapshot for "current price" — the scanner only rotates through part
+    // of the watchlist each cycle, so a held position's symbol can go
+    // several cycles without a fresh scan price even though the broker
+    // itself has a live quote every second. This is what "To TP/SL" needs
+    // to compute at all (owner: "Open positions should have ... To TP/SL").
+    const current = (enr.bid != null && enr.ask != null)
+      ? (enr.bid + enr.ask) / 2
+      : (Number(prices[String(p.symbol).toUpperCase()]) || null)
     const openedAt = p.opened_at || p.created_at
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
@@ -126,7 +135,7 @@ function externalPositionRows(positions, prices = {}, enrichById = {}) {
       entry: p.entry_price,
       sl: p.current_sl ?? null,
       tp: p.current_tp ?? null,
-      current: Number(prices[String(p.symbol).toUpperCase()]) || null,
+      current: (enr.bid != null && enr.ask != null) ? (enr.bid + enr.ask) / 2 : (Number(prices[String(p.symbol).toUpperCase()]) || null),
       ccy: enr.quoteCcy ?? null,
       moneyCcy: enr.depositCcy ?? null,
       margin: enr.usedMargin ?? null,
@@ -202,8 +211,10 @@ const ATTEMPT_SOURCE = {
   external: 'EXTERNAL',
 }
 
-// Order log rows (risk_events) → the standard shape.
-function OrderLogTable({ rows, marketHours = null }) {
+// Order log rows (risk_events) → the standard shape. prices (latest scan
+// close per symbol) light up "To TP/SL" for still-relevant proposals —
+// owner: "Those pending should have current price movement."
+function OrderLogTable({ rows, marketHours = null, prices = {} }) {
   const mapped = rows.map(ev => {
     let prop = null
     try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
@@ -220,6 +231,7 @@ function OrderLogTable({ rows, marketHours = null }) {
       sl: prop?.sl,
       tp: prop?.tp1,
       tps: tpLadder(prop?.tp1, prop?.tp2, prop?.requestedVolume),
+      current: Number(prices[String(ev.symbol).toUpperCase()]) || null,
       // Trader words up front; the raw machine code stays in the tooltip.
       reason: humanVeto(ev.veto_reason) || ev.sizing_note || '',
       reasonTitle: ev.veto_reason || ev.sizing_note || '',
@@ -318,11 +330,12 @@ export default function Trade() {
     }).catch(() => {})
   }, [])
 
+  const hasActivity = positions.length > 0 || liveOrders.length > 0
   useEffect(() => {
     load()
-    const id = setInterval(load, REFRESH_MS)
+    const id = setInterval(load, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => clearInterval(id)
-  }, [load])
+  }, [load, hasActivity])
 
   const act = async (label, path) => {
     setBusy(label)
@@ -714,7 +727,7 @@ export default function Trade() {
               {vetoBd.vetoes[0]?.reason === 'market_closed' && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
             </p>
           )}
-          <OrderLogTable rows={riskEvents} marketHours={marketHours} />
+          <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price]))} />
         </Card>
       </div>
     </div>

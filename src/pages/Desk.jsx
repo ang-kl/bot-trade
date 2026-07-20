@@ -24,6 +24,7 @@ import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
 
 const REFRESH_MS = 20_000
+const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
 
 // Short strategy tags for signal rows — the scan covers 5 registry
 // strategies (stage matrix); Desk must never read as fib-only.
@@ -186,11 +187,12 @@ export default function Desk() {
     } catch (e) { setError(e.message) }
   }, [historyDays])
 
+  const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
   useEffect(() => {
     const kick = setTimeout(load, 0) // async kick keeps the effect render-clean
-    const t = setInterval(load, REFRESH_MS)
+    const t = setInterval(load, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
-  }, [load])
+  }, [load, hasActivity])
 
   const watch = (config?.symbols || []).filter(w => w.enabled !== false).map(w => w.symbol)
   // Chart wall order: live broker positions first, then bot-tracked, then
@@ -310,8 +312,16 @@ export default function Desk() {
         <OpenPnlChart positions={broker?.positions || []} />
       </Section>
 
-      {/* ---- Chart wall — full width; per-symbol candlestick charts ---- */}
-      <Card>
+      {/* ---- Chart wall — full width; per-symbol candlestick charts.
+          Collapsible like every other Desk section (owner: "the charting
+          in desk page should be able to expand/collapse") — open by default
+          since it's the page's main content, with a live summary line so
+          it still says something useful collapsed. ---- */}
+      <Section
+        id="chartwall"
+        title="Chart wall"
+        summary={gridN === 1 ? (symbol || '—') : `${gridN}-chart wall`}
+      >
         <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Chart grid size">
           {[1, 4, 8, 16].map(n => (
             <button
@@ -386,7 +396,7 @@ export default function Desk() {
           ))}
           {scans.length === 0 && <span className="text-[var(--color-text-sub)] py-1">No scan yet — the loop runs every {config?.loop_interval_min ?? 5} min.</span>}
         </div>
-      </Card>
+      </Section>
 
       {/* ---- Detail sections — everything live, behind triangles ---- */}
       <Section
@@ -533,7 +543,7 @@ export default function Desk() {
             {heartbeats.map(c => {
               const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
               return (
-                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · ${c.runs} runs`}>
+                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · last beat ${c.last_run_at ?? '—'} · ${c.age_sec ?? '?'}s ago`}>
                   <span aria-hidden="true" style={{ color: dot }}>●</span>
                   <span className="font-semibold shrink-0">{c.label}</span>
                   {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (
@@ -541,7 +551,14 @@ export default function Desk() {
                       {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? ` · ${c.last_error}` : ''}
                     </span>
                   )}
-                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{c.status === 'idle' ? 'idle' : ago(c.last_run_at)}</span>
+                  {/* Owner: "I need to know you are active ... not a feature or
+                      blinking, show that network interaction" — a relative
+                      timestamp alone can look static between polls; the run
+                      COUNT only ever climbs, so it's undeniable proof this
+                      controller keeps firing, not a hardcoded dot. */}
+                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">
+                    {c.status === 'idle' ? 'idle' : <>{ago(c.last_run_at)} · {(c.runs ?? 0).toLocaleString()} runs</>}
+                  </span>
                 </li>
               )
             })}

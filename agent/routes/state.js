@@ -188,12 +188,16 @@ export default function stateRouter(db) {
   // GET /state/positions — active monitored positions
   // -----------------------------------------------------------------------
   router.get('/positions', (_req, res) => {
-    // Volume + broker fill time live on the linked trades row — joined in so
-    // the Open positions table can show Qty and the real opened time (the
-    // standard order-log columns).
+    // Volume + broker fill time + ctrader_position_id live on the linked
+    // trades row — joined in so the Open positions table can show Qty, the
+    // real opened time, AND match the live-broker enrichment map (P&L, ccy,
+    // margin, bid/ask, commission, swap) by position id. Without that last
+    // column every enrichment lookup missed and P&L/To TP/SL always read
+    // "—" (owner: "I mentioned in earlier PR that Open positions should
+    // have 'P&L, To TP/SL'").
     const rows = db
       .prepare(
-        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, a.tp2_price AS tp2_price
+        `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at, t.ctrader_position_id AS ctrader_position_id, a.tp2_price AS tp2_price
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
@@ -888,8 +892,11 @@ export default function stateRouter(db) {
     try {
       const pendingJson = getState(db, 'broker_pending_orders_json')
       const lastReconcileAt = getState(db, 'last_reconcile_at')
+      // Volume lives on the linked trades row, not monitored_positions —
+      // without this join every external position's Qty read "—" (owner:
+      // "At the broker missing QTY").
       const externalPositions = db.prepare(
-        `SELECT mp.*, t.ctrader_position_id
+        `SELECT mp.*, t.ctrader_position_id, t.volume AS volume
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          WHERE mp.status = 'active' AND mp.source = 'external'
