@@ -189,6 +189,32 @@ export function alphaDecayView(db, { window = 30 } = {}) {
       advisories.push({ level: 'advisory', strategy: s.strategy, text: `${s.strategy}: ${s.streak.n}-trade winning streak with ${s.trend === 'improving' ? 'improving' : 'held'} expectancy — evidence supports keeping it armed; revisit sizing only after ${window}+ trades.`, link: '/tune' })
     }
   }
+  // Arm advisory (owner: "why can I arm all strategies?"). Arming is NEVER
+  // blocked — an untested strategy can still be armed — but an armed strategy
+  // with NO proven edge should say so, loudly, where the owner already looks.
+  // Proven edge = a positive backtest FOR THAT strategy (the baseline holds
+  // only the last-run strategy, so we can only vouch for that one) OR a
+  // positive live record over a full window. Everything else armed = blind.
+  const backtestGoFor = (key) =>
+    !!backtest && backtest.strategy === key &&
+    backtest.combos.some(c => (c.profitFactor ?? 0) > 1 && (c.trades ?? 0) > 0)
+  for (const s of strategies) {
+    if (!s.armed || !s.registered || s.strategy === 'unlabelled') continue
+    const liveGo = s.total.n >= MIN_WINDOW_N && s.total.expectancy > 0
+    if (backtestGoFor(s.strategy) || liveGo) continue // has an edge — no warning
+    let why
+    if (s.total.n === 0) {
+      why = backtest && backtest.strategy === s.strategy
+        ? 'its last backtest produced no positive combo and it has no live trades yet'
+        : 'it has never been backtested and has no live trades yet'
+    } else if (s.netPnl < 0) {
+      why = `it is down $${Math.abs(s.netPnl).toFixed(2)} over ${s.total.n} live trade(s) with no backtest GO on record`
+    } else {
+      why = `it has only ${s.total.n} live trade(s) (< ${MIN_WINDOW_N}) and no backtest GO on record`
+    }
+    advisories.push({ level: 'advisory', strategy: s.strategy, text: `${s.strategy} is ARMED but unproven — ${why}. Arming is allowed, but back it with a GO backtest or disarm its Auto Trade cell.`, link: '/tune?tab=backtest' })
+  }
+
   const fast = entry_lag.find(b => b.key === 'fast')
   const slow = entry_lag.find(b => b.key === 'slow')
   if (fast?.n >= MIN_WINDOW_N && slow?.n >= MIN_WINDOW_N && slow.expectancy < fast.expectancy) {

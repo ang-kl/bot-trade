@@ -101,6 +101,16 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: `unknown strategy '${strategy}' — one of: ${STRATEGY_KEYS.join(', ')}` })
       }
       const entryMode = req.body?.entryMode === 'touch' ? 'touch' : 'close'
+      // Evaluation profile: the DEFAULT backtest samples the setup more
+      // permissively than LIVE so a testable sample appears instead of the
+      // "0 trades → NO-GO everywhere" the owner hit. Live autotrade keeps its
+      // own conviction>=8 / rr>=1.5 gates (untouched by this route) — these
+      // numbers only govern what the backtest counts. Both overridable per
+      // request; minConviction: 8 + minRr: 1.5 reproduces the strict live view.
+      const EVAL_MIN_CONVICTION = 3
+      const EVAL_MIN_RR = 1.2
+      const minConviction = req.body?.minConviction != null ? Number(req.body.minConviction) : EVAL_MIN_CONVICTION
+      const minRr = req.body?.minRr != null ? Number(req.body.minRr) : EVAL_MIN_RR
 
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
@@ -139,8 +149,10 @@ export default function actionsRouter(db) {
               symbol: name,
               strategy,
               entryMode,
-              // mirror live autotrade's conviction bar unless the caller overrides
-              minConviction: req.body?.minConviction != null ? Number(req.body.minConviction) : 8,
+              // evaluation profile (see above) — a testable sample, not the
+              // strict live gate; pass minConviction:8 / minRr:1.5 to reproduce live
+              minConviction,
+              minRr,
             }
             const { stats } = runBacktest(bars.slice(0, -1), btOpts)
             // Walk-forward: same rule over 4 sequential segments — evidence
@@ -169,7 +181,7 @@ export default function actionsRouter(db) {
       // that ACTUALLY ran — the renderer used to hardcode "Fib 61.8% fade" for
       // every non-cup strategy, so an RSI/EMA/VWAP run printed as fib.
       const strategyName = STRATEGY_REGISTRY.find(s => s.key === strategy)?.name || strategy
-      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, strategyName, entryMode, ranAt: new Date().toISOString() }
+      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, strategyName, entryMode, minConviction, minRr, ranAt: new Date().toISOString() }
       // Persist a self-contained HTML report under backtest/results/ and hand
       // the same document to the UI for a browser download. A write failure
       // (read-only disk) must not sink the backtest itself.

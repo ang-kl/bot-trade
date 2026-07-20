@@ -97,6 +97,19 @@ test('rr below 1.5 is rejected', () => {
   assert.equal(sig, null)
 })
 
+test('opts.minRr governs the R:R floor (backtest evaluation profile)', () => {
+  // This setup produces a signal with rr ≈ 1.52 (just over the live floor).
+  const setup = () => longSetup({ down: 6, drop: 3, bounce: 5 })
+  const base = computeRsiMeanrev(setup(), '1h', { minRr: 0 })
+  assert.ok(base && base.rr >= 1.5 && base.rr < 1.6, `rr ${base?.rr} is the boundary case`)
+  // Default floor is 1.5 — the signal survives.
+  assert.ok(computeRsiMeanrev(setup(), '1h'), 'default 1.5 floor keeps a 1.52-rr signal')
+  // Raising the floor ABOVE the signal's rr rejects it — the gate reads opts.minRr.
+  assert.equal(computeRsiMeanrev(setup(), '1h', { minRr: 1.6 }), null, 'floor above rr rejects')
+  // The evaluation profile's lower floor keeps it too.
+  assert.ok(computeRsiMeanrev(setup(), '1h', { minRr: 1.2 }), 'eval floor 1.2 keeps it')
+})
+
 test('needs at least 60 bars', () => {
   assert.equal(computeRsiMeanrev(longSetup().slice(-59), '1h'), null)
 })

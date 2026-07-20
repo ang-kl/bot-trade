@@ -80,6 +80,11 @@ export function runBacktest(bars, opts) {
   const { timeframe } = opts
   const costPct = opts.costPct ?? DEFAULT_COST_PCT
   const cooldownMs = (opts.cooldownMinutes ?? DEFAULT_COOLDOWN_MIN) * 60_000
+  // R:R floor for THIS run. Defaults to the live risk gate (1.5); the backtest
+  // route lowers it (evaluation profile) so a strategy whose targets sit just
+  // under 1.5 still produces a testable sample. Strategies with their OWN
+  // internal rr gate (RSI) read the same floor via the compute opts below.
+  const minRr = opts.minRr ?? MIN_RR
 
   const touchMode = opts.entryMode === 'touch'
   const trades = []
@@ -140,8 +145,10 @@ export function runBacktest(bars, opts) {
       fvgFilter: opts.fvgFilter || null,
       // touch mode: fib zones are valid resting-order levels pre-touch
       pendingSetup: touchMode && strat.pendingCapable,
+      // strategies with an internal rr gate honour the run's floor
+      minRr,
     })
-    if (!signal || signal.rr < MIN_RR) continue
+    if (!signal || signal.rr < minRr) continue
     // Fidelity with live autotrade: only take entries the bot would actually
     // fire on (conviction >= 8 by default, same bar as synthesizeFibSignal).
     // Pass minConviction: 0 to test every zone touch instead.

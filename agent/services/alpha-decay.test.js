@@ -152,6 +152,31 @@ test('view: loss streak → COMMITTED advisory when breaker armed, plain advisor
   assert.ok(off.advisories.some(a => a.level === 'advisory' && /breaker is OFF/.test(a.text)))
 })
 
+test('arm advisory: an ARMED strategy with no proven edge is flagged (non-blocking), a proven one is not', async () => {
+  const { alphaDecayView } = await import('./alpha-decay.js')
+  const { setState } = await import('../db.js')
+
+  // rsi_meanrev armed, never traded, never backtested → unproven advisory.
+  const db1 = initDB(':memory:')
+  setState(db1, 'enabled_strategies_json', JSON.stringify(['rsi_meanrev']))
+  const v1 = alphaDecayView(db1, { window: 10 })
+  assert.ok(
+    v1.advisories.some(a => a.strategy === 'rsi_meanrev' && /ARMED but unproven/.test(a.text)),
+    'armed untested strategy should warn',
+  )
+  // Arming still allowed — the strategy is present and armed, not blocked.
+  assert.equal(v1.strategies.find(s => s.strategy === 'rsi_meanrev').armed, true)
+  // An UNARMED strategy never gets the arm advisory.
+  assert.ok(!v1.advisories.some(a => a.strategy === 'vp_value' && /ARMED but unproven/.test(a.text)))
+
+  // fib armed WITH a positive backtest for it → no arm advisory (has edge).
+  const db2 = initDB(':memory:')
+  setState(db2, 'enabled_strategies_json', JSON.stringify(['fib_618_fade']))
+  setState(db2, 'backtest_baseline_json', JSON.stringify({ ranAt: '2026-07-17T00:00:00Z', strategy: 'fib_618_fade', combos: [{ symbol: 'EURUSD', tf: '4h', trades: 20, profitFactor: 1.6 }] }))
+  const v2 = alphaDecayView(db2, { window: 10 })
+  assert.ok(!v2.advisories.some(a => a.strategy === 'fib_618_fade' && /ARMED but unproven/.test(a.text)))
+})
+
 test('view: stored backtest baseline surfaces, reality-gap advisory fires on live-negative', async () => {
   const { alphaDecayView } = await import('./alpha-decay.js')
   const { setState } = await import('../db.js')
