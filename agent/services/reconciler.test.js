@@ -147,6 +147,11 @@ test('closed position detection marks status=closed', () => {
   const trade = db.prepare(`SELECT * FROM trades WHERE ctrader_position_id = '77'`).get()
   assert.equal(trade.status, 'closed')
   assert.ok(trade.closed_at, 'closed_at timestamp set')
+  // Owner: "it didn't say what happen" on a manual DOW.US close — a close
+  // detected here happened AT THE BROKER, and the ledger now says so
+  // instead of leaving the reason blank.
+  assert.match(trade.close_reason, /closed at the broker/)
+  assert.match(trade.close_reason, /not closed by the bot/)
 })
 
 test('pending orders stored in agent_state', () => {

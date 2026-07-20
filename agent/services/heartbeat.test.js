@@ -122,7 +122,8 @@ test('probeCppExec: no-op in js mode; records ok/failed beats in cpp mode', asyn
   assert.equal(await probeCppExec(db, { exec: jsExec }), null)
   assert.equal(db.prepare(`SELECT COUNT(*) n FROM controller_heartbeats WHERE name = 'cpp_exec'`).get().n, 0)
 
-  const up = { execEngineMode: () => 'cpp', pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true }) }
+  // Healthy = HTTP up AND broker session connected AND a fresh reconcile.
+  const up = { execEngineMode: () => 'cpp', pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: true, lastReconcileAt: T0.getTime() - 30_000 }) }
   const r1 = await probeCppExec(db, { exec: up, now: T0 })
   assert.equal(r1.ok, true)
   let row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name = 'cpp_exec'`).get()
@@ -134,6 +135,28 @@ test('probeCppExec: no-op in js mode; records ok/failed beats in cpp mode', asyn
   row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name = 'cpp_exec'`).get()
   assert.equal(row.consecutive_failures, 1)
   assert.equal(row.last_error, 'fetch failed')
+})
+
+test('probeCppExec: an answering HTTP server no longer masks a dead broker session', async () => {
+  // Owner saw "C++ exec engine" beating steadily while pending-order-manager
+  // failed 14× in a row with "no reconcile data yet" — /health says ok:true
+  // whenever the HTTP server is up, regardless of the broker WS behind it.
+  const db = initDB(':memory:')
+  const cases = [
+    [{ ok: true, mode: 'cpp', connected: false, hasCredentials: false }, /no credentials/],
+    [{ ok: true, mode: 'cpp', connected: false, hasCredentials: true }, /reconnecting/],
+    [{ ok: true, mode: 'cpp', connected: true, lastReconcileAt: null }, /no reconcile pass/],
+    [{ ok: true, mode: 'cpp', connected: true, lastReconcileAt: T0.getTime() - 10 * 60_000 }, /10m ago.*stalled/],
+  ]
+  for (const [health, errRe] of cases) {
+    const exec = { execEngineMode: () => 'cpp', pingSidecar: async () => health }
+    const r = await probeCppExec(db, { exec, now: T0 })
+    assert.equal(r.ok, false, JSON.stringify(health))
+    assert.match(r.error, errRe)
+  }
+  const row = db.prepare(`SELECT * FROM controller_heartbeats WHERE name = 'cpp_exec'`).get()
+  assert.equal(row.consecutive_failures, cases.length)
+  assert.match(row.last_error, /stalled/)
 })
 
 test('pingSidecar (exec-engine): js mode is trivially alive with no HTTP call', async () => {

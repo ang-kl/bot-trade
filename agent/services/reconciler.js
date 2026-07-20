@@ -155,8 +155,17 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   for (const row of knownRows) {
     if (!brokerIds.has(String(row.ctrader_position_id))) {
       db.prepare(`UPDATE monitored_positions SET status = 'closed' WHERE id = ?`).run(row.id)
+      // Say WHO closed it, or at least who didn't: a close the bot performs
+      // stamps its own close_reason via markTradeClosed before reconcile
+      // ever sees the position gone; a close detected HERE happened at the
+      // broker (manual close in cTrader, or a broker-side SL/TP fill).
+      // Owner hit the blank version live: a manual DOW.US short closed in
+      // under 5 minutes and the ledger had nothing to say beyond the exit
+      // price ("it didn't say what happen").
       db.prepare(
-        `UPDATE trades SET status = 'closed', closed_at = datetime('now') WHERE ctrader_position_id = ? AND status = 'open'`
+        `UPDATE trades SET status = 'closed', closed_at = datetime('now'),
+           close_reason = COALESCE(close_reason, 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot')
+         WHERE ctrader_position_id = ? AND status = 'open'`
       ).run(String(row.ctrader_position_id))
       closedDetected.push({ symbol: row.symbol, positionId: row.ctrader_position_id, source: row.source })
     }
