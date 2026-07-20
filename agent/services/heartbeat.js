@@ -168,10 +168,29 @@ export async function probeCppExec(db, deps = {}) {
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
   if (exec.execEngineMode() !== 'cpp') return null
   const r = await exec.pingSidecar()
-  beat(db, 'cpp_exec', {
-    ok: r.ok === true,
-    error: r.ok ? null : (r.error || 'health check failed'),
-    ...(deps.now ? { now: deps.now } : {}),
-  })
-  return r
+  // The sidecar's GET /health says ok:true whenever its HTTP server answers
+  // — even while the broker WS behind it has never connected or completed a
+  // reconcile pass. Owner saw exactly that lie: "C++ exec engine" beating
+  // steadily on the Controllers panel while pending-order-manager racked up
+  // 14 straight "no reconcile data yet" failures. Health here means "the
+  // ENGINE is doing its job", so the broker-session fields /health already
+  // reports are now part of the verdict, with the real cause as the error.
+  const nowMs = (deps.now ?? new Date()).getTime()
+  const STALE_RECONCILE_MS = 5 * 60_000 // engine loop reconciles ~every 30s; 5m of silence is a stall
+  let ok = r.ok === true
+  let error = ok ? null : (r.error || 'health check failed')
+  if (ok && r.connected === false) {
+    ok = false
+    error = r.hasCredentials === false
+      ? 'broker session down — no credentials pushed to the sidecar yet'
+      : 'broker session down — sidecar is reconnecting to cTrader'
+  } else if (ok && r.connected === true && r.lastReconcileAt == null) {
+    ok = false
+    error = 'connected but no reconcile pass has completed yet'
+  } else if (ok && r.lastReconcileAt != null && nowMs - Number(r.lastReconcileAt) > STALE_RECONCILE_MS) {
+    ok = false
+    error = `last reconcile ${Math.round((nowMs - Number(r.lastReconcileAt)) / 60_000)}m ago — engine loop looks stalled`
+  }
+  beat(db, 'cpp_exec', { ok, error, ...(deps.now ? { now: deps.now } : {}) })
+  return { ...r, ok, ...(error ? { error } : {}) }
 }
