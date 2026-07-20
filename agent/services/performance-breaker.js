@@ -24,7 +24,12 @@ export const DEFAULT_PERFORMANCE_BREAKER = {
   window: 20,         // rolling window of closed trades
   minTrades: 15,      // don't judge an edge on a handful of trades
   pfThreshold: 0.8,   // profit factor below this over the window = trouble
-  autoDisarm: false,  // OFF by default — disarming live trading is the owner's call
+  // Owner armed this 2026-07-20 after PF hit 0.15 (Net −$2019): auto-disarm
+  // ON. The trigger only fires below a 0.8 profit factor over 15+ trades —
+  // "clearly bleeding" territory — so stopping new entries there and waiting
+  // for a human is the right default now, not a per-account opt-in. Toggle
+  // back off in Tune if you'd rather it only alerts.
+  autoDisarm: true,
 }
 
 export function loadPerformanceBreakerConfig(db) {

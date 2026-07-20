@@ -18,6 +18,7 @@ import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services
 import { setStage } from '../services/stage-matrix.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
+import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -337,6 +338,25 @@ export default function actionsRouter(db) {
     setState(db, 'guardian_move_pct', String(pct))
     console.log(`[actions] guardian move threshold → ${pct}%`)
     res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/correlation-matrix — { on?, threshold?, maxCorrelated? }
+  // tunes the live-computed correlation veto (owner: "I want the
+  // live-computed version").
+  // -----------------------------------------------------------------------
+  router.post('/correlation-matrix', (req, res) => {
+    const cur = loadCorrelationMatrixConfig(db)
+    const b = req.body || {}
+    const next = {
+      ...cur,
+      on: b.on !== undefined ? b.on !== false : cur.on,
+      threshold: b.threshold !== undefined ? Math.min(0.99, Math.max(0.3, Number(b.threshold) || cur.threshold)) : cur.threshold,
+      maxCorrelated: b.maxCorrelated !== undefined ? Math.min(10, Math.max(1, Math.round(Number(b.maxCorrelated) || cur.maxCorrelated))) : cur.maxCorrelated,
+    }
+    setState(db, 'correlation_matrix_json', JSON.stringify(next))
+    console.log(`[actions] correlation matrix →`, next)
+    res.json({ ok: true, ...next })
   })
 
   // -----------------------------------------------------------------------
