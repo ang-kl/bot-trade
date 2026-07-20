@@ -29,6 +29,10 @@ const MAX_SAMPLES = 24 // ~2 min at the 5s active-poll rate — just enough for 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const money = (v) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 
+// Every gauge is decorative shape ONLY unless it's paired with a caption and
+// a real number underneath (owner: "where are the gauges labels and
+// measurement" — the meaning was previously only in code comments, invisible
+// in the browser).
 function AttitudeGauge({ pnl, volume, trending, size = 72 }) {
   // Bank angle isn't a literal reading — tanh keeps one outsized trade from
   // pinning the dial at a useless, always-maxed 90°.
@@ -37,28 +41,33 @@ function AttitudeGauge({ pnl, volume, trending, size = 72 }) {
   const up = (pnl || 0) >= 0
   const clipId = `ai-clip-${Math.round(size)}-${up ? 'u' : 'd'}`
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label={`Attitude indicator: ${up ? 'profit' : 'loss'} tilt, ${trending ? 'trending' : 'choppy'}`}>
-      <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
-      <clipPath id={clipId}><circle cx="50" cy="50" r="44" /></clipPath>
-      <g clipPath={`url(#${clipId})`}>
-        <g transform={`rotate(${bank} 50 50)`}>
-          <rect x="-20" y="-100" width="140" height="150" fill={UP} opacity="0.32" />
-          <rect x="-20" y="50" width="140" height="150" fill={DOWN} opacity="0.32" />
-          <line x1="-20" y1="50" x2="120" y2="50" stroke={up ? UP : DOWN} strokeWidth="2" />
+    <div className="flex flex-col items-center">
+      <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label={`Attitude indicator: ${up ? 'profit' : 'loss'} tilt, ${trending ? 'trending' : 'choppy'}, volume ${volume}`}>
+        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
+        <clipPath id={clipId}><circle cx="50" cy="50" r="44" /></clipPath>
+        <g clipPath={`url(#${clipId})`}>
+          <g transform={`rotate(${bank} 50 50)`}>
+            <rect x="-20" y="-100" width="140" height="150" fill={UP} opacity="0.32" />
+            <rect x="-20" y="50" width="140" height="150" fill={DOWN} opacity="0.32" />
+            <line x1="-20" y1="50" x2="120" y2="50" stroke={up ? UP : DOWN} strokeWidth="2" />
+          </g>
         </g>
-      </g>
-      {/* fixed aircraft symbol — wings stay level; only the horizon behind them tilts */}
-      <line x1={50 - wing} y1="50" x2="44" y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-      <line x1="56" y1="50" x2={50 + wing} y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-      <circle cx="50" cy="50" r="3" fill="currentColor" />
-      {trending
-        ? <path d={`M ${50 + wing} 50 l 7 -4.5 l 0 9 z`} fill="currentColor" />
-        : <circle cx={50 + wing + 4.5} cy="50" r="2.5" fill="currentColor" opacity="0.55" />}
-    </svg>
+        {/* fixed aircraft symbol — wings stay level; only the horizon behind them tilts */}
+        <line x1={50 - wing} y1="50" x2="44" y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        <line x1="56" y1="50" x2={50 + wing} y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        <circle cx="50" cy="50" r="3" fill="currentColor" />
+        {trending
+          ? <path d={`M ${50 + wing} 50 l 7 -4.5 l 0 9 z`} fill="currentColor" />
+          : <circle cx={50 + wing + 4.5} cy="50" r="2.5" fill="currentColor" opacity="0.55" />}
+      </svg>
+      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center">
+        Attitude<br />{(volume || 0).toFixed(2)} lots · {trending ? 'trending' : 'choppy'}
+      </span>
+    </div>
   )
 }
 
-function VsiGauge({ rate, size = 72 }) {
+function VsiGauge({ rate, ratePerMin, size = 72 }) {
   // rate is normalized -1..1. 0 = 9 o'clock (dormant), +1 = 12 o'clock
   // (climbing fast), -1 = 6 o'clock (dropping fast).
   const deg = 180 - clamp(rate, -1, 1) * 90
@@ -68,13 +77,18 @@ function VsiGauge({ rate, size = 72 }) {
   const ny = 50 - r * Math.sin(rad)
   const up = rate >= 0
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="Activity now">
-      <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
-      <path d="M 12 50 A 38 38 0 0 1 50 12" fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
-      <path d="M 12 50 A 38 38 0 0 0 50 88" fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
-      <line x1="50" y1="50" x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
-      <circle cx="50" cy="50" r="3.5" fill="currentColor" />
-    </svg>
+    <div className="flex flex-col items-center">
+      <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="Activity now">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
+        <path d="M 12 50 A 38 38 0 0 1 50 12" fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
+        <path d="M 12 50 A 38 38 0 0 0 50 88" fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
+        <line x1="50" y1="50" x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
+        <circle cx="50" cy="50" r="3.5" fill="currentColor" />
+      </svg>
+      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center">
+        Activity<br />{ratePerMin == null ? 'settling…' : `${ratePerMin >= 0 ? '+' : '−'}${Math.abs(ratePerMin).toFixed(2)}/min`}
+      </span>
+    </div>
   )
 }
 
@@ -132,7 +146,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
             </div>
             <div className="flex items-center justify-center gap-1">
               <AttitudeGauge pnl={pnl} volume={p.lots ?? p.volume ?? 0} trending={trending} />
-              <VsiGauge rate={rate} />
+              <VsiGauge rate={rate} ratePerMin={elapsedMin > 0 ? rawRate : null} />
             </div>
             <div className="text-center text-[12px] font-bold mt-0.5">{pnlOk ? money(pnl) : '—'}</div>
           </div>
