@@ -187,6 +187,19 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
     }
+    // P&L drift watch — every 2nd tick (~60s): Telegram warns when an open
+    // trade crosses ±N% of balance (owner audit: nothing warned on drift).
+    if (tick % 2 === 0) {
+      try {
+        const creds = getCreds(db)
+        if (creds?.ready) {
+          const { runPnlWatch } = await import('./pnl-watch.js')
+          await runPnlWatch(db, creds)
+        }
+      } catch (err) {
+        console.error('[fast-monitor] pnl-watch failed:', err.message)
+      }
+    }
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
       hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
