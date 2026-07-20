@@ -310,8 +310,16 @@ export default function Desk() {
         <OpenPnlChart positions={broker?.positions || []} />
       </Section>
 
-      {/* ---- Chart wall — full width; per-symbol candlestick charts ---- */}
-      <Card>
+      {/* ---- Chart wall — full width; per-symbol candlestick charts.
+          Collapsible like every other Desk section (owner: "the charting
+          in desk page should be able to expand/collapse") — open by default
+          since it's the page's main content, with a live summary line so
+          it still says something useful collapsed. ---- */}
+      <Section
+        id="chartwall"
+        title="Chart wall"
+        summary={gridN === 1 ? (symbol || '—') : `${gridN}-chart wall`}
+      >
         <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Chart grid size">
           {[1, 4, 8, 16].map(n => (
             <button
@@ -386,7 +394,7 @@ export default function Desk() {
           ))}
           {scans.length === 0 && <span className="text-[var(--color-text-sub)] py-1">No scan yet — the loop runs every {config?.loop_interval_min ?? 5} min.</span>}
         </div>
-      </Card>
+      </Section>
 
       {/* ---- Detail sections — everything live, behind triangles ---- */}
       <Section
