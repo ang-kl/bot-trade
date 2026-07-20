@@ -82,6 +82,17 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
   const timeCell = (v) => { const w2 = dateTimeParts(v); return w2 ? `${w2.day} ${w2.time}` : '—' }
+  // How long a position/order has been open (or was held before closing) —
+  // owner: "all table should also have the duration ... so you can also
+  // manage that or human can close". m → h → d, coarser as it grows.
+  const fmtDuration = (ms) => {
+    const mins = Math.round(ms / 60_000)
+    if (mins < 60) return `${mins}m`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return mins % 60 ? `${hrs}h ${mins % 60}m` : `${hrs}h`
+    const days = Math.floor(hrs / 24)
+    return hrs % 24 ? `${days}d ${hrs % 24}h` : `${days}d`
+  }
   // Trading currency beside the essential figures (owner spec): prices
   // carry the symbol's QUOTE ccy, money figures the DEPOSIT ccy.
   const ccyTag = (c) => (c ? <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">{c}</span> : null)
@@ -89,6 +100,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
     { key: 'updatedAt', label: 'Updated', fmt: timeCell },
+    { key: 'durationMs', label: 'Duration', fmt: fmtDuration },
     { key: 'margin', label: 'Margin Used', fmt: money2, money: true },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
