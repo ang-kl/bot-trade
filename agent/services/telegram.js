@@ -151,3 +151,21 @@ export async function sendMessage(text) {
   })
   return { ok: true, messageId: msg.message_id }
 }
+
+/**
+ * Send a FILE to the owner (multipart sendDocument) — used by the daily
+ * journal's HTML attachment. `content` is a string or Buffer; `mime`
+ * defaults to HTML.
+ */
+export async function sendDocument(filename, content, caption = '', mime = 'text/html') {
+  const botToken = getToken()
+  const chatId = getChatId()
+  const form = new FormData()
+  form.append('chat_id', chatId)
+  if (caption) form.append('caption', caption)
+  form.append('document', new Blob([content], { type: mime }), filename)
+  const res = await fetch(`${TG_API}/bot${botToken}/sendDocument`, { method: 'POST', body: form })
+  const data = await res.json().catch(() => ({}))
+  if (!data.ok) throw new Error(`telegram sendDocument failed: ${data.description || res.status}`)
+  return { ok: true, messageId: data.result?.message_id }
+}
