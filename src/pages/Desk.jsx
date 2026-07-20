@@ -89,6 +89,7 @@ export default function Desk() {
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
+  const [historyDays, setHistoryDays] = useState(7)     // "Closed at the broker" window — 7/30/90/180 (owner spec)
   const [symbolTouched, setSymbolTouched] = useState(false) // true once the trader manually picks a chart
   const [gridN, setGridN] = useState(() => {
     try { return Number(localStorage.getItem('desk_grid_n')) || 1 } catch { return 1 }
@@ -134,7 +135,7 @@ export default function Desk() {
       // snapshot made the Desk look current while showing Friday's data
       // (owner hit this Monday morning). The interval retries every cycle.
       .catch(e => setBrokerErr(`live broker refresh failed: ${e.message} — retrying`))
-    agentPost('/actions/broker-history', { days: 7 })
+    agentPost('/actions/broker-history', { days: historyDays })
       .then(bh => setBrokerHistory(bh?.ok ? bh : null))
       .catch(() => {})
     // Instant paint: the agent's cached snapshot (refreshed ~every 30s by
@@ -177,7 +178,7 @@ export default function Desk() {
       setMarketHours(mh?.hours || null)
       setError('')
     } catch (e) { setError(e.message) }
-  }, [])
+  }, [historyDays])
 
   useEffect(() => {
     const kick = setTimeout(load, 0) // async kick keeps the effect render-clean
@@ -394,7 +395,7 @@ export default function Desk() {
 
       <Section
         id="closed7d"
-        title="Closed at the broker — 7 days"
+        title="Closed at the broker"
         summary={(() => {
           if (brokerHistory?.realized == null) return null
           let s2 = `realised ${brokerHistory.realized >= 0 ? '+' : ''}${fmt(brokerHistory.realized, 2)} · ${brokerHistory.rows?.length ?? 0} deals`
@@ -409,6 +410,17 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
+        {/* Window picker (owner: "should also include 30 days and 3+6
+            months") — switching re-fetches broker-history at that window. */}
+        <div className="flex items-center gap-1 mb-1.5" role="radiogroup" aria-label="History window">
+          {[{ d: 7, label: '7d' }, { d: 30, label: '30d' }, { d: 90, label: '3mo' }, { d: 182, label: '6mo' }].map(({ d, label }) => (
+            <button
+              key={d} type="button" role="radio" aria-checked={historyDays === d}
+              onClick={() => setHistoryDays(d)}
+              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[11px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+            >{label}</button>
+          ))}
+        </div>
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
         {brokerHistory?._cachedAt && (
           <p className="text-[11px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
@@ -417,7 +429,7 @@ export default function Desk() {
           <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last 7 days.</p>
+          <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
         )}
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
       </Section>

@@ -429,17 +429,19 @@ export default function actionsRouter(db) {
   // POST /actions/broker-history — the broker's own closed-trade record
   // (every closing deal, bot-placed or manual), with realised NET P&L
   // (gross + swap + commission) exactly as cTrader's History tab shows it.
-  // Body: { days? } (default 7, max 30). Side effect: backfills net_pnl /
-  // gross_pnl / exit_price onto local trades rows matched by positionId, so
-  // performance stats and the Tune timeframe table use broker-true numbers.
+  // Body: { days? } (default 7, max 190 — covers 7d/30d/3mo/6mo, owner:
+  // "should also include 30 days and 3+6 months"). Side effect: backfills
+  // net_pnl/gross_pnl/exit_price onto local trades rows matched by
+  // positionId, so performance stats and the Tune timeframe table use
+  // broker-true numbers.
   // -----------------------------------------------------------------------
   router.post('/broker-history', async (req, res) => {
     try {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const days = Math.min(30, Math.max(1, Number(req.body?.days) || 7))
+      const days = Math.min(190, Math.max(1, Number(req.body?.days) || 7))
       const { host, clientId, clientSecret, accessToken, accountId } = creds
-      const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList } = await import('../lib/ctrader-ws.js')
+      const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
 
       const WEEK = 7 * 24 * 3_600_000
       const from = Date.now() - days * 24 * 3_600_000
@@ -469,6 +471,37 @@ export default function actionsRouter(db) {
         } catch { /* rows fall back to #symbolId */ }
       }
 
+      // Currencies (owner: "closed at the broker should have all the
+      // fields") — same asset-truth lookup as /actions/broker-positions:
+      // deposit ccy from the trader's account, each symbol's quote ccy from
+      // its quoteAssetId, FX-name fallback for symbols metadata couldn't map.
+      const assetNameById = {}
+      let depositCcy = null
+      try {
+        const [trader, assets] = await Promise.all([
+          wsGetTrader(host, clientId, clientSecret, accessToken, accountId),
+          wsGetAssets(host, clientId, clientSecret, accessToken, accountId),
+        ])
+        for (const a of (assets.asset || [])) assetNameById[a.assetId] = a.displayName || a.name || null
+        depositCcy = assetNameById[trader.depositAssetId] || null
+      } catch { /* currency stays null */ }
+
+      // Bot provenance + open time (for Duration) come from OUR OWN ledger,
+      // not the broker — cTrader deals carry no label/comment/open-time.
+      // Positions this account never opened (imported history, or before
+      // the DB existed) simply get source 'MANUAL' and no duration, same as
+      // the broker itself would show for an untracked position.
+      const positionIds = [...new Set(closing.map(d => d.positionId).filter(v => v != null).map(String))]
+      const localByPosition = new Map()
+      if (positionIds.length > 0) {
+        const placeholders = positionIds.map(() => '?').join(',')
+        for (const t of db.prepare(
+          `SELECT ctrader_position_id, source, label_raw, opened_at FROM trades WHERE ctrader_position_id IN (${placeholders})`
+        ).all(...positionIds)) {
+          localByPosition.set(String(t.ctrader_position_id), t)
+        }
+      }
+
       const SIDE_NAME = { 1: 'BUY', 2: 'SELL' }
       const rows = closing.map(d => {
         const cpd = d.closePositionDetail
@@ -482,10 +515,16 @@ export default function actionsRouter(db) {
         // The deal's tradeSide is the CLOSING side — the position was the opposite.
         const closeSide = SIDE_NAME[d.tradeSide] || String(d.tradeSide || '')
         const side = closeSide === 'BUY' ? 'SELL' : closeSide === 'SELL' ? 'BUY' : closeSide
+        const symName = String(meta.symbolName || '').toUpperCase()
+        const isFxPair = symName.length === 6 && /^[A-Z]{6}$/.test(symName)
+        const positionId = d.positionId != null ? String(d.positionId) : null
+        const local = positionId ? localByPosition.get(positionId) : null
+        const openedAt = local?.opened_at ? Date.parse(local.opened_at) : null
+        const closedAt = d.executionTimestamp ?? null
         return {
           dealId: d.dealId ?? null,
-          positionId: d.positionId != null ? String(d.positionId) : null,
-          closedAt: d.executionTimestamp ?? null,
+          positionId,
+          closedAt,
           symbol: meta.symbolName || `#${d.symbolId}`,
           side,
           lots,
@@ -495,6 +534,11 @@ export default function actionsRouter(db) {
           swap,
           commission,
           netPnl,
+          quoteCcy: assetNameById[meta.quoteAssetId] || (isFxPair ? symName.slice(3) : null),
+          depositCcy,
+          source: local?.source || null,
+          label: local?.label_raw || null,
+          durationMs: (openedAt != null && closedAt != null) ? Math.max(0, closedAt - openedAt) : null,
         }
       }).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
 

@@ -86,6 +86,7 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       commission: p2.commission ?? null,
       swap: p2.swap ?? null,
       positionId: p2.positionId ?? null,
+      durationMs: p2.openedAt ? Math.max(0, Date.now() - toMs(p2.openedAt)) : null,
       reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,
       chart: { symbol: p2.symbol, timeframe: '1h', lines: { entry: p2.entry, sl: p2.sl, tp: p2.tp } },
@@ -119,26 +120,40 @@ export function brokerOrderRows(orders, { manageable = false } = {}) {
 
 /** Closed broker deals (history) → standard rows. */
 export function brokerDealRows(deals) {
-  return (deals || []).map((d, i) => ({
-    id: `bd-${d.dealId ?? `${d.positionId}-${i}`}`,
-    at: d.closedAt ?? null,
-    symbol: d.symbol,
-    result: { text: 'CLOSED', tone: (Number(d.netPnl) || 0) >= 0 ? 'up' : 'down' },
-    source: { text: d.label ? 'BOT' : 'MANUAL', tone: d.label ? 'special' : 'neutral' },
-    side: String(d.side || '').toUpperCase() || null,
-    qty: d.lots,
-    entry: d.entryPrice,
-    sl: null,
-    tp: null,
-    pnl: d.netPnl ?? null,
-    reason: `out ${px(d.closePrice)} · net ${money(d.netPnl)}`,
-    chart: {
+  return (deals || []).map((d, i) => {
+    // Provenance comes from OUR OWN ledger (agent/routes/actions.js joins
+    // the local trades table by positionId) — cTrader deals themselves
+    // carry no label/comment. A position we never opened (imported history,
+    // or older than the local DB) reads MANUAL, same as the broker itself
+    // would show for an untracked position.
+    const isBot = !!d.source && d.source !== 'manual' && d.source !== 'external'
+    return {
+      id: `bd-${d.dealId ?? `${d.positionId}-${i}`}`,
+      at: d.closedAt ?? null,
       symbol: d.symbol,
-      timeframe: '1h',
-      lines: { entry: d.entryPrice },
-      at: toMs(d.closedAt),
-      markers: { exitT: toMs(d.closedAt) },
-    },
-    raw: d,
-  }))
+      result: { text: 'CLOSED', tone: (Number(d.netPnl) || 0) >= 0 ? 'up' : 'down' },
+      source: { text: isBot ? 'BOT' : 'MANUAL', tone: isBot ? 'special' : 'neutral' },
+      side: String(d.side || '').toUpperCase() || null,
+      qty: d.lots,
+      entry: d.entryPrice,
+      sl: null,
+      tp: null,
+      pnl: d.netPnl ?? null,
+      ccy: d.quoteCcy ?? null,
+      moneyCcy: d.depositCcy ?? null,
+      commission: d.commission ?? null,
+      swap: d.swap ?? null,
+      positionId: d.positionId ?? null,
+      durationMs: d.durationMs ?? null,
+      reason: `out ${px(d.closePrice)} · net ${money(d.netPnl)}`,
+      chart: {
+        symbol: d.symbol,
+        timeframe: '1h',
+        lines: { entry: d.entryPrice },
+        at: toMs(d.closedAt),
+        markers: { exitT: toMs(d.closedAt) },
+      },
+      raw: d,
+    }
+  })
 }
