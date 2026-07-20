@@ -431,7 +431,20 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     strategies: options.strategies || null, // registry entries, in order
     extraTimeframes: options.extraTimeframes || [],
   }
-  const batch = symbols.slice(0, 15)
+  // FULL-WATCHLIST coverage (owner: "I have 59 symbols, where is the
+  // intelligence?"). The old hard `slice(0, 15)` meant symbols past #15
+  // were NEVER scanned. Now: symbols with open positions are always in
+  // the batch (the monitor needs their prices), and the rest ROTATE via a
+  // persisted cursor — batchSize per run, the whole list every few runs.
+  const batchSize = Math.max(1, Number(options.batchSize) || 15)
+  const priority = new Set((options.prioritySymbols || []).map(s => String(s).toUpperCase()))
+  const pri = symbols.filter(w => priority.has(String(w.symbol).toUpperCase()))
+  const rest = symbols.filter(w => !priority.has(String(w.symbol).toUpperCase()))
+  const start = rest.length ? (Math.max(0, Number(options.cursor) || 0) % rest.length) : 0
+  const rotated = [...rest.slice(start), ...rest.slice(0, start)]
+  const batch = [...pri, ...rotated].slice(0, Math.max(batchSize, pri.length))
+  const rotSteps = Math.max(0, batch.length - pri.length)
+  const nextCursor = rest.length ? (start + rotSteps) % rest.length : 0
 
   const results = []
   for (let i = 0; i < batch.length; i += SCAN_CONCURRENCY) {
@@ -471,14 +484,17 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hot = scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol)
   const warm = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
 
+  const rounds = rest.length ? Math.ceil(rest.length / Math.max(1, rotSteps || 1)) : 1
   return {
     scans,
     hot,
     warm,
-    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} symbols, ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}.`,
+    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} of ${symbols.length} symbols this run (full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}.`,
     usage: { output_tokens: 0 },
     signals,
     errors,
+    next_cursor: nextCursor,
+    coverage: { scanned: scans.length, total: symbols.length },
   }
 }
 

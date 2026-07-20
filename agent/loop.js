@@ -733,9 +733,18 @@ async function runLoop(db) {
     try { extraTimeframes = JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { /* keep [] */ }
     let scanMatrix = null
     try { scanMatrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
+    // Full-watchlist rotation: held symbols always scan (the monitor needs
+    // their prices); the rest rotate via the persisted cursor so all 50+
+    // symbols are covered every few runs instead of only the first 15 ever.
+    let prioritySymbols = []
+    try {
+      prioritySymbols = db.prepare(`SELECT DISTINCT UPPER(symbol) AS s FROM monitored_positions WHERE status = 'active'`).all().map(r => r.s)
+    } catch { /* none */ }
+    const scanCursor = Number(getState(db, 'scan_cursor')) || 0
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
+    if (scanResult.next_cursor != null) setState(db, 'scan_cursor', String(scanResult.next_cursor))
 
     if (!ctraderCreds.ready) {
       const missing = [
