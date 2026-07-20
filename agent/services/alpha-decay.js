@@ -18,6 +18,8 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { STRATEGY_REGISTRY, enabledStrategies } from './strategies.js'
+import { STRATEGY_KIND } from './regime-gate.js'
 
 const MIN_WINDOW_N = 10 // below this a verdict would be noise, say so instead
 
@@ -115,9 +117,32 @@ export function alphaDecayView(db, { window = 30 } = {}) {
     }
     ;(byStrat[key] ??= []).push(t)
   }
-  const strategies = Object.entries(byStrat)
-    .map(([strategy, rows]) => ({ strategy, streak: streakOf(rows), ...rollingDecay(rows, window) }))
-    .sort((a, b) => b.total.n - a.total.n)
+  // EVERY registered strategy appears (owner: "Edge Health is meaningless if
+  // you don't include all strategy and justify") — even ones that have never
+  // traded, so the roster is complete and each row justifies itself with
+  // armed state, net P&L and win rate, not just a per-trade expectancy.
+  const armed = new Set(enabledStrategies(db, getState).map(s => s.key))
+  const nameOf = Object.fromEntries(STRATEGY_REGISTRY.map(s => [s.key, s.name]))
+  const registeredKeys = STRATEGY_REGISTRY.map(s => s.key)
+  const allKeys = [...new Set([...registeredKeys, ...Object.keys(byStrat)])]
+  const strategies = allKeys
+    .map((strategy) => {
+      const rows = byStrat[strategy] || []
+      const decayed = rollingDecay(rows, window)
+      return {
+        strategy,
+        name: strategy === 'unlabelled' ? 'Manual / external' : (nameOf[strategy] || strategy),
+        kind: STRATEGY_KIND[strategy] || (strategy === 'unlabelled' ? 'manual' : 'other'),
+        armed: armed.has(strategy),
+        registered: registeredKeys.includes(strategy),
+        netPnl: decayed.total.totalPnl,   // total realized $ — the number the owner is bleeding
+        winRate: decayed.total.winRate,    // 0..1
+        streak: streakOf(rows),
+        ...decayed,
+      }
+    })
+    // Most-traded first, but never bury an armed 0-trade strategy below noise.
+    .sort((a, b) => (b.total.n - a.total.n) || (Number(b.armed) - Number(a.armed)) || a.strategy.localeCompare(b.strategy))
 
   // Entry lag needs both timestamps; SQLite datetimes are UTC sans zone.
   const ms = (v) => {
