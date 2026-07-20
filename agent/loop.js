@@ -14,7 +14,7 @@ import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsGetSymbolsList } from './lib/ctrader-ws.js'
+import { wsGetSymbolsList, wsGetTrendbarsBatch } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
@@ -1671,6 +1671,37 @@ async function runLoop(db) {
         }
 
         log(`Regime updated for ${Object.keys(bySymbol).length} symbols`)
+
+        // Live correlation matrix (owner: "I want the live-computed
+        // version") — held positions + watchlist, correlated on recent 1h
+        // returns, cached for the risk gate's live-correlation veto.
+        try {
+          const clientId = ctraderEnv('clientId')
+          const clientSecret = ctraderEnv('clientSecret')
+          const accessToken = getState(db, 'ctrader_access_token')
+          const accountId = getState(db, 'ctrader_account_id')
+          const isLive = getState(db, 'ctrader_is_live') === 'true'
+          const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          if (clientId && clientSecret && accessToken && accountId) {
+            const symbolMap = (() => { try { return JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { return {} } })()
+            const held = db.prepare(`SELECT DISTINCT symbol FROM monitored_positions WHERE status = 'active'`).all().map(r => r.symbol)
+            // `symbols` (the scan-phase list) isn't in scope in the quant
+            // phase — use held positions plus whatever the recent scans
+            // covered (bySymbol), which is what actually needs correlating.
+            const corrSymbols = [...new Set([...held, ...Object.keys(bySymbol)])].filter(sym => symbolMap[String(sym).toUpperCase()])
+            const { computeAndStoreMatrix } = await import('./services/correlation-matrix.js')
+            const res = await computeAndStoreMatrix(db, corrSymbols, {
+              maxSymbols: 24,
+              fetchBars: async (sym, tf, count) => {
+                const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolMap[String(sym).toUpperCase()], [tf], count, 20_000)
+                return byTf[tf] || []
+              },
+            }, new Date().toISOString())
+            if (res.built) log(`Correlation matrix: ${res.built} symbols`)
+          }
+        } catch (err) {
+          log('Correlation matrix failed (non-fatal):', err.message)
+        }
       } catch (err) {
         log('Quant phase error:', err.message)
       }

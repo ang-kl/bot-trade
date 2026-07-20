@@ -39,16 +39,18 @@ test('rollingStats: profit factor, expectancy, win rate over the last N closed t
 
 test('runPerformanceBreaker: fires once the sample is big enough and PF is below the floor', () => {
   const db = initDB(':memory:')
+  // Explicitly alert-only (default is now autoDisarm ON since PF hit 0.15).
+  db.prepare(`INSERT OR REPLACE INTO agent_state (key, value) VALUES ('performance_breaker_json', ?)`)
+    .run(JSON.stringify({ ...DEFAULT_PERFORMANCE_BREAKER, autoDisarm: false }))
   for (let i = 0; i < 3; i++) closeTrade(db, +50, 200 - i * 5) // a few early wins
   for (let i = 0; i < 12; i++) closeTrade(db, -100, 100 - i * 5) // then a long bleed
   // 15 trades, 3 wins/12 losses: PF = 150/1200 = 0.125 — well under the 0.8 floor.
   const notes = []
   const out = runPerformanceBreaker(db, { notify: (t) => notes.push(t) })
   assert.equal(out.triggered, true)
-  assert.equal(out.autoDisarmed, false) // default off
+  assert.equal(out.autoDisarmed, false) // explicitly alert-only here
   assert.match(notes[0], /ALL HANDS ON DECK/)
   assert.match(notes[0], /Autotrade left running/)
-  assert.equal(getState(db, 'autotrade_enabled'), 'false') // untouched — same as its seeded default
 })
 
 test('runPerformanceBreaker: does not fire below minTrades even with a terrible PF', () => {

@@ -68,6 +68,14 @@ const RULES = [
   { re: /^bad_rr(?:\s+([\d.]+)<([\d.]+))?/, out: (m) => m[1] ? `Reward:risk ${m[1]} below the ${m[2]} floor` : 'Reward:risk below the floor' },
   { re: /^overexposed_(\w+)/, out: (m) => `Currency exposure cap hit (${m[1]})` },
   {
+    // Live-computed matrix: correlated_live=N thr=0.7 with=SYM@0.82|SYM2@0.75
+    re: /^correlated_live=(\d+)\s+thr=([\d.]+)(?:\s+with=(\S+))?/,
+    out: (m) => {
+      const withList = m[3] ? m[3].split('|').map(s => s.replace('@', ' ')).join(', ') : null
+      return `Too correlated (live) — already holding ${m[1]} highly-correlated position${m[1] === '1' ? '' : 's'} (≥${m[2]})${withList ? `: ${withList}` : ''}`
+    },
+  },
+  {
     re: /^correlated_(\w+)=(-?\d+)\s+cap=(\d+)(?:\s+with=(\S+))?/,
     out: (m) => {
       const CLUSTER = { usd_strength: 'USD strength', us_equity: 'US equity', crude: 'crude oil', risk_fx: 'risk-on FX' }

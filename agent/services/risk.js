@@ -16,6 +16,7 @@
 import { getState } from '../db.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { correlationVeto } from './correlation.js'
+import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -410,12 +411,25 @@ export function evaluateTrade(db, proposal, configOverride) {
     }
   }
 
-  // ---- 8b. Correlation-cluster cap ---------------------------------------
+  // ---- 8b. Correlation cap -----------------------------------------------
   // Owner: "did you check pair and correlation?" Currency exposure only
   // catches SHARED currency legs; this catches instruments that move
-  // together WITHOUT one (gold vs USDJPY, WTI vs Brent, US indices). Vetoes
-  // a proposal that would stack a correlated cluster past the cap in the
-  // same direction. maxClusterExposure 0 / null disables it.
+  // together WITHOUT one (gold vs USDJPY, WTI vs Brent, US indices).
+  //
+  // Two layers: the LIVE-computed matrix (owner: "I want the live-computed
+  // version") is preferred when fresh — it counts how many held positions
+  // are highly correlated with the proposal in the same directional-risk
+  // sense and vetoes the (maxCorrelated+1)th stacked bet. The curated
+  // ±1-beta clusters are the always-on floor for when the matrix is
+  // missing/stale (fresh boot, a symbol not yet in it).
+  const liveCfg = loadCorrelationMatrixConfig(db)
+  if (liveCfg.on) {
+    const live = liveCorrelationVeto(openPositions, proposal, loadStoredMatrix(db), liveCfg, Date.now())
+    if (live) {
+      checks.correlation = live
+      return veto(`correlated_live=${live.stacked.length} thr=${live.threshold} with=${live.stacked.map(s => `${s.symbol}@${s.corr}`).join('|')}`, checks, proposal)
+    }
+  }
   if (config.maxClusterExposure > 0) {
     const corr = correlationVeto(openPositions, proposal, config.maxClusterExposure)
     if (corr) {
