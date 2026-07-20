@@ -2165,36 +2165,49 @@ export default function Tune() {
                       >{sym}</button>
                     )
                   }
+                  // One card per group in a 5-column grid (owner spec): a
+                  // toggle SWITCH includes/skips the whole group; the name
+                  // expands the symbol chips. An open card breaks out to the
+                  // full row width so its chips have room.
                   const band = (key, names) => {
                     const open = openBands.has(`bt:${key}`)
                     const testing = names.filter(n => !btSkip.has(n)).length
+                    const on = testing > 0
+                    const partial = on && testing < names.length
                     return (
-                      <div key={key} className="border-b border-[var(--color-border)] py-1">
-                        <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                      <div
+                        key={key}
+                        className={`rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-2 flex flex-col gap-1 ${open ? 'col-span-2 sm:col-span-3 lg:col-span-5' : ''}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
                           <button
                             type="button" onClick={() => toggleBand(`bt:${key}`)} aria-expanded={open}
-                            className="flex items-center gap-1.5 font-bold cursor-pointer min-h-[28px]"
+                            className="flex items-center gap-1 font-semibold text-[12px] cursor-pointer min-w-0 min-h-[28px] text-left"
+                            title="Expand to pick individual symbols"
                           >
-                            <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
-                            {key}
-                            <span className="font-normal text-[var(--color-text-sub)]">testing {testing} of {names.length}</span>
+                            <span aria-hidden="true" className="inline-block w-2.5 shrink-0 text-[10px]">{open ? '▾' : '▸'}</span>
+                            <span className="truncate">{key}</span>
                           </button>
-                          <span className="ml-auto">
-                            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => setGroupSkip(names, testing > 0)}>
-                              {testing > 0 ? 'Skip group' : 'Include group'}
-                            </Button>
-                          </span>
+                          <button
+                            type="button" role="switch" aria-checked={on}
+                            aria-label={`${on ? 'Skip' : 'Include'} ${key}`}
+                            onClick={() => setGroupSkip(names, on)}
+                            className={`relative inline-flex h-[20px] w-[34px] shrink-0 items-center rounded-full transition-colors cursor-pointer ${on ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'}`}
+                          >
+                            <span className={`inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                          </button>
                         </div>
+                        <span className="text-[11px] text-[var(--color-text-sub)]">
+                          testing {testing} of {names.length}{partial ? ' (some skipped)' : ''}
+                        </span>
                         {open && <div className="mt-1 flex flex-wrap gap-1">{names.map(chip)}</div>}
                       </div>
                     )
                   }
                   return (
-                    <div className="mb-2">
+                    <div className="mb-2 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                       {[...groups.entries()].map(([key, names]) => band(key, names))}
-                      {singleNames.length > 0 && (groups.size > 0
-                        ? band('Singles', singleNames)
-                        : <div className="flex flex-wrap gap-1 py-1">{singleNames.map(chip)}</div>)}
+                      {singleNames.length > 0 && band('Singles', singleNames)}
                     </div>
                   )
                 })()}

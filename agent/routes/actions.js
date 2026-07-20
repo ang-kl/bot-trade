@@ -165,7 +165,11 @@ export default function actionsRouter(db) {
       for (let bi = 0; bi < names.length; bi += 3) {
         await Promise.all(names.slice(bi, bi + 3).map(testOne))
       }
-      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, entryMode, ranAt: new Date().toISOString() }
+      // Carry the strategy's display name + key so the report labels the run
+      // that ACTUALLY ran — the renderer used to hardcode "Fib 61.8% fade" for
+      // every non-cup strategy, so an RSI/EMA/VWAP run printed as fib.
+      const strategyName = STRATEGY_REGISTRY.find(s => s.key === strategy)?.name || strategy
+      const payload = { symbols, bars: count, rsiFilter: !!rsiFilter, vwapFilter: !!vwapFilter, fvgFilter: !!fvgFilter, sessionFilter, strategy, strategyName, entryMode, ranAt: new Date().toISOString() }
       // Persist a self-contained HTML report under backtest/results/ and hand
       // the same document to the UI for a browser download. A write failure
       // (read-only disk) must not sink the backtest itself.
