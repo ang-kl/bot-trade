@@ -1,6 +1,7 @@
 // Desk — THE one-screen workspace: a live chart wall on top (up to 30
-// charts: 3 columns × 10 rows — open positions first, then the watchlist),
-// and every detail of what is live below it in collapsible sections
+// charts: 3 columns × 10 rows — open positions first, then whatever the
+// scan currently finds active; the full watchlist only fills the wall when
+// nothing is), and every detail of what is live below it in collapsible sections
 // (expand/collapse triangles, state remembered per section). Nothing from
 // the old Monitor was dropped — it lives here behind the triangles.
 // Everything reuses the endpoints/components the dedicated pages already
@@ -188,11 +189,21 @@ export default function Desk() {
 
   const watch = (config?.symbols || []).filter(w => w.enabled !== false).map(w => w.symbol)
   // Chart wall order: live broker positions first, then bot-tracked, then
-  // the watchlist — deduped. The wall shows what you HOLD before what you WATCH.
+  // whatever the scan currently finds ACTIVE (a live bias — hot before
+  // warm), never the raw 50+ symbol watchlist (owner: "should based on
+  // active list and not all symbols"). The full watchlist is only a
+  // last-resort fallback for the empty state — before the first scan runs,
+  // or once in a great while when nothing anywhere has a setup — so the
+  // wall/dropdown is never blank.
+  const activeScans = [...scans]
+    .filter(sc => sc.bias && sc.bias !== 'skip')
+    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+    .map(sc => sc.symbol)
   const chartSymbols = [...new Set([
     ...(broker?.positions || []).map(p => p.symbol),
     ...positions.map(p => p.symbol),
-    ...(watch.length ? watch : scans.map(sc => sc.symbol)),
+    ...activeScans,
+    ...(activeScans.length === 0 ? watch : []),
   ])]
   const linesFor = (sym) => {
     const bp = (broker?.positions || []).find(px => px.symbol === sym)
