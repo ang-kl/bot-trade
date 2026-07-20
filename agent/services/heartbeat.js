@@ -25,6 +25,11 @@ import { getState } from '../db.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
+// `loopMultiplier` covers a controller tied to every Nth loop rather than
+// every loop (weekend_bank runs inside loop.js's reconcile phase, gated
+// `loopCount % 3 === 0` — without this its expected interval was computed as
+// a single loop, so a normal ~15min cadence with one slightly-long cycle
+// tripped a false STALLED before the real interval was ever exceeded).
 // `factor` is the grace multiplier before a missing beat counts as a stall.
 export const CONTROLLERS = {
   main_loop:        { label: 'Main loop',              tiedToLoop: true,  factor: 3 },
@@ -36,7 +41,7 @@ export const CONTROLLERS = {
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3 },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
-  weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, factor: 4 },
+  weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   guardian:         { label: 'Tick guardian',          expectedSec: 30,   factor: 10 },
   cpp_exec:         { label: 'C++ exec engine',        expectedSec: 120,  factor: 3 },
 }
@@ -49,7 +54,7 @@ function loopSecFrom(db) {
 }
 
 function expectedSecFor(def, loopSec) {
-  return def.tiedToLoop ? loopSec : def.expectedSec
+  return def.tiedToLoop ? loopSec * (def.loopMultiplier || 1) : def.expectedSec
 }
 
 /** Record one controller run. ok=false increments the failure streak. */

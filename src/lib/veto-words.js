@@ -7,7 +7,24 @@ const RULES = [
   // Detail groups are OPTIONAL so bare family keys (from the veto-breakdown
   // endpoint) translate too — "sl_too_tight" alone still reads as words.
   { re: /^sl_too_tight(?:\s+([\d.]+%)<([\d.]+%))?/, out: (m) => m[1] ? `Stop too tight — ${m[1]} vs ${m[2]} min` : 'Stop too tight' },
-  { re: /^duplicate_symbol(?:\s+existing_side=(\w+))?/, out: (m) => m[1] ? `Already ${m[1]} — one position per symbol` : 'Already in this symbol' },
+  {
+    re: /^duplicate_symbol(?:\s+existing_side=(\w+))?(?:\s+entry=([\w.]+))?(?:\s+opened=(\S+))?/,
+    out: (m) => {
+      if (!m[1]) return 'Already in this symbol'
+      const parts = [`Already ${m[1]}`]
+      if (m[2] && m[2] !== 'na') parts.push(`@ ${m[2]}`)
+      if (m[3] && m[3] !== 'na') {
+        const openedMs = Date.parse(m[3])
+        if (Number.isFinite(openedMs)) {
+          const ageMin = Math.max(0, Math.round((Date.now() - openedMs) / 60000))
+          const ageText = ageMin < 1 ? 'just now' : ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`
+          parts.push(`(opened ${ageText})`)
+        }
+      }
+      parts.push('— one position per symbol')
+      return parts.join(' ')
+    },
+  },
   { re: /^max_positions(?:=(\d+)\/(\d+))?/, out: (m) => m[1] ? `Position cap reached (${m[1]}/${m[2]})` : 'Position cap reached' },
   { re: /^loss_streak_cooldown(?:\s+streak=(\d+)\s+wait=(\w+))?/, out: (m) => m[1] ? `Cooling off after ${m[1]} straight losses — ${m[2]} left` : 'Loss-streak cooldown' },
   { re: /^symbol_cooldown(?:\s+wait=(\w+))?/, out: (m) => m[1] ? `Re-entry cooldown — ${m[1]} left` : 'Re-entry cooldown' },
