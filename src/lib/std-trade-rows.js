@@ -136,8 +136,12 @@ export function brokerDealRows(deals) {
       side: String(d.side || '').toUpperCase() || null,
       qty: d.lots,
       entry: d.entryPrice,
-      sl: null,
-      tp: null,
+      // SL/TP come from the local ledger (agent side) — the last-known
+      // levels before this close, not necessarily what was live at the
+      // exact instant of a trailed/scaled-out exit. Null for positions this
+      // account never tracked (broker history alone doesn't carry SL/TP).
+      sl: d.sl ?? null,
+      tp: d.tp ?? null,
       pnl: d.netPnl ?? null,
       ccy: d.quoteCcy ?? null,
       moneyCcy: d.depositCcy ?? null,
@@ -149,9 +153,9 @@ export function brokerDealRows(deals) {
       chart: {
         symbol: d.symbol,
         timeframe: '1h',
-        lines: { entry: d.entryPrice },
+        lines: { entry: d.entryPrice, sl: d.sl ?? null, tp: d.tp ?? null },
         at: toMs(d.closedAt),
-        markers: { exitT: toMs(d.closedAt) },
+        markers: { entryT: toMs(d.openedAt), exitT: toMs(d.closedAt) },
       },
       raw: d,
     }

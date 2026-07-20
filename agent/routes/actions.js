@@ -486,17 +486,21 @@ export default function actionsRouter(db) {
         depositCcy = assetNameById[trader.depositAssetId] || null
       } catch { /* currency stays null */ }
 
-      // Bot provenance + open time (for Duration) come from OUR OWN ledger,
-      // not the broker — cTrader deals carry no label/comment/open-time.
+      // Bot provenance + open time (for Duration) + SL/TP come from OUR OWN
+      // ledger, not the broker — cTrader deal history carries none of it
+      // (no label/comment, no open-time, and a CLOSED position's SL/TP no
+      // longer exists anywhere at the broker to look up). SL/TP reflect
+      // whatever was last set locally, which may predate the final trail/
+      // move on a scaled-out close — an approximation, not a fabrication.
       // Positions this account never opened (imported history, or before
-      // the DB existed) simply get source 'MANUAL' and no duration, same as
-      // the broker itself would show for an untracked position.
+      // the DB existed) simply get source 'MANUAL' and no SL/TP/duration,
+      // same as the broker itself would show for an untracked position.
       const positionIds = [...new Set(closing.map(d => d.positionId).filter(v => v != null).map(String))]
       const localByPosition = new Map()
       if (positionIds.length > 0) {
         const placeholders = positionIds.map(() => '?').join(',')
         for (const t of db.prepare(
-          `SELECT ctrader_position_id, source, label_raw, opened_at FROM trades WHERE ctrader_position_id IN (${placeholders})`
+          `SELECT ctrader_position_id, source, label_raw, opened_at, sl_price, tp_price FROM trades WHERE ctrader_position_id IN (${placeholders})`
         ).all(...positionIds)) {
           localByPosition.set(String(t.ctrader_position_id), t)
         }
@@ -530,6 +534,9 @@ export default function actionsRouter(db) {
           lots,
           entryPrice: cpd.entryPrice ?? null,
           closePrice: d.executionPrice ?? null,
+          sl: local?.sl_price ?? null,
+          tp: local?.tp_price ?? null,
+          openedAt: local?.opened_at ?? null,
           grossProfit,
           swap,
           commission,
