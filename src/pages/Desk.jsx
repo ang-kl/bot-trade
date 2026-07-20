@@ -420,20 +420,38 @@ export default function Desk() {
         summary={events.length ? `${events.filter(e => !e.approved).length} vetoes in last ${events.length}` : null}
         defaultOpen={false}
       >
+        <p className="text-[11px] text-[var(--color-text-sub)] mb-1">
+          Every signal the scanner considers trading passes through here.{' '}
+          <span className="font-semibold text-[var(--color-accent)]">OK</span> = the risk gate approved it (it still
+          has to clear broker sizing/spread checks after — OK is not the same as placed);{' '}
+          <span className="font-semibold text-[var(--color-warning-text)]">VETO</span> = risk math said no, with why.
+        </p>
         {events.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">None yet.</p>}
         {/* Plain rows, trader words — status is text with colour, not a pill;
-            the raw machine code stays in the tooltip. */}
+            the raw machine code stays in the tooltip. Side/strategy/entry
+            from proposal_json so a row reads as a decision, not just a
+            symbol + cryptic code (owner: "meaningless to me"). */}
         <ul className="text-[12px]">
-          {events.slice(0, 10).map(ev => (
-            <li key={ev.id} className="flex items-baseline gap-1.5 min-w-0 py-px" title={ev.veto_reason || ''}>
-              <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
-                {ev.approved ? 'OK' : 'VETO'}
-              </span>
-              <span className="font-semibold shrink-0">{ev.symbol}</span>
-              <span className="text-[var(--color-text-sub)] truncate">{humanVeto(ev.veto_reason)}</span>
-              <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
-            </li>
-          ))}
+          {events.slice(0, 10).map(ev => {
+            let p = {}
+            try { p = JSON.parse(ev.proposal_json || '{}') } catch { /* pre-migration rows */ }
+            return (
+              <li key={ev.id} className="flex items-baseline gap-1.5 min-w-0 py-px" title={ev.veto_reason || ''}>
+                <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+                  {ev.approved ? 'OK' : 'VETO'}
+                </span>
+                <span className="font-semibold shrink-0">{ev.symbol}</span>
+                {ev.side && <span className="text-[var(--color-text-sub)] shrink-0">{ev.side}</span>}
+                {p.strategy && <span className="text-[var(--color-text-sub)] shrink-0">{STRAT_SHORT[p.strategy] || p.strategy}</span>}
+                <span className="text-[var(--color-text-sub)] truncate">
+                  {ev.approved
+                    ? `risk-approved${p.entry != null ? ` @ ${fmt(p.entry)}` : ''}`
+                    : humanVeto(ev.veto_reason)}
+                </span>
+                <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
+              </li>
+            )
+          })}
         </ul>
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
