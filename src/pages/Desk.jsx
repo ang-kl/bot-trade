@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
+import OpenPnlChart from '../components/OpenPnlChart.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import ReportChart from '../components/ReportChart.jsx'
@@ -92,8 +93,13 @@ export default function Desk() {
   const [historyDays, setHistoryDays] = useState(7)     // "Closed at the broker" window — 7/30/90/180 (owner spec)
   const [symbolTouched, setSymbolTouched] = useState(false) // true once the trader manually picks a chart
   const [gridN, setGridN] = useState(() => {
-    try { return Number(localStorage.getItem('desk_grid_n')) || 1 } catch { return 1 }
-  })   // 1 | 4 | 9 | 30 charts (30 = 3 columns × 10 rows)
+    // Clamp a leftover value from before the 1/4/9/30 → 1/4/8/16 rework —
+    // an old "30" would otherwise render a wall no picker button matches.
+    try {
+      const n = Number(localStorage.getItem('desk_grid_n'))
+      return [1, 4, 8, 16].includes(n) ? n : 1
+    } catch { return 1 }
+  })   // 1 | 4 | 8 | 16 charts on the per-symbol wall
 
   const pickGrid = (n) => {
     setGridN(n)
@@ -201,6 +207,9 @@ export default function Desk() {
   const chartSymbols = [...new Set([
     ...(broker?.positions || []).map(p => p.symbol),
     ...positions.map(p => p.symbol),
+    // Resting orders are just as "active" as an open position — chart them
+    // too (owner: "also allow pending trade chart").
+    ...(broker?.orders || []).map(o => o.symbol),
     ...activeScans,
     ...(activeScans.length === 0 ? watch : []),
   ])]
@@ -278,16 +287,25 @@ export default function Desk() {
         )}
       </Card>
 
-      {/* ---- Chart wall — full width; 30 = 3 columns × 10 rows ---- */}
+      {/* ---- P&L overview — the FIRST chart, always visible (owner: "first
+          chart should be oscillator chart of all active trade... line chart
+          of all trades (active) whether profit or loss"), ahead of the
+          per-symbol grid wall below. ---- */}
+      <Card>
+        <h2 className="text-[13px] font-semibold mb-1.5">Open trades — floating P&amp;L</h2>
+        <OpenPnlChart positions={broker?.positions || []} />
+      </Card>
+
+      {/* ---- Chart wall — full width; per-symbol candlestick charts ---- */}
       <Card>
         <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Chart grid size">
-          {[1, 4, 9, 30].map(n => (
+          {[1, 4, 8, 16].map(n => (
             <button
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
-              title={n === 30 ? '30 charts — 3 columns × 10 rows' : `${n} chart${n > 1 ? 's' : ''} on screen`}
+              title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
               className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
-            >{n === 1 ? '1 chart' : n === 30 ? '30 wall' : `${n}`}</button>
+            >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
               of pills to swipe through (owner: "so many UI controls"). */}
@@ -317,7 +335,7 @@ export default function Desk() {
           </>
         )}
         {gridN > 1 && (
-          <div className={`grid gap-2 ${gridN === 4 ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+          <div className={`grid gap-2 ${gridN === 4 ? 'sm:grid-cols-2' : 'sm:grid-cols-2 lg:grid-cols-4'}`}>
             {chartSymbols.slice(0, gridN).map(sym => {
               const held = (broker?.positions || []).some(px => px.symbol === sym) || positions.some(px => px.symbol === sym)
               return (
