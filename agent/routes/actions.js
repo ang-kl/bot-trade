@@ -17,6 +17,7 @@ import { amendPosition as execAmendPosition, closePosition as execClosePosition,
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
+import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -336,6 +337,24 @@ export default function actionsRouter(db) {
     setState(db, 'guardian_move_pct', String(pct))
     console.log(`[actions] guardian move threshold → ${pct}%`)
     res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/session-open-guard — { on?, windowMin?, minR? } tunes the
+  // session-open breakeven lock (owner: "when markets open, XAUUSD went
+  // from profit to loss" → "build the session-open guard").
+  // -----------------------------------------------------------------------
+  router.post('/session-open-guard', (req, res) => {
+    const cur = loadSessionOpenGuardConfig(db)
+    const b = req.body || {}
+    const next = {
+      on: b.on !== undefined ? b.on !== false : cur.on,
+      windowMin: b.windowMin !== undefined ? Math.min(120, Math.max(5, Math.round(Number(b.windowMin) || cur.windowMin))) : cur.windowMin,
+      minR: b.minR !== undefined ? Math.min(0.69, Math.max(0.05, Number(b.minR) || cur.minR)) : cur.minR,
+    }
+    setState(db, 'session_open_guard_json', JSON.stringify(next))
+    console.log(`[actions] session-open guard →`, next)
+    res.json({ ok: true, ...next })
   })
 
   // -----------------------------------------------------------------------

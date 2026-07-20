@@ -93,6 +93,93 @@ test('pre-existing DB with the old CHECK constraint: migrates in place, keeps da
   fs.rmSync(path.dirname(file), { recursive: true, force: true })
 })
 
+test('dangling FK from the pre-legacy_alter_table migration is repaired: monitored_positions inserts work again', () => {
+  // Production hit "no such table: main.trades_pre_rejected_status_migration"
+  // on every pending-order-manager pass AFTER the trades migration ran: the
+  // modern (non-legacy) RENAME rewrote monitored_positions' FK to follow
+  // `trades` to the temp name, and dropping the temp left the FK dangling.
+  // Rebuild that exact damage with the OLD buggy sequence, then prove
+  // initDB() repairs it.
+  const file = tmpDbPath()
+  const fullTradesCols = (check) => `
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      side TEXT, entry_price REAL, exit_price REAL, sl_price REAL, tp_price REAL,
+      volume REAL, opened_at TEXT, closed_at TEXT, hold_duration_ms INTEGER,
+      gross_pnl REAL, net_pnl REAL,
+      status TEXT DEFAULT 'open' CHECK(status IN (${check})),
+      close_reason TEXT, thesis TEXT, strategy TEXT, conviction REAL,
+      ctrader_position_id TEXT, analysis_id INTEGER
+  `
+  const setup = new Database(file)
+  setup.exec(`
+    CREATE TABLE trades (${fullTradesCols("'open','closed','cancelled'")});
+    CREATE TABLE monitored_positions_probe (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trade_id INTEGER REFERENCES trades(id)
+    );
+  `)
+  setup.prepare(`INSERT INTO trades (symbol, status) VALUES ('EURUSD', 'closed')`).run()
+  // The old buggy sequence: default (FK-following) rename → recreate → drop.
+  setup.pragma('foreign_keys = OFF')
+  setup.exec('ALTER TABLE trades RENAME TO trades_pre_rejected_status_migration')
+  setup.exec(`CREATE TABLE trades (${fullTradesCols("'open','closed','cancelled','rejected'")});`)
+  setup.exec(`INSERT INTO trades (id, symbol, status) SELECT id, symbol, status FROM trades_pre_rejected_status_migration`)
+  setup.exec('DROP TABLE trades_pre_rejected_status_migration')
+  // Sanity: the fixture really is damaged the way production is.
+  assert.match(
+    setup.prepare(`SELECT sql FROM sqlite_master WHERE name = 'monitored_positions_probe'`).get().sql,
+    /trades_pre_rejected_status_migration/,
+  )
+  setup.close()
+
+  const db = initDB(file)
+  // The stored schema points back at trades, and FK-enforced inserts work.
+  assert.doesNotMatch(
+    db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'monitored_positions_probe'`).get().sql,
+    /trades_pre_rejected_status_migration/,
+  )
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1)
+  assert.doesNotThrow(() => {
+    db.prepare(`INSERT INTO monitored_positions_probe (trade_id) VALUES (1)`).run()
+  })
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM trades`).get().n, 1) // data untouched
+  db.close()
+  fs.rmSync(path.dirname(file), { recursive: true, force: true })
+})
+
+test('the migration itself no longer creates the dangling FK (legacy_alter_table rename)', () => {
+  // A pre-migration DB with a referencing table: after initDB() runs the
+  // CHECK-constraint rebuild, the referencing table must still point at
+  // `trades`, not at the temp name.
+  const file = tmpDbPath()
+  const setup = new Database(file)
+  setup.exec(`
+    CREATE TABLE trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      status TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled'))
+    );
+    CREATE TABLE monitored_positions_probe (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trade_id INTEGER REFERENCES trades(id)
+    );
+  `)
+  setup.prepare(`INSERT INTO trades (symbol, status) VALUES ('GBPUSD', 'open')`).run()
+  setup.close()
+
+  const db = initDB(file)
+  assert.doesNotMatch(
+    db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'monitored_positions_probe'`).get().sql,
+    /trades_pre_rejected_status_migration/,
+  )
+  assert.doesNotThrow(() => {
+    db.prepare(`INSERT INTO monitored_positions_probe (trade_id) VALUES (1)`).run()
+  })
+  db.close()
+  fs.rmSync(path.dirname(file), { recursive: true, force: true })
+})
+
 test('interrupted migration killed right after the rename: trades is missing, temp table has the data', () => {
   const file = tmpDbPath()
   const oldTableSql = `

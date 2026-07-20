@@ -226,6 +226,22 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       tickErr = err
       console.error('[fast-monitor] tick failed:', err.message)
     }
+    // Session-open guard — every tick, but a no-op outside the first
+    // minutes after a major session opens: locks SL to breakeven on
+    // positions already in decent profit, since opens are where reversals
+    // hit hardest (owner: XAUUSD +$218 → −$261 across a session open).
+    try {
+      const creds = getCreds(db)
+      if (creds?.ready) {
+        const { runSessionOpenGuard } = await import('./session-open-guard.js')
+        await runSessionOpenGuard(db, creds, {
+          ...deps,
+          notify: (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+        })
+      }
+    } catch (err) {
+      console.error('[fast-monitor] session-open-guard failed:', err.message)
+    }
     // P&L drift watch — every 2nd tick (~60s): Telegram warns when an open
     // trade crosses ±N% of balance (owner audit: nothing warned on drift).
     if (tick % 2 === 0) {
