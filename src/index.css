@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Global type — Google "Inter" everywhere (owner spec). Override the Tailwind
+   v4 default sans stack so every utility-classed element inherits Inter too;
+   system-ui stays as the fallback until the webfont loads. */
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --default-font-family: var(--font-sans);
+}
+
 /*
  * Design tokens — "Ultra Neo Glass" v2.0.
  * Neon glassmorphism + liquid glass: translucent panels over an ambient
@@ -271,7 +279,7 @@ html, body, #root {
   min-height: 100svh;
   min-height: 100vh; /* fallback */
   color: var(--color-text);
-  font-family: system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
 body {
