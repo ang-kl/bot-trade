@@ -12,6 +12,7 @@
 
 #include "json.hpp"
 #include "ws_client.hpp"
+#include "order_guard.hpp"
 
 namespace pt {
 constexpr int HEARTBEAT               = 51;
@@ -64,6 +65,10 @@ public:
   std::string lastReconcileJson();   // "" until first successful reconcile
   long long lastReconcileAtMs();     // 0 until first successful reconcile
 
+  // Atomic hot-reconfig block (#3): the HTTP thread flips these WITHOUT
+  // locking the execution thread; placeOrder reads a lock-free snapshot.
+  OrderGuard& guard() { return guard_; }
+
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
   // every 30s, heartbeat every 25s of idle. Runs until process exit.
   void runLoop();
@@ -87,4 +92,6 @@ private:
   std::mutex stateMtx_;
   std::string lastReconcile_;
   long long lastReconcileAtMs_ = 0;
+
+  OrderGuard guard_; // atomic knobs read on the order hot path
 };

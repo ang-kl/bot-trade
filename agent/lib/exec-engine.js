@@ -90,13 +90,41 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
   }
 }
 
+// Bracket guarantee, engine-agnostic (item #4). The C++ core enforces this
+// too, but the DEFAULT js path went straight to the broker — so this is the
+// parity guard: a MARKET order with no stop attached is a naked position and
+// is refused here, unless the caller explicitly sets allowNaked. Mirrors
+// cpp-exec/src/order_guard.cpp so both engines behave identically.
+export function orderHasBracket(p) {
+  const num = (k) => Number(p?.[k])
+  return num('relativeStopLoss') > 0 || num('stopLoss') > 0
+}
+
+export function validateOrderBracket(p) {
+  const type = (p?.orderType || 'MARKET')
+  const isMarket = type === 'MARKET' || type === 'MARKET_RANGE'
+  if (isMarket && !orderHasBracket(p) && p?.allowNaked !== true) {
+    return { ok: false, reason: 'guard_naked_order: market order has no stop loss attached (set allowNaked to override)' }
+  }
+  return { ok: true }
+}
+
 export async function placeOrder(creds, orderPayload) {
+  const v = validateOrderBracket(orderPayload)
+  if (!v.ok) throw new Error(v.reason)
   if (execEngineMode() === 'cpp') {
     await ensureSidecarSession(creds)
     return sidecar('POST', '/order', orderPayload)
   }
   const m = await ws()
   return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+}
+
+/** Push the atomic guard config to the C++ sidecar (#3). No-op in js mode. */
+export async function setExecGuard(creds, cfg) {
+  if (execEngineMode() !== 'cpp') return { ok: true, mode: 'js' }
+  await ensureSidecarSession(creds)
+  return sidecar('POST', '/config', cfg)
 }
 
 export async function amendPosition(creds, args) {
