@@ -75,6 +75,15 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       tpAt: (p2.tps?.length || p2.tp != null) ? (p2.tps?.[0]?.at ?? p2.lastModifiedAt ?? null) : null,
       current: p2.currentPrice ?? null,
       pnl: net ?? null,
+      // cTrader's compulsory position columns — the standard table shows
+      // them whenever rows carry them.
+      updatedAt: p2.lastModifiedAt ?? null,
+      margin: p2.usedMargin ?? null,
+      bid: p2.bid ?? null,
+      ask: p2.ask ?? null,
+      commission: p2.commission ?? null,
+      swap: p2.swap ?? null,
+      positionId: p2.positionId ?? null,
       reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,
       chart: { symbol: p2.symbol, timeframe: '1h', lines: { entry: p2.entry, sl: p2.sl, tp: p2.tp } },

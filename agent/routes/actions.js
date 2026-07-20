@@ -1815,6 +1815,16 @@ export default function actionsRouter(db) {
           try {
             pnlMap = await wsGetUnrealizedPnl(host, clientId, clientSecret, accessToken, acct.accountId)
           } catch { /* fall back to estimates */ }
+          // Live bid/ask for position symbols only (cTrader's compulsory
+          // columns) — a handful of one-shot quotes, fetched in parallel.
+          let spots = {}
+          try {
+            const posSymbolIds = [...new Set(rawPositions.map(p => p.tradeData?.symbolId).filter(Boolean))]
+            const rs2 = await Promise.all(posSymbolIds.map(id =>
+              wsGetSpotOnce(host, clientId, clientSecret, accessToken, acct.accountId, id).then(q => [id, q]).catch(() => [id, null])
+            ))
+            spots = Object.fromEntries(rs2)
+          } catch { /* bid/ask omitted */ }
 
           const money = (v) => (v == null ? null : v / Math.pow(10, acct.moneyDigits ?? 2))
           // volume and lotSize are both in cents-of-units, so lots is their
@@ -1915,6 +1925,8 @@ export default function actionsRouter(db) {
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
               tps: ladder.length ? ladder : null,
+              bid: spots[td.symbolId]?.bid ?? null,
+              ask: spots[td.symbolId]?.ask ?? null,
               swap: swapMoney,
               commission: commissionMoney,
               usedMargin: money(p.usedMargin),

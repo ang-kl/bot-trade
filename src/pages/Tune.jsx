@@ -1933,7 +1933,13 @@ export default function Tune() {
               <p className="text-[13px] text-[var(--color-text-sub)]">No enabled symbols — add instruments on the Watchlist tab first.</p>
             ) : (
               <>
-                <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tests your enabled watchlist — expand a group to skip individual symbols this run:</div>
+                <div className="text-[12px] text-[var(--color-text-sub)] mb-1.5">Tests your enabled watchlist — groups first: include/skip whole groups, expand only to fine-tune symbols:</div>
+                {/* One-tap ALL / NONE across every group (owner spec). */}
+                <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[12px]">
+                  <Button size="sm" variant="subtle" onClick={() => setBtSkip(new Set())}>Select all ({enabledSymbols.length})</Button>
+                  <Button size="sm" variant="subtle" onClick={() => setBtSkip(new Set(enabledSymbols))}>Select none</Button>
+                  <span className="text-[var(--color-text-sub)]">testing {btSymbols.length} of {enabledSymbols.length}</span>
+                </div>
                 {/* Banded like the watchlist (owner spec): one collapsed row
                     per group with skip/include-all; expand for symbol chips. */}
                 {(() => {
