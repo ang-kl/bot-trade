@@ -140,7 +140,14 @@ export async function runFastMonitor(db, creds, deps = {}) {
           eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
           pos.id,
         )
-        if (eval_.action === 'HOLD') continue
+        if (eval_.action === 'HOLD') {
+          // Same truthfulness fix as the main loop's monitor phase (owner:
+          // "why are you not monitoring") — a HOLD verdict used to write
+          // nothing, so a position checked every 30-90s for hours looked
+          // identical in the UI to one that was never touched.
+          s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
+          continue
+        }
         const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_)
         acted++
         const summary = outcome.error

@@ -1327,12 +1327,30 @@ async function runLoop(db) {
             continue
           }
 
-          // External positions: skip LLM monitor — just update metrics, no token spend
-          if (pos.source === 'external') continue
+          // External positions: skip LLM monitor — just update metrics, no
+          // token spend. Still stamp a HOLD checkpoint (owner: "why are you
+          // not monitoring" — this position WAS evaluated every cycle, the
+          // UI just never said so, because only a non-HOLD verdict used to
+          // get persisted here — a real position sitting well inside its
+          // rules for hours looked identical to one that was never checked).
+          if (pos.source === 'external') {
+            s.updatePositionCheck.run(
+              'HOLD', `${eval_.reason} | external: observe_only`, new Date().toISOString(), 'intact', pos.id
+            )
+            continue
+          }
 
           // Live Tweak & Close off for this strategy → no LLM monitor either
-          // (its EXIT would close the DB record while the broker still holds).
-          if (!manageStageAllows(db, getState, pos.strategy)) continue
+          // (its EXIT would close the DB record while the broker still
+          // holds) — still stamp the HOLD check, same reasoning as above.
+          if (!manageStageAllows(db, getState, pos.strategy)) {
+            s.updatePositionCheck.run(
+              'HOLD',
+              `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
+              new Date().toISOString(), 'intact', pos.id
+            )
+            continue
+          }
 
           // Fallback: free-text theses and ambiguous cases → LLM Monitor.
           const check = await runMonitorCheck(client, {
