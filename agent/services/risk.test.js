@@ -28,7 +28,7 @@ function freshDB() {
       gross_pnl REAL, net_pnl REAL,
       status TEXT DEFAULT 'open',
       close_reason TEXT, thesis TEXT, strategy TEXT, conviction REAL,
-      ctrader_position_id TEXT, analysis_id INTEGER
+      ctrader_position_id TEXT, analysis_id INTEGER, label_strategy TEXT
     );
     CREATE TABLE monitored_positions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +229,28 @@ test('duplicate symbol vetoes', () => {
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /duplicate_symbol/)
+})
+
+// Correlation-cluster cap -------------------------------------------------
+
+test('correlation cap vetoes a third correlated position across cluster members', () => {
+  const db = freshDB()
+  // Two US-equity longs already loaded; a NAS100 long stacks the cluster
+  // to +3 vs the default cap of 2 — vetoed even though no currency is shared.
+  insertOpenPosition(db, 'US30', 'long')
+  insertOpenPosition(db, 'US500', 'long')
+  const res = evaluateTrade(db, goodProposal({ symbol: 'NAS100', side: 'long', entry: 18000, sl: 17900, tp1: 18300 }))
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /correlated_us_equity/)
+})
+
+test('correlation cap: a hedging position on the same cluster is allowed', () => {
+  const db = freshDB()
+  insertOpenPosition(db, 'USDJPY', 'long')  // +1 long USD
+  insertOpenPosition(db, 'USDCHF', 'long')  // +1 long USD → net +2
+  // Long EURUSD reduces long-USD exposure (beta -1) — a hedge, not a stack.
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', side: 'long' }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
 
 // R:R floor --------------------------------------------------------------

@@ -42,7 +42,11 @@ const fmt = (v, d) => (v == null ? '—' : Number(v).toLocaleString(undefined, {
 function ago(iso) {
   if (!iso) return ''
   const t = Date.parse(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
-  const mins = Math.max(0, Math.round((Date.now() - t) / 60_000))
+  const secs = Math.max(0, Math.round((Date.now() - t) / 1000))
+  // Seconds under a minute (owner: a risk decision made "less than 1m" ago
+  // read as a useless "0m" — sub-minute events need sub-minute resolution).
+  if (secs < 60) return `${secs}s`
+  const mins = Math.round(secs / 60)
   if (mins < 60) return `${mins}m`
   if (mins < 1440) return `${Math.round(mins / 60)}h`
   return `${Math.round(mins / 1440)}d`

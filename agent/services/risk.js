@@ -15,6 +15,7 @@
 
 import { getState } from '../db.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
+import { correlationVeto } from './correlation.js'
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -45,6 +46,9 @@ export const DEFAULT_RISK_CONFIG = {
                                    // microstructure-frequent-trading-notes.md).
                                    // 0 disables the check.
   maxCurrencyExposure: 2,          // Net long/short exposure to any one ccy.
+  maxClusterExposure: 2,           // Net directional exposure to any one
+                                   // correlation cluster (gold/USD, US
+                                   // equity, crude…). 0 disables the check.
   minTradesForKelly: 30,           // Below this → use default volume.
   kellyFraction: 0.25,             // Quarter-Kelly for drawdown control.
   allowNegativeExpectancyOverride: false, // If false, negative expectancy vetoes.
@@ -299,7 +303,9 @@ export function evaluateTrade(db, proposal, configOverride) {
   // ---- 3. Max open positions ---------------------------------------------
   const openPositions = db
     .prepare(`
-      SELECT mp.symbol, mp.side, mp.entry_price, t.opened_at
+      SELECT mp.symbol, mp.side, mp.entry_price, mp.strategy AS strategy,
+             mp.last_check_action AS lastCheckAction, mp.last_check_at AS lastCheckAt,
+             t.opened_at, COALESCE(t.label_strategy, t.strategy) AS tradeStrategy
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active'
@@ -313,14 +319,15 @@ export function evaluateTrade(db, proposal, configOverride) {
   // ---- 4. No duplicate on same symbol ------------------------------------
   const existingSameSymbol = openPositions.find(p => p.symbol === proposal.symbol)
   if (existingSameSymbol) {
-    // Owner: "not contextual and not insight" — the veto now names the
-    // actual position blocking it (side, entry, age), not a bare "already
-    // in this symbol", so a repeated veto reads as "here's what you're
-    // already holding" instead of an unexplained no. entry/opened are
-    // parsed back out by src/lib/veto-words.js; the leading `existing_side=`
-    // stays first for back-compat with any code still matching on it alone.
+    // Owner: "show evidence of your veto ... what was the last strategy used
+    // to open-trade, and why you veto." The veto now names the actual
+    // blocking position — side, entry, WHICH STRATEGY opened it, when — so a
+    // repeated veto is a full audit line, not an unexplained no. All fields
+    // parse back out in src/lib/veto-words.js; the leading `existing_side=`
+    // stays first for back-compat with anything matching on it alone.
+    const stratOf = existingSameSymbol.strategy || existingSameSymbol.tradeStrategy || 'na'
     return veto(
-      `duplicate_symbol existing_side=${existingSameSymbol.side} entry=${existingSameSymbol.entry_price ?? 'na'} opened=${existingSameSymbol.opened_at ?? 'na'}`,
+      `duplicate_symbol existing_side=${existingSameSymbol.side} entry=${existingSameSymbol.entry_price ?? 'na'} opened=${existingSameSymbol.opened_at ?? 'na'} strat=${stratOf} lastcheck=${existingSameSymbol.lastCheckAt ?? 'na'}`,
       checks, proposal,
     )
   }
@@ -400,6 +407,20 @@ export function evaluateTrade(db, proposal, configOverride) {
   for (const [ccy, v] of Object.entries(exposure)) {
     if (Math.abs(v) > config.maxCurrencyExposure) {
       return veto(`overexposed_${ccy}=${v}`, checks, proposal)
+    }
+  }
+
+  // ---- 8b. Correlation-cluster cap ---------------------------------------
+  // Owner: "did you check pair and correlation?" Currency exposure only
+  // catches SHARED currency legs; this catches instruments that move
+  // together WITHOUT one (gold vs USDJPY, WTI vs Brent, US indices). Vetoes
+  // a proposal that would stack a correlated cluster past the cap in the
+  // same direction. maxClusterExposure 0 / null disables it.
+  if (config.maxClusterExposure > 0) {
+    const corr = correlationVeto(openPositions, proposal, config.maxClusterExposure)
+    if (corr) {
+      checks.correlation = corr
+      return veto(`correlated_${corr.cluster}=${corr.net} cap=${corr.cap} with=${corr.others.join('|') || 'none'}`, checks, proposal)
     }
   }
 
