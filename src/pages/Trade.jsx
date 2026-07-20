@@ -39,12 +39,14 @@ function ago(iso) {
 
 // Open (monitored) positions → the standard shape. Time = the broker fill
 // time when known (trades.opened_at via the join), else the row's created_at.
-function openPositionRows(positions, prices = {}) {
+function openPositionRows(positions, prices = {}, pnlById = {}) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
     const current = Number(prices[String(p.symbol).toUpperCase()]) || null
+    const pnl = pnlById[String(p.ctrader_position_id)] ?? null
     return {
+      pnl,
       id: `pos-${p.id}`,
       at: p.opened_at || p.created_at,
       symbol: p.symbol,
@@ -97,8 +99,9 @@ function pendingOrderRows(orders) {
 // External (non-bot) broker positions → the standard shape; observed only.
 // prices (latest scan close per symbol) light up the To TP/SL distance —
 // the owner's own trades deserve the same live protection read.
-function externalPositionRows(positions, prices = {}) {
+function externalPositionRows(positions, prices = {}, pnlById = {}) {
   return positions.map(p => ({
+    pnl: pnlById[String(p.ctrader_position_id)] ?? null,
     id: `ext-${p.id}`,
     at: p.opened_at || p.created_at || null,
     symbol: p.symbol,
@@ -223,6 +226,7 @@ export default function Trade() {
   const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
   const [marketHours, setMarketHours] = useState(null) // { SYM: { open, next_open_at } }
   const [vetoBd, setVetoBd] = useState(null)    // veto-reason breakdown for the order-log insight
+  const [pnlById, setPnlById] = useState({})    // broker-truth net P&L per ctrader position id
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -261,6 +265,16 @@ export default function Trade() {
     }
     // Order-log insight: WHY the vetoes, grouped — non-blocking.
     agentGet('/state/veto-breakdown?days=7').then(setVetoBd).catch(() => {})
+    // Broker-truth P&L per position from the last snapshot (SQLite-cached,
+    // ms-fast) — standardises the P&L column across ALL position tables.
+    agentGet('/state/broker-cache').then(bc => {
+      const by = {}
+      for (const p of bc?.snapshot?.account?.positions || []) {
+        const v = p.netPnl ?? p.estNetPnl
+        if (p.positionId != null && v != null) by[String(p.positionId)] = v
+      }
+      setPnlById(by)
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -437,7 +451,7 @@ export default function Trade() {
       <Card>
         <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="open positions" marketHours={marketHours} />}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), pnlById)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
@@ -536,7 +550,7 @@ export default function Trade() {
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <StdTradeTable rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])))} countLabel="external positions" marketHours={marketHours} />
+              <StdTradeTable rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), pnlById)} countLabel="external positions" marketHours={marketHours} />
             </div>
           )}
         </Card>
