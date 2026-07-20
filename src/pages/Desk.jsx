@@ -88,7 +88,8 @@ export default function Desk() {
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
-  const [symbol, setSymbol] = useState('')
+  const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
+  const [symbolTouched, setSymbolTouched] = useState(false) // true once the trader manually picks a chart
   const [gridN, setGridN] = useState(() => {
     try { return Number(localStorage.getItem('desk_grid_n')) || 1 } catch { return 1 }
   })   // 1 | 4 | 9 | 30 charts (30 = 3 columns × 10 rows)
@@ -128,7 +129,6 @@ export default function Desk() {
       .then(b => {
         setBroker(b?.accounts?.[0] ?? null)
         setBrokerErr('')
-        setSymbol(prev => prev || b?.accounts?.[0]?.positions?.[0]?.symbol || '')
       })
       // A failed LIVE refresh must be loud — silently keeping the cached
       // snapshot made the Desk look current while showing Friday's data
@@ -145,7 +145,6 @@ export default function Desk() {
       .then(bc => {
         if (bc?.snapshot?.account) {
           setBroker(prev => prev ?? { ...bc.snapshot.account, _cachedAt: bc.snapshot.fetchedAt })
-          setSymbol(prev => prev || bc.snapshot.account.positions?.[0]?.symbol || '')
         }
         if (bc?.history?.ok) setBrokerHistory(prev => prev ?? { ...bc.history, _cachedAt: bc.history.fetchedAt })
       })
@@ -177,7 +176,6 @@ export default function Desk() {
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
       setError('')
-      setSymbol(prev => prev || p.rows?.[0]?.symbol || rows[0]?.symbol || 'EURUSD')
     } catch (e) { setError(e.message) }
   }, [])
 
@@ -205,6 +203,16 @@ export default function Desk() {
     ...activeScans,
     ...(activeScans.length === 0 ? watch : []),
   ])]
+  // The DISPLAYED symbol follows the top of chartSymbols (a held position,
+  // or the hottest active signal) until the trader manually picks a chart —
+  // derived on every render rather than a "set once and never touch again"
+  // effect, which previously raced three separate defaults on load and
+  // could permanently lock onto a placeholder ('EURUSD') or a stale symbol
+  // before real positions/signals had even arrived (owner: "still doesn't
+  // show active trade for charting"). pickSymbol() is the ONLY thing that
+  // stops the auto-follow.
+  const symbol = symbolTouched ? manualSymbol : (chartSymbols[0] || '')
+  const pickSymbol = (sym) => { setManualSymbol(sym); setSymbolTouched(true) }
   const linesFor = (sym) => {
     const bp = (broker?.positions || []).find(px => px.symbol === sym)
     if (bp) return { entry: bp.entry, sl: bp.sl, tp: bp.tp }
@@ -286,7 +294,7 @@ export default function Desk() {
             <select
               aria-label="Chart symbol"
               value={symbol || ''}
-              onChange={e => setSymbol(e.target.value)}
+              onChange={e => pickSymbol(e.target.value)}
               className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[12px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
             >
               {chartSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
@@ -313,7 +321,7 @@ export default function Desk() {
               const held = (broker?.positions || []).some(px => px.symbol === sym) || positions.some(px => px.symbol === sym)
               return (
                 <div key={sym} className="min-w-0">
-                  <button type="button" className="text-[11px] font-bold cursor-pointer hover:underline" onClick={() => { setSymbol(sym); pickGrid(1) }}>
+                  <button type="button" className="text-[11px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
                     {sym}{held ? ' ●' : ''}
                   </button>
                   <PositionChart
@@ -331,7 +339,7 @@ export default function Desk() {
         <div className="mt-2 border-t border-[var(--color-border)] pt-1.5 grid gap-x-6 sm:grid-cols-2 lg:grid-cols-3 text-[12px]">
           {scans.map(sc => (
             <button
-              key={sc.symbol} type="button" onClick={() => { setSymbol(sc.symbol); if (gridN !== 1) pickGrid(1) }}
+              key={sc.symbol} type="button" onClick={() => { pickSymbol(sc.symbol); if (gridN !== 1) pickGrid(1) }}
               className="flex items-center gap-1.5 py-0.5 text-left cursor-pointer min-w-0"
               title={sc.thesis || ''}
             >
@@ -363,7 +371,7 @@ export default function Desk() {
             rows={brokerPositionRows(broker.positions, { manageable: true })}
             countLabel="open positions"
             marketHours={marketHours}
-            onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
+            onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
             panel={{ label: 'Manage', render: (row, close) => <PositionManager p={row.raw} onDone={() => { close(); load() }} /> }}
           />
         )}
@@ -374,7 +382,7 @@ export default function Desk() {
               rows={brokerOrderRows(broker.orders, { manageable: true })}
               countLabel="pending orders"
               marketHours={marketHours}
-              onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }}
+              onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
               panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
             />
           </div>
@@ -406,7 +414,7 @@ export default function Desk() {
           <p className="text-[11px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
-          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { setSymbol(sym3); pickGrid(1) }} />
+          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last 7 days.</p>
