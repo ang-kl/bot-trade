@@ -231,6 +231,27 @@ const TABLES = `
     proposal_json  TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- A hot signal whose own market was closed (stock/index/soft/grain outside
+  -- exchange hours) is queued here instead of just being dropped — owner:
+  -- "do you separate which one you would trade based on market open?".
+  -- resolved once, the first cycle after the market reopens, against a FRESH
+  -- re-scan (never against the stale queued price) — see runPendingSignals()
+  -- in services/pending-signals.js.
+  CREATE TABLE IF NOT EXISTS pending_signals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT NOT NULL,
+    bias            TEXT,
+    conviction      REAL,
+    strategy        TEXT,
+    timeframe       TEXT,
+    market_reason   TEXT,
+    status          TEXT DEFAULT 'pending' CHECK(status IN ('pending','fired','expired')),
+    queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT,
+    resolved_at     TEXT,
+    resolution_note TEXT
+  );
 `;
 
 const INDEXES = `
@@ -247,6 +268,7 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
+  CREATE INDEX IF NOT EXISTS idx_pending_signals_status ON pending_signals(status, symbol);
 `;
 
 // ---------------------------------------------------------------------------

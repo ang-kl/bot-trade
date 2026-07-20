@@ -140,8 +140,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
   // Market-hours gate: a MARKET order into a closed market is a guaranteed
   // broker rejection — stocks/indices trade the NY session only, FX/metals
-  // close on weekends. The signal isn't lost: if the zone still holds when
-  // the market reopens, the scan will fire it again.
+  // close on weekends. The signal isn't lost: it's queued (pending_signals)
+  // and re-checked against a FRESH scan the moment the symbol's own market
+  // reopens — see services/pending-signals.js and its runPendingSignals()
+  // loop.js phase (owner: "do you separate which one you would trade based
+  // on market open... which will trade later when NY opens?").
   // Broker-truth schedule (symbol_hours table) when cached; the sessions.js
   // heuristic is the fallback for symbols not yet refreshed.
   const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
@@ -163,6 +166,12 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         source: synth.source || 'auto_signal',
       }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
       setState(db, dedupeKey, 'y')
+    }
+    try {
+      const { queuePendingSignal } = await import('./services/pending-signals.js')
+      queuePendingSignal(db, symbol, synth, marketGate.reason)
+    } catch (err) {
+      log(`Pending-signal queue failed for ${symbol} (non-fatal): ${err.message}`)
     }
     log(`Auto-trade deferred — ${marketGate.reason}`)
     return null
@@ -383,6 +392,211 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
 function log(...args) {
   console.log('[loop]', ...args)
+}
+
+// ---------------------------------------------------------------------------
+// Per-symbol synthesis → gate chain → auto-trade dispatch. Shared by the live
+// scan/analyze phase below (which only walks the top 3 hot symbols per
+// cycle) and the pending-signals retry phase (services/pending-signals.js),
+// which re-fires this SAME chain — never a stored stale synth — the moment a
+// closed-market symbol's exchange reopens. One function means a gate added
+// here protects both paths; `signal` is the raw fib-strategy signal for
+// `sym` (scanResult.signals[sym] on the live path, a fresh re-scan on the
+// pending-signal retry path).
+// ---------------------------------------------------------------------------
+export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
+  const wItem = symbols.find(w => w.symbol === sym) || { autoTradeThreshold: 8 }
+
+  // Pre-flight: skip analysis if ALL trade styles are disabled for this symbol
+  if (wItem.allowed_styles) {
+    const st = wItem.allowed_styles
+    if (st.scalp === false && st.day === false && st.swing === false && st.mid_term === false) {
+      log(`Style filter: ${sym} — all styles disabled, skipping analysis`)
+      return { fired: false, synth: null }
+    }
+  }
+  const result = synthesizeFibSignal(sym, signal, wItem.autoTradeThreshold || 8)
+
+  // Find latest scan id for this symbol to link
+  const latestScan = s.latestScanForSymbol.get(sym)
+  const scanId = latestScan ? latestScan.id : null
+
+  const synth = result.synthesis || {}
+  s.insertAnalysis.run({
+    symbol: result.symbol,
+    consensus_bias: synth.consensus_bias || null,
+    overall_conviction: synth.overall_conviction ?? null,
+    consensus_summary: synth.consensus_summary || synth.synthesis || null,
+    synthesis: JSON.stringify(synth),
+    entry_price: synth.entry_price ?? synth.entry ?? null,
+    sl_price: synth.sl_price ?? synth.sl ?? null,
+    tp1_price: synth.tp1_price ?? synth.tp1 ?? null,
+    tp2_price: synth.tp2_price ?? synth.tp2 ?? null,
+    auto_trade: synth.auto_trade ? 1 : 0,
+    strategy: synth.strategy || null,
+    risk_note: synth.risk_note || null,
+    minion_reports: JSON.stringify(result.reports || []),
+    invalidation_trigger: synth.invalidation_trigger || null,
+    time_cap_minutes: synth.time_cap_minutes ?? null,
+    analyzed_at: new Date().toISOString(),
+    scan_id: scanId,
+  })
+
+  log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) rr=${synth.risk_note || ''}`)
+
+  // Auto-trade — only when armed and synthesis recommends it.
+  // Iterate all autopilot-enabled accounts so the same signal
+  // replicates across every assigned account with per-account sizing.
+  // Telegram alert per analysis, deduped on the zone signature —
+  // a persisting fib zone re-analyzes every loop with near-identical
+  // numbers and must not re-ping every 5 minutes.
+  if (synth.overall_conviction >= 6 && process.env.TELEGRAM_BOT_TOKEN) {
+    const alertKey = `last_analysis_alert_${sym}`
+    const alertSig = signal ? `${signal.timeframe}@${signal.level618}` : String(synth.entry)
+    if (alertSig !== getState(db, alertKey)) {
+      try {
+        const { sendMessage } = await import('./services/telegram.js')
+        const { formatAnalysisAlert } = await import('./services/alert-format.js')
+        const newsLines = await import('./services/news-calendar.js').then(m => m.newsLinesFor(db, sym)).catch(() => [])
+        await sendMessage(formatAnalysisAlert(db, { sym, synth, signal, newsLines, armed: {
+          tfs: (() => { try { return JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { return [] } })(),
+          matrix: (() => { try { return JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { return null } })(),
+          autotrade: getState(db, 'autotrade_enabled') === 'true',
+        } }))
+        setState(db, alertKey, alertSig)
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  // Autotrade SCOPE (owner 2026-07-17): the backtest arms combos, but
+  // auto-trade is the intelligent full-watchlist trader. Default
+  // scope 'all' = every enabled watchlist symbol × every scanned
+  // timeframe may trade (backtest-armed combos remain micro-tuning:
+  // the scan prefers them where present). scope 'armed' restores the
+  // narrow behaviour: only the armed TF list / per-symbol matrix.
+  // Either way the risk gate, stage matrix, market hours, exposure
+  // caps and equity stop still veto — scope decides what is
+  // CONSIDERED, the gates decide what EXECUTES.
+  if (synth.auto_trade && (getState(db, 'autotrade_scope') || 'all') === 'armed') {
+    let allowedTfs = ['4h', '1d']
+    const tfJson = getState(db, 'autotrade_timeframes')
+    if (tfJson) {
+      try {
+        const parsedTfs = JSON.parse(tfJson)
+        if (Array.isArray(parsedTfs) && parsedTfs.length > 0) allowedTfs = parsedTfs
+      } catch { /* keep default */ }
+    }
+    if (!allowedTfs.includes(synth.timeframe)) {
+      log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
+      synth.auto_trade = false
+    }
+
+    // Per-instrument arming (autotrade_matrix_json = {SYM: [tfs]}):
+    // when the matrix exists, a symbol only trades the timeframes the
+    // trader armed FOR THAT SYMBOL — "arm anyway" on NATGAS 2h must
+    // not arm 2h for the whole watchlist. Absent matrix = legacy
+    // TF-wide behaviour.
+    if (synth.auto_trade) {
+      const matrixJson = getState(db, 'autotrade_matrix_json')
+      if (matrixJson) {
+        try {
+          const matrix = JSON.parse(matrixJson)
+          if (matrix && typeof matrix === 'object' && Object.keys(matrix).length > 0) {
+            const armedForSym = matrix[sym.toUpperCase()] || []
+            if (!armedForSym.includes(synth.timeframe)) {
+              log(`Matrix gate: ${sym} blocked — ${synth.timeframe} not armed for this symbol (armed: ${armedForSym.join(',') || 'none'})`)
+              synth.auto_trade = false
+            }
+          }
+        } catch { /* corrupt matrix — fall back to TF-wide */ }
+      }
+    }
+  }
+  if (synth.auto_trade) {
+    // Stage-matrix gate (Tune → Pipeline table): the scan now covers
+    // MORE than what may trade — the strategy's "Auto Trade & Open"
+    // cell must be on, and no trade-armed filter may have failed at
+    // scan time (filters run in annotate mode there).
+    const gate = tradeStageGate(db, getState, {
+      strategy: synth.strategy,
+      filtersFailed: signal?.filters_failed || [],
+    })
+    if (!gate.ok) {
+      log(`Stage gate: ${sym} blocked — ${gate.reason}`)
+      synth.auto_trade = false
+    }
+  }
+
+  // Human override: if override_bias is set, use it instead of AI's
+  if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
+    if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
+      synth.auto_trade = false
+    } else {
+      synth.consensus_bias = wItem.override_bias
+    }
+  }
+
+  // Style filter: check if time_cap_minutes matches allowed trade types
+  if (wItem.allowed_styles && synth.auto_trade) {
+    const ttl = synth.time_cap_minutes || 180
+    const styles = wItem.allowed_styles
+    const isScalp = ttl <= 30
+    const isDay = ttl > 30 && ttl <= 480
+    const isSwing = ttl > 480 && ttl <= 10080
+    const isMidTerm = ttl > 10080
+
+    if (isScalp && styles.scalp === false) {
+      log(`Style filter: ${sym} blocked — scalp trading disabled (TTL ${ttl}m)`)
+      synth.auto_trade = false
+    }
+    if (isDay && styles.day === false) {
+      log(`Style filter: ${sym} blocked — day trading disabled (TTL ${ttl}m)`)
+      synth.auto_trade = false
+    }
+    if (isSwing && styles.swing === false) {
+      log(`Style filter: ${sym} blocked — swing trading disabled (TTL ${ttl}m)`)
+      synth.auto_trade = false
+    }
+    if (isMidTerm && styles.mid_term === false) {
+      log(`Style filter: ${sym} blocked — mid-term trading disabled (TTL ${ttl}m)`)
+      synth.auto_trade = false
+    }
+  }
+
+  // Human override: block_next_trade — one-time veto then auto-clear
+  if (wItem.block_next_trade && synth.auto_trade) {
+    log(`Block next trade: ${sym} — human veto, clearing flag`)
+    synth.auto_trade = false
+    // Clear the flag after use
+    const symbolsJsonCurrent = getState(db, 'autopilot_symbols_json') || '[]'
+    try {
+      const syms = JSON.parse(symbolsJsonCurrent)
+      const s2 = syms.map(s2i => typeof s2i === 'string' ? { symbol: s2i } : s2i)
+      const target = s2.find(s2i => s2i.symbol === sym)
+      if (target) target.block_next_trade = false
+      setState(db, 'autopilot_symbols_json', JSON.stringify(s2))
+    } catch { /* non-fatal */ }
+  }
+
+  let fired = false
+  if (getState(db, 'autotrade_enabled') === 'true' && synth.auto_trade && synth.entry) {
+    const apAccounts = getAutopilotAccounts(db)
+    for (const acct of apAccounts) {
+      const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
+      if (tradeResult) {
+        fired = true
+        if (process.env.TELEGRAM_BOT_TOKEN) {
+          try {
+            const { sendMessage } = await import('./services/telegram.js')
+            await sendMessage(
+              `🤖 AUTO-TRADE [${acct.accountId}]: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
+            )
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
+  }
+  return { fired, synth }
 }
 
 // ---------------------------------------------------------------------------
@@ -668,7 +882,6 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
-    const autotradeEnabled = getState(db, 'autotrade_enabled') === 'true'
     const client = getAnthropicClient()
 
     // Daily token budget — reporting only. Scan/analyze are deterministic
@@ -832,199 +1045,7 @@ async function runLoop(db) {
       setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
         try {
-          const wItem =
-            symbols.find(w => w.symbol === sym) || { autoTradeThreshold: 8 }
-
-          // Pre-flight: skip analysis if ALL trade styles are disabled for this symbol
-          if (wItem.allowed_styles) {
-            const st = wItem.allowed_styles
-            if (st.scalp === false && st.day === false && st.swing === false && st.mid_term === false) {
-              log(`Style filter: ${sym} — all styles disabled, skipping analysis`)
-              continue
-            }
-          }
-          const result = synthesizeFibSignal(sym, scanResult.signals[sym], wItem.autoTradeThreshold || 8)
-
-          // Find latest scan id for this symbol to link
-          const latestScan = s.latestScanForSymbol.get(sym)
-          const scanId = latestScan ? latestScan.id : null
-
-          const synth = result.synthesis || {}
-          s.insertAnalysis.run({
-            symbol: result.symbol,
-            consensus_bias: synth.consensus_bias || null,
-            overall_conviction: synth.overall_conviction ?? null,
-            consensus_summary: synth.consensus_summary || synth.synthesis || null,
-            synthesis: JSON.stringify(synth),
-            entry_price: synth.entry_price ?? synth.entry ?? null,
-            sl_price: synth.sl_price ?? synth.sl ?? null,
-            tp1_price: synth.tp1_price ?? synth.tp1 ?? null,
-            tp2_price: synth.tp2_price ?? synth.tp2 ?? null,
-            auto_trade: synth.auto_trade ? 1 : 0,
-            strategy: synth.strategy || null,
-            risk_note: synth.risk_note || null,
-            minion_reports: JSON.stringify(result.reports || []),
-            invalidation_trigger: synth.invalidation_trigger || null,
-            time_cap_minutes: synth.time_cap_minutes ?? null,
-            analyzed_at: new Date().toISOString(),
-            scan_id: scanId,
-          })
-
-          log(`Analysis complete: ${sym} — ${synth.consensus_bias || '?'} (${synth.overall_conviction || 0}/10) rr=${synth.risk_note || ''}`)
-
-          // Auto-trade — only when armed and synthesis recommends it.
-          // Iterate all autopilot-enabled accounts so the same signal
-          // replicates across every assigned account with per-account sizing.
-          // Telegram alert per analysis, deduped on the zone signature —
-          // a persisting fib zone re-analyzes every loop with near-identical
-          // numbers and must not re-ping every 5 minutes.
-          if (synth.overall_conviction >= 6 && process.env.TELEGRAM_BOT_TOKEN) {
-            const sig = scanResult.signals[sym]
-            const alertKey = `last_analysis_alert_${sym}`
-            const alertSig = sig ? `${sig.timeframe}@${sig.level618}` : String(synth.entry)
-            if (alertSig !== getState(db, alertKey)) {
-              try {
-                const { sendMessage } = await import('./services/telegram.js')
-                const { formatAnalysisAlert } = await import('./services/alert-format.js')
-                const newsLines = await import('./services/news-calendar.js').then(m => m.newsLinesFor(db, sym)).catch(() => [])
-                await sendMessage(formatAnalysisAlert(db, { sym, synth, signal: sig, newsLines, armed: {
-                  tfs: (() => { try { return JSON.parse(getState(db, 'autotrade_timeframes') || '[]') } catch { return [] } })(),
-                  matrix: (() => { try { return JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { return null } })(),
-                  autotrade: getState(db, 'autotrade_enabled') === 'true',
-                } }))
-                setState(db, alertKey, alertSig)
-              } catch { /* non-fatal */ }
-            }
-          }
-
-          // Autotrade SCOPE (owner 2026-07-17): the backtest arms combos, but
-          // auto-trade is the intelligent full-watchlist trader. Default
-          // scope 'all' = every enabled watchlist symbol × every scanned
-          // timeframe may trade (backtest-armed combos remain micro-tuning:
-          // the scan prefers them where present). scope 'armed' restores the
-          // narrow behaviour: only the armed TF list / per-symbol matrix.
-          // Either way the risk gate, stage matrix, market hours, exposure
-          // caps and equity stop still veto — scope decides what is
-          // CONSIDERED, the gates decide what EXECUTES.
-          if (synth.auto_trade && (getState(db, 'autotrade_scope') || 'all') === 'armed') {
-            let allowedTfs = ['4h', '1d']
-            const tfJson = getState(db, 'autotrade_timeframes')
-            if (tfJson) {
-              try {
-                const parsedTfs = JSON.parse(tfJson)
-                if (Array.isArray(parsedTfs) && parsedTfs.length > 0) allowedTfs = parsedTfs
-              } catch { /* keep default */ }
-            }
-            if (!allowedTfs.includes(synth.timeframe)) {
-              log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
-              synth.auto_trade = false
-            }
-
-            // Per-instrument arming (autotrade_matrix_json = {SYM: [tfs]}):
-            // when the matrix exists, a symbol only trades the timeframes the
-            // trader armed FOR THAT SYMBOL — "arm anyway" on NATGAS 2h must
-            // not arm 2h for the whole watchlist. Absent matrix = legacy
-            // TF-wide behaviour.
-            if (synth.auto_trade) {
-              const matrixJson = getState(db, 'autotrade_matrix_json')
-              if (matrixJson) {
-                try {
-                  const matrix = JSON.parse(matrixJson)
-                  if (matrix && typeof matrix === 'object' && Object.keys(matrix).length > 0) {
-                    const armedForSym = matrix[sym.toUpperCase()] || []
-                    if (!armedForSym.includes(synth.timeframe)) {
-                      log(`Matrix gate: ${sym} blocked — ${synth.timeframe} not armed for this symbol (armed: ${armedForSym.join(',') || 'none'})`)
-                      synth.auto_trade = false
-                    }
-                  }
-                } catch { /* corrupt matrix — fall back to TF-wide */ }
-              }
-            }
-          }
-          if (synth.auto_trade) {
-
-            // Stage-matrix gate (Tune → Pipeline table): the scan now covers
-            // MORE than what may trade — the strategy's "Auto Trade & Open"
-            // cell must be on, and no trade-armed filter may have failed at
-            // scan time (filters run in annotate mode there).
-            if (synth.auto_trade) {
-              const sig = scanResult.signals[sym]
-              const gate = tradeStageGate(db, getState, {
-                strategy: synth.strategy,
-                filtersFailed: sig?.filters_failed || [],
-              })
-              if (!gate.ok) {
-                log(`Stage gate: ${sym} blocked — ${gate.reason}`)
-                synth.auto_trade = false
-              }
-            }
-          }
-
-          // Human override: if override_bias is set, use it instead of AI's
-          if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
-            if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
-              synth.auto_trade = false
-            } else {
-              synth.consensus_bias = wItem.override_bias
-            }
-          }
-
-          // Style filter: check if time_cap_minutes matches allowed trade types
-          if (wItem.allowed_styles && synth.auto_trade) {
-            const ttl = synth.time_cap_minutes || 180
-            const styles = wItem.allowed_styles
-            const isScalp = ttl <= 30
-            const isDay = ttl > 30 && ttl <= 480
-            const isSwing = ttl > 480 && ttl <= 10080
-            const isMidTerm = ttl > 10080
-
-            if (isScalp && styles.scalp === false) {
-              log(`Style filter: ${sym} blocked — scalp trading disabled (TTL ${ttl}m)`)
-              synth.auto_trade = false
-            }
-            if (isDay && styles.day === false) {
-              log(`Style filter: ${sym} blocked — day trading disabled (TTL ${ttl}m)`)
-              synth.auto_trade = false
-            }
-            if (isSwing && styles.swing === false) {
-              log(`Style filter: ${sym} blocked — swing trading disabled (TTL ${ttl}m)`)
-              synth.auto_trade = false
-            }
-            if (isMidTerm && styles.mid_term === false) {
-              log(`Style filter: ${sym} blocked — mid-term trading disabled (TTL ${ttl}m)`)
-              synth.auto_trade = false
-            }
-          }
-
-          // Human override: block_next_trade — one-time veto then auto-clear
-          if (wItem.block_next_trade && synth.auto_trade) {
-            log(`Block next trade: ${sym} — human veto, clearing flag`)
-            synth.auto_trade = false
-            // Clear the flag after use
-            const symbolsJsonCurrent = getState(db, 'autopilot_symbols_json') || '[]'
-            try {
-              const syms = JSON.parse(symbolsJsonCurrent)
-              const s2 = syms.map(s => typeof s === 'string' ? { symbol: s } : s)
-              const target = s2.find(s => s.symbol === sym)
-              if (target) target.block_next_trade = false
-              setState(db, 'autopilot_symbols_json', JSON.stringify(s2))
-            } catch { /* non-fatal */ }
-          }
-
-          if (autotradeEnabled && synth.auto_trade && synth.entry) {
-            const apAccounts = getAutopilotAccounts(db)
-            for (const acct of apAccounts) {
-              const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
-              if (tradeResult && process.env.TELEGRAM_BOT_TOKEN) {
-                try {
-                  const { sendMessage } = await import('./services/telegram.js')
-                  await sendMessage(
-                    `🤖 AUTO-TRADE [${acct.accountId}]: ${tradeResult.side} ${sym} @ ${tradeResult.executionPrice ?? 'mkt'} | SL ${synth.sl ?? '—'} TP ${synth.tp1 ?? '—'}`
-                  )
-                } catch { /* non-fatal */ }
-              }
-            }
-          }
+          await dispatchSymbolSignal(db, s, symbols, sym, scanResult.signals[sym])
         } catch (err) {
           log(`Analysis failed for ${sym}:`, err.message)
         }
@@ -1070,6 +1091,23 @@ async function runLoop(db) {
       } catch (err) {
         log(`Burn-in failed (non-fatal): ${err.message}`)
         await hbeat(db, 'burn_in', false, err.message)
+      }
+
+      // PENDING-SIGNALS RETRY — signals deferred by autoTrade() because their
+      // symbol's own market was closed (owner: "do you separate which one
+      // you would trade based on market open... which will trade later when
+      // NY opens?"). Every cycle, regardless of scan rotation: the instant a
+      // queued symbol's market reopens it's re-checked against a FRESH scan
+      // and fired through the same gate chain — never blind on stale prices.
+      try {
+        const psCreds = getCtraderCreds(db)
+        const { runPendingSignals } = await import('./services/pending-signals.js')
+        const p = await runPendingSignals(db, psCreds)
+        if (p.fired || p.expired) log(`Pending signals: ${p.fired} fired, ${p.expired} expired, ${p.checked} checked`)
+        await hbeat(db, 'pending_signals')
+      } catch (err) {
+        log(`Pending-signals retry failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'pending_signals', false, err.message)
       }
 
       // Per-position trade guards — break-even / trailing / partial TPs the
