@@ -49,7 +49,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
     { key: 'updatedAt', label: 'Updated', fmt: timeCell },
-    { key: 'margin', label: 'Margin', fmt: money2 },
+    { key: 'margin', label: 'Margin Used', fmt: money2 },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
     { key: 'commission', label: 'Commission', fmt: money2 },
