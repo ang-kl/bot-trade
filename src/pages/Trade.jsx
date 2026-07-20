@@ -70,8 +70,16 @@ function openPositionRows(positions, prices = {}, enrichById = {}) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
-    const current = Number(prices[String(p.symbol).toUpperCase()]) || null
     const enr = enrichById[String(p.ctrader_position_id)] || {}
+    // Live broker bid/ask (from the SAME enrichment join) beats the scan
+    // snapshot for "current price" — the scanner only rotates through part
+    // of the watchlist each cycle, so a held position's symbol can go
+    // several cycles without a fresh scan price even though the broker
+    // itself has a live quote every second. This is what "To TP/SL" needs
+    // to compute at all (owner: "Open positions should have ... To TP/SL").
+    const current = (enr.bid != null && enr.ask != null)
+      ? (enr.bid + enr.ask) / 2
+      : (Number(prices[String(p.symbol).toUpperCase()]) || null)
     const openedAt = p.opened_at || p.created_at
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
@@ -126,7 +134,7 @@ function externalPositionRows(positions, prices = {}, enrichById = {}) {
       entry: p.entry_price,
       sl: p.current_sl ?? null,
       tp: p.current_tp ?? null,
-      current: Number(prices[String(p.symbol).toUpperCase()]) || null,
+      current: (enr.bid != null && enr.ask != null) ? (enr.bid + enr.ask) / 2 : (Number(prices[String(p.symbol).toUpperCase()]) || null),
       ccy: enr.quoteCcy ?? null,
       moneyCcy: enr.depositCcy ?? null,
       margin: enr.usedMargin ?? null,

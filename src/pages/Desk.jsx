@@ -541,7 +541,7 @@ export default function Desk() {
             {heartbeats.map(c => {
               const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
               return (
-                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · ${c.runs} runs`}>
+                <li key={c.name} className="flex items-baseline gap-1.5 min-w-0 py-px" title={c.status === 'idle' ? 'never ran (not armed / not applicable)' : `${c.status} · last beat ${c.last_run_at ?? '—'} · ${c.age_sec ?? '?'}s ago`}>
                   <span aria-hidden="true" style={{ color: dot }}>●</span>
                   <span className="font-semibold shrink-0">{c.label}</span>
                   {(c.status === 'stalled' || c.status === 'error' || c.consecutive_failures > 0) && (
@@ -549,7 +549,14 @@ export default function Desk() {
                       {c.status.toUpperCase()}{c.consecutive_failures > 0 ? ` · ${c.consecutive_failures} failing` : ''}{c.last_error ? ` · ${c.last_error}` : ''}
                     </span>
                   )}
-                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{c.status === 'idle' ? 'idle' : ago(c.last_run_at)}</span>
+                  {/* Owner: "I need to know you are active ... not a feature or
+                      blinking, show that network interaction" — a relative
+                      timestamp alone can look static between polls; the run
+                      COUNT only ever climbs, so it's undeniable proof this
+                      controller keeps firing, not a hardcoded dot. */}
+                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">
+                    {c.status === 'idle' ? 'idle' : <>{ago(c.last_run_at)} · {(c.runs ?? 0).toLocaleString()} runs</>}
+                  </span>
                 </li>
               )
             })}
