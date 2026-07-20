@@ -127,11 +127,13 @@ export default function Desk() {
 
   // Column sorting for the Edge-health tables (same interaction as the
   // standard table). Streak sorts losses negative so worst floats on desc asc.
-  const edgeSort = useSort(alphaDecay?.strategies || [], { key: 'trades', dir: 'desc' }, {
+  const edgeSort = useSort(alphaDecay?.strategies || [], { key: 'net', dir: 'asc' }, {
     strategy: s2 => s2.strategy,
     trend: s2 => s2.trend,
     streak: s2 => (s2.streak?.n ?? 0) * (s2.streak?.kind === 'loss' ? -1 : 1),
     trades: s2 => s2.total?.n,
+    net: s2 => s2.netPnl,
+    win: s2 => s2.winRate,
     recent: s2 => s2.recent?.expectancy,
     prior: s2 => s2.prior?.expectancy,
     delta: s2 => s2.delta,
@@ -708,11 +710,13 @@ export default function Desk() {
                   <thead className="text-left text-[var(--color-text-sub)]">
                     <tr className="border-b border-[var(--color-border)]">
                       <th aria-sort={edgeSort.ariaSort('strategy')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
-                      <th aria-sort={edgeSort.ariaSort('trend')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
-                      <th aria-sort={edgeSort.ariaSort('streak')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
+                      <th className="py-1 pr-3 font-semibold">Status</th>
+                      <th aria-sort={edgeSort.ariaSort('net')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('net', 'Net P&L')}</th>
+                      <th aria-sort={edgeSort.ariaSort('win')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('win', 'Win %')}</th>
                       <th aria-sort={edgeSort.ariaSort('trades')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
+                      <th aria-sort={edgeSort.ariaSort('streak')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
+                      <th aria-sort={edgeSort.ariaSort('trend')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
                       <th aria-sort={edgeSort.ariaSort('recent')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
-                      <th aria-sort={edgeSort.ariaSort('prior')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('prior', 'Prior exp.')}</th>
                       <th aria-sort={edgeSort.ariaSort('delta')} className="py-1 font-semibold text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
                     </tr>
                   </thead>
@@ -722,24 +726,39 @@ export default function Desk() {
                       const srcNote = un && alphaDecay.unlabelled
                         ? Object.entries(alphaDecay.unlabelled.sources).map(([k, v]) => `${k}: ${v}`).join(' · ')
                         : null
+                      const traded = (s2.total?.n ?? 0) > 0
                       return (
                         <tr key={s2.strategy} className="border-b border-[var(--color-border)]">
                           <td className="py-1 pr-3 font-semibold">
                             {un
-                              ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>unlabelled <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
-                              : <Link to="/tune" className="underline underline-offset-2" title="Open Tune — pipeline stage matrix for this strategy">{s2.strategy}</Link>}
+                              ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>{s2.name || 'unlabelled'} <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
+                              : <Link to="/tune" className="underline underline-offset-2" title="Open Tune — arm/disarm this strategy and its filters">{STRAT_SHORT[s2.strategy] || s2.strategy}</Link>}
                           </td>
+                          {/* Status justifies WHY a row reads as it does (owner: "include
+                              all strategy and justify") — armed vs off, and whether it's
+                              even traded yet, so a losing armed strategy and an idle
+                              unarmed one never look the same. */}
                           <td className="py-1 pr-3">
-                            <Badge tone={s2.trend === 'improving' ? 'up' : s2.trend === 'decaying' ? 'down' : 'neutral'}>
-                              {s2.trend === 'insufficient' ? `NEED ${alphaDecay.window}+` : s2.trend.toUpperCase()}
-                            </Badge>
+                            {un
+                              ? <span className="text-[var(--color-text-sub)]">manual</span>
+                              : <Badge tone={s2.armed ? 'up' : 'neutral'}>{s2.armed ? 'ARMED' : 'off'}</Badge>}
                           </td>
+                          <td className={`py-1 pr-3 text-right font-semibold ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                            {traded ? `${s2.netPnl >= 0 ? '+' : '−'}$${Math.abs(s2.netPnl).toFixed(2)}` : '—'}
+                          </td>
+                          <td className="py-1 pr-3 text-right">{traded && s2.winRate != null ? `${Math.round(s2.winRate * 100)}%` : '—'}</td>
+                          <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
                           <td className={`py-1 pr-3 font-semibold ${s2.streak?.kind === 'win' ? 'text-[var(--color-up)]' : s2.streak?.kind === 'loss' ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
                             {s2.streak?.n ? `${s2.streak.n} ${s2.streak.kind}${s2.streak.n > 1 ? 's' : ''}` : '—'}
                           </td>
-                          <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
+                          <td className="py-1 pr-3">
+                            {!traded
+                              ? <span className="text-[var(--color-text-sub)]">{s2.armed ? 'no trades yet' : 'idle'}</span>
+                              : <Badge tone={s2.trend === 'improving' ? 'up' : s2.trend === 'decaying' ? 'down' : 'neutral'}>
+                                  {s2.trend === 'insufficient' ? `NEED ${alphaDecay.window}+` : s2.trend.toUpperCase()}
+                                </Badge>}
+                          </td>
                           <td className="py-1 pr-3 text-right">{s2.recent?.expectancy != null ? `$${s2.recent.expectancy.toFixed(2)}` : '—'}</td>
-                          <td className="py-1 pr-3 text-right">{s2.prior?.expectancy != null ? `$${s2.prior.expectancy.toFixed(2)}` : '—'}</td>
                           <td className={`py-1 text-right font-semibold ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {s2.delta != null ? `${s2.delta >= 0 ? '+' : ''}${s2.delta.toFixed(2)}` : '—'}
                           </td>

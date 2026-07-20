@@ -86,10 +86,21 @@ test('alphaDecayView: groups by strategy and computes lag from the analyses join
 
   const v = alphaDecayView(db, { window: 10 })
   assert.equal(v.total_closed, 12)
-  assert.equal(v.strategies.length, 1)
-  assert.equal(v.strategies[0].strategy, 'fib_618_fade')
-  assert.equal(v.strategies[0].total.n, 12)
-  assert.equal(v.strategies[0].trend, 'insufficient') // prior window only 2
+  // Every REGISTERED strategy now appears, not just the one that traded
+  // (owner: "include all strategy and justify"). The fib row carries the
+  // trades; the untraded ones are present with n=0.
+  const fib = v.strategies.find(s => s.strategy === 'fib_618_fade')
+  assert.ok(v.strategies.length >= 5, `expected all registered strategies, got ${v.strategies.length}`)
+  assert.equal(fib.total.n, 12)
+  assert.equal(fib.netPnl, 60)       // 12 × +5
+  assert.equal(fib.winRate, 1)        // all wins
+  assert.equal(fib.trend, 'insufficient') // prior window only 2
+  assert.equal(typeof fib.armed, 'boolean')
+  // An untraded registered strategy shows up with a clean zero row.
+  const idle = v.strategies.find(s => s.strategy === 'vp_value')
+  assert.ok(idle)
+  assert.equal(idle.total.n, 0)
+  assert.equal(idle.netPnl, 0)
   assert.equal(v.lag_sampled, 12)
   assert.equal(v.entry_lag[0].n, 12) // all lags = 30s → fast bucket
 })
