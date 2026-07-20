@@ -22,7 +22,24 @@ import { Fragment, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
-import { dateTimeParts, nextOpenLabel, priceDp } from '../lib/std-trade-rows.js'
+import { dateTimeParts, nextOpenLabel, priceDp, toMs } from '../lib/std-trade-rows.js'
+
+// Sort accessors per column key. null/undefined always sorts LAST in either
+// direction so empty cells never float above real data.
+function sortVal(r, k) {
+  switch (k) {
+    case 'time': return toMs(r.at)
+    case 'symbol': return r.symbol || null
+    case 'result': return r.result?.text || null
+    case 'reason': return r.reason || null
+    case 'source': return r.source?.text || null
+    case 'side': return r.side || null
+    case 'qty': return r.qty ?? (r.qtyText ? parseFloat(String(r.qtyText).replace(/[^0-9.]/g, '')) : null)
+    case 'tp': return r.tp ?? r.tps?.[0]?.price ?? null
+    case 'updatedAt': return toMs(r.updatedAt)
+    default: return r[k] ?? null
+  }
+}
 
 const PAGE = 8
 const COL1_W = 76 // px — frozen date/time column; col 2 offset builds on it
@@ -31,14 +48,34 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null)
   const [panelFor, setPanelFor] = useState(null)
+  // Every column sorts on tap; default = newest change on top (owner spec).
+  const [sort, setSort] = useState({ key: 'time', dir: 'desc' })
+  const sorted = [...rows].sort((a, b) => {
+    const va = sortVal(a, sort.key)
+    const vb = sortVal(b, sort.key)
+    if (va == null && vb == null) return 0
+    if (va == null) return 1
+    if (vb == null) return -1
+    const c = typeof va === 'string' || typeof vb === 'string'
+      ? String(va).localeCompare(String(vb))
+      : va - vb
+    return sort.dir === 'desc' ? -c : c
+  })
+  const pickSort = (k) => setSort(s => ({ key: k, dir: s.key === k && s.dir === 'desc' ? 'asc' : 'desc' }))
+  // Plain JSX helper (not a component — react-refresh rules) for header sort buttons.
+  const sortBtn = (k, label) => (
+    <button type="button" className="cursor-pointer hover:underline font-semibold whitespace-nowrap" onClick={() => pickSort(k)}>
+      {label}{sort.key === k ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+    </button>
+  )
 
   // The Manage sheet is a pop-up over the page, not an inline row — if the
   // row vanishes on a refresh (closed/cancelled) the modal closes itself.
   const panelRow = panelFor == null ? null : rows.find(r => r.id === panelFor) ?? null
 
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE))
+  const pages = Math.max(1, Math.ceil(sorted.length / PAGE))
   const p = Math.min(page, pages - 1)
-  const slice = rows.slice(p * PAGE, p * PAGE + PAGE)
+  const slice = sorted.slice(p * PAGE, p * PAGE + PAGE)
 
   if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
 
@@ -49,7 +86,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
     { key: 'updatedAt', label: 'Updated', fmt: timeCell },
-    { key: 'margin', label: 'Margin', fmt: money2 },
+    { key: 'margin', label: 'Margin Used', fmt: money2 },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
     { key: 'commission', label: 'Commission', fmt: money2 },
@@ -65,22 +102,22 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   return (
     <div>
       <div className="overflow-x-auto">
-        <table className="min-w-[880px] w-full text-[12px] tabular-nums">
+        <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
           <thead className="text-left text-[var(--color-text-sub)]">
             <tr className="border-b border-[var(--color-border)]">
-              <th className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>Time</th>
-              <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>Symbol</th>
-              <th className="py-1.5 pr-3 font-semibold">Result</th>
-              <th className="py-1.5 pr-3 font-semibold">Reason</th>
-              <th className="py-1.5 pr-3 font-semibold">Source</th>
-              <th className="py-1.5 pr-3 font-semibold">Side</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Qty</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Entry</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Stop Loss</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">P&amp;L</th>
+              <th aria-sort={sort.key === 'time' ? (sort.dir === 'desc' ? 'descending' : 'ascending') : undefined} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
+              <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('qty', 'Qty')}</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('entry', 'Entry')}</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('sl', 'Stop Loss')}</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('tp', 'Take Profit')}</th>
+              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('pnl', 'P&L')}</th>
               <th className="py-1.5 pr-3 font-semibold text-right">To TP/SL</th>
-              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold text-right whitespace-nowrap">{c.label}</th>)}
+              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold text-right whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
           </thead>
