@@ -949,6 +949,24 @@ async function runLoop(db) {
           const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
+          // Un-blind the safety brakes: a position closed at the BROKER (a
+          // resting SL/TP fill — the normal stop-out) was marked closed with
+          // net_pnl NULL, invisible to the daily cap, equity stop, loss-streak
+          // cooldown, and the performance breaker until a human opened the
+          // dashboard. Backfill broker-true realized P&L here, in the loop, so
+          // every downstream brake this cycle sees the real drawdown. Runs
+          // only when something actually closed at the broker and best-effort
+          // (a deal-history hiccup must never stall the loop).
+          if ((result.closedDetected || []).length > 0) {
+            try {
+              const { backfillClosedPnl } = await import('./services/pnl-backfill.js')
+              const bf = await backfillClosedPnl(db, { host, clientId, clientSecret, accessToken, accountId })
+              if (bf.backfilled > 0) log(`P&L backfill: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
+            } catch (err) {
+              log(`P&L backfill failed (non-fatal): ${err.message}`)
+            }
+          }
+
           // Weekend bank — inside the last window before a LONG closure
           // (weekend/holiday), close any position in profit, bot or owner:
           // floating profit held through a closure is gap risk, and the
@@ -1662,9 +1680,16 @@ async function runLoop(db) {
 
         if (stats && stats.total > 0) {
           const winRate = stats.wins / stats.total
-          const profitFactor = stats.avg_loss !== 0
-            ? Math.abs((stats.avg_win || 0) / (stats.avg_loss || -1))
-            : 0
+          // TRUE profit factor = gross win / gross loss. The old formula was
+          // |avg_win / avg_loss| — the PAYOFF ratio, which ignores how OFTEN
+          // you win, so at a 19% win rate it overstated PF ~4x (a real 0.15
+          // showed as ~0.64). Reconstruct the gross sums from the averages ×
+          // counts. Same null-on-no-losses convention as performance-breaker.
+          const grossWin = (stats.avg_win || 0) * stats.wins
+          const grossLoss = Math.abs((stats.avg_loss || 0) * stats.losses)
+          const profitFactor = grossLoss > 0
+            ? Math.round((grossWin / grossLoss) * 100) / 100
+            : (grossWin > 0 ? null : 0)
           db.prepare(
             `INSERT INTO performance_snapshots (total_trades, winning_trades, losing_trades, win_rate, profit_factor, total_pnl, avg_win, avg_loss, computed_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
