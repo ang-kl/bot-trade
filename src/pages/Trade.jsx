@@ -13,6 +13,7 @@ import OrderManager from '../components/OrderManager.jsx'
 import { toMs, priceDp, brokerOrderRows } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
+import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -271,6 +272,29 @@ export default function Trade() {
   const [enrichById, setEnrichById] = useState({})
   const [liveOrders, setLiveOrders] = useState([]) // live resting orders (replaces the stale reconcile-cache list)
 
+  // Live sub-second price ticks for whatever's actually active (open/pending
+  // symbols first, since that's what you're watching move) — owner: "should
+  // update every 1/2 second... why aren't you listening." The real fix isn't
+  // a faster poll, it's this: a genuine SSE tick stream (already built for
+  // PositionChart) instead of waiting on the next fetch.
+  const liveSymbols = [...new Set([
+    ...positions.map(p => p.symbol),
+    ...liveOrders.map(o => o.symbol),
+  ].filter(Boolean))]
+  const liveTicks = useLiveTicks(liveSymbols)
+  // Scan price as the base (covers every symbol, not just the live-ticked
+  // handful), live tick as the override wherever the SSE stream has one —
+  // same "poll instant-paints, live stream overwrites" two-tier pattern used
+  // everywhere else in this app.
+  const priceMap = (() => {
+    const m = Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price]))
+    for (const sym of liveSymbols) {
+      const mid = liveMid(liveTicks, sym)
+      if (mid != null) m[String(sym).toUpperCase()] = mid
+    }
+    return m
+  })()
+
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
@@ -517,7 +541,7 @@ export default function Trade() {
       <Card>
         <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)} countLabel="open positions" marketHours={marketHours} />}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
@@ -620,7 +644,7 @@ export default function Trade() {
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
               <StdTradeTable
-                rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)}
+                rows={externalPositionRows(broker.externalPositions, priceMap, enrichById)}
                 countLabel="external positions"
                 marketHours={marketHours}
                 extraAction={(row) => {
@@ -727,7 +751,7 @@ export default function Trade() {
               {vetoBd.vetoes[0]?.reason === 'market_closed' && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
             </p>
           )}
-          <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price]))} />
+          <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={priceMap} />
         </Card>
       </div>
     </div>
