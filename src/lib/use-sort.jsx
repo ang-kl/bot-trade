@@ -30,5 +30,8 @@ export function useSort(rows, initial, accessors = {}) {
       {label}{sort.key === k ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
     </button>
   )
-  return { sorted, sortBtn, sort }
+  // Pass to a header's aria-sort — audit found this attribute missing
+  // entirely on every bespoke (non-StdTradeTable) sortable table.
+  const ariaSort = (k) => (sort.key === k ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none')
+  return { sorted, sortBtn, sort, ariaSort }
 }

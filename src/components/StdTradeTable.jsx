@@ -62,6 +62,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     return sort.dir === 'desc' ? -c : c
   })
   const pickSort = (k) => setSort(s => ({ key: k, dir: s.key === k && s.dir === 'desc' ? 'asc' : 'desc' }))
+  // aria-sort was only ever wired to the Time header (audit finding) — every
+  // sortable column needs it, not just the default-sorted one.
+  const ariaSort = (k) => (sort.key === k ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none')
   // Plain JSX helper (not a component — react-refresh rules) for header sort buttons.
   const sortBtn = (k, label) => (
     <button type="button" className="cursor-pointer hover:underline font-semibold whitespace-nowrap" onClick={() => pickSort(k)}>
@@ -120,19 +123,19 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
           <thead className="text-center text-[var(--color-text-sub)]">
             <tr className="border-b border-[var(--color-border)]">
-              <th aria-sort={sort.key === 'time' ? (sort.dir === 'desc' ? 'descending' : 'ascending') : undefined} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
-              <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
-              <th className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
+              <th aria-sort={ariaSort('time')} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
+              <th aria-sort={ariaSort('symbol')} className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
+              <th aria-sort={ariaSort('result')} className="py-1.5 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
+              <th aria-sort={ariaSort('reason')} className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
+              <th aria-sort={ariaSort('source')} className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
+              <th aria-sort={ariaSort('side')} className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
+              <th aria-sort={ariaSort('qty')} className="py-1.5 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
+              <th aria-sort={ariaSort('entry')} className="py-1.5 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
+              <th aria-sort={ariaSort('sl')} className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
+              <th aria-sort={ariaSort('tp')} className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
+              <th aria-sort={ariaSort('pnl')} className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
               <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>
-              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
+              {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
           </thead>

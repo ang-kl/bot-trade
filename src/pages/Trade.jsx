@@ -509,12 +509,12 @@ export default function Trade() {
             <table className="std-cols w-full text-[13px]">
               <thead className="text-left text-[var(--color-text-sub)]">
                 <tr>
-                  <th className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
-                  <th className="pr-3">{sigSort.sortBtn('strategy', 'Strategy')}</th>
-                  <th className="pr-3">{sigSort.sortBtn('bias', 'Bias')}</th>
-                  <th className="pr-3">{sigSort.sortBtn('timeframe', 'TF')}</th>
-                  <th className="pr-3">{sigSort.sortBtn('confidence', 'Conviction')}</th>
-                  <th className="pr-3">{sigSort.sortBtn('price', 'Price')}</th>
+                  <th aria-sort={sigSort.ariaSort('symbol')} className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
+                  <th aria-sort={sigSort.ariaSort('strategy')} className="pr-3">{sigSort.sortBtn('strategy', 'Strategy')}</th>
+                  <th aria-sort={sigSort.ariaSort('bias')} className="pr-3">{sigSort.sortBtn('bias', 'Bias')}</th>
+                  <th aria-sort={sigSort.ariaSort('timeframe')} className="pr-3">{sigSort.sortBtn('timeframe', 'TF')}</th>
+                  <th aria-sort={sigSort.ariaSort('confidence')} className="pr-3">{sigSort.sortBtn('confidence', 'Conviction')}</th>
+                  <th aria-sort={sigSort.ariaSort('price')} className="pr-3">{sigSort.sortBtn('price', 'Price')}</th>
                   <th>Thesis</th>
                 </tr>
               </thead>

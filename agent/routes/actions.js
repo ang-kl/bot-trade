@@ -16,6 +16,7 @@ import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.j
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
+import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -316,6 +317,46 @@ export default function actionsRouter(db) {
     setState(db, 'weekend_bank', on ? 'true' : 'false')
     console.log(`[actions] weekend bank → ${on ? 'ON' : 'off'}`)
     res.json({ ok: true, on })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/guardian-move-pct — { pct } sets the tick guardian's
+  // significant-move threshold (% of price) that triggers an immediate
+  // position sweep between the normal 30s ticks, instead of the 0.05%
+  // default only ever being changeable via a raw agent_state write. Audit
+  // finding (owner: "audit the last 20 PRs, did you do what I want") — the
+  // guardian's backend logic was always correct, this control just never
+  // had a route/UI in front of it.
+  // -----------------------------------------------------------------------
+  router.post('/guardian-move-pct', (req, res) => {
+    const pct = Number(req.body?.pct)
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 5) {
+      return res.status(400).json({ error: 'pct must be a number between 0 and 5 (percent)' })
+    }
+    setState(db, 'guardian_move_pct', String(pct))
+    console.log(`[actions] guardian move threshold → ${pct}%`)
+    res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/performance-breaker — { on?, window?, minTrades?,
+  // pfThreshold?, autoDisarm? } tunes the "all hands on deck" rolling
+  // profit-factor checkpoint (owner: "what checkpoints would trigger all
+  // hands on deck to turn the tide").
+  // -----------------------------------------------------------------------
+  router.post('/performance-breaker', (req, res) => {
+    const cur = loadPerformanceBreakerConfig(db)
+    const b = req.body || {}
+    const next = {
+      on: b.on !== undefined ? b.on !== false : cur.on,
+      window: b.window !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.window) || cur.window))) : cur.window,
+      minTrades: b.minTrades !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.minTrades) || cur.minTrades))) : cur.minTrades,
+      pfThreshold: b.pfThreshold !== undefined ? Math.min(2, Math.max(0.1, Number(b.pfThreshold) || cur.pfThreshold)) : cur.pfThreshold,
+      autoDisarm: b.autoDisarm !== undefined ? b.autoDisarm === true : cur.autoDisarm,
+    }
+    setState(db, 'performance_breaker_json', JSON.stringify(next))
+    console.log(`[actions] performance breaker →`, next)
+    res.json({ ok: true, ...next })
   })
 
   // -----------------------------------------------------------------------
@@ -1586,9 +1627,23 @@ export default function actionsRouter(db) {
         extraTimeframes,
       }
 
-      // Scan every enabled symbol for a live setup, then rank by conviction.
+      // Scan a batch of enabled symbols, then rank by conviction. Bounded at
+      // 15 per call — this is a synchronous HTTP request, not the
+      // background loop, so scanning a 1900+ symbol watchlist in one shot
+      // would time out the request. A ROTATING batch (own cursor, separate
+      // from the main loop's scan_cursor so a manual burst never perturbs
+      // the loop's own rotation progress) means repeated clicks eventually
+      // cover the whole watchlist instead of always re-scanning the same
+      // first 15 forever — the exact class of bug PR #201 fixed in the main
+      // loop's own scan, audited into this route too (owner: "audit the
+      // last 20 PRs, did you do what I want").
+      const batchSize = 15
+      const cursor = watchlist.length ? Math.max(0, Number(getState(db, 'trade_now_cursor')) || 0) % watchlist.length : 0
+      const batch = [...watchlist.slice(cursor), ...watchlist.slice(0, cursor)].slice(0, batchSize)
+      setState(db, 'trade_now_cursor', String(watchlist.length ? (cursor + batch.length) % watchlist.length : 0))
+
       const candidates = []
-      for (const w of watchlist.slice(0, 15)) {
+      for (const w of batch) {
         const symbolId = map[w.symbol.toUpperCase()]
         if (!symbolId) continue
         try {

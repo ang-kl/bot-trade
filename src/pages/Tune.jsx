@@ -725,6 +725,7 @@ export default function Tune() {
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
   const [monOvDraft, setMonOvDraft] = useState({ symbol: '', minutes: '' }) // per-symbol monitor override editor
+  const [guardianPctDraft, setGuardianPctDraft] = useState('') // tick guardian move-threshold editor
   // Excel-style bands in the active watchlist: which group bands are OPEN.
   // Groups default COLLAPSED (100s of instruments must not overwhelm the
   // page); the Singles band starts open. Persisted per device.
@@ -1258,6 +1259,31 @@ export default function Tune() {
                 {config?.adaptive_breaker?.streak ?? 3} losses in a row on a strategy → it is disarmed (or, if it's the last one, the next filter is armed) — the bot adapts instead of pausing
               </span>
             </div>
+            {/* Performance breaker — the "all hands on deck" checkpoint: a
+                bad rolling profit factor that never strings 3 losses in a
+                row still bleeds, so this watches the AGGREGATE edge
+                (owner: "what checkpoints would trigger all hands on deck to
+                turn the tide"). Alert-first — auto-disarm is opt-in. */}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.performance_breaker?.on !== false} label="Performance breaker (all hands on deck)" onClick={() => {
+                const next = !(config?.performance_breaker?.on !== false)
+                run(async () => {
+                  const r = await agentPost('/actions/performance-breaker', { on: next })
+                  setConfig(c => ({ ...c, performance_breaker: r }))
+                }, `Performance breaker ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                profit factor below {config?.performance_breaker?.pfThreshold ?? 0.8} over the last {config?.performance_breaker?.window ?? 20} closed trades (min {config?.performance_breaker?.minTrades ?? 15} to judge an edge) → urgent Telegram alert
+              </span>
+              <Toggle on={config?.performance_breaker?.autoDisarm === true} label="also auto-disarm autotrade" onClick={() => {
+                const next = !(config?.performance_breaker?.autoDisarm === true)
+                if (next && !window.confirm('Auto-disarm autotrade when the performance breaker fires? New entries stop until you re-arm from Tune — open positions keep being managed normally.')) return
+                run(async () => {
+                  const r = await agentPost('/actions/performance-breaker', { autoDisarm: next })
+                  setConfig(c => ({ ...c, performance_breaker: r }))
+                }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
+              }} />
+            </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
               <span className="font-semibold">Position monitor:</span>
               {[1, 2, 3, 5].map(m => (
@@ -1312,6 +1338,43 @@ export default function Tune() {
               {Object.keys(config?.monitor_overrides || {}).length === 0 && (
                 <span className="text-[var(--color-text-sub)]">none — all symbols on auto (volume-adaptive)</span>
               )}
+            </div>
+            {/* Weekend bank + tick guardian — both existed backend-only with
+                no control here (audit finding, owner: "audit the last 20
+                PRs, did you do what I want"). */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.weekend_bank !== false} label="Weekend profit bank" onClick={() => {
+                const next = !(config?.weekend_bank !== false)
+                run(async () => {
+                  await agentPost('/actions/weekend-bank', { on: next })
+                  setConfig(c => ({ ...c, weekend_bank: next }))
+                }, `Weekend bank ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                inside the final window before a weekend/holiday closure, closes any position (bot or manual) that's in profit — skips losers, avoids holding gap risk through the close
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="font-semibold">Tick guardian threshold:</span>
+              <form
+                className="flex items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const pct = Number(guardianPctDraft)
+                  if (!Number.isFinite(pct) || pct <= 0) { setError('Guardian threshold must be a positive percent'); return }
+                  run(async () => {
+                    await agentPost('/actions/guardian-move-pct', { pct })
+                    setConfig(c => ({ ...c, guardian_move_pct: pct }))
+                    setGuardianPctDraft('')
+                  }, `Tick guardian threshold → ${pct}%`)
+                }}
+              >
+                <Input type="number" step="0.01" min="0.01" max="5" value={guardianPctDraft} onChange={e => setGuardianPctDraft(e.target.value)} className="w-20 !py-0.5 !min-h-0 text-[12px]" aria-label="Guardian move threshold percent" />
+                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[11px]">Set</Button>
+              </form>
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                current: {config?.guardian_move_pct ?? 0.05}% — a live price tick moving this much between the 30s checks triggers an immediate sweep of open positions instead of waiting for the next tick
+              </span>
             </div>
             {/* Burn-in — the track-record builder: min-size trades with
                 tight time caps across the enabled watchlist, mass-producing
