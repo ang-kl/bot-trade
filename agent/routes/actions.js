@@ -307,6 +307,18 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/weekend-bank — { on } toggles the pre-closure profit
+  // sweep: inside the last window before a long (weekend/holiday) closure,
+  // positions in profit are closed to bank the move before the reopen gap.
+  // -----------------------------------------------------------------------
+  router.post('/weekend-bank', (req, res) => {
+    const on = req.body?.on !== false
+    setState(db, 'weekend_bank', on ? 'true' : 'false')
+    console.log(`[actions] weekend bank → ${on ? 'ON' : 'off'}`)
+    res.json({ ok: true, on })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/llm-budget — { dailyCapUsd } arms the once-a-day Telegram
   // alert when estimated Anthropic spend crosses the cap. 0/null disarms.
   // -----------------------------------------------------------------------

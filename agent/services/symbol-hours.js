@@ -156,6 +156,41 @@ const WEEK_SECONDS_TOTAL = 7 * 24 * 3600
  * Heuristic-only symbols (not yet refreshed) report next_open_at: null —
  * we don't fake a timestamp we don't have.
  */
+/**
+ * When does the symbol's CURRENT session end, and how long is the closure
+ * that follows? Powers the weekend-bank sweep: closure_sec ≥ ~12h means a
+ * weekend/holiday gap, not the ordinary overnight break. Heuristic-only
+ * symbols return nulls — we never act on a schedule we don't have.
+ */
+export function nextCloseInfo(db, symbol, now = new Date()) {
+  const s = String(symbol || '').toUpperCase()
+  let row = null
+  try { row = db.prepare(`SELECT schedule_json, tz FROM symbol_hours WHERE symbol = ?`).get(s) } catch { row = null }
+  if (!row || !row.schedule_json) return { open: null, closes_in_sec: null, closure_sec: null, source: 'heuristic' }
+  let schedule = []
+  try { schedule = JSON.parse(row.schedule_json) } catch { schedule = [] }
+  const norm = schedule
+    .map(iv => ({ a: Number(iv.startSecond ?? iv.start), b: Number(iv.endSecond ?? iv.end) }))
+    .filter(iv => Number.isFinite(iv.a) && Number.isFinite(iv.b))
+  if (norm.length === 0) return { open: true, closes_in_sec: null, closure_sec: null, source: 'broker' } // 24/7 CFD
+  const W = WEEK_SECONDS_TOTAL
+  const sow = secondsIntoWeek(now, row.tz || 'UTC')
+  let end = null
+  for (const { a, b } of norm) {
+    if (a <= b ? (sow >= a && sow < b) : (sow >= a || sow < b)) { end = b; break }
+  }
+  if (end == null) return { open: false, closes_in_sec: null, closure_sec: null, source: 'broker' }
+  const closesIn = ((end - sow) % W + W) % W
+  // Gap until the next interval START at/after this end; contiguous
+  // intervals give closure 0 (the market doesn't actually close).
+  let gap = null
+  for (const { a } of norm) {
+    const d = ((a - end) % W + W) % W
+    if (gap == null || d < gap) gap = d
+  }
+  return { open: true, closes_in_sec: closesIn, closure_sec: gap, source: 'broker' }
+}
+
 export function nextOpenInfo(db, symbol, now = new Date()) {
   const base = isSymbolOpenCached(db, symbol, now)
   if (base.open || base.source !== 'broker') {

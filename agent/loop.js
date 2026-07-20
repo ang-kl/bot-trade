@@ -1428,6 +1428,20 @@ async function runLoop(db) {
 
           const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+
+          // Weekend bank — inside the last window before a LONG closure
+          // (weekend/holiday), close any position in profit, bot or owner:
+          // floating profit held through a closure is gap risk, and the
+          // owner is often asleep at these hours (owner order 2026-07-20).
+          try {
+            const { runWeekendBank } = await import('./services/weekend-bank.js')
+            const wb = await runWeekendBank(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
+            if (wb.banked?.length) log(`Weekend bank: closed ${wb.banked.map(b => `${b.symbol} +${b.movePct}%`).join(', ')} ahead of the long closure`)
+            await hbeat(db, 'weekend_bank', true)
+          } catch (err) {
+            log(`Weekend bank check failed: ${err.message}`)
+            await hbeat(db, 'weekend_bank', false, err.message)
+          }
           log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
 
           // Tamper watch — the owner changed a bot-tracked position in the

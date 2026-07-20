@@ -36,6 +36,7 @@ export const CONTROLLERS = {
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3 },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
+  weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, factor: 4 },
   cpp_exec:         { label: 'C++ exec engine',        expectedSec: 120,  factor: 3 },
 }
 
