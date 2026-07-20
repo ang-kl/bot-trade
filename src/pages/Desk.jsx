@@ -267,7 +267,12 @@ export default function Desk() {
             <span aria-hidden="true" style={{ color: !health ? '#94a3b8' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
             {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Autotrade ON' : 'Autotrade OFF'}
           </span>
-          {health?.pendingModeEnabled && <span className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold">⏳ pending armed</span>}
+          {health?.pendingModeEnabled && (
+            <span
+              className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold"
+              title="Resting-limit-order mode is ON in Settings — new signals place a resting limit order instead of a market order. This is a standing mode, not a per-trade status; it stays lit until you turn it off on the Tune page."
+            >⏳ pending armed</span>
+          )}
           <span className={`font-semibold whitespace-nowrap ${health?.broker?.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
             {health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}
           </span>
@@ -321,6 +326,13 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
+        <details className="mb-1.5 text-[11px] text-[var(--color-text-sub)]">
+          <summary className="cursor-pointer select-none font-semibold">what do these gauges mean?</summary>
+          <p className="mt-1 leading-relaxed">
+            <strong>Attitude</strong> — the horizon tilts with this trade's P&amp;L (blue rises on profit, orange on loss); the fixed wings across the middle don't tilt — their length is the position's size (lots), and the tip shows an arrow when P&amp;L has moved consistently one way for the last minute or so, or a dot when it's choppy/flat.<br />
+            <strong>Activity</strong> — the needle reads how fast this trade's P&amp;L is moving right now: flat left (9 o'clock) = dormant, up toward 12 = profit accelerating, down toward 6 = loss accelerating. The number underneath is that rate in account currency per minute.
+          </p>
+        </details>
         <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Gauge wall grid size">
           {[1, 4, 8, 16].map(n => (
             <button

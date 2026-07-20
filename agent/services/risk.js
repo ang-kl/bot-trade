@@ -298,7 +298,12 @@ export function evaluateTrade(db, proposal, configOverride) {
 
   // ---- 3. Max open positions ---------------------------------------------
   const openPositions = db
-    .prepare(`SELECT symbol, side FROM monitored_positions WHERE status = 'active'`)
+    .prepare(`
+      SELECT mp.symbol, mp.side, mp.entry_price, t.opened_at
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.status = 'active'
+    `)
     .all()
   checks.open_positions = openPositions.length
   if (openPositions.length >= config.maxOpenPositions) {
@@ -308,7 +313,16 @@ export function evaluateTrade(db, proposal, configOverride) {
   // ---- 4. No duplicate on same symbol ------------------------------------
   const existingSameSymbol = openPositions.find(p => p.symbol === proposal.symbol)
   if (existingSameSymbol) {
-    return veto(`duplicate_symbol existing_side=${existingSameSymbol.side}`, checks, proposal)
+    // Owner: "not contextual and not insight" — the veto now names the
+    // actual position blocking it (side, entry, age), not a bare "already
+    // in this symbol", so a repeated veto reads as "here's what you're
+    // already holding" instead of an unexplained no. entry/opened are
+    // parsed back out by src/lib/veto-words.js; the leading `existing_side=`
+    // stays first for back-compat with any code still matching on it alone.
+    return veto(
+      `duplicate_symbol existing_side=${existingSameSymbol.side} entry=${existingSameSymbol.entry_price ?? 'na'} opened=${existingSameSymbol.opened_at ?? 'na'}`,
+      checks, proposal,
+    )
   }
 
   // ---- 4b. Per-symbol re-entry cooldown -----------------------------------

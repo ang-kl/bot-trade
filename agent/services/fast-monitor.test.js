@@ -6,7 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cadenceMs, relVolFromBars, effectiveCadenceMs } from './fast-monitor.js'
+import { cadenceMs, relVolFromBars, effectiveCadenceMs, isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
 
 const MIN = 60_000
 
@@ -49,4 +49,30 @@ test('owner override beats the volume-adaptive cadence, both directions', () => 
   // no/garbage override → volume-adaptive
   assert.equal(effectiveCadenceMs(null, 0.2, 1), 3 * MIN)
   assert.equal(effectiveCadenceMs('nope', 2.0, 1), 1 * MIN)
+})
+
+test('isSpikeMove: fast enough move since the last check counts as a spike', () => {
+  const t0 = 1_000_000
+  // 0.5% in 30s = 1%/min — above the 0.4%/min default threshold.
+  assert.equal(isSpikeMove(100, t0, 100.5, t0 + 30_000), true)
+  // Same 0.5% move stretched over 5 minutes = 0.1%/min — not a spike.
+  assert.equal(isSpikeMove(100, t0, 100.5, t0 + 5 * MIN), false)
+  // Custom threshold widens/narrows what counts.
+  assert.equal(isSpikeMove(100, t0, 100.05, t0 + 30_000, 0.05), true)
+})
+
+test('isSpikeMove: no prior sample, non-finite price, or non-advancing clock never spikes', () => {
+  const t0 = 1_000_000
+  assert.equal(isSpikeMove(undefined, undefined, 101, t0), false)
+  assert.equal(isSpikeMove(100, t0, null, t0 + MIN), false)
+  assert.equal(isSpikeMove(100, t0, 200, t0), false)      // clock didn't advance
+  assert.equal(isSpikeMove(0, t0, 1, t0 + MIN), false)    // prevMid <= 0 is garbage, not "infinite move"
+})
+
+test('SPIKE_PCT_PER_MIN is exported and isSpikeMove uses it as the default threshold', () => {
+  const t0 = 1_000_000
+  const justUnder = 100 * (1 + (SPIKE_PCT_PER_MIN - 0.01) / 100)
+  const justOver = 100 * (1 + (SPIKE_PCT_PER_MIN + 0.01) / 100)
+  assert.equal(isSpikeMove(100, t0, justUnder, t0 + MIN), false)
+  assert.equal(isSpikeMove(100, t0, justOver, t0 + MIN), true)
 })

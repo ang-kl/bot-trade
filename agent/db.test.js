@@ -92,3 +92,81 @@ test('pre-existing DB with the old CHECK constraint: migrates in place, keeps da
 
   fs.rmSync(path.dirname(file), { recursive: true, force: true })
 })
+
+test('interrupted migration killed right after the rename: trades is missing, temp table has the data', () => {
+  const file = tmpDbPath()
+  const oldTableSql = `
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      status TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled'))
+  `
+  const setup = new Database(file)
+  // No `trades` table at all — only the renamed-away original, simulating a
+  // kill between the ALTER TABLE RENAME and the CREATE TABLE that follows it.
+  setup.exec(`CREATE TABLE trades_pre_rejected_status_migration (${oldTableSql});`)
+  setup.prepare(`INSERT INTO trades_pre_rejected_status_migration (symbol, status) VALUES ('GBPUSD', 'open')`).run()
+  setup.close()
+
+  const db = initDB(file)
+  assert.equal(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'trades_pre_rejected_status_migration'`).get(), undefined)
+  assert.equal(db.prepare(`SELECT status FROM trades WHERE symbol = 'GBPUSD'`).get().status, 'open')
+  assert.doesNotThrow(() => {
+    db.prepare(`UPDATE trades SET status = 'rejected' WHERE symbol = 'GBPUSD'`).run()
+  })
+  db.close()
+
+  fs.rmSync(path.dirname(file), { recursive: true, force: true })
+})
+
+test('interrupted migration: leftover temp table is self-healed on next boot', () => {
+  // Simulates production hitting "no such table:
+  // trades_pre_rejected_status_migration" — a prior initDB() run got killed
+  // (platform restart) between the rename and the final drop, leaving BOTH
+  // a stale temp table AND a working `trades` (either freshly migrated or
+  // never touched) on disk. The next boot must clean this up, not crash.
+  const file = tmpDbPath()
+  const oldTableSql = `
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      side TEXT,
+      entry_price REAL,
+      exit_price REAL,
+      sl_price REAL,
+      tp_price REAL,
+      volume REAL,
+      opened_at TEXT,
+      closed_at TEXT,
+      hold_duration_ms INTEGER,
+      gross_pnl REAL,
+      net_pnl REAL,
+      status TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled')),
+      close_reason TEXT,
+      thesis TEXT,
+      strategy TEXT,
+      conviction REAL,
+      ctrader_position_id TEXT,
+      analysis_id INTEGER
+  `
+  const setup = new Database(file)
+  // The already-migrated `trades` (fixed CHECK, from the attempt that
+  // completed the rename+recreate before being killed) ...
+  setup.exec(`CREATE TABLE trades (${oldTableSql.replace("CHECK(status IN ('open','closed','cancelled'))", "CHECK(status IN ('open','closed','cancelled','rejected'))")});`)
+  setup.prepare(`INSERT INTO trades (symbol, status) VALUES ('EURUSD', 'closed')`).run()
+  // ... plus the leftover temp table (old schema) that never got dropped.
+  setup.exec(`CREATE TABLE trades_pre_rejected_status_migration (${oldTableSql});`)
+  setup.close()
+
+  assert.doesNotThrow(() => {
+    const db = initDB(file)
+    // The stale temp table must be gone, and the real `trades` (with its
+    // one pre-existing row) must survive untouched.
+    assert.equal(db.prepare(`SELECT name FROM sqlite_master WHERE name = 'trades_pre_rejected_status_migration'`).get(), undefined)
+    assert.equal(db.prepare(`SELECT status FROM trades WHERE symbol = 'EURUSD'`).get().status, 'closed')
+    assert.doesNotThrow(() => {
+      db.prepare(`UPDATE trades SET status = 'rejected' WHERE symbol = 'EURUSD'`).run()
+    })
+    db.close()
+  })
+
+  fs.rmSync(path.dirname(file), { recursive: true, force: true })
+})

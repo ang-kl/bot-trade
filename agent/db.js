@@ -336,28 +336,65 @@ export function initDB(dbPath) {
   // ALTER a CHECK constraint in place, so this rebuilds the table exactly
   // once, preserving every row — a fresh DB already gets the fixed
   // constraint from TABLES above and skips this entirely.
+  // Self-heal a leftover temp table from a run that was killed mid-migration
+  // (e.g. a platform restart landing between the rename and the drop) —
+  // production hit "no such table: trades_pre_rejected_status_migration"
+  // from exactly this. Note `db.exec(TABLES)` above already ran `CREATE
+  // TABLE IF NOT EXISTS trades`, so if the kill landed right after the
+  // rename (before the real CREATE TABLE), `trades` exists again here too —
+  // as an EMPTY stub — so "does trades exist" can't tell real data from
+  // that stub. Row counts can: the real data always lands in whichever
+  // table still has rows.
+  const staleTemp = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trades_pre_rejected_status_migration'`
+  ).get();
+  if (staleTemp) {
+    const tradesRows = db.prepare(`SELECT COUNT(*) n FROM trades`).get()?.n ?? 0;
+    const tempRows = db.prepare(`SELECT COUNT(*) n FROM trades_pre_rejected_status_migration`).get()?.n ?? 0;
+    if (tradesRows === 0 && tempRows > 0) {
+      // `trades` is TABLES's just-created empty stub — the temp table holds
+      // the real data; swap it back in.
+      db.exec('DROP TABLE trades');
+      db.exec('ALTER TABLE trades_pre_rejected_status_migration RENAME TO trades');
+    } else {
+      // `trades` already has the real data (a prior attempt finished the
+      // copy before being killed on the final drop) — the temp table is a
+      // redundant snapshot.
+      db.exec('DROP TABLE trades_pre_rejected_status_migration');
+    }
+  }
+
   const tradesSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'trades'`).get()?.sql || '';
   if (tradesSql && !tradesSql.includes("'rejected'")) {
-    const fkWasOn = db.pragma('foreign_keys', { simple: true });
-    db.pragma('foreign_keys = OFF');
-    // Explicit column list on both sides — never rely on physical column
-    // order matching between the old table (columns appended over time via
-    // ALTER TABLE ADD COLUMN) and the freshly-declared one.
-    const TRADES_COLS = [
-      'id', 'symbol', 'side', 'entry_price', 'exit_price', 'sl_price', 'tp_price', 'volume',
-      'opened_at', 'closed_at', 'hold_duration_ms', 'gross_pnl', 'net_pnl', 'status', 'close_reason',
-      'thesis', 'strategy', 'conviction', 'ctrader_position_id', 'analysis_id', 'label_raw', 'source',
-      'label_version', 'label_strategy', 'label_conviction', 'label_session', 'label_timeframe', 'label_regime',
-    ];
-    const oldCols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
-    const copyCols = TRADES_COLS.filter(c => oldCols.has(c));
-    db.transaction(() => {
-      db.exec('ALTER TABLE trades RENAME TO trades_pre_rejected_status_migration');
-      db.exec(TRADES_TABLE_SQL);
-      db.exec(`INSERT INTO trades (${copyCols.join(', ')}) SELECT ${copyCols.join(', ')} FROM trades_pre_rejected_status_migration`);
-      db.exec('DROP TABLE trades_pre_rejected_status_migration');
-    })();
-    if (fkWasOn) db.pragma('foreign_keys = ON');
+    try {
+      const fkWasOn = db.pragma('foreign_keys', { simple: true });
+      db.pragma('foreign_keys = OFF');
+      // Explicit column list on both sides — never rely on physical column
+      // order matching between the old table (columns appended over time via
+      // ALTER TABLE ADD COLUMN) and the freshly-declared one.
+      const TRADES_COLS = [
+        'id', 'symbol', 'side', 'entry_price', 'exit_price', 'sl_price', 'tp_price', 'volume',
+        'opened_at', 'closed_at', 'hold_duration_ms', 'gross_pnl', 'net_pnl', 'status', 'close_reason',
+        'thesis', 'strategy', 'conviction', 'ctrader_position_id', 'analysis_id', 'label_raw', 'source',
+        'label_version', 'label_strategy', 'label_conviction', 'label_session', 'label_timeframe', 'label_regime',
+      ];
+      const oldCols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+      const copyCols = TRADES_COLS.filter(c => oldCols.has(c));
+      db.transaction(() => {
+        db.exec('DROP TABLE IF EXISTS trades_pre_rejected_status_migration');
+        db.exec('ALTER TABLE trades RENAME TO trades_pre_rejected_status_migration');
+        db.exec(TRADES_TABLE_SQL);
+        db.exec(`INSERT INTO trades (${copyCols.join(', ')}) SELECT ${copyCols.join(', ')} FROM trades_pre_rejected_status_migration`);
+        db.exec('DROP TABLE trades_pre_rejected_status_migration');
+      })();
+      if (fkWasOn) db.pragma('foreign_keys = ON');
+    } catch (err) {
+      // Never let a migration failure take the whole server down — the app
+      // still works against whatever schema is currently on disk (with
+      // 'rejected' writes failing loudly at the call site, same as before
+      // this migration existed) rather than crash-looping on every boot.
+      console.error('[db] trades CHECK-constraint migration failed, continuing on existing schema:', err.message);
+    }
   }
 
   // In-place migrations for pre-existing DBs

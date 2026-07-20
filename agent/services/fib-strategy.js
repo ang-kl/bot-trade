@@ -13,6 +13,7 @@
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import { tfMs } from '../lib/timeframes.js'
 import { computeCupHandleSignal } from './cup-handle.js'
+import { categoriseSymbol } from '../lib/sessions.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -30,6 +31,35 @@ const ATR_PERIOD = 14
 const SL_BUFFER = 0.02
 const TP2_EXTENSION = 0.272   // -27.2% extension beyond the swing end
 const BAR_COUNT = 150         // bars fetched per timeframe
+
+// Instrument-class tuning (owner: "do you think current TP/SL for
+// commodities and INDICES make sense... tweaking should be dynamic based on
+// type of trade, not hardcoded"). Every number above this point was ONE
+// fixed set for every symbol — FX majors, NatGas, and JPN225 all fading off
+// the identical leg-size floor and SL/TP shape. Indices and commodities
+// (and softs/grains, which trade thin outside their exchange windows) see
+// fatter-tailed, gappier moves than FX majors, so they get a taller leg
+// floor (avoid fading noise) and a wider SL buffer + TP2 extension (room for
+// the bigger swings that are normal for that instrument class) — not a
+// backtested-optimal set, a reasoned starting point tuned toward each
+// class's known volatility character. FX/metals — the classes fib-strategy
+// was originally tuned against — keep the original numbers exactly.
+export const DEFAULT_TUNING = { minLegAtrMult: MIN_LEG_ATR_MULT, slBuffer: SL_BUFFER, tp2Extension: TP2_EXTENSION }
+export const CLASS_TUNING = {
+  fx:        DEFAULT_TUNING,
+  metal:     DEFAULT_TUNING,
+  crypto:    { minLegAtrMult: 3.5, slBuffer: 0.03,  tp2Extension: 0.272 },
+  stock:     { minLegAtrMult: 3.5, slBuffer: 0.03,  tp2Extension: 0.28 },
+  index:     { minLegAtrMult: 4,   slBuffer: 0.035, tp2Extension: 0.30 },
+  commodity: { minLegAtrMult: 4,   slBuffer: 0.035, tp2Extension: 0.30 },
+  soft:      { minLegAtrMult: 4,   slBuffer: 0.035, tp2Extension: 0.30 },
+  grain:     { minLegAtrMult: 4,   slBuffer: 0.035, tp2Extension: 0.30 },
+}
+
+/** Class tuning for a symbol — falls back to the original FX-tuned defaults. */
+export function tuningFor(symbol) {
+  return CLASS_TUNING[categoriseSymbol(symbol)] || DEFAULT_TUNING
+}
 // Checked in this order (largest first); first timeframe with a valid
 // signal wins. All timeframes are eligible — none are excluded.
 const TIMEFRAMES = ['1mo', '1w', '1d', '4h', '1h', '30m', '15m', '5m']
@@ -193,6 +223,12 @@ export function findSwings(bars, fractalWidth = FRACTAL_WIDTH) {
 export function computeFibSignal(bars, timeframe, opts = {}) {
   if (!Array.isArray(bars) || bars.length < FRACTAL_WIDTH * 2 + 10) return null
 
+  // Instrument-class tuning — see CLASS_TUNING above. Callers that know the
+  // symbol (scanSymbolFib, scanPendingSetups) pass it via opts.classTuning;
+  // anything that doesn't (tests, the chart-preview route) gets the
+  // original FX-tuned numbers, unchanged.
+  const tuning = opts.classTuning || DEFAULT_TUNING
+
   const { highs, lows } = findSwings(bars)
   if (highs.length === 0 || lows.length === 0) return null
 
@@ -208,7 +244,7 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
 
   // Leg must be significant relative to recent volatility — micro-legs are
   // noise whose "zone reactions" are spread-sized.
-  if (range < MIN_LEG_ATR_MULT * atr(bars)) return null
+  if (range < tuning.minLegAtrMult * atr(bars)) return null
 
   const level618 = upLeg
     ? swingB.price - 0.618 * range
@@ -226,7 +262,7 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
 
   // Invalidation: price already broke past the swing origin — the leg
   // failed to react at all, so the fade thesis is dead.
-  const buffer = SL_BUFFER * range
+  const buffer = tuning.slBuffer * range
   const invalidated = upLeg
     ? lastClose < swingA.price - buffer
     : lastClose > swingA.price + buffer
@@ -289,7 +325,7 @@ export function computeFibSignal(bars, timeframe, opts = {}) {
   const entry = pendingMode ? level618 : lastClose
   const sl = upLeg ? swingA.price - buffer : swingA.price + buffer
   const tp1 = swingB.price
-  const tp2 = upLeg ? swingB.price + TP2_EXTENSION * range : swingB.price - TP2_EXTENSION * range
+  const tp2 = upLeg ? swingB.price + tuning.tp2Extension * range : swingB.price - tuning.tp2Extension * range
 
   const slDistance = Math.abs(entry - sl)
   const tp1Distance = Math.abs(tp1 - entry)
@@ -356,6 +392,9 @@ function strategyFns(opts) {
 
 export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
+  // Instrument-class SL/TP/leg-size tuning (see CLASS_TUNING) — an explicit
+  // opts.classTuning always wins (tests, callers that already resolved it).
+  opts = { ...opts, classTuning: opts.classTuning || tuningFor(symbol) }
 
   // Classic set plus any custom timeframes the trader added (e.g. 1.5h) —
   // a custom TF armed for autotrade must also be scanned, or it never fires.
@@ -620,7 +659,7 @@ export async function scanPendingSetups(creds, symbolMap, pendingMatrix, opts = 
       // order placed off a repainting mid-bar swing is the same lookahead trap.
       const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-      const signal = computeFibSignal(closed, timeframe, { ...opts, pendingSetup: true })
+      const signal = computeFibSignal(closed, timeframe, { ...opts, pendingSetup: true, classTuning: opts.classTuning || tuningFor(symbol) })
       if (signal) setups.push({ symbol, timeframe, signal })
     }
   }
