@@ -878,6 +878,129 @@ async function runLoop(db) {
     const s = prepareStatements(db)
 
     // -----------------------------------------------------------------------
+    // 0. RECONCILE PHASE — every 3rd loop (~15 min)
+    //
+    // Runs BEFORE scan/autoTrade, not after. Owner hit this live: a manual
+    // NatGas LONG opened at 07:38 PM, then the bot opened a NatGas SHORT at
+    // 08:02 PM in the very next loop — risk.js's `duplicate_symbol` veto (any
+    // active row on the symbol blocks a new proposal, regardless of side)
+    // WOULD have caught it, but only sees `monitored_positions`, which a
+    // manual position only enters via this reconcile phase. With reconcile
+    // running after the scan/dispatch phase in the same tick, a manual
+    // position could sit unreconciled through one whole extra loop before the
+    // veto could ever see it. Reconciling first closes that gap to "worst
+    // case one reconcile cycle" instead of "one reconcile cycle plus one
+    // scan/dispatch ordering".
+    // -----------------------------------------------------------------------
+    if (loopCount % 3 === 0) {
+      try {
+        const clientId = ctraderEnv('clientId')
+        const clientSecret = ctraderEnv('clientSecret')
+        const accessToken = getState(db, 'ctrader_access_token')
+        const accountId = getState(db, 'ctrader_account_id')
+        const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+        if (clientId && clientSecret && accessToken && accountId) {
+          setState(db, 'loop_phase', 'reconciling broker positions')
+          const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+          const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+
+          const allSymbolIds = [...new Set([
+            ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
+            ...(reconcileData.order || []).map(o => o.tradeData?.symbolId),
+          ].filter(Boolean))]
+
+          // Names come from the LIGHT symbols list — SYMBOL_BY_ID returns the
+          // full record, which has no symbolName field.
+          let symbolNameMap = {}
+          if (allSymbolIds.length > 0) {
+            const symData = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
+            for (const s2 of (symData.symbol || [])) {
+              symbolNameMap[s2.symbolId] = s2.symbolName
+            }
+          }
+
+          const positions = (reconcileData.position || []).map(p => ({
+            ...p,
+            symbolName: symbolNameMap[p.tradeData?.symbolId] || null,
+          }))
+          const orders = (reconcileData.order || []).map(o => ({
+            ...o,
+            symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
+          }))
+
+          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
+          setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+
+          // Weekend bank — inside the last window before a LONG closure
+          // (weekend/holiday), close any position in profit, bot or owner:
+          // floating profit held through a closure is gap risk, and the
+          // owner is often asleep at these hours (owner order 2026-07-20).
+          try {
+            const { runWeekendBank } = await import('./services/weekend-bank.js')
+            const wb = await runWeekendBank(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
+            if (wb.banked?.length) log(`Weekend bank: closed ${wb.banked.map(b => `${b.symbol} +${b.movePct}%`).join(', ')} ahead of the long closure`)
+            await hbeat(db, 'weekend_bank', true)
+          } catch (err) {
+            log(`Weekend bank check failed: ${err.message}`)
+            await hbeat(db, 'weekend_bank', false, err.message)
+          }
+          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
+
+          // Tamper watch — the owner changed a bot-tracked position in the
+          // cTrader app (reverse / volume / SL / TP). Alert loudly, audit it,
+          // and let the monitor manage the adopted broker truth.
+          for (const mc of result.manualChanges || []) {
+            // Re-strategize: verify the changed trade against the market and
+            // recalibrate (reversal → fresh ATR-based SL/TP amended at the
+            // broker; volume/level edits → risk audit). Never fatal.
+            let outcome = null
+            let tail = ''
+            try {
+              const rs = await import('./services/restrategize.js')
+              outcome = await rs.restrategizeAfterTamper(db, { host, clientId, clientSecret, accessToken, accountId }, mc)
+              tail = rs.summarize(outcome)
+            } catch { /* verdict optional */ }
+            const text = mc.kind === 'reversed'
+              ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} was REVERSED at the broker (${mc.from}→${mc.to}). Original thesis no longer applies.${tail}`
+              : mc.kind === 'volume'
+                ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} volume changed at the broker (${mc.from}→${mc.to} units) outside the bot.${tail}`
+                : `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} ${mc.kind === 'sl_moved' ? 'stop loss' : 'take profit'} moved at the broker (${mc.from ?? '—'}→${mc.to ?? '—'}) outside the bot. Adopted as the managed level.${tail}`
+            log(text)
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TAMPER', '/reconcile', JSON.stringify({ ...mc, outcome }).slice(0, 2000))
+            } catch { /* audit best-effort */ }
+            try {
+              const { notifyOwner } = await import('./services/telegram-control.js')
+              await notifyOwner(text)
+            } catch { /* non-fatal */ }
+          }
+
+          // Refresh the real account balance so risk sizing tracks equity as
+          // trades close (linking set it once; this keeps it live).
+          try {
+            const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js')
+            const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
+            const bal = traderBalance(trader)
+            if (bal != null) setState(db, 'account_balance_usd', String(bal))
+          } catch { /* best effort */ }
+
+          if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              for (const ext of result.newExternal) {
+                await sendMessage(`External position detected: ${ext.side} ${ext.symbol} @ ${ext.entry}`)
+              }
+            } catch { /* non-fatal */ }
+          }
+        }
+      } catch (err) {
+        log('Reconcile phase error:', err.message)
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // 1. SCAN PHASE — scan all enabled symbols
     // -----------------------------------------------------------------------
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
@@ -1450,117 +1573,6 @@ async function runLoop(db) {
         log('Equity stop check failed:', err.message)
       }
     } // end symbolsJson
-
-    // -----------------------------------------------------------------------
-    // 3.5. RECONCILE PHASE — every 3rd loop (~15 min)
-    // -----------------------------------------------------------------------
-    if (loopCount % 3 === 0) {
-      try {
-        const clientId = ctraderEnv('clientId')
-        const clientSecret = ctraderEnv('clientSecret')
-        const accessToken = getState(db, 'ctrader_access_token')
-        const accountId = getState(db, 'ctrader_account_id')
-        const isLive = getState(db, 'ctrader_is_live') === 'true'
-
-        if (clientId && clientSecret && accessToken && accountId) {
-          setState(db, 'loop_phase', 'reconciling broker positions')
-          const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-          const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
-
-          const allSymbolIds = [...new Set([
-            ...(reconcileData.position || []).map(p => p.tradeData?.symbolId),
-            ...(reconcileData.order || []).map(o => o.tradeData?.symbolId),
-          ].filter(Boolean))]
-
-          // Names come from the LIGHT symbols list — SYMBOL_BY_ID returns the
-          // full record, which has no symbolName field.
-          let symbolNameMap = {}
-          if (allSymbolIds.length > 0) {
-            const symData = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
-            for (const s2 of (symData.symbol || [])) {
-              symbolNameMap[s2.symbolId] = s2.symbolName
-            }
-          }
-
-          const positions = (reconcileData.position || []).map(p => ({
-            ...p,
-            symbolName: symbolNameMap[p.tradeData?.symbolId] || null,
-          }))
-          const orders = (reconcileData.order || []).map(o => ({
-            ...o,
-            symbolName: symbolNameMap[o.tradeData?.symbolId] || null,
-          }))
-
-          const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
-          setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-
-          // Weekend bank — inside the last window before a LONG closure
-          // (weekend/holiday), close any position in profit, bot or owner:
-          // floating profit held through a closure is gap risk, and the
-          // owner is often asleep at these hours (owner order 2026-07-20).
-          try {
-            const { runWeekendBank } = await import('./services/weekend-bank.js')
-            const wb = await runWeekendBank(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
-            if (wb.banked?.length) log(`Weekend bank: closed ${wb.banked.map(b => `${b.symbol} +${b.movePct}%`).join(', ')} ahead of the long closure`)
-            await hbeat(db, 'weekend_bank', true)
-          } catch (err) {
-            log(`Weekend bank check failed: ${err.message}`)
-            await hbeat(db, 'weekend_bank', false, err.message)
-          }
-          log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
-
-          // Tamper watch — the owner changed a bot-tracked position in the
-          // cTrader app (reverse / volume / SL / TP). Alert loudly, audit it,
-          // and let the monitor manage the adopted broker truth.
-          for (const mc of result.manualChanges || []) {
-            // Re-strategize: verify the changed trade against the market and
-            // recalibrate (reversal → fresh ATR-based SL/TP amended at the
-            // broker; volume/level edits → risk audit). Never fatal.
-            let outcome = null
-            let tail = ''
-            try {
-              const rs = await import('./services/restrategize.js')
-              outcome = await rs.restrategizeAfterTamper(db, { host, clientId, clientSecret, accessToken, accountId }, mc)
-              tail = rs.summarize(outcome)
-            } catch { /* verdict optional */ }
-            const text = mc.kind === 'reversed'
-              ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} was REVERSED at the broker (${mc.from}→${mc.to}). Original thesis no longer applies.${tail}`
-              : mc.kind === 'volume'
-                ? `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} volume changed at the broker (${mc.from}→${mc.to} units) outside the bot.${tail}`
-                : `⚠️ MANUAL CHANGE: ${mc.symbol} position ${mc.positionId} ${mc.kind === 'sl_moved' ? 'stop loss' : 'take profit'} moved at the broker (${mc.from ?? '—'}→${mc.to ?? '—'}) outside the bot. Adopted as the managed level.${tail}`
-            log(text)
-            try {
-              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
-                .run('TAMPER', '/reconcile', JSON.stringify({ ...mc, outcome }).slice(0, 2000))
-            } catch { /* audit best-effort */ }
-            try {
-              const { notifyOwner } = await import('./services/telegram-control.js')
-              await notifyOwner(text)
-            } catch { /* non-fatal */ }
-          }
-
-          // Refresh the real account balance so risk sizing tracks equity as
-          // trades close (linking set it once; this keeps it live).
-          try {
-            const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js')
-            const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
-            const bal = traderBalance(trader)
-            if (bal != null) setState(db, 'account_balance_usd', String(bal))
-          } catch { /* best effort */ }
-
-          if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {
-            try {
-              const { sendMessage } = await import('./services/telegram.js')
-              for (const ext of result.newExternal) {
-                await sendMessage(`External position detected: ${ext.side} ${ext.symbol} @ ${ext.entry}`)
-              }
-            } catch { /* non-fatal */ }
-          }
-        }
-      } catch (err) {
-        log('Reconcile phase error:', err.message)
-      }
-    }
 
     // -----------------------------------------------------------------------
     // 4. QUANT PHASE — every 6th loop (~30 min)

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
-import OpenPnlChart from '../components/OpenPnlChart.jsx'
+import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import ReportChart from '../components/ReportChart.jsx'
@@ -105,6 +105,18 @@ export default function Desk() {
   const pickGrid = (n) => {
     setGridN(n)
     try { localStorage.setItem('desk_grid_n', String(n)) } catch { /* private mode */ }
+  }
+
+  const [pnlGridN, setPnlGridN] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem('desk_pnl_grid_n'))
+      return [1, 4, 8, 16].includes(n) ? n : 4
+    } catch { return 4 }
+  })   // 1 | 4 | 8 | 16 gauge tiles per row on the floating P&L wall
+
+  const pickPnlGrid = (n) => {
+    setPnlGridN(n)
+    try { localStorage.setItem('desk_pnl_grid_n', String(n)) } catch { /* private mode */ }
   }
 
   // Column sorting for the Edge-health tables (same interaction as the
@@ -309,7 +321,16 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
-        <OpenPnlChart positions={broker?.positions || []} />
+        <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Gauge wall grid size">
+          {[1, 4, 8, 16].map(n => (
+            <button
+              key={n} type="button" role="radio" aria-checked={pnlGridN === n}
+              onClick={() => pickPnlGrid(n)}
+              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+            >{n}</button>
+          ))}
+        </div>
+        <TradeGaugeWall positions={broker?.positions || []} gridN={pnlGridN} />
       </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
