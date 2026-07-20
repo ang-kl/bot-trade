@@ -1579,6 +1579,13 @@ async function runLoop(db) {
       })
     } catch { /* non-fatal */ }
 
+    // Daily journal — once per UTC day, yesterday's trading written down
+    // (trades, net, win rate, gate pressure) to Telegram + agent_state.
+    try {
+      const { sendDailyJournal } = await import('./services/journal.js')
+      await sendDailyJournal(db)
+    } catch { /* non-fatal */ }
+
     await hbeat(db, 'main_loop')
   } catch (err) {
     console.error('[loop] error:', err.message)
