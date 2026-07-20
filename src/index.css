@@ -368,3 +368,11 @@ body::after {
 /* Neon glow helpers */
 .glow-accent { box-shadow: var(--glow-accent); }
 .glow-down   { box-shadow: var(--glow-down); }
+
+/* Standard trade table: light vertical separators between columns — with
+   this many columns the eye needs the rails (owner spec). Last (Actions)
+   column stays rail-free. */
+.std-cols th:not(:last-child),
+.std-cols td:not(:last-child) {
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
