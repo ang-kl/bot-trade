@@ -757,6 +757,15 @@ export default function Tune() {
   const [btForce, setBtForce] = useState(() => {
     try { return new Set(JSON.parse(sessionStorage.getItem('bt_force_v1')) || []) } catch { return new Set() }
   })
+  // Which verdict CLASSES go into Activate (owner spec): Go only (default),
+  // Go + Go (thin), Go (thin) only, or everything incl. No-Go (<½ blue).
+  const [btArmClass, setBtArmClass] = useState(() => {
+    try { return sessionStorage.getItem('bt_arm_class') || 'go' } catch { return 'go' }
+  })
+  const pickArmClass = (v) => {
+    setBtArmClass(v)
+    try { sessionStorage.setItem('bt_arm_class', v) } catch { /* quota — skip */ }
+  }
   const toggleForce = (sym, tf) => setBtForce(prev => {
     const k = `${sym}|${tf}`
     const next = new Set(prev)
@@ -1059,29 +1068,33 @@ export default function Tune() {
     return Object.values(results).reduce((n, r) => n + (r.trades || 0), 0)
   }
 
-  // GO timeframes across every tested symbol (union) — the Activate flow arms
-  // timeframes, not symbols, so a GO on any symbol lights that timeframe up.
-  const goVerdict = (r) => verdictFor(r)?.state === 'go'
+  // Verdict-class selection (owner spec) — which classes flow into Activate.
+  // 'nogo' = less than half the checks pass ("less than ½ blue").
+  const ARM_CLASS_SETS = { go: ['go'], 'go+thin': ['go', 'thin'], thin: ['thin'], all: ['go', 'thin', 'nogo'] }
+  const stateOf = (r) => { const s2 = verdictFor(r)?.state; return s2 === 'go' ? 'go' : s2 === 'thin' ? 'thin' : 'nogo' }
+  const inClass = (r) => !r.error && (ARM_CLASS_SETS[btArmClass] || ['go']).includes(stateOf(r))
+  // Selected timeframes across every tested symbol (union) — the Activate
+  // flow arms timeframes, not symbols, so any included row lights its tf up.
   const goTfs = bt?.symbols
     ? [...new Set(
         Object.values(bt.symbols).flatMap(s => s.results
-          ? Object.entries(s.results).filter(([, r]) => goVerdict(r)).map(([tf]) => tf)
+          ? Object.entries(s.results).filter(([, r]) => inClass(r)).map(([tf]) => tf)
           : []),
       )]
     : []
-  // Timeframes armed only because the trader ticked "arm anyway" on a
-  // NO-GO / GO (thin) row of the CURRENT result set (stale overrides ignored).
+  // Timeframes armed only because the trader ticked "arm anyway" on a row
+  // OUTSIDE the selected class (stale overrides of old result sets ignored).
   const forcedTfs = bt?.symbols
     ? [...new Set(
         Object.entries(bt.symbols).flatMap(([sym, s]) => s.results
           ? Object.entries(s.results)
-              .filter(([tf, r]) => !r.error && btForce.has(`${sym}|${tf}`) && verdictFor(r)?.state !== 'go')
+              .filter(([tf, r]) => !r.error && btForce.has(`${sym}|${tf}`) && !inClass(r))
               .map(([tf]) => tf)
           : []),
       )].filter(tf => !goTfs.includes(tf))
     : []
   const armTfs = [...goTfs, ...forcedTfs]
-  // Per-instrument arm matrix: {SYMBOL: [tfs]} — a GO row arms that
+  // Per-instrument arm matrix: {SYMBOL: [tfs]} — an included row arms that
   // symbol×timeframe pair; "arm anyway" arms exactly its own pair, never the
   // whole watchlist. This is what the agent's matrix gate enforces.
   const armMatrix = bt?.symbols
@@ -1089,7 +1102,7 @@ export default function Tune() {
         Object.entries(bt.symbols)
           .map(([sym, s]) => [sym, s.results
             ? Object.entries(s.results)
-                .filter(([tf, r]) => !r.error && (verdictFor(r)?.state === 'go' || btForce.has(`${sym}|${tf}`)))
+                .filter(([tf, r]) => !r.error && (inClass(r) || btForce.has(`${sym}|${tf}`)))
                 .map(([tf]) => tf)
             : []])
           .filter(([, tfs]) => tfs.length > 0),
@@ -2163,6 +2176,29 @@ export default function Tune() {
                   })()}
                   Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. GO (thin) = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". Tick "arm anyway" on any row to include it in Activate at your own risk. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
+                {/* Verdict-class picker (owner spec): choose WHICH classes
+                    flow into Activate — one tap instead of per-row ticks. */}
+                <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[12px]" role="radiogroup" aria-label="Which verdicts to arm">
+                  <span className="text-[var(--color-text-sub)] font-semibold">Add to Activate:</span>
+                  {[
+                    ['go', 'Go only'],
+                    ['go+thin', 'Go + Go (thin)'],
+                    ['thin', 'Go (thin) only'],
+                    ['all', 'All incl. No-Go (<½ blue)'],
+                  ].map(([v, lbl]) => (
+                    <button
+                      key={v} type="button" role="radio" aria-checked={btArmClass === v}
+                      onClick={() => pickArmClass(v)}
+                      className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                    >{lbl}</button>
+                  ))}
+                  {btArmClass === 'all' && (
+                    <span className="text-[var(--color-warning-text)] font-semibold">No-Go rows failed the evidence bar — arming them trades against your own backtest.</span>
+                  )}
+                  {btArmClass === 'thin' && (
+                    <span className="text-[var(--color-text-sub)]">thin = positive edge, unproven sample.</span>
+                  )}
+                </div>
                 {armTfs.length === 0 && (() => {
                   const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
                   return (
