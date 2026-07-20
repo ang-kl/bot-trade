@@ -1740,7 +1740,7 @@ export default function actionsRouter(db) {
       if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
-      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
+      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl } = await import('../lib/ctrader-ws.js')
 
       let accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
@@ -1808,6 +1808,23 @@ export default function actionsRouter(db) {
           try {
             lastCloses = await wsGetLastCloses(host, clientId, clientSecret, accessToken, acct.accountId, symbolIds)
           } catch { /* est P&L omitted */ }
+          // Broker-truth unrealized P&L in the deposit currency — the number
+          // cTrader's own app shows, exact for every asset class. The price
+          // estimate below stays as the fallback for older API servers.
+          let pnlMap = {}
+          try {
+            pnlMap = await wsGetUnrealizedPnl(host, clientId, clientSecret, accessToken, acct.accountId)
+          } catch { /* fall back to estimates */ }
+          // Live bid/ask for position symbols only (cTrader's compulsory
+          // columns) — a handful of one-shot quotes, fetched in parallel.
+          let spots = {}
+          try {
+            const posSymbolIds = [...new Set(rawPositions.map(p => p.tradeData?.symbolId).filter(Boolean))]
+            const rs2 = await Promise.all(posSymbolIds.map(id =>
+              wsGetSpotOnce(host, clientId, clientSecret, accessToken, acct.accountId, id).then(q => [id, q]).catch(() => [id, null])
+            ))
+            spots = Object.fromEntries(rs2)
+          } catch { /* bid/ask omitted */ }
 
           const money = (v) => (v == null ? null : v / Math.pow(10, acct.moneyDigits ?? 2))
           // volume and lotSize are both in cents-of-units, so lots is their
@@ -1866,6 +1883,9 @@ export default function actionsRouter(db) {
             const estNetPnl = estPnlDeposit != null
               ? Math.round((estPnlDeposit + (swapMoney || 0) + (commissionMoney || 0)) * 100) / 100
               : null
+            // Broker truth wins; estimate only fills the gap.
+            const brokerPnl = pnlMap[String(p.positionId)] || null
+            const netPnl = brokerPnl?.net ?? estNetPnl
             // TP ladder: closing limit orders carry the app's TP2/TP3 with
             // their per-level quantity; the position's native TP covers the
             // leftover volume. Sorted nearest-first in the profit direction.
@@ -1896,12 +1916,17 @@ export default function actionsRouter(db) {
               currentPrice: now,
               deltaPips,
               estPnlQuote, // in the symbol's QUOTE currency, price-move only (excludes swap/commission)
-              estNetPnl,   // deposit-ccy estimate incl. swap + commission — matches cTrader's Net P&L
+              estNetPnl,   // deposit-ccy ESTIMATE incl. swap + commission (fallback only)
+              netPnl,      // BROKER-truth net unrealized P&L (deposit ccy) — cTrader's own figure
+              grossPnl: brokerPnl?.gross ?? null,
+              pnlSource: brokerPnl ? 'broker' : (estNetPnl != null ? 'estimate' : null),
               pipSize: meta.pipPosition != null ? Math.pow(10, -meta.pipPosition) : null,
               digits: meta.digits ?? null,
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
               tps: ladder.length ? ladder : null,
+              bid: spots[td.symbolId]?.bid ?? null,
+              ask: spots[td.symbolId]?.ask ?? null,
               swap: swapMoney,
               commission: commissionMoney,
               usedMargin: money(p.usedMargin),

@@ -43,6 +43,21 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
 
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
+  const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+  const timeCell = (v) => { const w2 = dateTimeParts(v); return w2 ? `${w2.day} ${w2.time}` : '—' }
+  // cTrader's compulsory position columns (owner spec) appear only when the
+  // rows actually carry them — closed deals and order-log rows stay lean.
+  const OPT_COLS = [
+    { key: 'updatedAt', label: 'Updated', fmt: timeCell },
+    { key: 'margin', label: 'Margin', fmt: money2 },
+    { key: 'bid', label: 'Bid', fmt: num },
+    { key: 'ask', label: 'Ask', fmt: num },
+    { key: 'commission', label: 'Commission', fmt: money2 },
+    { key: 'swap', label: 'Swap', fmt: money2 },
+    { key: 'positionId', label: 'Position ID', fmt: (v) => String(v) },
+  ]
+  const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
+  const colCount = 13 + activeOpt.length
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -65,6 +80,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th className="py-1.5 pr-3 font-semibold text-right">Take Profit</th>
               <th className="py-1.5 pr-3 font-semibold text-right">P&amp;L</th>
               <th className="py-1.5 pr-3 font-semibold text-right">To TP/SL</th>
+              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold text-right whitespace-nowrap">{c.label}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
           </thead>
@@ -161,6 +177,11 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           ? <span className="text-[var(--color-down)]">SL {num(Math.max(0, slDist))}</span>
                           : '—'}
                     </td>
+                    {activeOpt.map(c => (
+                      <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
+                        {r[c.key] != null ? c.fmt(r[c.key]) : '—'}
+                      </td>
+                    ))}
                     <td className="py-1.5 whitespace-nowrap">
                       {r.chart && (
                         <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
@@ -176,7 +197,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   </tr>
                   {chartFor === r.id && r.chart && (
                     <tr className="border-b border-[var(--color-border)]">
-                      <td colSpan={13} className="py-2">
+                      <td colSpan={colCount} className="py-2">
                         <PositionChart
                           symbol={r.chart.symbol}
                           timeframe={r.chart.timeframe || '1h'}

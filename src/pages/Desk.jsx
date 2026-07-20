@@ -188,7 +188,7 @@ export default function Desk() {
     : (armed?.timeframes || []).map(tf => `all symbols · ${tf}`)
   const brokerFlat = (broker?.positions?.length ?? 0) === 0 && (broker?.orders?.length ?? 0) === 0
   const equityStopToday = (health?.equityStopTrippedAt || '').slice(0, 10) === new Date().toISOString().slice(0, 10)
-  const floating = (broker?.positions || []).reduce((s2, p2) => s2 + (Number(p2.estNetPnl ?? p2.estPnlQuote) || 0), 0)
+  const floating = (broker?.positions || []).reduce((s2, p2) => s2 + (Number(p2.netPnl ?? p2.estNetPnl ?? p2.estPnlQuote) || 0), 0)
 
   return (
     <div className="space-y-3">

@@ -200,7 +200,7 @@ export default function PositionManager({ p, onDone }) {
             Close ({fmt(p.currentPrice, p.digits ?? 5)})
           </button>
           <div className="text-center text-[12px] mt-1.5">
-            Net P&L: <span className={(p.estNetPnl ?? p.estPnlQuote ?? 0) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{money(p.estNetPnl ?? p.estPnlQuote)}</span>
+            Net P&L: <span className={(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote ?? 0) >= 0 ? 'text-[var(--color-up)] font-semibold' : 'text-[var(--color-down)] font-semibold'}>{money(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)}</span>
           </div>
         </div>
       )}

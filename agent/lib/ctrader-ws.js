@@ -65,6 +65,8 @@ export const PT = Object.freeze({
   GET_TRENDBARS_REQ:       2137,
   GET_TRENDBARS_RES:       2138,
   ERROR_RES:               2142,
+  GET_POSITION_UNREALIZED_PNL_REQ: 2187,
+  GET_POSITION_UNREALIZED_PNL_RES: 2188,
 })
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
@@ -538,6 +540,30 @@ export async function wsGetTrader(host, clientId, clientSecret, accessToken, acc
     { send: { payloadType: PT.TRADER_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.TRADER_RES },
   ], timeoutMs), 2, 'wsGetTrader')
   return payload.trader || {}
+}
+
+/**
+ * Broker-truth unrealized P&L per open position (ProtoOAGetPositionUnrealizedPnLReq).
+ * Returns { [positionId]: { gross, net } } in the DEPOSIT currency, decoded
+ * with the response's moneyDigits — exact for every asset class, unlike any
+ * client-side price-move estimate (owner: JPY-quoted JPN225 showed yen as
+ * dollars). Older API servers without 2187 → caller falls back to estimates.
+ */
+export async function wsGetUnrealizedPnl(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 20_000) {
+  const payload = await withRetry(() => wsRun(host, [
+    ...authSteps(clientId, clientSecret, accessToken, accountId),
+    { send: { payloadType: PT.GET_POSITION_UNREALIZED_PNL_REQ, payload: { ctidTraderAccountId: parseInt(accountId) } }, expect: PT.GET_POSITION_UNREALIZED_PNL_RES },
+  ], timeoutMs), 2, 'wsGetUnrealizedPnl')
+  const digits = payload.moneyDigits != null ? payload.moneyDigits : 2
+  const div = Math.pow(10, digits)
+  const out = {}
+  for (const r of (payload.positionUnrealizedPnL || [])) {
+    out[String(r.positionId)] = {
+      gross: r.grossUnrealizedPnL != null ? r.grossUnrealizedPnL / div : null,
+      net: r.netUnrealizedPnL != null ? r.netUnrealizedPnL / div : null,
+    }
+  }
+  return out
 }
 
 /**

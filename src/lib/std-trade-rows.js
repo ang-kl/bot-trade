@@ -56,7 +56,9 @@ const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { max
 /** Live broker positions → standard rows. manageable=true arms the panel. */
 export function brokerPositionRows(positions, { manageable = false } = {}) {
   return (positions || []).map(p2 => {
-    const net = p2.estNetPnl ?? p2.estPnlQuote
+    // Broker-truth net P&L first (cTrader's own figure, every asset class);
+    // the client-side estimate only fills the gap and is marked as such.
+    const net = p2.netPnl ?? p2.estNetPnl ?? p2.estPnlQuote
     return {
       id: `bp-${p2.positionId}`,
       at: p2.openedAt ?? null,
@@ -73,7 +75,16 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       tpAt: (p2.tps?.length || p2.tp != null) ? (p2.tps?.[0]?.at ?? p2.lastModifiedAt ?? null) : null,
       current: p2.currentPrice ?? null,
       pnl: net ?? null,
-      reason: `now ${px(p2.currentPrice)}${p2.estNetPnl == null && net != null ? ' (P&L est*)' : ''}`,
+      // cTrader's compulsory position columns — the standard table shows
+      // them whenever rows carry them.
+      updatedAt: p2.lastModifiedAt ?? null,
+      margin: p2.usedMargin ?? null,
+      bid: p2.bid ?? null,
+      ask: p2.ask ?? null,
+      commission: p2.commission ?? null,
+      swap: p2.swap ?? null,
+      positionId: p2.positionId ?? null,
+      reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,
       chart: { symbol: p2.symbol, timeframe: '1h', lines: { entry: p2.entry, sl: p2.sl, tp: p2.tp } },
       panel: manageable,
