@@ -126,11 +126,15 @@ export default function OpenPnlChart({ positions = [] }) {
     const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
     return s2 + (Number.isFinite(v) ? v : 0)
   }, 0)
+  const flat = positions.length === 0
 
-  if (positions.length === 0) {
-    return <div className="text-[13px] text-[var(--color-text-sub)] py-6 text-center">Flat — no open positions.</div>
-  }
-
+  // The chart container must ALWAYS mount, even when flat — the
+  // create-chart effect below only ever runs ONCE ([] deps) and bails
+  // silently if the container isn't in the DOM yet; an early return here
+  // (as this used to do, before ANY position had loaded) meant that on a
+  // fresh page load the chart never got created at all, and never got a
+  // second chance once positions arrived a few seconds later. The "Flat"
+  // message renders alongside the (empty) chart instead of replacing it.
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-1">
@@ -142,15 +146,18 @@ export default function OpenPnlChart({ positions = [] }) {
             >{label}</button>
           ))}
         </div>
-        {mode === 'combined' && (
+        {!flat && mode === 'combined' && (
           <span className={`text-[13px] font-bold ${combinedNow >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
             {money(combinedNow)}
           </span>
         )}
         <span className="ml-auto text-[10px] text-[var(--color-text-sub)]">this session only — starts fresh on page reload</span>
       </div>
+      {flat && <p className="text-[13px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>}
+      {/* Always in the DOM (never behind display:none) — a hide/show cycle
+          risks the chart's ResizeObserver seeing a stale 0×0 box. */}
       <div ref={boxRef} style={{ height: 160 }} />
-      {mode === 'per' && (
+      {!flat && mode === 'per' && (
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
           {positions.map((p, i) => {
             const look = lineLookFor(i)

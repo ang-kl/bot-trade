@@ -287,14 +287,28 @@ export default function Desk() {
         )}
       </Card>
 
-      {/* ---- P&L overview — the FIRST chart, always visible (owner: "first
-          chart should be oscillator chart of all active trade... line chart
-          of all trades (active) whether profit or loss"), ahead of the
-          per-symbol grid wall below. ---- */}
-      <Card>
-        <h2 className="text-[13px] font-semibold mb-1.5">Open trades — floating P&amp;L</h2>
+      {/* ---- P&L overview — the FIRST chart (owner: "first chart should be
+          oscillator chart of all active trade... line chart of all trades
+          (active) whether profit or loss"), ahead of the per-symbol grid
+          wall below. Collapsible like every other Desk section (owner:
+          "chart collapse unless i want to see then expand") — the summary
+          line stays live while collapsed so it still reads as active. ---- */}
+      <Section
+        id="openpnl"
+        title="Open trades — floating P&L"
+        summary={(() => {
+          const openPositions = broker?.positions || []
+          if (openPositions.length === 0) return 'flat'
+          const total = openPositions.reduce((s2, p) => {
+            const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
+            return s2 + (Number.isFinite(v) ? v : 0)
+          }, 0)
+          return `${openPositions.length} open · ${total >= 0 ? '+' : '−'}${Math.abs(total).toFixed(2)}`
+        })()}
+        defaultOpen={false}
+      >
         <OpenPnlChart positions={broker?.positions || []} />
-      </Card>
+      </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts ---- */}
       <Card>
