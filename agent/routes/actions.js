@@ -19,6 +19,7 @@ import { setStage } from '../services/stage-matrix.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
+import { setAssetController } from '../services/asset-controllers.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -338,6 +339,23 @@ export default function actionsRouter(db) {
     setState(db, 'guardian_move_pct', String(pct))
     console.log(`[actions] guardian move threshold → ${pct}%`)
     res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/asset-controller — { class, beTriggerR?, partialTriggerR?,
+  // runnerTriggerR?, runnerTrailR? } sets one asset class's trade-management
+  // triggers (owner: "separate controllers for forex/indices/commodities").
+  // A null/absent value for a key clears it back to the class default.
+  // -----------------------------------------------------------------------
+  router.post('/asset-controller', (req, res) => {
+    const cls = String(req.body?.class || '')
+    try {
+      const view = setAssetController(db, cls, req.body || {})
+      console.log(`[actions] asset controller ${cls} updated`)
+      res.json({ ok: true, asset_controllers: view })
+    } catch (err) {
+      res.status(400).json({ error: err.message })
+    }
   })
 
   // -----------------------------------------------------------------------

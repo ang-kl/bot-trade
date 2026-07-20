@@ -1284,6 +1284,53 @@ export default function Tune() {
                 }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
               }} />
             </div>
+            {/* Per-asset-class controllers — owner: "separate controllers for
+                forex/indices/commodities... trading like a beginner." A
+                EURUSD and a NatGas trade shouldn't be managed identically. */}
+            <div className="mt-3">
+              <div className="text-[13px] font-semibold mb-1">Asset-class controllers</div>
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                per-class breakeven / partial / runner triggers (in R). Whippy classes (energy, crypto) lock in sooner; clean trenders (indices, gold) give runners more room. Blank = class default.
+              </span>
+              <div className="overflow-x-auto mt-1">
+                <table className="std-cols text-[12px] tabular-nums">
+                  <thead className="text-left text-[var(--color-text-sub)]">
+                    <tr className="border-b border-[var(--color-border)]">
+                      <th className="py-1 pr-3 font-semibold">Class</th>
+                      <th className="py-1 pr-3 font-semibold" title="Move stop to breakeven at this R">BE @R</th>
+                      <th className="py-1 pr-3 font-semibold" title="Take half off at this R">Partial @R</th>
+                      <th className="py-1 pr-3 font-semibold" title="Start trailing the runner at this R">Runner @R</th>
+                      <th className="py-1 font-semibold" title="Trail this many R behind price">Trail R</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(config?.asset_controllers || []).map(row => (
+                      <tr key={row.class} className="border-b border-[var(--color-border)]/40">
+                        <td className="py-1 pr-3 font-semibold">{row.class}{row.overridden ? ' *' : ''}</td>
+                        {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR'].map(k => (
+                          <td key={k} className="py-1 pr-3">
+                            <input
+                              type="number" step="0.1" min="0.1" max="20"
+                              defaultValue={row[k]}
+                              aria-label={`${row.class} ${k}`}
+                              className="w-16 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[12px]"
+                              onBlur={(e) => {
+                                const v = e.target.value === '' ? null : Number(e.target.value)
+                                if (e.target.value !== '' && Number(v) === row[k]) return
+                                run(async () => {
+                                  const r = await agentPost('/actions/asset-controller', { class: row.class, [k]: v })
+                                  setConfig(c => ({ ...c, asset_controllers: r.asset_controllers }))
+                                }, `${row.class} ${k} → ${v ?? 'default'}`)
+                              }}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             {/* Regime gate — owner: "trading like a beginner" (PF 0.15). The
                 fade strategy was firing into trends where its levels get
                 blown through; this blocks strategy/regime mismatches. */}

@@ -34,6 +34,8 @@ const STRAT_SHORT = {
   ema_pullback: 'EMA',
   donchian_breakout: 'BRK',
   rsi_meanrev: 'RSI',
+  vwap_trend: 'VWAP',
+  vp_value: 'VP',
 }
 // No-digits calls are PRICES (scale-aware canonical dp); explicit digits
 // are money/counts and keep exactly what the caller asked for.

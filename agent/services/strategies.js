@@ -28,6 +28,8 @@ async function loadCompute(path, exportName) {
 const computeEmaPullback = await loadCompute('./ema-pullback.js', 'computeEmaPullback')
 const computeDonchianBreakout = await loadCompute('./donchian-breakout.js', 'computeDonchianBreakout')
 const computeRsiMeanrev = await loadCompute('./rsi-meanrev.js', 'computeRsiMeanrev')
+const computeVwapTrend = await loadCompute('./vwap-trend.js', 'computeVwapTrend')
+const computeVpValue = await loadCompute('./vp-value.js', 'computeVpValue')
 
 export const STRATEGY_REGISTRY = [
   { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: true,  pendingCapable: true  },
@@ -35,6 +37,8 @@ export const STRATEGY_REGISTRY = [
   { key: 'ema_pullback',      name: 'EMA trend-pullback', compute: computeEmaPullback,      defaultOn: false, pendingCapable: false },
   { key: 'donchian_breakout', name: 'Range breakout',     compute: computeDonchianBreakout, defaultOn: false, pendingCapable: false },
   { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: false, pendingCapable: false },
+  { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: false, pendingCapable: false },
+  { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: false, pendingCapable: false },
 ]
 
 export const STRATEGY_KEYS = STRATEGY_REGISTRY.map(s => s.key)
