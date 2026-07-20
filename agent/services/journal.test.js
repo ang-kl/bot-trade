@@ -32,6 +32,23 @@ test('buildDailyJournal: trades, net, win rate, gate pressure for ONE day', () =
   assert.match(text, /market closed ×2/)
 })
 
+test('journalHtml: self-contained page with webapp links, no green ink', async () => {
+  const { journalHtml, buildDailyJournal } = await import('./journal.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO trades (symbol, side, net_pnl, status, closed_at) VALUES ('NATGAS', 'BUY', 50, 'closed', '2026-07-19 10:00:00')`).run()
+  const html = journalHtml(buildDailyJournal(db, '2026-07-19'), 'https://example.app')
+  assert.match(html, /Journal — 2026-07-19/)
+  assert.match(html, /https:\/\/example\.app\/tune/)
+  assert.match(html, /https:\/\/example\.app\/trade/)
+  assert.match(html, /\+\$50\.00/)
+  // Colour discipline: every hex in the page must be from the app palette
+  // (blue up / red down / slate neutrals) — owner is red/G colour-blind.
+  const allowed = new Set(['#2563eb', '#dc2626', '#0f172a', '#f4f6fb', '#fff', '#64748b', '#94a3b8'])
+  for (const hex of html.match(/#[0-9a-f]{3,6}/gi) || []) {
+    assert.ok(allowed.has(hex.toLowerCase()), `unexpected colour ${hex}`)
+  }
+})
+
 test('empty day journals honestly', () => {
   const db = initDB(':memory:')
   const j = buildDailyJournal(db, '2026-07-19')
