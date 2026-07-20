@@ -1635,5 +1635,11 @@ export function startLoop(db) {
   import('./services/fast-monitor.js')
     .then(m => m.startFastMonitor(db, getCtraderCreds))
     .catch(err => log('fast-monitor failed to start:', err.message))
+  // Tick-driven guardian — live spot subscription on symbols with open
+  // positions; guard sweeps fire on price movement, the loop stays the
+  // guaranteed backstop (owner: attention proportional to risk).
+  import('./services/guardian.js')
+    .then(m => m.startGuardian(db, getCtraderCreds))
+    .catch(err => log('guardian failed to start:', err.message))
   return { getLoopCount: () => loopCount }
 }
