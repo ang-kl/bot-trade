@@ -10,7 +10,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
-import { toMs, priceDp } from '../lib/std-trade-rows.js'
+import { toMs, priceDp, brokerOrderRows } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
 
@@ -37,19 +37,46 @@ function ago(iso) {
   return `${Math.round(mins / 1440)}d ago`
 }
 
+// Live-broker positions → an enrichment map keyed by ctrader position id
+// (P&L, ccy, margin, bid/ask, commission, swap) — merged onto Trade's own
+// DB-tracked rows so they carry the same fields Desk's live view shows.
+function buildEnrichMap(positions) {
+  const by = {}
+  for (const p of positions || []) {
+    if (p.positionId == null) continue
+    by[String(p.positionId)] = {
+      netPnl: p.netPnl ?? null,
+      estNetPnl: p.estNetPnl ?? null,
+      quoteCcy: p.quoteCcy ?? null,
+      depositCcy: p.depositCcy ?? null,
+      usedMargin: p.usedMargin ?? null,
+      bid: p.bid ?? null,
+      ask: p.ask ?? null,
+      commission: p.commission ?? null,
+      swap: p.swap ?? null,
+    }
+  }
+  return by
+}
+
 
 // Open (monitored) positions → the standard shape. Time = the broker fill
 // time when known (trades.opened_at via the join), else the row's created_at.
-function openPositionRows(positions, prices = {}, pnlById = {}) {
+// enrichById (keyed by ctrader_position_id) carries the live-broker fields
+// this DB-only row never had — ccy, margin, bid/ask, commission, swap —
+// matching the richness Desk's "At the broker" table already shows (owner:
+// "why you didn't include" the same columns here).
+function openPositionRows(positions, prices = {}, enrichById = {}) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
     const current = Number(prices[String(p.symbol).toUpperCase()]) || null
-    const pnl = pnlById[String(p.ctrader_position_id)] ?? null
+    const enr = enrichById[String(p.ctrader_position_id)] || {}
+    const openedAt = p.opened_at || p.created_at
     return {
-      pnl,
+      pnl: enr.netPnl ?? enr.estNetPnl ?? null,
       id: `pos-${p.id}`,
-      at: p.opened_at || p.created_at,
+      at: openedAt,
       symbol: p.symbol,
       result: { text: 'OPEN', tone: 'info' },
       source: { text: ATTEMPT_SOURCE[src] || String(src).toUpperCase(), tone: src === 'validation_fill' ? 'special' : 'neutral' },
@@ -60,6 +87,15 @@ function openPositionRows(positions, prices = {}, pnlById = {}) {
       tp: p.current_tp,
       tps: tpLadder(p.current_tp, p.tp2_price, p.volume, { scaledOut: !!p.scaled_out }),
       current,
+      ccy: enr.quoteCcy ?? null,
+      moneyCcy: enr.depositCcy ?? null,
+      margin: enr.usedMargin ?? null,
+      bid: enr.bid ?? null,
+      ask: enr.ask ?? null,
+      commission: enr.commission ?? null,
+      swap: enr.swap ?? null,
+      positionId: p.ctrader_position_id ?? null,
+      durationMs: openedAt ? Math.max(0, Date.now() - toMs(openedAt)) : null,
       reason: `${p.last_check_action || 'not checked yet'}${checkedAt ? ` (${ago(checkedAt)})` : ''}`,
       chart: {
         symbol: p.symbol,
@@ -70,53 +106,41 @@ function openPositionRows(positions, prices = {}, pnlById = {}) {
   })
 }
 
-// Broker resting orders → the standard shape. Time is the broker's
-// last-update stamp (when the order or its SL/TP was last set); the
-// expiry lives in Reason. Qty is in UNITS at the broker (not lots) — kept
-// explicit with a 'u' suffix rather than guessing a contract size.
-function pendingOrderRows(orders) {
-  return orders.map((o, i) => ({
-    id: `po-${o.orderId || i}`,
-    at: o.updatedAt ?? null, // last time the order (incl. its SL/TP) was set
-    symbol: o.symbolName || '?',
-    result: { text: 'PENDING', tone: 'warning' },
-    source: { text: o.bot ? 'BOT' : 'MANUAL', tone: o.bot ? 'special' : 'neutral' },
-    side: o.side || null,
-    qtyText: o.volumeUnits != null ? `${Number(o.volumeUnits).toLocaleString()} u` : '—',
-    entry: o.limitPrice ?? o.stopPrice,
-    sl: o.sl,
-    tp: o.tp,
-    reason: `${typeof o.orderType === 'string' ? o.orderType : 'LIMIT'}${o.expiresAt ? ` · expires ${new Date(o.expiresAt).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}`,
-    chart: {
-      symbol: o.symbolName,
-      timeframe: '1h',
-      lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp },
-    },
-    panel: o.orderId != null,
-    raw: { ...o, symbol: o.symbolName || '?', type: typeof o.orderType === 'string' ? o.orderType : null },
-  }))
-}
-
 // External (non-bot) broker positions → the standard shape; observed only.
 // prices (latest scan close per symbol) light up the To TP/SL distance —
-// the owner's own trades deserve the same live protection read.
-function externalPositionRows(positions, prices = {}, pnlById = {}) {
-  return positions.map(p => ({
-    pnl: pnlById[String(p.ctrader_position_id)] ?? null,
-    id: `ext-${p.id}`,
-    at: p.opened_at || p.created_at || null,
-    symbol: p.symbol,
-    result: { text: 'OPEN', tone: 'info' },
-    source: { text: 'EXTERNAL', tone: 'neutral' },
-    side: String(p.side || '').toUpperCase() || null,
-    qty: p.volume ?? null,
-    entry: p.entry_price,
-    sl: p.current_sl ?? null,
-    tp: p.current_tp ?? null,
-    current: Number(prices[String(p.symbol).toUpperCase()]) || null,
-    reason: 'observed, not managed',
-    chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp } },
-  }))
+// the owner's own trades deserve the same live protection read. enrichById
+// carries the same live-broker richness as openPositionRows above.
+function externalPositionRows(positions, prices = {}, enrichById = {}) {
+  return positions.map(p => {
+    const enr = enrichById[String(p.ctrader_position_id)] || {}
+    const openedAt = p.opened_at || p.created_at || null
+    return {
+      pnl: enr.netPnl ?? enr.estNetPnl ?? null,
+      id: `ext-${p.id}`,
+      at: openedAt,
+      symbol: p.symbol,
+      result: { text: 'OPEN', tone: 'info' },
+      source: { text: 'EXTERNAL', tone: 'neutral' },
+      side: String(p.side || '').toUpperCase() || null,
+      qty: p.volume ?? null,
+      entry: p.entry_price,
+      sl: p.current_sl ?? null,
+      tp: p.current_tp ?? null,
+      current: Number(prices[String(p.symbol).toUpperCase()]) || null,
+      ccy: enr.quoteCcy ?? null,
+      moneyCcy: enr.depositCcy ?? null,
+      margin: enr.usedMargin ?? null,
+      bid: enr.bid ?? null,
+      ask: enr.ask ?? null,
+      commission: enr.commission ?? null,
+      swap: enr.swap ?? null,
+      positionId: p.ctrader_position_id ?? null,
+      durationMs: openedAt ? Math.max(0, Date.now() - toMs(openedAt)) : null,
+      reason: 'observed, not managed',
+      chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp } },
+      raw: p,
+    }
+  })
 }
 
 // Recent BOT trades → the standard shape (owner: "Recent trades follows the
@@ -142,6 +166,7 @@ function closedTradeRows(trades) {
       tp: t.tp_price,
       tps: tpLadder(t.tp_price, t.tp2_price, t.volume, { scaledOut: !!t.scaled_out }),
       pnl: rejected || unconfirmed ? null : t.net_pnl ?? null,
+      durationMs: t.hold_duration_ms ?? (t.opened_at && t.closed_at ? Math.max(0, toMs(t.closed_at) - toMs(t.opened_at)) : null),
       reason: rejected ? 'broker has no record (reconciled)'
         : unconfirmed ? 'no broker fill recorded — tap Reconcile above'
         : [t.exit_price != null ? `out ${fmt(t.exit_price)}` : null, t.close_reason || null].filter(Boolean).join(' · '),
@@ -227,7 +252,12 @@ export default function Trade() {
   const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
   const [marketHours, setMarketHours] = useState(null) // { SYM: { open, next_open_at } }
   const [vetoBd, setVetoBd] = useState(null)    // veto-reason breakdown for the order-log insight
-  const [pnlById, setPnlById] = useState({})    // broker-truth net P&L per ctrader position id
+  // Live-broker enrichment per ctrader position id (P&L, ccy, margin,
+  // bid/ask, commission, swap) — owner: "Trade tables lack the
+  // insightfulness ... as 'At the broker' in desk page". Same fields Desk
+  // already shows, joined onto Trade's own DB-tracked rows by positionId.
+  const [enrichById, setEnrichById] = useState({})
+  const [liveOrders, setLiveOrders] = useState([]) // live resting orders (replaces the stale reconcile-cache list)
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -266,15 +296,25 @@ export default function Trade() {
     }
     // Order-log insight: WHY the vetoes, grouped — non-blocking.
     agentGet('/state/veto-breakdown?days=7').then(setVetoBd).catch(() => {})
-    // Broker-truth P&L per position from the last snapshot (SQLite-cached,
-    // ms-fast) — standardises the P&L column across ALL position tables.
+    // Live broker enrichment (P&L, ccy, margin, bid/ask, commission, swap)
+    // + resting orders — the SAME live call Desk uses. Cache instant-paints
+    // (`prev` guards below never let a stale cache clobber live data that
+    // already landed, matching Desk's two-tier load pattern); the live
+    // fetch overwrites the moment the WS answers.
+    agentPost('/actions/broker-positions', { selectedOnly: true })
+      .then(b => {
+        const acct = b?.accounts?.[0]
+        if (acct) {
+          setEnrichById(buildEnrichMap(acct.positions))
+          setLiveOrders(acct.orders || [])
+        }
+      })
+      .catch(() => {})
     agentGet('/state/broker-cache').then(bc => {
-      const by = {}
-      for (const p of bc?.snapshot?.account?.positions || []) {
-        const v = p.netPnl ?? p.estNetPnl
-        if (p.positionId != null && v != null) by[String(p.positionId)] = v
-      }
-      setPnlById(by)
+      const acct = bc?.snapshot?.account
+      if (!acct) return
+      setEnrichById(prev => (Object.keys(prev).length ? prev : buildEnrichMap(acct.positions)))
+      setLiveOrders(prev => (prev.length ? prev : (acct.orders || [])))
     }).catch(() => {})
   }, [])
 
@@ -464,7 +504,7 @@ export default function Trade() {
       <Card>
         <h2 className="text-[13px] font-semibold mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[13px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), pnlById)} countLabel="open positions" marketHours={marketHours} />}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
@@ -522,15 +562,21 @@ export default function Trade() {
         </button>
       </div>
 
-      {/* Broker snapshot: pending (preset) orders + positions opened outside the bot */}
-      {broker && ((broker.pendingOrders?.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
+      {/* Broker snapshot: pending (resting) orders + positions opened outside
+          the bot. Pending orders now come from the LIVE broker fetch above
+          (liveOrders), not the old reconcile-cache — that cache only ever
+          refreshed on a periodic background job and could show orders long
+          cancelled or missing ones just placed. Same richness (ccy/margin/
+          bid/ask/commission/swap) as Desk's "At the broker" table (owner:
+          "why you didn't include"). */}
+      {broker && ((liveOrders.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
         <Card>
           <div className="flex items-center gap-2 mb-2">
             <h2 className="text-[13px] font-semibold">
               At the broker
               {broker.lastReconcileAt && <span className="ml-2 font-normal text-[var(--color-text-sub)]">synced {ago(broker.lastReconcileAt)}</span>}
             </h2>
-            {(broker.pendingOrders?.length || 0) > 0 && (
+            {(liveOrders.length || 0) > 0 && (
               <Button
                 size="sm" variant="subtle" className="ml-auto" disabled={busy === 'pclean'}
                 title="Cancel BOT-placed resting orders that the bot's ledger no longer tracks (stale duplicates from before the permanent database). Your own manual cTrader orders are never touched."
@@ -546,24 +592,48 @@ export default function Trade() {
               >{busy === 'pclean' ? 'Cleaning…' : 'Clean up stale pending orders'}</Button>
             )}
           </div>
-          {(broker.pendingOrders?.length || 0) > 0 && (
+          {(liveOrders.length || 0) > 0 && (
             <div className="mb-2">
-              <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({broker.pendingOrders.length})</div>
+              <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending orders ({liveOrders.length})</div>
               <StdTradeTable
-                rows={pendingOrderRows(broker.pendingOrders)}
+                rows={brokerOrderRows(liveOrders, { manageable: true })}
                 countLabel="pending orders"
                 marketHours={marketHours}
                 panel={{ label: 'Manage', render: (row, close) => <OrderManager o={row.raw} onDone={() => { close(); load() }} /> }}
               />
-              <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
-                Qty is in broker UNITS (not lots). Stop Loss / Take Profit showing — means the resting order carries none at the broker (it would fill unprotected until the bot's monitor adopts it). Older snapshots need one loop cycle after deploy to enrich.
-              </p>
             </div>
           )}
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <StdTradeTable rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), pnlById)} countLabel="external positions" marketHours={marketHours} />
+              <StdTradeTable
+                rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)}
+                countLabel="external positions"
+                marketHours={marketHours}
+                extraAction={(row) => {
+                  const positionId = row.raw?.ctrader_position_id
+                  if (!positionId) return null
+                  const managed = !row.raw?.keeper_opt_out
+                  return (
+                    <label
+                      className="flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap"
+                      title="Let the Profit Keeper manage this position (per the policy armed on Tune). Untick to leave this ONE position hands-off regardless of that policy."
+                    >
+                      <input
+                        type="checkbox" checked={managed}
+                        aria-label={`${managed ? 'Stop' : 'Let'} the bot manage ${row.symbol}`}
+                        onChange={async () => {
+                          try {
+                            await agentPost('/actions/position-keeper-optout', { positionId, optOut: managed })
+                            await load()
+                          } catch (e) { setError(e.message) }
+                        }}
+                      />
+                      bot manage
+                    </label>
+                  )
+                }}
+              />
             </div>
           )}
         </Card>

@@ -44,7 +44,7 @@ function sortVal(r, k) {
 const PAGE = 8
 const COL1_W = 76 // px — frozen date/time column; col 2 offset builds on it
 
-export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null, marketHours = null }) {
+export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick = null, panel = null, marketHours = null, extraAction = null }) {
   const [page, setPage] = useState(0)
   const [chartFor, setChartFor] = useState(null)
   const [panelFor, setPanelFor] = useState(null)
@@ -245,6 +245,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           {panel.label}
                         </Button>
                       )}
+                      {extraAction && extraAction(r)}
                     </td>
                   </tr>
                   {chartFor === r.id && r.chart && (

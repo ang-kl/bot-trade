@@ -173,6 +173,11 @@ const TABLES = `
     -- Peak floating profit (USD) seen by the Profit Keeper — drives the
     -- ratchet/giveback policy on manual/external positions.
     peak_profit_usd       REAL,
+    -- Per-position override (owner spec): a human-opened position is in the
+    -- Profit Keeper's scope by default (per the account-wide on/off + scope
+    -- setting) — ticking this OFF excludes just this one position, same as
+    -- if it had its own guard_json rule. 0/NULL = follow the global policy.
+    keeper_opt_out        INTEGER DEFAULT 0,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -334,6 +339,7 @@ export function initDB(dbPath) {
     ['broker_volume_units',  'REAL'],
     ['broker_sl',            'REAL'],
     ['broker_tp',            'REAL'],
+    ['keeper_opt_out',       'INTEGER DEFAULT 0'],
   ];
   for (const [col, type] of mpMigrations) {
     if (!mpColNames.has(col)) {
