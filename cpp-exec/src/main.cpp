@@ -159,6 +159,27 @@ int main(int argc, char** argv) {
     return forward(req.body, &ExecEngine::cancelOrder, engine);
   });
 
+  // Atomic hot-reconfig (#3): the Node strategy tier retunes the execution
+  // guard live — halt (kill switch), require-bracket, max order volume —
+  // without pausing or locking the order path. Each field is optional; only
+  // the ones present are changed. Reads on the order path are lock-free.
+  server.route("POST", "/config", [&engine](const HttpRequest& req) -> HttpResponse {
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    const jsn::Value& v = *parsed;
+    if (v.get("halt").isBool()) engine.guard().setHalt(v.get("halt").asBool());
+    if (v.get("requireBracket").isBool()) engine.guard().setRequireBracket(v.get("requireBracket").asBool());
+    if (v.get("maxOrderVolume").isNumber()) engine.guard().setMaxOrderVolume(v.get("maxOrderVolume").asNumber());
+    const GuardSnapshot g = engine.guard().snapshot();
+    jsn::Value out{jsn::Object{}};
+    out.set("ok", true);
+    out.set("halt", g.halt);
+    out.set("requireBracket", g.requireBracket);
+    out.set("maxOrderVolume", g.maxOrderVolume);
+    return {200, jsn::dump(out)};
+  });
+
   // Same payload/response as `cpp-exec --backtest` (Bearer-gated like every
   // other route). Payload guarded at 5MB in handleBacktest; note the socket
   // reader also enforces its own 4 MiB body cap.

@@ -186,6 +186,16 @@ static jsn::Value withAccountId(const jsn::Value& payload, long long accountId) 
 }
 
 EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
+  // Bracket guarantee (#4) + atomic block (#3): validate BEFORE touching the
+  // socket. A naked market order (no stop) or a halted/over-cap order is
+  // refused here — the last line of defence, independent of anything the
+  // Node strategy tier did or failed to do. Read is lock-free (snapshot of
+  // atomics), so the HTTP thread can retune the guard without blocking this.
+  const OrderVerdict v = validateOrder(payload, guard_.snapshot());
+  if (!v.ok) {
+    logLine("order REJECTED by guard: " + v.reason);
+    return errResult(v.reason, v.reason, false);
+  }
   std::lock_guard lk(mtx_);
   return request(pt::NEW_ORDER_REQ, withAccountId(payload, accountId_),
                  pt::EXECUTION_EVENT);

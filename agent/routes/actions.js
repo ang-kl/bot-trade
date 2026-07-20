@@ -801,6 +801,9 @@ export default function actionsRouter(db) {
         volume: td.volume,
         comment: 'abot-double',
         label,
+        // Intentionally replicates an existing manual position's size with no
+        // fresh stop — exempt from the naked-market bracket guard.
+        allowNaked: true,
       })
       res.json({ ok: true, doubledFrom: positionId, newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
     } catch (err) {
@@ -830,6 +833,9 @@ export default function actionsRouter(db) {
         volume: td.volume,
         comment: 'abot-reverse',
         label,
+        // Mirrors an existing manual position's size in the opposite direction
+        // with no fresh stop — exempt from the naked-market bracket guard.
+        allowNaked: true,
       })
       res.json({ ok: true, reversedFrom: positionId, newSide: wasSell ? 'BUY' : 'SELL', newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
     } catch (err) {
