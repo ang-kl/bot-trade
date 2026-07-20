@@ -128,8 +128,23 @@ export async function cancelOrder(creds, { orderId }) {
 
 export async function reconcile(creds) {
   if (execEngineMode() === 'cpp') {
-    await ensureSidecarSession(creds)
-    return sidecar('GET', '/positions')
+    // The sidecar's own reconcile loop hasn't completed a single pass yet
+    // (just started, reconnecting after a drop, etc) — GET /positions 503s
+    // with "no reconcile data yet" the whole time. Owner hit this live:
+    // pending-order-manager failed on every tick, and the main loop's own
+    // reconcile phase failing before reaching weekend-bank's heartbeat call
+    // left it looking STALLED too — one sidecar hiccup took out two
+    // unrelated controllers. Fall back to the JS/WS reconcile path instead
+    // of hard-failing every caller; the sidecar resumes owning reconcile
+    // again the moment it reports data.
+    try {
+      await ensureSidecarSession(creds)
+      return await sidecar('GET', '/positions')
+    } catch (err) {
+      if (!/no reconcile data yet/.test(err.message)) throw err
+      const m = await ws()
+      return m.wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
+    }
   }
   const m = await ws()
   return m.wsReconcile(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)

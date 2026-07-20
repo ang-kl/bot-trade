@@ -1,157 +1,260 @@
 // TradeGaugeWall — per-open-position instrument cluster, replacing the P&L
 // line chart (owner: "change ... from chart to gauges, each trade will have
-// Attitude Indicator gauge style"). Two aviation-style gauges per trade:
+// Attitude Indicator gauge style"). Two aviation-style gauges per trade,
+// each paired with a graduated numeric scale (owner: "where are the numeric
+// intervals, indicators, and text arranged on a dial chart to clearly
+// communicate progress toward a KPI or target value"):
 //
-//   Attitude Indicator — the horizon tilts with this trade's P&L: blue sky
-//     rises on the profit side, orange ground rises on the loss side (never
-//     literal red/green, matching every other P&L readout in the app). The
-//     fixed aircraft "wings" crossing the horizon don't rotate — their
-//     length reads the position's SIZE (lots), independent of direction, so
-//     a big losing trade reads as long orange-tilted wings (higher stakes)
-//     vs a small one (short wings, same tilt). The wingtip marker points
-//     right when the trade is trending (P&L has moved consistently one way
-//     over the last minute or so) or sits as a dot when it's choppy/flat.
-//   Vertical Speed Indicator — needle deflection reads how FAST this
-//     trade's P&L is moving right now (not its size): flat sits at 9
-//     o'clock, a fast mover swings toward 12 (accelerating profit) or 6
-//     (accelerating loss) — same mental model as an aircraft VSI, relabelled
-//     "activity now."
+//   Attitude Indicator — the horizon tilts with this trade's progress in
+//     RISK units (R-multiple: how far price has moved from entry, scaled by
+//     the distance to this trade's own stop) — blue sky rises on the
+//     profit side, orange ground on the loss side. R is computed straight
+//     from a LIVE price tick against entry/SL, not from the broker's
+//     polled dollar P&L, so it updates the instant a tick arrives and needs
+//     no per-instrument contract-value conversion (unlike a dollar figure,
+//     "price moved half its stop-distance" means the same thing on every
+//     symbol). The scale strip below reads the current R directly. The
+//     fixed aircraft "wings" don't rotate — their length reads position
+//     SIZE (lots); the wingtip shows an arrow when trending, a dot when
+//     choppy/flat.
+//   Vertical Speed Indicator — needle + scale strip read how fast R is
+//     changing right now (R per minute) — flat sits at 9 o'clock, a fast
+//     mover swings toward 12 (accelerating in profit) or 6 (accelerating
+//     against). Sampled from the SAME live ticks, so it moves sub-second
+//     while the market's active instead of waiting on a poll.
 //
-// Session-only history, same pattern as the chart it replaces: sampled
-// whenever Desk's own poll delivers a fresh snapshot (no extra network
-// calls), reset on page reload.
-import { useEffect, useRef, useState } from 'react'
+// Grid selector semantics (owner: "one chart means one overview combination
+// of all open trade symbols, four means four trade symbol"): 1 = a single
+// COMBINED portfolio tile (lots-weighted average R across every open
+// position); 4/8/16 = that many INDIVIDUAL trade tiles, capped (an overflow
+// note shows if there are more open positions than the grid size).
+//
+// The dollar P&L printed under each tile is still the broker-truth polled
+// figure (unchanged) — R and its rate are a live, instrument-agnostic
+// PROXY for "how is this trade doing right now," not a replacement for the
+// exact money number.
+import { useEffect, useId, useState } from 'react'
+import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 
 const UP = 'var(--color-up)'
 const DOWN = 'var(--color-down)'
-const MAX_SAMPLES = 24 // ~2 min at the 5s active-poll rate — just enough for a rate-of-change
+const MAX_SAMPLES = 40 // ~2 min of tick-driven samples — enough for a rate-of-change
+const SIZE = 116 // owner: "make it bigger for me to understand"
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const money = (v) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+const isLong = (side) => side === 'BUY' || side === 'Long' || side === 'long'
 
-// Every gauge is decorative shape ONLY unless it's paired with a caption and
-// a real number underneath (owner: "where are the gauges labels and
-// measurement" — the meaning was previously only in code comments, invisible
-// in the browser).
-function AttitudeGauge({ pnl, volume, trending, size = 72 }) {
-  // Bank angle isn't a literal reading — tanh keeps one outsized trade from
-  // pinning the dial at a useless, always-maxed 90°.
-  const bank = clamp(Math.tanh((pnl || 0) / 200) * 42, -42, 42)
-  const wing = clamp(6 + Math.sqrt(Math.max(volume || 0, 0)) * 10, 6, 34)
-  const up = (pnl || 0) >= 0
-  const clipId = `ai-clip-${Math.round(size)}-${up ? 'u' : 'd'}`
+/** R-multiple: how far price has travelled from entry, in units of this trade's own stop distance. */
+function rMultiple(entry, sl, side, price) {
+  if (entry == null || sl == null || price == null) return null
+  const risk = Math.abs(entry - sl)
+  if (!(risk > 0)) return null
+  const dir = isLong(side) ? 1 : -1
+  return ((price - entry) * dir) / risk
+}
+
+// Graduated scale strip: tick marks + numbers + a filled bar from zero to
+// the current value. This is the "numeric intervals/indicators" the plain
+// dials were missing — the dial shows shape, this shows the actual number
+// against a fixed, labelled range.
+function ScaleStrip({ value, min, max, ticks, width = 108, height = 22 }) {
+  const w = width - 6
+  const x = (v) => 3 + clamp((v - min) / (max - min), 0, 1) * w
+  const up = (value ?? 0) >= 0
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={value == null ? 'no reading yet' : `${value.toFixed(2)}`}>
+      <line x1={x(min)} y1="8" x2={x(max)} y2="8" stroke="var(--color-border)" strokeWidth="2" />
+      {ticks.map(t => (
+        <g key={t}>
+          <line x1={x(t)} y1="4" x2={x(t)} y2="12" stroke="var(--color-text-sub)" strokeWidth="1" />
+          <text x={x(t)} y={height - 1} fontSize="6.5" textAnchor="middle" fill="var(--color-text-sub)">{t > 0 ? `+${t}` : t}</text>
+        </g>
+      ))}
+      {value != null && (
+        <>
+          <line x1={x(0)} y1="8" x2={x(clamp(value, min, max))} y2="8" stroke={up ? UP : DOWN} strokeWidth="3.5" strokeLinecap="round" />
+          <circle cx={x(clamp(value, min, max))} cy="8" r="4" fill={up ? UP : DOWN} stroke="var(--color-bg)" strokeWidth="1" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+function AttitudeGauge({ r, volume, trending, size = SIZE }) {
+  // ±2R maps to the dial's full ±42° tilt — tanh-free since R is already a
+  // bounded, meaningful unit (unlike a raw dollar figure).
+  const bank = clamp((r ?? 0) * 21, -42, 42)
+  const wing = clamp(size * 0.08 + Math.sqrt(Math.max(volume || 0, 0)) * (size * 0.14), size * 0.08, size * 0.47)
+  const up = (r ?? 0) >= 0
+  const cx = size / 2
+  const clipId = `ai-clip-${useId()}`
   return (
     <div className="flex flex-col items-center">
-      <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label={`Attitude indicator: ${up ? 'profit' : 'loss'} tilt, ${trending ? 'trending' : 'choppy'}, volume ${volume}`}>
-        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
-        <clipPath id={clipId}><circle cx="50" cy="50" r="44" /></clipPath>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Attitude: ${r == null ? 'no reading yet' : `${r.toFixed(2)}R`}, ${trending ? 'trending' : 'choppy'}, volume ${volume}`}>
+        <circle cx={cx} cy={cx} r={cx - 3} fill="none" stroke="var(--color-border)" strokeWidth="2" />
+        <clipPath id={clipId}><circle cx={cx} cy={cx} r={cx - 5} /></clipPath>
         <g clipPath={`url(#${clipId})`}>
-          <g transform={`rotate(${bank} 50 50)`}>
-            <rect x="-20" y="-100" width="140" height="150" fill={UP} opacity="0.32" />
-            <rect x="-20" y="50" width="140" height="150" fill={DOWN} opacity="0.32" />
-            <line x1="-20" y1="50" x2="120" y2="50" stroke={up ? UP : DOWN} strokeWidth="2" />
+          <g transform={`rotate(${bank} ${cx} ${cx})`}>
+            <rect x={-cx * 0.4} y={-cx * 2} width={size * 1.4} height={size * 1.5} fill={UP} opacity="0.32" />
+            <rect x={-cx * 0.4} y={cx} width={size * 1.4} height={size * 1.5} fill={DOWN} opacity="0.32" />
+            <line x1={-cx * 0.4} y1={cx} x2={size * 1.2} y2={cx} stroke={up ? UP : DOWN} strokeWidth="2" />
           </g>
         </g>
         {/* fixed aircraft symbol — wings stay level; only the horizon behind them tilts */}
-        <line x1={50 - wing} y1="50" x2="44" y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        <line x1="56" y1="50" x2={50 + wing} y2="50" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        <circle cx="50" cy="50" r="3" fill="currentColor" />
+        <line x1={cx - wing} y1={cx} x2={cx - size * 0.06} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        <line x1={cx + size * 0.06} y1={cx} x2={cx + wing} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        <circle cx={cx} cy={cx} r={size * 0.03} fill="currentColor" />
         {trending
-          ? <path d={`M ${50 + wing} 50 l 7 -4.5 l 0 9 z`} fill="currentColor" />
-          : <circle cx={50 + wing + 4.5} cy="50" r="2.5" fill="currentColor" opacity="0.55" />}
+          ? <path d={`M ${cx + wing} ${cx} l ${size * 0.08} ${-size * 0.05} l 0 ${size * 0.1} z`} fill="currentColor" />
+          : <circle cx={cx + wing + size * 0.05} cy={cx} r={size * 0.025} fill="currentColor" opacity="0.55" />}
       </svg>
-      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center">
-        Attitude<br />{(volume || 0).toFixed(2)} lots · {trending ? 'trending' : 'choppy'}
+      <ScaleStrip value={r} min={-2} max={2} ticks={[-2, -1, 0, 1, 2]} width={size - 6} />
+      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
+        Attitude — {r == null ? 'no SL set' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`}<br />{(volume || 0).toFixed(2)} lots · {trending ? 'trending' : 'choppy'}
       </span>
     </div>
   )
 }
 
-function VsiGauge({ rate, ratePerMin, size = 72 }) {
-  // rate is normalized -1..1. 0 = 9 o'clock (dormant), +1 = 12 o'clock
-  // (climbing fast), -1 = 6 o'clock (dropping fast).
+function VsiGauge({ rate, ratePerMin, size = SIZE }) {
+  // rate is normalized -1..1 for the needle. 0 = 9 o'clock (dormant), +1 =
+  // 12 o'clock (climbing fast), -1 = 6 o'clock (dropping fast).
   const deg = 180 - clamp(rate, -1, 1) * 90
   const rad = (deg * Math.PI) / 180
-  const r = 38
-  const nx = 50 + r * Math.cos(rad)
-  const ny = 50 - r * Math.sin(rad)
+  const cx = size / 2
+  const r = cx * 0.82
+  const nx = cx + r * Math.cos(rad)
+  const ny = cx - r * Math.sin(rad)
   const up = rate >= 0
   return (
     <div className="flex flex-col items-center">
-      <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label="Activity now">
-        <circle cx="50" cy="50" r="46" fill="none" stroke="var(--color-border)" strokeWidth="2" />
-        <path d="M 12 50 A 38 38 0 0 1 50 12" fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
-        <path d="M 12 50 A 38 38 0 0 0 50 88" fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
-        <line x1="50" y1="50" x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
-        <circle cx="50" cy="50" r="3.5" fill="currentColor" />
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Activity: ${ratePerMin == null ? 'settling' : `${ratePerMin.toFixed(2)}R per minute`}`}>
+        <circle cx={cx} cy={cx} r={cx - 3} fill="none" stroke="var(--color-border)" strokeWidth="2" />
+        <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 1 ${cx} ${cx - r}`} fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
+        <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 0 ${cx} ${cx + r}`} fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
+        <line x1={cx} y1={cx} x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
+        <circle cx={cx} cy={cx} r={size * 0.035} fill="currentColor" />
       </svg>
-      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center">
-        Activity<br />{ratePerMin == null ? 'settling…' : `${ratePerMin >= 0 ? '+' : '−'}${Math.abs(ratePerMin).toFixed(2)}/min`}
+      <ScaleStrip value={ratePerMin} min={-1} max={1} ticks={[-1, -0.5, 0, 0.5, 1]} width={size - 6} />
+      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
+        Activity — {ratePerMin == null ? 'settling…' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}
       </span>
+    </div>
+  )
+}
+
+/**
+ * History-tracked R samples → current rate-of-change + trending flag. Each
+ * GaugeTile instance owns its own ref (React keys the tile by position id),
+ * so this is a plain array, not an id-keyed map. Samples are appended in an
+ * EFFECT, not during render — mutating a ref straight in the render body
+ * would double-sample under StrictMode's dev double-render.
+ */
+function useTileSeries(r) {
+  // History itself is the state (appended on the external signal — a fresh
+  // R arriving); rate/trending are PURE derivations from it at render time,
+  // not a second round-trip through an effect+setState.
+  const [hist, setHist] = useState([])
+  useEffect(() => {
+    if (r == null) return
+    // Genuinely syncing an external signal (a fresh live-tick-derived R) into
+    // an accumulated rolling buffer — there's no source of truth to derive
+    // this from at render time, unlike the mirrored-prop case this lint rule
+    // targets.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHist(prev => {
+      const t = Date.now()
+      const next = prev.length && t - prev[prev.length - 1].t < 500
+        ? [...prev.slice(0, -1), { t, r }]
+        : [...prev, { t, r }]
+      return next.length > MAX_SAMPLES ? next.slice(next.length - MAX_SAMPLES) : next
+    })
+  }, [r])
+  const first = hist[0]
+  const last = hist[hist.length - 1]
+  const elapsedMin = first && last && last.t > first.t ? (last.t - first.t) / 60000 : 0
+  const ratePerMin = elapsedMin > 0 ? (last.r - first.r) / elapsedMin : null
+  return {
+    rate: ratePerMin == null ? 0 : Math.tanh(ratePerMin / 0.5),
+    ratePerMin,
+    trending: ratePerMin != null && Math.abs(ratePerMin) > 0.15,
+  }
+}
+
+function GaugeTile({ label, side, r, volume, pnl }) {
+  const { rate, ratePerMin, trending } = useTileSeries(r)
+  const pnlOk = Number.isFinite(pnl)
+  return (
+    <div className={`rounded-[10px] p-2 glass-inset ${pnlOk ? (pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]') : 'text-[var(--color-text-sub)]'}`}>
+      <div className="flex items-center justify-between text-[11px] mb-0.5">
+        <span className="font-semibold text-[var(--color-text)]">{label}</span>
+        {side != null && <span className={isLong(side) ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{isLong(side) ? 'Long' : 'Short'}</span>}
+      </div>
+      <div className="flex items-center justify-center gap-2 flex-wrap">
+        <AttitudeGauge r={r} volume={volume} trending={trending} />
+        <VsiGauge rate={rate} ratePerMin={ratePerMin} />
+      </div>
+      <div className="text-center text-[13px] font-bold mt-1">{pnlOk ? money(pnl) : '—'}</div>
     </div>
   )
 }
 
 export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
-  const historyRef = useRef({}) // positionId -> [{ t, pnl }]
-  const [, forceTick] = useState(0)
-
-  const signature = positions.map(p => `${p.positionId}:${Math.round((p.netPnl ?? p.estNetPnl ?? 0) * 100)}`).join('|')
-  useEffect(() => {
-    const t = Date.now()
-    const hist = historyRef.current
-    const liveIds = new Set(positions.map(p => String(p.positionId)))
-    for (const id of Object.keys(hist)) if (!liveIds.has(id)) delete hist[id]
-    for (const p of positions) {
-      const v = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
-      if (!Number.isFinite(v)) continue
-      const id = String(p.positionId)
-      const arr = hist[id] || (hist[id] = [])
-      if (arr.length && t - arr[arr.length - 1].t < 1000) arr[arr.length - 1] = { t, pnl: v }
-      else arr.push({ t, pnl: v })
-      if (arr.length > MAX_SAMPLES) arr.splice(0, arr.length - MAX_SAMPLES)
-    }
-    forceTick(n => n + 1)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature])
+  const symbols = [...new Set(positions.map(p => p.symbol).filter(Boolean))]
+  const ticks = useLiveTicks(symbols)
 
   if (positions.length === 0) {
     return <p className="text-[13px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
   }
 
-  const cols = gridN === 1 ? 'grid-cols-1 max-w-xs'
-    : gridN === 4 ? 'grid-cols-1 sm:grid-cols-2'
+  const withR = positions.map(p => {
+    const price = liveMid(ticks, p.symbol) ?? p.currentPrice ?? null
+    const r = rMultiple(p.entry, p.sl, p.side, price)
+    const pnl = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
+    return { p, r, pnl: Number.isFinite(pnl) ? pnl : null }
+  })
+
+  if (gridN === 1) {
+    // Combined portfolio view (owner: "one chart means one overview
+    // combination of all open trade symbols") — lots-weighted average R
+    // across every position that has a stop set to compute R from.
+    const withValidR = withR.filter(x => x.r != null)
+    const totalLots = withR.reduce((s, x) => s + (Number(x.p.lots) || 0), 0)
+    const weightedR = withValidR.length
+      ? withValidR.reduce((s, x) => s + x.r * (Number(x.p.lots) || 1), 0) / withValidR.reduce((s, x) => s + (Number(x.p.lots) || 1), 0)
+      : null
+    const totalPnl = withR.reduce((s, x) => s + (x.pnl || 0), 0)
+    const longs = positions.filter(p => isLong(p.side)).length
+    return (
+      <div className="grid grid-cols-1 max-w-xs gap-2">
+        <GaugeTile
+          label={`Portfolio · ${positions.length} open (${longs}L/${positions.length - longs}S)`}
+          side={null}
+          r={weightedR}
+          volume={totalLots}
+          pnl={totalPnl}
+        />
+      </div>
+    )
+  }
+
+  const shown = withR.slice(0, gridN)
+  const overflow = withR.length - shown.length
+  const cols = gridN === 4 ? 'grid-cols-1 sm:grid-cols-2'
     : gridN === 8 ? 'grid-cols-2 sm:grid-cols-4'
     : 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-8'
 
   return (
-    <div className={`grid ${cols} gap-2`}>
-      {positions.map(p => {
-        const id = String(p.positionId)
-        const hist = historyRef.current[id] || []
-        const pnl = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
-        const first = hist[0]
-        const last = hist[hist.length - 1]
-        const elapsedMin = first && last && last.t > first.t ? (last.t - first.t) / 60000 : 0
-        const rawRate = elapsedMin > 0 ? (last.pnl - first.pnl) / elapsedMin : 0
-        const rate = Math.tanh(rawRate / 50)
-        const trending = Math.abs(rate) > 0.15
-        const long = p.side === 'BUY' || p.side === 'Long'
-        const pnlOk = Number.isFinite(pnl)
-        return (
-          <div key={id} className={`rounded-[10px] p-2 glass-inset ${pnlOk ? (pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]') : 'text-[var(--color-text-sub)]'}`}>
-            <div className="flex items-center justify-between text-[11px] mb-0.5">
-              <span className="font-semibold text-[var(--color-text)]">{p.symbol}</span>
-              <span className={long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{long ? 'Long' : 'Short'}</span>
-            </div>
-            <div className="flex items-center justify-center gap-1">
-              <AttitudeGauge pnl={pnl} volume={p.lots ?? p.volume ?? 0} trending={trending} />
-              <VsiGauge rate={rate} ratePerMin={elapsedMin > 0 ? rawRate : null} />
-            </div>
-            <div className="text-center text-[12px] font-bold mt-0.5">{pnlOk ? money(pnl) : '—'}</div>
-          </div>
-        )
-      })}
+    <div>
+      <div className={`grid ${cols} gap-2`}>
+        {shown.map(({ p, r, pnl }) => (
+          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} />
+        ))}
+      </div>
+      {overflow > 0 && (
+        <p className="text-[11px] text-[var(--color-text-sub)] mt-1">+{overflow} more open position{overflow > 1 ? 's' : ''} not shown at this grid size — pick a bigger one, or 1 for the combined view.</p>
+      )}
     </div>
   )
 }

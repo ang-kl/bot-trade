@@ -19,8 +19,12 @@ before(async () => {
     req.on('data', (c) => { raw += c })
     req.on('end', () => {
       requests.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: raw })
-      res.writeHead(nextResponse.status, { 'content-type': 'application/json' })
-      res.end(nextResponse.body)
+      // /connect always succeeds — it just sets credentials, never depends on
+      // reconcile state. Every test that wants a FAILING call is testing the
+      // actual operation (order/positions/etc), never the credential push.
+      const resp = req.url === '/connect' ? { status: 200, body: '{}' } : nextResponse
+      res.writeHead(resp.status, { 'content-type': 'application/json' })
+      res.end(resp.body)
     })
   })
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
@@ -126,6 +130,32 @@ test('cpp error with empty body still throws a status-labelled error', async () 
   await assert.rejects(reconcile(CREDS), (err) => {
     assert.match(err.message, /500/)
     assert.match(err.message, /\/positions/)
+    return true
+  })
+})
+
+test('cpp reconcile: "no reconcile data yet" falls back to the JS/WS path instead of failing', async () => {
+  // Owner hit this live: the sidecar hadn't completed its first reconcile
+  // pass, so GET /positions 503s every time — which took out BOTH
+  // pending-order-manager (hard failure every tick) and weekend-bank's
+  // heartbeat (never reached because the main loop's own reconcile call
+  // threw first). The fallback delegates to ctrader-ws instead of
+  // propagating the sidecar's "not ready yet" as a hard error — proven the
+  // same way the "js mode delegates" tests prove delegation: a bogus host
+  // makes the ws layer fail at the network level, which could only happen
+  // if the fallback path was actually reached.
+  nextResponse = { status: 503, body: '{"error":"no reconcile data yet"}' }
+  const p = reconcile({ ...CREDS, host: '127.0.0.1' })
+  await assert.rejects(p, (err) => /ECONNREFUSED|ETIMEDOUT|socket|closed|handshake|connect/i.test(err.message) || /ECONNREFUSED|ETIMEDOUT/.test(err.code || ''))
+  // The sidecar was still tried first (connect push + the /positions 503).
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].url, '/positions')
+})
+
+test('cpp reconcile: any OTHER sidecar error still throws — only "no reconcile data yet" falls back', async () => {
+  nextResponse = { status: 500, body: 'sidecar exploded' }
+  await assert.rejects(reconcile(CREDS), (err) => {
+    assert.match(err.message, /sidecar exploded/)
     return true
   })
 })

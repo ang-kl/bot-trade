@@ -1259,6 +1259,31 @@ export default function Tune() {
                 {config?.adaptive_breaker?.streak ?? 3} losses in a row on a strategy → it is disarmed (or, if it's the last one, the next filter is armed) — the bot adapts instead of pausing
               </span>
             </div>
+            {/* Performance breaker — the "all hands on deck" checkpoint: a
+                bad rolling profit factor that never strings 3 losses in a
+                row still bleeds, so this watches the AGGREGATE edge
+                (owner: "what checkpoints would trigger all hands on deck to
+                turn the tide"). Alert-first — auto-disarm is opt-in. */}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.performance_breaker?.on !== false} label="Performance breaker (all hands on deck)" onClick={() => {
+                const next = !(config?.performance_breaker?.on !== false)
+                run(async () => {
+                  const r = await agentPost('/actions/performance-breaker', { on: next })
+                  setConfig(c => ({ ...c, performance_breaker: r }))
+                }, `Performance breaker ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                profit factor below {config?.performance_breaker?.pfThreshold ?? 0.8} over the last {config?.performance_breaker?.window ?? 20} closed trades (min {config?.performance_breaker?.minTrades ?? 15} to judge an edge) → urgent Telegram alert
+              </span>
+              <Toggle on={config?.performance_breaker?.autoDisarm === true} label="also auto-disarm autotrade" onClick={() => {
+                const next = !(config?.performance_breaker?.autoDisarm === true)
+                if (next && !window.confirm('Auto-disarm autotrade when the performance breaker fires? New entries stop until you re-arm from Tune — open positions keep being managed normally.')) return
+                run(async () => {
+                  const r = await agentPost('/actions/performance-breaker', { autoDisarm: next })
+                  setConfig(c => ({ ...c, performance_breaker: r }))
+                }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
+              }} />
+            </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
               <span className="font-semibold">Position monitor:</span>
               {[1, 2, 3, 5].map(m => (

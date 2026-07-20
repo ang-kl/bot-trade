@@ -1572,6 +1572,24 @@ async function runLoop(db) {
       } catch (err) {
         log('Equity stop check failed:', err.message)
       }
+
+      // ---------------------------------------------------------------------
+      // 4c. PERFORMANCE BREAKER — the "all hands on deck" checkpoint. Equity
+      // stop catches a bad DAY; adaptive breaker catches a bad STREAK on one
+      // strategy; this catches a structurally bad EDGE that never strings 3
+      // losses in a row but still bleeds — same rolling profit-factor/
+      // expectancy numbers the Desk Performance panel shows (owner: "what
+      // checkpoints would trigger all hands on deck").
+      // ---------------------------------------------------------------------
+      try {
+        const { runPerformanceBreaker } = await import('./services/performance-breaker.js')
+        const pb = runPerformanceBreaker(db, {
+          notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+        })
+        if (pb.triggered) log(`Performance breaker: PF ${pb.stats.profitFactor} over ${pb.stats.trades} trades${pb.autoDisarmed ? ' — autotrade disarmed' : ''}`)
+      } catch (err) {
+        log('Performance breaker failed (non-fatal):', err.message)
+      }
     } // end symbolsJson
 
     // -----------------------------------------------------------------------

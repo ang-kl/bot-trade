@@ -16,6 +16,7 @@ import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.j
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
+import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -335,6 +336,27 @@ export default function actionsRouter(db) {
     setState(db, 'guardian_move_pct', String(pct))
     console.log(`[actions] guardian move threshold → ${pct}%`)
     res.json({ ok: true, pct })
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/performance-breaker — { on?, window?, minTrades?,
+  // pfThreshold?, autoDisarm? } tunes the "all hands on deck" rolling
+  // profit-factor checkpoint (owner: "what checkpoints would trigger all
+  // hands on deck to turn the tide").
+  // -----------------------------------------------------------------------
+  router.post('/performance-breaker', (req, res) => {
+    const cur = loadPerformanceBreakerConfig(db)
+    const b = req.body || {}
+    const next = {
+      on: b.on !== undefined ? b.on !== false : cur.on,
+      window: b.window !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.window) || cur.window))) : cur.window,
+      minTrades: b.minTrades !== undefined ? Math.min(200, Math.max(5, Math.round(Number(b.minTrades) || cur.minTrades))) : cur.minTrades,
+      pfThreshold: b.pfThreshold !== undefined ? Math.min(2, Math.max(0.1, Number(b.pfThreshold) || cur.pfThreshold)) : cur.pfThreshold,
+      autoDisarm: b.autoDisarm !== undefined ? b.autoDisarm === true : cur.autoDisarm,
+    }
+    setState(db, 'performance_breaker_json', JSON.stringify(next))
+    console.log(`[actions] performance breaker →`, next)
+    res.json({ ok: true, ...next })
   })
 
   // -----------------------------------------------------------------------
