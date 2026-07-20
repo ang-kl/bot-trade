@@ -436,9 +436,9 @@ const RISK_CONTROLS = {
   symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
   maxConsecutiveLosses: { type: 'select', options: [[0, 'off — no streak breaker'], ...[2, 3, 4, 5, 6].map(n => [n, String(n)])] },
   cooldownMinutes: { type: 'select', options: [[0, 'off — resume next cycle'], [30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
-  minSLDistancePct: { type: 'slider', min: 0.05, max: 0.5, step: 0.05, fmt: v => `${Number(v).toFixed(2)}%` },
+  minSLDistancePct: { type: 'slider', min: 0.01, max: 0.5, step: 0.01, fmt: v => `${Number(v).toFixed(2)}%` },
   maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
-  maxMarginUsagePct: { type: 'slider', min: 0.1, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
+  maxMarginUsagePct: { type: 'slider', min: 0.001, max: 1, step: 0.0001, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
   kellyFraction: { type: 'select', options: [[0.1, '0.10 — very conservative'], [0.25, '0.25 — quarter-Kelly (default)'], [0.5, '0.50 — aggressive'], [1, '1.00 — full Kelly (not advised)']] },
 }
 
@@ -682,7 +682,14 @@ function SavedReports() {
 
 export default function Tune() {
   const [tab, setTab] = useState(() => {
-    try { return sessionStorage.getItem('tune_tab') || 'pipeline' } catch { return 'pipeline' }
+    try {
+      // A ?tab= link (e.g. from Edge Health's strategy names) wins over the
+      // remembered tab — otherwise the link dumped you on whatever tab you
+      // last used (owner: "hyperlink to Risk... i cannot arm them, why?").
+      const urlTab = new URLSearchParams(window.location.search).get('tab')
+      if (urlTab && TABS.some(t => t.id === urlTab)) return urlTab
+      return sessionStorage.getItem('tune_tab') || 'pipeline'
+    } catch { return 'pipeline' }
   })
   const pickTab = (id) => { setTab(id); try { sessionStorage.setItem('tune_tab', id) } catch { /* quota — skip */ } }
 

@@ -54,6 +54,17 @@ function ago(iso) {
   return `${Math.round(mins / 1440)}d`
 }
 
+// Exact wall-clock HH:MM:SS of an event — second-level precision the relative
+// "ago" can't give when events are minutes apart (owner: "I ask for seconds").
+function clockSecs(iso) {
+  if (!iso) return ''
+  const t = Date.parse(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
+  if (!Number.isFinite(t)) return ''
+  const d = new Date(t)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 // Collapsible desk section — triangle + title + right-aligned summary that
 // stays informative while collapsed. Open/closed persists per section.
 function Section({ id, title, summary, defaultOpen = true, children }) {
@@ -546,12 +557,19 @@ export default function Desk() {
                 <span className="font-semibold shrink-0">{ev.symbol}</span>
                 {ev.side && <span className="text-[var(--color-text-sub)] shrink-0">{ev.side}</span>}
                 {p.strategy && <span className="text-[var(--color-text-sub)] shrink-0">{STRAT_SHORT[p.strategy] || p.strategy}</span>}
+                {p.timeframe && <span className="text-[var(--color-text-sub)] shrink-0">{p.timeframe}</span>}
                 <span className="text-[var(--color-text-sub)] truncate">
                   {ev.approved
                     ? `risk-approved${p.entry != null ? ` @ ${fmt(p.entry)}` : ''}`
                     : humanVeto(ev.veto_reason)}
                 </span>
-                <span className="ml-auto text-[var(--color-text-sub)] shrink-0">{ago(ev.created_at)}</span>
+                {/* Precise second-level clock time, not just relative age
+                    (owner: "I ask for seconds") — the scan runs every ~5 min
+                    so a relative age almost never reads in seconds; the exact
+                    HH:MM:SS of the decision does. */}
+                <span className="ml-auto text-[var(--color-text-sub)] shrink-0 tabular-nums" title={`${ev.created_at} · raw: ${ev.veto_reason || 'approved'}`}>
+                  {clockSecs(ev.created_at)} <span className="opacity-60">({ago(ev.created_at)})</span>
+                </span>
               </li>
             )
           })}
@@ -732,7 +750,7 @@ export default function Desk() {
                           <td className="py-1 pr-3 font-semibold">
                             {un
                               ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>{s2.name || 'unlabelled'} <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
-                              : <Link to="/tune" className="underline underline-offset-2" title="Open Tune — arm/disarm this strategy and its filters">{STRAT_SHORT[s2.strategy] || s2.strategy}</Link>}
+                              : <Link to="/tune?tab=pipeline" className="underline underline-offset-2" title="Open the Pipeline matrix — arm/disarm this strategy for Scan / Backtest / Auto Trade / Manage">{STRAT_SHORT[s2.strategy] || s2.strategy}</Link>}
                           </td>
                           {/* Status justifies WHY a row reads as it does (owner: "include
                               all strategy and justify") — armed vs off, and whether it's
