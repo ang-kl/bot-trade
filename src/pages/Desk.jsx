@@ -19,6 +19,7 @@ import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { useSort } from '../lib/use-sort.jsx'
 
 const REFRESH_MS = 20_000
 
@@ -95,6 +96,25 @@ export default function Desk() {
     setGridN(n)
     try { localStorage.setItem('desk_grid_n', String(n)) } catch { /* private mode */ }
   }
+
+  // Column sorting for the Edge-health tables (same interaction as the
+  // standard table). Streak sorts losses negative so worst floats on desc asc.
+  const edgeSort = useSort(alphaDecay?.strategies || [], { key: 'trades', dir: 'desc' }, {
+    strategy: s2 => s2.strategy,
+    trend: s2 => s2.trend,
+    streak: s2 => (s2.streak?.n ?? 0) * (s2.streak?.kind === 'loss' ? -1 : 1),
+    trades: s2 => s2.total?.n,
+    recent: s2 => s2.recent?.expectancy,
+    prior: s2 => s2.prior?.expectancy,
+    delta: s2 => s2.delta,
+  })
+  const baseSort = useSort(alphaDecay?.backtest?.combos || [], { key: 'pf', dir: 'desc' }, {
+    combo: c2 => `${c2.symbol} ${c2.tf}`,
+    trades: c2 => c2.trades,
+    pf: c2 => c2.profitFactor,
+    win: c2 => c2.winRatePct,
+    total: c2 => c2.totalProfitPct,
+  })
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — log in on the Connect tab.'); return }
@@ -471,7 +491,7 @@ export default function Desk() {
             </div>
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <table className="w-full text-[12px] tabular-nums">
+                <table className="std-cols w-full text-[12px] tabular-nums">
                   <thead className="text-left text-[var(--color-text-sub)]">
                     <tr className="border-b border-[var(--color-border)]">
                       <th className="py-1 pr-3 font-semibold">Purpose</th>
@@ -547,20 +567,20 @@ export default function Desk() {
             )}
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <table className="w-full text-[12px] tabular-nums">
+                <table className="std-cols w-full text-[12px] tabular-nums">
                   <thead className="text-left text-[var(--color-text-sub)]">
                     <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3 font-semibold">Strategy</th>
-                      <th className="py-1 pr-3 font-semibold">Trend</th>
-                      <th className="py-1 pr-3 font-semibold">Streak</th>
-                      <th className="py-1 pr-3 font-semibold text-right">Trades</th>
-                      <th className="py-1 pr-3 font-semibold text-right">Recent exp.</th>
-                      <th className="py-1 pr-3 font-semibold text-right">Prior exp.</th>
-                      <th className="py-1 font-semibold text-right">Δ</th>
+                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
+                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
+                      <th className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
+                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
+                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
+                      <th className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('prior', 'Prior exp.')}</th>
+                      <th className="py-1 font-semibold text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {alphaDecay.strategies.map(s2 => {
+                    {edgeSort.sorted.map(s2 => {
                       const un = s2.strategy === 'unlabelled'
                       const srcNote = un && alphaDecay.unlabelled
                         ? Object.entries(alphaDecay.unlabelled.sources).map(([k, v]) => `${k}: ${v}`).join(' · ')
@@ -613,18 +633,18 @@ export default function Desk() {
               ? (
                 <>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-[12px] tabular-nums">
+                    <table className="std-cols w-full text-[12px] tabular-nums">
                       <thead className="text-left text-[var(--color-text-sub)]">
                         <tr className="border-b border-[var(--color-border)]">
-                          <th className="py-1 pr-3 font-semibold">Combo</th>
-                          <th className="py-1 pr-3 font-semibold text-right">Trades</th>
-                          <th className="py-1 pr-3 font-semibold text-right">PF</th>
-                          <th className="py-1 pr-3 font-semibold text-right">Win %</th>
-                          <th className="py-1 font-semibold text-right">Total %</th>
+                          <th className="py-1 pr-3 font-semibold">{baseSort.sortBtn('combo', 'Combo')}</th>
+                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('trades', 'Trades')}</th>
+                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('pf', 'PF')}</th>
+                          <th className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('win', 'Win %')}</th>
+                          <th className="py-1 font-semibold text-right">{baseSort.sortBtn('total', 'Total %')}</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {alphaDecay.backtest.combos.slice(0, 10).map(c2 => (
+                        {baseSort.sorted.slice(0, 10).map(c2 => (
                           <tr key={`${c2.symbol}|${c2.tf}`} className="border-b border-[var(--color-border)]">
                             <td className="py-1 pr-3 font-semibold">{c2.symbol} · {c2.tf}</td>
                             <td className="py-1 pr-3 text-right">{c2.trades}</td>
