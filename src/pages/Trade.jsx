@@ -138,6 +138,7 @@ function externalPositionRows(positions, prices = {}, enrichById = {}) {
       durationMs: openedAt ? Math.max(0, Date.now() - toMs(openedAt)) : null,
       reason: 'observed, not managed',
       chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp } },
+      raw: p,
     }
   })
 }
@@ -605,7 +606,34 @@ export default function Trade() {
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
               <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
-              <StdTradeTable rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)} countLabel="external positions" marketHours={marketHours} />
+              <StdTradeTable
+                rows={externalPositionRows(broker.externalPositions, Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), enrichById)}
+                countLabel="external positions"
+                marketHours={marketHours}
+                extraAction={(row) => {
+                  const positionId = row.raw?.ctrader_position_id
+                  if (!positionId) return null
+                  const managed = !row.raw?.keeper_opt_out
+                  return (
+                    <label
+                      className="flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap"
+                      title="Let the Profit Keeper manage this position (per the policy armed on Tune). Untick to leave this ONE position hands-off regardless of that policy."
+                    >
+                      <input
+                        type="checkbox" checked={managed}
+                        aria-label={`${managed ? 'Stop' : 'Let'} the bot manage ${row.symbol}`}
+                        onChange={async () => {
+                          try {
+                            await agentPost('/actions/position-keeper-optout', { positionId, optOut: managed })
+                            await load()
+                          } catch (e) { setError(e.message) }
+                        }}
+                      />
+                      bot manage
+                    </label>
+                  )
+                }}
+              />
             </div>
           )}
         </Card>

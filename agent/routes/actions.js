@@ -754,6 +754,35 @@ export default function actionsRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/position-keeper-optout — per-position override for the
+  // Profit Keeper (owner: "At the broker (which is traded by human) should
+  // have a checkbox that allow/stop bot to manage after open position").
+  // The account-wide Profit Keeper on/off + scope (Tune) still decides what
+  // gets considered; this excludes ONE position from that regardless of
+  // scope. Body: { positionId, optOut: boolean }.
+  // -----------------------------------------------------------------------
+  router.post('/position-keeper-optout', (req, res) => {
+    try {
+      const { positionId, optOut } = req.body || {}
+      if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+      const row = db.prepare(
+        `SELECT mp.id FROM monitored_positions mp
+         JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId))
+      if (!row) {
+        return res.status(404).json({
+          error: `position ${positionId} is not in the monitor yet — it is adopted on the next reconcile pass (within one loop cycle); retry shortly`,
+        })
+      }
+      db.prepare('UPDATE monitored_positions SET keeper_opt_out = ? WHERE id = ?').run(optOut ? 1 : 0, row.id)
+      res.json({ ok: true, positionId, optOut: !!optOut })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET-equivalent: current guard rules for the UI (POST for parity with the
   // actions router's logging middleware). Body: { positionId }
   router.post('/position-guard-get', (req, res) => {

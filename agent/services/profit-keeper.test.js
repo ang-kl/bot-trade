@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER } from './profit-keeper.js'
+import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper } from './profit-keeper.js'
 
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
 
@@ -158,6 +158,52 @@ test('adaptive without ATR data falls back to the fixed thresholds', () => {
   })
   // fixed path: peak 60 armed (≥ $50), profit 57.95 > lock 36 → dollar-lock SL
   assert.ok(out.action?.sl != null)
+})
+
+// ---- per-position opt-out (owner: "checkbox that allow/stop bot to
+// manage after open position") --------------------------------------------
+
+const CREDS = { ready: true, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't', accountId: '1' }
+
+function mkKeeperDb({ keeperOptOut = 0 } = {}) {
+  const db = initDB(':memory:')
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: true, scope: 'external', mode: 'fixed', armProfitUsd: 50, givebackPct: 40 }))
+  db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status) VALUES ('NATGAS', 'SELL', '9001', 'open')`).run()
+  const tradeId = db.prepare(`SELECT id FROM trades WHERE ctrader_position_id = '9001'`).get().id
+  db.prepare(`
+    INSERT INTO monitored_positions
+      (symbol, side, entry_price, current_sl, status, source, trade_id, keeper_opt_out)
+    VALUES ('NATGAS', 'short', 2.8795, 2.918, 'active', 'external', ?, ?)
+  `).run(tradeId, keeperOptOut)
+  return db
+}
+
+function keeperDeps() {
+  return {
+    exec: {
+      reconcile: async () => ({
+        position: [{ positionId: 9001, price: 2.8795, stopLoss: 2.918, tradeData: { symbolId: 1, volume: 10000, tradeSide: 2 } }],
+      }),
+    },
+    ws: {
+      wsGetLastCloses: async () => ({ 1: 2.30 }), // deep in profit → would arm if considered
+      wsGetTrendbarsBatch: async () => ({}),
+    },
+    sizing: { getVolumeMeta: async () => ({ lotSize: 10000, digits: 3 }) },
+    notify: () => {},
+  }
+}
+
+test('keeper_opt_out excludes one position even though it is in scope', async () => {
+  const db = mkKeeperDb({ keeperOptOut: 1 })
+  const out = await runProfitKeeper(db, CREDS, keeperDeps())
+  assert.equal(out.checked, 0, 'the opted-out position must never reach the decision step')
+})
+
+test('without opt-out, the same position IS considered (sanity check the fixture)', async () => {
+  const db = mkKeeperDb({ keeperOptOut: 0 })
+  const out = await runProfitKeeper(db, CREDS, keeperDeps())
+  assert.equal(out.checked, 1)
 })
 
 test('off by default; config loads with defaults and merges saved values', () => {

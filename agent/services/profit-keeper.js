@@ -178,6 +178,7 @@ export async function runProfitKeeper(db, creds, deps = {}) {
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
+         AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
          AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})`
     ).all()
     if (rows.length === 0) return summary
