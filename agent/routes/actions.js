@@ -340,6 +340,17 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/regime-gate — { on } toggles the regime entry gate (don't
+  // fade a trend / chase a range). Owner: "trading like a beginner", PF 0.15.
+  // -----------------------------------------------------------------------
+  router.post('/regime-gate', (req, res) => {
+    const on = req.body?.on !== false
+    setState(db, 'regime_gate_json', JSON.stringify({ on }))
+    console.log(`[actions] regime gate → ${on ? 'ON' : 'off'}`)
+    res.json({ ok: true, on })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/session-open-guard — { on?, windowMin?, minR? } tunes the
   // session-open breakeven lock (owner: "when markets open, XAUUSD went
   // from profit to loss" → "build the session-open guard").

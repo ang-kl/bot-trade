@@ -1284,6 +1284,21 @@ export default function Tune() {
                 }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
               }} />
             </div>
+            {/* Regime gate — owner: "trading like a beginner" (PF 0.15). The
+                fade strategy was firing into trends where its levels get
+                blown through; this blocks strategy/regime mismatches. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={config?.regime_gate?.on !== false} label="Regime gate" onClick={() => {
+                const next = !(config?.regime_gate?.on !== false)
+                run(async () => {
+                  const r = await agentPost('/actions/regime-gate', { on: next })
+                  setConfig(c => ({ ...c, regime_gate: r }))
+                }, `Regime gate ${next ? 'ON' : 'off'}`)
+              }} />
+              <span className="text-[12px] text-[var(--color-text-sub)]">
+                don't fade a trend, don't chase a range — blocks mean-reversion entries (Fib fade, RSI) in trending/volatile markets and trend entries (EMA, breakout) in quiet ones, using the per-symbol regime the quant phase computes
+              </span>
+            </div>
             {/* Session-open guard — owner: "when markets open, XAUUSD went
                 from profit to loss $333" → lock breakeven on open-window
                 profit the normal +0.7R ladder hasn't reached yet. */}

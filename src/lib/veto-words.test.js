@@ -12,10 +12,18 @@ describe('humanVeto', () => {
   })
   it('duplicate_symbol shows the actual blocking position when the risk gate provides it', () => {
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
-    expect(humanVeto(`duplicate_symbol existing_side=BUY entry=1.1429 opened=${twoHoursAgo}`))
-      .toBe('Already BUY @ 1.1429 (opened 2h ago) — one position per symbol')
+    const out = humanVeto(`duplicate_symbol existing_side=BUY entry=1.1429 opened=${twoHoursAgo}`)
+    expect(out).toMatch(/^Already BUY @ 1.1429 opened \d\d:\d\d \d\d\/\d\d \(2h ago\) — one position per symbol$/)
     expect(humanVeto('duplicate_symbol existing_side=SELL entry=na opened=na'))
       .toBe('Already SELL — one position per symbol')
+  })
+  it('duplicate_symbol includes the opening strategy and last-check age as veto evidence', () => {
+    const nineHoursAgo = new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString()
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const out = humanVeto(`duplicate_symbol existing_side=SELL entry=0.70013 opened=${nineHoursAgo} strat=fib_618_fade lastcheck=${fiveMinAgo}`)
+    expect(out).toContain('Already SELL (FIB) @ 0.70013')
+    expect(out).toMatch(/opened \d\d:\d\d \d\d\/\d\d \(9h ago\)/)
+    expect(out).toContain('last checked 5m ago')
   })
   it('unknown codes degrade to spaced words, empty stays empty', () => {
     expect(humanVeto('some_new_rule detail=1')).toBe('some new rule detail=1')
