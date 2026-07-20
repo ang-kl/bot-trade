@@ -12,6 +12,7 @@ import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
+import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 
@@ -428,6 +429,7 @@ export default function stateRouter(db) {
       guardian_move_pct: Number(getState(db, 'guardian_move_pct')) || 0.05,
       performance_breaker: loadPerformanceBreakerConfig(db),
       session_open_guard: loadSessionOpenGuardConfig(db),
+      regime_gate: loadRegimeGateConfig(db),
       burn_in: (() => { try { const p = JSON.parse(getState(db, 'burn_in_json') || 'null'); return p && typeof p === 'object' ? p : { on: false } } catch { return { on: false } } })(),
       adaptive_breaker: (() => { try { const p = JSON.parse(getState(db, 'adaptive_breaker_json') || 'null'); return p && typeof p === 'object' ? { on: p.on !== false, streak: p.streak ?? 3 } : { on: true, streak: 3 } } catch { return { on: true, streak: 3 } } })(),
       monitor_interval_min: Number(getState(db, 'monitor_interval_min')) || 1,

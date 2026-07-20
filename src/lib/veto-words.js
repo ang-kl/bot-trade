@@ -52,6 +52,17 @@ const RULES = [
   { re: /^symbol_cooldown(?:\s+wait=(\w+))?/, out: (m) => m[1] ? `Re-entry cooldown — ${m[1]} left` : 'Re-entry cooldown' },
   { re: /^below_min_volume/, out: () => 'Sized below the broker minimum lot' },
   { re: /^symbol_blocked/, out: () => 'Symbol blocked by owner' },
+  {
+    re: /^regime_block\s+([\w-]+)/,
+    out: (m) => {
+      const K = {
+        'meanrev-in-volatile': 'Skipped — fade strategy in a whipsaw (volatile regime)',
+        'fade-vs-trend': 'Skipped — would fade a live trend',
+        'trend-in-quiet': 'Skipped — trend strategy with no trend (quiet regime)',
+      }
+      return K[m[1]] || 'Skipped — wrong market regime for this strategy'
+    },
+  },
   { re: /^missing_entry_or_sl/, out: () => 'Signal missing entry or stop' },
   { re: /^sl_at_entry/, out: () => 'Stop equals entry — no risk distance' },
   { re: /^bad_rr(?:\s+([\d.]+)<([\d.]+))?/, out: (m) => m[1] ? `Reward:risk ${m[1]} below the ${m[2]} floor` : 'Reward:risk below the floor' },

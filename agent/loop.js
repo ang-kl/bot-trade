@@ -22,6 +22,7 @@ import { getCtraderCreds, getSymbolMap } from './lib/ctrader-creds.js'
 import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
+import { checkRegimeGate } from './services/regime-gate.js'
 import { getState, setState } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
@@ -523,6 +524,21 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     })
     if (!gate.ok) {
       log(`Stage gate: ${sym} blocked — ${gate.reason}`)
+      synth.auto_trade = false
+    }
+  }
+
+  // Regime gate: don't fade a trend, don't chase a range (owner: "trading
+  // like a beginner", PF 0.15). The regimes table was computed but never
+  // used to gate entries — this is the fix. Records a veto so the block is
+  // auditable in Risk decisions, same as every other gate.
+  if (synth.auto_trade) {
+    const rg = checkRegimeGate(db, synth.strategy, synth.consensus_bias, sym)
+    if (rg.block) {
+      log(`Regime gate: ${sym} blocked — ${rg.reason}`)
+      try {
+        persistRiskEvent(db, { symbol: sym, side: synth.consensus_bias === 'short' ? 'SELL' : 'BUY', strategy: synth.strategy, entry: signal?.entry ?? null }, { approved: false, veto_reason: rg.reason })
+      } catch { /* audit best-effort */ }
       synth.auto_trade = false
     }
   }
