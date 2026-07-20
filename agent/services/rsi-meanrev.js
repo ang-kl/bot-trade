@@ -31,8 +31,13 @@ const round2 = x => Math.round(x * 100) / 100
  * mean we revert to), tp2 = 1.5x that distance. rr must clear 1.5 — same
  * floor as the other strategies so risk sizing stays comparable.
  */
-export function computeRsiMeanrev(bars, timeframe) {
+export function computeRsiMeanrev(bars, timeframe, opts = {}) {
   if (!Array.isArray(bars) || bars.length < MIN_BARS) return null
+  // R:R floor — live callers pass nothing → 1.5 (matches the risk gate). The
+  // backtest evaluation profile lowers it so the mean-reversion setup, whose
+  // SMA20 target often sits just under 1.5R of the 5-bar-extreme stop, still
+  // produces a testable sample instead of zero trades.
+  const minRr = opts.minRr ?? 1.5
 
   const last = bars[bars.length - 1]
   const rsiNow = rsi(bars, RSI_PERIOD)
@@ -70,7 +75,7 @@ export function computeRsiMeanrev(bars, timeframe) {
   const risk = Math.abs(entry - sl)
   if (!(risk > 0)) return null
   const rr = round2(Math.abs(tp1 - entry) / risk)
-  if (rr < 1.5) return null
+  if (rr < minRr) return null
 
   // tp2 must sit BEYOND tp1 on the profit side — position management scales
   // out at tp1 and runs the rest toward tp2. SMA50 is the WRONG level here:
