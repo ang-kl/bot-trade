@@ -69,9 +69,29 @@ export function relVolFromBars(bars) {
   return (last.v || 0) / avg
 }
 
+// Owner: "if the market volume is active... if sudden dip or spike what must
+// you do?" A spike is a % move since the LAST check that's too fast for the
+// elapsed time — pure math over data this ticker already fetches (no extra
+// broker call), so it costs nothing to check every tick. SPIKE_HOLD_MS keeps
+// a symbol at the fastest cadence for a while after a spike even if relVol
+// itself hasn't caught up yet (relVol is a 5min-stale lagging read; a spike
+// is the leading signal that a symbol just became "busy").
+export const SPIKE_PCT_PER_MIN = 0.4 // % move per minute that counts as a spike
+const SPIKE_HOLD_MS = 5 * 60_000
+
+/** True when `mid` moved fast enough since (`prevMid`,`prevAt`) to be a spike. */
+export function isSpikeMove(prevMid, prevAt, mid, now, pctPerMin = SPIKE_PCT_PER_MIN) {
+  if (prevMid == null || !(prevMid > 0) || mid == null || !(prevAt < now)) return false
+  const elapsedMin = Math.max(1 / 60, (now - prevAt) / 60_000) // floor at 1s — avoids a divide-by-near-zero false spike
+  const movePct = Math.abs(mid - prevMid) / prevMid * 100
+  return (movePct / elapsedMin) >= pctPerMin
+}
+
 // Per-position pacing + per-symbol volume cache. In-memory: a restart just
 // re-checks everything once, which is safe.
 const lastCheckAt = new Map()  // position id → ms
+const lastPriceAt = new Map()  // position id → { mid, at }
+const spikeUntil = new Map()   // symbol → ms timestamp; forces fastest cadence until then
 const volCache = new Map()     // symbol → { relVol, at }
 const VOL_TTL_MS = 5 * 60_000
 
@@ -122,6 +142,11 @@ export async function runFastMonitor(db, creds, deps = {}) {
             volCache.set(pos.symbol, vc)
           }
           relVol = vc.relVol
+          // A recent spike is a leading signal relVol (5min-stale) hasn't
+          // caught up to yet — hold this symbol at the fastest cadence
+          // regardless of what the lagging volume read says.
+          const spikeExpiry = spikeUntil.get(pos.symbol)
+          if (spikeExpiry && now() < spikeExpiry) relVol = Math.max(relVol || 0, 2)
         }
         const due = now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
         if (!due) continue
@@ -130,6 +155,13 @@ export async function runFastMonitor(db, creds, deps = {}) {
         const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
         const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
         if (mid == null) continue // market closed / no feed — main loop's problem
+
+        const prevPrice = lastPriceAt.get(pos.id)
+        if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {
+          spikeUntil.set(pos.symbol, now() + SPIKE_HOLD_MS)
+          console.log(`[fast-monitor] ${pos.symbol}: volatility spike detected — fast-tracking checks for ${Math.round(SPIKE_HOLD_MS / 60000)}m`)
+        }
+        lastPriceAt.set(pos.id, { mid, at: now() })
 
         checked++
         const eval_ = evaluatePosition(pos, { currentPrice: mid })
