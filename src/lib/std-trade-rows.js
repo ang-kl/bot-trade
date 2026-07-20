@@ -78,6 +78,8 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       // cTrader's compulsory position columns — the standard table shows
       // them whenever rows carry them.
       updatedAt: p2.lastModifiedAt ?? null,
+      ccy: p2.quoteCcy ?? null,        // price columns (Entry/SL/TP) quote here
+      moneyCcy: p2.depositCcy ?? null, // money columns (P&L/Margin/Comm/Swap)
       margin: p2.usedMargin ?? null,
       bid: p2.bid ?? null,
       ask: p2.ask ?? null,

@@ -82,15 +82,18 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
   const timeCell = (v) => { const w2 = dateTimeParts(v); return w2 ? `${w2.day} ${w2.time}` : '—' }
+  // Trading currency beside the essential figures (owner spec): prices
+  // carry the symbol's QUOTE ccy, money figures the DEPOSIT ccy.
+  const ccyTag = (c) => (c ? <span className="ml-0.5 text-[9px] text-[var(--color-text-sub)]">{c}</span> : null)
   // cTrader's compulsory position columns (owner spec) appear only when the
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
     { key: 'updatedAt', label: 'Updated', fmt: timeCell },
-    { key: 'margin', label: 'Margin Used', fmt: money2 },
+    { key: 'margin', label: 'Margin Used', fmt: money2, money: true },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
-    { key: 'commission', label: 'Commission', fmt: money2 },
-    { key: 'swap', label: 'Swap', fmt: money2 },
+    { key: 'commission', label: 'Commission', fmt: money2, money: true },
+    { key: 'swap', label: 'Swap', fmt: money2, money: true },
     { key: 'positionId', label: 'Position ID', fmt: (v) => String(v) },
   ]
   const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
@@ -103,7 +106,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     <div>
       <div className="overflow-x-auto">
         <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
-          <thead className="text-left text-[var(--color-text-sub)]">
+          <thead className="text-center text-[var(--color-text-sub)]">
             <tr className="border-b border-[var(--color-border)]">
               <th aria-sort={sort.key === 'time' ? (sort.dir === 'desc' ? 'descending' : 'ascending') : undefined} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
               <th className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
@@ -111,13 +114,13 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
               <th className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
               <th className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('qty', 'Qty')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('entry', 'Entry')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('sl', 'Stop Loss')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('tp', 'Take Profit')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">{sortBtn('pnl', 'P&L')}</th>
-              <th className="py-1.5 pr-3 font-semibold text-right">To TP/SL</th>
-              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold text-right whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
+              <th className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
+              <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>
+              {activeOpt.map(c => <th key={c.key} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
           </thead>
@@ -174,9 +177,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       {r.side ? (long ? 'Long' : 'Short') : '—'}
                     </td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}</td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}{ccyTag(r.ccy)}</td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                      {num(r.sl)}
+                      {num(r.sl)}{ccyTag(r.ccy)}
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
                         return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
@@ -194,14 +197,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                               {t.done && <span title="partial already taken"> ✓</span>}
                             </span>
                           ))
-                        : num(r.tp)}
+                        : <>{num(r.tp)}{ccyTag(r.ccy)}</>}
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
                         return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     <td className={`py-1.5 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                      {r.pnl != null ? `${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                      {r.pnl != null ? <>{`${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{ccyTag(r.moneyCcy)}</> : '—'}
                     </td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">
                       {tpDists.length > 0
@@ -216,7 +219,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     </td>
                     {activeOpt.map(c => (
                       <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
-                        {r[c.key] != null ? c.fmt(r[c.key]) : '—'}
+                        {r[c.key] != null ? <>{c.fmt(r[c.key])}{c.money ? ccyTag(r.moneyCcy) : null}</> : '—'}
                       </td>
                     ))}
                     <td className="py-1.5 whitespace-nowrap">

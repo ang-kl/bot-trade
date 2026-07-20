@@ -1766,14 +1766,16 @@ export default function actionsRouter(db) {
           const rawPositions = rec.position || []
           const rawOrders = rec.order || []
 
-          // Deposit currency: trader.depositAssetId resolved via the asset list
+          // Deposit currency: trader.depositAssetId resolved via the asset list.
+          // The full asset map also names each symbol's QUOTE currency below.
+          const assetNameById = {}
           try {
             const [trader, assets] = await Promise.all([
               wsGetTrader(host, clientId, clientSecret, accessToken, acct.accountId),
               wsGetAssets(host, clientId, clientSecret, accessToken, acct.accountId),
             ])
-            const asset = (assets.asset || []).find(a => a.assetId === trader.depositAssetId)
-            out.currency = asset?.displayName || asset?.name || null
+            for (const a of (assets.asset || [])) assetNameById[a.assetId] = a.displayName || a.name || null
+            out.currency = assetNameById[trader.depositAssetId] || null
           } catch { /* currency stays null */ }
 
           if (rawPositions.length === 0 && rawOrders.length === 0) return out
@@ -1932,6 +1934,11 @@ export default function actionsRouter(db) {
               usedMargin: money(p.usedMargin),
               openedAt: td.openTimestamp ?? null,
               lastModifiedAt: p.utcLastUpdateTimestamp ?? null,
+              // Currencies for the table (owner spec): prices quote in the
+              // symbol's QUOTE currency (broker asset truth, FX-name
+              // fallback); money figures are in the DEPOSIT currency.
+              quoteCcy: assetNameById[meta.quoteAssetId] || (isFxPair ? quoteCcy : null),
+              depositCcy: out.currency || null,
               label: td.label || null,
               comment: td.comment || null,
               guaranteedSl: !!p.guaranteedStopLoss,
