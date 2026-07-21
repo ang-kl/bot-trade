@@ -4,6 +4,7 @@
 
 import { createLLMClient } from './lib/llm-provider.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
+import { enabledStrategies } from './services/strategies.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
@@ -889,6 +890,7 @@ async function runLoop(db) {
   loopRunning = true
   loopCount++
   const start = Date.now()
+  console.log(`[diag] LOOP #${loopCount} start`)
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
 
@@ -1125,6 +1127,12 @@ async function runLoop(db) {
     // survives, failure recorded in filters_failed for the trade gate), or
     // off. The trade column is enforced later, at Auto Trade & Open.
     const strategies = scanStageStrategies(db, getState)
+    // Keys of strategies ARMED to trade (Auto Trade & Open). The scanner still
+    // computes every scan-staged strategy, but pickBestSignal prefers an armed
+    // one so a selective armed strategy (RSI-2/VP) isn't shadowed by a
+    // higher-conviction UNARMED one (FIB) that only gets vetoed — the reason
+    // armed RSI-2/VP sat at 0 trades for hours.
+    const armedStrategyKeys = enabledStrategies(db, getState).map(s => s.key)
     const stageFilterOpts = scanFilterOptions(db, getState)
     // Custom autotrade timeframes (e.g. 1.5h) must be scanned too — the
     // classic scan set only covers the native ladder.
@@ -1142,7 +1150,7 @@ async function runLoop(db) {
     const scanCursor = Number(getState(db, 'scan_cursor')) || 0
     const scanT0 = Date.now()
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
     const scanMs = Date.now() - scanT0
     setState(db, 'last_scan_ms', String(scanMs))
@@ -1898,6 +1906,7 @@ async function runLoop(db) {
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
+  console.log(`[diag] LOOP #${loopCount} end ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }

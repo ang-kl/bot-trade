@@ -36,6 +36,7 @@
 import { useEffect, useId, useState } from 'react'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
+import TradeChronograph from './TradeChronograph.jsx'
 
 const UP = 'var(--color-up)'
 const DOWN = 'var(--color-down)'
@@ -192,7 +193,7 @@ function minsSince(iso) {
   return Math.max(0, Math.round((Date.now() - t) / 60000))
 }
 
-function GaugeTile({ label, side, r, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl }) {
+function GaugeTile({ label, side, r, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen }) {
   const { rate, ratePerMin, trending } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
   // Proof the monitor is actually reviewing THIS position (owner: "how do I know
@@ -212,7 +213,14 @@ function GaugeTile({ label, side, r, volume, pnl, strategy, source, lastCheckAt,
     ? (STRAT_SHORT[strategy] || strategy)
     : (source && source !== 'autopilot' ? 'manual' : null)
   return (
-    <div className={`rounded-[10px] p-2 glass-inset ${pnlOk ? (pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]') : 'text-[var(--color-text-sub)]'}`}>
+    <div
+      className={`rounded-[10px] p-2 glass-inset ${onOpen ? 'cursor-pointer hover:ring-1 hover:ring-[var(--color-accent)]' : ''} ${pnlOk ? (pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]') : 'text-[var(--color-text-sub)]'}`}
+      onClick={onOpen}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onKeyDown={onOpen ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }) : undefined}
+      title={onOpen ? 'Open the full chronograph for this trade' : undefined}
+    >
       <div className="flex items-center justify-between text-[11px] mb-0.5">
         <span className="flex items-center gap-1 min-w-0">
           <span className="font-semibold text-[var(--color-text)]">{label}</span>
@@ -248,12 +256,16 @@ function GaugeTile({ label, side, r, volume, pnl, strategy, source, lastCheckAt,
 export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
   const symbols = [...new Set(positions.map(p => p.symbol).filter(Boolean))]
   const ticks = useLiveTicks(symbols)
+  const [selected, setSelected] = useState(null)
 
   if (positions.length === 0) {
     return <p className="text-[13px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
   }
 
-  const withR = positions.map(p => {
+  // Group the same symbol's trades together (owner: "group the same trades
+  // together") — stable sort by symbol so the two ADAUSD / ETHUSD cards cluster.
+  const grouped = [...positions].sort((a, b) => String(a.symbol || '').localeCompare(String(b.symbol || '')))
+  const withR = grouped.map(p => {
     const price = liveMid(ticks, p.symbol) ?? p.currentPrice ?? null
     const r = rMultiple(p.entry, p.sl, p.side, price)
     const pnl = Number(p.netPnl ?? p.estNetPnl ?? p.estPnlQuote)
@@ -294,12 +306,13 @@ export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
     <div>
       <div className={`grid ${cols} gap-2`}>
         {shown.map(({ p, r, pnl }) => (
-          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} />
+          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} onOpen={() => setSelected(p)} />
         ))}
       </div>
       {overflow > 0 && (
         <p className="text-[11px] text-[var(--color-text-sub)] mt-1">+{overflow} more open position{overflow > 1 ? 's' : ''} not shown at this grid size — pick a bigger one, or 1 for the combined view.</p>
       )}
+      {selected && <TradeChronograph pos={selected} onClose={() => setSelected(null)} />}
     </div>
   )
 }

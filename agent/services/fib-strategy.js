@@ -434,10 +434,25 @@ function strategyFns(opts) {
  * (registry-order) strategy, so behaviour is deterministic. Pure/testable.
  */
 export function pickBestSignal(fns, closed, timeframe, opts) {
+  // Prefer a strategy that is ARMED to trade over a higher-conviction one that
+  // isn't. Only an armed strategy can actually place an order, so surfacing the
+  // objectively-strongest UNARMED signal just gets it vetoed at the trade gate
+  // while the armed signal that WOULD trade is thrown away. That is exactly why
+  // RSI-2 and VP sat at 0 trades for hours despite being armed — they kept
+  // losing the pure-conviction contest to FIB/EMA and never reached the gate.
+  // armedStrategyKeys absent/empty → pure conviction (backtest, display, legacy
+  // callers) so nothing regresses.
+  const armedRaw = opts?.armedStrategyKeys
+  const armedSet = armedRaw instanceof Set ? armedRaw : (Array.isArray(armedRaw) ? new Set(armedRaw) : null)
+  const isArmed = (c) => !armedSet || armedSet.size === 0 || armedSet.has(c.strategy)
   let best = null
   for (const fn of fns) {
     const c = fn(closed, timeframe, opts)
-    if (c && (!best || (c.conviction ?? 0) > (best.conviction ?? 0))) best = c
+    if (!c) continue
+    if (!best) { best = c; continue }
+    const ca = isArmed(c), ba = isArmed(best)
+    if (ca !== ba) { if (ca) best = c; continue }   // armed beats unarmed
+    if ((c.conviction ?? 0) > (best.conviction ?? 0)) best = c  // else strongest wins
   }
   return best
 }
@@ -537,6 +552,10 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     cupHandle: !!options.cupHandle, // legacy flag — superseded by strategies
     strategies: options.strategies || null, // registry entries, in order
     extraTimeframes: options.extraTimeframes || [],
+    // Keys of strategies armed to trade — pickBestSignal prefers these so an
+    // armed selective strategy (RSI-2/VP) is not shadowed by a higher-conviction
+    // unarmed one that would only get vetoed anyway.
+    armedStrategyKeys: options.armedStrategyKeys || null,
   }
   // FULL-WATCHLIST coverage, DECOUPLED from monitoring. The heavy multi-
   // timeframe scan is spent ONLY on fresh candidates that could actually open
