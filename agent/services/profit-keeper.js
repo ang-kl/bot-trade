@@ -1,6 +1,12 @@
 // ---------------------------------------------------------------------------
 // agent/services/profit-keeper.js — automatic profit protection for
-// MANUAL / EXTERNAL positions (opt-in, off by default).
+// MANUAL / EXTERNAL positions (ON by default; disarm to go hands-off).
+//
+// A manual position is NOT hands-off: the moment it shows real profit the
+// keeper arms a tighten-only broker stop behind it, so an unattended winner
+// (e.g. the JPN225 that gave back $725) is protected without you watching.
+// It never touches a losing position and never widens risk — turning it OFF
+// (profit_keeper_json.on = false) is the only way back to fully manual.
 //
 // Two modes:
 //
@@ -21,7 +27,7 @@
 // AT THE BROKER — tick-level protection between loop cycles, not polling.
 //
 // Safety by construction:
-//   · opt-in (profit_keeper_json.on), scope 'external' (default) or 'all'
+//   · on by default (profit_keeper_json.on), scope 'external' (default) or 'all'
 //   · a stop only ever TIGHTENS; the keeper never widens risk
 //   · losing positions are untouched — nothing happens until profit arms
 //   · positions with owner-armed guard rules (guard_json) are skipped
@@ -36,7 +42,7 @@ import { getAccountBalance } from './risk.js'
 import { roundToDigits } from './trade-guard.js'
 
 export const DEFAULT_PROFIT_KEEPER = {
-  on: false,
+  on: true,               // manual positions are managed by default — disarm for hands-off
   scope: 'external',      // 'external' = manual/imported positions only · 'all' = bot positions too
   mode: 'adaptive',       // 'adaptive' (ATR/balance units) · 'fixed' (dollar thresholds)
   // adaptive mode

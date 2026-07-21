@@ -206,10 +206,16 @@ test('without opt-out, the same position IS considered (sanity check the fixture
   assert.equal(out.checked, 1)
 })
 
-test('off by default; config loads with defaults and merges saved values', () => {
+test('on by default; explicit off still wins; config merges saved values', () => {
   const db = initDB(':memory:')
   assert.deepEqual(loadProfitKeeperConfig(db), DEFAULT_PROFIT_KEEPER)
-  assert.equal(DEFAULT_PROFIT_KEEPER.on, false)
+  assert.equal(DEFAULT_PROFIT_KEEPER.on, true)
+  // unconfigured → managed
+  assert.equal(loadProfitKeeperConfig(db).on, true)
+  // owner disarms → the stored value wins (fully hands-off)
+  setState(db, 'profit_keeper_json', JSON.stringify({ on: false }))
+  assert.equal(loadProfitKeeperConfig(db).on, false)
+  // saved partial config merges over defaults
   setState(db, 'profit_keeper_json', JSON.stringify({ on: true, armProfitUsd: 75 }))
   const cfg = loadProfitKeeperConfig(db)
   assert.equal(cfg.on, true)
