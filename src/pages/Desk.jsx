@@ -19,6 +19,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
+import OrderLedger from '../components/OrderLedger.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
@@ -144,6 +145,7 @@ export default function Desk() {
   const [capDraft, setCapDraft] = useState('')             // LLM daily cap editor
   const [capNote, setCapNote] = useState('')
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
+  const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
@@ -241,7 +243,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -253,6 +255,7 @@ export default function Desk() {
         agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
+        agentGet('/state/orders').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -266,6 +269,7 @@ export default function Desk() {
       setLlmSpend(ls)
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
+      setOrders(ord || null)
       setError('')
     } catch (e) { setError(e.message) }
   }, [historyDays])
@@ -565,6 +569,18 @@ export default function Desk() {
         {broker && brokerFlat && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
         )}
+      </Section>
+
+      {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
+          after they fill/cancel (and even while switches are OFF), so there's
+          always a record of what was set and what became of it. */}
+      <Section
+        id="order-ledger"
+        title={`Set-order ledger — records (${orders?.working?.length ?? '…'} working)`}
+        summary={orders?.recentlyGone?.length ? `${orders.recentlyGone.length} filled/cancelled in 24h` : null}
+        defaultOpen={false}
+      >
+        <OrderLedger orders={orders} />
       </Section>
 
       <Section
