@@ -171,6 +171,36 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     }
   }
 
+  // ORPHAN SWEEP — the loop above only reaches trades linked to an ACTIVE
+  // monitored_positions row. A trade left status='open' whose monitored row was
+  // already closed (or never written) is invisible to it and lingers 'open'
+  // forever. Live health showed 85 'open' trades vs 14 monitored positions —
+  // ~71 phantom opens poisoning exposure caps, the duplicate-symbol veto, and
+  // daily-loss math. Close any open trade whose broker position id is provably
+  // NOT among the live broker positions. Trades still awaiting a fill
+  // (ctrader_position_id IS NULL) are left untouched — they have no position to
+  // be gone. Scoped to ids absent from brokerIds, so a live position is never
+  // touched.
+  const orphansClosed = []
+  const openWithPosId = db.prepare(
+    `SELECT id, symbol, ctrader_position_id FROM trades
+      WHERE status = 'open' AND ctrader_position_id IS NOT NULL`
+  ).all()
+  const closeOrphanTrade = db.prepare(
+    `UPDATE trades SET status = 'closed', closed_at = datetime('now'),
+       close_reason = COALESCE(close_reason, 'stale reconcile: position not open at the broker (orphaned open row, never reconciled)')
+     WHERE id = ? AND status = 'open'`
+  )
+  const closeOrphanMon = db.prepare(
+    `UPDATE monitored_positions SET status = 'closed' WHERE trade_id = ? AND status = 'active'`
+  )
+  for (const t of openWithPosId) {
+    if (brokerIds.has(String(t.ctrader_position_id))) continue // still live at the broker
+    closeOrphanTrade.run(t.id)
+    closeOrphanMon.run(t.id)
+    orphansClosed.push({ tradeId: t.id, symbol: t.symbol, positionId: t.ctrader_position_id })
+  }
+
   // Human-readable snapshot: the raw broker order carries NUMERIC enums
   // (tradeSide 1/2, orderType 2=LIMIT) and RELATIVE SL/TP distances in
   // 1/100000-price units — the UI showed "? … 2 @ 1.15477" (owner: "so
@@ -212,5 +242,5 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   setState('broker_pending_orders_json', JSON.stringify(pendingOrders))
   setState('last_reconcile_at', new Date().toISOString())
 
-  return { newExternal, closedDetected, manualChanges, pendingOrders }
+  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed }
 }

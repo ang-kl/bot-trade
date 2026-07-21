@@ -154,6 +154,60 @@ test('closed position detection marks status=closed', () => {
   assert.match(trade.close_reason, /not closed by the bot/)
 })
 
+// Orphan sweep — trades left status='open' with NO active monitored row are
+// invisible to the closedDetected loop and accumulate forever (live health:
+// 85 'open' trades vs 14 monitored positions).
+function insertOrphanOpenTrade(db, { symbol = 'GBPUSD', positionId = '555' } = {}) {
+  return db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES (?, 'BUY', 1.25, 0.01, ?, 'autopilot', 'open', datetime('now', '-2 days'))`
+  ).run(symbol, positionId).lastInsertRowid
+}
+
+test('orphan sweep: an open trade whose position is gone at the broker (no monitored row) is closed', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = insertOrphanOpenTrade(db, { symbol: 'GBPUSD', positionId: '555' })
+
+  // Broker returns a DIFFERENT live position — 555 is not among them.
+  const brokerPos = [makeBrokerPosition({ positionId: '111', symbolName: 'EURUSD' })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  assert.equal(result.orphansClosed.length, 1)
+  assert.equal(String(result.orphansClosed[0].positionId), '555')
+  const trade = db.prepare(`SELECT status, close_reason FROM trades WHERE id = ?`).get(tradeId)
+  assert.equal(trade.status, 'closed')
+  assert.match(trade.close_reason, /stale reconcile/)
+})
+
+test('orphan sweep: an open trade STILL live at the broker is NOT closed', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = insertOrphanOpenTrade(db, { symbol: 'GBPUSD', positionId: '777' })
+
+  // 777 IS among the live broker positions → must stay open.
+  const brokerPos = [makeBrokerPosition({ positionId: '777', symbolName: 'GBPUSD' })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  assert.equal(result.orphansClosed.length, 0)
+  const trade = db.prepare(`SELECT status FROM trades WHERE id = ?`).get(tradeId)
+  assert.equal(trade.status, 'open', 'a live position is never swept')
+})
+
+test('orphan sweep: an open trade still awaiting a fill (no position id) is untouched', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('EURUSD', 'BUY', 1.1, 0.01, NULL, 'autopilot', 'open', datetime('now'))`
+  ).run().lastInsertRowid
+
+  const result = reconcilePositions(db, [], [], setState)
+  assert.equal(result.orphansClosed.length, 0)
+  const trade = db.prepare(`SELECT status FROM trades WHERE id = ?`).get(tradeId)
+  assert.equal(trade.status, 'open', 'a fill-pending trade with no position id is left alone')
+})
+
 test('pending orders stored in agent_state', () => {
   const db = mkDb()
   const setState = mkSetState(db)

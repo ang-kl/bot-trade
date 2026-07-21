@@ -259,9 +259,22 @@ app.get('/health', (_req, res) => {
 
   const status = circuitBreaker ? 'circuit_breaker_tripped' : 'ok'
 
+  // Deploy indicator: the Docker build context is agent/, so APP_VERSION can't
+  // read the repo-root package.json (always 0.0.000). Railway injects the real
+  // commit as RAILWAY_GIT_COMMIT_SHA — compare it to `main`'s HEAD to confirm
+  // the deploy is current. `llmProvider` reveals whether OPENAI_API_KEY is
+  // actually live on this service (else the LLM monitor falls back to Anthropic
+  // and errors on a dry credit balance).
+  const commit = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '').slice(0, 7) || null
+  const llmProvider = process.env.OPENAI_API_KEY
+    ? `openai:${process.env.OPENAI_MODEL || 'gpt-4o-mini'}`
+    : `anthropic:${process.env.CLAUDE_MODEL || 'claude-sonnet-4-5'}`
+
   res.json({
     status,
     version: APP_VERSION,
+    commit,
+    llmProvider,
     uptime: process.uptime(),
     loopCount: Number(getState(db, 'loop_count') || 0),
     lastScanAt: getState(db, 'last_scan_at'),
