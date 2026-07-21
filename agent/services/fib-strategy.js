@@ -71,7 +71,16 @@ const TIME_CAP_MINUTES = {
   '1w': 60480,    // a weekly fade is a ~6-week position
   '1mo': 259200,  // a monthly fade is a ~6-month position
 }
-const SCAN_CONCURRENCY = 3    // symbols scanned at once (avoid WS burst)
+// Symbols scanned concurrently. Each symbol scan opens ONE authenticated WS
+// connection (a single batched fetch of all its stale timeframes), so this is
+// literally the number of parallel broker connections — and the auth handshake
+// is the dominant per-symbol cost. 3 was conservative ("avoid WS burst") but
+// serialised a 15-symbol batch into 5 handshake-bound rounds, a big slice of
+// the ~72s loop that tripped the stall watchdog. 6 halves the round count
+// without a heavy burst; env-tunable (SCAN_CONCURRENCY, clamped 1..12) so the
+// cadence can be dialled live without a redeploy. Result order is preserved
+// regardless (chunks push in batch order), so scans stay deterministic.
+const SCAN_CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.SCAN_CONCURRENCY) || 6))
 
 // In-memory bar cache. A timeframe's bars only change when a new bar closes,
 // so refetching 1d candles every 5-minute loop is pure waste — cache entries

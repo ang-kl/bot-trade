@@ -279,6 +279,7 @@ app.get('/health', (_req, res) => {
     loopCount: Number(getState(db, 'loop_count') || 0),
     lastScanAt: getState(db, 'last_scan_at'),
     lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
+    lastScanMs: Number(getState(db, 'last_scan_ms') || 0),
     dbSize,
     dbSizeMB: Number((dbSize / 1048576).toFixed(2)),
     errorsToday,
