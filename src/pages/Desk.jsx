@@ -20,6 +20,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderLedger from '../components/OrderLedger.jsx'
+import LossReview from '../components/LossReview.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
@@ -146,6 +147,7 @@ export default function Desk() {
   const [capNote, setCapNote] = useState('')
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
+  const [postmortems, setPostmortems] = useState(null)  // post-loss playback (/state/postmortems)
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
@@ -243,7 +245,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -256,6 +258,7 @@ export default function Desk() {
         agentGet('/state/alpha-decay').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
         agentGet('/state/orders').catch(() => null),
+        agentGet('/state/postmortems').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -270,6 +273,7 @@ export default function Desk() {
       setAlphaDecay(ad)
       setMarketHours(mh?.hours || null)
       setOrders(ord || null)
+      setPostmortems(pms || null)
       setError('')
     } catch (e) { setError(e.message) }
   }, [historyDays])
@@ -574,6 +578,23 @@ export default function Desk() {
       {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
           after they fill/cancel (and even while switches are OFF), so there's
           always a record of what was set and what became of it. */}
+      {/* Post-loss playback — the bot's homework after every losing trade:
+          what did the market DO next, and what does that teach per strategy. */}
+      <Section
+        id="loss-review"
+        title={`Loss review — what the market did (${postmortems?.rows?.length ?? '…'})`}
+        summary={(() => {
+          const st = postmortems?.stats || []
+          if (!st.length) return null
+          const hunts = st.filter(s2 => s2.classification === 'stop_hunt').reduce((a, b) => a + b.n, 0)
+          const wrong = st.filter(s2 => s2.classification === 'thesis_wrong').reduce((a, b) => a + b.n, 0)
+          return `30d: ${hunts} stop-hunt · ${wrong} thesis-wrong`
+        })()}
+        defaultOpen={false}
+      >
+        <LossReview postmortems={postmortems} />
+      </Section>
+
       <Section
         id="order-ledger"
         title={`Set-order ledger — records (${orders?.working?.length ?? '…'} working)`}

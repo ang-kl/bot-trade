@@ -17,6 +17,7 @@ import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
+import { postmortemStats } from '../services/loss-postmortem.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -230,6 +231,28 @@ export default function stateRouter(db) {
     } catch { /* table may not exist on a very old DB */ }
     res.json({ working, recentlyGone, workingCount: working.length })
   })
+
+  // -----------------------------------------------------------------------
+  // GET /state/postmortems — post-loss playback: what the market did after
+  // each losing trade, with replay bars + per-strategy loss-class stats.
+  // -----------------------------------------------------------------------
+  router.get('/postmortems', (req, res) => {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30))
+    let rows = [], stats = []
+    try {
+      rows = db.prepare(
+        `SELECT * FROM trade_postmortems ORDER BY id DESC LIMIT ?`
+      ).all(limit)
+    } catch { /* table appears on first boot after migration */ }
+    try {
+      rows = rows.map(r => ({ ...r, bars: safeParse(r.bars_json), bars_json: undefined }))
+    } catch { /* keep raw rows */ }
+    try {
+      stats = postmortemStats(db)
+    } catch { /* table missing on a very old DB — stats stay empty */ }
+    res.json({ rows, stats })
+  })
+  function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot

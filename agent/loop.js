@@ -1003,6 +1003,26 @@ async function runLoop(db) {
             }
           }
 
+          // Post-loss playback — classify what the market did after each
+          // losing trade (stop_hunt / thesis_wrong / chop) and store the
+          // replay bars, so losses become data instead of just damage
+          // (owner: "playback after each loss to understand what the market
+          // is happening"). Best-effort; capped per cycle.
+          try {
+            const { runLossPostmortems } = await import('./services/loss-postmortem.js')
+            const symbolMap2 = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+            const pmFetch = async (sym, tf, count) => {
+              const sid = symbolMap2[String(sym).toUpperCase()]
+              if (!sid) throw new Error(`symbolId unknown for ${sym}`)
+              const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000)
+              return byTf[tf] || []
+            }
+            const pm = await runLossPostmortems(db, pmFetch)
+            if (pm.classified > 0) log(`Loss postmortem: classified ${pm.classified} losing trade(s) — see the Desk Loss review`)
+          } catch (err) {
+            log(`Loss postmortem sweep failed (non-fatal): ${err.message}`)
+          }
+
           // Weekend bank — inside the last window before a LONG closure
           // (weekend/holiday), close any position in profit, bot or owner:
           // floating profit held through a closure is gap risk, and the
