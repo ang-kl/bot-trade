@@ -1,0 +1,103 @@
+// ---------------------------------------------------------------------------
+// LossReview — post-loss playback (owner: "playback after each loss to
+// understand what the market is happening").
+//
+// Each losing trade gets a verdict of what the market DID next, computed by
+// the agent's postmortem sweep:
+//   stop_hunt    — right idea, stop too tight (price came back to entry)
+//   thesis_wrong — wrong idea, stop saved money (price kept going)
+//   chop         — noise; the entry filter let it through
+//   time_cap     — the clock closed it, not the market
+// plus a bar-replay sparkline (entry → stop → aftermath).
+//
+// Accessibility (owner has red-green colour vision): verdicts are NEVER
+// colour-only — each carries its text label; the sparkline uses the accent
+// colour for price and TEXT markers (E / SL / X), not red/green coding.
+// ---------------------------------------------------------------------------
+
+// Verdict → label + tone. Tones map to the app's blue/neutral palette (no
+// red-vs-green distinction is required to read them; text always present).
+const VERDICTS = {
+  stop_hunt: { label: 'STOP HUNT', hint: 'right idea, stop too tight' },
+  thesis_wrong: { label: 'THESIS WRONG', hint: 'stop saved money' },
+  chop: { label: 'CHOP', hint: 'noise entry' },
+  time_cap: { label: 'TIME CAP', hint: 'clock, not market' },
+  inconclusive: { label: 'INCONCLUSIVE', hint: 'not enough data' },
+}
+
+function Spark({ bars, entry, sl, exit }) {
+  if (!Array.isArray(bars) || bars.length < 2) return null
+  const W = 220, H = 56, PAD = 4
+  const closes = bars.map(b => b[4])
+  const lows = bars.map(b => b[3])
+  const highs = bars.map(b => b[2])
+  const lo = Math.min(...lows, sl ?? Infinity)
+  const hi = Math.max(...highs, entry ?? -Infinity)
+  if (!(hi > lo)) return null
+  const x = (i) => PAD + (i / (bars.length - 1)) * (W - 2 * PAD)
+  const y = (p) => PAD + (1 - (p - lo) / (hi - lo)) * (H - 2 * PAD)
+  const path = closes.map((c, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(c).toFixed(1)}`).join(' ')
+  const line = (p, label) => (p == null ? null : (
+    <g>
+      <line x1={PAD} x2={W - PAD} y1={y(p)} y2={y(p)} stroke="currentColor" strokeDasharray="3 3" strokeWidth="0.75" opacity="0.55" />
+      <text x={W - PAD} y={y(p) - 2} textAnchor="end" fontSize="8" fill="currentColor" opacity="0.85">{label}</text>
+    </g>
+  ))
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-[220px] h-[56px] text-[var(--color-text-sub)]" role="img" aria-label="price replay around the loss">
+      {line(entry, 'E')}
+      {line(sl, 'SL')}
+      {line(exit, 'X')}
+      <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+export default function LossReview({ postmortems }) {
+  const rows = postmortems?.rows || []
+  const stats = postmortems?.stats || []
+  if (rows.length === 0) {
+    return (
+      <p className="text-[13px] text-[var(--color-text-sub)]">
+        No classified losses yet — the sweep reviews each losing trade a few bars after it closes.
+      </p>
+    )
+  }
+  // Per-strategy learning line: "FIB: 5 stop_hunt · 2 thesis_wrong …"
+  const byStrat = {}
+  for (const s of stats) {
+    (byStrat[s.strategy] ||= []).push(`${s.n} ${VERDICTS[s.classification]?.label?.toLowerCase() || s.classification}`)
+  }
+  return (
+    <div className="space-y-2">
+      {Object.keys(byStrat).length > 0 && (
+        <div className="text-[12px] text-[var(--color-text-sub)]">
+          <span className="font-semibold text-[var(--color-text)]">Pattern (30d): </span>
+          {Object.entries(byStrat).map(([k, v]) => `${k}: ${v.join(' · ')}`).join('  |  ')}
+        </div>
+      )}
+      <div className="space-y-2">
+        {rows.map((r) => {
+          const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
+          return (
+            <div key={r.id} className="glass-inset rounded-lg p-2 flex flex-wrap items-start gap-3">
+              <div className="min-w-[130px]">
+                <div className="text-[13px] font-semibold">
+                  {r.symbol} <span className="font-normal text-[var(--color-text-sub)]">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+                </div>
+                <div className="text-[13px] font-bold tracking-wide">{v.label}</div>
+                <div className="text-[11px] text-[var(--color-text-sub)]">{v.hint}</div>
+                <div className="text-[12px] mt-0.5">
+                  {r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'}
+                  {r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
+                </div>
+              </div>
+              <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
+              <p className="flex-1 min-w-[200px] text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}

@@ -262,6 +262,28 @@ const TABLES = `
     gone_at     TEXT
   );
 
+  -- Post-loss playback: after each losing trade, the sweep stores WHAT THE
+  -- MARKET DID next (stop_hunt / thesis_wrong / chop / time_cap) plus the
+  -- replay bars, so losses teach instead of just hurting (owner: "playback
+  -- after each loss to understand what the market is happening").
+  CREATE TABLE IF NOT EXISTS trade_postmortems (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id       INTEGER UNIQUE REFERENCES trades(id),
+    symbol         TEXT,
+    strategy       TEXT,
+    timeframe      TEXT,
+    side           TEXT,
+    entry_price    REAL,
+    exit_price     REAL,
+    sl_price       REAL,
+    net_pnl        REAL,
+    r_multiple     REAL,
+    classification TEXT,          -- stop_hunt | thesis_wrong | chop | time_cap | inconclusive
+    detail         TEXT,
+    bars_json      TEXT,          -- [[t,o,h,l,c,v], ...] replay window
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS risk_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol         TEXT,
