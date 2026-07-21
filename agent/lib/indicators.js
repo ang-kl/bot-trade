@@ -57,6 +57,36 @@ export function vwapSeries(bars, anchorIdx = 0) {
   return out;
 }
 
+/**
+ * Session-ANCHORED VWAP: the cumulative sums reset at each real calendar
+ * boundary (default the UTC day) instead of at the fetched-window start. A true
+ * VWAP resets at a session/day/week anchor — anchoring at index 0 both measured
+ * against the wrong baseline (a rolling ~window-length average) AND drifted the
+ * absolute level between fetches, because index 0 mapped to a different real
+ * timestamp on each scan. Resetting on `floor(t / periodMs)` change fixes both:
+ * a fixed real bar always falls in the same period, so its VWAP is stable and
+ * reads as the CURRENT session's VWAP. Bars must carry a ms timestamp `t`;
+ * without one it degrades to a single-window cumulative (old behaviour).
+ */
+export function vwapAnchored(bars, periodMs = 86_400_000) {
+  const out = new Array(bars.length).fill(null);
+  let pv = 0;
+  let vol = 0;
+  let curPeriod = null;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const t = b.t ?? b.time ?? null;
+    const period = t != null && periodMs > 0 ? Math.floor(Number(t) / periodMs) : 0;
+    if (curPeriod === null || period !== curPeriod) { pv = 0; vol = 0; curPeriod = period; } // reset at the anchor
+    const tp = (b.h + b.l + b.c) / 3;
+    const v = b.v || 0;
+    pv += tp * v;
+    vol += v;
+    out[i] = vol > 0 ? pv / vol : tp;
+  }
+  return out;
+}
+
 /** Anchored VWAP: anchor by TIMESTAMP (ms) — first bar with t >= anchorT. */
 export function avwapSeries(bars, anchorT) {
   let idx = bars.findIndex((b) => b.t >= anchorT);

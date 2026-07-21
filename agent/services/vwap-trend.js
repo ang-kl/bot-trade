@@ -10,7 +10,21 @@
 // ---------------------------------------------------------------------------
 
 import { atr } from './fib-strategy.js'
-import { vwapSeries } from '../lib/indicators.js'
+import { vwapAnchored } from '../lib/indicators.js'
+import { tfMs } from '../lib/timeframes.js'
+
+const DAY_MS = 86_400_000, WEEK_MS = 604_800_000, MONTH_MS = 2_592_000_000
+
+// A true VWAP resets at a session/day/week anchor. Pick an anchor period that
+// always spans several bars of the scan timeframe: DAILY for intraday, WEEKLY
+// for 1d bars, MONTHLY for weekly+ — so the line is a real anchored VWAP, not a
+// window-length average, and its level is stable across fetches.
+function anchorPeriodFor(timeframe) {
+  const ms = tfMs(timeframe) || 0
+  if (ms >= WEEK_MS) return MONTH_MS
+  if (ms >= DAY_MS) return WEEK_MS
+  return DAY_MS
+}
 
 const MIN_BARS = 30
 const ATR_PERIOD = 14
@@ -24,9 +38,11 @@ const round2 = (v) => Math.round(v * 100) / 100
 export function computeVwapTrend(bars, timeframe /*, opts = {} */) {
   if (!Array.isArray(bars) || bars.length < MIN_BARS) return null
 
-  // Anchor VWAP at the window start (a session-length proxy on intraday
-  // timeframes; the whole window on higher ones).
-  const vw = vwapSeries(bars, 0)
+  // Anchor VWAP at the real session/day/week boundary appropriate to the
+  // timeframe (resets cumulative sums there) — a true anchored VWAP, stable
+  // across fetches, measured against the current session rather than the
+  // fetched window.
+  const vw = vwapAnchored(bars, anchorPeriodFor(timeframe))
   const i = bars.length - 1
   const bar = bars[i]
   const v = vw[i]
