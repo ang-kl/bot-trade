@@ -23,6 +23,7 @@ import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
 import { dateTimeParts, nextOpenLabel, priceDp, toMs } from '../lib/std-trade-rows.js'
+import { stratShort } from '../lib/strategy-labels.js'
 
 // Sort accessors per column key. null/undefined always sorts LAST in either
 // direction so empty cells never float above real data.
@@ -102,6 +103,10 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // cTrader's compulsory position columns (owner spec) appear only when the
   // rows actually carry them — closed deals and order-log rows stay lean.
   const OPT_COLS = [
+    // Segment open/pending trades by their setup (owner spec). Shown only
+    // when rows carry a parsed label — closed deals / attempts stay lean.
+    { key: 'timeframe', label: 'TF', fmt: (v) => v || '—' },
+    { key: 'strategy', label: 'Strategy', fmt: (v) => stratShort(v) || '—' },
     { key: 'updatedAt', label: 'Updated', fmt: timeCell },
     { key: 'durationMs', label: 'Duration', fmt: fmtDuration },
     { key: 'margin', label: 'Margin Used', fmt: money2, money: true },

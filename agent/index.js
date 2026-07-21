@@ -97,6 +97,15 @@ if (envAccountId && !getState(db, 'ctrader_account_id')) {
   console.log('[boot] cTrader account ID seeded from env')
 }
 
+// Move B — one-time additive seed: arm RSI-2 + its backtested GO combos so
+// the proven edge trades out of the box. Idempotent (guarded by a state
+// flag); additive and reversible (see rsi2-seed.js).
+const { seedRsi2GoCombos } = await import('./services/rsi2-seed.js')
+const rsi2Seed = seedRsi2GoCombos(db)
+if (rsi2Seed.seeded) {
+  console.log(`[boot] RSI-2 GO seed applied — strategy armed: ${rsi2Seed.addedStrategy}, combos: ${rsi2Seed.addedCombos?.length ?? 0}${rsi2Seed.note ? ` (${rsi2Seed.note})` : ''}`)
+}
+
 // ---------------------------------------------------------------------------
 // Express app
 // ---------------------------------------------------------------------------
