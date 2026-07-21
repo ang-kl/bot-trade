@@ -67,7 +67,11 @@ export default function TradeChronograph({ pos, onClose }) {
   const tf = pos.timeframe || pos.tf
   const strat = pos.strategy ? (STRAT_SHORT[pos.strategy] || pos.strategy) : (pos.source && pos.source !== 'autopilot' ? 'manual' : null)
 
-  const travel = priceTravel({ entry, sl, tp: tp1, side, price })
+  // Dial scale runs SL → the FARTHEST stored target, so TP2 (when present)
+  // sits at the dial end and TP1 at its true interior position. The old
+  // SL→TP1 scale put TP2 beyond the dial and its mark landed wrong.
+  const tpFar = (tp2 != null && Number.isFinite(Number(tp2))) ? Number(tp2) : tp1
+  const travel = priceTravel({ entry, sl, tp: tpFar, side, price })
   const r = rMultiple({ entry, sl, side, price })
   const rTp = Number.isFinite(tp1) ? rMultiple({ entry, sl, side, price: tp1 }) : 2
   const ms = elapsedMs(openedAt)
@@ -90,10 +94,13 @@ export default function TradeChronograph({ pos, onClose }) {
   if (travel) {
     marks.push({ f: travel.sl, label: 'SL', price: sl, color: DOWN })
     marks.push({ f: travel.entry, label: 'entry', price: entry, color: SUB })
-    if (Number.isFinite(tp1)) marks.push({ f: travel.tp, label: 'TP1', price: tp1, color: UP })
+    if (Number.isFinite(tp1)) {
+      // TP1's true position on the SL→tpFar scale (interior when TP2 exists).
+      const t1 = priceTravel({ entry, sl, tp: tpFar, side, price: tp1 })
+      if (t1) marks.push({ f: t1.price, label: 'TP1', price: tp1, color: UP })
+    }
     if (tp2 != null && Number.isFinite(Number(tp2))) {
-      const t2 = priceTravel({ entry, sl, tp: Number(tp2), side, price })
-      if (t2) marks.push({ f: Math.max(0, Math.min(1, (Number(tp2) - (isLong(side) ? sl : tp1)) / ((isLong(side) ? Number(tp2) : sl) - (isLong(side) ? sl : Number(tp2))))), label: 'TP2', price: Number(tp2), color: UP })
+      marks.push({ f: travel.tp, label: 'TP2', price: Number(tp2), color: UP })
     }
   }
 

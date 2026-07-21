@@ -117,7 +117,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     { key: 'positionId', label: 'Position ID', fmt: (v) => String(v) },
   ]
   const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
-  const colCount = 13 + activeOpt.length
+  const colCount = 15 + activeOpt.length
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -140,6 +140,11 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th aria-sort={ariaSort('tp')} className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
               <th aria-sort={ariaSort('pnl')} className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
               <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>
+              {/* Absolute price distances (owner: entry $1, now $1.20, TP $2,
+                  SL $0.80 → "to TP" 0.80 and "to SL" (0.40)) — always shown
+                  when a live price + level exist, both directions at once. */}
+              <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from current to the take profit">📈 to TP</th>
+              <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from current to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>
               {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
@@ -237,6 +242,13 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           ? <span className="text-[var(--color-down)]">SL {num(Math.max(0, slDist))}</span>
                           : '—'}
                     </td>
+                    {/* 📈 to TP / 📉 to SL — absolute distances from CURRENT */}
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {hasLive && r.tp != null ? num(Math.abs(Number(r.tp) - r.current)) : '—'}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {hasLive && r.sl != null ? `(${num(Math.abs(r.current - Number(r.sl)))})` : '—'}
+                    </td>
                     {activeOpt.map(c => (
                       <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
                         {r[c.key] != null ? <>{c.fmt(r[c.key])}{c.money ? ccyTag(r.moneyCcy) : null}</> : '—'}
@@ -284,12 +296,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10} className={`py-1.5 pr-3 text-right text-[var(--color-text-sub)] ${stick1}`}>
+                  <td colSpan={10} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
                   <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>
+                  <td className="py-1.5 pr-3" />
+                  <td className="py-1.5 pr-3" />
                   <td className="py-1.5 pr-3" />
                   {activeOpt.map(c => (
                     <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">

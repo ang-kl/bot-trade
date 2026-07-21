@@ -192,7 +192,14 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
     FROM trades t
     LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
-    WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND t.net_pnl != 0 AND pm.id IS NULL
+    WHERE t.status = 'closed' AND pm.id IS NULL
+      AND (
+        (t.net_pnl IS NOT NULL AND t.net_pnl != 0)
+        -- P&L not backfilled yet (broker-closed): infer the outcome from the
+        -- prices instead of skipping the trade forever — this is why only a
+        -- couple of lessons appeared against dozens of closed trades.
+        OR (t.net_pnl IS NULL AND t.exit_price IS NOT NULL AND t.entry_price IS NOT NULL)
+      )
       AND t.closed_at >= datetime('now', ?)
     ORDER BY t.closed_at DESC
     LIMIT ?
@@ -215,7 +222,17 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       bars = await fetchBars(t.symbol, tf, count, endTime) || []
     } catch { /* fetch hiccup — leave for next sweep */ continue }
 
-    const isWin = t.net_pnl > 0
+    // Outcome: broker-true P&L when backfilled; else inferred from prices
+    // (direction-aware). A dead-flat exit with no P&L stays unclassified.
+    let isWin
+    if (t.net_pnl != null) {
+      isWin = t.net_pnl > 0
+    } else {
+      const dirW = /^(buy|long)$/i.test(String(t.side || '')) ? 1 : -1
+      const move = (Number(t.exit_price) - Number(t.entry_price)) * dirW
+      if (!(Math.abs(move) > 0)) continue
+      isWin = move > 0
+    }
     // A stale loss (>24h) is classified with whatever aftermath exists rather
     // than retrying forever; a fresh one waits for enough bars. Wins classify
     // immediately (they only need the holding-period bars).
@@ -224,6 +241,12 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       ? classifyWin(t, bars, openedMs, closedMs)
       : classifyLoss(t, bars, closedMs, { allowPartial: stale })
     if (verdict === null) { waiting++; continue }
+    // Honesty guard: a clipped fetch window (old trade > 400 bars) can hide
+    // the early holding period, so a win's MFE/MAE may be understated — say
+    // so instead of overstating "clean".
+    if (isWin && bars.length && Number.isFinite(openedMs) && bars[0].t > openedMs + 2 * ms) {
+      verdict.detail += ' (bar window clipped — early holding period not visible, MFE/MAE may be understated)'
+    }
 
     const riskDist = t.sl_price != null ? Math.abs(t.entry_price - t.sl_price) : (Number(t.initial_risk) > 0 ? Number(t.initial_risk) : null)
     const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null
