@@ -139,7 +139,14 @@ export default function Desk() {
     prior: s2 => s2.prior?.expectancy,
     delta: s2 => s2.delta,
   })
-  const baseSort = useSort(alphaDecay?.backtest?.combos || [], { key: 'pf', dir: 'desc' }, {
+  // Per-strategy baselines (owner: "why didn't you update the rest"). Show one
+  // strategy at a time via a chip picker; default to the most-recently tested.
+  const [baselineStrat, setBaselineStrat] = useState(null)
+  const backtestsList = alphaDecay?.backtests?.length
+    ? alphaDecay.backtests
+    : (alphaDecay?.backtest ? [alphaDecay.backtest] : [])
+  const curBaseline = backtestsList.find(b => b.strategy === baselineStrat) || backtestsList[0] || null
+  const baseSort = useSort(curBaseline?.combos || [], { key: 'pf', dir: 'desc' }, {
     combo: c2 => `${c2.symbol} ${c2.tf}`,
     trades: c2 => c2.trades,
     pf: c2 => c2.profitFactor,
@@ -791,11 +798,22 @@ export default function Desk() {
               )
               : <p className="text-[12px] text-[var(--color-text-sub)]">Needs trades that carry their signal timestamp — fills from scanned signals populate this automatically.</p>}
 
-            {/* Band 3 — the OWNER's edge as backtested */}
+            {/* Band 3 — the OWNER's edge as backtested (per strategy) */}
             <div className="text-[12px] font-semibold mt-3 mb-1">Your edge — backtest baseline</div>
-            {alphaDecay.backtest
+            {curBaseline
               ? (
                 <>
+                  {backtestsList.length > 1 && (
+                    <div className="flex flex-wrap gap-1 mb-1.5" role="radiogroup" aria-label="Backtested strategy">
+                      {backtestsList.map(b => (
+                        <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
+                          onClick={() => setBaselineStrat(b.strategy)}
+                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[11px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          {STRAT_SHORT[b.strategy] || b.strategy}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="std-cols w-full text-[12px] tabular-nums">
                       <thead className="text-left text-[var(--color-text-sub)]">
@@ -821,7 +839,7 @@ export default function Desk() {
                     </table>
                   </div>
                   <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
-                    {alphaDecay.backtest.strategy} · tested {ago(alphaDecay.backtest.ranAt)} ago{alphaDecay.backtest.combos.length > 10 ? ` · showing 10 of ${alphaDecay.backtest.combos.length} combos` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
+                    {curBaseline.strategy} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
                   </p>
                 </>
               )

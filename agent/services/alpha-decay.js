@@ -172,6 +172,13 @@ export function alphaDecayView(db, { window = 30 } = {}) {
     if (b && Array.isArray(b.combos)) backtest = b
   } catch { /* none */ }
 
+  // Per-strategy baselines (backtest_baselines_json = { [strategy]: baseline }).
+  // Lets Edge health show and vouch for EVERY armed strategy's tested edge, not
+  // only the last-run one. Back-fill the singular baseline in for older data.
+  let baselines = {}
+  try { baselines = JSON.parse(getState(db, 'backtest_baselines_json') || '{}') || {} } catch { baselines = {} }
+  if (backtest && backtest.strategy && !baselines[backtest.strategy]) baselines[backtest.strategy] = backtest
+
   // ADVISORY vs COMMITTED: what the owner should consider, and what the
   // machine will do on its own — every line evidential and linkable.
   const advisories = []
@@ -192,20 +199,22 @@ export function alphaDecayView(db, { window = 30 } = {}) {
   // Arm advisory (owner: "why can I arm all strategies?"). Arming is NEVER
   // blocked — an untested strategy can still be armed — but an armed strategy
   // with NO proven edge should say so, loudly, where the owner already looks.
-  // Proven edge = a positive backtest FOR THAT strategy (the baseline holds
-  // only the last-run strategy, so we can only vouch for that one) OR a
-  // positive live record over a full window. Everything else armed = blind.
-  const backtestGoFor = (key) =>
-    !!backtest && backtest.strategy === key &&
-    backtest.combos.some(c => (c.profitFactor ?? 0) > 1 && (c.trades ?? 0) > 0)
+  // Proven edge = a positive backtest FOR THAT strategy (now per-strategy, so
+  // we can vouch for EACH armed strategy that's been tested) OR a positive live
+  // record over a full window. Everything else armed = blind.
+  const backtestGoFor = (key) => {
+    const b = baselines[key]
+    return !!b && Array.isArray(b.combos) &&
+      b.combos.some(c => (c.profitFactor ?? 0) > 1 && (c.trades ?? 0) > 0)
+  }
   for (const s of strategies) {
     if (!s.armed || !s.registered || s.strategy === 'unlabelled') continue
     const liveGo = s.total.n >= MIN_WINDOW_N && s.total.expectancy > 0
     if (backtestGoFor(s.strategy) || liveGo) continue // has an edge — no warning
     let why
     if (s.total.n === 0) {
-      why = backtest && backtest.strategy === s.strategy
-        ? 'its last backtest produced no positive combo and it has no live trades yet'
+      why = baselines[s.strategy]
+        ? 'its backtest produced no positive combo and it has no live trades yet'
         : 'it has never been backtested and has no live trades yet'
     } else if (s.netPnl < 0) {
       why = `it is down $${Math.abs(s.netPnl).toFixed(2)} over ${s.total.n} live trade(s) with no backtest GO on record`
@@ -244,6 +253,11 @@ export function alphaDecayView(db, { window = 30 } = {}) {
     lag_sampled: lagRows.length,
     breaker,
     backtest,
+    // Per-strategy baselines for Edge health (owner: show every strategy's
+    // tested edge, not just the last). Array, newest-tested first.
+    backtests: Object.values(baselines)
+      .filter(b => b && Array.isArray(b.combos))
+      .sort((a, b) => String(b.ranAt || '').localeCompare(String(a.ranAt || ''))),
     advisories,
   }
 }

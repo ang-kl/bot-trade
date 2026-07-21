@@ -177,6 +177,27 @@ test('arm advisory: an ARMED strategy with no proven edge is flagged (non-blocki
   assert.ok(!v2.advisories.some(a => a.strategy === 'fib_618_fade' && /ARMED but unproven/.test(a.text)))
 })
 
+test('per-strategy baselines: EACH tested strategy is vouched for and exposed', async () => {
+  const { alphaDecayView } = await import('./alpha-decay.js')
+  const { setState } = await import('../db.js')
+  const db = initDB(':memory:')
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade', 'rsi2_reversion', 'ema_pullback']))
+  setState(db, 'backtest_baselines_json', JSON.stringify({
+    fib_618_fade: { ranAt: '2026-07-19T00:00:00Z', strategy: 'fib_618_fade', combos: [{ symbol: 'EURUSD', tf: '4h', trades: 20, profitFactor: 1.6 }] },
+    rsi2_reversion: { ranAt: '2026-07-21T00:00:00Z', strategy: 'rsi2_reversion', combos: [{ symbol: 'US30', tf: '8h', trades: 45, profitFactor: 1.9 }] },
+    // ema tested but no positive combo → still flagged unproven
+    ema_pullback: { ranAt: '2026-07-20T00:00:00Z', strategy: 'ema_pullback', combos: [{ symbol: 'XAUUSD', tf: '1h', trades: 30, profitFactor: 0.8 }] },
+  }))
+  const v = alphaDecayView(db, { window: 10 })
+  // both fib AND rsi2 are vouched for (no arm advisory), from their OWN baselines
+  assert.ok(!v.advisories.some(a => a.strategy === 'fib_618_fade' && /ARMED but unproven/.test(a.text)))
+  assert.ok(!v.advisories.some(a => a.strategy === 'rsi2_reversion' && /ARMED but unproven/.test(a.text)))
+  // ema tested but no positive combo → still flagged
+  assert.ok(v.advisories.some(a => a.strategy === 'ema_pullback' && /ARMED but unproven/.test(a.text)))
+  // all three baselines exposed, newest-tested first
+  assert.deepEqual(v.backtests.map(b => b.strategy), ['rsi2_reversion', 'ema_pullback', 'fib_618_fade'])
+})
+
 test('view: stored backtest baseline surfaces, reality-gap advisory fires on live-negative', async () => {
   const { alphaDecayView } = await import('./alpha-decay.js')
   const { setState } = await import('../db.js')

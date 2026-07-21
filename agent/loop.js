@@ -2,7 +2,7 @@
 // agent/loop.js — Main 5-minute scan loop
 // ---------------------------------------------------------------------------
 
-import Anthropic from '@anthropic-ai/sdk'
+import { createLLMClient } from './lib/llm-provider.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { scanStageStrategies, scanFilterOptions, tradeStageGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
@@ -75,12 +75,14 @@ let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 
-// Lazy singleton — only the monitor/weekend position checks call Anthropic
-// now; the scan/analyze pipeline is deterministic (fib-strategy.js).
+// Lazy singleton — only the monitor/weekend position checks call the LLM now;
+// the scan/analyze pipeline is deterministic (fib-strategy.js). Provider is
+// OpenAI when OPENAI_API_KEY is set (owner's primary key), else Anthropic —
+// same messages.create shape either way (see lib/llm-provider.js).
 let _anthropicClient = null
 function getAnthropicClient() {
   if (!_anthropicClient) {
-    _anthropicClient = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY })
+    _anthropicClient = createLLMClient()
   }
   return _anthropicClient
 }

@@ -24,6 +24,11 @@ export const MODEL_PRICES = {
   'claude-opus-4-6': { input: 5, output: 25 },
   'claude-opus-4-7': { input: 5, output: 25 },
   'claude-opus-4-8': { input: 5, output: 25 },
+  // OpenAI (primary provider when OPENAI_API_KEY is set) — $/1M tokens.
+  'gpt-4o-mini': { input: 0.15, output: 0.6 },
+  'gpt-4o': { input: 2.5, output: 10 },
+  'gpt-4.1-mini': { input: 0.4, output: 1.6 },
+  'gpt-4.1': { input: 2, output: 8 },
 }
 const FALLBACK_PRICE = { input: 5, output: 25 } // conservative: Opus tier
 
