@@ -3,10 +3,11 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decideChanges } from './strategy-autopilot.js'
+import { decideChanges, isBusyWindow } from './strategy-autopilot.js'
 import { explainVerdict, equitySvg, renderAutopilotReport } from '../lib/autopilot-report.js'
 
-const GO = (strategy, symbol, timeframe, entryMode = 'close') => ({ strategy, symbol, timeframe, entryMode, state: 'go', trades: 20, pf: 1.8, total: 5, wfActive: 4, wfPositive: 3 })
+// GO fixture clears the strict arming bar (PF≥1.7, win≥60%, ≥25 trades).
+const GO = (strategy, symbol, timeframe, entryMode = 'close') => ({ strategy, symbol, timeframe, entryMode, state: 'go', trades: 25, pf: 1.8, winRate: 65, total: 5, wfActive: 4, wfPositive: 3 })
 const NOGO = (strategy, symbol, timeframe, entryMode = 'close') => ({ strategy, symbol, timeframe, entryMode, state: 'no-go', trades: 20, pf: 0.8, total: -3, wfActive: 4, wfPositive: 1 })
 const EMPTY = { enabledStrategies: ['fib_618_fade'], autoMatrix: {}, pendingMatrix: {} }
 
@@ -51,6 +52,31 @@ test('change cap: disarms jump the queue, overflow becomes suggestions', () => {
   assert.equal(c.disarm.length, 1) // the safety cut got through
   assert.equal(c.arm.length, 1)
   assert.ok(c.suggestions.length >= 4) // the rest wait for the human or the next night
+})
+
+test('arming bar: a GO below PF/win/trades is NOT armed (only proven combos)', () => {
+  // clears "GO" but marginal — like AUDUSD·4h (PF 1.50, 54%): must not arm
+  const marginal = { strategy: 'fib_618_fade', symbol: 'AUDUSD', timeframe: '4h', entryMode: 'close', state: 'go', trades: 40, pf: 1.5, winRate: 54, total: 3, wfActive: 4, wfPositive: 3 }
+  const c = decideChanges([marginal], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} })
+  assert.equal(c.arm.length, 0)
+})
+
+test('arming bar: thresholds are configurable', () => {
+  const combo = { strategy: 'rsi2_reversion', symbol: 'US30', timeframe: '8h', entryMode: 'close', state: 'go', trades: 30, pf: 1.6, winRate: 58, total: 4, wfActive: 4, wfPositive: 3 }
+  // strict default (1.7/60/25) → no arm; loosened → arms
+  assert.equal(decideChanges([combo], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }).arm.length, 0)
+  const loose = decideChanges([combo], { enabledStrategies: [], autoMatrix: {}, pendingMatrix: {} }, { armMinPf: 1.5, armMinWin: 55, armMinTrades: 20 })
+  assert.ok(loose.arm.length >= 1)
+})
+
+test('isBusyWindow: US session, NY→Sydney handover, and JPN225 window', () => {
+  assert.equal(isBusyWindow(['New York'], 3), true)          // NY live
+  assert.equal(isBusyWindow([], 3), true)                    // handover, Asia not open, JPN pre-open
+  assert.equal(isBusyWindow(['Sydney'], 3), false)           // Asia open, outside JPN window → calm
+  assert.equal(isBusyWindow(['Tokyo'], 9), true)             // 09:00 JST — first trading hour
+  assert.equal(isBusyWindow(['Tokyo'], 8), true)             // 08:00 JST — premarket hour
+  assert.equal(isBusyWindow(['Tokyo'], 13), false)           // 13:00 JST — window closed
+  assert.equal(isBusyWindow(['London'], 15), false)          // London-only midday → calm
 })
 
 test('explainVerdict spells out each gate in words', () => {
