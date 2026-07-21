@@ -641,6 +641,7 @@ const STRATEGY_DISPLAY = {
   ema_pullback:      { name: 'EMA trend-pullback', role: 'Deterministic pullback to the trend EMA' },
   donchian_breakout: { name: 'Range breakout',     role: 'Deterministic Donchian channel breakout' },
   rsi_meanrev:       { name: 'RSI mean-reversion', role: 'Deterministic RSI stretch snap-back' },
+  fib_confluence:    { name: 'Fib confluence',     role: 'Multi-grid Fibonacci confluence zone' },
 }
 
 export function synthesizeFibSignal(symbol, signal, threshold = 8) {

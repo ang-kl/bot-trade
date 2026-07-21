@@ -970,6 +970,12 @@ async function runLoop(db) {
           if ((result.orphansClosed || []).length > 0) {
             log(`Reconcile: closed ${result.orphansClosed.length} stale open trade(s) whose broker position is gone (ledger drift cleanup)`)
           }
+          if ((result.dupsClosed || []).length > 0) {
+            log(`Reconcile: closed ${result.dupsClosed.length} DUPLICATE open trade(s) sharing a broker position (re-adoption leak cleanup)`)
+          }
+          if ((result.relinked || []).length > 0) {
+            log(`Reconcile: re-linked ${result.relinked.length} position(s) to their existing trade instead of duplicating (leak prevented)`)
+          }
           if ((result.ordersGone || []).length > 0) {
             log(`Reconcile: ${result.ordersGone.length} resting order(s) left the book (filled or cancelled) — the monitor adopts any resulting position`)
           }

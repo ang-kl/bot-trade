@@ -224,6 +224,47 @@ test('pending orders stored in agent_state', () => {
   assert.equal(stored[0].symbolName, 'XAUUSD')
 })
 
+test('re-adoption guard: a broker position with an existing open trade is RE-LINKED, not duplicated', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // An open trade for posId 500 exists, but its monitored row was marked closed
+  // (a manage cycle deactivated it) — so knownIds no longer contains 500.
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('EURUSD','BUY',1.1,0.01,'500','autopilot','open', datetime('now'))`
+  ).run().lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status) VALUES ('EURUSD', ?, 'long', 'closed')`).run(tradeId)
+
+  const brokerPos = [makeBrokerPosition({ positionId: '500', symbolName: 'EURUSD' })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  // NO new trade for posId 500 — still exactly one.
+  const trades = db.prepare(`SELECT COUNT(*) c FROM trades WHERE ctrader_position_id = '500'`).get()
+  assert.equal(trades.c, 1, 'no duplicate trade inserted')
+  assert.equal(result.relinked.length, 1)
+  assert.equal(result.newExternal.length, 0, 'not adopted as new')
+  // its monitored row is active again
+  const mp = db.prepare(`SELECT status FROM monitored_positions WHERE trade_id = ?`).get(tradeId)
+  assert.equal(mp.status, 'active')
+})
+
+test('dedup sweep: duplicate open trades sharing a posId are collapsed to the newest', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // Three leaked open trades for the same live position 600.
+  for (let i = 0; i < 3; i++) {
+    db.prepare(`INSERT INTO trades (symbol, side, ctrader_position_id, status, opened_at) VALUES ('GBPUSD','BUY','600','open', datetime('now'))`).run()
+  }
+  const brokerPos = [makeBrokerPosition({ positionId: '600', symbolName: 'GBPUSD' })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  const open = db.prepare(`SELECT COUNT(*) c FROM trades WHERE ctrader_position_id='600' AND status='open'`).get()
+  assert.equal(open.c, 1, 'only the newest open trade survives')
+  assert.equal(result.dupsClosed.length, 2)
+  const closed = db.prepare(`SELECT close_reason FROM trades WHERE ctrader_position_id='600' AND status='closed' LIMIT 1`).get()
+  assert.match(closed.close_reason, /duplicate reconcile adoption/)
+})
+
 test('broker_orders ledger: reconcile records resting orders as working', () => {
   const db = mkDb()
   const setState = mkSetState(db)

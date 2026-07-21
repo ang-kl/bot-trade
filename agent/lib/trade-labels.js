@@ -47,6 +47,7 @@ export const STRATEGIES = {
   vwap_trend: 'VWAP',
   vp_value: 'VP',
   rsi2_reversion: 'RSI2',
+  fib_confluence: 'FIBC',
   other:      'OTH',
 }
 

@@ -10,6 +10,7 @@ export const STRAT_SHORT = {
   rsi2_reversion: 'RSI2',
   vwap_trend: 'VWAP',
   vp_value: 'VP',
+  fib_confluence: 'FIBC',
 }
 
 // key → short code, falling back to the raw key (never blank for a real

@@ -32,6 +32,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
 
   const newExternal = []
   const manualChanges = []
+  const relinked = []
 
   // Price-scale-aware "did it really change" — null↔value counts as a change.
   const differs = (a, b) => {
@@ -129,6 +130,34 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     const symbolName = bp.symbolName || `ID:${bp.tradeData?.symbolId || '?'}`
     const initialRisk = (entry && sl) ? Math.abs(entry - sl) : null
 
+    // DUPLICATE-ADOPTION GUARD: we only reach here because no ACTIVE monitored
+    // row maps to this posId — but a trade for it may STILL exist 'open' with a
+    // merely-inactive monitored row (a manage cycle marked it closed while the
+    // broker position lived on). Inserting a fresh trade every reconcile is what
+    // ballooned openTrades (85→155 while the bot was stopped). If an open trade
+    // for this posId already exists, RE-LINK its management instead of spawning
+    // a second row.
+    const existingOpen = db.prepare(
+      `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`
+    ).get(posId)
+    if (existingOpen) {
+      const mp = db.prepare(
+        `SELECT id FROM monitored_positions WHERE trade_id = ? ORDER BY (status='active') DESC, id DESC LIMIT 1`
+      ).get(existingOpen.id)
+      if (mp) {
+        db.prepare(`UPDATE monitored_positions SET status='active' WHERE id = ?`).run(mp.id)
+      } else {
+        db.prepare(`
+          INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+            thesis, initial_risk, source, strategy, label_raw, account_id, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        `).run(symbolName, existingOpen.id, side, entry, sl, tp, thesis, initialRisk,
+          adoptedSource, parsed.strategy || null, label || null, getState(db, 'ctrader_account_id'))
+      }
+      relinked.push({ symbol: symbolName, positionId: posId, tradeId: existingOpen.id })
+      continue
+    }
+
     const inserted = db.transaction(() => {
       const tradeInsert = db.prepare(`
         INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
@@ -181,6 +210,30 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   // (ctrader_position_id IS NULL) are left untouched — they have no position to
   // be gone. Scoped to ids absent from brokerIds, so a live position is never
   // touched.
+  // DEDUP existing garbage: prior re-adoption may have left several 'open'
+  // trades sharing one broker positionId. Keep the newest per posId, close the
+  // rest — the orphan sweep can't (their posId is still live at the broker).
+  const dupsClosed = []
+  try {
+    const dups = db.prepare(
+      `SELECT id, symbol, ctrader_position_id FROM trades
+        WHERE status = 'open' AND ctrader_position_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MAX(id) FROM trades
+             WHERE status = 'open' AND ctrader_position_id IS NOT NULL
+             GROUP BY ctrader_position_id
+          )`
+    ).all()
+    const closeDup = db.prepare(
+      `UPDATE trades SET status='closed', closed_at=datetime('now'),
+         close_reason=COALESCE(close_reason,'duplicate reconcile adoption — superseded by the newest row for this position')
+       WHERE id = ? AND status='open'`
+    )
+    const closeDupMon = db.prepare(`UPDATE monitored_positions SET status='closed' WHERE trade_id = ? AND status='active'`)
+    const tx = db.transaction(() => { for (const d of dups) { closeDup.run(d.id); closeDupMon.run(d.id); dupsClosed.push(d) } })
+    tx()
+  } catch { /* dedup best-effort */ }
+
   const orphansClosed = []
   const openWithPosId = db.prepare(
     `SELECT id, symbol, ctrader_position_id FROM trades
@@ -248,7 +301,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   // (working → gone) so a fill is tracked and the history survives a restart.
   const ordersGone = syncBrokerOrders(db, pendingOrders)
 
-  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone }
+  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed }
 }
 
 /**
