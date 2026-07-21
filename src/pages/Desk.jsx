@@ -34,6 +34,7 @@ const STRAT_SHORT = {
   ema_pullback: 'EMA',
   donchian_breakout: 'BRK',
   rsi_meanrev: 'RSI',
+  rsi2_reversion: 'RSI2',
   vwap_trend: 'VWAP',
   vp_value: 'VP',
 }
@@ -767,7 +768,7 @@ export default function Desk() {
                           <td className="py-1 pr-3 text-right">{traded && s2.winRate != null ? `${Math.round(s2.winRate * 100)}%` : '—'}</td>
                           <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
                           <td className={`py-1 pr-3 font-semibold ${s2.streak?.kind === 'win' ? 'text-[var(--color-up)]' : s2.streak?.kind === 'loss' ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
-                            {s2.streak?.n ? `${s2.streak.n} ${s2.streak.kind}${s2.streak.n > 1 ? 's' : ''}` : '—'}
+                            {s2.streak?.n ? `${s2.streak.n} ${s2.streak.n > 1 ? (s2.streak.kind === 'loss' ? 'losses' : 'wins') : s2.streak.kind}` : '—'}
                           </td>
                           <td className="py-1 pr-3">
                             {!traded
