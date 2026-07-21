@@ -2083,11 +2083,23 @@ export default function actionsRouter(db) {
   // margin, open time, label) and pending orders.
   // On-demand only (up to ~3 WS round-trips per account) — not on the loop.
   // -----------------------------------------------------------------------
+  // COALESCE + short TTL — a snapshot costs ~6 fresh WS connections with full
+  // auth handshakes (~20s). The Desk polls this from several widgets at once,
+  // so uncoalesced it runs dozens of overlapping 20s snapshots and starves the
+  // box (the owner's "everything is stale"). One in-flight snapshot is shared
+  // by every caller, and its result is reused for a short window.
+  const bpShared = { all: { at: 0, promise: null }, sel: { at: 0, promise: null } }
+  const BP_TTL_MS = 12_000
   router.post('/broker-positions', async (req, res) => {
-    try {
+    const slot = bpShared[req.body?.selectedOnly ? 'sel' : 'all']
+    if (slot.promise && Date.now() - slot.at < BP_TTL_MS) {
+      try { return res.json(await slot.promise) } catch { /* stale failure — fall through to a fresh run */ }
+    }
+    slot.at = Date.now()
+    slot.promise = (async () => {
       const { ctraderEnv } = await import('../lib/ctrader-env.js')
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
-      if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
+      if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
       const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl } = await import('../lib/ctrader-ws.js')
@@ -2350,10 +2362,14 @@ export default function actionsRouter(db) {
         const sel = results.find(a => a.selected && !a.error)
         if (sel) setState(db, 'broker_snapshot_cache_json', JSON.stringify({ account: sel, fetchedAt }))
       } catch { /* cache is best-effort */ }
-      res.json({ ok: true, accounts: results, fetchedAt })
+      return { ok: true, accounts: results, fetchedAt }
+    })()
+    try {
+      res.json(await slot.promise)
     } catch (err) {
+      slot.promise = null // never serve a cached failure
       console.error('[actions/broker-positions] error:', err.message)
-      res.status(502).json({ error: err.message })
+      res.status(err.httpStatus || 502).json({ error: err.message })
     }
   })
 

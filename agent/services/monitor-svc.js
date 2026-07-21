@@ -6,6 +6,19 @@ import { getSessionContext } from '../lib/sessions.js'
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5'
 const MAX_TOKENS = 768
 
+// A long whose SL sits ABOVE entry (short: below) is a PROFIT-LOCKED stop —
+// breakeven/trailing already moved it. The LLM once read that as "malformed
+// protection" and closed a guaranteed-profit USDJPY runner; spell it out.
+function slNote(position) {
+  const { side, entry, sl } = position
+  if (!(Number.isFinite(Number(entry)) && Number.isFinite(Number(sl)))) return ''
+  const long = /^(buy|long)$/i.test(String(side || ''))
+  const locked = long ? Number(sl) > Number(entry) : Number(sl) < Number(entry)
+  return locked
+    ? '\nNOTE: The stop is on the PROFIT side of entry — breakeven/trailing already locked in gains. This is intentional and healthy, NOT malformed protection.'
+    : ''
+}
+
 function buildMonitorPrompt(position, sessionContext) {
   return `You are the Monitor Agent on a prop trading desk. You manage open positions.
 Your job: decide if the original thesis still holds, and recommend action.
@@ -15,7 +28,7 @@ Symbol: ${position.symbol}
 Side: ${position.side}
 Entry: ${position.entry}
 Current price: ${position.currentPrice || 'unknown'}
-Stop loss: ${position.sl}
+Stop loss: ${position.sl}${slNote(position)}
 Take profit: ${position.tp1}
 P&L: ${position.pnl || 'unknown'}
 Original thesis: ${position.thesis || 'not recorded'}
@@ -72,6 +85,18 @@ export async function runMonitorCheck(client, position) {
 
   const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '')
   const parsed = JSON.parse(clean)
+
+  // HARD GUARD — never act blind. Without a live price the model cannot know
+  // where the position stands, yet it once closed a profit-locked USDJPY with
+  // "current price unavailable" in its own reasoning. Deterministic rule: no
+  // price → destructive actions (EXIT / SCALE_OUT) downgrade to HOLD; the
+  // broker-side SL keeps protecting the position in the meantime.
+  const noPrice = position.currentPrice == null || !Number.isFinite(Number(position.currentPrice))
+  if (noPrice && (parsed.action === 'EXIT' || parsed.action === 'SCALE_OUT')) {
+    parsed.reasoning = `guard: ${parsed.action} suppressed — no live price available; broker SL remains in force. LLM said: ${parsed.reasoning}`
+    parsed.action = 'HOLD'
+    parsed.scale_pct = null
+  }
 
   return {
     symbol: position.symbol,
