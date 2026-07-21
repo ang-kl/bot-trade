@@ -803,6 +803,7 @@ export default function Tune() {
     return next
   })
   const [status, setStatus] = useState('')
+  const [lastSaved, setLastSaved] = useState(null) // persistent save proof { msg, at }
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -917,7 +918,13 @@ export default function Tune() {
 
   const flash = (msg) => { setStatus(msg); setTimeout(() => setStatus(''), 2500) }
   const run = async (fn, okMsg) => {
-    try { await fn(); await load(); flash(okMsg) } catch (e) { setError(e.message) }
+    try {
+      await fn(); await load(); flash(okMsg)
+      // Persistent "it saved" proof (owner: "i feel not saved but actually is").
+      // The flash vanishes in 2.5s; this line stays with a clock time so you
+      // can always confirm the last change stuck.
+      if (okMsg) setLastSaved({ msg: okMsg, at: new Date() })
+    } catch (e) { setError(e.message) }
   }
 
   const toggle = (path, key, current) =>
@@ -1165,6 +1172,14 @@ export default function Tune() {
     <div className="space-y-4">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
       {status && <div className="text-[13px] text-[var(--color-info-text)]" role="status">{status}</div>}
+      {/* Persistent save proof — most controls here auto-save the instant you
+          change them (no Save button needed); this line stays visible with the
+          time of the last saved change so you never have to wonder. */}
+      {lastSaved && (
+        <div className="text-[12px] text-[var(--color-text-sub)]" aria-live="polite">
+          ✓ Saved at {lastSaved.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — {lastSaved.msg}. Changes auto-save on the agent as you make them.
+        </div>
+      )}
 
       <FolioTabs tabs={TABS} active={tab} onChange={pickTab}>
         {tab === 'pipeline' && (
