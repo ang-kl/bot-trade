@@ -30,14 +30,26 @@ test('defaults: scan analyses EVERYTHING, filters gate nothing at scan', () => {
   }
   // trade column mirrors enabledStrategies default (fib only)
   assert.deepEqual(m.strategies.filter(s => s.stages.trade).map(s => s.key), ['fib_618_fade'])
-  // filters: off at scan (analyse all convictions) and backtest; no manage cell
+  // filters: off at scan (analyse all convictions) and backtest; no manage cell.
   for (const f of m.filters) {
     assert.equal(f.stages.scan, false)
     assert.equal(f.stages.backtest, false)
-    assert.equal(f.stages.trade, false)
     assert.equal(f.stages.manage, null)
   }
+  // RSI confluence is TRADE-armed by default (kill naked fib); the others off.
+  assert.equal(m.filters.find(f => f.key === 'rsi').stages.trade, true)
+  assert.equal(m.filters.find(f => f.key === 'vwap').stages.trade, false)
+  assert.equal(m.filters.find(f => f.key === 'fvg').stages.trade, false)
   assert.deepEqual(m.filters.map(f => f.key), FILTER_KEYS)
+})
+
+test('kill-naked-fib: RSI trade defaults ON, but an explicit OFF still wins', () => {
+  const db = initDB(':memory:')
+  // Unset → RSI confluence trade-armed (no naked fib).
+  assert.equal(loadStageMatrix(db, getState).filters.find(f => f.key === 'rsi').stages.trade, true)
+  // Owner opts back into naked fib → the stored value wins.
+  setState(db, 'fib_rsi_filter', 'false')
+  assert.equal(loadStageMatrix(db, getState).filters.find(f => f.key === 'rsi').stages.trade, false)
 })
 
 test('trade column derives LIVE from legacy keys — never from stored JSON', () => {

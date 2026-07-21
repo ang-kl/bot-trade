@@ -52,20 +52,22 @@ test('streak on the LAST armed strategy → next filter armed instead of going i
   const db = initDB(':memory:') // default: fib only
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const out = runAdaptiveBreaker(db, {})
-  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'armed_filter', filter: 'rsi' }])
+  // RSI confluence is now trade-armed by DEFAULT (kill naked fib), so the next
+  // UNARMED filter the breaker reaches for is VWAP.
+  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'armed_filter', filter: 'vwap' }])
   const m = loadStageMatrix(db, getState)
   assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, true, 'strategy stays live')
-  assert.equal(m.filters.find(f => f.key === 'rsi').stages.trade, true, 'RSI filter armed')
+  assert.equal(m.filters.find(f => f.key === 'vwap').stages.trade, true, 'VWAP filter armed')
 })
 
 test('acts ONCE per streak; a new loss re-triggers with the next filter', () => {
   const db = initDB(':memory:')
   for (const m of [20, 10, 5]) closeTrade(db, 'fib_618_fade', -1, m)
-  assert.equal(runAdaptiveBreaker(db, {}).actions.length, 1) // arms rsi
+  assert.equal(runAdaptiveBreaker(db, {}).actions.length, 1) // arms vwap (rsi already on by default)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 0) // same streak — no repeat
   closeTrade(db, 'fib_618_fade', -1, 0)                      // 4th loss = new information
   const out = runAdaptiveBreaker(db, {})
-  assert.deepEqual(out.actions[0], { strategy: 'fib_618_fade', streak: 4, did: 'armed_filter', filter: 'vwap' })
+  assert.deepEqual(out.actions[0], { strategy: 'fib_618_fade', streak: 4, did: 'armed_filter', filter: 'fvg' })
 })
 
 test('off → no actions even with a streak', () => {

@@ -51,6 +51,20 @@ const DEFAULTS = {
   filter: { scan: false, backtest: false },
 }
 
+// Kill naked Fib. The audit found the live default was a NAKED 61.8% fade with
+// every confluence filter OFF — a setup the code itself says "has no documented
+// standalone edge", and the source of the ~16% live win rate. So the RSI
+// confluence filter is now TRADE-armed BY DEFAULT: a fade that disagrees with
+// momentum (long not into RSI weakness / short not into strength) still appears
+// in the scan (annotated) but is VETOED at Auto Trade & Open. An explicit stored
+// value always wins, so the owner can turn it back off in Tune → no naked fib
+// unless they opt in. Other filters keep their off-by-default behaviour.
+function filterTradeDefault(raw, key) {
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+  return key === 'rsi'
+}
+
 function readStored(db, getState) {
   try {
     const parsed = JSON.parse(getState(db, STATE_KEY) || 'null')
@@ -93,7 +107,7 @@ export function loadStageMatrix(db, getState) {
       stages: {
         scan: typeof row.scan === 'boolean' ? row.scan : DEFAULTS.filter.scan,
         backtest: typeof row.backtest === 'boolean' ? row.backtest : DEFAULTS.filter.backtest,
-        trade: getState(db, f.stateKey) === 'true',
+        trade: filterTradeDefault(getState(db, f.stateKey), f.key),
         manage: null,
       },
     }
