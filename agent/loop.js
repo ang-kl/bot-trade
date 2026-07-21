@@ -1560,6 +1560,25 @@ async function runLoop(db) {
       }
 
       // ---------------------------------------------------------------------
+      // 4a-ii. EDGE WATCHDOG — per-strategy alpha-decay enforcement. Catches a
+      // strategy grinding to NEGATIVE EXPECTANCY without ever stringing a loss
+      // streak (which adaptive-breaker needs) and without dragging the
+      // AGGREGATE profit factor under (which performance-breaker needs). Now
+      // that broker stop-outs are backfilled, this runs on honest numbers.
+      // ---------------------------------------------------------------------
+      try {
+        const { runEdgeWatchdog } = await import('./services/edge-watchdog.js')
+        const ew = runEdgeWatchdog(db, {
+          notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+        })
+        if (ew.actions?.length) log(`Edge watchdog: disarmed ${ew.actions.map(a => `${a.strategy} (exp $${a.expectancy}, PF ${a.profitFactor ?? '∞'})`).join(', ')}`)
+        await hbeat(db, 'edge_watchdog')
+      } catch (err) {
+        log(`Edge watchdog failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'edge_watchdog', false, err.message)
+      }
+
+      // ---------------------------------------------------------------------
       // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions.
       // risk.js's dailyLossPct only vetoes NEW trades; this closes everything
       // and disarms autotrade when today's realized PnL breaches the cap.
