@@ -2165,6 +2165,11 @@ export default function actionsRouter(db) {
               quoteCcy: assetNameById[meta.quoteAssetId] || (isFxPair ? quoteCcy : null),
               depositCcy: out.currency || null,
               label: td.label || null,
+              // Segment open trades by what opened them (owner: "segment ...
+              // by timeframe + Strategy Used column"). Parsed from the
+              // structured label; null for manual/external positions.
+              strategy: parseLabel(td.label || '').strategy || null,
+              timeframe: parseLabel(td.label || '').timeframe || null,
               comment: td.comment || null,
               guaranteedSl: !!p.guaranteedStopLoss,
             }
@@ -2195,6 +2200,9 @@ export default function actionsRouter(db) {
               expiresAt: o.expirationTimestamp ?? null,
               updatedAt: o.utcLastUpdateTimestamp ?? null,
               label: td.label || null,
+              // Segment pending orders the same way as open trades.
+              strategy: parseLabel(td.label || '').strategy || null,
+              timeframe: parseLabel(td.label || '').timeframe || null,
               comment: td.comment || null,
             }
           })

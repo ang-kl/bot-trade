@@ -86,6 +86,10 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       commission: p2.commission ?? null,
       swap: p2.swap ?? null,
       positionId: p2.positionId ?? null,
+      // Segment by what opened the trade (owner spec) — parsed from the
+      // structured label server-side; null for manual/external.
+      timeframe: p2.timeframe ?? null,
+      strategy: p2.strategy ?? null,
       durationMs: p2.openedAt ? Math.max(0, Date.now() - toMs(p2.openedAt)) : null,
       reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,
@@ -110,6 +114,8 @@ export function brokerOrderRows(orders, { manageable = false } = {}) {
     sl: o.sl,
     tp: o.tp,
     current: o.currentPrice ?? null,
+    timeframe: o.timeframe ?? null,
+    strategy: o.strategy ?? null,
     reason: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.expiresAt ? ` · expires ${dateTimeParts(o.expiresAt)?.day ?? ''} ${dateTimeParts(o.expiresAt)?.time ?? ''}` : ''}`,
     reasonTitle: `${o.type || 'LIMIT'} · now ${px(o.currentPrice)}${o.label || o.comment ? ` · ${o.label || o.comment}` : ''}`,
     chart: { symbol: o.symbol, timeframe: '1h', lines: { entry: o.limitPrice ?? o.stopPrice, sl: o.sl, tp: o.tp } },

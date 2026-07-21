@@ -22,22 +22,11 @@ import StdTradeTable from '../components/StdTradeTable.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
+// Short strategy tags — shared so Desk and the Std trade table never drift.
+import { STRAT_SHORT } from '../lib/strategy-labels.js'
 
 const REFRESH_MS = 20_000
 const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
-
-// Short strategy tags for signal rows — the scan covers 5 registry
-// strategies (stage matrix); Desk must never read as fib-only.
-const STRAT_SHORT = {
-  fib_618_fade: 'FIB',
-  cup_handle: 'C&H',
-  ema_pullback: 'EMA',
-  donchian_breakout: 'BRK',
-  rsi_meanrev: 'RSI',
-  rsi2_reversion: 'RSI2',
-  vwap_trend: 'VWAP',
-  vp_value: 'VP',
-}
 // No-digits calls are PRICES (scale-aware canonical dp); explicit digits
 // are money/counts and keep exactly what the caller asked for.
 const fmt = (v, d) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d ?? priceDp(v) }))
