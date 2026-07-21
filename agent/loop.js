@@ -1199,7 +1199,16 @@ async function runLoop(db) {
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
     if (analyzeEnabled && scanResult.hot.length > 0) {
-      const hotToAnalyze = scanResult.hot.slice(0, 3)
+      // Best-first slot allocation: with concurrent positions capped (owner set
+      // 25), the few candidates dispatched each cycle must be the STRONGEST
+      // signals, not whichever scanned first — otherwise mediocre setups fill
+      // the slots and stronger later signals hit the max-positions veto. Rank
+      // hot by conviction (tie-break: a symbol with a positive backtest edge).
+      const { rankHotSymbols, provenEdgeSymbolsFrom } = await import('./services/signal-ranking.js')
+      let baseline = null
+      try { baseline = JSON.parse(getState(db, 'backtest_baseline_json') || 'null') } catch { /* none */ }
+      const ranked = rankHotSymbols(scanResult.scans, scanResult.hot, { provenEdgeSymbols: provenEdgeSymbolsFrom(baseline) })
+      const hotToAnalyze = ranked.slice(0, 3)
       setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
       for (const sym of hotToAnalyze) {
         try {
