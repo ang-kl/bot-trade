@@ -23,6 +23,11 @@ export const DEFAULT_RULES = Object.freeze({
   partialTrailR: 0.5,      // trail SL 0.5R behind current price after partial
   runnerTriggerR: 2.5,     // begin runner trail at +2.5R
   runnerTrailR: 1.0,       // trail 1R behind current price
+  // BANK the whole position at this R. The runner trail alone never exits a
+  // winner until it pulls back a full trail-R, so on a margin-tight account
+  // big winners (LLY sat at +17R) held ALL the margin hostage and armed
+  // strategies couldn't get a fill (owner chose: cap + bank). 0/null disables.
+  bankTriggerR: 4,
   defaultTimeCapMinutes: 180, // 3 hours if Analyst didn't set one
 })
 
@@ -155,6 +160,21 @@ export function evaluatePosition(pos, ctx) {
     return {
       action: 'FULL_EXIT',
       reason: `invalidation_trigger: ${priceTrigger.label}`,
+      newSL: null,
+      exitFraction: 1,
+      updates,
+      metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
+    }
+  }
+
+  // --- 2.5 Bank target — take the WHOLE win at bankTriggerR ---------------
+  // Recycles margin into new setups instead of trailing a giant winner
+  // forever. Checked before the partial so a gap straight through both
+  // levels banks everything rather than scaling out of a done trade.
+  if (rules.bankTriggerR > 0 && r >= rules.bankTriggerR) {
+    return {
+      action: 'FULL_EXIT',
+      reason: `bank_target_${rules.bankTriggerR}R (current R=${r.toFixed(2)})`,
       newSL: null,
       exitFraction: 1,
       updates,

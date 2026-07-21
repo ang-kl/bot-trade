@@ -252,3 +252,38 @@ test('parsePriceTrigger rejects garbage', () => {
   assert.equal(_internal.parsePriceTrigger(null), null)
   assert.equal(_internal.parsePriceTrigger('close below 3400 on 15m'), null)
 })
+
+// Bank target ---------------------------------------------------------------
+
+test('bank target: FULL_EXIT at bankTriggerR — margin recycled out of a big winner', () => {
+  // risk 20 → +4R = 3480. Default bankTriggerR is 4.
+  const res = evaluatePosition(longXAU({ scaled_out: 1 }), { currentPrice: 3480 })
+  assert.equal(res.action, 'FULL_EXIT')
+  assert.match(res.reason, /bank_target_4R/)
+  assert.equal(res.exitFraction, 1)
+})
+
+test('bank target: beats the runner trail (a +17R LLY-style winner banks, not trails)', () => {
+  const res = evaluatePosition(longXAU({ scaled_out: 1 }), { currentPrice: 3400 + 17 * 20 })
+  assert.equal(res.action, 'FULL_EXIT')
+  assert.match(res.reason, /bank_target/)
+})
+
+test('bank target: below the trigger the runner trail still manages the trade', () => {
+  // +3R with scaled_out → runner MOVE_SL (bank at 4R not reached)
+  const res = evaluatePosition(longXAU({ scaled_out: 1 }), { currentPrice: 3460 })
+  assert.equal(res.action, 'MOVE_SL')
+  assert.match(res.reason, /runner_trail/)
+})
+
+test('bank target: disabled with bankTriggerR 0 — old trail-forever behaviour', () => {
+  const res = evaluatePosition(longXAU({ scaled_out: 1 }), { currentPrice: 3480, rules: { bankTriggerR: 0 } })
+  assert.equal(res.action, 'MOVE_SL')
+  assert.match(res.reason, /runner_trail/)
+})
+
+test('bank target: per-class override flows through rules (crypto banks at 3R)', () => {
+  const res = evaluatePosition(longXAU({ scaled_out: 1 }), { currentPrice: 3460, rules: { bankTriggerR: 3 } })
+  assert.equal(res.action, 'FULL_EXIT')
+  assert.match(res.reason, /bank_target_3R/)
+})
