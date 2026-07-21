@@ -5,7 +5,7 @@
 // watch (entries + risk gate are deterministic). Owner set OPENAI_API_KEY as
 // the primary key, so this factory picks the provider by which key is present:
 //
-//   OPENAI_API_KEY set  → OpenAI  (default model gpt-4o-mini, or OPENAI_MODEL)
+//   OPENAI_API_KEY set  → OpenAI  (default model gpt-5.6-luna, or OPENAI_MODEL)
 //   else                → Anthropic (CLAUDE_API_KEY, default claude-sonnet-4-5
 //                                    or ANTHROPIC_MODEL)
 //
@@ -17,7 +17,10 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 
-const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini'
+// Owner-chosen default (2026-07-21). The OPENAI_MODEL env var still overrides
+// this per-deploy. If the API rejects this id (400 invalid model), set
+// OPENAI_MODEL to a known-good id on the Railway service without a redeploy.
+const OPENAI_DEFAULT_MODEL = 'gpt-5.6-luna'
 const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-5'
 
 /** Which provider/model will be used, given the current env. Pure. */
