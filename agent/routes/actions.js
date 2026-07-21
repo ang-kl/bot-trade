@@ -210,7 +210,16 @@ export default function actionsRouter(db) {
             }
           }
         }
-        setState(db, 'backtest_baseline_json', JSON.stringify({ ranAt: payload.ranAt, strategy, entryMode, bars: count, combos }))
+        const baseline = { ranAt: payload.ranAt, strategy, entryMode, bars: count, combos }
+        setState(db, 'backtest_baseline_json', JSON.stringify(baseline)) // last run (back-compat)
+        // Per-strategy map so Edge health can vouch for EVERY armed strategy's
+        // tested edge, not just the last one backtested (owner: "why didn't you
+        // update the rest of the strategies used?"). Keyed by strategy; each
+        // new run for a strategy replaces that strategy's entry only.
+        let all = {}
+        try { all = JSON.parse(getState(db, 'backtest_baselines_json') || '{}') || {} } catch { all = {} }
+        if (strategy) all[strategy] = baseline
+        setState(db, 'backtest_baselines_json', JSON.stringify(all))
       } catch { /* baseline is best-effort */ }
       return payload
       } // end runWork
