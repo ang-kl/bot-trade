@@ -25,18 +25,20 @@ import { DEFAULT_RULES } from './position-manager.js'
 // beTriggerR   — lock breakeven sooner in whippy classes, later in clean trends
 // partialTriggerR — bank half sooner where reversals are vicious
 // runnerTriggerR / runnerTrailR — how far to let a runner go, how tight to trail
+// bankTriggerR — full exit at this R: recycle margin out of big winners
+// instead of trailing them forever (clean trenders get more room).
 export const CLASS_RULE_DEFAULTS = {
-  fx:        { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0 },
-  metal:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2 }, // gold trends — give runners room
-  index:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2 }, // indices trend clean
-  crypto:    { beTriggerR: 0.5, partialTriggerR: 1.2, runnerTriggerR: 2.5, runnerTrailR: 0.8 }, // violent — protect early
-  commodity: { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9 }, // energy whipsaws
-  soft:      { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9 }, // thin, gappy
-  grain:     { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9 },
-  stock:     { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0 },
+  fx:        { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
+  metal:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // gold trends — give runners room
+  index:     { beTriggerR: 0.8, partialTriggerR: 1.6, runnerTriggerR: 3.0, runnerTrailR: 1.2, bankTriggerR: 5 }, // indices trend clean
+  crypto:    { beTriggerR: 0.5, partialTriggerR: 1.2, runnerTriggerR: 2.5, runnerTrailR: 0.8, bankTriggerR: 3 }, // violent — protect early
+  commodity: { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // energy whipsaws
+  soft:      { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 }, // thin, gappy
+  grain:     { beTriggerR: 0.6, partialTriggerR: 1.3, runnerTriggerR: 2.5, runnerTrailR: 0.9, bankTriggerR: 3 },
+  stock:     { beTriggerR: 0.7, partialTriggerR: 1.5, runnerTriggerR: 2.5, runnerTrailR: 1.0, bankTriggerR: 4 },
 }
 
-export const MANAGED_KEYS = ['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR']
+export const MANAGED_KEYS = ['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR']
 
 /** Owner overrides per class from agent_state, if any. */
 export function loadAssetControllers(db) {

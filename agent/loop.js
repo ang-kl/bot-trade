@@ -1011,10 +1011,12 @@ async function runLoop(db) {
           try {
             const { runLossPostmortems } = await import('./services/loss-postmortem.js')
             const symbolMap2 = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-            const pmFetch = async (sym, tf, count) => {
+            const pmFetch = async (sym, tf, count, endTimeMs) => {
               const sid = symbolMap2[String(sym).toUpperCase()]
               if (!sid) throw new Error(`symbolId unknown for ${sym}`)
-              const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000)
+              // endTime anchors old trades' windows at their own close so the
+              // 90-day history back-fill sees the right bars, not today's.
+              const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000, endTimeMs || 0)
               return byTf[tf] || []
             }
             const pm = await runLossPostmortems(db, pmFetch)

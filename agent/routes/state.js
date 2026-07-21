@@ -220,7 +220,7 @@ export default function stateRouter(db) {
   // the bot's switches are OFF, so they get a durable record with lifecycle.
   // -----------------------------------------------------------------------
   router.get('/orders', (_req, res) => {
-    let working = [], recentlyGone = []
+    let working = [], recentlyGone = [], queued = []
     try {
       working = db.prepare(
         `SELECT * FROM broker_orders WHERE status = 'working' ORDER BY last_seen DESC`
@@ -229,7 +229,36 @@ export default function stateRouter(db) {
         `SELECT * FROM broker_orders WHERE status = 'gone' AND gone_at >= datetime('now', '-24 hours') ORDER BY gone_at DESC LIMIT 100`
       ).all()
     } catch { /* table may not exist on a very old DB */ }
-    res.json({ working, recentlyGone, workingCount: working.length })
+    // BOT-SIDE queues (owner: "there are many but you keep waiting" — these
+    // exist before anything rests at the broker, so the ledger must show
+    // them or it reads as empty while work is queued):
+    //  · pending_orders  — closed-market limits parked by the bot (excluded
+    //    when the same order_id already shows in broker_orders working)
+    //  · pending_signals — signals queued for market open / conditions
+    try {
+      const po = db.prepare(
+        `SELECT * FROM pending_orders WHERE status = 'working'
+           AND (order_id IS NULL OR order_id NOT IN (SELECT order_id FROM broker_orders WHERE status = 'working'))
+         ORDER BY id DESC LIMIT 100`
+      ).all()
+      queued.push(...po.map(o => ({
+        kind: 'closed_market_limit', symbol: o.symbol, side: o.dir > 0 ? 'BUY' : 'SELL',
+        order_type: 'LIMIT', volume: o.volume, limit_price: o.level, sl: o.sl, tp: o.tp,
+        timeframe: o.timeframe, queued_at: o.placed_at, expires_at: o.expires_at, note: o.note,
+      })))
+    } catch { /* table optional */ }
+    try {
+      const ps = db.prepare(
+        `SELECT * FROM pending_signals WHERE status = 'pending' ORDER BY id DESC LIMIT 100`
+      ).all()
+      queued.push(...ps.map(s => ({
+        kind: 'queued_signal', symbol: s.symbol,
+        side: /long|buy/i.test(s.bias || '') ? 'BUY' : 'SELL',
+        strategy: s.strategy, timeframe: s.timeframe, conviction: s.conviction,
+        queued_at: s.queued_at, expires_at: s.expires_at, note: s.market_reason,
+      })))
+    } catch { /* table optional */ }
+    res.json({ working, recentlyGone, queued, workingCount: working.length })
   })
 
   // -----------------------------------------------------------------------

@@ -97,3 +97,95 @@ test('runLossPostmortems: fetch failure skips without inserting; stats aggregate
   const stats = postmortemStats(db)
   assert.deepEqual(stats, [{ strategy: 'fib_618_fade', classification: 'stop_hunt', n: 1 }])
 })
+
+// Wins carry lessons too --------------------------------------------------
+
+test('classifyWin: gave_back — peaked far above the banked R', async () => {
+  const { classifyWin } = await import('./loss-postmortem.js')
+  // Long entry 100, SL 98 (risk 2), banked at 103 (+1.5R) but peaked 108 (+4R).
+  const w = { side: 'BUY', entry_price: 100, sl_price: 98, exit_price: 103 }
+  const bars = [
+    { t: 10, o: 100, h: 104, l: 99.5, c: 103 },
+    { t: 20, o: 103, h: 108, l: 102, c: 107 },
+    { t: 30, o: 107, h: 107.5, l: 103, c: 103.2 },
+  ]
+  const v = classifyWin(w, bars, 5, 35)
+  assert.equal(v.classification, 'gave_back')
+  assert.match(v.detail, /left on the table/)
+})
+
+test('classifyWin: escaped beats gave_back — near-stop first is the bigger lesson', async () => {
+  const { classifyWin } = await import('./loss-postmortem.js')
+  // Drew down to 98.2 (−0.9R) before rallying to 108 and banking 103.
+  const w = { side: 'BUY', entry_price: 100, sl_price: 98, exit_price: 103 }
+  const bars = [
+    { t: 10, o: 100, h: 100.5, l: 98.2, c: 99 },
+    { t: 20, o: 99, h: 108, l: 99, c: 107 },
+    { t: 30, o: 107, h: 107.5, l: 103, c: 103.2 },
+  ]
+  const v = classifyWin(w, bars, 5, 35)
+  assert.equal(v.classification, 'escaped')
+  assert.match(v.detail, /luck, not edge/)
+})
+
+test('classifyWin: clean_win when the exit captured the move', async () => {
+  const { classifyWin } = await import('./loss-postmortem.js')
+  const w = { side: 'SELL', entry_price: 100, sl_price: 102, exit_price: 97.5 }
+  const bars = [
+    { t: 10, o: 100, h: 100.4, l: 98.5, c: 99 },
+    { t: 20, o: 99, h: 99.2, l: 97.2, c: 97.6 },
+  ]
+  const v = classifyWin(w, bars, 5, 25)
+  assert.equal(v.classification, 'clean_win')
+})
+
+test('runLossPostmortems: sweep classifies WINS too, with endTime-anchored fetch', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, opened_at, closed_at,
+                        net_pnl, status, close_reason, label_strategy, label_timeframe)
+    VALUES ('EURUSD', 'BUY', 100, 103, 98, datetime('now', '-30 hours'), datetime('now', '-26 hours'),
+            +75, 'closed', 'bank_target', 'ema_pullback', '1h')
+  `).run()
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  let gotEndTime = null
+  const fetchBars = async (_sym, _tf, _count, endTimeMs) => {
+    gotEndTime = endTimeMs
+    // Holding-period bars: peak +4R (108) while banked +1.5R → gave_back.
+    const out = []
+    for (let i = 0; i < 30; i++) {
+      const t = closedMs - (28 - i) * 3_600_000
+      out.push({ t, o: 100, h: i > 10 ? 108 : 101, l: 99.5, c: 103, v: 5 })
+    }
+    return out
+  }
+  const res = await runLossPostmortems(db, fetchBars)
+  assert.equal(res.classified, 1)
+  assert.ok(gotEndTime != null && gotEndTime >= closedMs, 'fetch anchored at/after the close')
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.equal(pm.classification, 'gave_back')
+  assert.ok(pm.r_multiple > 0, 'win stored with positive R')
+})
+
+test('runLossPostmortems: 90-day window back-fills history (old trade included)', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, opened_at, closed_at,
+                        net_pnl, status, close_reason)
+    VALUES ('GBPUSD', 'BUY', 100, 98, 98, datetime('now', '-40 days'), datetime('now', '-40 days', '+2 hours'),
+            -20, 'closed', 'sl')
+  `).run()
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const fetchBars = async () => {
+    const out = []
+    for (let i = 0; i < 40; i++) {
+      const t = closedMs - (25 - i) * 3_600_000
+      const late = t > closedMs
+      out.push({ t, o: 99, h: late ? 101 : 99.5, l: late ? 99 : 98.4, c: late ? 100.5 : 99, v: 5 })
+    }
+    return out
+  }
+  const res = await runLossPostmortems(db, fetchBars)
+  assert.equal(res.classified, 1, 'a 40-day-old loss is inside the 90-day back-fill window')
+  assert.equal(db.prepare(`SELECT classification FROM trade_postmortems`).get().classification, 'stop_hunt')
+})

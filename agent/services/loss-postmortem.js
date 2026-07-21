@@ -104,6 +104,66 @@ function verdictWrong(risk) {
   }
 }
 
+/**
+ * Classify a closed WINNING trade — wins carry lessons too (owner: "two
+ * tables for lesson learnt for both lost and wins"). Uses the DURING-trade
+ * bars (entry → close), so no waiting for aftermath. Pure.
+ *
+ *   escaped   — MAE ≤ −0.8R before winning: the entry was nearly stopped and
+ *               won anyway. That's luck, not edge — don't size up on it.
+ *   gave_back — MFE exceeded the banked R by ≥1R: the exit engine left a
+ *               full R on the table — bank earlier / trail tighter.
+ *   clean_win — banked within 1R of the best the market offered.
+ *
+ * Priority: escaped first (a near-death entry is the bigger red flag), then
+ * gave_back, else clean_win.
+ */
+export function classifyWin(trade, bars, openedAtMs, closedAtMs) {
+  const entry = Number(trade.entry_price)
+  const exit = Number(trade.exit_price)
+  const sl = trade.sl_price != null ? Number(trade.sl_price) : null
+  if (!Number.isFinite(entry) || !Number.isFinite(exit)) {
+    return { classification: 'inconclusive', detail: 'Missing entry/exit price — cannot reconstruct the trade geometry.' }
+  }
+  const long = /^(buy|long)$/i.test(String(trade.side || ''))
+  const risk = sl != null && Math.abs(entry - sl) > 0
+    ? Math.abs(entry - sl)
+    : (Number(trade.initial_risk) > 0 ? Number(trade.initial_risk) : null)
+  if (!(risk > 0)) {
+    return { classification: 'inconclusive', detail: 'No stop distance on record — win quality cannot be measured in R.' }
+  }
+  const during = (bars || []).filter(b => b.t >= (openedAtMs || 0) && b.t <= closedAtMs)
+  if (during.length === 0) {
+    return { classification: 'inconclusive', detail: 'No bars from the holding period — win quality cannot be judged.' }
+  }
+  const dir = long ? 1 : -1
+  const realizedR = ((exit - entry) * dir) / risk
+  let mfeR = 0, maeR = 0
+  for (const b of during) {
+    mfeR = Math.max(mfeR, ((long ? b.h : b.l) - entry) * dir / risk)
+    maeR = Math.min(maeR, ((long ? b.l : b.h) - entry) * dir / risk)
+  }
+  if (maeR <= -0.8) {
+    return {
+      classification: 'escaped',
+      detail: `Drew down to ${maeR.toFixed(2)}R before winning — the entry was nearly stopped out. A win by escape is luck, not edge; don't size up on this setup.`,
+      realizedR, mfeR, maeR,
+    }
+  }
+  if (mfeR - realizedR >= 1) {
+    return {
+      classification: 'gave_back',
+      detail: `Peaked at +${mfeR.toFixed(2)}R but banked only +${realizedR.toFixed(2)}R — ${(mfeR - realizedR).toFixed(1)}R left on the table. Bank earlier or trail tighter for this setup.`,
+      realizedR, mfeR, maeR,
+    }
+  }
+  return {
+    classification: 'clean_win',
+    detail: `Banked +${realizedR.toFixed(2)}R of a +${mfeR.toFixed(2)}R best — the exit engine captured what the market offered.`,
+    realizedR, mfeR, maeR,
+  }
+}
+
 /** Parse "YYYY-MM-DD HH:MM:SS" (sqlite, UTC) or ISO into epoch ms. */
 export function sqliteMs(s) {
   if (!s) return NaN
@@ -111,27 +171,32 @@ export function sqliteMs(s) {
 }
 
 /**
- * Sweep: classify recent closed LOSING trades that have no postmortem yet.
- * Fetches bars via the injected fetcher (testable), stores the verdict +
- * replay bars. Limits work per cycle so the loop never stalls on this.
+ * Sweep: classify closed trades — LOSSES and WINS — that have no postmortem
+ * yet, over a 90-day window (owner: "run one PR to learn all past and fill it
+ * in" — the loop back-fills history automatically at maxPerCycle a tick).
+ * Bar fetches are ANCHORED at each trade's own close (endTime), so an old
+ * trade's holding period + aftermath land inside the window instead of being
+ * clipped off by a now-anchored fetch. Limits work per cycle so the loop
+ * never stalls on this.
  *
  * @param {import('better-sqlite3').Database} db
- * @param {(symbol:string, timeframe:string, count:number) => Promise<Array>} fetchBars
+ * @param {(symbol:string, timeframe:string, count:number, endTimeMs:number) => Promise<Array>} fetchBars
  * @returns {{ examined:number, classified:number, waiting:number }}
  */
-export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 3, now = Date.now() } = {}) {
+export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now = Date.now(), windowDays = 90 } = {}) {
   const rows = db.prepare(`
     SELECT t.id, t.symbol, t.side, t.entry_price, t.exit_price, t.sl_price,
            t.net_pnl, t.close_reason, t.opened_at, t.closed_at,
            COALESCE(t.label_strategy, t.strategy) AS strategy,
-           t.label_timeframe AS timeframe
+           t.label_timeframe AS timeframe,
+           (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
     FROM trades t
     LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
-    WHERE t.status = 'closed' AND t.net_pnl < 0 AND pm.id IS NULL
-      AND t.closed_at >= datetime('now', '-7 days')
+    WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL AND t.net_pnl != 0 AND pm.id IS NULL
+      AND t.closed_at >= datetime('now', ?)
     ORDER BY t.closed_at DESC
     LIMIT ?
-  `).all(maxPerCycle)
+  `).all(`-${windowDays} days`, maxPerCycle)
 
   let classified = 0, waiting = 0
   for (const t of rows) {
@@ -140,21 +205,29 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 3, now =
     const tf = t.timeframe || '1h'
     const ms = tfMs(tf) || 3_600_000
     const openedMs = sqliteMs(t.opened_at)
-    // Window: from a bit before entry to now, capped at 400 bars.
-    const count = Math.min(400, Math.max(60, Math.ceil((now - (openedMs || closedMs)) / ms) + AFTERMATH_BARS + 10))
+    // Anchor the fetch at close + aftermath (never in the future) so history
+    // back-fills correctly; size the window from entry-context to that end.
+    const endTime = Math.min(now, closedMs + (AFTERMATH_BARS + 3) * ms)
+    const spanMs = endTime - (((openedMs || closedMs)) - 20 * ms)
+    const count = Math.min(400, Math.max(60, Math.ceil(spanMs / ms) + 5))
     let bars = []
     try {
-      bars = await fetchBars(t.symbol, tf, count) || []
+      bars = await fetchBars(t.symbol, tf, count, endTime) || []
     } catch { /* fetch hiccup — leave for next sweep */ continue }
 
+    const isWin = t.net_pnl > 0
     // A stale loss (>24h) is classified with whatever aftermath exists rather
-    // than retrying forever; a fresh one waits for enough bars.
+    // than retrying forever; a fresh one waits for enough bars. Wins classify
+    // immediately (they only need the holding-period bars).
     const stale = now - closedMs > 24 * 3_600_000
-    const verdict = classifyLoss(t, bars, closedMs, { allowPartial: stale })
+    const verdict = isWin
+      ? classifyWin(t, bars, openedMs, closedMs)
+      : classifyLoss(t, bars, closedMs, { allowPartial: stale })
     if (verdict === null) { waiting++; continue }
 
-    const rMult = t.sl_price != null && Math.abs(t.entry_price - t.sl_price) > 0 && t.exit_price != null
-      ? -(Math.abs(t.entry_price - t.exit_price) / Math.abs(t.entry_price - t.sl_price))
+    const riskDist = t.sl_price != null ? Math.abs(t.entry_price - t.sl_price) : (Number(t.initial_risk) > 0 ? Number(t.initial_risk) : null)
+    const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null
+      ? (isWin ? 1 : -1) * (Math.abs(t.entry_price - t.exit_price) / riskDist)
       : null
     // Replay window: 20 bars before entry → aftermath end (compact for the UI).
     const fromMs = (openedMs || closedMs) - 20 * ms

@@ -1345,14 +1345,15 @@ export default function Tune() {
                       <th className="py-1 pr-3 font-semibold" title="Move stop to breakeven at this R">BE @R</th>
                       <th className="py-1 pr-3 font-semibold" title="Take half off at this R">Partial @R</th>
                       <th className="py-1 pr-3 font-semibold" title="Start trailing the runner at this R">Runner @R</th>
-                      <th className="py-1 font-semibold" title="Trail this many R behind price">Trail R</th>
+                      <th className="py-1 pr-3 font-semibold" title="Trail this many R behind price">Trail R</th>
+                      <th className="py-1 font-semibold" title="Close the WHOLE position at this R — recycles margin out of big winners into new setups">Bank @R</th>
                     </tr>
                   </thead>
                   <tbody>
                     {(config?.asset_controllers || []).map(row => (
                       <tr key={row.class} className="border-b border-[var(--color-border)]/40">
                         <td className="py-1 pr-3 font-semibold">{row.class}{row.overridden ? ' *' : ''}</td>
-                        {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR'].map(k => (
+                        {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR'].map(k => (
                           <td key={k} className="py-1 pr-3">
                             <input
                               type="number" step="0.1" min="0.1" max="20"

@@ -582,7 +582,7 @@ export default function Desk() {
           what did the market DO next, and what does that teach per strategy. */}
       <Section
         id="loss-review"
-        title={`Loss review — what the market did (${postmortems?.rows?.length ?? '…'})`}
+        title={`Trade lessons — losses & wins (${postmortems?.rows?.length ?? '…'})`}
         summary={(() => {
           const st = postmortems?.stats || []
           if (!st.length) return null
