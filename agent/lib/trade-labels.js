@@ -39,6 +39,14 @@ export const STRATEGIES = {
   ema_pullback: 'EMA',
   donchian_breakout: 'DON',
   rsi_meanrev: 'RSIM',
+  // Newer registry strategies — without these, encodeLabel wrote '-' for the
+  // strategy segment, so their trades carried NO attribution at the broker and
+  // any position rebuilt from the broker (adoption/reconcile) showed a blank
+  // Strategy column (owner: "why missing Strategy column"). vp_value and
+  // rsi2_reversion are the armed edge strategies, so this hit them hardest.
+  vwap_trend: 'VWAP',
+  vp_value: 'VP',
+  rsi2_reversion: 'RSI2',
   other:      'OTH',
 }
 

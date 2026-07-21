@@ -662,6 +662,45 @@ test('maxMarginUsagePct config is honoured', () => {
   assert.match(res.veto_reason, /insufficient_margin/)
 })
 
+// AGGREGATE margin — the cap is a PORTFOLIO ceiling: already-open positions'
+// margin + the new trade must fit. Owner margin-called with 16 open at 126%
+// margin level because each trade only checked its OWN margin in isolation.
+function insertOpenPositionSized(db, { symbol, side = 'short', volume, entry }) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, status, opened_at)
+     VALUES (?, ?, ?, ?, 'open', datetime('now'))`
+  ).run(symbol, side === 'long' ? 'BUY' : 'SELL', entry, volume).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, status)
+     VALUES (?, ?, ?, ?, 'active')`
+  ).run(symbol, tradeId, side, entry)
+  return tradeId
+}
+
+test('margin gate — AGGREGATE: open positions margin + new trade over the cap vetoes', () => {
+  const db = freshDB()
+  setBalance(db, 10000)  // cap = $5000 margin (maxMarginUsagePct 0.5)
+  setLeverage(db, 100)
+  // Open XAUUSD SHORT 2.0 lots @ 2400 → margin = 2.0×100×2400/100 = $4800 used.
+  // (short so its +USD leg cancels the new EURUSD long's −USD — no exposure veto)
+  insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 2.0, entry: 2400 })
+  // New EURUSD 0.25 lot → margin = 0.25×100000×1.1/100 = $275; 4800+275 > 5000.
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false, `expected aggregate-margin veto, got approved`)
+  assert.match(res.veto_reason, /insufficient_margin/)
+  assert.match(res.veto_reason, /used=4800/)
+  assert.ok(res.checks.margin_used_usd >= 4800, `used margin summed: ${res.checks.margin_used_usd}`)
+})
+
+test('margin gate — AGGREGATE: the same new trade approves with no open positions', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  setLeverage(db, 100)
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.margin_used_usd, 0)
+})
+
 test('empty blockedSymbols allows everything budget supports', () => {
   const db = freshDB()
   setBalance(db, 20000)

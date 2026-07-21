@@ -20,6 +20,14 @@ test('encodeLabel — full round trip', () => {
   assert.equal(label, 'AP|v1|TREND|HI|LDN|H1|REGT')
 })
 
+test('encodeLabel — newer registry strategies round-trip (were "-" before, blanking the Strategy column)', () => {
+  for (const [key, code] of [['vp_value', 'VP'], ['rsi2_reversion', 'RSI2'], ['vwap_trend', 'VWAP']]) {
+    const label = encodeLabel({ source: 'autopilot', strategy: key })
+    assert.equal(label.split('|')[2], code, `${key} should encode to ${code}`)
+    assert.equal(parseLabel(label).strategy, key, `${code} should parse back to ${key}`)
+  }
+})
+
 test('encodeLabel — missing fields collapse to "-"', () => {
   const label = encodeLabel({ source: 'autopilot' })
   assert.equal(label, 'AP|v1|-|-|-|-|-')

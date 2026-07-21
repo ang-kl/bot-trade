@@ -10,8 +10,13 @@ import {
 } from './llm-provider.js'
 
 test('provider selection: OpenAI when its key is set, else Anthropic', () => {
-  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x' }), { provider: 'openai', model: 'gpt-4o-mini' })
+  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x' }), { provider: 'openai', model: 'gpt-5.6-luna' })
+  // OPENAI_DEFAULT_MODEL is the standardised env var (owner set this on Railway)
+  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
+  // legacy OPENAI_MODEL still works as a fallback
   assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'gpt-4o' }), { provider: 'openai', model: 'gpt-4o' })
+  // OPENAI_DEFAULT_MODEL wins when both are set (it's the standard)
+  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'legacy', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
   assert.deepEqual(llmProviderInfo({ CLAUDE_API_KEY: 'k' }), { provider: 'anthropic', model: 'claude-sonnet-4-5' })
   assert.deepEqual(llmProviderInfo({ ANTHROPIC_MODEL: 'claude-haiku-4-5' }), { provider: 'anthropic', model: 'claude-haiku-4-5' })
 })
@@ -54,7 +59,7 @@ test('OpenAI client: messages.create round-trips through a fake fetch', async ()
   const resp = await client.messages.create({ model: 'claude-sonnet-4-5', max_tokens: 128, messages: [{ role: 'user', content: 'q' }] })
   assert.equal(resp.content[0].text, 'ok')
   assert.equal(calls[0].url, 'https://api.openai.com/v1/chat/completions')
-  assert.equal(calls[0].body.model, 'gpt-4o-mini') // NOT the claude id
+  assert.equal(calls[0].body.model, 'gpt-5.6-luna') // the OpenAI default, NOT the claude id
   assert.equal(calls[0].auth, 'Bearer sk-test')
 })
 

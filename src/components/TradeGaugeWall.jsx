@@ -35,6 +35,7 @@
 // exact money number.
 import { useEffect, useId, useState } from 'react'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
+import { STRAT_SHORT } from '../lib/strategy-labels.js'
 
 const UP = 'var(--color-up)'
 const DOWN = 'var(--color-down)'
@@ -182,13 +183,30 @@ function useTileSeries(r) {
   }
 }
 
-function GaugeTile({ label, side, r, volume, pnl }) {
+function GaugeTile({ label, side, r, volume, pnl, strategy, source }) {
   const { rate, ratePerMin, trending } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
+  // Attribution: bot positions carry a strategy; adopted/manual broker fills
+  // don't (owner: "why missing Strategies in the open trade"). Show the short
+  // strategy code when known, else flag it as an external/manual position so a
+  // blank isn't mistaken for a bug.
+  const stratTag = strategy
+    ? (STRAT_SHORT[strategy] || strategy)
+    : (source && source !== 'autopilot' ? 'manual' : null)
   return (
     <div className={`rounded-[10px] p-2 glass-inset ${pnlOk ? (pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]') : 'text-[var(--color-text-sub)]'}`}>
       <div className="flex items-center justify-between text-[11px] mb-0.5">
-        <span className="font-semibold text-[var(--color-text)]">{label}</span>
+        <span className="flex items-center gap-1 min-w-0">
+          <span className="font-semibold text-[var(--color-text)]">{label}</span>
+          {stratTag && (
+            <span
+              className="text-[9px] uppercase tracking-wide px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)] truncate"
+              title={strategy ? `Opened by strategy: ${strategy}` : 'Manual / external position — no bot strategy attached'}
+            >
+              {stratTag}
+            </span>
+          )}
+        </span>
         {side != null && <span className={isLong(side) ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{isLong(side) ? 'Long' : 'Short'}</span>}
       </div>
       <div className="flex items-center justify-center gap-2 flex-wrap">
@@ -249,7 +267,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
     <div>
       <div className={`grid ${cols} gap-2`}>
         {shown.map(({ p, r, pnl }) => (
-          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} />
+          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} />
         ))}
       </div>
       {overflow > 0 && (
