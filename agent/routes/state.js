@@ -741,6 +741,12 @@ export default function stateRouter(db) {
     res.json({ config: loadLossGuardianConfig(db) })
   })
 
+  // GET /state/closed-market-limits — resting-limit-orders policy
+  router.get('/closed-market-limits', async (_req, res) => {
+    const { loadClosedMarketLimitsConfig } = await import('../services/closed-market-limits.js')
+    res.json({ config: loadClosedMarketLimitsConfig(db) })
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/sizing-preview — dynamic per-symbol lot sizing for the
   // Watchlist table (same math as the live risk gate)

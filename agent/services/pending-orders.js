@@ -147,7 +147,11 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   const brokerOrderIds = new Set(brokerOrders.map(o => String(o.orderId)))
 
   const updateStatus = db.prepare(`UPDATE pending_orders SET status = ?, note = ? WHERE id = ?`)
-  let working = db.prepare(`SELECT * FROM pending_orders WHERE status = 'working'`).all()
+  // Exclude closed-market limits (note 'pending-closed') — they share this
+  // table but are reconciled by the general reconciler (autopilot-label
+  // adoption), never by this fib-specific pass. Everything else (fib rows,
+  // legacy null-note rows) is handled here exactly as before.
+  let working = db.prepare(`SELECT * FROM pending_orders WHERE status = 'working' AND (note IS NULL OR note != 'pending-closed')`).all()
 
   // Positions already persisted as trades must never be adopted twice — a
   // second stale row on the same symbol (pre-restart leftovers, expiry racing

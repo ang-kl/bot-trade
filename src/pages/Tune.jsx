@@ -771,6 +771,7 @@ export default function Tune() {
   const [sizingPrev, setSizingPrev] = useState(null) // dynamic lot preview per symbol — same math as the risk gate
   const [keeper, setKeeper] = useState(null)         // Profit Keeper policy (manual/external position protection)
   const [lossGuard, setLossGuard] = useState(null)   // Loss Guardian policy (naked-position safety net)
+  const [closedLimits, setClosedLimits] = useState(null) // resting limit orders for closed markets
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -900,6 +901,7 @@ export default function Tune() {
     if (!agentConfigured()) return
     agentGet('/state/profit-keeper').then(r => setKeeper(r?.config || null)).catch(() => {})
     agentGet('/state/loss-guardian').then(r => setLossGuard(r?.config || null)).catch(() => {})
+    agentGet('/state/closed-market-limits').then(r => setClosedLimits(r?.config || null)).catch(() => {})
   }, [])
 
   // Broker instrument list (once) — powers the add-symbol autocomplete.
@@ -1555,6 +1557,21 @@ export default function Tune() {
               )}
               <span className="w-full text-[11px] text-[var(--color-text-sub)]">
                 Safety net for LOSING positions the Profit Keeper won't touch. A position with NO stop gets a protective SL {lossGuard?.maxAtrMult ?? 3}×ATR from entry (or is closed if already past that); an optional time cap closes anything held too long. It never tightens a stop you already set — your mean-reversion trades keep their room to breathe.
+              </span>
+            </div>
+            {/* Closed-market resting limits — when a signal fires while its
+                market is closed, place a broker LIMIT at the entry so it fills
+                at open, instead of the invisible internal re-fire queue. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={closedLimits?.on} label="Closed-market limit orders" onClick={() => {
+                const next = !closedLimits?.on
+                run(async () => {
+                  const r = await agentPost('/actions/closed-market-limits', { on: next })
+                  setClosedLimits(r.config)
+                }, `Closed-market limit orders ${next ? 'on' : 'off'}`)
+              }} />
+              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+                When a setup fires while its market is CLOSED (weekend FX/metals, off-hours stocks/indices), rest a real broker LIMIT order at the entry — visible on the desk, filling automatically at open with the setup's SL/TP — instead of the hidden re-fire queue. One order per symbol, clears the SAME risk gate, expires with the timeframe. Off → falls back to the internal queue (re-scan &amp; market order at open).
               </span>
             </div>
             {/* Profit Keeper — automatic protection for MANUAL/external

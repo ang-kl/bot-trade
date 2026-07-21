@@ -1882,6 +1882,22 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/closed-market-limits — arm/disarm resting limit orders for
+  // closed-market setups. Body: { on }.
+  router.post('/closed-market-limits', async (req, res) => {
+    try {
+      const { loadClosedMarketLimitsConfig } = await import('../services/closed-market-limits.js')
+      const current = loadClosedMarketLimitsConfig(db)
+      const b = req.body || {}
+      const next = { ...current, on: b.on != null ? b.on === true : current.on }
+      setState(db, 'closed_market_limits_json', JSON.stringify(next))
+      console.log(`[actions] Closed-market limits ${next.on ? 'ON' : 'off'}`)
+      res.json({ ok: true, config: next })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/autotrade-toggle', (req, res) => {
     const on = req.body?.on === true
     setState(db, 'autotrade_enabled', on ? 'true' : 'false')

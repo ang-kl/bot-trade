@@ -154,30 +154,45 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const { isSymbolOpenCached } = await import('./services/symbol-hours.js')
   const marketGate = isSymbolOpenCached(db, symbol)
   if (!marketGate.open) {
-    // A persisting signal re-attempts every 5-minute cycle for the whole
-    // closed session — log the veto ONCE per closure, not 100+ times
-    // (owner: the Order log drowned in repeat market_closed rows).
-    const dedupeKey = `mkt_closed_logged_${symbol}`
-    if (getState(db, dedupeKey) !== 'y') {
-      // Carry the would-be levels so the order log shows WHAT was refused,
-      // not just why (owner: "where are the TP calculations even in veto").
-      persistRiskEvent(db, {
-        symbol, side,
-        entry: synth.entry ?? null, sl: synth.sl ?? null,
-        tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
-        requestedVolume: requestedVol,
-        strategy: synth.strategy || null,
-        source: synth.source || 'auto_signal',
-      }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
-      setState(db, dedupeKey, 'y')
-    }
+    // Closed market: a MARKET order would be rejected. Owner decision
+    // (Option A, on by default): place a RESTING LIMIT order at the setup's
+    // entry — locked in, visible, fills at open — as the SINGLE source of the
+    // fill (no internal re-fire queue, so no double-fill). The limit clears
+    // the SAME risk gate. One order per symbol; a fresher read replaces it.
+    // If the feature is OFF, fall back to the legacy internal re-fire queue.
     try {
-      const { queuePendingSignal } = await import('./services/pending-signals.js')
-      queuePendingSignal(db, symbol, synth, marketGate.reason)
+      const { placeClosedMarketLimit } = await import('./services/closed-market-limits.js')
+      const r = await placeClosedMarketLimit(
+        db,
+        { host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com', clientId, clientSecret, accessToken, accountId },
+        symbol, synth,
+        { requestedVolume: requestedVol, notify: (t) => import('./services/telegram-control.js').then(m => m.notifyOwner(t)).catch(() => {}) }
+      )
+      if (r.placed) {
+        log(`Closed market — resting LIMIT for ${symbol} @ ${r.limitPrice} (fills at open, expires ${r.expiresAt})`)
+      } else if (r.skipped === 'off') {
+        // Legacy path: queue the signal internally and re-fire at reopen.
+        const dedupeKey = `mkt_closed_logged_${symbol}`
+        if (getState(db, dedupeKey) !== 'y') {
+          persistRiskEvent(db, {
+            symbol, side,
+            entry: synth.entry ?? null, sl: synth.sl ?? null,
+            tp1: synth.tp1 ?? null, tp2: synth.tp2 ?? null,
+            requestedVolume: requestedVol,
+            strategy: synth.strategy || null,
+            source: synth.source || 'auto_signal',
+          }, { approved: false, veto_reason: `market_closed: ${marketGate.reason}` })
+          setState(db, dedupeKey, 'y')
+        }
+        const { queuePendingSignal } = await import('./services/pending-signals.js')
+        queuePendingSignal(db, symbol, synth, marketGate.reason)
+        log(`Auto-trade deferred (queued) — ${marketGate.reason}`)
+      } else {
+        log(`Closed-market limit for ${symbol}: ${r.skipped}${r.reason ? ` — ${r.reason}` : ''}`)
+      }
     } catch (err) {
-      log(`Pending-signal queue failed for ${symbol} (non-fatal): ${err.message}`)
+      log(`Closed-market handling failed for ${symbol} (non-fatal): ${err.message}`)
     }
-    log(`Auto-trade deferred — ${marketGate.reason}`)
     return null
   }
   setState(db, `mkt_closed_logged_${symbol}`, null) // market open again — re-arm the one-shot
