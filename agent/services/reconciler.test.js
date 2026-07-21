@@ -130,6 +130,52 @@ test('foreign-labelled broker position is imported observe-only (external)', () 
   assert.equal(mp.source, 'external')
 })
 
+test('adopted position stores trades.volume in LOTS, not raw broker units', () => {
+  // Broker volume 10,000,000 (API units×100) = 100,000 units = 1.0 lot EURUSD.
+  // The old code stored 100,000 into the lots column, so the aggregate margin
+  // gate saw a ~100,000× notional and vetoed every new trade for
+  // "insufficient_margin". It must be 1 lot.
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const brokerPos = [makeBrokerPosition({
+    positionId: '950', symbolName: 'EURUSD', openPrice: 1.1,
+    label: 'AP|v1|FIB|HI|LDN|12h|REGT', volume: 10_000_000,
+  })]
+  reconcilePositions(db, brokerPos, [], setState)
+  const trade = db.prepare(`SELECT volume FROM trades WHERE ctrader_position_id = '950'`).get()
+  assert.equal(trade.volume, 1.0, 'stored as 1 lot, not 100000 units')
+})
+
+test('self-heal: a legacy units-in-lots-column row is corrected to LOTS on reconcile', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // A KNOWN position whose trades.volume was written in broker UNITS (100000)
+  // by the old adoption bug — the exact state polluting the live margin gate.
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('EURUSD','BUY',1.1,100000,'960','autopilot','open',datetime('now'))`
+  ).run().lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp,
+      thesis, initial_risk, source, broker_volume_units, status)
+     VALUES ('EURUSD', ?, 'long', 1.1, 1.0, 1.2, 'test', 0.1, 'autopilot', 100000, 'active')`
+  ).run(tradeId)
+  // Broker truth: 1 lot (10,000,000 API).
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '960', symbolName: 'EURUSD', openPrice: 1.1, volume: 10_000_000 })], [], setState)
+  const trade = db.prepare(`SELECT volume FROM trades WHERE id = ?`).get(tradeId)
+  assert.equal(trade.volume, 1.0, 'units 100000 healed to 1 lot')
+})
+
+test('self-heal leaves a correctly-sized LOTS row untouched', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { symbol: 'EURUSD', positionId: '970' })  // trades.volume = 0.01 lot
+  // Broker truth matches 0.01 lot: 0.01 × 100000 units × 100 = 100000 API.
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '970', symbolName: 'EURUSD', openPrice: 1.1, volume: 100000 })], [], setState)
+  const trade = db.prepare(`SELECT volume FROM trades WHERE ctrader_position_id = '970'`).get()
+  assert.equal(trade.volume, 0.01, 'a correct lots row is not rewritten')
+})
+
 test('closed position detection marks status=closed', () => {
   const db = mkDb()
   const setState = mkSetState(db)
