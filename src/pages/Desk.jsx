@@ -21,6 +21,7 @@ import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { describeRiskCriteria } from '../lib/risk-criteria.js'
 import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
@@ -76,6 +77,54 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
       </button>
       {open && <div className="mt-1.5">{children}</div>}
     </Card>
+  )
+}
+
+// One risk-decision row, expandable to the FULL criteria breakdown captured in
+// checks_json (owner: "Risk Decision is so superficial ... more than one
+// criteria"). The gate evaluates many criteria in order; a late veto still
+// passed everything before it — this shows all of them and flags the failure.
+function RiskDecisionRow({ ev }) {
+  const [open, setOpen] = useState(false)
+  let p = {}, checks = {}
+  try { p = JSON.parse(ev.proposal_json || '{}') } catch { /* pre-migration rows */ }
+  try { checks = JSON.parse(ev.checks_json || '{}') } catch { /* pre-migration rows */ }
+  const criteria = describeRiskCriteria(checks, ev.approved ? null : ev.veto_reason)
+  return (
+    <li className="border-b border-[var(--color-border)] last:border-0 py-px">
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-baseline gap-1.5 min-w-0 text-left cursor-pointer" title={ev.veto_reason || 'approved'}>
+        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{criteria.length ? (open ? '▾' : '▸') : ''}</span>
+        <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+          {ev.approved ? 'OK' : 'VETO'}
+        </span>
+        <span className="font-semibold shrink-0">{ev.symbol}</span>
+        {ev.side && <span className="text-[var(--color-text-sub)] shrink-0">{ev.side}</span>}
+        {p.strategy && <span className="text-[var(--color-text-sub)] shrink-0">{STRAT_SHORT[p.strategy] || p.strategy}</span>}
+        {p.timeframe && <span className="text-[var(--color-text-sub)] shrink-0">{p.timeframe}</span>}
+        <span className="text-[var(--color-text-sub)] truncate">
+          {ev.approved ? `risk-approved${p.entry != null ? ` @ ${fmt(p.entry)}` : ''}` : humanVeto(ev.veto_reason)}
+        </span>
+        <span className="ml-auto text-[var(--color-text-sub)] shrink-0 tabular-nums" title={`${ev.created_at} · raw: ${ev.veto_reason || 'approved'}`}>
+          {clockSecs(ev.created_at)} <span className="opacity-60">({ago(ev.created_at)})</span>
+        </span>
+      </button>
+      {open && criteria.length > 0 && (
+        <div className="ml-[52px] mt-0.5 mb-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+          {criteria.map(row => (
+            <div key={row.key} className="contents">
+              <span className={`${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : 'text-[var(--color-text-sub)]'}`}>
+                {row.label}{row.failed ? ' ✗' : ''}
+              </span>
+              <span className={`tabular-nums ${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : ''}`}>{row.value}</span>
+            </div>
+          ))}
+          <span className="col-span-2 mt-0.5 text-[10px] text-[var(--color-text-sub)] opacity-70">
+            All criteria evaluated for this signal{ev.approved ? ' — approved' : ' — ✗ marks the one that vetoed'}.
+          </span>
+        </div>
+      )}
+    </li>
   )
 }
 
@@ -286,6 +335,23 @@ export default function Desk() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
+  // Merge the monitor's per-position review record (last_check_*, thesis_status,
+  // current_sl from /state/positions) onto the live broker positions, matched by
+  // ctrader_position_id, so each gauge card can PROVE it's being reviewed
+  // (owner: "how do I know you are reviewing each one ... watch stop-loss").
+  const monitorByPid = useMemo(() => {
+    const m = new Map()
+    for (const r of positions) if (r.ctrader_position_id != null) m.set(String(r.ctrader_position_id), r)
+    return m
+  }, [positions])
+  const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
+    const mp = monitorByPid.get(String(bp.positionId))
+    return mp
+      ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl }
+      : bp
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [posSig, monitorByPid])
+
   return (
     <div className="space-y-3">
       {error && <Card className="text-[13px]">{error}</Card>}
@@ -375,7 +441,7 @@ export default function Desk() {
             >{n}</button>
           ))}
         </div>
-        <TradeGaugeWall positions={broker?.positions || []} gridN={pnlGridN} />
+        <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} />
       </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
@@ -559,34 +625,14 @@ export default function Desk() {
             the raw machine code stays in the tooltip. Side/strategy/entry
             from proposal_json so a row reads as a decision, not just a
             symbol + cryptic code (owner: "meaningless to me"). */}
+        {/* Each row expands to the full criteria breakdown from checks_json —
+            side/strategy/entry from proposal_json (owner: "meaningless to me"),
+            and the complete multi-criteria evaluation on click (owner: "Risk
+            Decision is so superficial ... more than one criteria"). */}
         <ul className="text-[12px]">
-          {events.slice(0, 10).map(ev => {
-            let p = {}
-            try { p = JSON.parse(ev.proposal_json || '{}') } catch { /* pre-migration rows */ }
-            return (
-              <li key={ev.id} className="flex items-baseline gap-1.5 min-w-0 py-px" title={ev.veto_reason || ''}>
-                <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
-                  {ev.approved ? 'OK' : 'VETO'}
-                </span>
-                <span className="font-semibold shrink-0">{ev.symbol}</span>
-                {ev.side && <span className="text-[var(--color-text-sub)] shrink-0">{ev.side}</span>}
-                {p.strategy && <span className="text-[var(--color-text-sub)] shrink-0">{STRAT_SHORT[p.strategy] || p.strategy}</span>}
-                {p.timeframe && <span className="text-[var(--color-text-sub)] shrink-0">{p.timeframe}</span>}
-                <span className="text-[var(--color-text-sub)] truncate">
-                  {ev.approved
-                    ? `risk-approved${p.entry != null ? ` @ ${fmt(p.entry)}` : ''}`
-                    : humanVeto(ev.veto_reason)}
-                </span>
-                {/* Precise second-level clock time, not just relative age
-                    (owner: "I ask for seconds") — the scan runs every ~5 min
-                    so a relative age almost never reads in seconds; the exact
-                    HH:MM:SS of the decision does. */}
-                <span className="ml-auto text-[var(--color-text-sub)] shrink-0 tabular-nums" title={`${ev.created_at} · raw: ${ev.veto_reason || 'approved'}`}>
-                  {clockSecs(ev.created_at)} <span className="opacity-60">({ago(ev.created_at)})</span>
-                </span>
-              </li>
-            )
-          })}
+          {events.slice(0, 10).map(ev => (
+            <RiskDecisionRow key={ev.id} ev={ev} />
+          ))}
         </ul>
         <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.

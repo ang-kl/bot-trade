@@ -183,9 +183,27 @@ function useTileSeries(r) {
   }
 }
 
-function GaugeTile({ label, side, r, volume, pnl, strategy, source }) {
+// Minutes since an ISO timestamp, or null. Framework-free so the monitor-review
+// line reads the same everywhere.
+function minsSince(iso) {
+  if (!iso) return null
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return null
+  return Math.max(0, Math.round((Date.now() - t) / 60000))
+}
+
+function GaugeTile({ label, side, r, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl }) {
   const { rate, ratePerMin, trending } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
+  // Proof the monitor is actually reviewing THIS position (owner: "how do I know
+  // you are reviewing each one ... watch stop-loss"). Green when reviewed
+  // recently, amber when the review is stale (>15m), red when never reviewed —
+  // so a silent/stalled monitor is visible, not hidden behind a promise.
+  const reviewAge = minsSince(lastCheckAt)
+  const reviewColor = reviewAge == null ? 'var(--color-down)' : reviewAge > 15 ? 'var(--color-warning-text)' : 'var(--color-up)'
+  const reviewText = reviewAge == null
+    ? 'not yet reviewed'
+    : `reviewed ${reviewAge === 0 ? 'just now' : `${reviewAge}m ago`}${lastCheckAction ? ` · ${String(lastCheckAction).toUpperCase()}` : ''}${thesisStatus ? ` · thesis ${thesisStatus}` : ''}`
   // Attribution: bot positions carry a strategy; adopted/manual broker fills
   // don't (owner: "why missing Strategies in the open trade"). Show the short
   // strategy code when known, else flag it as an external/manual position so a
@@ -214,6 +232,15 @@ function GaugeTile({ label, side, r, volume, pnl, strategy, source }) {
         <VsiGauge rate={rate} ratePerMin={ratePerMin} />
       </div>
       <div className="text-center text-[13px] font-bold mt-1">{pnlOk ? money(pnl) : '—'}</div>
+      {/* Monitor review record — the verifiable proof each position is watched. */}
+      <div className="mt-1 pt-1 border-t border-[var(--color-border)] text-[9px] leading-tight flex items-center justify-between gap-1">
+        <span style={{ color: reviewColor }} className="truncate" title={lastCheckAt ? `Last monitor review at ${lastCheckAt}` : 'The monitor has not reviewed this position yet'}>
+          ● {reviewText}
+        </span>
+        <span className={`shrink-0 tabular-nums ${monitorSl != null ? 'text-[var(--color-text-sub)]' : 'text-[var(--color-down)]'}`} title={monitorSl != null ? 'Stop-loss the monitor is managing' : 'NO stop-loss tracked by the monitor'}>
+          {monitorSl != null ? `SL ${Number(monitorSl).toLocaleString(undefined, { maximumFractionDigits: 5 })}` : 'no SL'}
+        </span>
+      </div>
     </div>
   )
 }
@@ -267,7 +294,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
     <div>
       <div className={`grid ${cols} gap-2`}>
         {shown.map(({ p, r, pnl }) => (
-          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} />
+          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} />
         ))}
       </div>
       {overflow > 0 && (
