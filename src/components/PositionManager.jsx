@@ -19,7 +19,15 @@ import PositionChart from './PositionChart.jsx'
 import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 
-const TABS = ['Modify', 'Protect', 'Chart', 'Details']
+// Purpose-named tabs (owner: "how do I change with such window layout" — the
+// old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
+// Keys stay stable so the tab-body conditionals below are unchanged.
+const TABS = [
+  { key: 'Modify', label: 'Size' },
+  { key: 'Protect', label: 'Stop & Target' },
+  { key: 'Chart', label: 'Chart' },
+  { key: 'Details', label: 'Details' },
+]
 
 // Canonical price display (owner): scale-aware — 4 dp, 2 dp in the
 // hundreds, none at five figures; symbol digits below that keep their own.
@@ -150,12 +158,12 @@ export default function PositionManager({ p, onDone }) {
         <Button size="sm" variant="ghost" onClick={onDone}>✕</Button>
       </div>
 
-      {/* Tab strip: Modify | Protect | Chart | Details */}
+      {/* Tab strip: Size | Stop & Target | Chart | Details */}
       <div className="glass-inset rounded-[10px] p-0.5 flex mb-2">
         {TABS.map(t => (
-          <button key={t} type="button" onClick={() => setTab(t)}
-            className={`flex-1 rounded-[8px] px-2 py-1 text-[13px] font-semibold cursor-pointer ${tab === t ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
-            {t}
+          <button key={t.key} type="button" onClick={() => setTab(t.key)}
+            className={`flex-1 rounded-[8px] px-2 py-1 text-[13px] font-semibold cursor-pointer ${tab === t.key ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
+            {t.label}
           </button>
         ))}
       </div>

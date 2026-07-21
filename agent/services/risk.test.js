@@ -10,6 +10,8 @@ import {
   netExposure,
   kellyVolume,
   computeRiskBasedVolume,
+  riskBudgetUsd,
+  drawdownDeriskFactor,
   getAccountBalance,
   getAccountLeverage,
   requiredMargin,
@@ -426,23 +428,23 @@ test('computeRiskBasedVolume — tiny balance rounds to 0', () => {
 
 // Equity-aware mode integration -----------------------------------------
 
-test('equity-aware — $200 balance: EURUSD 30 pip SL insufficient → veto', () => {
+test('equity-aware — $50 balance: EURUSD 30 pip SL insufficient → veto', () => {
   const db = freshDB()
-  setBalance(db, 200)
-  // budget = $2, usd_per_lot = 0.003 × 100000 = $300 → 0.006 → floor 0
+  setBalance(db, 50)
+  // budget = $50 × 5% = $2.50, usd_per_lot = 0.003 × 100000 = $300 → 0.008 → floor 0
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /insufficient_equity/)
 })
 
-test('equity-aware — $10k balance, EURUSD: risk-based volume computed', () => {
+test('equity-aware — $10k balance, EURUSD: risk-based volume computed (5% default)', () => {
   const db = freshDB()
   setBalance(db, 10000)
-  // budget = $100, usd_per_lot = $300 → 0.33 lot, capped by requestedVolume 0.01
+  // budget = $10k × 5% = $500, usd_per_lot = $300 → 1.66 lot, capped by requestedVolume 0.01
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
-  assert.equal(res.checks.risk_based_volume, 0.33)
-  // Final volume is min(0.33, 0.01 requested) = 0.01
+  assert.equal(res.checks.risk_based_volume, 1.66)
+  // Final volume is min(1.66, 0.01 requested) = 0.01
   assert.equal(res.adjusted_volume, 0.01)
 })
 
@@ -469,7 +471,7 @@ test('equity-aware — check.balance and check.daily_cap_usd are populated', () 
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.checks.balance, 5000)
   assert.equal(res.checks.daily_cap_usd, 150) // 5000 × 3%
-  assert.equal(res.checks.risk_budget, 50)    // 5000 × 1%
+  assert.equal(res.checks.risk_budget, 250)   // 5000 × 5% default
 })
 
 // Tier label + blocked-symbol gate ---------------------------------------
@@ -751,4 +753,36 @@ test('evaluateTrade sizes a cross end-to-end using scan rates from state', () =>
   const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.ok(r.adjusted_volume >= 1.4, `expected ~1.5 lots, got ${r.adjusted_volume}`)
+})
+
+// ---------------------------------------------------------------------------
+// Algo hard cap: 5%/absolute budget, hard ceiling, anti-tilt de-risk
+// ---------------------------------------------------------------------------
+test('riskBudgetUsd: 5% of balance by default', () => {
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05 }), 500)
+})
+test('riskBudgetUsd: absolute perTradeRiskUsd overrides the pct', () => {
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, perTradeRiskUsd: 120, maxRiskCapPct: 0.05 }), 120)
+})
+test('riskBudgetUsd: hard ceiling caps an over-configured pct', () => {
+  // 8% wanted, ceiling 5% → capped to $500
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.08, maxRiskCapPct: 0.05 }), 500)
+})
+test('riskBudgetUsd: absolute maxRiskUsd ceiling also bites', () => {
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05, maxRiskUsd: 300 }), 300)
+})
+test('riskBudgetUsd: drawdown factor scales the budget down', () => {
+  assert.equal(riskBudgetUsd(10000, { perTradeRiskPct: 0.05, maxRiskCapPct: 0.05 }, 0.5), 250)
+})
+
+test('drawdownDeriskFactor: halves after a losing window, 1 otherwise', () => {
+  const cfg = { deriskOnDrawdown: true, deriskWindowHours: 24, deriskTriggerPct: 0.05, deriskMult: 0.5 }
+  const db = freshDB()
+  // no trades → normal size
+  assert.equal(drawdownDeriskFactor(db, 10000, cfg), 1)
+  // down $600 in the window (> 5% of $10k = $500) → de-risk
+  insertClosedTrade(db, -600)
+  assert.equal(drawdownDeriskFactor(db, 10000, cfg), 0.5)
+  // disabled → always 1
+  assert.equal(drawdownDeriskFactor(db, 10000, { ...cfg, deriskOnDrawdown: false }), 1)
 })

@@ -48,20 +48,29 @@ test('streak on a strategy with OTHERS armed → that strategy is disarmed', () 
   assert.match(notes[0], /disarmed at Auto Trade/)
 })
 
-test('streak on the LAST armed strategy → next filter armed instead of going idle', () => {
-  const db = initDB(':memory:') // default: fib only
+test('AGGRESSIVE default: streak on the LAST armed strategy → DISARMED (not filter-laddered)', () => {
+  const db = initDB(':memory:') // default: fib only, aggressive default on
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const out = runAdaptiveBreaker(db, {})
-  // RSI confluence is now trade-armed by DEFAULT (kill naked fib), so the next
-  // UNARMED filter the breaker reaches for is VWAP.
+  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_last_strategy' }])
+  const m = loadStageMatrix(db, getState)
+  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, false, 'bleeding strategy is cut')
+})
+
+test('conservative (aggressive:false): LAST armed strategy → next filter armed instead of going idle', () => {
+  const db = initDB(':memory:')
+  setState(db, 'adaptive_breaker_json', JSON.stringify({ on: true, aggressive: false }))
+  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
+  const out = runAdaptiveBreaker(db, {})
   assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'armed_filter', filter: 'vwap' }])
   const m = loadStageMatrix(db, getState)
   assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, true, 'strategy stays live')
   assert.equal(m.filters.find(f => f.key === 'vwap').stages.trade, true, 'VWAP filter armed')
 })
 
-test('acts ONCE per streak; a new loss re-triggers with the next filter', () => {
+test('acts ONCE per streak; a new loss re-triggers (conservative ladder)', () => {
   const db = initDB(':memory:')
+  setState(db, 'adaptive_breaker_json', JSON.stringify({ on: true, aggressive: false }))
   for (const m of [20, 10, 5]) closeTrade(db, 'fib_618_fade', -1, m)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 1) // arms vwap (rsi already on by default)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 0) // same streak — no repeat

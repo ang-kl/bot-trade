@@ -32,12 +32,12 @@ test('instrumentType classifies each family', () => {
 })
 
 test('EURUSD auto lots follow the fixed-fractional formula exactly', () => {
-  // balance 10k, default risk 1% → $100 budget. minSLDistancePct default 0.15%
-  // of 1.10 = 0.00165 distance × 100k = $165/lot → floor(100/165 · 100)/100
+  // balance 10k, default risk 5% → $500 budget. minSLDistancePct default 0.15%
+  // of 1.10 = 0.00165 distance × 100k = $165/lot → floor(500/165 · 100)/100
   const db = mkDb({ prices: { EURUSD: 1.10 } })
   const out = sizingPreview(db)
   const row = out.rows.find(r => r.symbol === 'EURUSD')
-  assert.equal(out.budget, 100)
+  assert.equal(out.budget, 500)
   assert.ok(row.autoLots > 0)
   const expected = Math.floor((out.budget / row.usdPerLot) * 100) / 100
   assert.equal(row.autoLots, expected)
