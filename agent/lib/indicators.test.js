@@ -6,6 +6,7 @@ import {
   emaSeries,
   vwapSeries,
   avwapSeries,
+  vwapAnchored,
   findFvgZones,
   volumeProfile,
 } from './indicators.js';
@@ -49,6 +50,37 @@ test('vwapSeries: cumulative typical-price VWAP from anchor, nulls before', () =
   assert.equal(w[1], 20); // tp=20, only bar
   // (20*300 + 30*100) / 400 = 22.5
   assert.ok(Math.abs(w[2] - 22.5) < 1e-12);
+});
+
+test('vwapAnchored: cumulative sums RESET at each period boundary (session anchor)', () => {
+  const DAY = 86_400_000;
+  // Two bars in day 0, two in day 1. VWAP must reset at the day-1 boundary, so
+  // bar 2's VWAP is its own typical price (not carried over from day 0).
+  const bars = [
+    { t: 0, h: 11, l: 9, c: 10, v: 100 },
+    { t: 1 * MIN, h: 21, l: 19, c: 20, v: 100 },
+    { t: DAY, h: 31, l: 29, c: 30, v: 100 },          // new day → reset here
+    { t: DAY + MIN, h: 41, l: 39, c: 40, v: 100 },
+  ];
+  const out = vwapAnchored(bars, DAY);
+  assert.equal(out[0], 10);                 // (30)/... typical 10
+  assert.equal(out[1], 15);                 // (10+20)/2 within day 0
+  assert.equal(out[2], 30);                 // RESET — day 1 starts fresh at 30
+  assert.equal(out[3], 35);                 // (30+40)/2 within day 1
+});
+
+test('vwapAnchored: a new session is independent of prior-session bars (no cross-session drift)', () => {
+  const DAY = 86_400_000;
+  const mk = (t, c) => ({ t, h: c, l: c, c, v: 100 });
+  // full includes day-0 bars; trimmed dropped them. The day-1 bars must read
+  // the SAME VWAP either way — because the reset severs day-1 from day-0.
+  // (window-start anchoring would have folded day-0 into day-1 and drifted.)
+  const full = [mk(0, 10), mk(MIN, 20), mk(DAY, 30), mk(DAY + MIN, 40)];
+  const trimmed = [mk(DAY, 30), mk(DAY + MIN, 40)];
+  const a = vwapAnchored(full, DAY);
+  const b = vwapAnchored(trimmed, DAY);
+  assert.equal(a[2], b[0]); // day-1 first bar: 30 == 30
+  assert.equal(a[3], b[1]); // day-1 second bar: 35 == 35
 });
 
 test('avwapSeries: anchored by timestamp — first bar with t >= anchorT', () => {

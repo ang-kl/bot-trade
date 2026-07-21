@@ -240,8 +240,12 @@ export function findSwings(bars, fractalWidth = FRACTAL_WIDTH) {
     let isHigh = true
     let isLow = true
     for (let j = i - fractalWidth; j <= i + fractalWidth; j++) {
-      if (bars[j].h > bars[i].h) isHigh = false
-      if (bars[j].l < bars[i].l) isLow = false
+      if (j === i) continue
+      // STRICT pivot (matches the spec's `>=`/`<=` invalidation): a neighbour
+      // that ties the extreme disqualifies it, so a flat top/bottom no longer
+      // emits duplicate adjacent swing points.
+      if (bars[j].h >= bars[i].h) isHigh = false
+      if (bars[j].l <= bars[i].l) isLow = false
       if (!isHigh && !isLow) break
     }
     if (isHigh) highs.push({ idx: i, price: bars[i].h, t: bars[i].t })
