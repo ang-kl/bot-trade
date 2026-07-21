@@ -42,9 +42,14 @@ export async function runPnlWatch(db, creds) {
   const pnlMap = await wsGetUnrealizedPnl(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
 
   // positionId → symbol/side from the bot's ledger (bot + adopted positions).
+  // ctrader_position_id lives on `trades`, NOT monitored_positions — join
+  // through trade_id. (Querying it off monitored_positions raised
+  // "no such column: ctrader_position_id" and silently killed the watch.)
   const rows = db.prepare(
-    `SELECT ctrader_position_id AS pid, symbol, side FROM monitored_positions
-     WHERE status = 'active' AND ctrader_position_id IS NOT NULL`
+    `SELECT t.ctrader_position_id AS pid, m.symbol AS symbol, m.side AS side
+       FROM monitored_positions m
+       JOIN trades t ON t.id = m.trade_id
+      WHERE m.status = 'active' AND t.ctrader_position_id IS NOT NULL`
   ).all()
 
   let alerts = 0

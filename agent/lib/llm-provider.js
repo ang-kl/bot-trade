@@ -39,6 +39,11 @@ export function llmProviderInfo(env = process.env) {
  * chat.completions body. `system` becomes a system message; string or
  * block-array message content is flattened to text. The claude model id the
  * caller passes is ignored — OpenAI uses its own configured model. Pure.
+ *
+ * Newer OpenAI models (gpt-5.x, incl. gpt-5.6-luna) REJECT `max_tokens` with a
+ * 400 ("Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'
+ * instead"), which was silently killing every monitor check. We emit
+ * `max_completion_tokens` — the parameter these models require.
  */
 export function toOpenAIBody({ max_tokens, system, messages }, model) {
   const oai = []
@@ -49,7 +54,7 @@ export function toOpenAIBody({ max_tokens, system, messages }, model) {
       : (Array.isArray(m.content) ? m.content.map(c => c?.text || '').join('') : '')
     oai.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content })
   }
-  return { model, max_tokens, messages: oai }
+  return { model, max_completion_tokens: max_tokens, messages: oai }
 }
 
 /** Map an OpenAI chat.completions response to the Anthropic response shape. Pure. */
