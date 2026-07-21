@@ -348,15 +348,34 @@ test('kellyVolume — positive expectancy scales volume', () => {
   assert.ok(out.volume > 0 && out.volume <= 0.10, `got ${out.volume}`)
 })
 
-test('evaluateTrade — negative expectancy vetoes via kelly', () => {
-  const db = freshDB()
+// Per-strategy trade with a strategy label, on a NON-proposal symbol and old
+// enough not to trip the daily-loss / streak / symbol-cooldown gates.
+function insertStratTrade(db, strategy, pnl, daysAgo) {
+  const closedAt = new Date(Date.now() - daysAgo * 86400_000).toISOString()
   db.prepare(
-    `INSERT INTO performance_snapshots (total_trades, winning_trades, losing_trades, win_rate, avg_win, avg_loss)
-     VALUES (50, 15, 35, 0.30, 10, -20)`
-  ).run()
+    `INSERT INTO trades (symbol, side, net_pnl, status, closed_at, label_strategy)
+     VALUES ('GBPUSD', 'BUY', ?, 'closed', ?, ?)`
+  ).run(pnl, closedAt, strategy)
+}
+
+test('evaluateTrade — a strategy with its OWN negative expectancy vetoes via kelly', () => {
+  const db = freshDB()
+  // 40 'trend' trades INSIDE the 30-day window: 30% win, +10 / −20 → negative kelly
+  for (let i = 0; i < 12; i++) insertStratTrade(db, 'trend', 10, 3 + i)          // wins
+  for (let i = 0; i < 28; i++) insertStratTrade(db, 'trend', -20, 3 + (i % 22))  // losses
   const res = evaluateTrade(db, goodProposal())
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /negative_expectancy/)
+})
+
+test('evaluateTrade — a PROVEN strategy is NOT vetoed by ANOTHER strategy losses (per-strategy expectancy)', () => {
+  const db = freshDB()
+  // fib is deeply negative over 30 trades…
+  for (let i = 0; i < 30; i++) insertStratTrade(db, 'fib_618_fade', -20, 5 + i)
+  // …but rsi2_reversion (the proposal) has NO losing record → must not inherit
+  // fib's expectancy (the bug: global snapshot vetoed every strategy).
+  const res = evaluateTrade(db, goodProposal({ strategy: 'rsi2_reversion' }))
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
 })
 
 // Happy path -------------------------------------------------------------
