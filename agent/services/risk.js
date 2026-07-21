@@ -17,6 +17,7 @@ import { getState } from '../db.js'
 import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
+import { minRrFor } from './strategies.js'
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -389,8 +390,11 @@ export function evaluateTrade(db, proposal, configOverride) {
       const tpDistance = Math.abs(tp1 - entry)
       const rr = Math.round((tpDistance / slDistance) * 100) / 100
       checks.rr = rr
-      if (rr < config.minRR) {
-        return veto(`bad_rr ${rr.toFixed(2)}<${config.minRR}`, checks, proposal)
+      // Per-strategy floor: a high-win-rate mean-reversion strategy runs a
+      // small R:R on purpose, so it declares a lower floor than the global 1.5.
+      const rrFloor = minRrFor(proposal.strategy, config.minRR)
+      if (rr < rrFloor) {
+        return veto(`bad_rr ${rr.toFixed(2)}<${rrFloor}`, checks, proposal)
       }
     }
   }
