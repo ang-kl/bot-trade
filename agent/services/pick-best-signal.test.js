@@ -38,3 +38,31 @@ test('a lower-conviction fib no longer shadows a stronger rsi2 (the bug)', () =>
   const fns = [strat('fib', 4), strat('rsi2', 9)]
   assert.equal(pickBestSignal(fns, [], '8h', {}).strategy, 'rsi2')
 })
+
+// Armed-strategy preference (owner: "RSI2/VP armed but 0 trades after 6h ...
+// you keep using FIB/EMA"). An ARMED strategy that can actually trade must beat
+// a higher-conviction UNARMED one that would only get vetoed.
+test('an ARMED strategy wins over a higher-conviction UNARMED one', () => {
+  // fib conviction 9 but NOT armed; rsi2 conviction 6 but ARMED → rsi2 wins.
+  const fns = [strat('fib', 9), strat('rsi2', 6)]
+  const best = pickBestSignal(fns, [], '1h', { armedStrategyKeys: ['rsi2', 'vp_value'] })
+  assert.equal(best.strategy, 'rsi2')
+})
+
+test('among ARMED strategies, highest conviction still wins', () => {
+  const fns = [strat('vp_value', 6), strat('rsi2', 8), strat('fib', 9)]
+  const best = pickBestSignal(fns, [], '1h', { armedStrategyKeys: ['rsi2', 'vp_value'] })
+  assert.equal(best.strategy, 'rsi2') // 8 > 6, and fib (9) is unarmed so excluded
+})
+
+test('no armed set given → pure conviction (backtest/display, no regression)', () => {
+  const fns = [strat('fib', 9), strat('rsi2', 6)]
+  assert.equal(pickBestSignal(fns, [], '1h', {}).strategy, 'fib')
+  assert.equal(pickBestSignal(fns, [], '1h', { armedStrategyKeys: [] }).strategy, 'fib')
+})
+
+test('all candidates unarmed → falls back to highest conviction', () => {
+  const fns = [strat('fib', 9), strat('ema', 7)]
+  const best = pickBestSignal(fns, [], '1h', { armedStrategyKeys: ['rsi2'] })
+  assert.equal(best.strategy, 'fib') // neither armed → strongest surfaces (for the scan/display)
+})
