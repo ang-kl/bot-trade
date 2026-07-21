@@ -1846,6 +1846,33 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/loss-guardian — configure the loss-side safety net. Body:
+  // { on, scope, maxAtrMult, fallbackAdversePct, maxHoldHours } (partial
+  // updates merge over the stored config).
+  router.post('/loss-guardian', async (req, res) => {
+    try {
+      const { loadLossGuardianConfig } = await import('../services/loss-guardian.js')
+      const current = loadLossGuardianConfig(db)
+      const b = req.body || {}
+      const clamp = (v, lo, hi, fallback) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : fallback)
+      const next = {
+        on: b.on != null ? b.on === true : current.on,
+        scope: b.scope === 'all' ? 'all' : b.scope === 'external' ? 'external' : current.scope,
+        atrTimeframe: typeof b.atrTimeframe === 'string' && b.atrTimeframe.trim() ? b.atrTimeframe.trim() : current.atrTimeframe,
+        atrPeriod: b.atrPeriod !== undefined ? Math.round(clamp(b.atrPeriod, 5, 50, current.atrPeriod)) : current.atrPeriod,
+        maxAtrMult: b.maxAtrMult !== undefined ? clamp(b.maxAtrMult, 1, 10, current.maxAtrMult) : current.maxAtrMult,
+        fallbackAdversePct: b.fallbackAdversePct !== undefined ? clamp(b.fallbackAdversePct, 0.005, 0.2, current.fallbackAdversePct) : current.fallbackAdversePct,
+        // null = time cap off; a positive number arms it
+        maxHoldHours: b.maxHoldHours === null ? null : (b.maxHoldHours !== undefined ? (Number(b.maxHoldHours) > 0 ? Number(b.maxHoldHours) : null) : current.maxHoldHours),
+      }
+      setState(db, 'loss_guardian_json', JSON.stringify(next))
+      console.log(`[actions] Loss Guardian ${next.on ? 'ON' : 'off'} — scope=${next.scope} maxAtr=${next.maxAtrMult} timeCap=${next.maxHoldHours ?? 'off'}`)
+      res.json({ ok: true, config: next })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/autotrade-toggle', (req, res) => {
     const on = req.body?.on === true
     setState(db, 'autotrade_enabled', on ? 'true' : 'false')

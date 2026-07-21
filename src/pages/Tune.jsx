@@ -770,6 +770,7 @@ export default function Tune() {
   })
   const [sizingPrev, setSizingPrev] = useState(null) // dynamic lot preview per symbol — same math as the risk gate
   const [keeper, setKeeper] = useState(null)         // Profit Keeper policy (manual/external position protection)
+  const [lossGuard, setLossGuard] = useState(null)   // Loss Guardian policy (naked-position safety net)
   // Backtest covers the ENABLED watchlist symbols — the instruments set on
   // this page — never a typed-in default. Tap a chip to skip one this run.
   const [btSkip, setBtSkip] = useState(() => new Set())
@@ -897,6 +898,7 @@ export default function Tune() {
   useEffect(() => {
     if (!agentConfigured()) return
     agentGet('/state/profit-keeper').then(r => setKeeper(r?.config || null)).catch(() => {})
+    agentGet('/state/loss-guardian').then(r => setLossGuard(r?.config || null)).catch(() => {})
   }, [])
 
   // Broker instrument list (once) — powers the add-symbol autocomplete.
@@ -1509,6 +1511,35 @@ export default function Tune() {
               </div>
               <span className="text-[12px] text-[var(--color-text-sub)]">
                 micro-quant: timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Auto sizing uses the SAME uncapped risk-based lot as auto signals; Fixed pins a cheap 0.01–0.05 sample. Every attempt lands in the Order log (BURN-IN badge).
+              </span>
+            </div>
+            {/* Loss Guardian — safety net the Profit Keeper's opposite number:
+                protects a NAKED position (no stop) and enforces an optional
+                time cap. Never tightens a valid mean-reversion stop. */}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]">
+              <Toggle on={lossGuard?.on} label="Loss Guardian" onClick={() => {
+                const next = !lossGuard?.on
+                run(async () => {
+                  const r = await agentPost('/actions/loss-guardian', { on: next })
+                  setLossGuard(r.config)
+                }, `Loss Guardian ${next ? 'armed' : 'off'}`)
+              }} />
+              {lossGuard?.on && (
+                <label className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)]">
+                  Time cap (h)
+                  <Input type="number" min="0" step="1" className="w-16 !py-0.5 !min-h-0"
+                    value={lossGuard.maxHoldHours ?? ''}
+                    aria-label="Loss Guardian time cap hours"
+                    placeholder="off"
+                    onChange={e => setLossGuard(g => ({ ...g, maxHoldHours: e.target.value === '' ? null : Number(e.target.value) }))}
+                    onBlur={() => run(async () => {
+                      const r = await agentPost('/actions/loss-guardian', { maxHoldHours: lossGuard.maxHoldHours === '' || lossGuard.maxHoldHours == null ? null : Number(lossGuard.maxHoldHours) })
+                      setLossGuard(r.config)
+                    }, 'Loss Guardian updated')} />
+                </label>
+              )}
+              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+                Safety net for LOSING positions the Profit Keeper won't touch. A position with NO stop gets a protective SL {lossGuard?.maxAtrMult ?? 3}×ATR from entry (or is closed if already past that); an optional time cap closes anything held too long. It never tightens a stop you already set — your mean-reversion trades keep their room to breathe.
               </span>
             </div>
             {/* Profit Keeper — automatic protection for MANUAL/external
