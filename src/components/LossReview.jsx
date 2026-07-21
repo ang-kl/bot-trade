@@ -117,7 +117,17 @@ function Verdict({ r }) {
         </div>
       </div>
       <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-      <p className="flex-1 min-w-[200px] text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+      <div className="flex-1 min-w-[200px]">
+        {/* Structured lesson fields (Trade-Lesson Extraction spec) — the
+            imperative lesson first, then the flat flags controllers read. */}
+        {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+        <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+        <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">
+          {r.result ? `Result: ${r.result}` : null}
+          {r.alpha_decay ? ` · Alpha-decay: ${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay}` : null}
+          {r.entry_quality ? ` · Entry-quality: ${r.entry_quality}` : null}
+        </p>
+      </div>
     </div>
   )
 }

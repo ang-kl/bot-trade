@@ -125,7 +125,7 @@ test('classifyWin: escaped beats gave_back — near-stop first is the bigger les
   ]
   const v = classifyWin(w, bars, 5, 35)
   assert.equal(v.classification, 'escaped')
-  assert.match(v.detail, /luck, not edge/)
+  assert.match(v.detail, /entry timing was early/)
 })
 
 test('classifyWin: clean_win when the exit captured the move', async () => {
@@ -188,4 +188,71 @@ test('runLossPostmortems: 90-day window back-fills history (old trade included)'
   const res = await runLossPostmortems(db, fetchBars)
   assert.equal(res.classified, 1, 'a 40-day-old loss is inside the 90-day back-fill window')
   assert.equal(db.prepare(`SELECT classification FROM trade_postmortems`).get().classification, 'stop_hunt')
+})
+
+// Trade-Lesson Extraction (owner spec) --------------------------------------
+
+test('classifyResult: Win/Partial/Miss judged against the GOAL (TP1), not raw P&L', async () => {
+  const { classifyResult } = await import('./loss-postmortem.js')
+  // Long entry 100, goal TP1 110: exit 110 = Win; exit 105 = Partial; exit 98 = Miss.
+  assert.equal(classifyResult({ side: 'BUY', entry_price: 100, exit_price: 110, tp_price: 110 }), 'Win')
+  assert.equal(classifyResult({ side: 'BUY', entry_price: 100, exit_price: 105, tp_price: 110 }), 'Partial')
+  assert.equal(classifyResult({ side: 'BUY', entry_price: 100, exit_price: 98, tp_price: 110 }), 'Miss')
+  // Short mirrored; no TP recorded → any profit counts as Win (no goal to miss).
+  assert.equal(classifyResult({ side: 'SELL', entry_price: 100, exit_price: 90, tp_price: 90 }), 'Win')
+  assert.equal(classifyResult({ side: 'BUY', entry_price: 100, exit_price: 103, tp_price: null }), 'Win')
+})
+
+test('alphaDecayFlag: EXACT Symbol+Strategy+Timeframe key, last 5, >=3 Miss = decay', async () => {
+  const { alphaDecayFlag } = await import('./loss-postmortem.js')
+  const db = initDB(':memory:')
+  const ins = db.prepare(`INSERT INTO trade_postmortems (trade_id, symbol, strategy, timeframe, result) VALUES (NULL, ?, ?, ?, ?)`)
+  // 5 same-key rows, 3 Miss → decay
+  for (const r of ['Miss', 'Miss', 'Win', 'Miss', 'Partial']) ins.run('EURUSD', 'fib_618_fade', '4h', r)
+  assert.equal(alphaDecayFlag(db, { symbol: 'EURUSD', strategy: 'fib_618_fade', timeframe: '4h' }), 'decay')
+  // Same symbol, DIFFERENT timeframe → independent edge, insufficient history
+  assert.equal(alphaDecayFlag(db, { symbol: 'EURUSD', strategy: 'fib_618_fade', timeframe: '1d' }), 'insufficient_history')
+  // Same symbol, different strategy → independent edge
+  assert.equal(alphaDecayFlag(db, { symbol: 'EURUSD', strategy: 'ema_pullback', timeframe: '4h' }), 'insufficient_history')
+  // Healthy key: 5 rows, only 1 Miss → ok
+  for (const r of ['Win', 'Win', 'Miss', 'Partial', 'Win']) ins.run('GBPUSD', 'vp_value', '4h', r)
+  assert.equal(alphaDecayFlag(db, { symbol: 'GBPUSD', strategy: 'vp_value', timeframe: '4h' }), 'ok')
+})
+
+test('entryQuality: <=2 confluence -> Watch; unrecorded -> unknown (never invented)', async () => {
+  const { entryQuality } = await import('./loss-postmortem.js')
+  assert.equal(entryQuality(2), 'Watch')
+  assert.equal(entryQuality(3), 'OK')
+  assert.equal(entryQuality(null), 'unknown')
+})
+
+test('lessonLine: imperative, deterministic per classification', async () => {
+  const { lessonLine } = await import('./loss-postmortem.js')
+  assert.match(lessonLine('stop_hunt'), /^Widen stop/)
+  assert.match(lessonLine('thesis_wrong', { strategy: 'fib_618_fade' }), /fib_618_fade/)
+  assert.match(lessonLine('escaped', { maeR: -0.92 }), /-0\.9R/)
+  assert.ok(lessonLine('chop').split(' ').length < 15)
+})
+
+test('sweep persists the flat lesson fields', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, tp_price, opened_at, closed_at,
+                        net_pnl, status, close_reason, label_strategy, label_timeframe, confluence_count)
+    VALUES ('EURUSD', 'BUY', 100, 98, 98, 104, datetime('now', '-3 hours'), datetime('now', '-2 hours'),
+            -50, 'closed', 'sl', 'fib_618_fade', '1h', 2)
+  `).run()
+  const closedMs = sqliteMs(db.prepare(`SELECT closed_at FROM trades`).get().closed_at)
+  const bars = []
+  for (let i = 0; i < 40; i++) {
+    const t = closedMs - (30 - i) * 3_600_000
+    const late = t > closedMs
+    bars.push({ t, o: 99, h: late ? 101 : 99.5, l: late ? 99 : 98.4, c: late ? 100.5 : 99, v: 10 })
+  }
+  await runLossPostmortems(db, async () => bars)
+  const pm = db.prepare(`SELECT * FROM trade_postmortems`).get()
+  assert.equal(pm.result, 'Miss')
+  assert.equal(pm.alpha_decay, 'insufficient_history')
+  assert.equal(pm.entry_quality, 'Watch')       // confluence_count = 2
+  assert.match(pm.lesson, /^Widen stop/)        // stop_hunt verdict
 })

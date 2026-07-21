@@ -146,7 +146,7 @@ export function classifyWin(trade, bars, openedAtMs, closedAtMs) {
   if (maeR <= -0.8) {
     return {
       classification: 'escaped',
-      detail: `Drew down to ${maeR.toFixed(2)}R before winning — the entry was nearly stopped out. A win by escape is luck, not edge; don't size up on this setup.`,
+      detail: `Drew down to ${maeR.toFixed(2)}R before winning — the entry was nearly stopped out. The thesis worked but the entry timing was early; don't size up until entries stop drawing down this deep.`,
       realizedR, mfeR, maeR,
     }
   }
@@ -162,6 +162,65 @@ export function classifyWin(trade, bars, openedAtMs, closedAtMs) {
     detail: `Banked +${realizedR.toFixed(2)}R of a +${mfeR.toFixed(2)}R best — the exit engine captured what the market offered.`,
     realizedR, mfeR, maeR,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Trade-Lesson Extraction (owner spec) — flat key-value fields any controller
+// can consume unmodified. Deterministic (no LLM): result vs the stated GOAL
+// (TP1), one imperative lesson line per verdict, alpha-decay keyed on the
+// EXACT Symbol+Strategy+Timeframe (a symbol running two strategies carries
+// two independent edges), and Entry-quality from the recorded confluence
+// count (≤2 → Watch; unrecorded → unknown, never invented).
+// ---------------------------------------------------------------------------
+
+/** Result vs GOAL (TP1): Win = reached goal; Partial = profit short of goal; Miss = loss/flat. */
+export function classifyResult(trade) {
+  const entry = Number(trade.entry_price), exit = Number(trade.exit_price)
+  if (!Number.isFinite(entry) || !Number.isFinite(exit)) return 'unknown'
+  const dir = /^(buy|long)$/i.test(String(trade.side || '')) ? 1 : -1
+  const move = (exit - entry) * dir
+  // Number(null) is 0 — a missing TP must read as "no goal", not "goal 0".
+  const tp1 = trade.tp_price == null ? NaN : Number(trade.tp_price)
+  if (move <= 0) return 'Miss'
+  if (Number.isFinite(tp1) && (tp1 - entry) * dir > 0 && move >= (tp1 - entry) * dir * 0.98) return 'Win'
+  return Number.isFinite(tp1) ? 'Partial' : 'Win'
+}
+
+/** One imperative lesson line (<15 words) naming the deciding condition. */
+export function lessonLine(classification, ctx = {}) {
+  switch (classification) {
+    case 'stop_hunt': return 'Widen stop beyond the sweep zone; direction was right.'
+    case 'thesis_wrong': return `Re-validate ${ctx.strategy || 'the'} entry conditions; price continued against the thesis.`
+    case 'chop': return 'Require a stronger trend filter before entry; market was noise.'
+    case 'time_cap': return 'Avoid setups needing more time than the cap allows.'
+    case 'gave_back': return 'Bank earlier; peak exceeded the exit by a full R.'
+    case 'clean_win': return 'Repeat this setup; the exit captured the available move.'
+    case 'escaped': return `Enter later in the setup; drawdown hit ${ctx.maeR != null ? ctx.maeR.toFixed(1) : '-0.8'}R first.`
+    default: return 'Insufficient data; record entry context on future trades.'
+  }
+}
+
+/**
+ * Alpha-decay on the EXACT Symbol+Strategy+Timeframe key: of the last 5 prior
+ * postmortems sharing that key, ≥3 Miss → 'decay'; <5 history →
+ * 'insufficient_history'; else 'ok'. Null strategy/timeframe keys still match
+ * only their own kind (IS-null comparison), never bleed across.
+ */
+export function alphaDecayFlag(db, trade) {
+  const rows = db.prepare(`
+    SELECT result FROM trade_postmortems
+    WHERE symbol = ? AND strategy IS ? AND timeframe IS ?
+    ORDER BY id DESC LIMIT 5
+  `).all(trade.symbol, trade.strategy ?? null, trade.timeframe ?? null)
+  if (rows.length < 5) return 'insufficient_history'
+  const misses = rows.filter(r => r.result === 'Miss').length
+  return misses >= 3 ? 'decay' : 'ok'
+}
+
+/** Entry-quality: Watch when confluence-count ≤2; unknown when never recorded. */
+export function entryQuality(confluenceCount) {
+  if (confluenceCount == null) return 'unknown'
+  return Number(confluenceCount) <= 2 ? 'Watch' : 'OK'
 }
 
 /** Parse "YYYY-MM-DD HH:MM:SS" (sqlite, UTC) or ISO into epoch ms. */
@@ -186,7 +245,8 @@ export function sqliteMs(s) {
 export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now = Date.now(), windowDays = 90 } = {}) {
   const rows = db.prepare(`
     SELECT t.id, t.symbol, t.side, t.entry_price, t.exit_price, t.sl_price,
-           t.net_pnl, t.close_reason, t.opened_at, t.closed_at,
+           t.net_pnl, t.close_reason, t.opened_at, t.closed_at, t.tp_price,
+           t.confluence_count,
            COALESCE(t.label_strategy, t.strategy) AS strategy,
            t.label_timeframe AS timeframe,
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
@@ -256,15 +316,23 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const fromMs = (openedMs || closedMs) - 20 * ms
     const toMs = closedMs + (AFTERMATH_BARS + 2) * ms
     const replay = bars.filter(b => b.t >= fromMs && b.t <= toMs)
+    // Flat controller-consumable lesson fields (owner spec). Decay is read
+    // over the PRIOR same-key history, before this row lands.
+    const result = classifyResult(t)
+    const decay = alphaDecayFlag(db, { symbol: t.symbol, strategy: t.strategy || null, timeframe: tf })
+    const lesson = lessonLine(verdict.classification, { strategy: t.strategy, maeR: verdict.maeR })
+    const eq = entryQuality(t.confluence_count)
     db.prepare(`
       INSERT INTO trade_postmortems
         (trade_id, symbol, strategy, timeframe, side, entry_price, exit_price, sl_price,
-         net_pnl, r_multiple, classification, detail, bars_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         net_pnl, r_multiple, classification, detail, bars_json,
+         result, lesson, alpha_decay, entry_quality)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       t.id, t.symbol, t.strategy || null, tf, t.side, t.entry_price, t.exit_price, t.sl_price,
       t.net_pnl, rMult, verdict.classification, verdict.detail,
       JSON.stringify(replay.map(b => [b.t, b.o, b.h, b.l, b.c, b.v ?? null])),
+      result, lesson, decay, eq,
     )
     classified++
   }
