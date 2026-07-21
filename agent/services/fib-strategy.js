@@ -486,6 +486,25 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
  * the monitor phase resolves open-position prices from these rows. Fetch
  * failures are counted in `errors` and surfaced in the row's thesis.
  */
+/**
+ * Pick which symbols the HEAVY scan covers this run. Held symbols are excluded
+ * entirely (a second position on them is vetoed anyway, and their prices come
+ * from the cheap spot refresh), and the cursor ALWAYS advances by the number of
+ * fresh symbols scanned — so a full book of held positions can never freeze
+ * new-setup coverage. Pure and side-effect free for testing.
+ * @returns {{ batch: Array, nextCursor: number }}
+ */
+export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cursor = 0 } = {}) {
+  const size = Math.max(1, Math.floor(batchSize) || 15)
+  const held = new Set(heldSymbols.map(s => String(s).toUpperCase()))
+  const rest = (symbols || []).filter(w => !held.has(String(w.symbol).toUpperCase()))
+  if (rest.length === 0) return { batch: [], nextCursor: 0, restCount: 0 }
+  const start = Math.max(0, Math.floor(cursor) || 0) % rest.length
+  const rotated = [...rest.slice(start), ...rest.slice(0, start)]
+  const batch = rotated.slice(0, size)
+  return { batch, nextCursor: (start + batch.length) % rest.length, restCount: rest.length }
+}
+
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
   const scanOpts = {
@@ -496,20 +515,19 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     strategies: options.strategies || null, // registry entries, in order
     extraTimeframes: options.extraTimeframes || [],
   }
-  // FULL-WATCHLIST coverage (owner: "I have 59 symbols, where is the
-  // intelligence?"). The old hard `slice(0, 15)` meant symbols past #15
-  // were NEVER scanned. Now: symbols with open positions are always in
-  // the batch (the monitor needs their prices), and the rest ROTATE via a
-  // persisted cursor — batchSize per run, the whole list every few runs.
-  const batchSize = Math.max(1, Number(options.batchSize) || 15)
-  const priority = new Set((options.prioritySymbols || []).map(s => String(s).toUpperCase()))
-  const pri = symbols.filter(w => priority.has(String(w.symbol).toUpperCase()))
-  const rest = symbols.filter(w => !priority.has(String(w.symbol).toUpperCase()))
-  const start = rest.length ? (Math.max(0, Number(options.cursor) || 0) % rest.length) : 0
-  const rotated = [...rest.slice(start), ...rest.slice(0, start)]
-  const batch = [...pri, ...rotated].slice(0, Math.max(batchSize, pri.length))
-  const rotSteps = Math.max(0, batch.length - pri.length)
-  const nextCursor = rest.length ? (start + rotSteps) % rest.length : 0
+  // FULL-WATCHLIST coverage, DECOUPLED from monitoring. The heavy multi-
+  // timeframe scan is spent ONLY on fresh candidates that could actually open
+  // a trade — held symbols are EXCLUDED (a second position on a held symbol is
+  // vetoed anyway, and their prices come from a cheap spot refresh in the
+  // monitor phase, not this scan). Rotate `batchSize` fresh symbols per run and
+  // ALWAYS advance the cursor by that many, so a full book of held positions
+  // can never crowd out the hunt (the old batch reserved slots for held
+  // symbols first, so holding ≥ batchSize positions froze new-setup coverage).
+  const { batch, nextCursor, restCount } = selectScanBatch(symbols, {
+    heldSymbols: options.prioritySymbols || [],
+    batchSize: Number(options.batchSize) || 15,
+    cursor: Number(options.cursor) || 0,
+  })
 
   const results = []
   for (let i = 0; i < batch.length; i += SCAN_CONCURRENCY) {
@@ -549,7 +567,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hot = scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol)
   const warm = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
 
-  const rounds = rest.length ? Math.ceil(rest.length / Math.max(1, rotSteps || 1)) : 1
+  const rounds = restCount ? Math.ceil(restCount / Math.max(1, batch.length || 1)) : 1
   return {
     scans,
     hot,
