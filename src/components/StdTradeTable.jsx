@@ -273,6 +273,36 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               )
             })}
           </tbody>
+          {/* Sub-totals over the WHOLE table (not just this page) — owner:
+              "each of the table where there are Margin Used and TP and SL
+              headers should have a sub-total". P&L and Margin sum; the rest
+              aren't meaningfully summable. */}
+          {(rows.some(r => r.pnl != null) || rows.some(r => r.margin != null)) && (() => {
+            const pnlSum = rows.reduce((a, r) => a + (Number(r.pnl) || 0), 0)
+            const marginSum = rows.reduce((a, r) => a + (Number(r.margin) || 0), 0)
+            const hasMargin = rows.some(r => r.margin != null)
+            return (
+              <tfoot>
+                <tr className="border-t-2 border-[var(--color-border)] font-semibold">
+                  <td colSpan={10} className={`py-1.5 pr-3 text-right text-[var(--color-text-sub)] ${stick1}`}>
+                    Sub-total ({rows.length} rows)
+                  </td>
+                  <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  </td>
+                  <td className="py-1.5 pr-3" />
+                  {activeOpt.map(c => (
+                    <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      {c.key === 'margin' && hasMargin
+                        ? marginSum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                        : ''}
+                    </td>
+                  ))}
+                  <td />
+                </tr>
+              </tfoot>
+            )
+          })()}
         </table>
       </div>
       {/* Pagination — keeps every panel the same height */}

@@ -112,6 +112,8 @@ function AttitudeGauge({ r, volume, trending, size = SIZE }) {
           : <circle cx={cx + wing + size * 0.05} cy={cx} r={size * 0.025} fill="currentColor" opacity="0.55" />}
       </svg>
       <ScaleStrip value={r} min={-2} max={2} ticks={[-2, -1, 0, 1, 2]} width={size - 6} />
+      {/* Unit line for the scale (owner: "label each unit") */}
+      <span className="text-[8px] text-[var(--color-text-sub)] leading-none">scale: R (risk multiples — 1R = the SL distance)</span>
       <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
         Attitude — {r == null ? 'no SL set' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`}<br />{(volume || 0).toFixed(2)} lots · {trending ? 'trending' : 'choppy'}
       </span>
@@ -139,6 +141,7 @@ function VsiGauge({ rate, ratePerMin, size = SIZE }) {
         <circle cx={cx} cy={cx} r={size * 0.035} fill="currentColor" />
       </svg>
       <ScaleStrip value={ratePerMin} min={-1} max={1} ticks={[-1, -0.5, 0, 0.5, 1]} width={size - 6} />
+      <span className="text-[8px] text-[var(--color-text-sub)] leading-none">scale: R/min (how fast R is changing)</span>
       <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
         Activity — {ratePerMin == null ? 'settling…' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}
       </span>

@@ -262,6 +262,43 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/correlation — the correlation-symbols controller, made
+  // VISIBLE (owner: "when are you going to use all the correlation-symbols
+  // controller" — it vetoes live but had no UI). Returns the curated
+  // clusters, each cluster's LIVE net exposure from active positions, the
+  // caps, and the rolling-matrix config + freshness.
+  // -----------------------------------------------------------------------
+  router.get('/correlation', async (_req, res) => {
+    try {
+      const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
+      const { loadStoredMatrix } = await import('../services/correlation-matrix.js')
+      const positions = db.prepare(
+        `SELECT symbol, side FROM monitored_positions WHERE status = 'active'`
+      ).all()
+      const exposure = clusterExposure(positions, null)
+      const cfg = loadRiskConfig(db)
+      let matrix = null
+      try { matrix = loadStoredMatrix(db) } catch { /* none yet */ }
+      res.json({
+        clusters: CORRELATION_CLUSTERS.map(c => ({
+          key: c.key, label: c.label, members: c.members,
+          net: exposure[c.key]?.net ?? 0,
+          held: (exposure[c.key]?.members || []).map(m => `${m.symbol} ${m.side} (${m.contribution > 0 ? '+' : ''}${m.contribution})`),
+        })),
+        maxClusterExposure: cfg.maxClusterExposure,
+        maxCurrencyExposure: cfg.maxCurrencyExposure,
+        liveMatrix: {
+          config: loadCorrelationMatrixConfig(db),
+          computedAt: matrix?.computedAt || null,
+          symbols: matrix?.symbols?.length || 0,
+        },
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/postmortems — post-loss playback: what the market did after
   // each losing trade, with replay bars + per-strategy loss-class stats.
   // -----------------------------------------------------------------------

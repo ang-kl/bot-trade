@@ -9,7 +9,12 @@
 // are OFF (owner: "keep records of these" + "two controllers ... one to
 // monitor the trigger take place").
 // ---------------------------------------------------------------------------
-import { orderStrategy, orderStatusLabel, orderTriggerPrice } from '../lib/order-ledger-rows.js'
+import { useState } from 'react'
+import { orderStrategy, orderStatusLabel, orderTriggerPrice, isoWeek } from '../lib/order-ledger-rows.js'
+import OrderManager from './OrderManager.jsx'
+import Button from './common/Button.jsx'
+
+const parseTs = (iso) => Date.parse(String(iso || '').includes('T') ? iso : String(iso || '').replace(' ', 'T') + 'Z')
 
 const num = (v) => {
   if (v == null) return '—'
@@ -31,7 +36,7 @@ function ago(iso) {
   return `${Math.round(mins / 1440)}d`
 }
 
-function Row({ o, gone }) {
+function Row({ o, gone, action = null }) {
   const long = String(o.side).toUpperCase() === 'BUY' || String(o.side).toLowerCase() === 'long'
   const strat = orderStrategy(o.label)
   return (
@@ -54,6 +59,7 @@ function Row({ o, gone }) {
         </span>
         {gone && o.gone_at ? <span className="ml-1 text-[var(--color-text-sub)]">· {ago(o.gone_at)} ago</span> : null}
       </td>
+      <td className="py-1.5 whitespace-nowrap">{action}</td>
     </tr>
   )
 }
@@ -77,11 +83,12 @@ function QueuedRow({ q }) {
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">
         waiting{q.expires_at ? ` · expires ${ago(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}
       </td>
+      <td className="py-1.5" />
     </tr>
   )
 }
 
-export default function OrderLedger({ orders }) {
+export default function OrderLedger({ orders, onChanged = null }) {
   const working = orders?.working || []
   const recentlyGone = orders?.recentlyGone || []
   const queued = orders?.queued || []
@@ -95,8 +102,8 @@ export default function OrderLedger({ orders }) {
   const head = (
     <thead>
       <tr className="text-left text-[var(--color-text-sub)]">
-        {['Placed', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'Strategy', 'Source', 'Status'].map((h) => (
-          <th key={h} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
+        {['Placed', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
+          <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
         ))}
       </tr>
     </thead>
@@ -120,7 +127,11 @@ export default function OrderLedger({ orders }) {
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               {head}
-              <tbody>{working.map((o) => <Row key={`w-${o.order_id}`} o={o} gone={false} />)}</tbody>
+              <tbody>
+                {working.map((o) => (
+                  <WorkingRow key={`w-${o.order_id}`} o={o} onDone={onChanged} />
+                ))}
+              </tbody>
             </table>
           </div>
         </div>
@@ -131,11 +142,66 @@ export default function OrderLedger({ orders }) {
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               {head}
-              <tbody>{recentlyGone.map((o) => <Row key={`g-${o.order_id}`} o={o} gone={true} />)}</tbody>
+              <tbody>
+                {/* Pivot-style grouping: a tiny subheader per DAY, carrying the
+                    ISO week — done orders read like a pivot table by
+                    day → week (owner spec). */}
+                {(() => {
+                  const out = []
+                  let lastDay = null
+                  for (const o of recentlyGone) {
+                    const t = parseTs(o.gone_at || o.last_seen)
+                    const d = Number.isFinite(t) ? new Date(t) : null
+                    const dayKey = d ? d.toISOString().slice(0, 10) : 'unknown'
+                    if (dayKey !== lastDay) {
+                      lastDay = dayKey
+                      const n = recentlyGone.filter(x => {
+                        const xt = parseTs(x.gone_at || x.last_seen)
+                        return Number.isFinite(xt) && new Date(xt).toISOString().slice(0, 10) === dayKey
+                      }).length
+                      out.push(
+                        <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
+                          <td colSpan={11} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                            {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
+                          </td>
+                        </tr>
+                      )
+                    }
+                    out.push(<Row key={`g-${o.order_id}`} o={o} gone={true} />)
+                  }
+                  return out
+                })()}
+              </tbody>
             </table>
           </div>
         </div>
       )}
     </div>
+  )
+}
+
+// A working broker-resting order row + its Manage sheet (cancel / chart) —
+// owner: "ability for human to close pending orders and see chart". Reuses
+// the same OrderManager pop-up the live broker table uses.
+function WorkingRow({ o, onDone }) {
+  const [open, setOpen] = useState(false)
+  const manageShape = {
+    orderId: o.order_id, symbol: o.symbol, side: o.side,
+    limitPrice: o.limit_price, stopPrice: o.stop_price,
+    volumeUnits: o.volume, sl: o.sl, tp: o.tp, label: o.label,
+  }
+  return (
+    <>
+      <Row o={o} gone={false} action={
+        <Button size="sm" variant="ghost" onClick={() => setOpen(v => !v)}>{open ? 'Close' : 'Manage'}</Button>
+      } />
+      {open && (
+        <tr>
+          <td colSpan={12} className="py-2">
+            <OrderManager o={manageShape} onDone={() => { setOpen(false); onDone?.() }} />
+          </td>
+        </tr>
+      )}
+    </>
   )
 }

@@ -148,6 +148,9 @@ export default function Desk() {
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
   const [postmortems, setPostmortems] = useState(null)  // post-loss playback (/state/postmortems)
+  const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
+  const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
+  const [sweepNote, setSweepNote] = useState('')
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
@@ -245,7 +248,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -259,6 +262,7 @@ export default function Desk() {
         agentGet('/state/market-hours').catch(() => null),
         agentGet('/state/orders').catch(() => null),
         agentGet('/state/postmortems').catch(() => null),
+        agentGet('/state/correlation').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -274,6 +278,7 @@ export default function Desk() {
       setMarketHours(mh?.hours || null)
       setOrders(ord || null)
       setPostmortems(pms || null)
+      setCorrelation(corr || null)
       setError('')
     } catch (e) { setError(e.message) }
   }, [historyDays])
@@ -592,16 +597,69 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
+        {/* On-demand back-fill: sweep a big batch of unclassified closed
+            trades now instead of waiting for the loop's 6-per-cycle pace. */}
+        <div className="mb-2">
+          <Button size="sm" variant="ghost" disabled={sweepBusy} onClick={async () => {
+            setSweepBusy(true)
+            try {
+              const r = await agentPost('/actions/postmortem-sweep', { batch: 30 })
+              setSweepNote(`swept: ${r.classified ?? 0} classified, ${r.waiting ?? 0} waiting${(r.tunerActive || []).length ? ` · tuner active: ${r.tunerActive.join(', ')}` : ''}`)
+              load()
+            } catch (e) { setSweepNote(`sweep failed: ${e.message}`) }
+            setSweepBusy(false)
+          }}>{sweepBusy ? 'Sweeping…' : 'Sweep lessons now'}</Button>
+          {sweepNote && <span className="ml-2 text-[11px] text-[var(--color-text-sub)]">{sweepNote}</span>}
+        </div>
         <LossReview postmortems={postmortems} />
+      </Section>
+
+      {/* Correlation-symbols controller — the cluster exposure the risk gate
+          vetoes on, made visible (owner: "when are you going to use all the
+          correlation-symbols controller"). */}
+      <Section
+        id="correlation"
+        title="Correlation clusters — shared-bet exposure"
+        summary={correlation ? `cap ±${correlation.maxClusterExposure} per cluster · ccy cap ±${correlation.maxCurrencyExposure}` : null}
+        defaultOpen={false}
+      >
+        {!correlation && <p className="text-[12px] text-[var(--color-text-sub)]">Loading cluster exposure…</p>}
+        {correlation && (
+          <div className="space-y-1.5">
+            <p className="text-[12px] text-[var(--color-text-sub)]">
+              Positions in the same cluster are the SAME macro bet. The risk gate vetoes any entry pushing a cluster's net beyond ±{correlation.maxClusterExposure}. Net is signed: +2 long-USD means two full USD-strength bets stacked.
+            </p>
+            {correlation.clusters.map(c => (
+              <div key={c.key} className="glass-inset rounded-lg p-2 text-[12px]">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{c.label}</span>
+                  <span className={`font-bold ${Math.abs(c.net) >= correlation.maxClusterExposure ? 'text-[var(--color-down)]' : ''}`}>
+                    net {c.net > 0 ? '+' : ''}{c.net}
+                  </span>
+                  {Math.abs(c.net) >= correlation.maxClusterExposure && <span className="text-[11px] font-semibold text-[var(--color-down)]">AT CAP — new entries in this cluster veto</span>}
+                </div>
+                <div className="text-[11px] text-[var(--color-text-sub)]">
+                  {c.held.length ? `holding: ${c.held.join(' · ')}` : 'no open positions in this cluster'}
+                </div>
+                <div className="text-[10px] text-[var(--color-text-sub)] mt-0.5">
+                  members: {Object.entries(c.members).map(([s2, b]) => `${s2}${b > 0 ? '+' : '−'}`).join(' ')}
+                </div>
+              </div>
+            ))}
+            <p className="text-[11px] text-[var(--color-text-sub)]">
+              Rolling live matrix: {correlation.liveMatrix?.computedAt ? `computed ${ago(correlation.liveMatrix.computedAt)} ago over ${correlation.liveMatrix.symbols} symbols` : 'not computed yet'} · caps tunable in Tune → Risk (cluster / currency exposure).
+            </p>
+          </div>
+        )}
       </Section>
 
       <Section
         id="order-ledger"
-        title={`Set-order ledger — records (${orders?.working?.length ?? '…'} working)`}
+        title={`Set-order ledger — records (${orders ? `${orders.working?.length ?? 0} at broker · ${orders.queued?.length ?? 0} queued` : '…'})`}
         summary={orders?.recentlyGone?.length ? `${orders.recentlyGone.length} filled/cancelled in 24h` : null}
         defaultOpen={false}
       >
-        <OrderLedger orders={orders} />
+        <OrderLedger orders={orders} onChanged={load} />
       </Section>
 
       <Section

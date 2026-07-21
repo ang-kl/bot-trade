@@ -203,6 +203,17 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // Runs before cTrader WS open. No LLM calls. Every evaluation is persisted
   // to risk_events for Workshop audit.
   // -------------------------------------------------------------------------
+  // Lessons tuner — when a strategy's recent losses are dominated by stop
+  // hunts, widen its stop at proposal time (evidence-driven, self-clearing).
+  // synth.sl itself is updated so the risk gate, spread gate, broker order
+  // and DB rows all see the SAME widened stop; risk-based sizing keeps the
+  // $ risk constant on the wider distance (fewer lots, same budget).
+  try {
+    const { loadLessonTuning, applySlWiden } = await import('./services/lessons-tuner.js')
+    const tuned = applySlWiden({ strategy: synth.strategy, entry: synth.entry, sl: synth.sl }, loadLessonTuning(db))
+    if (tuned.note) { synth.sl = tuned.signal.sl; log(`${symbol}: ${tuned.note}`) }
+  } catch { /* tuner is optional — never blocks a trade */ }
+
   const proposal = {
     symbol,
     side,
@@ -1020,9 +1031,29 @@ async function runLoop(db) {
               return byTf[tf] || []
             }
             const pm = await runLossPostmortems(db, pmFetch)
-            if (pm.classified > 0) log(`Loss postmortem: classified ${pm.classified} losing trade(s) — see the Desk Loss review`)
+            if (pm.classified > 0) {
+              log(`Trade lessons: classified ${pm.classified} closed trade(s) — see the Desk Trade lessons`)
+              // Close the learning loop: recompute the evidence-driven SL-widen
+              // factors whenever new lessons land (self-clearing when the
+              // stop-hunt pattern stops).
+              const { refreshLessonTuning } = await import('./services/lessons-tuner.js')
+              const factors = refreshLessonTuning(db)
+              const keys = Object.keys(factors)
+              if (keys.length) log(`Lesson tuner ACTIVE: ${keys.map(k => `${k} SL×${factors[k].factor} (${factors[k].evidence})`).join(' · ')}`)
+            }
           } catch (err) {
-            log(`Loss postmortem sweep failed (non-fatal): ${err.message}`)
+            log(`Trade lessons sweep failed (non-fatal): ${err.message}`)
+          }
+
+          // Proving sweep — an ARMED strategy with no backtest GO on record
+          // gets a real backtest queued (one per day, one at a time) so
+          // "ARMED but unproven" advisories resolve themselves with evidence.
+          try {
+            const { runProvingSweep } = await import('./services/proving-sweep.js')
+            const pv = await runProvingSweep(db)
+            if (pv.queued) log(`Proving sweep: queued GO backtest for armed-but-unproven '${pv.queued}'`)
+          } catch (err) {
+            log(`Proving sweep failed (non-fatal): ${err.message}`)
           }
 
           // Weekend bank — inside the last window before a LONG closure
