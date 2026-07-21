@@ -21,15 +21,17 @@ test('provider selection: OpenAI when its key is set, else Anthropic', () => {
   assert.deepEqual(llmProviderInfo({ ANTHROPIC_MODEL: 'claude-haiku-4-5' }), { provider: 'anthropic', model: 'claude-haiku-4-5' })
 })
 
-test('toOpenAIBody: system + flattened content, uses the OpenAI model', () => {
+test('toOpenAIBody: system + flattened content, emits max_completion_tokens', () => {
   const body = toOpenAIBody(
     { max_tokens: 200, system: 'sys', messages: [{ role: 'user', content: 'hi' }] },
     'gpt-4o-mini'
   )
+  // gpt-5.x rejects max_tokens; the body must carry max_completion_tokens instead.
   assert.deepEqual(body, {
-    model: 'gpt-4o-mini', max_tokens: 200,
+    model: 'gpt-4o-mini', max_completion_tokens: 200,
     messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
   })
+  assert.equal(body.max_tokens, undefined)
 })
 
 test('toOpenAIBody flattens Anthropic block content to text', () => {
