@@ -763,6 +763,35 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/postmortem-sweep — on-demand Trade-lessons sweep (owner:
+  // "create one PR to sweep the lesson learn"). Runs a BIG batch now instead
+  // of waiting for the loop's gradual 6-per-cycle back-fill. Body:
+  // { batch?: number } (default 30, max 60 — each trade costs a bar fetch).
+  router.post('/postmortem-sweep', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const batch = Math.min(60, Math.max(1, Number(req.body?.batch) || 30))
+      const map = await ensureSymbolMap(db, creds)
+      const { runLossPostmortems } = await import('../services/loss-postmortem.js')
+      const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const fetchBars = async (sym, tf, count, endTimeMs) => {
+        const sid = map[String(sym).toUpperCase()]
+        if (!sid) throw new Error(`symbolId unknown for ${sym}`)
+        const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, sid, [tf], count, 20_000, endTimeMs || 0)
+        return byTf[tf] || []
+      }
+      const out = await runLossPostmortems(db, fetchBars, { maxPerCycle: batch })
+      // New lessons may change the tuner's evidence — refresh immediately.
+      const { refreshLessonTuning } = await import('../services/lessons-tuner.js')
+      const factors = refreshLessonTuning(db)
+      res.json({ ok: true, ...out, tunerActive: Object.keys(factors) })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/order-cancel — cancel ONE resting order at the broker
   // (the Manage pop-up's Cancel). Marks any matching pending_orders ledger
   // row cancelled so the pending manager doesn't chase a ghost.

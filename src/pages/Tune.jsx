@@ -429,6 +429,8 @@ const RISK_FIELDS = [
   ['minSLDistancePct', 'Min SL distance', 'stops tighter than this % are vetoed'],
   ['maxSpreadFracOfSL', 'Max spread (of SL)', 'veto entry if the live spread exceeds this share of the SL distance — blocks off-hours/rollover fills'],
   ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
+  ['maxClusterExposure', 'Max cluster exposure', 'net same-direction bets allowed in one correlation cluster (USD, US equity, crude…) — see Desk → Correlation clusters'],
+  ['maxCurrencyExposure', 'Max currency exposure', 'net long/short exposure to any single currency'],
 ]
 
 // Grouped by what the trader is deciding — sizing, when to stop, what
@@ -437,7 +439,7 @@ const RISK_GROUPS = [
   { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'maxMarginUsagePct'] },
   { title: 'Circuit breakers', blurb: 'When the bot must stand down.', keys: ['dailyLossPct', 'maxConsecutiveLosses', 'cooldownMinutes'] },
   { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct', 'maxSpreadFracOfSL'] },
-  { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes'] },
+  { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure'] },
 ]
 
 // Rich controls for the Risk tab — sliders for continuous fractions
@@ -453,6 +455,8 @@ const RISK_CONTROLS = {
   cooldownMinutes: { type: 'select', options: [[0, 'off — resume next cycle'], [30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
   minSLDistancePct: { type: 'slider', min: 0.01, max: 0.5, step: 0.01, fmt: v => `${Number(v).toFixed(2)}%` },
   maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
+  maxClusterExposure: { type: 'select', options: [[0, 'off — no cluster gate'], [1, '±1 — one bet per cluster'], [2, '±2 — default'], [3, '±3'], [4, '±4 — loose']] },
+  maxCurrencyExposure: { type: 'select', options: [[0, 'off'], [1, '±1'], [2, '±2 — default'], [3, '±3'], [4, '±4 — loose']] },
   maxMarginUsagePct: { type: 'slider', min: 0.001, max: 1, step: 0.0001, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
 }
 

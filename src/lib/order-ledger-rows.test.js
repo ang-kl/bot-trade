@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { orderStrategy, orderStatusLabel, orderTriggerPrice } from './order-ledger-rows.js'
+import { orderStrategy, orderStatusLabel, orderTriggerPrice, isoWeek } from './order-ledger-rows.js'
 
 describe('orderStrategy', () => {
   it('extracts the strategy code from a structured bot label', () => {
@@ -28,5 +28,12 @@ describe('orderTriggerPrice', () => {
     expect(orderTriggerPrice({ limit_price: null, stop_price: 1.2 })).toBe(1.2)
     expect(orderTriggerPrice({ limit_price: null, stop_price: null })).toBeNull()
     expect(orderTriggerPrice(null)).toBeNull()
+  })
+})
+
+describe('isoWeek', () => {
+  it('computes ISO week numbers', () => {
+    expect(isoWeek(new Date(Date.UTC(2026, 6, 21)))).toBe(30)  // Tue 21 Jul 2026
+    expect(isoWeek(new Date(Date.UTC(2026, 0, 1)))).toBe(1)
   })
 })

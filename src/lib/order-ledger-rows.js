@@ -25,6 +25,16 @@ export function orderStatusLabel(row) {
   return row.status === 'working' ? 'working' : 'filled / cancelled'
 }
 
+// ISO week number — the pivot key for the done-orders day→week grouping
+// (owner: "group by date and then the week … like a pivot table").
+export function isoWeek(d) {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  const day = date.getUTCDay() || 7
+  date.setUTCDate(date.getUTCDate() + 4 - day)
+  const jan1 = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  return Math.ceil(((date - jan1) / 86400000 + 1) / 7)
+}
+
 // The entry price a resting order triggers at — limit or stop, whichever the
 // order type carries. Returns null when neither is set.
 export function orderTriggerPrice(row) {

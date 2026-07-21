@@ -29,7 +29,9 @@ function Hand({ cx, cy, len, angle, width = 2, color = 'var(--color-text)' }) {
   return <line x1={xb} y1={yb} x2={x} y2={y} stroke={color} strokeWidth={width} strokeLinecap="round" />
 }
 
-function SubDial({ cx, cy, r, frac, label, value, color = 'var(--color-text)', ticks = 6 }) {
+// Every sub-dial states its UNIT (owner: "I don't understand the dials
+// without label each unit") and uses larger, full-contrast text.
+function SubDial({ cx, cy, r, frac, label, unit, value, color = 'var(--color-text)', ticks = 6 }) {
   const marks = Array.from({ length: ticks + 1 }, (_, i) => i / ticks)
   return (
     <g>
@@ -39,8 +41,9 @@ function SubDial({ cx, cy, r, frac, label, value, color = 'var(--color-text)', t
         const [x2, y2] = polar(cx, cy, r - (i % (ticks / 2 || 1) === 0 ? 6 : 4), at(m))
         return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={SUB} strokeWidth="0.75" />
       })}
-      <text x={cx} y={cy - r * 0.34} textAnchor="middle" fontSize="6" fill={SUB} style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</text>
-      <text x={cx} y={cy + r * 0.55} textAnchor="middle" fontSize="8" fontWeight="700" fill={color}>{value}</text>
+      <text x={cx} y={cy - r * 0.30} textAnchor="middle" fontSize="7.5" fill="var(--color-text)" style={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</text>
+      <text x={cx} y={cy + r * 0.48} textAnchor="middle" fontSize="10.5" fontWeight="700" fill={color}>{value}</text>
+      {unit && <text x={cx} y={cy + r * 0.78} textAnchor="middle" fontSize="6.5" fill={SUB}>{unit}</text>}
       {frac != null && <Hand cx={cx} cy={cy} len={r - 5} angle={at(frac)} width={1.5} color={color} />}
       <circle cx={cx} cy={cy} r="1.6" fill={color} />
     </g>
@@ -96,7 +99,9 @@ export default function TradeChronograph({ pos, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div className="glass-inset rounded-2xl p-3 max-w-[360px] w-full" onClick={e => e.stopPropagation()}>
+      {/* SOLID surface, not glass — the see-through card washed the dial out
+          (owner: "the pop-up font colour font size"). */}
+      <div className="bg-[var(--color-bg)] border border-[var(--color-border)] shadow-2xl rounded-2xl p-4 max-w-[400px] w-full" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-baseline gap-2">
             <span className="text-[15px] font-bold">{pos.symbol}</span>
@@ -118,14 +123,14 @@ export default function TradeChronograph({ pos, onClose }) {
           })}
           {[0, 1, 2, 3, 4, 5, 6].map((v) => {
             const [x, y] = polar(C, C, RING - 22, at(v / 6))
-            return <text key={v} x={x} y={y + 3} textAnchor="middle" fontSize="8" fill={SUB}>{v}</text>
+            return <text key={v} x={x} y={y + 3} textAnchor="middle" fontSize="10" fontWeight="600" fill="var(--color-text)">{v}</text>
           })}
-          <text x={C} y={30} textAnchor="middle" fontSize="8" fill={SUB} style={{ letterSpacing: '0.08em' }}>R / HR (velocity)</text>
+          <text x={C} y={30} textAnchor="middle" fontSize="10" fontWeight="600" fill="var(--color-text)" style={{ letterSpacing: '0.08em' }}>R / HR (velocity)</text>
 
           {/* Volume readout on the tachymeter */}
           <g>
-            <text x={C} y={C + RING - 26} textAnchor="middle" fontSize="9" fill={SUB} style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</text>
-            <text x={C} y={C + RING - 14} textAnchor="middle" fontSize="13" fontWeight="800" fill="var(--color-text)">{Number(volume).toLocaleString(undefined, { maximumFractionDigits: 2 })} lots</text>
+            <text x={C} y={C + RING - 28} textAnchor="middle" fontSize="10" fill="var(--color-text)" style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</text>
+            <text x={C} y={C + RING - 14} textAnchor="middle" fontSize="15" fontWeight="800" fill="var(--color-text)">{Number(volume).toLocaleString(undefined, { maximumFractionDigits: 2 })} lots</text>
           </g>
 
           {/* Main price marks (SL / entry / TP1 / TP2) on an inner arc */}
@@ -135,17 +140,17 @@ export default function TradeChronograph({ pos, onClose }) {
             const [lx, ly] = polar(C, C, RING - 42, at(m.f))
             return (
               <g key={i}>
-                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={m.color} strokeWidth="2" />
-                <text x={lx} y={ly} textAnchor="middle" fontSize="7" fontWeight="700" fill={m.color}>{m.label}</text>
-                <text x={lx} y={ly + 8} textAnchor="middle" fontSize="6.5" fill={SUB}>{price5(m.price)}</text>
+                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={m.color} strokeWidth="2.5" />
+                <text x={lx} y={ly} textAnchor="middle" fontSize="9" fontWeight="700" fill={m.color}>{m.label}</text>
+                <text x={lx} y={ly + 10} textAnchor="middle" fontSize="8.5" fontWeight="600" fill="var(--color-text)">{price5(m.price)}</text>
               </g>
             )
           })}
 
-          {/* Sub-dials */}
-          <SubDial cx={C - 56} cy={C + 4} r={30} frac={timeFrac} label="In trade" value={fmtDuration(ms)} color="var(--color-text)" ticks={12} />
-          <SubDial cx={C + 56} cy={C + 4} r={30} frac={rFrac} label="→ target" value={r == null ? '—' : `${r.toFixed(2)}R`} color={pnlUp ? UP : DOWN} ticks={Math.max(2, Math.round(rTp) || 2)} />
-          <SubDial cx={C} cy={C + 66} r={28} frac={slProx} label="to stop" value={slProx == null ? '—' : `${Math.round((1 - slProx) * 100)}%`} color={slProx != null && slProx > 0.66 ? DOWN : SUB} ticks={5} />
+          {/* Sub-dials — each labelled with its UNIT */}
+          <SubDial cx={C - 56} cy={C + 4} r={30} frac={timeFrac} label="In trade" unit="dial = 60 min" value={fmtDuration(ms)} color="var(--color-text)" ticks={12} />
+          <SubDial cx={C + 56} cy={C + 4} r={30} frac={rFrac} label="→ target" unit={`R units · full = ${Number.isFinite(rTp) ? rTp.toFixed(1) : '2.0'}R`} value={r == null ? '—' : `${r.toFixed(2)}R`} color={pnlUp ? UP : DOWN} ticks={Math.max(2, Math.round(rTp) || 2)} />
+          <SubDial cx={C} cy={C + 66} r={28} frac={slProx} label="to stop" unit="% of risk left" value={slProx == null ? '—' : `${Math.round((1 - slProx) * 100)}%`} color={slProx != null && slProx > 0.66 ? DOWN : SUB} ticks={5} />
 
           {/* Main velocity sweep hand (thin red chrono hand) */}
           {velFrac != null && <Hand cx={C} cy={C} len={RING - 6} angle={at(velFrac)} width={1.4} color={DOWN} />}
@@ -157,11 +162,15 @@ export default function TradeChronograph({ pos, onClose }) {
           <text x={C} y={C - 84} textAnchor="middle" fontSize="16" fontWeight="800" fill="var(--color-text)" fontFamily="ui-monospace, monospace">{fmtDuration(ms)}</text>
         </svg>
 
-        <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] mt-1">
-          <span className="text-[var(--color-text-sub)]">Current</span><span className="tabular-nums text-right">{price5(price)}</span>
-          <span className="text-[var(--color-text-sub)]">Velocity</span><span className="tabular-nums text-right">{vel == null ? '—' : `${vel.toFixed(2)} R/hr`}</span>
-          <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[13px] mt-2">
+          <span className="text-[var(--color-text-sub)]">Current price</span><span className="tabular-nums text-right font-semibold">{price5(price)}</span>
+          <span className="text-[var(--color-text-sub)]">Velocity</span><span className="tabular-nums text-right font-semibold">{vel == null ? '—' : `${vel.toFixed(2)} R/hr`}</span>
+          <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right font-semibold">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
         </div>
+        {/* Legend — what each element means, in words (never colour-only) */}
+        <p className="text-[11px] leading-snug text-[var(--color-text-sub)] mt-1.5">
+          Bold hand = current price on the SL→TP1 travel · thin hand = velocity on the outer R/hr ring · marks show SL / entry / TP1 / TP2 with live prices.
+        </p>
       </div>
     </div>
   )
