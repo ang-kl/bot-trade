@@ -280,12 +280,19 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
           "pop-up window and not within the table"). Backdrop click closes. */}
       {panel && panelRow && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-3 sm:p-6"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center sm:p-6"
           role="dialog"
           aria-modal="true"
           onClick={() => setPanelFor(null)}
         >
-          <div className="w-full max-w-xl my-auto" onClick={e => e.stopPropagation()}>
+          {/* Bottom-sheet on phones, centred card on desktop. The SHEET itself
+              scrolls (max-height + overflow), so a tall panel never pushes its
+              own header off the top — the old `items-start + my-auto` centring
+              clipped the title on small screens (owner: "iPhone UI are worst"). */}
+          <div
+            className="w-full max-w-xl max-h-[92dvh] overflow-y-auto overscroll-contain sm:max-h-[85vh]"
+            onClick={e => e.stopPropagation()}
+          >
             {panel.render(panelRow, () => setPanelFor(null))}
           </div>
         </div>

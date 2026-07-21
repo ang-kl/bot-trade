@@ -43,9 +43,10 @@ export default function OrderManager({ o, onDone }) {
   }
 
   return (
-    <div className="glass-panel rounded-[12px] p-3 mt-2">
-      {/* Header — OID + symbol + lots, like the cTrader sheet title */}
-      <div className="flex items-center justify-between mb-2">
+    <div className="glass-panel rounded-t-2xl sm:rounded-[12px] p-3">
+      {/* Header — OID + symbol + lots, like the cTrader sheet title. Sticky so
+          the title + close stay reachable while a tall tab scrolls. */}
+      <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
         <h3 className="text-[14px] font-bold">OID{o.orderId} {o.symbol} ({qty})</h3>
         <Button size="sm" variant="ghost" onClick={onDone}>✕</Button>
       </div>
