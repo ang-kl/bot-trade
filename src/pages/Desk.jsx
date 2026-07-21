@@ -6,7 +6,7 @@
 // the old Monitor was dropped — it lives here behind the triangles.
 // Everything reuses the endpoints/components the dedicated pages already
 // trust — this page assembles, it does not invent.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
@@ -163,15 +163,21 @@ export default function Desk() {
     // "fetching…" and fill in whenever the WS answers.
     agentPost('/actions/broker-positions', { selectedOnly: true })
       .then(b => {
-        setBroker(b?.accounts?.[0] ?? null)
-        setBrokerErr('')
+        // Refreshes update the snapshot IN PLACE — never blank it. Setting
+        // broker to null on a transient empty refresh collapsed the whole
+        // "At the broker" table to "Fetching…" then repopulated it next tick,
+        // so the page jumped up/down every few seconds (owner). Keep the last
+        // good snapshot; React then diffs only the changed cells (price/P&L),
+        // no reflow. A real fetch failure is surfaced via brokerErr below.
+        const next = b?.accounts?.[0]
+        if (next) { setBroker(next); setBrokerErr('') }
       })
       // A failed LIVE refresh must be loud — silently keeping the cached
       // snapshot made the Desk look current while showing Friday's data
       // (owner hit this Monday morning). The interval retries every cycle.
       .catch(e => setBrokerErr(`live broker refresh failed: ${e.message} — retrying`))
     agentPost('/actions/broker-history', { days: historyDays })
-      .then(bh => setBrokerHistory(bh?.ok ? bh : null))
+      .then(bh => { if (bh?.ok) setBrokerHistory(bh) }) // keep prev on a bad refresh — no collapse
       .catch(() => {})
     // Instant paint: the agent's cached snapshot (refreshed ~every 30s by
     // the monitor) fills the broker sections in milliseconds; the live
@@ -268,6 +274,17 @@ export default function Desk() {
   const brokerFlat = (broker?.positions?.length ?? 0) === 0 && (broker?.orders?.length ?? 0) === 0
   const equityStopToday = (health?.equityStopTrippedAt || '').slice(0, 10) === new Date().toISOString().slice(0, 10)
   const floating = (broker?.positions || []).reduce((s2, p2) => s2 + (Number(p2.netPnl ?? p2.estNetPnl ?? p2.estPnlQuote) || 0), 0)
+  // Memoise the broker tables on a content signature so an unchanged tick keeps
+  // the SAME row array — the price/P&L cells update in place, and the table
+  // never churns just because another Desk section polled (owner: "refresh that
+  // cell, not the whole table"). Combined with the no-blank refresh above, the
+  // section no longer collapses/repopulates, so the page stops jumping.
+  const posSig = (broker?.positions || []).map(x => `${x.positionId}:${x.currentPrice ?? ''}:${x.netPnl ?? x.estNetPnl ?? ''}:${x.sl ?? ''}:${x.tp ?? ''}:${x.lots ?? ''}`).join('|')
+  const ordSig = (broker?.orders || []).map(x => `${x.orderId}:${x.limitPrice ?? x.stopPrice ?? ''}:${x.sl ?? ''}:${x.tp ?? ''}:${x.lots ?? ''}`).join('|')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true }), [posSig])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
   return (
     <div className="space-y-3">
@@ -460,7 +477,7 @@ export default function Desk() {
         {brokerErr && <p className="text-[11px] text-[var(--color-warning-text)]">{brokerErr}</p>}
         {(broker?.positions?.length ?? 0) > 0 && (
           <StdTradeTable
-            rows={brokerPositionRows(broker.positions, { manageable: true })}
+            rows={brokerPosRows}
             countLabel="open positions"
             marketHours={marketHours}
             onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
@@ -471,7 +488,7 @@ export default function Desk() {
           <div className="mt-2">
             <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
             <StdTradeTable
-              rows={brokerOrderRows(broker.orders, { manageable: true })}
+              rows={brokerOrderRowsM}
               countLabel="pending orders"
               marketHours={marketHours}
               onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }}
