@@ -558,6 +558,15 @@ export function initDB(dbPath) {
     db.exec("ALTER TABLE scans ADD COLUMN strategy TEXT");
   }
 
+  // Pending-orders migration — carry the STRATEGY that queued the order so
+  // the set-order ledger can show strategy + timeframe (owner: "pending
+  // order should have Strategy plus Time-Frame").
+  const poCols = db.prepare("PRAGMA table_info(pending_orders)").all();
+  const poColNames = new Set(poCols.map(c => c.name));
+  if (!poColNames.has('strategy')) {
+    db.exec("ALTER TABLE pending_orders ADD COLUMN strategy TEXT");
+  }
+
   const aCols = db.prepare("PRAGMA table_info(analyses)").all();
   const aColNames = new Set(aCols.map(c => c.name));
   const aMigrations = [

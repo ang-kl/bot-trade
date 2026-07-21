@@ -242,8 +242,9 @@ export default function stateRouter(db) {
          ORDER BY id DESC LIMIT 100`
       ).all()
       queued.push(...po.map(o => ({
-        kind: 'closed_market_limit', symbol: o.symbol, side: o.dir > 0 ? 'BUY' : 'SELL',
+        id: o.id, kind: 'closed_market_limit', symbol: o.symbol, side: o.dir > 0 ? 'BUY' : 'SELL',
         order_type: 'LIMIT', volume: o.volume, limit_price: o.level, sl: o.sl, tp: o.tp,
+        strategy: o.strategy || null, order_id: o.order_id || null,
         timeframe: o.timeframe, queued_at: o.placed_at, expires_at: o.expires_at, note: o.note,
       })))
     } catch { /* table optional */ }
@@ -252,7 +253,7 @@ export default function stateRouter(db) {
         `SELECT * FROM pending_signals WHERE status = 'pending' ORDER BY id DESC LIMIT 100`
       ).all()
       queued.push(...ps.map(s => ({
-        kind: 'queued_signal', symbol: s.symbol,
+        id: s.id, kind: 'queued_signal', symbol: s.symbol,
         side: /long|buy/i.test(s.bias || '') ? 'BUY' : 'SELL',
         strategy: s.strategy, timeframe: s.timeframe, conviction: s.conviction,
         queued_at: s.queued_at, expires_at: s.expires_at, note: s.market_reason,

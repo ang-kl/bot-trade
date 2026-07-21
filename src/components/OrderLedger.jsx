@@ -64,8 +64,19 @@ function Row({ o, gone, action = null }) {
   )
 }
 
-function QueuedRow({ q }) {
+function QueuedRow({ q, onDone }) {
   const long = String(q.side).toUpperCase() === 'BUY'
+  const [busy, setBusy] = useState(false)
+  const cancel = async () => {
+    if (!window.confirm(`Cancel queued ${q.kind === 'closed_market_limit' ? 'limit order' : 'signal'} — ${q.symbol} ${q.side}?`)) return
+    setBusy(true)
+    try {
+      const { agentPost } = await import('../lib/agent-api.js')
+      await agentPost('/actions/queued-cancel', { kind: q.kind, id: q.id })
+      onDone?.()
+    } catch (e) { window.alert(`Cancel failed: ${e.message}`) }
+    setBusy(false)
+  }
   return (
     <tr className="border-t border-[var(--color-border)]">
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{ago(q.queued_at)} ago</td>
@@ -78,12 +89,17 @@ function QueuedRow({ q }) {
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.limit_price)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.sl)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.tp)}</td>
-      <td className="py-1.5 pr-3 whitespace-nowrap">{q.strategy || q.timeframe || '—'}</td>
+      {/* Strategy PLUS timeframe (owner spec) */}
+      <td className="py-1.5 pr-3 whitespace-nowrap">{[q.strategy, q.timeframe].filter(Boolean).join(' · ') || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">Bot</td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">
         waiting{q.expires_at ? ` · expires ${ago(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}
       </td>
-      <td className="py-1.5" />
+      <td className="py-1.5 whitespace-nowrap">
+        {q.id != null && (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={cancel}>{busy ? '…' : 'Cancel'}</Button>
+        )}
+      </td>
     </tr>
   )
 }
@@ -116,7 +132,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               {head}
-              <tbody>{queued.map((q, i) => <QueuedRow key={`q-${i}`} q={q} />)}</tbody>
+              <tbody>{queued.map((q, i) => <QueuedRow key={`q-${i}`} q={q} onDone={onChanged} />)}</tbody>
             </table>
           </div>
         </div>

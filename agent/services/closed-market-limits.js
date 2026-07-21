@@ -157,12 +157,12 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     const ev = await exec.placeOrder(creds, payload)
     const orderId = ev?.order?.orderId ?? ev?.orderId ?? null
     db.prepare(`
-      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed')
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?)
     `).run(
       symbol, synth.timeframe || null, orderId != null ? String(orderId) : null,
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, new Date(expiresAtMs).toISOString()
+      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null
     )
     risk.persistRiskEvent(db, proposal, {
       approved: true, veto_reason: null,

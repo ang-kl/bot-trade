@@ -763,6 +763,39 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/queued-cancel — cancel a BOT-SIDE queued order/signal
+  // (owner: "when am I able to close or manage pending order?"). Body:
+  // { kind: 'closed_market_limit'|'queued_signal', id }. A closed-market
+  // limit that already rests at the broker (order_id set) is cancelled
+  // there too, via the same path as order-cancel.
+  router.post('/queued-cancel', async (req, res) => {
+    try {
+      const { kind, id } = req.body || {}
+      if (!id || !['closed_market_limit', 'queued_signal'].includes(kind)) {
+        return res.status(400).json({ error: "kind ('closed_market_limit'|'queued_signal') and id required" })
+      }
+      if (kind === 'queued_signal') {
+        const r = db.prepare(
+          `UPDATE pending_signals SET status='expired', resolved_at=datetime('now'),
+             resolution_note='cancelled by owner' WHERE id = ? AND status = 'pending'`
+        ).run(id)
+        return res.json({ ok: true, cancelled: r.changes > 0 })
+      }
+      const row = db.prepare(`SELECT * FROM pending_orders WHERE id = ? AND status = 'working'`).get(id)
+      if (!row) return res.json({ ok: true, cancelled: false, note: 'already gone' })
+      if (row.order_id) {
+        const creds = getCtraderCreds(db)
+        if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected — cannot cancel the broker leg' })
+        const { cancelOrder } = await import('../lib/exec-engine.js')
+        await cancelOrder(creds, { orderId: row.order_id })
+      }
+      db.prepare(`UPDATE pending_orders SET status='cancelled', note = COALESCE(note,'') || ' · cancelled by owner' WHERE id = ?`).run(id)
+      res.json({ ok: true, cancelled: true, brokerLeg: !!row.order_id })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/postmortem-sweep — on-demand Trade-lessons sweep (owner:
   // "create one PR to sweep the lesson learn"). Runs a BIG batch now instead
   // of waiting for the loop's gradual 6-per-cycle back-fill. Body:
