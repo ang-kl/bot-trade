@@ -11,7 +11,16 @@
 //     · X is the LAST enabled strategy      → arm the next unarmed
 //       confluence filter (rsi → vwap → fvg) instead, tightening entries
 //       rather than going idle
-//     · everything already armed             → disarm X and say so plainly
+//     · X is last AND every filter already armed → HOLD X armed (tightened)
+//       — never disarm the last strategy to zero
+//
+// INVARIANT (2026-07-21 audit): the breaker NEVER leaves the account with zero
+// armed strategies. An earlier "aggressive" mode disarmed the last strategy on
+// the theory the autopilot would re-arm proven combos — but on a LIVE account
+// without autopilot_allow_live the autopilot only SUGGESTS and never re-arms,
+// so the account ratcheted to zero armed and stopped trading entirely (the
+// "no pending trades for hours" symptom). Adapting (tighten filters) is the
+// aggressive-in-spirit response; going dark is not.
 //
 // Every action goes through setStage() (single source of truth with the
 // Tune matrix + legacy keys), lands in action_log, and pings the owner.
@@ -23,11 +32,7 @@ import { getState, setState } from '../db.js'
 import { STRATEGY_KEYS } from './strategies.js'
 import { loadStageMatrix, setStage, FILTER_DEFS } from './stage-matrix.js'
 
-// aggressive (owner: "build more aggressive"): a losing strategy that is the
-// LAST one armed is DISARMED immediately, instead of arming tightening filters
-// and letting it ride (that's how fib bled 7 losses). Safe now that the
-// autopilot backfills proven combos. Set aggressive:false for the old ladder.
-export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3, aggressive: true }
+export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3 }
 
 export function loadAdaptiveBreakerConfig(db) {
   try {
@@ -36,7 +41,6 @@ export function loadAdaptiveBreakerConfig(db) {
       return {
         on: parsed.on !== false,
         streak: Math.min(10, Math.max(2, Math.round(Number(parsed.streak) || 3))),
-        aggressive: parsed.aggressive !== false,
       }
     }
   } catch { /* corrupt — defaults */ }
@@ -86,20 +90,17 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
       if (othersOn) {
         setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
         action = { strategy: key, streak, did: 'disarmed_strategy' }
-      } else if (cfg.aggressive) {
-        // AGGRESSIVE: cut the bleeding strategy even as the last one — the
-        // autopilot re-arms proven combos, so we don't need to keep a loser
-        // live just to avoid going idle.
-        setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
-        action = { strategy: key, streak, did: 'disarmed_last_strategy' }
       } else {
+        // LAST armed strategy — NEVER disarm to zero (the account would go dark
+        // and, on live, the autopilot can't re-arm it). Tighten entries with
+        // the next confluence filter; if every filter is already armed, HOLD it
+        // armed rather than going idle.
         const nextFilter = FILTER_DEFS.find(f => !matrix.filters.find(x => x.key === f.key)?.stages.trade)
         if (nextFilter) {
           setStage(db, { kind: 'filter', key: nextFilter.key, stage: 'trade', on: true }, io)
           action = { strategy: key, streak, did: 'armed_filter', filter: nextFilter.key }
         } else {
-          setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
-          action = { strategy: key, streak, did: 'disarmed_last_strategy' }
+          action = { strategy: key, streak, did: 'held_last_strategy' }
         }
       }
       actions.push(action)
@@ -109,8 +110,8 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
       } catch { /* audit best-effort */ }
       const msg = action.did === 'armed_filter'
         ? `🔧 ADAPTIVE BREAKER: ${key} lost ${streak} in a row — it is the last armed strategy, so the ${String(action.filter).toUpperCase()} filter is now armed to tighten its entries.`
-        : action.did === 'disarmed_last_strategy'
-          ? `🔧 ADAPTIVE BREAKER: ${key} lost ${streak} in a row and every filter is already armed — ${key} disarmed at Auto Trade & Open. Re-arm from Tune when ready.`
+        : action.did === 'held_last_strategy'
+          ? `🔧 ADAPTIVE BREAKER: ${key} lost ${streak} in a row and every filter is already armed — keeping ${key} armed (the account never goes to zero armed strategies). Review it from Tune.`
           : `🔧 ADAPTIVE BREAKER: ${key} lost ${streak} in a row — disarmed at Auto Trade & Open (other strategies stay live). Re-arm from Tune when ready.`
       try { notify?.(msg) } catch { /* best effort */ }
     } catch (err) {

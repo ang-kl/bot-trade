@@ -429,13 +429,12 @@ const RISK_FIELDS = [
   ['minSLDistancePct', 'Min SL distance', 'stops tighter than this % are vetoed'],
   ['maxSpreadFracOfSL', 'Max spread (of SL)', 'veto entry if the live spread exceeds this share of the SL distance — blocks off-hours/rollover fills'],
   ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
-  ['kellyFraction', 'Kelly fraction', '0.25 = quarter-Kelly sizing'],
 ]
 
 // Grouped by what the trader is deciding — sizing, when to stop, what
 // counts as a good trade, and how much runs at once.
 const RISK_GROUPS = [
-  { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'kellyFraction', 'maxMarginUsagePct'] },
+  { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'maxMarginUsagePct'] },
   { title: 'Circuit breakers', blurb: 'When the bot must stand down.', keys: ['dailyLossPct', 'maxConsecutiveLosses', 'cooldownMinutes'] },
   { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct', 'maxSpreadFracOfSL'] },
   { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes'] },
@@ -445,7 +444,7 @@ const RISK_GROUPS = [
 // (displayed as %), dropdowns for enumerable choices. Values are stored in
 // the same units the agent expects; only the display is humanised.
 const RISK_CONTROLS = {
-  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.03, step: 0.0025, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
+  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.05, step: 0.0025, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
   dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fraction: true, fmt: v => `${(v * 100).toFixed(1)}%` },
   minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
   maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10, 15, 25, 50, 100, 200].map(n => [n, String(n)]) },
@@ -455,7 +454,6 @@ const RISK_CONTROLS = {
   minSLDistancePct: { type: 'slider', min: 0.01, max: 0.5, step: 0.01, fmt: v => `${Number(v).toFixed(2)}%` },
   maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   maxMarginUsagePct: { type: 'slider', min: 0.001, max: 1, step: 0.0001, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
-  kellyFraction: { type: 'select', options: [[0.1, '0.10 — very conservative'], [0.25, '0.25 — quarter-Kelly (default)'], [0.5, '0.50 — aggressive'], [1, '1.00 — full Kelly (not advised)']] },
 }
 
 function RiskControl({ k, label, hint, value, onChange }) {
