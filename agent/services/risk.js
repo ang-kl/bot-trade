@@ -276,6 +276,30 @@ export function kellyVolume(stats, defaultVolume, config) {
   return { volume: scaled, note: `kelly=${kelly.toFixed(3)} scale=${scale.toFixed(2)}` }
 }
 
+/**
+ * Per-strategy live performance for the Kelly / expectancy gate. Using the
+ * GLOBAL performance snapshot let ONE losing strategy (fib) veto EVERY
+ * strategy for "negative expectancy" — even proven ones with their own edge.
+ * This scopes expectancy to the proposal's OWN record, so a strategy with too
+ * few trades returns a small total_trades and kellyVolume SKIPS (default size)
+ * instead of vetoing. Shape matches performance_snapshots columns.
+ */
+export function strategyPerfStats(db, strategyKey, windowDays = 30) {
+  if (!strategyKey) return null
+  try {
+    return db.prepare(
+      `SELECT COUNT(*) AS total_trades,
+              AVG(CASE WHEN net_pnl > 0 THEN 1.0 ELSE 0.0 END) AS win_rate,
+              AVG(CASE WHEN net_pnl > 0 THEN net_pnl END) AS avg_win,
+              AVG(CASE WHEN net_pnl <= 0 THEN net_pnl END) AS avg_loss
+       FROM trades
+       WHERE status = 'closed' AND net_pnl IS NOT NULL
+         AND COALESCE(label_strategy, strategy) = ?
+         AND closed_at >= datetime('now', ?)`
+    ).get(strategyKey, `-${Math.max(1, Math.round(windowDays))} days`)
+  } catch { return null }
+}
+
 // ---------------------------------------------------------------------------
 // Main gate
 // ---------------------------------------------------------------------------
@@ -527,10 +551,13 @@ export function evaluateTrade(db, proposal, configOverride) {
     sizingNote = hasCap && reqVol < risked.volume ? `${risked.note} · capped_at_max_lots=${reqVol}` : risked.note
   }
 
-  // ---- 10. Kelly sizing --------------------------------------------------
-  const latestStats = db
-    .prepare(`SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1`)
-    .get()
+  // ---- 10. Kelly sizing (PER-STRATEGY expectancy) ------------------------
+  // Scope expectancy to the proposal's OWN strategy so a losing strategy can't
+  // veto a proven one (fib's losses were blocking RSI-2/VP for "negative
+  // expectancy"). Unlabelled proposals fall back to the global snapshot.
+  const latestStats = proposal.strategy
+    ? strategyPerfStats(db, proposal.strategy)
+    : db.prepare(`SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1`).get()
   const { volume: kellyVol, note: kellyNote } = kellyVolume(
     latestStats,
     sizingFloor,
