@@ -1418,13 +1418,33 @@ async function runLoop(db) {
       let lastScanResults = null
       try { lastScanResults = JSON.parse(lastScanResultsJson || 'null') } catch { /* non-fatal */ }
 
+      // Cheap price refresh for held positions — one spot quote each, decoupled
+      // from the heavy new-setup scan (held symbols are no longer force-scanned,
+      // so monitoring can't crowd out hunting). This is the PRIMARY price for
+      // the deterministic rules; the last scan row is only a fallback for a
+      // symbol whose quote failed this cycle.
+      let heldPrices = {}
+      if (activePositions.length > 0) {
+        try {
+          const monCreds = getCtraderCreds(db)
+          if (monCreds.ready) {
+            const { refreshHeldPrices } = await import('./services/held-prices.js')
+            const monSymbolMap = getSymbolMap(db)
+            heldPrices = await refreshHeldPrices(monCreds, monSymbolMap, activePositions.map(p => p.symbol))
+          }
+        } catch (err) {
+          log(`Held-price refresh failed (non-fatal): ${err.message}`)
+        }
+      }
+
       for (const pos of activePositions) {
         try {
-          // Resolve current price from the most recent scan for this symbol.
-          // When absent, position-manager returns HOLD + null metrics and we
-          // still hand off to the LLM so the position is never skipped silently.
+          // Current price: the fresh spot quote first, then the most recent
+          // scan row as a fallback. When both are absent, position-manager
+          // returns HOLD + null metrics and we still hand off to the LLM so the
+          // position is never skipped silently.
           const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
-          const currentPrice = scanRow?.price ?? null
+          const currentPrice = heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
 
           const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
 
