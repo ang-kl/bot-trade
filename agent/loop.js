@@ -965,6 +965,9 @@ async function runLoop(db) {
 
           const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+          if ((result.orphansClosed || []).length > 0) {
+            log(`Reconcile: closed ${result.orphansClosed.length} stale open trade(s) whose broker position is gone (ledger drift cleanup)`)
+          }
 
           // Un-blind the safety brakes: a position closed at the BROKER (a
           // resting SL/TP fill — the normal stop-out) was marked closed with
