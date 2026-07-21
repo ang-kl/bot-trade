@@ -558,6 +558,18 @@ export function initDB(dbPath) {
     db.exec("ALTER TABLE scans ADD COLUMN strategy TEXT");
   }
 
+  // Trade-Lesson Extraction (owner spec): flat controller-consumable fields
+  // on every postmortem + confluence capture at entry.
+  const pmCols = db.prepare("PRAGMA table_info(trade_postmortems)").all();
+  const pmColNames = new Set(pmCols.map(c => c.name));
+  for (const [col, type] of [["result", "TEXT"], ["lesson", "TEXT"], ["alpha_decay", "TEXT"], ["entry_quality", "TEXT"]]) {
+    if (!pmColNames.has(col)) db.exec(`ALTER TABLE trade_postmortems ADD COLUMN ${col} ${type}`);
+  }
+  const tCols2 = db.prepare("PRAGMA table_info(trades)").all();
+  if (!new Set(tCols2.map(c => c.name)).has("confluence_count")) {
+    db.exec("ALTER TABLE trades ADD COLUMN confluence_count INTEGER");
+  }
+
   // Pending-orders migration — carry the STRATEGY that queued the order so
   // the set-order ledger can show strategy + timeframe (owner: "pending
   // order should have Strategy plus Time-Frame").

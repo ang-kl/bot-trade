@@ -97,6 +97,9 @@ export function computeFibConfluence(bars, timeframe /*, opts = {} */) {
 
   return {
     bias, entry, sl, tp1, tp2, conviction, rr, timeframe,
+    // How many Fib levels stack in the zone — the Trade-Lesson agent's
+    // Entry-quality check reads this (≤2 → Watch).
+    confluenceCount: cluster.length,
     time_cap_minutes: null,
     strategy: 'fib_confluence',
     thesis: `${cluster.length}-level Fibonacci confluence ${bias === 'long' ? 'support' : 'resistance'} on ${timeframe} at ${round(entry)} (ratios ${ratios} across multiple swing-pair grids). ${bias === 'long' ? 'Buying the bounce' : 'Selling the rejection'} off the stacked zone, stop beyond it, targets 2R/3R.`,
