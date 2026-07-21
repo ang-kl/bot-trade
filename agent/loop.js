@@ -1315,6 +1315,26 @@ async function runLoop(db) {
         await hbeat(db, 'profit_keeper', false, err.message)
       }
 
+      // Loss Guardian — safety net for LOSING/naked positions the Profit
+      // Keeper won't touch (it only protects gains). Conservative: places a
+      // protective stop on a NAKED position and enforces an optional time cap;
+      // never tightens a valid mean-reversion stop. Inert when off; non-fatal.
+      try {
+        const guardCreds = getCtraderCreds(db)
+        if (guardCreds.ready) {
+          const { runLossGuardian } = await import('./services/loss-guardian.js')
+          const g = await runLossGuardian(db, guardCreds, {
+            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
+          })
+          if (g.stops || g.closes) log(`Loss Guardian: ${g.stops} protective stop(s), ${g.closes} close(s)`)
+          if (g.errors.length) log(`Loss Guardian errors: ${g.errors.join(' · ')}`)
+        }
+        await hbeat(db, 'loss_guardian')
+      } catch (err) {
+        log(`Loss Guardian failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'loss_guardian', false, err.message)
+      }
+
       // Periodic broker-truth market-hours refresh — pull each mapped
       // symbol's real trading schedule from cTrader into symbol_hours so the
       // open/closed gate scales to 1,900+ instruments without hardcoded

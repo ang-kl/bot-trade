@@ -735,6 +735,12 @@ export default function stateRouter(db) {
     res.json({ config: loadProfitKeeperConfig(db) })
   })
 
+  // GET /state/loss-guardian — the loss-side safety-net policy
+  router.get('/loss-guardian', async (_req, res) => {
+    const { loadLossGuardianConfig } = await import('../services/loss-guardian.js')
+    res.json({ config: loadLossGuardianConfig(db) })
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/sizing-preview — dynamic per-symbol lot sizing for the
   // Watchlist table (same math as the live risk gate)
