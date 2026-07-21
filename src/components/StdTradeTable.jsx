@@ -284,7 +284,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10} className={`py-1.5 pr-3 text-right text-[var(--color-text-sub)] ${stick1}`}>
+                  <td colSpan={10} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
                   <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>

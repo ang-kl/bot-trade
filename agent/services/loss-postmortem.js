@@ -224,6 +224,12 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       ? classifyWin(t, bars, openedMs, closedMs)
       : classifyLoss(t, bars, closedMs, { allowPartial: stale })
     if (verdict === null) { waiting++; continue }
+    // Honesty guard: a clipped fetch window (old trade > 400 bars) can hide
+    // the early holding period, so a win's MFE/MAE may be understated — say
+    // so instead of overstating "clean".
+    if (isWin && bars.length && Number.isFinite(openedMs) && bars[0].t > openedMs + 2 * ms) {
+      verdict.detail += ' (bar window clipped — early holding period not visible, MFE/MAE may be understated)'
+    }
 
     const riskDist = t.sl_price != null ? Math.abs(t.entry_price - t.sl_price) : (Number(t.initial_risk) > 0 ? Number(t.initial_risk) : null)
     const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null

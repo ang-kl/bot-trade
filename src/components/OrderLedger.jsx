@@ -161,7 +161,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                       }).length
                       out.push(
                         <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
-                          <td colSpan={11} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                          <td colSpan={12} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
                             {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
                           </td>
                         </tr>
