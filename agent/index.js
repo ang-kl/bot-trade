@@ -5,6 +5,7 @@ import { resolve, dirname } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
+import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -73,6 +74,22 @@ if (!DB_PATH) {
   console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
 }
 const db = initDB(resolvedDbPath);
+
+// Exhaustive lifecycle/crash diagnostics to stdout (owner reads these from
+// Railway to find the ~4-min restarts). Installed as early as possible so a
+// boot-time error is still captured; the heartbeat reads live loop stats.
+installProcessDiagnostics({
+  version: APP_VERSION,
+  commit: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '?').slice(0, 7),
+});
+startHeartbeatLog(() => ({
+  loopCount: Number(getState(db, 'loop_count') || 0),
+  lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
+  lastScanMs: Number(getState(db, 'last_scan_ms') || 0),
+  lastScanAt: getState(db, 'last_scan_at'),
+  openTrades: (() => { try { return db.prepare("SELECT COUNT(*) c FROM trades WHERE status='open'").get().c } catch { return '?' } })(),
+  openPositions: (() => { try { return db.prepare("SELECT COUNT(*) c FROM monitored_positions WHERE status='active'").get().c } catch { return '?' } })(),
+}));
 
 // Seed cTrader credentials from env vars if present and not already stored.
 // This lets Railway hold the secrets so the agent starts trading immediately

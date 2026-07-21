@@ -889,6 +889,7 @@ async function runLoop(db) {
   loopRunning = true
   loopCount++
   const start = Date.now()
+  console.log(`[diag] LOOP #${loopCount} start`)
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
 
@@ -1898,6 +1899,7 @@ async function runLoop(db) {
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
+  console.log(`[diag] LOOP #${loopCount} end ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), delay)
 }
