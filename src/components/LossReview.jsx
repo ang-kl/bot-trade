@@ -23,7 +23,12 @@ const VERDICTS = {
   chop: { label: 'CHOP', hint: 'noise entry' },
   time_cap: { label: 'TIME CAP', hint: 'clock, not market' },
   inconclusive: { label: 'INCONCLUSIVE', hint: 'not enough data' },
+  // Wins carry lessons too (owner: "lesson learnt for both lost and wins")
+  clean_win: { label: 'CLEAN WIN', hint: 'exit captured the move' },
+  gave_back: { label: 'GAVE BACK', hint: 'left ≥1R on the table' },
+  escaped: { label: 'ESCAPED', hint: 'won after near-stop — luck, not edge' },
 }
+const WIN_CLASSES = new Set(['clean_win', 'gave_back', 'escaped'])
 
 function Spark({ bars, entry, sl, exit }) {
   if (!Array.isArray(bars) || bars.length < 2) return null
@@ -53,13 +58,25 @@ function Spark({ bars, entry, sl, exit }) {
   )
 }
 
+function Group({ title, rows }) {
+  if (rows.length === 0) return null
+  return (
+    <div>
+      <div className="text-[12px] font-semibold text-[var(--color-text-sub)] mb-1">{title} ({rows.length})</div>
+      <div className="space-y-2">
+        {rows.map((r) => <Verdict key={r.id} r={r} />)}
+      </div>
+    </div>
+  )
+}
+
 export default function LossReview({ postmortems }) {
   const rows = postmortems?.rows || []
   const stats = postmortems?.stats || []
   if (rows.length === 0) {
     return (
       <p className="text-[13px] text-[var(--color-text-sub)]">
-        No classified losses yet — the sweep reviews each losing trade a few bars after it closes.
+        No classified trades yet — the sweep reviews every closed trade (wins AND losses) a few bars after it closes, working back through 90 days of history.
       </p>
     )
   }
@@ -68,36 +85,39 @@ export default function LossReview({ postmortems }) {
   for (const s of stats) {
     (byStrat[s.strategy] ||= []).push(`${s.n} ${VERDICTS[s.classification]?.label?.toLowerCase() || s.classification}`)
   }
+  const losses = rows.filter(r => !WIN_CLASSES.has(r.classification))
+  const wins = rows.filter(r => WIN_CLASSES.has(r.classification))
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {Object.keys(byStrat).length > 0 && (
         <div className="text-[12px] text-[var(--color-text-sub)]">
           <span className="font-semibold text-[var(--color-text)]">Pattern (30d): </span>
           {Object.entries(byStrat).map(([k, v]) => `${k}: ${v.join(' · ')}`).join('  |  ')}
         </div>
       )}
-      <div className="space-y-2">
-        {rows.map((r) => {
-          const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
-          return (
-            <div key={r.id} className="glass-inset rounded-lg p-2 flex flex-wrap items-start gap-3">
-              <div className="min-w-[130px]">
-                <div className="text-[13px] font-semibold">
-                  {r.symbol} <span className="font-normal text-[var(--color-text-sub)]">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
-                </div>
-                <div className="text-[13px] font-bold tracking-wide">{v.label}</div>
-                <div className="text-[11px] text-[var(--color-text-sub)]">{v.hint}</div>
-                <div className="text-[12px] mt-0.5">
-                  {r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'}
-                  {r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
-                </div>
-              </div>
-              <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-              <p className="flex-1 min-w-[200px] text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-            </div>
-          )
-        })}
+      <Group title="Losses — what the market did" rows={losses} />
+      <Group title="Wins — what the exit engine did" rows={wins} />
+    </div>
+  )
+}
+
+function Verdict({ r }) {
+  const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
+  return (
+    <div className="glass-inset rounded-lg p-2 flex flex-wrap items-start gap-3">
+      <div className="min-w-[130px]">
+        <div className="text-[13px] font-semibold">
+          {r.symbol} <span className="font-normal text-[var(--color-text-sub)]">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+        </div>
+        <div className="text-[13px] font-bold tracking-wide">{v.label}</div>
+        <div className="text-[11px] text-[var(--color-text-sub)]">{v.hint}</div>
+        <div className="text-[12px] mt-0.5">
+          {r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'}
+          {r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
+        </div>
       </div>
+      <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
+      <p className="flex-1 min-w-[200px] text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
     </div>
   )
 }
