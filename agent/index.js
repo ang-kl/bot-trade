@@ -312,11 +312,16 @@ async function start() {
   const server = createServer(app);
   const port = Number(PORT);
 
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, '0.0.0.0', async () => {
     console.log(`[agent] listening on 0.0.0.0:${port}`);
     console.log(`[agent] CORS origin: ${FRONTEND_URL || '*'}`);
     console.log(`[agent] DB path: ${DB_PATH || './agent.db'}`);
-    console.log(`[agent] CLAUDE_API_KEY: ${CLAUDE_API_KEY ? 'set' : 'MISSING'}`);
+    // LLM provider (position-monitor fallback only): OpenAI is primary when
+    // OPENAI_API_KEY is set, else Anthropic via CLAUDE_API_KEY.
+    const { llmProviderInfo } = await import('./lib/llm-provider.js');
+    const llm = llmProviderInfo();
+    const llmKeyOk = llm.provider === 'openai' ? !!process.env.OPENAI_API_KEY : !!CLAUDE_API_KEY;
+    console.log(`[agent] LLM provider: ${llm.provider} (${llm.model}) — key ${llmKeyOk ? 'set' : 'MISSING (monitor LLM fallback disabled; deterministic trading still runs)'}`);
     console.log(`[agent] cTrader access token: ${envAccessToken || getState(db, 'ctrader_access_token') ? 'set' : 'not set'}`);
     console.log(`[agent] TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN ? 'set' : 'not set'}`);
   });
