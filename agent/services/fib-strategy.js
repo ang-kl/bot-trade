@@ -85,6 +85,32 @@ function cachedBars(symbolId, period) {
   return Date.now() - entry.fetchedAt < ttl ? entry.bars : null
 }
 
+/**
+ * Bars for a REGIME read. Prefers a higher timeframe already in the scan
+ * cache — 1h+ entries stay fresh for a full bar, so the ~30-min quant phase
+ * reuses them for free — and falls back to fetching `fallbackTf` only when
+ * nothing higher is cached. Best-effort: returns { tf: null, bars: [] } on
+ * failure so the caller SKIPS the symbol rather than writing a fabricated
+ * regime. Shares barCache with the scan.
+ */
+export async function getRegimeBars(creds, symbolId, { preferredTfs = ['1d', '4h', '1h'], fallbackTf = '1h', count = 80 } = {}) {
+  for (const tf of preferredTfs) {
+    const c = cachedBars(symbolId, tf)
+    if (c && c.length >= 40) return { tf, bars: c }
+  }
+  try {
+    const fetched = await wsGetTrendbarsBatch(
+      creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
+      symbolId, [fallbackTf], count, 60_000,
+    )
+    const bars = (fetched && fetched[fallbackTf]) || []
+    if (bars.length) barCache.set(`${symbolId}|${fallbackTf}`, { bars, fetchedAt: Date.now() })
+    return { tf: fallbackTf, bars }
+  } catch {
+    return { tf: null, bars: [] }
+  }
+}
+
 // Position time cap for a timeframe — the fixed table for the classic set,
 // 24× the bar duration (clamped to the table's own range) for custom
 // timeframes like 1.5h or 6h that the trader typed in.

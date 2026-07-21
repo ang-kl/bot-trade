@@ -1633,39 +1633,46 @@ async function runLoop(db) {
     if (loopCount % 6 === 0) {
       log('Quant phase — computing regime + performance snapshot')
       try {
-        // Regime: summarise recent scan biases per symbol into regime state
+        // Regime from REAL price structure, not the bot's own scan confidence
+        // (the audit's Class-1A/2 finding: the old regime averaged scan
+        // confidence — diluted by every 'skip' — into 'quiet'/'ranging' and
+        // wrote that same number into atr_pct labelled "ATR%"; the gate it
+        // feeds therefore blocked almost nothing). Now: Wilder ADX + DI for
+        // trend strength/direction, an ATR-expansion ratio for volatility, and
+        // a real ATR% — emitting the same four labels regime-gate.js expects.
         const recentScans = db.prepare(
-          `SELECT symbol, bias, confidence, scanned_at FROM scans
-           WHERE scanned_at > datetime('now', '-6 hours') ORDER BY scanned_at DESC`
+          `SELECT DISTINCT symbol FROM scans WHERE scanned_at > datetime('now', '-6 hours')`
         ).all()
 
-        const bySymbol = {}
-        for (const s of recentScans) {
-          if (!bySymbol[s.symbol]) bySymbol[s.symbol] = []
-          bySymbol[s.symbol].push(s)
+        const { computeRegime } = await import('./services/regime.js')
+        const { getRegimeBars } = await import('./services/fib-strategy.js')
+        const clientId = ctraderEnv('clientId')
+        const clientSecret = ctraderEnv('clientSecret')
+        const accessToken = getState(db, 'ctrader_access_token')
+        const accountId = getState(db, 'ctrader_account_id')
+        const isLive = getState(db, 'ctrader_is_live') === 'true'
+        const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+        const regimeSymbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+        const regimeCreds = { host, clientId, clientSecret, accessToken, accountId }
+        const insRegime = db.prepare(
+          `INSERT INTO regimes (symbol, regime, trend_direction, atr_pct, computed_at)
+           VALUES (?, ?, ?, ?, datetime('now'))`
+        )
+        let regimeWritten = 0
+        for (const { symbol } of recentScans) {
+          const sid = regimeSymbolMap[String(symbol).toUpperCase()]
+          if (!sid) continue
+          try {
+            const { bars } = await getRegimeBars(regimeCreds, sid)
+            const r = computeRegime(bars)
+            // Never write a fabricated regime — an unknown one fails the gate
+            // OPEN, exactly like the rest of the risk chain.
+            if (r.regime === 'unknown') continue
+            insRegime.run(symbol, r.regime, r.trendDir, r.atrPct)
+            regimeWritten++
+          } catch { /* one symbol's fetch must not sink the quant phase */ }
         }
-
-        for (const [symbol, rows] of Object.entries(bySymbol)) {
-          const biases = rows.map(r => r.bias)
-          const avgConf = rows.reduce((sum, r) => sum + (r.confidence || 0), 0) / rows.length
-          const uniqueBiases = [...new Set(biases.filter(b => b && b !== 'skip'))]
-
-          let regime = 'quiet'
-          let trendDir = null
-          if (uniqueBiases.length === 1 && avgConf >= 6) {
-            regime = 'trending'
-            trendDir = uniqueBiases[0]
-          } else if (uniqueBiases.length > 1 && avgConf >= 5) {
-            regime = 'volatile'
-          } else if (avgConf >= 3) {
-            regime = 'ranging'
-          }
-
-          db.prepare(
-            `INSERT INTO regimes (symbol, regime, trend_direction, atr_pct, computed_at)
-             VALUES (?, ?, ?, ?, datetime('now'))`
-          ).run(symbol, regime, trendDir, avgConf)
-        }
+        log(`Regime (ADX/ATR) computed for ${regimeWritten}/${recentScans.length} scanned symbols`)
 
         // Performance snapshot from closed trades
         const stats = db.prepare(
@@ -1696,8 +1703,6 @@ async function runLoop(db) {
           ).run(stats.total, stats.wins, stats.losses, winRate, profitFactor, stats.total_pnl, stats.avg_win, stats.avg_loss)
         }
 
-        log(`Regime updated for ${Object.keys(bySymbol).length} symbols`)
-
         // Live correlation matrix (owner: "I want the live-computed
         // version") — held positions + watchlist, correlated on recent 1h
         // returns, cached for the risk gate's live-correlation veto.
@@ -1713,8 +1718,8 @@ async function runLoop(db) {
             const held = db.prepare(`SELECT DISTINCT symbol FROM monitored_positions WHERE status = 'active'`).all().map(r => r.symbol)
             // `symbols` (the scan-phase list) isn't in scope in the quant
             // phase — use held positions plus whatever the recent scans
-            // covered (bySymbol), which is what actually needs correlating.
-            const corrSymbols = [...new Set([...held, ...Object.keys(bySymbol)])].filter(sym => symbolMap[String(sym).toUpperCase()])
+            // covered, which is what actually needs correlating.
+            const corrSymbols = [...new Set([...held, ...recentScans.map(r => r.symbol)])].filter(sym => symbolMap[String(sym).toUpperCase()])
             const { computeAndStoreMatrix } = await import('./services/correlation-matrix.js')
             const res = await computeAndStoreMatrix(db, corrSymbols, {
               maxSymbols: 24,
