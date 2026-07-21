@@ -237,6 +237,31 @@ const TABLES = `
     note TEXT
   );
 
+  -- Mirror of the broker's resting ENTRY orders (limit/stop), synced every
+  -- reconcile. Owner: "even if Scan/Analyze/Autotrade are OFF, these pending
+  -- orders will execute and you don't monitor" — resting orders live at the
+  -- BROKER and fill regardless of the bot's switches. This gives them a durable
+  -- record + lifecycle (working → gone) so a fill is never a surprise and the
+  -- history survives a restart. SL/TP legs bound to open positions are excluded
+  -- (they close, not open) — only standalone entry orders are recorded.
+  CREATE TABLE IF NOT EXISTS broker_orders (
+    order_id    TEXT PRIMARY KEY,
+    symbol      TEXT,
+    side        TEXT,
+    order_type  TEXT,
+    volume      REAL,
+    limit_price REAL,
+    stop_price  REAL,
+    sl          REAL,
+    tp          REAL,
+    label       TEXT,
+    is_bot      INTEGER DEFAULT 0,
+    status      TEXT DEFAULT 'working',   -- working | gone (filled or cancelled)
+    first_seen  TEXT DEFAULT (datetime('now')),
+    last_seen   TEXT,
+    gone_at     TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS risk_events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol         TEXT,

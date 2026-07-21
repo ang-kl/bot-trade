@@ -968,6 +968,14 @@ async function runLoop(db) {
           if ((result.orphansClosed || []).length > 0) {
             log(`Reconcile: closed ${result.orphansClosed.length} stale open trade(s) whose broker position is gone (ledger drift cleanup)`)
           }
+          if ((result.ordersGone || []).length > 0) {
+            log(`Reconcile: ${result.ordersGone.length} resting order(s) left the book (filled or cancelled) — the monitor adopts any resulting position`)
+          }
+          // Trigger-monitor controller: the broker_orders ledger was just synced
+          // and fills detected (reconcilePositions → syncBrokerOrders). Beat it
+          // so the stall watchdog covers order-fill tracking independently of
+          // the placement controller (pending_orders).
+          await hbeat(db, 'order_monitor')
 
           // Un-blind the safety brakes: a position closed at the BROKER (a
           // resting SL/TP fill — the normal stop-out) was marked closed with
