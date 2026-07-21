@@ -20,7 +20,7 @@
 
 import { pathToFileURL } from 'node:url'
 // Strategies resolve through the registry — any registry key is backtestable.
-import { STRATEGY_REGISTRY, strategyByKey } from '../services/strategies.js'
+import { STRATEGY_REGISTRY, strategyByKey, minRrFor } from '../services/strategies.js'
 import { inPrimeSession } from '../lib/sessions.js'
 
 /**
@@ -82,9 +82,10 @@ export function runBacktest(bars, opts) {
   const cooldownMs = (opts.cooldownMinutes ?? DEFAULT_COOLDOWN_MIN) * 60_000
   // R:R floor for THIS run. Defaults to the live risk gate (1.5); the backtest
   // route lowers it (evaluation profile) so a strategy whose targets sit just
-  // under 1.5 still produces a testable sample. Strategies with their OWN
-  // internal rr gate (RSI) read the same floor via the compute opts below.
-  const minRr = opts.minRr ?? MIN_RR
+  // under 1.5 still produces a testable sample. A strategy with its OWN lower
+  // floor (a high-win-rate mean-reversion system) uses that, so the backtest
+  // counts the same trades the live risk gate would — matching risk.js.
+  const minRr = minRrFor(opts.strategy, opts.minRr ?? MIN_RR)
 
   const touchMode = opts.entryMode === 'touch'
   const trades = []

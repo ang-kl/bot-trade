@@ -30,6 +30,7 @@ export const DEFAULT_REGIME_GATE = { on: true }
 export const STRATEGY_KIND = {
   fib_618_fade: 'meanrev',
   rsi_meanrev: 'meanrev',
+  rsi2_reversion: 'meanrev', // Connors RSI(2) washout fade — ranges & aligned dips
   vp_value: 'meanrev',      // value-area edge fade — wants rotation, dies in trends
   ema_pullback: 'trend',
   donchian_breakout: 'trend',

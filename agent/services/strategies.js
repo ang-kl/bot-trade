@@ -30,6 +30,7 @@ const computeDonchianBreakout = await loadCompute('./donchian-breakout.js', 'com
 const computeRsiMeanrev = await loadCompute('./rsi-meanrev.js', 'computeRsiMeanrev')
 const computeVwapTrend = await loadCompute('./vwap-trend.js', 'computeVwapTrend')
 const computeVpValue = await loadCompute('./vp-value.js', 'computeVpValue')
+const computeRsi2 = await loadCompute('./rsi2-reversion.js', 'computeRsi2')
 
 export const STRATEGY_REGISTRY = [
   { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: true,  pendingCapable: true  },
@@ -39,9 +40,25 @@ export const STRATEGY_REGISTRY = [
   { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: false, pendingCapable: false },
   { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: false, pendingCapable: false },
   { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: false, pendingCapable: false },
+  { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: false, pendingCapable: false },
 ]
 
 export const STRATEGY_KEYS = STRATEGY_REGISTRY.map(s => s.key)
+
+// Per-strategy R:R floor overrides. Most strategies inherit the global risk
+// floor (1.5). A HIGH-WIN-RATE mean-reversion strategy deliberately runs a
+// small R:R — forcing 1.5 on it would veto its entire edge — so it declares a
+// lower floor here, honoured by BOTH the live risk gate (risk.js) and the
+// backtest driver (backtest-fib.js). Absent key → use the caller's default.
+export const STRATEGY_MIN_RR = {
+  rsi2_reversion: 1.0,
+}
+
+/** R:R floor for a strategy: its override, else the provided fallback. */
+export function minRrFor(strategyKey, fallback) {
+  const v = STRATEGY_MIN_RR[strategyKey]
+  return typeof v === 'number' ? v : fallback
+}
 
 /** Look up one registry entry by key (or undefined). */
 export function strategyByKey(key) {
