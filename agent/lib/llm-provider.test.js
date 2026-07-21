@@ -12,6 +12,10 @@ import {
 test('provider selection: OpenAI when its key is set, else Anthropic', () => {
   assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x' }), { provider: 'openai', model: 'gpt-5.6-luna' })
   assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'gpt-4o' }), { provider: 'openai', model: 'gpt-4o' })
+  // OPENAI_DEFAULT_MODEL env var is honoured too (owner set this name on Railway)
+  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
+  // OPENAI_MODEL wins when both are set
+  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'gpt-4o', OPENAI_DEFAULT_MODEL: 'other' }), { provider: 'openai', model: 'gpt-4o' })
   assert.deepEqual(llmProviderInfo({ CLAUDE_API_KEY: 'k' }), { provider: 'anthropic', model: 'claude-sonnet-4-5' })
   assert.deepEqual(llmProviderInfo({ ANTHROPIC_MODEL: 'claude-haiku-4-5' }), { provider: 'anthropic', model: 'claude-haiku-4-5' })
 })

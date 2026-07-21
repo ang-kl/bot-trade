@@ -26,7 +26,9 @@ const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-5'
 /** Which provider/model will be used, given the current env. Pure. */
 export function llmProviderInfo(env = process.env) {
   if (env.OPENAI_API_KEY) {
-    return { provider: 'openai', model: env.OPENAI_MODEL || OPENAI_DEFAULT_MODEL }
+    // Accept BOTH env names: OPENAI_MODEL (canonical) and OPENAI_DEFAULT_MODEL
+    // (owner set this one on Railway). Either overrides the built-in default.
+    return { provider: 'openai', model: env.OPENAI_MODEL || env.OPENAI_DEFAULT_MODEL || OPENAI_DEFAULT_MODEL }
   }
   return { provider: 'anthropic', model: env.ANTHROPIC_MODEL || ANTHROPIC_DEFAULT_MODEL }
 }
