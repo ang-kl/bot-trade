@@ -17,18 +17,19 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 
-// Owner-chosen default (2026-07-21). The OPENAI_MODEL env var still overrides
-// this per-deploy. If the API rejects this id (400 invalid model), set
-// OPENAI_MODEL to a known-good id on the Railway service without a redeploy.
-const OPENAI_DEFAULT_MODEL = 'gpt-5.6-luna'
+// Built-in fallback if no env var is set (2026-07-21, owner-chosen). The
+// canonical env var to override it is OPENAI_DEFAULT_MODEL (standardised name);
+// legacy OPENAI_MODEL is still accepted. If the API rejects the id (400 invalid
+// model), fix it on Railway by setting OPENAI_DEFAULT_MODEL — no redeploy.
+const OPENAI_FALLBACK_MODEL = 'gpt-5.6-luna'
 const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-5'
 
 /** Which provider/model will be used, given the current env. Pure. */
 export function llmProviderInfo(env = process.env) {
   if (env.OPENAI_API_KEY) {
-    // Accept BOTH env names: OPENAI_MODEL (canonical) and OPENAI_DEFAULT_MODEL
-    // (owner set this one on Railway). Either overrides the built-in default.
-    return { provider: 'openai', model: env.OPENAI_MODEL || env.OPENAI_DEFAULT_MODEL || OPENAI_DEFAULT_MODEL }
+    // OPENAI_DEFAULT_MODEL is the standardised env var (owner set this on
+    // Railway); legacy OPENAI_MODEL kept as a fallback; then the built-in.
+    return { provider: 'openai', model: env.OPENAI_DEFAULT_MODEL || env.OPENAI_MODEL || OPENAI_FALLBACK_MODEL }
   }
   return { provider: 'anthropic', model: env.ANTHROPIC_MODEL || ANTHROPIC_DEFAULT_MODEL }
 }

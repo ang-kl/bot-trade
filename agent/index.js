@@ -267,7 +267,7 @@ app.get('/health', (_req, res) => {
   // and errors on a dry credit balance).
   const commit = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '').slice(0, 7) || null
   const llmProvider = process.env.OPENAI_API_KEY
-    ? `openai:${process.env.OPENAI_MODEL || process.env.OPENAI_DEFAULT_MODEL || 'gpt-5.6-luna'}`
+    ? `openai:${process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6-luna'}`
     : `anthropic:${process.env.CLAUDE_MODEL || 'claude-sonnet-4-5'}`
 
   res.json({
