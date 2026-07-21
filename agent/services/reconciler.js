@@ -1,5 +1,22 @@
 import { isOurs, parseLabel } from '../lib/trade-labels.js'
 import { getState } from '../db.js'
+import { contractSize } from '../lib/contracts.js'
+
+// cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
+// treats `trades.volume` as LOTS (bot-placed rows store lots; the keeper does
+// lots × meta.lotSize to scale out; the risk margin gate feeds it to
+// notionalUsd, which multiplies by contractSize). Storing raw broker units in
+// that column made an adopted FX position's notional ~100,000× too large — a
+// ~$700M phantom "used margin" that vetoed every new trade with
+// `insufficient_margin` and corrupted the keeper's scale-out maths. Convert to
+// lots: lots = (volume / 100) / unitsPerLot, unitsPerLot = contractSize(symbol)
+// (100k for FX, 1 for indices/crypto). Returns null when volume is absent.
+export function brokerVolumeToLots(bp, symbol) {
+  const units = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
+  if (units == null) return null
+  const perLot = contractSize(symbol) || 1
+  return perLot > 0 ? units / perLot : units
+}
 
 /**
  * Reconcile the agent's local DB against live broker positions/orders.
@@ -20,7 +37,8 @@ import { getState } from '../db.js'
 export function reconcilePositions(db, brokerPositions, brokerOrders, setState) {
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
-            mp.broker_volume_units, mp.broker_sl, mp.broker_tp, t.ctrader_position_id
+            mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id,
+            t.ctrader_position_id, t.volume AS tradeVolume
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL`
@@ -103,6 +121,24 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
         bVol, bSl, bTp,
         row.id,
       )
+
+      // SELF-HEAL the legacy units-in-lots-column bug: earlier adoptions wrote
+      // broker UNITS into trades.volume (a lots column), so the aggregate margin
+      // gate read a ~100,000× notional and vetoed all new trades. Using live
+      // broker truth, rewrite trades.volume to the correct LOTS. Precise trigger
+      // — only when the stored value equals the raw broker UNITS (the exact bug
+      // signature) and that differs from the true lots (i.e. contractSize > 1),
+      // or when it's missing. A correctly-sized lots row is never touched.
+      const healUnits = bp?.tradeData?.volume ? bp.tradeData.volume / 100 : null
+      const healLots = brokerVolumeToLots(bp, row.symbol)
+      if (row.trade_id && healLots != null && healLots > 0 && healUnits != null) {
+        const cur = Number(row.tradeVolume)
+        const looksLikeUnits = cur > 0 && Math.abs(cur - healUnits) <= Math.max(1e-9, healUnits * 0.01)
+        const needsHeal = (!(cur > 0) || looksLikeUnits) && Math.abs(cur - healLots) > healLots * 0.01
+        if (needsHeal) {
+          db.prepare(`UPDATE trades SET volume = ? WHERE id = ?`).run(healLots, row.trade_id)
+        }
+      }
       continue
     }
 
@@ -126,8 +162,9 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     const entry = bp.tradeData?.openPrice ?? bp.price ?? null
     const sl = bp.stopLoss ?? null
     const tp = bp.takeProfit ?? null
-    const volume = bp.tradeData?.volume ? bp.tradeData.volume / 100 : null
     const symbolName = bp.symbolName || `ID:${bp.tradeData?.symbolId || '?'}`
+    // Store LOTS (not raw broker units) so the risk/keeper stack reads it right.
+    const volume = brokerVolumeToLots(bp, symbolName)
     const initialRisk = (entry && sl) ? Math.abs(entry - sl) : null
 
     // DUPLICATE-ADOPTION GUARD: we only reach here because no ACTIVE monitored
