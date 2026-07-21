@@ -750,7 +750,7 @@ export default function Desk() {
                           <td className="py-1 pr-3 font-semibold">
                             {un
                               ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>{s2.name || 'unlabelled'} <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
-                              : <Link to="/tune?tab=pipeline" className="underline underline-offset-2" title="Open the Pipeline matrix — arm/disarm this strategy for Scan / Backtest / Auto Trade / Manage">{STRAT_SHORT[s2.strategy] || s2.strategy}</Link>}
+                              : <Link to={`/tune?tab=pipeline&arm=${encodeURIComponent(s2.strategy)}`} className="underline underline-offset-2" title="Open the Pipeline matrix and jump straight to this strategy's Auto Trade cell — tap to arm/disarm">{STRAT_SHORT[s2.strategy] || s2.strategy}{!s2.armed && <span className="ml-1 text-[var(--color-accent)]">→ arm</span>}</Link>}
                           </td>
                           {/* Status justifies WHY a row reads as it does (owner: "include
                               all strategy and justify") — armed vs off, and whether it's

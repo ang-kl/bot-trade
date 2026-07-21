@@ -255,12 +255,28 @@ function MxCell({ on, counts, selected, na, onClick }) {
   )
 }
 
-function StageMatrix({ mx, onUpdated, onError }) {
+function StageMatrix({ mx, onUpdated, onError, armTarget }) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(STAGE_MX_OPEN_KEY) !== '0' } catch { return true }
   })
   const [sel, setSel] = useState(null)   // { kind, key, name, stage }
   const [busy, setBusy] = useState(false)
+  const editorRef = useRef(null)
+  const armedOnce = useRef(false)
+
+  // Deep-link from Desk's Edge-health ("tap rsi2_reversion → arm it"): open the
+  // matrix, preselect that strategy's Auto Trade cell so the Turn ON control is
+  // right there, and scroll it into view. Crucial on iPhone, where the wide
+  // matrix otherwise buries the cell the owner came to flip. Runs once.
+  useEffect(() => {
+    if (armedOnce.current || !armTarget || !mx) return
+    const row = (mx.strategies || []).find(r => r.key === armTarget)
+    if (!row) return
+    armedOnce.current = true
+    setOpen(true)
+    setSel({ kind: 'strategy', key: row.key, name: row.name, stage: 'trade' })
+    requestAnimationFrame(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+  }, [armTarget, mx])
 
   const toggleOpen = () => setOpen(o => {
     const next = !o
@@ -354,7 +370,7 @@ function StageMatrix({ mx, onUpdated, onError }) {
           {/* Hollow separator line + the editor for the selected cell — the
               ONLY place a cell's value changes (owner spec: click the cell,
               then edit below the line). */}
-          <hr className="my-3 border-0 border-t border-[var(--color-border)]" />
+          <hr ref={editorRef} className="my-3 border-0 border-t border-[var(--color-border)] scroll-mt-24" />
           {!sel && (
             <p className="text-[12px] text-[var(--color-text-sub)]">
               Tap any ✓/✗ cell above to change it here. Scan is wide by default — every strategy is analysed and filters only annotate (a failed filter no longer hides a conviction; it blocks the order at Auto Trade &amp; Open instead).
@@ -692,6 +708,10 @@ export default function Tune() {
     } catch { return 'pipeline' }
   })
   const pickTab = (id) => { setTab(id); try { sessionStorage.setItem('tune_tab', id) } catch { /* quota — skip */ } }
+  // ?arm=<strategyKey> deep-link (Desk Edge-health → arm a strategy). Read once.
+  const [armTarget] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('arm') } catch { return null }
+  })
 
   const [config, setConfig] = useState(null)          // toggles + symbols
   const [risk, setRisk] = useState(null)              // { effective, derived }
@@ -1182,6 +1202,7 @@ export default function Tune() {
                 edits write the same legacy keys the chips used. */}
             <StageMatrix
               mx={stageMx}
+              armTarget={armTarget}
               onError={setError}
               onUpdated={(r) => {
                 setStageMx(prev => (prev ? { ...prev, strategies: r.strategies, filters: r.filters } : prev))
