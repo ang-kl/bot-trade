@@ -335,6 +335,23 @@ export default function Desk() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
+  // Merge the monitor's per-position review record (last_check_*, thesis_status,
+  // current_sl from /state/positions) onto the live broker positions, matched by
+  // ctrader_position_id, so each gauge card can PROVE it's being reviewed
+  // (owner: "how do I know you are reviewing each one ... watch stop-loss").
+  const monitorByPid = useMemo(() => {
+    const m = new Map()
+    for (const r of positions) if (r.ctrader_position_id != null) m.set(String(r.ctrader_position_id), r)
+    return m
+  }, [positions])
+  const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
+    const mp = monitorByPid.get(String(bp.positionId))
+    return mp
+      ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl }
+      : bp
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [posSig, monitorByPid])
+
   return (
     <div className="space-y-3">
       {error && <Card className="text-[13px]">{error}</Card>}
@@ -424,7 +441,7 @@ export default function Desk() {
             >{n}</button>
           ))}
         </div>
-        <TradeGaugeWall positions={broker?.positions || []} gridN={pnlGridN} />
+        <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} />
       </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
