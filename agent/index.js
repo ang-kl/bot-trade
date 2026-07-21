@@ -106,6 +106,17 @@ if (rsi2Seed.seeded) {
   console.log(`[boot] RSI-2 GO seed applied — strategy armed: ${rsi2Seed.addedStrategy}, combos: ${rsi2Seed.addedCombos?.length ?? 0}${rsi2Seed.note ? ` (${rsi2Seed.note})` : ''}`)
 }
 
+// One-time: turn ON the Strategy Autopilot in full-auto (owner opted in) so it
+// auto-backtests the watchlist on the session-adaptive cadence and arms only
+// PF≥1.7/win≥60%/≥25-trade combos, disarming NO-GO ones — including on the live
+// account. Reversible in Tune / via /actions/autopilot. Runs once.
+if (!getState(db, 'autopilot_boot_v1')) {
+  if (!getState(db, 'autopilot_mode')) setState(db, 'autopilot_mode', 'auto')
+  setState(db, 'autopilot_allow_live', 'true')
+  setState(db, 'autopilot_boot_v1', new Date().toISOString())
+  console.log('[boot] Strategy Autopilot enabled — auto mode, live arming allowed, session-adaptive cadence')
+}
+
 // ---------------------------------------------------------------------------
 // Express app
 // ---------------------------------------------------------------------------

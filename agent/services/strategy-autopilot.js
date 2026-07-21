@@ -20,13 +20,51 @@ import { verdictFor } from '../lib/backtest-report.js'
 import { backtestRemote } from '../lib/exec-engine.js'
 import { tfMs } from '../lib/timeframes.js'
 import { backtestStageStrategies } from './stage-matrix.js'
+import { getActiveSessions } from '../lib/sessions.js'
 
-const RUN_EVERY_MS = 22 * 3600_000 // ~nightly, drift-tolerant
+const RUN_EVERY_MS = 22 * 3600_000 // legacy default (fallback only)
+const BUSY_MS = 10 * 60_000        // US session — the action window
+const CALM_MS = 30 * 60_000        // otherwise
 const BARS = 1000
 
 export function autopilotMode(db) {
   const m = getState(db, 'autopilot_mode')
   return m === 'auto' || m === 'suggest' ? m : 'off'
+}
+
+function hourInTz(tz) {
+  try {
+    return Number(new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()))
+  } catch { return null }
+}
+
+/**
+ * Is the clock inside an "active" window that warrants the fast cadence? Pure —
+ * the caller injects the current sessions + Tokyo hour so it's unit-testable.
+ * Two owner windows:
+ *   · US: Chicago/NY open until Sydney opens (NY session live, or the thin
+ *     NY→Sydney handover before Asia opens).
+ *   · JPN225: premarket 1h + first 4 trading hours → 08:00–13:00 JST.
+ */
+export function isBusyWindow(sessionLabels = [], tokyoHour = null) {
+  const nyActive = sessionLabels.includes('New York')
+  const asiaOpen = sessionLabels.includes('Sydney') || sessionLabels.includes('Tokyo') || sessionLabels.includes('Singapore')
+  const usBusy = nyActive || (sessionLabels.length === 0 && !asiaOpen)
+  const jpnBusy = tokyoHour != null && tokyoHour >= 8 && tokyoHour < 13
+  return usBusy || jpnBusy
+}
+
+/**
+ * Re-run cadence. An explicit autopilot_interval_ms (≥ 5 min) overrides;
+ * otherwise SESSION-ADAPTIVE (owner): every 10 min inside a busy window
+ * (see isBusyWindow), every 30 min otherwise.
+ */
+export function autopilotIntervalMs(db, opts = {}) {
+  const override = Number(getState(db, 'autopilot_interval_ms'))
+  if (Number.isFinite(override) && override >= 300_000) return override
+  const labels = (opts.sessions ?? getActiveSessions()).map(s => s.label)
+  const tokyoHour = opts.tokyoHour ?? hourInTz('Asia/Tokyo')
+  return isBusyWindow(labels, tokyoHour) ? BUSY_MS : CALM_MS
 }
 
 /**
@@ -41,16 +79,26 @@ export function autopilotMode(db) {
  */
 export function decideChanges(verdicts, current, opts = {}) {
   const maxChanges = opts.maxChanges ?? 4
+  // Strict ARMING bar (owner): a backtest "GO" (PF≥1.1) is too loose to put
+  // real money on — it armed coin-flip combos like AUDUSD·4h (PF 1.50) that
+  // lose. Only a PROVEN combo gets armed. Disarm still triggers on NO-GO, so a
+  // GO-below-bar armed combo is kept, not churned (live results / the Edge
+  // Watchdog handle decay). Thresholds are configurable.
+  const armMinPf = opts.armMinPf ?? 1.7
+  const armMinWin = opts.armMinWin ?? 60
+  const armMinTrades = opts.armMinTrades ?? 25
+  const armGrade = (v) => (v.pf ?? 0) >= armMinPf && (v.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades
   const arm = []
   const disarm = []
   const has = (m, sym, tf) => Array.isArray(m?.[sym]) && m[sym].includes(tf)
 
-  const gos = verdicts.filter(v => v.state === 'go')
+  const gos = verdicts.filter(v => v.state === 'go')       // any GO protects an existing arm from disarm
+  const armGos = gos.filter(armGrade)                       // only these clear the bar to be NEWLY armed
   const nogos = verdicts.filter(v => v.state === 'no-go')
 
-  // ARM: close-confirm GOs → strategy enable + per-instrument matrix entry;
-  // touch GOs (fib only, entryMode 'touch') → pending matrix entry.
-  for (const v of gos) {
+  // ARM: only combos that CLEAR THE BAR. close-confirm → strategy enable +
+  // per-instrument matrix entry; touch (fib only) → pending matrix entry.
+  for (const v of armGos) {
     if (v.entryMode === 'touch') {
       if (!has(current.pendingMatrix, v.symbol, v.timeframe)) {
         arm.push({ kind: 'pending', strategy: v.strategy, symbol: v.symbol, timeframe: v.timeframe })
@@ -144,9 +192,19 @@ async function evaluateAll(db, creds, deps) {
   // nightly sweep evaluates (all of them by default).
   const strategiesToTest = backtestStageStrategies(db, getState)
 
+  // Rotate the 24-symbol window through the whole watchlist (owner: "based on
+  // the selected symbols") so a large watchlist is fully covered over
+  // successive runs instead of only ever testing the first 24.
+  const WINDOW = 24
+  let cursor = Number(getState(db, 'autopilot_scan_cursor')) || 0
+  if (watch.length > 0) cursor %= watch.length
+  const rotated = watch.length > WINDOW ? [...watch.slice(cursor), ...watch.slice(0, cursor)] : watch
+  const batch = rotated.slice(0, WINDOW)
+  if (watch.length > 0) setState(db, 'autopilot_scan_cursor', String((cursor + batch.length) % watch.length))
+
   const verdicts = []
   const errors = []
-  for (const symbol of watch.slice(0, 24)) {
+  for (const symbol of batch) {
     const symbolId = map[symbol.toUpperCase()]
     if (!symbolId) { errors.push(`${symbol}: no symbolId`); continue }
     let byPeriod
@@ -174,7 +232,8 @@ async function evaluateAll(db, creds, deps) {
             verdicts.push({
               strategy: strat.key, symbol, timeframe: tf, entryMode,
               state: v ? v.state : 'no-go',
-              trades: stats.trades || 0, pf: stats.profitFactor ?? null, total: stats.totalProfitPct ?? 0,
+              trades: stats.trades || 0, pf: stats.profitFactor ?? null,
+              winRate: stats.winRatePct ?? null, total: stats.totalProfitPct ?? 0,
               wf: `${wf.positive}/${wf.active}`, wfActive: wf.active, wfPositive: wf.positive,
               wfWorstMddPct: wf.worstMddPct, maxDrawdownPct: stats.maxDrawdownPct ?? null,
               losses: stats.losses ?? null,
@@ -227,7 +286,7 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const mode = autopilotMode(db)
   if (mode === 'off' || !creds?.ready) return { skipped: mode === 'off' ? 'off' : 'no creds' }
   const last = Number(getState(db, 'autopilot_last_run_ms')) || 0
-  if (Date.now() - last < RUN_EVERY_MS) return { skipped: 'not due' }
+  if (Date.now() - last < autopilotIntervalMs(db)) return { skipped: 'not due' }
   setState(db, 'autopilot_last_run_ms', String(Date.now())) // set FIRST — a crash must not hot-loop the evaluator
 
   const notify = async (text) => {
@@ -255,12 +314,15 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   const changes = decideChanges(verdicts, current, { maxChanges })
 
   const isLive = getState(db, 'ctrader_is_live') === 'true'
+  // Owner opted into full-auto on live (autopilot_allow_live). Without it, auto
+  // mode still refuses to arm real money and downgrades to suggestions.
+  const allowLive = getState(db, 'autopilot_allow_live') === 'true'
   const goCount = verdicts.filter(v => v.state === 'go').length
   const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${goCount} GO${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
-  if (mode === 'suggest' || isLive) {
+  if (mode === 'suggest' || (isLive && !allowLive)) {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]
-    await notify(`${head}${isLive && mode === 'auto' ? ' LIVE account — auto mode refuses to act; suggestions only:' : ' Suggestions:'}\n${all.length ? all.join('\n') : 'no changes needed'}`)
+    await notify(`${head}${isLive && mode === 'auto' ? ' LIVE account — auto mode refuses to act (set autopilot_allow_live to enable); suggestions only:' : ' Suggestions:'}\n${all.length ? all.join('\n') : 'no changes needed'}`)
     return { mode: 'suggest', suggested: all.length }
   }
 

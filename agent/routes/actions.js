@@ -1181,8 +1181,9 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
-  // POST /actions/autopilot — { mode: 'off'|'suggest'|'auto', maxChanges? }
-  // The strategy autopilot's master switch. 'auto' never acts on LIVE.
+  // POST /actions/autopilot — { mode, maxChanges?, allowLive?, intervalMs? }
+  // The strategy autopilot's master switch. allowLive=true lets 'auto' arm a
+  // LIVE account; intervalMs overrides the session-adaptive cadence.
   // -----------------------------------------------------------------------
   router.post('/autopilot', (req, res) => {
     const mode = ['off', 'suggest', 'auto'].includes(req.body?.mode) ? req.body.mode : null
@@ -1192,8 +1193,18 @@ export default function actionsRouter(db) {
       const n = Number(req.body.maxChanges)
       if (Number.isFinite(n) && n >= 1 && n <= 20) setState(db, 'autopilot_max_changes', String(Math.round(n)))
     }
+    if (req.body?.allowLive != null) setState(db, 'autopilot_allow_live', req.body.allowLive === true ? 'true' : 'false')
+    if (req.body?.intervalMs != null) {
+      const n = Number(req.body.intervalMs)
+      // 0/null clears the override → back to the session-adaptive cadence.
+      setState(db, 'autopilot_interval_ms', Number.isFinite(n) && n >= 300_000 ? String(Math.round(n)) : null)
+    }
     if (req.body?.runNow) setState(db, 'autopilot_last_run_ms', '0') // next loop cycle evaluates
-    res.json({ ok: true, mode, maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4 })
+    res.json({
+      ok: true, mode,
+      maxChanges: Number(getState(db, 'autopilot_max_changes')) || 4,
+      allowLive: getState(db, 'autopilot_allow_live') === 'true',
+    })
   })
 
   // -----------------------------------------------------------------------
