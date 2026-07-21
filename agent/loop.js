@@ -1132,9 +1132,12 @@ async function runLoop(db) {
       prioritySymbols = db.prepare(`SELECT DISTINCT UPPER(symbol) AS s FROM monitored_positions WHERE status = 'active'`).all().map(r => r.s)
     } catch { /* none */ }
     const scanCursor = Number(getState(db, 'scan_cursor')) || 0
+    const scanT0 = Date.now()
     const scanResult = ctraderCreds.ready
       ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
+    const scanMs = Date.now() - scanT0
+    setState(db, 'last_scan_ms', String(scanMs))
     if (scanResult.next_cursor != null) setState(db, 'scan_cursor', String(scanResult.next_cursor))
 
     if (!ctraderCreds.ready) {
@@ -1159,7 +1162,7 @@ async function runLoop(db) {
     }
 
     log(
-      `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm`
+      `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm (${scanMs}ms, concurrency ${process.env.SCAN_CONCURRENCY || 6})`
     )
 
     // Persist scans
