@@ -39,12 +39,22 @@ test('oversold washout in an uptrend fires a long with ~1.2R geometry', () => {
 })
 
 test('overbought spike in a downtrend fires a short', () => {
-  const sig = computeRsi2(downtrendSpike(), '15m')
+  const sig = computeRsi2(downtrendSpike(), '4h')
   assert.ok(sig, 'expected a signal')
   assert.equal(sig.bias, 'short')
   assert.ok(sig.sl > sig.entry, 'stop above entry')
   assert.ok(sig.tp1 < sig.entry, 'target below entry')
-  assert.equal(sig.time_cap_minutes, 75) // 5 bars of 15m
+  assert.equal(sig.time_cap_minutes, 1200) // 5 bars of 4h
+})
+
+test('refuses low timeframes below the 1h floor (the baked-in lesson)', () => {
+  // The exact washout that fires on 1h is REJECTED on 5m-30m, where the
+  // 2026-07-21 backtest showed RSI-2 bleeds on spread/noise.
+  for (const tf of ['5m', '10m', '15m', '30m']) {
+    assert.equal(computeRsi2(uptrendWashout(), tf), null, `${tf} must be refused`)
+  }
+  assert.ok(computeRsi2(uptrendWashout(), '1h'), '1h still fires')
+  assert.ok(computeRsi2(uptrendWashout(), '4h'), '4h still fires')
 })
 
 test('no signal when RSI(2) is not extreme', () => {

@@ -38,6 +38,13 @@ const SL_ATR = 1.5         // stop distance in ATRs — wide, so the bounce brea
 const TP_RR = 1.2          // target = TP_RR × stop distance → rr ≈ 1.2 by design
 const TP2_RR = 2.2         // runner target for scale-out management
 const MIN_BARS = TREND_PERIOD + RSI_PERIOD + 2
+// Lesson from the 2026-07-21 walk-forward backtest across 24 symbols: RSI-2's
+// edge lives on the HIGHER timeframes (1h/4h/8h — indices & commodities
+// especially: JPN225 8h PF 1.53, NATGAS 4h PF 1.41, CORN 8h PF 1.52, …). On
+// 5m-30m the 1.2R target is eaten by spread/noise and the combos were near-
+// uniformly NO-GO. So the strategy REFUSES to fire below this floor — it can't
+// take the low-timeframe setups it structurally loses on, even if armed there.
+const MIN_TF_MIN = 60
 
 const round2 = (x) => Math.round(x * 100) / 100
 
@@ -48,6 +55,11 @@ const round2 = (x) => Math.round(x * 100) / 100
  */
 export function computeRsi2(bars, timeframe) {
   if (!Array.isArray(bars) || bars.length < MIN_BARS) return null
+
+  // Timeframe floor (the baked-in lesson). An unreadable timeframe fails OPEN
+  // (never blocks) — same convention as the rest of the strategy.
+  const tf = parseTimeframe(timeframe)
+  if (tf && tf.ms < MIN_TF_MIN * 60_000) return null
 
   const last = bars[bars.length - 1]
   const r = rsi(bars, RSI_PERIOD)
@@ -77,7 +89,6 @@ export function computeRsi2(bars, timeframe) {
 
   // Mean reversion is a fast trade — give it a handful of bars, then hand the
   // risk budget back. null time cap when the timeframe string is unreadable.
-  const tf = parseTimeframe(timeframe)
   const timeCap = tf ? 5 * (tf.ms / 60_000) : null
 
   return {
