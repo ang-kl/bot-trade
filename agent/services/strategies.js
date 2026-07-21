@@ -31,6 +31,7 @@ const computeRsiMeanrev = await loadCompute('./rsi-meanrev.js', 'computeRsiMeanr
 const computeVwapTrend = await loadCompute('./vwap-trend.js', 'computeVwapTrend')
 const computeVpValue = await loadCompute('./vp-value.js', 'computeVpValue')
 const computeRsi2 = await loadCompute('./rsi2-reversion.js', 'computeRsi2')
+const computeFibConfluence = await loadCompute('./fib-confluence.js', 'computeFibConfluence')
 
 export const STRATEGY_REGISTRY = [
   { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: true,  pendingCapable: true  },
@@ -41,6 +42,7 @@ export const STRATEGY_REGISTRY = [
   { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: false, pendingCapable: false },
   { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: false, pendingCapable: false },
   { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: false, pendingCapable: false },
+  { key: 'fib_confluence',    name: 'Fib confluence zone', compute: computeFibConfluence,   defaultOn: false, pendingCapable: false },
 ]
 
 export const STRATEGY_KEYS = STRATEGY_REGISTRY.map(s => s.key)
