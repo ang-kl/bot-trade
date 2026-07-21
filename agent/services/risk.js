@@ -383,7 +383,7 @@ export function evaluateTrade(db, proposal, configOverride) {
     .prepare(`
       SELECT mp.symbol, mp.side, mp.entry_price, mp.strategy AS strategy,
              mp.last_check_action AS lastCheckAction, mp.last_check_at AS lastCheckAt,
-             t.opened_at, COALESCE(t.label_strategy, t.strategy) AS tradeStrategy
+             t.opened_at, t.volume AS volume, COALESCE(t.label_strategy, t.strategy) AS tradeStrategy
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active'
@@ -579,20 +579,37 @@ export function evaluateTrade(db, proposal, configOverride) {
   // Never ship below broker minimum.
   const finalVolume = Math.max(config.minLotSize, kellyVol || sizingFloor)
 
-  // ---- 11. Margin-headroom gate ------------------------------------------
-  // Ensure the position (plus existing open positions' margin) doesn't exceed
-  // `maxMarginUsagePct` of balance. Only enforced when balance is set.
+  // ---- 11. Margin-headroom gate (AGGREGATE) ------------------------------
+  // The new position PLUS the margin already locked by every open position
+  // must not exceed `maxMarginUsagePct` of balance. This used to check only the
+  // single new trade against the cap — so 16 trades each passed in isolation
+  // while COLLECTIVELY locking ~79% of equity and margin-calling the account
+  // (owner hit exactly this: 16 open, margin level 126% vs 50% stop-out). Now
+  // the cap is a true PORTFOLIO ceiling, which is what its comment always
+  // claimed. Only enforced when balance is set.
   if (balance != null) {
+    const rates = scanRates(db)
     const { notional, marginRequired } = requiredMargin(
-      proposal.symbol, finalVolume, entry, leverage, scanRates(db),
+      proposal.symbol, finalVolume, entry, leverage, rates,
     )
+    // Sum margin already committed by open positions (best-effort per row).
+    let usedMargin = 0
+    for (const p of openPositions) {
+      if (!(Number(p.volume) > 0) || !(Number(p.entry_price) > 0)) continue
+      try {
+        usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates).marginRequired || 0
+      } catch { /* skip a row we can't price — never block sizing on one bad row */ }
+    }
+    const totalMargin = usedMargin + marginRequired
     checks.notional_usd = Number(notional.toFixed(2))
     checks.margin_required_usd = Number(marginRequired.toFixed(2))
+    checks.margin_used_usd = Number(usedMargin.toFixed(2))
+    checks.margin_total_usd = Number(totalMargin.toFixed(2))
     const marginCap = balance * config.maxMarginUsagePct
     checks.margin_cap_usd = Number(marginCap.toFixed(2))
-    if (marginRequired > marginCap) {
+    if (totalMargin > marginCap) {
       return veto(
-        `insufficient_margin required=${marginRequired.toFixed(2)} cap=${marginCap.toFixed(2)} leverage=${leverage}`,
+        `insufficient_margin total=${totalMargin.toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage}`,
         checks, proposal,
       )
     }
