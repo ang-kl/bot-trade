@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -222,6 +222,51 @@ test('pending orders stored in agent_state', () => {
   const stored = JSON.parse(getState(db, 'broker_pending_orders_json'))
   assert.equal(stored.length, 2)
   assert.equal(stored[0].symbolName, 'XAUUSD')
+})
+
+test('broker_orders ledger: reconcile records resting orders as working', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const orders = [
+    makeBrokerOrder({ orderId: '101', symbolName: 'XAUUSD', limitPrice: 3350 }),
+    makeBrokerOrder({ orderId: '102', symbolName: 'EURUSD', limitPrice: 1.08 }),
+  ]
+  reconcilePositions(db, [], orders, setState)
+  const rows = db.prepare(`SELECT order_id, symbol, status FROM broker_orders ORDER BY order_id`).all()
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].status, 'working')
+  assert.equal(rows[0].symbol, 'XAUUSD')
+})
+
+test('broker_orders ledger: an order that leaves the book is marked gone and reported', () => {
+  const db = mkDb()
+  // Round 1: two resting orders recorded.
+  syncBrokerOrders(db, [
+    { orderId: '101', symbolName: 'XAUUSD', side: 'BUY', orderType: 'LIMIT', limitPrice: 3350, volume: 0.2, label: 'AP|v1|VP|-|-|-|-' },
+    { orderId: '102', symbolName: 'EURUSD', side: 'SELL', orderType: 'LIMIT', limitPrice: 1.08, volume: 0.1, label: 'manual' },
+  ])
+  // Round 2: order 101 is gone (filled or cancelled), 102 still resting.
+  const gone = syncBrokerOrders(db, [
+    { orderId: '102', symbolName: 'EURUSD', side: 'SELL', orderType: 'LIMIT', limitPrice: 1.08, volume: 0.1, label: 'manual' },
+  ])
+  assert.deepEqual(gone, ['101'])
+  const o101 = db.prepare(`SELECT status, gone_at, is_bot FROM broker_orders WHERE order_id = '101'`).get()
+  assert.equal(o101.status, 'gone')
+  assert.ok(o101.gone_at, 'gone_at stamped')
+  assert.equal(o101.is_bot, 1, 'AP-labelled order flagged as ours')
+  const o102 = db.prepare(`SELECT status, is_bot FROM broker_orders WHERE order_id = '102'`).get()
+  assert.equal(o102.status, 'working')
+  assert.equal(o102.is_bot, 0, 'manual order not flagged as bot')
+})
+
+test('broker_orders ledger: a re-appearing order flips back to working (gone_at cleared)', () => {
+  const db = mkDb()
+  syncBrokerOrders(db, [{ orderId: '101', symbolName: 'XAUUSD', side: 'BUY', orderType: 'LIMIT', limitPrice: 3350 }])
+  syncBrokerOrders(db, []) // gone
+  syncBrokerOrders(db, [{ orderId: '101', symbolName: 'XAUUSD', side: 'BUY', orderType: 'LIMIT', limitPrice: 3350 }]) // back
+  const o = db.prepare(`SELECT status, gone_at FROM broker_orders WHERE order_id = '101'`).get()
+  assert.equal(o.status, 'working')
+  assert.equal(o.gone_at, null)
 })
 
 test('pending orders: relative SL/TP decoded, closers excluded, updatedAt kept', () => {

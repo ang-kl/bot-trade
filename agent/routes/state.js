@@ -214,6 +214,24 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/orders — the broker resting-order ledger (working + recently
+  // gone). Owner: "keep records of these" — resting entry orders fill even when
+  // the bot's switches are OFF, so they get a durable record with lifecycle.
+  // -----------------------------------------------------------------------
+  router.get('/orders', (_req, res) => {
+    let working = [], recentlyGone = []
+    try {
+      working = db.prepare(
+        `SELECT * FROM broker_orders WHERE status = 'working' ORDER BY last_seen DESC`
+      ).all()
+      recentlyGone = db.prepare(
+        `SELECT * FROM broker_orders WHERE status = 'gone' AND gone_at >= datetime('now', '-24 hours') ORDER BY gone_at DESC LIMIT 100`
+      ).all()
+    } catch { /* table may not exist on a very old DB */ }
+    res.json({ working, recentlyGone, workingCount: working.length })
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
   router.get('/metrics', (_req, res) => {

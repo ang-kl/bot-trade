@@ -36,6 +36,7 @@ export const CONTROLLERS = {
   fast_monitor:     { label: 'Fast position monitor',  expectedSec: 30,   factor: 10 },
   burn_in:          { label: 'Burn-in engine',         tiedToLoop: true,  factor: 3 },
   pending_orders:   { label: 'Pending-order manager',  tiedToLoop: true,  factor: 3 },
+  order_monitor:    { label: 'Order-fill monitor',     tiedToLoop: true,  factor: 3 },
   trade_guards:     { label: 'Trade guards',           tiedToLoop: true,  factor: 3 },
   profit_keeper:    { label: 'Profit keeper',          tiedToLoop: true,  factor: 3 },
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },

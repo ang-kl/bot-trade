@@ -242,5 +242,61 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   setState('broker_pending_orders_json', JSON.stringify(pendingOrders))
   setState('last_reconcile_at', new Date().toISOString())
 
-  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed }
+  // Durable ledger of the broker's resting entry orders. These fill regardless
+  // of the bot's scan/autotrade switches (owner: "even if ... OFF, these
+  // pending orders will execute"), so record each one and its lifecycle
+  // (working → gone) so a fill is tracked and the history survives a restart.
+  const ordersGone = syncBrokerOrders(db, pendingOrders)
+
+  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone }
+}
+
+/**
+ * Upsert the current resting entry orders into the broker_orders ledger and
+ * mark any previously-working order that's no longer present as 'gone' (it
+ * either filled or was cancelled — deal history distinguishes, but either way
+ * it's no longer resting). Returns the ids that transitioned working → gone
+ * this pass, so the caller can log/act on likely fills. Best-effort: a DB hiccup
+ * never blocks reconciliation.
+ */
+export function syncBrokerOrders(db, pendingOrders = []) {
+  try {
+    const upsert = db.prepare(
+      `INSERT INTO broker_orders
+         (order_id, symbol, side, order_type, volume, limit_price, stop_price, sl, tp, label, is_bot, status, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', datetime('now'))
+       ON CONFLICT(order_id) DO UPDATE SET
+         symbol=excluded.symbol, side=excluded.side, order_type=excluded.order_type,
+         volume=excluded.volume, limit_price=excluded.limit_price, stop_price=excluded.stop_price,
+         sl=excluded.sl, tp=excluded.tp, label=excluded.label, is_bot=excluded.is_bot,
+         status='working', last_seen=datetime('now'), gone_at=NULL`
+    )
+    const presentIds = []
+    const tx = db.transaction(() => {
+      for (const o of pendingOrders) {
+        const id = String(o.orderId ?? '')
+        if (!id) continue
+        presentIds.push(id)
+        upsert.run(
+          id, o.symbolName || null, o.side || null, o.orderType || null,
+          o.volume ?? o.volumeUnits ?? null, o.limitPrice ?? null, o.stopPrice ?? null,
+          o.sl ?? null, o.tp ?? null, o.label || null, isOurs(o.label) ? 1 : 0,
+        )
+      }
+    })
+    tx()
+
+    // Anything still 'working' but not in this snapshot has left the book.
+    const wasWorking = db.prepare(`SELECT order_id FROM broker_orders WHERE status = 'working'`).all().map(r => String(r.order_id))
+    const presentSet = new Set(presentIds)
+    const gone = wasWorking.filter(id => !presentSet.has(id))
+    if (gone.length) {
+      const mark = db.prepare(`UPDATE broker_orders SET status='gone', gone_at=datetime('now') WHERE order_id = ? AND status='working'`)
+      const tx2 = db.transaction(() => { for (const id of gone) mark.run(id) })
+      tx2()
+    }
+    return gone
+  } catch {
+    return []
+  }
 }
