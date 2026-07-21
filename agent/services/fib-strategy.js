@@ -416,6 +416,23 @@ function strategyFns(opts) {
     .filter(fn => typeof fn === 'function')
 }
 
+/**
+ * Evaluate EVERY enabled strategy on one timeframe's closed bars and return the
+ * HIGHEST-conviction signal. Replaces the old "first strategy in registry order
+ * wins" — that let fib (registry-first) monopolise every symbol where it found a
+ * 61.8% fade, so the other 7 strategies almost never traded (owner: "only 3 in
+ * use"). Now the strongest setup wins regardless of order; ties keep the earlier
+ * (registry-order) strategy, so behaviour is deterministic. Pure/testable.
+ */
+export function pickBestSignal(fns, closed, timeframe, opts) {
+  let best = null
+  for (const fn of fns) {
+    const c = fn(closed, timeframe, opts)
+    if (c && (!best || (c.conviction ?? 0) > (best.conviction ?? 0))) best = c
+  }
+  return best
+}
+
 export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const { host, clientId, clientSecret, accessToken, accountId } = creds
   // Instrument-class SL/TP/leg-size tuning (see CLASS_TUNING) — an explicit
@@ -461,13 +478,10 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     if (!signal || (preferred && !signal._preferred)) {
       const periodMs = tfMs(timeframe) || 0
       const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
-      // Try every ENABLED strategy in registry order — first signal wins on
-      // this timeframe. All strategies share the one bar fetch/cache above.
-      let cand = null
-      for (const fn of strategyFns(opts)) {
-        cand = fn(closed, timeframe, opts)
-        if (cand) break
-      }
+      // Best-conviction across ALL enabled strategies on this timeframe (not
+      // "first in registry order wins" — that starved every strategy but fib).
+      // All strategies share the one bar fetch/cache above.
+      const cand = pickBestSignal(strategyFns(opts), closed, timeframe, opts)
       if (cand) {
         cand._preferred = isPreferred(timeframe)
         if (!signal || (cand._preferred && !signal._preferred)) signal = cand
