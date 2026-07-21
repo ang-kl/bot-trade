@@ -42,10 +42,10 @@ export function auditRisk({ symbol, side, entry, sl, tp, lots, balance, riskCfg,
   const dist = entry != null && sl != null ? Math.abs(entry - sl) : null
   const perLot = dist ? usdLossPerLot(symbol, dist, entry, rates) : null
   const riskUsd = perLot != null && lots != null ? Math.round(perLot * lots * 100) / 100 : null
-  const capUsd = balance != null ? Math.round(balance * (riskCfg.perTradeRiskPct ?? 0.01) * 100) / 100 : null
+  const capUsd = balance != null ? Math.round(balance * (riskCfg.perTradeRiskPct ?? 0.05) * 100) / 100 : null
   const rr = dist && tp != null ? Math.round((Math.abs(tp - entry) / dist) * 100) / 100 : null
   const issues = []
-  if (riskUsd != null && capUsd != null && riskUsd > capUsd) issues.push(`risk $${riskUsd} exceeds your ${((riskCfg.perTradeRiskPct ?? 0.01) * 100).toFixed(1)}% cap ($${capUsd})`)
+  if (riskUsd != null && capUsd != null && riskUsd > capUsd) issues.push(`risk $${riskUsd} exceeds your ${((riskCfg.perTradeRiskPct ?? 0.05) * 100).toFixed(1)}% cap ($${capUsd})`)
   if (sl == null) issues.push('position has NO stop loss at the broker')
   if (rr != null && rr < (riskCfg.minRR ?? 1.5)) issues.push(`R:R ${rr} is below your ${riskCfg.minRR ?? 1.5} floor`)
   return { riskUsd, capUsd, rr, issues, side }

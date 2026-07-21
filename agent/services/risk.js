@@ -67,8 +67,7 @@ export const DEFAULT_RISK_CONFIG = {
   maxClusterExposure: 2,           // Net directional exposure to any one
                                    // correlation cluster (gold/USD, US
                                    // equity, crude…). 0 disables the check.
-  minTradesForKelly: 30,           // Below this → use default volume.
-  kellyFraction: 0.25,             // Quarter-Kelly for drawdown control.
+  minTradesForKelly: 30,           // Below this → use default volume (skip Kelly).
   allowNegativeExpectancyOverride: false, // If false, negative expectancy vetoes.
   // Account leverage (e.g. 200 = 1:200). Used to check margin headroom so the
   // risk manager doesn't approve a position that eats your available margin.
@@ -271,9 +270,14 @@ export function kellyVolume(stats, defaultVolume, config) {
   if (kelly <= 0) {
     return { volume: 0, note: `kelly_negative=${kelly.toFixed(3)}` }
   }
-  const scale = Math.min(1, kelly * config.kellyFraction * 4)
-  const scaled = Math.max(0.01, Math.round(defaultVolume * scale * 100) / 100)
-  return { volume: scaled, note: `kelly=${kelly.toFixed(3)} scale=${scale.toFixed(2)}` }
+  // Positive expectancy on the strategy's OWN record → ship the full
+  // risk-budgeted size. Kelly is a VETO here, not a down-sizer: the 5% algo cap
+  // already bounds the budget and the drawdown-derisk already halves it in a
+  // slump. The prior `kelly * kellyFraction * 4` reduced to full Kelly, then
+  // HAIRCUT proven strategies below the budget while unproven (<30-trade,
+  // kelly-skipped) ones shipped the full 5% — sizing ran backwards to
+  // conviction. A proven strategy now gets the same budget its edge earned.
+  return { volume: defaultVolume, note: `kelly=${kelly.toFixed(3)} ok` }
 }
 
 /**
@@ -554,10 +558,15 @@ export function evaluateTrade(db, proposal, configOverride) {
   // ---- 10. Kelly sizing (PER-STRATEGY expectancy) ------------------------
   // Scope expectancy to the proposal's OWN strategy so a losing strategy can't
   // veto a proven one (fib's losses were blocking RSI-2/VP for "negative
-  // expectancy"). Unlabelled proposals fall back to the global snapshot.
+  // expectancy"). An UNLABELLED proposal has no strategy record to judge, so it
+  // SKIPS the Kelly veto (sizes by the risk budget) rather than inheriting the
+  // GLOBAL snapshot — that global fallback re-introduced the exact bug this
+  // section fixes (the whole-book aggregate is negative by design, so one loser
+  // vetoed everything). All the other gates (drawdown, exposure, min-RR,
+  // min-SL, margin) still apply to unlabelled proposals.
   const latestStats = proposal.strategy
     ? strategyPerfStats(db, proposal.strategy)
-    : db.prepare(`SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1`).get()
+    : null
   const { volume: kellyVol, note: kellyNote } = kellyVolume(
     latestStats,
     sizingFloor,

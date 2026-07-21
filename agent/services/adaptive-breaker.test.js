@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import { runAdaptiveBreaker, strategyLossStreak, loadAdaptiveBreakerConfig, DEFAULT_ADAPTIVE_BREAKER } from './adaptive-breaker.js'
-import { loadStageMatrix } from './stage-matrix.js'
+import { loadStageMatrix, setStage, FILTER_DEFS } from './stage-matrix.js'
 
 function closeTrade(db, strategy, pnl, minutesAgo = 0) {
   db.prepare(
@@ -48,29 +48,29 @@ test('streak on a strategy with OTHERS armed → that strategy is disarmed', () 
   assert.match(notes[0], /disarmed at Auto Trade/)
 })
 
-test('AGGRESSIVE default: streak on the LAST armed strategy → DISARMED (not filter-laddered)', () => {
-  const db = initDB(':memory:') // default: fib only, aggressive default on
-  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
-  const out = runAdaptiveBreaker(db, {})
-  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'disarmed_last_strategy' }])
-  const m = loadStageMatrix(db, getState)
-  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, false, 'bleeding strategy is cut')
-})
-
-test('conservative (aggressive:false): LAST armed strategy → next filter armed instead of going idle', () => {
-  const db = initDB(':memory:')
-  setState(db, 'adaptive_breaker_json', JSON.stringify({ on: true, aggressive: false }))
+test('NEVER-ZERO invariant: streak on the LAST armed strategy → next filter armed, strategy stays live', () => {
+  const db = initDB(':memory:') // default: fib only
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const out = runAdaptiveBreaker(db, {})
   assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'armed_filter', filter: 'vwap' }])
   const m = loadStageMatrix(db, getState)
-  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, true, 'strategy stays live')
-  assert.equal(m.filters.find(f => f.key === 'vwap').stages.trade, true, 'VWAP filter armed')
+  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, true, 'last strategy stays live (never zero armed)')
+  assert.equal(m.filters.find(f => f.key === 'vwap').stages.trade, true, 'VWAP filter armed to tighten entries')
 })
 
-test('acts ONCE per streak; a new loss re-triggers (conservative ladder)', () => {
+test('LAST armed strategy with every filter already armed → HELD, never disarmed to zero', () => {
   const db = initDB(':memory:')
-  setState(db, 'adaptive_breaker_json', JSON.stringify({ on: true, aggressive: false }))
+  // Arm all confluence filters up front so the ladder is exhausted.
+  for (const f of FILTER_DEFS) setStage(db, { kind: 'filter', key: f.key, stage: 'trade', on: true }, { getState, setState })
+  for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
+  const out = runAdaptiveBreaker(db, {})
+  assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'held_last_strategy' }])
+  const m = loadStageMatrix(db, getState)
+  assert.equal(m.strategies.find(s => s.key === 'fib_618_fade').stages.trade, true, 'last strategy is NOT disarmed to zero')
+})
+
+test('acts ONCE per streak; a new loss re-triggers (filter ladder)', () => {
+  const db = initDB(':memory:')
   for (const m of [20, 10, 5]) closeTrade(db, 'fib_618_fade', -1, m)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 1) // arms vwap (rsi already on by default)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 0) // same streak — no repeat

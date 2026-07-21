@@ -342,10 +342,13 @@ test('kellyVolume — negative expectancy → 0', () => {
   assert.equal(out.volume, 0)
 })
 
-test('kellyVolume — positive expectancy scales volume', () => {
+test('kellyVolume — positive expectancy ships the FULL risk budget (veto-only, no haircut)', () => {
   const stats = { total_trades: 100, win_rate: 0.55, avg_win: 20, avg_loss: -10 }
   const out = kellyVolume(stats, 0.10, DEFAULT_RISK_CONFIG)
-  assert.ok(out.volume > 0 && out.volume <= 0.10, `got ${out.volume}`)
+  // Proven positive expectancy → full budget, not a fraction of it. Kelly only
+  // vetoes (returns 0) on negative expectancy; it never down-sizes a winner.
+  assert.equal(out.volume, 0.10, `got ${out.volume}`)
+  assert.match(out.note, /kelly=.*ok/)
 })
 
 // Per-strategy trade with a strategy label, on a NON-proposal symbol and old
@@ -703,7 +706,7 @@ test('no Max lots cap → adjusted volume is the full risk-based size', () => {
   setLeverage(db, 200)
   // EURUSD, 50-pip stop: risk budget 1% = $500; usd/lot = 100000×0.005 = $500 → 1 lot
   const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: null }
-  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.ok(r.adjusted_volume >= 0.9, `expected ~1 lot risk-based size, got ${r.adjusted_volume}`)
   assert.equal(r.checks.risk_based_volume, r.adjusted_volume)
@@ -714,7 +717,7 @@ test('explicit Max lots cap still reduces the risk-based size', () => {
   setBalance(db, 50_000)
   setLeverage(db, 200)
   const proposal = { symbol: 'EURUSD', side: 'BUY', entry: 1.1000, sl: 1.0950, tp1: 1.1100, requestedVolume: 0.05 }
-  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.equal(r.adjusted_volume, 0.05)
   assert.match(r.sizing_note || '', /capped_at_max_lots/)
@@ -769,7 +772,7 @@ test('evaluateTrade sizes a cross end-to-end using scan rates from state', () =>
     `INSERT INTO agent_state (key, value) VALUES ('last_scan_results', ?)`
   ).run(JSON.stringify({ scans: [{ symbol: 'USDJPY', price: 150 }] }))
   const proposal = { symbol: 'GBPJPY', side: 'BUY', entry: 195, sl: 194.5, tp1: 195.9, requestedVolume: null }
-  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01, kellyFraction: 0 })
+  const r = evaluateTrade(db, proposal, { ...NO_SYMBOL_COOLDOWN, perTradeRiskPct: 0.01 })
   assert.equal(r.approved, true, r.veto_reason)
   assert.ok(r.adjusted_volume >= 1.4, `expected ~1.5 lots, got ${r.adjusted_volume}`)
 })

@@ -318,7 +318,13 @@ export async function maybeRunAutopilot(db, creds, deps = {}) {
   // mode still refuses to arm real money and downgrades to suggestions.
   const allowLive = getState(db, 'autopilot_allow_live') === 'true'
   const goCount = verdicts.filter(v => v.state === 'go').length
-  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${goCount} GO${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
+  // "GO" is the loose backtest bar (PF≥1.1) — it protects an existing arm from
+  // being churned, but it is NOT the bar to be NEWLY armed. Report the ARMABLE
+  // count (the strict PF≥1.7 / 60% win / 25-trade bar decideChanges enforces)
+  // alongside it so the headline never overstates what the bot will actually
+  // trade. Same thresholds as decideChanges' armGrade defaults.
+  const armable = verdicts.filter(v => v.state === 'go' && (v.pf ?? 0) >= 1.7 && (v.winRate ?? 0) >= 60 && (v.trades ?? 0) >= 25).length
+  const head = `📊 Autopilot evaluation: ${verdicts.length} combos tested, ${armable} armable (${goCount} GO at the loose bar)${errors.length ? `, ${errors.length} errors` : ''}.${reportName ? ` Full charted report: ${reportName} (Tune → Backtest → Past reports).` : ''}`
 
   if (mode === 'suggest' || (isLive && !allowLive)) {
     const all = [...changes.disarm.map(c => `disarm ${describe(c)}`), ...changes.arm.map(c => `arm ${describe(c)}`), ...changes.suggestions.map(c => `${c.action} ${describe(c)}`)]
