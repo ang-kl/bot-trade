@@ -22,7 +22,23 @@ import { minRrFor } from './strategies.js'
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
   dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
-  perTradeRiskPct: 0.01,           // 1% of balance per trade.
+  // Per-trade risk (owner: "push default risk to 5% or absolute amount").
+  // Size AGGRESSIVELY on the now-proven combos, with an ALGO HARD CAP as the
+  // safety layer. The effective $ budget per trade is:
+  //   base    = perTradeRiskUsd (if > 0) else balance × perTradeRiskPct
+  //   ceiling = min(balance × maxRiskCapPct, maxRiskUsd?)
+  //   budget  = min(base, ceiling) × drawdown-de-risk factor
+  perTradeRiskPct: 0.05,           // 5% of balance per trade (aggressive)
+  perTradeRiskUsd: null,           // absolute $ risk/trade; when > 0, overrides the pct
+  maxRiskCapPct: 0.05,             // hard ceiling — never risk more than this % of balance
+  maxRiskUsd: null,                // optional absolute $ ceiling per trade
+  // Anti-tilt: when realized PnL over the last window is down more than
+  // deriskTriggerPct of balance, scale the budget by deriskMult — a losing run
+  // sizes DOWN automatically instead of compounding at 5%.
+  deriskOnDrawdown: true,
+  deriskWindowHours: 24,
+  deriskTriggerPct: 0.05,          // down >5% in the window → de-risk
+  deriskMult: 0.5,                 // …to half size until it recovers
   minLotSize: 0.01,                // Broker minimum lot size.
   maxConsecutiveLosses: 3,         // After N losses in a row → cooldown.
   cooldownMinutes: 60,             // Cool-off window after hitting the streak.
@@ -180,6 +196,38 @@ export function computeRiskBasedVolume(balance, symbol, slDistance, riskPct, ent
     usdRisk: Number(usdRisk.toFixed(2)),
     note: `risk_budget=$${budget.toFixed(2)} usd_per_lot=$${usdPerLot.toFixed(2)}`,
   }
+}
+
+/**
+ * The effective $ risk budget for one trade after the algo layers: absolute-$
+ * override → pct, capped by the hard ceiling(s), scaled by the drawdown
+ * de-risk factor. Pure.
+ */
+export function riskBudgetUsd(balance, cfg, ddFactor = 1) {
+  if (!(balance > 0)) return 0
+  const base = Number(cfg.perTradeRiskUsd) > 0 ? Number(cfg.perTradeRiskUsd) : balance * (cfg.perTradeRiskPct ?? 0)
+  const ceilings = [balance * (Number.isFinite(cfg.maxRiskCapPct) ? cfg.maxRiskCapPct : Infinity)]
+  if (Number(cfg.maxRiskUsd) > 0) ceilings.push(Number(cfg.maxRiskUsd))
+  const capped = Math.min(base, ...ceilings)
+  const f = Number.isFinite(ddFactor) ? ddFactor : 1
+  return Math.max(0, capped * f)
+}
+
+/**
+ * Anti-tilt de-risk multiplier: 1 normally, or cfg.deriskMult when realized net
+ * PnL over the last cfg.deriskWindowHours is worse than −(balance × trigger).
+ */
+export function drawdownDeriskFactor(db, balance, cfg) {
+  if (!cfg?.deriskOnDrawdown || !(balance > 0)) return 1
+  try {
+    const row = db.prepare(
+      `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+       WHERE status = 'closed' AND net_pnl IS NOT NULL
+         AND closed_at >= datetime('now', ?)`
+    ).get(`-${Math.max(1, Math.round(cfg.deriskWindowHours || 24))} hours`)
+    const pnl = row?.pnl ?? 0
+    return pnl <= -(balance * (cfg.deriskTriggerPct ?? 1)) ? (cfg.deriskMult ?? 1) : 1
+  } catch { return 1 }
 }
 
 /**
@@ -458,8 +506,14 @@ export function evaluateTrade(db, proposal, configOverride) {
     // Live rates for cross-pair sizing (GBPJPY loss is in JPY; convert via
     // USDJPY from the scan's freshest closes) — the whole watchlist of USD
     // majors doubles as the conversion table.
-    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, config.perTradeRiskPct, entry, scanRates(db))
-    checks.risk_budget = Number((balance * config.perTradeRiskPct).toFixed(2))
+    // Algo-capped, drawdown-aware budget → effective risk fraction for sizing.
+    const ddFactor = drawdownDeriskFactor(db, balance, config)
+    const budget = riskBudgetUsd(balance, config, ddFactor)
+    const effRiskPct = budget / balance
+    const risked = computeRiskBasedVolume(balance, proposal.symbol, slDistance, effRiskPct, entry, scanRates(db))
+    checks.risk_budget = Number(budget.toFixed(2))
+    checks.risk_pct_effective = Number(effRiskPct.toFixed(4))
+    if (ddFactor < 1) checks.derisked = { factor: ddFactor, window_h: config.deriskWindowHours }
     checks.risk_based_volume = risked.volume
     checks.risk_based_usd = risked.usdRisk
     if (risked.volume < config.minLotSize) {

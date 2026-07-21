@@ -23,7 +23,11 @@ import { getState, setState } from '../db.js'
 import { STRATEGY_KEYS } from './strategies.js'
 import { loadStageMatrix, setStage, FILTER_DEFS } from './stage-matrix.js'
 
-export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3 }
+// aggressive (owner: "build more aggressive"): a losing strategy that is the
+// LAST one armed is DISARMED immediately, instead of arming tightening filters
+// and letting it ride (that's how fib bled 7 losses). Safe now that the
+// autopilot backfills proven combos. Set aggressive:false for the old ladder.
+export const DEFAULT_ADAPTIVE_BREAKER = { on: true, streak: 3, aggressive: true }
 
 export function loadAdaptiveBreakerConfig(db) {
   try {
@@ -32,6 +36,7 @@ export function loadAdaptiveBreakerConfig(db) {
       return {
         on: parsed.on !== false,
         streak: Math.min(10, Math.max(2, Math.round(Number(parsed.streak) || 3))),
+        aggressive: parsed.aggressive !== false,
       }
     }
   } catch { /* corrupt — defaults */ }
@@ -81,6 +86,12 @@ export function runAdaptiveBreaker(db, { notify } = {}) {
       if (othersOn) {
         setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
         action = { strategy: key, streak, did: 'disarmed_strategy' }
+      } else if (cfg.aggressive) {
+        // AGGRESSIVE: cut the bleeding strategy even as the last one — the
+        // autopilot re-arms proven combos, so we don't need to keep a loser
+        // live just to avoid going idle.
+        setStage(db, { kind: 'strategy', key, stage: 'trade', on: false }, io)
+        action = { strategy: key, streak, did: 'disarmed_last_strategy' }
       } else {
         const nextFilter = FILTER_DEFS.find(f => !matrix.filters.find(x => x.key === f.key)?.stages.trade)
         if (nextFilter) {
