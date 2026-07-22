@@ -1,11 +1,52 @@
-# Virtual Pending Order Engine (VWAP + Volume Profile) — C++ sidecar, draft v0.1
+# Virtual Pending Order Engine (VWAP + Volume Profile) — C++ sidecar
 
-Repo: `ang-kl/bot-trade` · Target: `cpp-exec/` (new module) + `agent/lib/exec-engine.js` (delegator wiring)
-Status: **draft — awaiting owner sign-off before any code change**
+Repo: `ang-kl/bot-trade` · Module: `cpp-exec/src/vpo_*.{hpp,cpp}`
+Status: **v1 built, NOT wired into `main.cpp`/live trading yet — needs manual review before that step**
 Prepared: 22-07-'26, following review of `cpp-exec/src/engine.{hpp,cpp}`,
 `order_guard.{hpp,cpp}`, `main.cpp`, `doc_reference/pending-order-mode.md`,
 and the two source prompts (owner-supplied, 2026-07-22, "Strategy: Clear"
 and "Strategy: Taleb").
+
+## Implementation update (22-07-'26, later same day)
+
+Owner directly authorized the build and answered every open question in
+§5 below in a follow-up prompt: confirmed the ~100-modify/min cTrader rate
+limit is real (§5.1 resolved — this DOES apply here, the earlier
+"maybe you don't need this" hedge in §2 is superseded), accepted the
+missed-entry-on-disconnect risk explicitly ("do not write a broker-side
+hybrid fallback" — §5.3 resolved), named all 7 strategies (§5.2), confirmed
+native C++ indicator math over IPC (§5.4), and set initial scope to one
+timeframe pair, 4h macro / 15m micro (§5.5).
+
+Built: `vpo_indicators.{hpp,cpp}` (byte-parity ATR/anchored-VWAP/volume-
+profile port of `agent/lib/indicators.js`), `vpo_types.hpp`
+(`VposState`/`VirtualPendingOrder`), `vpo_strategy.hpp` (base class),
+`vpo_strategies.{hpp,cpp}` (real `VwapTrendStrategy` + `VpValueStrategy`
+ports — adapted from signal-on-close to arm-then-wait-for-touch, see file
+header; the other 5 named strategies are honest stubs that compile and
+register but never arm — porting EMA/BRK/C&H/FIBC/RSI is separate work,
+not done here), `vpo_dispatcher.{hpp,cpp}` (background recompute thread +
+hot tick thread, atomic CAS fire, race-safety explained inline). Tests:
+`test_vpo_indicators.cpp`, `test_vpo_strategies.cpp`, `test_vpo_dispatcher.cpp`
+— all passing alongside the existing 6 C++ test binaries, no regressions.
+
+**Deliberately NOT done, flagged rather than invented:**
+- **Sizing.** `VolumeResolver` is an injected callback the dispatcher
+  refuses to fire without a positive number from. This engine does not
+  reimplement `risk.js`'s Kelly/margin logic — building a second, unaudited
+  sizing engine in C++ was never asked for and would be its own large risk
+  decision.
+- **Unit scaling.** `relativeStopLoss`/`relativeTakeProfit` are stored as
+  raw price distances; cTrader's wire format may need those scaled (pip/
+  point convention per symbol) before this fires for real — not yet wired,
+  not yet verified against a live account.
+- **Not wired into `main.cpp`.** No dispatcher instance runs in the actual
+  binary yet, no bar-provider is connected to the real WS trendbar/tick
+  feed, and `OrderGuard`'s bracket/target requirement is satisfied by
+  construction (every armed order carries both) but not yet exercised
+  against a live socket. Wiring this in is the next step and should get
+  its own review pass given it's the point where this starts actually
+  placing real market orders.
 
 ---
 
