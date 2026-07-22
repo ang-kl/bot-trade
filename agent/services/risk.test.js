@@ -677,19 +677,55 @@ function insertOpenPositionSized(db, { symbol, side = 'short', volume, entry }) 
   return tradeId
 }
 
-test('margin gate — AGGREGATE: open positions margin + new trade over the cap vetoes', () => {
+test('margin gate — AGGREGATE: shrinks the new trade to fit remaining headroom instead of an all-or-nothing veto', () => {
+  // Owner (2026-07-22): "why do we need such a big lot size when
+  // realistically cannot trade" — the old behaviour computed the full
+  // risk/Kelly volume, found it 4800+275 > 5000 cap, and discarded the
+  // WHOLE trade even though $200 of headroom was still available. Now it
+  // shrinks proportionally to what fits instead of wasting the headroom.
   const db = freshDB()
   setBalance(db, 10000)  // cap = $5000 margin (maxMarginUsagePct 0.5)
   setLeverage(db, 100)
   // Open XAUUSD SHORT 2.0 lots @ 2400 → margin = 2.0×100×2400/100 = $4800 used.
   // (short so its +USD leg cancels the new EURUSD long's −USD — no exposure veto)
   insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 2.0, entry: 2400 })
-  // New EURUSD 0.25 lot → margin = 0.25×100000×1.1/100 = $275; 4800+275 > 5000.
+  // Requested EURUSD 0.25 lot → margin = 0.25×100000×1.1/100 = $275; 4800+275
+  // > 5000, but $200 headroom remains → shrinks to 0.25×(200/275) ≈ 0.18 lot,
+  // which DOES fit (4800 + 0.18×100000×1.1/100 = 4800+198 = 4998 ≤ 5000).
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
-  assert.equal(res.approved, false, `expected aggregate-margin veto, got approved`)
-  assert.match(res.veto_reason, /insufficient_margin/)
-  assert.match(res.veto_reason, /used=4800/)
+  assert.equal(res.approved, true, `expected a shrunk approval, got veto: ${res.veto_reason}`)
+  assert.equal(res.adjusted_volume, 0.18)
   assert.ok(res.checks.margin_used_usd >= 4800, `used margin summed: ${res.checks.margin_used_usd}`)
+  assert.deepEqual(res.checks.margin_shrink, { from: 0.25, to: 0.18, reason: 'margin_headroom' })
+  assert.match(res.sizing_note, /shrunk_for_margin=0\.25->0\.18/)
+  assert.ok(res.checks.margin_total_usd <= res.checks.margin_cap_usd, 'shrunk position must actually fit under the cap')
+})
+
+test('margin gate — AGGREGATE: still vetoes outright when even the shrunk volume falls below the minimum lot', () => {
+  const db = freshDB()
+  setBalance(db, 10000)  // cap = $5000
+  setLeverage(db, 100)
+  // Open XAUUSD SHORT 2.0 lots @ 2495 → margin = 2.0×100×2495/100 = $4990 used,
+  // leaving only $10 headroom — nowhere near enough for even a 0.01-lot EURUSD
+  // position ($275/0.25 lot ⇒ ~$11/0.01 lot).
+  insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 2.0, entry: 2495 })
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false, `expected veto — no shrink helps here, got: ${JSON.stringify(res)}`)
+  assert.match(res.veto_reason, /insufficient_margin/)
+  assert.match(res.veto_reason, /used=4990/)
+})
+
+test('margin gate — AGGREGATE: no headroom left at all (existing positions alone exceed the cap) vetoes without computing a shrink', () => {
+  const db = freshDB()
+  setBalance(db, 10000)  // cap = $5000
+  setLeverage(db, 100)
+  // Open XAUUSD SHORT 3.0 lots @ 2400 → margin = 3.0×100×2400/100 = $7200,
+  // already over the $5000 cap on its own.
+  insertOpenPositionSized(db, { symbol: 'XAUUSD', side: 'short', volume: 3.0, entry: 2400 })
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /insufficient_margin/)
+  assert.match(res.veto_reason, /no headroom left to shrink into/)
 })
 
 test('margin gate — AGGREGATE: the same new trade approves with no open positions', () => {

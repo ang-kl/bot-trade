@@ -579,7 +579,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   // Never ship below broker minimum.
   const finalVolume = Math.max(config.minLotSize, kellyVol || sizingFloor)
 
-  // ---- 11. Margin-headroom gate (AGGREGATE) ------------------------------
+  // ---- 11. Margin-headroom gate (AGGREGATE, shrink-to-fit) ---------------
   // The new position PLUS the margin already locked by every open position
   // must not exceed `maxMarginUsagePct` of balance. This used to check only the
   // single new trade against the cap — so 16 trades each passed in isolation
@@ -587,10 +587,22 @@ export function evaluateTrade(db, proposal, configOverride) {
   // (owner hit exactly this: 16 open, margin level 126% vs 50% stop-out). Now
   // the cap is a true PORTFOLIO ceiling, which is what its comment always
   // claimed. Only enforced when balance is set.
+  //
+  // Owner (2026-07-22): "why do we need such a big lot size when realistically
+  // cannot trade" — this used to compute the FULL risk/Kelly size, discover
+  // it was e.g. 6x over the remaining margin headroom, and discard the whole
+  // trade. That's wasted sizing work, not a wasted trade: whatever headroom
+  // IS left can usually still take a smaller, correctly-margined position.
+  // Margin scales linearly with volume for a fixed price, so shrink
+  // proportionally to whatever fits, floor it to the broker's 0.01-lot
+  // granularity (computeRiskBasedVolume's own rounding), and only veto
+  // outright when even the minimum lot size doesn't fit — i.e. when
+  // shrinking would produce nothing tradeable, not merely something smaller.
+  let volume = finalVolume
   if (balance != null) {
     const rates = scanRates(db)
-    const { notional, marginRequired } = requiredMargin(
-      proposal.symbol, finalVolume, entry, leverage, rates,
+    let { notional, marginRequired } = requiredMargin(
+      proposal.symbol, volume, entry, leverage, rates,
     )
     // Sum margin already committed by open positions (best-effort per row).
     let usedMargin = 0
@@ -600,25 +612,50 @@ export function evaluateTrade(db, proposal, configOverride) {
         usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates).marginRequired || 0
       } catch { /* skip a row we can't price — never block sizing on one bad row */ }
     }
-    const totalMargin = usedMargin + marginRequired
-    checks.notional_usd = Number(notional.toFixed(2))
-    checks.margin_required_usd = Number(marginRequired.toFixed(2))
-    checks.margin_used_usd = Number(usedMargin.toFixed(2))
-    checks.margin_total_usd = Number(totalMargin.toFixed(2))
     const marginCap = balance * config.maxMarginUsagePct
+    const headroom = marginCap - usedMargin
+    checks.margin_used_usd = Number(usedMargin.toFixed(2))
     checks.margin_cap_usd = Number(marginCap.toFixed(2))
-    if (totalMargin > marginCap) {
+
+    if (headroom <= 0) {
+      // Existing positions alone already consume the whole cap — no amount
+      // of shrinking the NEW trade helps, so there's nothing to compute.
+      checks.margin_required_usd = Number(marginRequired.toFixed(2))
+      checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
       return veto(
-        `insufficient_margin total=${totalMargin.toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage}`,
+        `insufficient_margin total=${(usedMargin + marginRequired).toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage} · no headroom left to shrink into`,
         checks, proposal,
       )
     }
+
+    if (marginRequired > headroom) {
+      // Shrink proportionally to whatever margin IS available, floored to
+      // the same 0.01-lot granularity computeRiskBasedVolume uses.
+      const shrunk = Math.floor(volume * (headroom / marginRequired) * 100) / 100
+      if (shrunk < config.minLotSize) {
+        checks.margin_required_usd = Number(marginRequired.toFixed(2))
+        checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
+        return veto(
+          `insufficient_margin total=${(usedMargin + marginRequired).toFixed(2)} (used=${usedMargin.toFixed(2)} + new=${marginRequired.toFixed(2)}) cap=${marginCap.toFixed(2)} leverage=${leverage} · shrunk_to=${shrunk} below min_lot=${config.minLotSize}`,
+          checks, proposal,
+        )
+      }
+      const before = volume
+      volume = shrunk
+      ;({ notional, marginRequired } = requiredMargin(proposal.symbol, volume, entry, leverage, rates))
+      checks.margin_shrink = { from: before, to: volume, reason: 'margin_headroom' }
+      sizingNote = sizingNote ? `${sizingNote} · shrunk_for_margin=${before}->${volume}` : `shrunk_for_margin=${before}->${volume}`
+    }
+
+    checks.notional_usd = Number(notional.toFixed(2))
+    checks.margin_required_usd = Number(marginRequired.toFixed(2))
+    checks.margin_total_usd = Number((usedMargin + marginRequired).toFixed(2))
   }
 
   const combinedNote = sizingNote ? `${sizingNote} · ${kellyNote}` : kellyNote
   return {
     approved: true,
-    adjusted_volume: finalVolume,
+    adjusted_volume: volume,
     sizing_note: combinedNote,
     checks,
   }
