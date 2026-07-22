@@ -125,14 +125,15 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     },
   ]
   const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
-  // The To-TP/SL trio needs a LIVE current price on at least one row — a
-  // purely historical table (e.g. Recent trades, all CLOSED/UNCONFIRMED
-  // rows) never carries one, so these three columns rendered permanently
-  // blank there (owner: "why the columns not fill"). Auto-hide them, same
-  // convention as the optional columns above, instead of always reserving
-  // the space for data that table can never have.
-  const anyLive = rows.some(r => r.current != null)
-  const colCount = (anyLive ? 15 : 12) + activeOpt.length
+  // The To-TP/SL trio doesn't need a LIVE price specifically — once a trade
+  // closes, its recorded EXIT price is the final reference point, so "how
+  // close did it come to TP/SL" is still real, computable data (owner
+  // pushback: "you can recompute when the live ends"). Every row-builder
+  // sets `current` while open and `exit` once closed; this trio only goes
+  // blank when NEITHER exists anywhere in the table (e.g. a pending-order
+  // table with no fill history at all).
+  const anyRef = rows.some(r => r.current != null || r.exit != null)
+  const colCount = (anyRef ? 15 : 12) + activeOpt.length
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -154,12 +155,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th aria-sort={ariaSort('sl')} className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
               <th aria-sort={ariaSort('tp')} className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
               <th aria-sort={ariaSort('pnl')} className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
-              {anyLive && <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>}
+              {anyRef && <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>}
               {/* Absolute price distances (owner: entry $1, now $1.20, TP $2,
-                  SL $0.80 → "to TP" 0.80 and "to SL" (0.40)) — always shown
-                  when a live price + level exist, both directions at once. */}
-              {anyLive && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from current to the take profit">📈 to TP</th>}
-              {anyLive && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from current to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
+                  SL $0.80 → "to TP" 0.80 and "to SL" (0.40)) — shown whenever
+                  a reference price + level exist: the LIVE price while open,
+                  or the recorded EXIT price once closed (owner: "you can
+                  recompute when the live ends"). */}
+              {anyRef && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the take profit">📈 to TP</th>}
+              {anyRef && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
               {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
               <th className="py-1.5 font-semibold" aria-label="Actions" />
             </tr>
@@ -171,17 +174,21 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               const mh = marketHours?.[String(r.symbol || '').toUpperCase()]
               // Progress read: in profit → remaining distance to each TP
               // ladder level (nearest, 2nd, 3rd); in loss → distance left
-              // before the stop. Needs a live price on the row.
+              // before the stop. Needs a reference price on the row — the
+              // LIVE price while open, or the recorded EXIT price once
+              // closed (a closed trade's exit IS its final reference point,
+              // so this stays real, computable data instead of going blank).
               const dir = long ? 1 : -1
-              const hasLive = r.current != null && r.entry != null && r.side
-              const inProfit = !hasLive ? null : r.pnl != null ? r.pnl >= 0 : (r.current - r.entry) * dir >= 0
-              const tpDists = hasLive && inProfit
+              const ref = r.current ?? r.exit
+              const hasRef = ref != null && r.entry != null && r.side
+              const inProfit = !hasRef ? null : r.pnl != null ? r.pnl >= 0 : (ref - r.entry) * dir >= 0
+              const tpDists = hasRef && inProfit
                 ? (r.tps?.length ? r.tps : (r.tp != null ? [{ n: 1, price: r.tp }] : []))
                     .slice(0, 3)
-                    .map(t => ({ n: t.n, d: (Number(t.price) - r.current) * dir }))
+                    .map(t => ({ n: t.n, d: (Number(t.price) - ref) * dir }))
                     .filter(x => Number.isFinite(x.d))
                 : []
-              const slDist = hasLive && inProfit === false && r.sl != null ? (r.current - r.sl) * dir : null
+              const slDist = hasRef && inProfit === false && r.sl != null ? (ref - r.sl) * dir : null
               return (
                 <Fragment key={r.id}>
                   <tr className="border-b border-[var(--color-border)] align-middle">
@@ -246,7 +253,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     <td className={`py-1.5 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.pnl != null ? <>{`${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{ccyTag(r.moneyCcy)}</> : '—'}
                     </td>
-                    {anyLive && (
+                    {anyRef && (
                       <td className="py-1.5 pr-3 text-right whitespace-nowrap">
                         {tpDists.length > 0
                           ? tpDists.map(x => (
@@ -259,15 +266,16 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                             : '—'}
                       </td>
                     )}
-                    {/* 📈 to TP / 📉 to SL — absolute distances from CURRENT */}
-                    {anyLive && (
+                    {/* 📈 to TP / 📉 to SL — absolute distances from the
+                        reference price (current while open, exit once closed) */}
+                    {anyRef && (
                       <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                        {hasLive && r.tp != null ? num(Math.abs(Number(r.tp) - r.current)) : '—'}
+                        {hasRef && r.tp != null ? num(Math.abs(Number(r.tp) - ref)) : '—'}
                       </td>
                     )}
-                    {anyLive && (
+                    {anyRef && (
                       <td className="py-1.5 pr-3 text-right whitespace-nowrap">
-                        {hasLive && r.sl != null ? `(${num(Math.abs(r.current - Number(r.sl)))})` : '—'}
+                        {hasRef && r.sl != null ? `(${num(Math.abs(ref - Number(r.sl)))})` : '—'}
                       </td>
                     )}
                     {activeOpt.map(c => (
@@ -323,9 +331,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                   <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>
-                  {anyLive && <td className="py-1.5 pr-3" />}
-                  {anyLive && <td className="py-1.5 pr-3" />}
-                  {anyLive && <td className="py-1.5 pr-3" />}
+                  {anyRef && <td className="py-1.5 pr-3" />}
+                  {anyRef && <td className="py-1.5 pr-3" />}
+                  {anyRef && <td className="py-1.5 pr-3" />}
                   {activeOpt.map(c => (
                     <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
                       {c.key === 'margin' && hasMargin

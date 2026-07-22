@@ -92,6 +92,7 @@ export function brokerPositionRows(positions, { manageable = false, dbByPid = nu
       tps: p2.tps?.length ? p2.tps : undefined,
       tpAt: (p2.tps?.length || p2.tp != null) ? (p2.tps?.[0]?.at ?? p2.lastModifiedAt ?? null) : null,
       current: p2.currentPrice ?? null,
+      exit: null, // still open — nothing to fall back to
       pnl: net ?? null,
       // cTrader's compulsory position columns — the standard table shows
       // them whenever rows carry them.
@@ -167,6 +168,12 @@ export function brokerDealRows(deals) {
       // account never tracked (broker history alone doesn't carry SL/TP).
       sl: d.sl ?? null,
       tp: d.tp ?? null,
+      // Pushback (owner): "To TP/SL" doesn't need a LIVE price — once a
+      // trade closes, the exit price IS the final reference point, so
+      // "how close did the exit come to TP/SL" is real, computable data,
+      // not a column that should just go blank. StdTradeTable falls back
+      // to this whenever `current` is absent.
+      exit: d.closePrice ?? null,
       pnl: d.netPnl ?? null,
       ccy: d.quoteCcy ?? null,
       moneyCcy: d.depositCcy ?? null,

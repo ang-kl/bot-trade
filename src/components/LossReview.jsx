@@ -128,17 +128,64 @@ function Verdict({ r }) {
         <div className="mt-1.5 flex flex-wrap items-start gap-3">
           <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
           <div className="flex-1 min-w-[200px]">
-            {/* Structured lesson fields (Trade-Lesson Extraction spec) — the
-                imperative lesson first, then the flat flags controllers read. */}
             {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
             <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-            <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">
-              {r.result ? `Result: ${r.result}` : null}
-              {r.alpha_decay ? ` · Alpha-decay: ${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay}` : null}
-              {r.entry_quality ? ` · Entry-quality: ${r.entry_quality}` : null}
-            </p>
+            <FieldGrid r={r} />
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+const dash = (v) => (v == null || v === '' ? '—' : v)
+const untracked = 'not tracked yet'
+const px2 = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 5 }))
+
+// Full Trade-Lesson Extraction field breakdown (owner spec) — every field
+// the spec names, laid out explicitly. Fields this codebase doesn't capture
+// yet (Fundamental tag, structured Confluence indicators/Fib/VWAP, TP3, a
+// SMART-goal text) are labelled "not tracked yet" rather than omitted or
+// invented — the spec's shape is honoured, the data gap is honest.
+function FieldGrid({ r }) {
+  const goal = r.tp1_price != null
+    ? `reach TP1 (${px2(r.tp1_price)})`
+    : 'no TP1 on record'
+  const rows = [
+    ['Symbol', r.symbol],
+    ['Strategy', dash(r.strategy)],
+    ['Timeframe', dash(r.timeframe)],
+    ['Direction', r.side === 'BUY' || r.side === 'long' ? 'Long' : r.side === 'SELL' || r.side === 'short' ? 'Short' : '—'],
+    ['Fundamental', untracked],
+    ['Confluence — Indicators', untracked],
+    ['Confluence — Fib', untracked],
+    ['Confluence — VWAP', untracked],
+    ['Confluence-count', r.confluence_count != null ? String(r.confluence_count) : 'not recorded'],
+    ['Entry', px2(r.entry_price)],
+    ['Lot', r.lot != null ? Number(r.lot).toFixed(2) : '—'],
+    ['SL', px2(r.sl_price)],
+    ['TP1', px2(r.tp1_price)],
+    ['TP2', px2(r.tp2_price)],
+    ['TP3', untracked],
+    ['Exit', px2(r.exit_price)],
+    ['Goal (SMART)', goal],
+    ['Result', dash(r.result)],
+    ['R-multiple', r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : '—'],
+    ['Alpha-decay', r.alpha_decay ? `${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay} (keyed Symbol+Strategy+Timeframe)` : '—'],
+    ['Entry-quality', dash(r.entry_quality)],
+  ]
+  return (
+    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+      {rows.map(([label, value]) => (
+        <div key={label} className="contents">
+          <span className="text-[var(--color-text-sub)]">{label}</span>
+          <span className={value === untracked || value === 'not recorded' ? 'text-[var(--color-text-sub)] italic' : ''}>{value}</span>
+        </div>
+      ))}
+      {r.setup_thesis && (
+        <span className="col-span-2 mt-0.5 text-[10px] text-[var(--color-text-sub)] opacity-80">
+          Setup thesis (free text, not the structured Confluence breakdown above): {r.setup_thesis}
+        </span>
       )}
     </div>
   )

@@ -307,8 +307,18 @@ export default function stateRouter(db) {
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30))
     let rows = [], stats = []
     try {
+      // Trade-Lesson field spec (owner) asks for Lot / TP1 / TP2 /
+      // Confluence-count alongside the flat lesson fields — none of those
+      // live on trade_postmortems itself, so join back to the trade (lot,
+      // TP1, confluence_count) and its analysis (TP2, laddered target).
+      // Aliased names only — never shadows pm's own snapshotted prices.
       rows = db.prepare(
-        `SELECT * FROM trade_postmortems ORDER BY id DESC LIMIT ?`
+        `SELECT pm.*, t.volume AS lot, t.tp_price AS tp1_price, t.thesis AS setup_thesis,
+                t.confluence_count AS confluence_count, a.tp2_price AS tp2_price
+         FROM trade_postmortems pm
+         LEFT JOIN trades t ON t.id = pm.trade_id
+         LEFT JOIN analyses a ON a.id = t.analysis_id
+         ORDER BY pm.id DESC LIMIT ?`
       ).all(limit)
     } catch { /* table appears on first boot after migration */ }
     try {
