@@ -76,6 +76,20 @@ let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 
+/**
+ * Clear the in-process consecutive-error count. POST /actions/reset-breaker
+ * was only clearing the DB-persisted `circuit_breaker_tripped_at`/`errors_today`
+ * — the trip condition at the top of runLoop() checks the in-memory
+ * `consecutiveErrors` counter above, which a route handler in a different
+ * module can't reach directly. Without this, a "successful" manual reset
+ * looked fine in the response but the very next tick re-tripped the breaker
+ * instantly (consecutiveErrors was still >= MAX_CONSECUTIVE_ERRORS), so the
+ * loop stayed halted until the whole process restarted.
+ */
+export function resetCircuitBreaker() {
+  consecutiveErrors = 0
+}
+
 // Lazy singleton — only the monitor/weekend position checks call the LLM now;
 // the scan/analyze pipeline is deterministic (fib-strategy.js). Provider is
 // OpenAI when OPENAI_API_KEY is set (owner's primary key), else Anthropic —
