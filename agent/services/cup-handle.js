@@ -6,7 +6,7 @@
 // 5-step checklist (video spec, owner-approved 2026-07-09):
 //   1. uptrend        — close above SMA 20, 50 and 200
 //   2. healthy cup    — rounded bottom (≥3 bars near the low, not a V),
-//                       depth 8–40% of the rim, volume: sell-off > bottom,
+//                       depth 15–33% of the rim, volume: sell-off > bottom,
 //                       recovery > bottom (spike → dry-up → rebuild)
 //   3. tight handle   — drift holds the upper ⅓ of the cup, 2–15 bars,
 //                       volume tapering vs the recovery leg
@@ -26,8 +26,8 @@ const CUP_MIN = 15              // cup length bounds (bars)
 const CUP_MAX = 120
 const HANDLE_MIN = 2
 const HANDLE_MAX = 15
-const DEPTH_MIN = 0.08          // cup depth as fraction of rim price
-const DEPTH_MAX = 0.40
+const DEPTH_MIN = 0.15          // cup depth as fraction of rim price
+const DEPTH_MAX = 0.33
 const ROUND_BOTTOM_BARS = 3     // bars that must sit near the low (U, not V)
 const BREAKOUT_VOL_X = 1.3      // breakout volume vs handle average
 const MIN_RR = 1.5

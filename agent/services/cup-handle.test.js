@@ -20,13 +20,13 @@ function cupHandleBars() {
   // 185 bars of gentle uptrend to 100 — keeps price above all SMAs and
   // leaves >=210 total bars so SMA200 exists at the breakout.
   for (; i < 185; i++) { p += 50 / 185; bars.push(bar(i, p - 0.1, p + 0.3, p - 0.4, p, 1000)) }
-  // decline to ~87 over 12 bars, volume high early — depth ~8.7% of rim,
-  // comfortably clearing DEPTH_MIN (8%, owner-confirmed 2026-07-22)
-  for (let k = 0; k < 12; k++, i++) { p -= 1.1; bars.push(bar(i, p + 1.1, p + 1.3, p - 0.3, p, 1600 - k * 60)) }
-  // rounded bottom: 8 bars flat at ~87, dry volume
+  // decline to ~76 over 12 bars, volume high early — depth ~21.3% of rim,
+  // comfortably inside DEPTH_MIN/MAX (15-33%, owner-confirmed 2026-07-22)
+  for (let k = 0; k < 12; k++, i++) { p -= 2.0; bars.push(bar(i, p + 2.0, p + 2.2, p - 0.3, p, 1600 - k * 60)) }
+  // rounded bottom: 8 bars flat at ~76, dry volume
   for (let k = 0; k < 8; k++, i++) { bars.push(bar(i, p, p + 0.4, p - 0.25, p + 0.1, 500)) }
   // recovery to ~100 over 12 bars, volume rebuilding
-  for (let k = 0; k < 12; k++, i++) { p += 1.1; bars.push(bar(i, p - 1.1, p + 0.4, p - 1.2, p, 1200 + k * 40)) }
+  for (let k = 0; k < 12; k++, i++) { p += 2.0; bars.push(bar(i, p - 2.0, p + 0.4, p - 2.1, p, 1200 + k * 40)) }
   // tight handle: 5 bars drifting to ~97.5, low volume
   for (let k = 0; k < 5; k++, i++) { const hp = p - 0.5 * (k + 1) / 2; bars.push(bar(i, hp + 0.2, hp + 0.5, hp - 0.3, hp, 600)) }
   // breakout bar: closes above rim + prior-2 highs on 2× handle volume
