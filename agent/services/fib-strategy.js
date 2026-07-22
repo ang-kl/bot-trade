@@ -12,7 +12,7 @@
 
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import { tfMs } from '../lib/timeframes.js'
-import { computeCupHandleSignal, traceCupHandleSearch } from './cup-handle.js'
+import { computeCupHandleSignal, computeInvCupHandleSignal, traceCupHandleSearch, traceInvCupHandleSearch } from './cup-handle.js'
 import { categoriseSymbol } from '../lib/sessions.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
@@ -492,9 +492,11 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const now = Date.now()
   const fns = strategyFns(opts)
   // Cup & Handle Silence Diagnostics (Part A): rides on the existing
-  // cup_handle enable toggle — only computed when the strategy is actually
-  // armed for this scan, so it costs nothing when the strategy is off.
+  // cup_handle/inv_cup_handle enable toggles — only computed when a
+  // strategy is actually armed for this scan, so it costs nothing when
+  // both are off.
   const cupHandleOn = fns.includes(computeCupHandleSignal)
+  const invCupHandleOn = fns.includes(computeInvCupHandleSignal)
   const cupHandleTraces = []
   for (const timeframe of scanTfs) {
     const bars = cachedBars(symbolId, timeframe) || []
@@ -512,6 +514,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     const periodMs = tfMs(timeframe) || 0
     const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
     if (cupHandleOn) cupHandleTraces.push(traceCupHandleSearch(closed, timeframe))
+    if (invCupHandleOn) cupHandleTraces.push(traceInvCupHandleSearch(closed, timeframe))
     if (!signal || (preferred && !signal._preferred)) {
       // Best-conviction across ALL enabled strategies on this timeframe (not
       // "first in registry order wins" — that starved every strategy but fib).
@@ -647,6 +650,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
 const STRATEGY_DISPLAY = {
   fib_618_fade:      { name: 'Fibonacci Fade',     role: 'Deterministic 61.8% retracement fade' },
   cup_handle:        { name: 'Cup & Handle',       role: 'Deterministic cup & handle breakout' },
+  inv_cup_handle:    { name: 'Inverted Cup & Handle', role: 'Deterministic inverted cup & handle breakdown' },
   ema_pullback:      { name: 'EMA trend-pullback', role: 'Deterministic pullback to the trend EMA' },
   donchian_breakout: { name: 'Range breakout',     role: 'Deterministic Donchian channel breakout' },
   rsi_meanrev:       { name: 'RSI mean-reversion', role: 'Deterministic RSI stretch snap-back' },

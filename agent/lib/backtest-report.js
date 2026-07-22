@@ -55,6 +55,7 @@ const num = v => (v == null ? '—' : String(v))
 const KNOWN_STRATEGY_LABELS = {
   fib_618_fade: 'Fib 61.8% fade',
   cup_handle: 'Cup & Handle (breakout, long-only)',
+  inv_cup_handle: 'Inverted Cup & Handle (breakdown, short-only)',
   ema_pullback: 'EMA trend-pullback',
   donchian_breakout: 'Range breakout',
   rsi_meanrev: 'RSI mean-reversion',

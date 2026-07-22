@@ -4,6 +4,7 @@
 export const STRAT_SHORT = {
   fib_618_fade: 'FIB',
   cup_handle: 'C&H',
+  inv_cup_handle: 'ICUP',
   ema_pullback: 'EMA',
   donchian_breakout: 'BRK',
   rsi_meanrev: 'RSI',

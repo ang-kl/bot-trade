@@ -35,6 +35,7 @@ export const STRATEGY_KIND = {
   ema_pullback: 'trend',
   donchian_breakout: 'trend',
   cup_handle: 'trend',
+  inv_cup_handle: 'trend',
   vwap_trend: 'trend',      // VWAP pullback in a trend — dies in quiet chop
 }
 
