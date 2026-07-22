@@ -10,7 +10,7 @@
 // monitor the trigger take place").
 // ---------------------------------------------------------------------------
 import { useState } from 'react'
-import { orderStrategy, orderStatusLabel, orderTriggerPrice, isoWeek } from '../lib/order-ledger-rows.js'
+import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, isoWeek } from '../lib/order-ledger-rows.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
 
@@ -39,6 +39,7 @@ function ago(iso) {
 function Row({ o, gone, action = null }) {
   const long = String(o.side).toUpperCase() === 'BUY' || String(o.side).toLowerCase() === 'long'
   const strat = orderStrategy(o.label)
+  const tf = orderTimeframe(o.label)
   return (
     <tr className="border-t border-[var(--color-border)]">
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{ago(o.first_seen)} ago</td>
@@ -51,6 +52,9 @@ function Row({ o, gone, action = null }) {
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(orderTriggerPrice(o))}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(o.sl)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(o.tp)}</td>
+      {/* TF then Strategy — same column order as the open-positions table
+          (owner: fix the discrepancy between the two). */}
+      <td className="py-1.5 pr-3 whitespace-nowrap">{tf || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{strat || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{o.is_bot ? 'Bot' : 'Manual'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">
@@ -89,8 +93,11 @@ function QueuedRow({ q, onDone }) {
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.limit_price)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.sl)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.tp)}</td>
-      {/* Strategy PLUS timeframe (owner spec) */}
-      <td className="py-1.5 pr-3 whitespace-nowrap">{[q.strategy, q.timeframe].filter(Boolean).join(' · ') || '—'}</td>
+      {/* TF then Strategy — separate columns, matching Row above and the
+          open-positions table (owner: fix the discrepancy between the two;
+          these used to be combined into one cell here only). */}
+      <td className="py-1.5 pr-3 whitespace-nowrap">{q.timeframe || '—'}</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{q.strategy || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">Bot</td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">
         waiting{q.expires_at ? ` · expires ${ago(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}
@@ -118,7 +125,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
   const head = (
     <thead>
       <tr className="text-left text-[var(--color-text-sub)]">
-        {['Placed', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
+        {['Placed', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
           <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
         ))}
       </tr>
@@ -177,7 +184,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                       }).length
                       out.push(
                         <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
-                          <td colSpan={12} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                          <td colSpan={13} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
                             {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
                           </td>
                         </tr>
@@ -213,7 +220,7 @@ function WorkingRow({ o, onDone }) {
       } />
       {open && (
         <tr>
-          <td colSpan={12} className="py-2">
+          <td colSpan={13} className="py-2">
             <OrderManager o={manageShape} onDone={() => { setOpen(false); onDone?.() }} />
           </td>
         </tr>

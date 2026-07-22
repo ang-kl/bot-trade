@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { orderStrategy, orderStatusLabel, orderTriggerPrice, isoWeek } from './order-ledger-rows.js'
+import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, isoWeek } from './order-ledger-rows.js'
 
 describe('orderStrategy', () => {
   it('extracts the strategy code from a structured bot label', () => {
@@ -11,6 +11,24 @@ describe('orderStrategy', () => {
     expect(orderStrategy('manual')).toBeNull()
     expect(orderStrategy('')).toBeNull()
     expect(orderStrategy(null)).toBeNull()
+  })
+  it('normalizes label codes that differ from the open-positions short code (owner: fix the discrepancy)', () => {
+    expect(orderStrategy('AP|v1|DON|-|-|-|-')).toBe('BRK')   // donchian_breakout
+    expect(orderStrategy('AP|v1|CUP|-|-|-|-')).toBe('C&H')  // cup_handle
+    expect(orderStrategy('AP|v1|RSIM|-|-|-|-')).toBe('RSI') // rsi_meanrev
+  })
+})
+
+describe('orderTimeframe', () => {
+  it('extracts the timeframe segment from a structured bot label', () => {
+    expect(orderTimeframe('AP|v1|VP|HI|LDN|4h|REGT')).toBe('4h')
+    expect(orderTimeframe('AP|v1|FIB|HI|LDN|H1|REGT')).toBe('H1')
+  })
+  it('returns null for a placeholder, manual, or empty label', () => {
+    expect(orderTimeframe('AP|v1|VP|-|-|-|-')).toBeNull()
+    expect(orderTimeframe('manual')).toBeNull()
+    expect(orderTimeframe('')).toBeNull()
+    expect(orderTimeframe(null)).toBeNull()
   })
 })
 
