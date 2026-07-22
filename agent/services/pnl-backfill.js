@@ -28,6 +28,25 @@
 const WEEK_MS = 7 * 24 * 3_600_000
 
 /**
+ * Should this loop cycle run the P&L backfill? Any reconcile path that can
+ * close a trade with net_pnl left NULL must be able to trigger it — not just
+ * closedDetected (the broker-detected-close loop). The orphan sweep and
+ * dedup sweep (reconciler.js) also close trades with net_pnl left NULL but
+ * used to never populate closedDetected, so a trade closed ONLY via those
+ * two paths could never trigger this backfill and sat permanently excluded
+ * from Edge Health (alpha-decay.js's `net_pnl IS NOT NULL` read) — a silent
+ * gap, not a transient one. Pure/testable; backfillClosedPnl itself still
+ * self-gates on its own COUNT(*) check, so this only widens WHEN it's
+ * called, never what it does once called.
+ * @param {{closedDetected?:Array, orphansClosed?:Array, dupsClosed?:Array}} result
+ */
+export function shouldRunPnlBackfill(result) {
+  return (result?.closedDetected || []).length > 0
+    || (result?.orphansClosed || []).length > 0
+    || (result?.dupsClosed || []).length > 0
+}
+
+/**
  * Backfill net_pnl / gross_pnl for closed trades that have none, from the
  * broker's deal history. Realised money fields live on each closing deal's
  * closePositionDetail, scaled by moneyDigits — identical maths to

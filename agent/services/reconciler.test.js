@@ -221,9 +221,16 @@ test('orphan sweep: an open trade whose position is gone at the broker (no monit
 
   assert.equal(result.orphansClosed.length, 1)
   assert.equal(String(result.orphansClosed[0].positionId), '555')
-  const trade = db.prepare(`SELECT status, close_reason FROM trades WHERE id = ?`).get(tradeId)
+  const trade = db.prepare(`SELECT status, close_reason, net_pnl FROM trades WHERE id = ?`).get(tradeId)
   assert.equal(trade.status, 'closed')
   assert.match(trade.close_reason, /stale reconcile/)
+  // Root cause of the Edge Health gap this closes elsewhere (loop.js +
+  // pnl-backfill.js's shouldRunPnlBackfill): this sweep closes the trade with
+  // net_pnl left NULL, and does NOT populate closedDetected — only
+  // orphansClosed. A trigger that only checks closedDetected.length can
+  // never see this trade.
+  assert.equal(trade.net_pnl, null)
+  assert.equal(result.closedDetected.length, 0)
 })
 
 test('orphan sweep: an open trade STILL live at the broker is NOT closed', () => {
