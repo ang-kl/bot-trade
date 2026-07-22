@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import {
   smaSeries,
   emaSeries,
+  rsi,
+  macd,
+  stochastic,
   vwapSeries,
   avwapSeries,
   vwapAnchored,
@@ -41,6 +44,62 @@ test('emaSeries/smaSeries: series shorter than period → all null', () => {
   const bars = closes([1, 2]);
   assert.deepEqual(smaSeries(bars, 5), [null, null]);
   assert.deepEqual(emaSeries(bars, 5), [null, null]);
+});
+
+test('rsi: matches the standard textbook (StockCharts) 14-day example', () => {
+  const c = [
+    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
+    45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+  ];
+  const r = rsi(c, 14);
+  assert.deepEqual(r.slice(0, 14), new Array(14).fill(null));
+  assert.ok(Math.abs(r[14] - 70.46) < 0.1);
+});
+
+test('rsi: stays in [0,100], saturates at extremes for monotonic series', () => {
+  const rising = Array.from({ length: 30 }, (_, i) => i + 1);
+  const falling = Array.from({ length: 30 }, (_, i) => 30 - i);
+  const rUp = rsi(rising, 14);
+  const rDown = rsi(falling, 14);
+  for (const v of [...rUp, ...rDown]) {
+    if (v != null) { assert.ok(v >= 0); assert.ok(v <= 100); }
+  }
+  assert.equal(rUp[rUp.length - 1], 100);
+  assert.equal(rDown[rDown.length - 1], 0);
+});
+
+test('macd: macdLine = fastEma - slowEma, histogram = macdLine - signalLine', () => {
+  const c = Array.from({ length: 60 }, (_, i) => 100 + Math.sin(i / 3) * 5 + i * 0.2);
+  const { macdLine, signalLine, histogram } = macd(c, 12, 26, 9);
+  const bars = c.map((x) => ({ c: x }));
+  const fastEma = emaSeries(bars, 12);
+  const slowEma = emaSeries(bars, 26);
+  for (let i = 0; i < c.length; i++) {
+    if (fastEma[i] != null && slowEma[i] != null) {
+      assert.ok(Math.abs(macdLine[i] - (fastEma[i] - slowEma[i])) < 1e-9);
+    } else {
+      assert.equal(macdLine[i], null);
+    }
+    if (macdLine[i] != null && signalLine[i] != null) {
+      assert.ok(Math.abs(histogram[i] - (macdLine[i] - signalLine[i])) < 1e-9);
+    } else {
+      assert.equal(histogram[i], null);
+    }
+  }
+  const firstMacd = macdLine.findIndex((v) => v != null);
+  assert.deepEqual(signalLine.slice(firstMacd, firstMacd + 8), new Array(8).fill(null));
+  assert.notEqual(signalLine[firstMacd + 8], null);
+});
+
+test('stochastic: %K from high/low/close range, %D = SMA(%K, dPeriod), [0,100]', () => {
+  const bars = closes([10, 11, 12, 11, 10, 9, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+  const { k, d } = stochastic(bars, 14, 3);
+  assert.deepEqual(k.slice(0, 13), new Array(13).fill(null));
+  assert.notEqual(k[13], null);
+  for (const v of k) if (v != null) { assert.ok(v >= 0); assert.ok(v <= 100); }
+  for (const v of d) if (v != null) { assert.ok(v >= 0); assert.ok(v <= 100); }
+  assert.equal(d[13], null);
+  assert.ok(Math.abs(d[15] - (k[13] + k[14] + k[15]) / 3) < 1e-9);
 });
 
 test('vwapSeries: cumulative typical-price VWAP from anchor, nulls before', () => {
