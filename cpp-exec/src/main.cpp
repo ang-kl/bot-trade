@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -14,6 +15,7 @@
 #include "engine.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
+#include "telemetry.hpp"
 
 static void logLine(const std::string& msg) {
   std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
@@ -87,7 +89,24 @@ int main(int argc, char** argv) {
   int port = std::atoi(envOr("PORT", "8091").c_str());
   if (!ok) return 1;
 
+  // Order telemetry: append-only binary log of every order submit/reject/
+  // result, meant to live on the Railway volume mounted for this service
+  // (owner 2026-07-22: the volume was provisioned but nothing wrote to it —
+  // Telemetry existed and was tested but was never constructed here). Optional
+  // by design: unset TELEMETRY_PATH (no volume configured, or a standalone
+  // run) leaves the engine's telemetry_ pointer null and every log() call
+  // site is a no-op, so this is safe to leave off in any environment.
+  std::string telemetryPath = envOr("TELEMETRY_PATH", "");
+  std::unique_ptr<Telemetry> telemetry;
+  if (!telemetryPath.empty()) {
+    telemetry = std::make_unique<Telemetry>(4096, telemetryPath);
+    logLine("order telemetry -> " + telemetryPath);
+  } else {
+    logLine("TELEMETRY_PATH not set — order telemetry disabled");
+  }
+
   ExecEngine engine;
+  if (telemetry) engine.setTelemetry(telemetry.get());
   {
     std::string host = envOr("CTRADER_HOST", "");
     std::string clientId = envOr("CTRADER_CLIENT_ID", "");
@@ -115,6 +134,15 @@ int main(int argc, char** argv) {
     v.set("hasCredentials", engine.hasCredentials());
     long long at = engine.lastReconcileAtMs();
     v.set("lastReconcileAt", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));
+    // Telemetry counters — null when TELEMETRY_PATH isn't configured, so the
+    // Node keeper can tell "disabled" apart from "configured, zero events".
+    if (Telemetry* t = engine.telemetry()) {
+      v.set("telemetryWritten", static_cast<double>(t->written()));
+      v.set("telemetryDropped", static_cast<double>(t->dropped()));
+    } else {
+      v.set("telemetryWritten", jsn::Value(nullptr));
+      v.set("telemetryDropped", jsn::Value(nullptr));
+    }
     return {200, jsn::dump(v)};
   });
 
