@@ -83,6 +83,34 @@ function ScaleStrip({ value, min, max, ticks, width = 108, height = 22 }) {
   )
 }
 
+// Fixed roll-index tick marks around a bezel rim — the part of a real
+// attitude indicator that reads as "instrument", not a plain circle. Marks
+// at 0/±10/±20/±30/±45/±60°, longer at 0/±30/±60, with a fixed pointer
+// triangle at 12 o'clock (owner: "lacks the professional dial").
+const ROLL_MARKS = [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]
+function BezelTicks({ cx, r, size }) {
+  return (
+    <>
+      {ROLL_MARKS.map(deg => {
+        const long = deg === 0 || Math.abs(deg) === 30 || Math.abs(deg) === 60
+        const rad = ((deg - 90) * Math.PI) / 180
+        const rOuter = r
+        const rInner = r - (long ? size * 0.09 : size * 0.05)
+        return (
+          <line
+            key={deg}
+            x1={cx + rOuter * Math.cos(rad)} y1={cx + rOuter * Math.sin(rad)}
+            x2={cx + rInner * Math.cos(rad)} y2={cx + rInner * Math.sin(rad)}
+            stroke="var(--color-text-sub)" strokeWidth={long ? 1.4 : 1} opacity="0.8"
+          />
+        )
+      })}
+      {/* fixed top pointer — the instrument's own reference index, never rotates */}
+      <path d={`M ${cx} ${cx - r + size * 0.02} l ${size * 0.045} ${size * 0.07} l ${-size * 0.09} 0 z`} fill="var(--color-text-sub)" />
+    </>
+  )
+}
+
 function AttitudeGauge({ r, volume, trending, size = SIZE }) {
   // ±2R maps to the dial's full ±42° tilt — tanh-free since R is already a
   // bounded, meaningful unit (unlike a raw dollar figure).
@@ -90,19 +118,41 @@ function AttitudeGauge({ r, volume, trending, size = SIZE }) {
   const wing = clamp(size * 0.08 + Math.sqrt(Math.max(volume || 0, 0)) * (size * 0.14), size * 0.08, size * 0.47)
   const up = (r ?? 0) >= 0
   const cx = size / 2
-  const clipId = `ai-clip-${useId()}`
+  const uid = useId()
+  const clipId = `ai-clip-${uid}`
+  const skyId = `ai-sky-${uid}`
+  const groundId = `ai-ground-${uid}`
+  const bezelId = `ai-bezel-${uid}`
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Attitude: ${r == null ? 'no reading yet' : `${r.toFixed(2)}R`}, ${trending ? 'trending' : 'choppy'}, volume ${volume}`}>
-        <circle cx={cx} cy={cx} r={cx - 3} fill="none" stroke="var(--color-border)" strokeWidth="2" />
-        <clipPath id={clipId}><circle cx={cx} cy={cx} r={cx - 5} /></clipPath>
+        <defs>
+          <linearGradient id={skyId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={UP} stopOpacity="0.5" />
+            <stop offset="100%" stopColor={UP} stopOpacity="0.22" />
+          </linearGradient>
+          <linearGradient id={groundId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={DOWN} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={DOWN} stopOpacity="0.5" />
+          </linearGradient>
+          <linearGradient id={bezelId} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--color-text-sub)" stopOpacity="0.7" />
+            <stop offset="50%" stopColor="var(--color-border)" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="var(--color-text-sub)" stopOpacity="0.5" />
+          </linearGradient>
+        </defs>
+        {/* metallic bezel — a plain single-stroke circle read as "placeholder"; a gradient ring reads as an instrument */}
+        <circle cx={cx} cy={cx} r={cx - 1.5} fill="none" stroke={`url(#${bezelId})`} strokeWidth="3" />
+        <circle cx={cx} cy={cx} r={cx - 3.5} fill="none" stroke="var(--color-border)" strokeWidth="1" opacity="0.6" />
+        <clipPath id={clipId}><circle cx={cx} cy={cx} r={cx - 6} /></clipPath>
         <g clipPath={`url(#${clipId})`}>
           <g transform={`rotate(${bank} ${cx} ${cx})`}>
-            <rect x={-cx * 0.4} y={-cx * 2} width={size * 1.4} height={size * 1.5} fill={UP} opacity="0.32" />
-            <rect x={-cx * 0.4} y={cx} width={size * 1.4} height={size * 1.5} fill={DOWN} opacity="0.32" />
+            <rect x={-cx * 0.4} y={-cx * 2} width={size * 1.4} height={size * 1.5} fill={`url(#${skyId})`} />
+            <rect x={-cx * 0.4} y={cx} width={size * 1.4} height={size * 1.5} fill={`url(#${groundId})`} />
             <line x1={-cx * 0.4} y1={cx} x2={size * 1.2} y2={cx} stroke={up ? UP : DOWN} strokeWidth="2" />
           </g>
         </g>
+        <BezelTicks cx={cx} r={cx - 5} size={size} />
         {/* fixed aircraft symbol — wings stay level; only the horizon behind them tilts */}
         <line x1={cx - wing} y1={cx} x2={cx - size * 0.06} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
         <line x1={cx + size * 0.06} y1={cx} x2={cx + wing} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
@@ -121,6 +171,28 @@ function AttitudeGauge({ r, volume, trending, size = SIZE }) {
   )
 }
 
+// Fixed graduation marks along the VSI's semicircular scale — 9 o'clock
+// (dormant) through 12 (climbing) to 6 (falling), at the same angles the
+// needle can reach, so the dial reads as calibrated rather than empty.
+const VSI_MARKS = [-1, -0.5, 0, 0.5, 1]
+function VsiTicks({ cx, r, size }) {
+  return VSI_MARKS.map(v => {
+    const deg = 180 - clamp(v, -1, 1) * 90
+    const rad = (deg * Math.PI) / 180
+    const long = v === 0 || Math.abs(v) === 1
+    const rOuter = r
+    const rInner = r - (long ? size * 0.08 : size * 0.05)
+    return (
+      <line
+        key={v}
+        x1={cx + rOuter * Math.cos(rad)} y1={cx - rOuter * Math.sin(rad)}
+        x2={cx + rInner * Math.cos(rad)} y2={cx - rInner * Math.sin(rad)}
+        stroke="var(--color-text-sub)" strokeWidth={long ? 1.4 : 1} opacity="0.8"
+      />
+    )
+  })
+}
+
 function VsiGauge({ rate, ratePerMin, size = SIZE }) {
   // rate is normalized -1..1 for the needle. 0 = 9 o'clock (dormant), +1 =
   // 12 o'clock (climbing fast), -1 = 6 o'clock (dropping fast).
@@ -131,14 +203,26 @@ function VsiGauge({ rate, ratePerMin, size = SIZE }) {
   const nx = cx + r * Math.cos(rad)
   const ny = cx - r * Math.sin(rad)
   const up = rate >= 0
+  const uid = useId()
+  const bezelId = `vsi-bezel-${uid}`
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Activity: ${ratePerMin == null ? 'settling' : `${ratePerMin.toFixed(2)}R per minute`}`}>
-        <circle cx={cx} cy={cx} r={cx - 3} fill="none" stroke="var(--color-border)" strokeWidth="2" />
+        <defs>
+          <linearGradient id={bezelId} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--color-text-sub)" stopOpacity="0.7" />
+            <stop offset="50%" stopColor="var(--color-border)" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="var(--color-text-sub)" stopOpacity="0.5" />
+          </linearGradient>
+        </defs>
+        <circle cx={cx} cy={cx} r={cx - 1.5} fill="none" stroke={`url(#${bezelId})`} strokeWidth="3" />
+        <circle cx={cx} cy={cx} r={cx - 3.5} fill="none" stroke="var(--color-border)" strokeWidth="1" opacity="0.6" />
         <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 1 ${cx} ${cx - r}`} fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
         <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 0 ${cx} ${cx + r}`} fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
+        <VsiTicks cx={cx} r={r + size * 0.06} size={size} />
         <line x1={cx} y1={cx} x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
-        <circle cx={cx} cy={cx} r={size * 0.035} fill="currentColor" />
+        <circle cx={cx} cy={cx} r={size * 0.045} fill="var(--color-bg)" stroke="currentColor" strokeWidth="1.5" />
+        <circle cx={cx} cy={cx} r={size * 0.02} fill="currentColor" />
       </svg>
       <ScaleStrip value={ratePerMin} min={-1} max={1} ticks={[-1, -0.5, 0, 0.5, 1]} width={size - 6} />
       <span className="text-[8px] text-[var(--color-text-sub)] leading-none">scale: R/min (how fast R is changing)</span>
@@ -299,21 +383,24 @@ export default function TradeGaugeWall({ positions = [], gridN = 4 }) {
     )
   }
 
-  const shown = withR.slice(0, gridN)
-  const overflow = withR.length - shown.length
+  // gridN picks column DENSITY, not a hard cap — with 30 open positions and
+  // gridN=16 the old code sliced to 16 tiles and printed "+14 more ... not
+  // shown", with no way to actually SEE the rest (owner: "i have 30 trades
+  // open, how to see the dials"). Every open position now renders; the wrap
+  // scrolls vertically past a sane height instead of hiding the tail.
   const cols = gridN === 4 ? 'grid-cols-1 sm:grid-cols-2'
     : gridN === 8 ? 'grid-cols-2 sm:grid-cols-4'
     : 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-8'
 
   return (
     <div>
-      <div className={`grid ${cols} gap-2`}>
-        {shown.map(({ p, r, pnl }) => (
+      <div className={`grid ${cols} gap-2 max-h-[70vh] overflow-y-auto overscroll-contain pr-1`}>
+        {withR.map(({ p, r, pnl }) => (
           <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} onOpen={() => setSelected(p)} />
         ))}
       </div>
-      {overflow > 0 && (
-        <p className="text-[11px] text-[var(--color-text-sub)] mt-1">+{overflow} more open position{overflow > 1 ? 's' : ''} not shown at this grid size — pick a bigger one, or 1 for the combined view.</p>
+      {withR.length > gridN && (
+        <p className="text-[11px] text-[var(--color-text-sub)] mt-1">{withR.length} open — scroll for the rest, or pick a bigger grid size to see more per screen.</p>
       )}
       {selected && <TradeChronograph pos={selected} onClose={() => setSelected(null)} />}
     </div>

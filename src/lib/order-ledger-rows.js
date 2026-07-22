@@ -6,6 +6,16 @@
 // OFF (owner: "keep records of these"). Kept out of the component so the
 // parsing is unit-testable.
 
+// A handful of label codes (agent/lib/trade-labels.js's STRATEGIES table)
+// don't match the short display code the open-positions table shows for the
+// same strategy (src/lib/strategy-labels.js's STRAT_SHORT) — e.g. a donchian
+// breakout order's label carries 'DON' but the open-positions table shows
+// 'BRK'. Without this, the pending-order ledger and the open-positions table
+// disagreed on a live strategy's own short code (owner: "discrepancy ...
+// between pending order table and open table"). MIRROR TWIN of the 3
+// strategies where the label code and STRAT_SHORT code differ.
+const CODE_SHORT = { CUP: 'C&H', DON: 'BRK', RSIM: 'RSI' }
+
 // Strategy short-code carried in a structured bot label ("AP|v1|VP|HI|LDN|4h|
 // REGT"). Segment index 2 is the strategy code; manual/foreign orders have no
 // structured label, so they report null (rendered as a dash).
@@ -14,7 +24,18 @@ export function orderStrategy(label) {
   const seg = label.split('|')
   if (seg[0] !== 'AP' || seg.length < 3) return null
   const code = seg[2]
-  return code && code !== '-' ? code : null
+  if (!code || code === '-') return null
+  return CODE_SHORT[code] || code
+}
+
+// Timeframe carried in a structured bot label ("AP|v1|FIB|HI|LDN|4h|REGT").
+// Segment index 5 — stored raw (not a coded lookup), so no mapping needed.
+export function orderTimeframe(label) {
+  if (!label || typeof label !== 'string') return null
+  const seg = label.split('|')
+  if (seg[0] !== 'AP' || seg.length < 6) return null
+  const tf = seg[5]
+  return tf && tf !== '-' ? tf : null
 }
 
 // Human status for a ledger row. A 'working' order rests on the book; a 'gone'

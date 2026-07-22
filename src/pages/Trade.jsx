@@ -175,6 +175,11 @@ function closedTradeRows(trades) {
       sl: t.sl_price,
       tp: t.tp_price,
       tps: tpLadder(t.tp_price, t.tp2_price, t.volume, { scaledOut: !!t.scaled_out }),
+      // No live price on a closed/rejected/unconfirmed row — the recorded
+      // exit IS the final reference point, so "how close did it come to
+      // TP/SL" is still real, computable data (owner pushback: "you can
+      // recompute when the live ends"). StdTradeTable falls back to this.
+      exit: rejected || unconfirmed ? null : t.exit_price ?? null,
       pnl: rejected || unconfirmed ? null : t.net_pnl ?? null,
       durationMs: t.hold_duration_ms ?? (t.opened_at && t.closed_at ? Math.max(0, toMs(t.closed_at) - toMs(t.opened_at)) : null),
       reason: rejected ? 'broker has no record (reconciled)'

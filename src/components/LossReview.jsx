@@ -15,6 +15,8 @@
 // colour for price and TEXT markers (E / SL / X), not red/green coding.
 // ---------------------------------------------------------------------------
 
+import { useState } from 'react'
+
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
 const VERDICTS = {
@@ -101,33 +103,90 @@ export default function LossReview({ postmortems }) {
   )
 }
 
+// Collapsed by default, same accordion pattern as the Risk-Decision veto
+// rows (owner: "create collapse/expand like veto triangle") — with 30
+// postmortems on one symbol/timeframe the old always-expanded cards made
+// the panel unreadably tall; a one-line summary row now expands on demand.
 function Verdict({ r }) {
+  const [open, setOpen] = useState(false)
   const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
+  const pnlText = r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'
   return (
-    <div className="glass-inset rounded-lg p-2 flex flex-wrap items-start gap-3">
-      <div className="min-w-[130px]">
-        <div className="text-[13px] font-semibold">
-          {r.symbol} <span className="font-normal text-[var(--color-text-sub)]">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+    <div className="glass-inset rounded-lg p-2">
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer">
+        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        <span className="font-semibold shrink-0">{r.symbol}</span>
+        <span className="text-[11px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+        <span className="text-[11px] font-bold tracking-wide shrink-0">{v.label}</span>
+        <span className="text-[11px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
+        <span className={`ml-auto text-[12px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
+          {pnlText}{r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap items-start gap-3">
+          <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
+          <div className="flex-1 min-w-[200px]">
+            {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+            <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+            <FieldGrid r={r} />
+          </div>
         </div>
-        <div className="text-[13px] font-bold tracking-wide">{v.label}</div>
-        <div className="text-[11px] text-[var(--color-text-sub)]">{v.hint}</div>
-        <div className="text-[12px] mt-0.5">
-          {r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'}
-          {r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
+      )}
+    </div>
+  )
+}
+
+const dash = (v) => (v == null || v === '' ? '—' : v)
+const untracked = 'not tracked yet'
+const px2 = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 5 }))
+
+// Full Trade-Lesson Extraction field breakdown (owner spec) — every field
+// the spec names, laid out explicitly. Fields this codebase doesn't capture
+// yet (Fundamental tag, structured Confluence indicators/Fib/VWAP, TP3, a
+// SMART-goal text) are labelled "not tracked yet" rather than omitted or
+// invented — the spec's shape is honoured, the data gap is honest.
+function FieldGrid({ r }) {
+  const goal = r.tp1_price != null
+    ? `reach TP1 (${px2(r.tp1_price)})`
+    : 'no TP1 on record'
+  const rows = [
+    ['Symbol', r.symbol],
+    ['Strategy', dash(r.strategy)],
+    ['Timeframe', dash(r.timeframe)],
+    ['Direction', r.side === 'BUY' || r.side === 'long' ? 'Long' : r.side === 'SELL' || r.side === 'short' ? 'Short' : '—'],
+    ['Fundamental', untracked],
+    ['Confluence — Indicators', untracked],
+    ['Confluence — Fib', untracked],
+    ['Confluence — VWAP', untracked],
+    ['Confluence-count', r.confluence_count != null ? String(r.confluence_count) : 'not recorded'],
+    ['Entry', px2(r.entry_price)],
+    ['Lot', r.lot != null ? Number(r.lot).toFixed(2) : '—'],
+    ['SL', px2(r.sl_price)],
+    ['TP1', px2(r.tp1_price)],
+    ['TP2', px2(r.tp2_price)],
+    ['TP3', untracked],
+    ['Exit', px2(r.exit_price)],
+    ['Goal (SMART)', goal],
+    ['Result', dash(r.result)],
+    ['R-multiple', r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : '—'],
+    ['Alpha-decay', r.alpha_decay ? `${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay} (keyed Symbol+Strategy+Timeframe)` : '—'],
+    ['Entry-quality', dash(r.entry_quality)],
+  ]
+  return (
+    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+      {rows.map(([label, value]) => (
+        <div key={label} className="contents">
+          <span className="text-[var(--color-text-sub)]">{label}</span>
+          <span className={value === untracked || value === 'not recorded' ? 'text-[var(--color-text-sub)] italic' : ''}>{value}</span>
         </div>
-      </div>
-      <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-      <div className="flex-1 min-w-[200px]">
-        {/* Structured lesson fields (Trade-Lesson Extraction spec) — the
-            imperative lesson first, then the flat flags controllers read. */}
-        {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-        <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-        <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">
-          {r.result ? `Result: ${r.result}` : null}
-          {r.alpha_decay ? ` · Alpha-decay: ${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay}` : null}
-          {r.entry_quality ? ` · Entry-quality: ${r.entry_quality}` : null}
-        </p>
-      </div>
+      ))}
+      {r.setup_thesis && (
+        <span className="col-span-2 mt-0.5 text-[10px] text-[var(--color-text-sub)] opacity-80">
+          Setup thesis (free text, not the structured Confluence breakdown above): {r.setup_thesis}
+        </span>
+      )}
     </div>
   )
 }

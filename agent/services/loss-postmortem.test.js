@@ -234,6 +234,35 @@ test('lessonLine: imperative, deterministic per classification', async () => {
   assert.ok(lessonLine('chop').split(' ').length < 15)
 })
 
+test('lessonLine: genuinely contextual — different trades read differently (owner: "nothing is contextual")', async () => {
+  const { lessonLine } = await import('./loss-postmortem.js')
+  // Two stop-hunts with different bars-to-reclaim and stop distance must NOT
+  // produce the same lesson text — the old code returned one fixed string
+  // for every stop_hunt regardless of the trade.
+  const a = lessonLine('stop_hunt', { nBars: 1, riskDist: 23.40 })
+  const b = lessonLine('stop_hunt', { nBars: 4, riskDist: 66.15 })
+  assert.notEqual(a, b)
+  assert.match(a, /1 bar\(s\)/)
+  assert.match(a, /23\.40000/)
+  assert.match(b, /4 bar\(s\)/)
+  assert.match(b, /66\.15000/)
+  // No context at all still degrades to a sane generic line, never "undefined".
+  assert.doesNotMatch(lessonLine('stop_hunt'), /undefined|NaN/)
+
+  const win1 = lessonLine('clean_win', { mfeR: 1.8, realizedR: 1.5 })
+  const win2 = lessonLine('clean_win', { mfeR: 0.9, realizedR: 0.85 })
+  assert.notEqual(win1, win2)
+  assert.match(win1, /\+1\.50R of \+1\.80R/)
+
+  const gb1 = lessonLine('gave_back', { mfeR: 2.2, realizedR: 1.0 })
+  const gb2 = lessonLine('gave_back', { mfeR: 1.3, realizedR: 0.2 })
+  assert.notEqual(gb1, gb2)
+
+  const chop1 = lessonLine('chop', { afterBars: 3 })
+  const chop2 = lessonLine('chop', { afterBars: 12 })
+  assert.notEqual(chop1, chop2)
+})
+
 test('sweep persists the flat lesson fields', async () => {
   const db = initDB(':memory:')
   db.prepare(`
