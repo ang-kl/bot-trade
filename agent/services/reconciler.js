@@ -178,9 +178,19 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
       `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1`
     ).get(posId)
     if (existingOpen) {
+      // reaching this branch at all means `trades` still says 'open' but no
+      // ACTIVE monitored_positions row maps to this broker position — the
+      // trade and its management have desynced. Two shapes, both worth
+      // surfacing (this used to happen silently, fixed only by a log line):
+      //   · a row exists but isn't 'active' — something closed it locally
+      //     while the broker kept the position open (e.g. the LLM-monitor
+      //     EXIT-without-broker-close bug, fixed 2026-07-22) — re-activate it.
+      //   · no row exists at all — the bot's fill never got one written
+      //     (exec response lacked a positionId) — create it fresh.
       const mp = db.prepare(
-        `SELECT id FROM monitored_positions WHERE trade_id = ? ORDER BY (status='active') DESC, id DESC LIMIT 1`
+        `SELECT id, status FROM monitored_positions WHERE trade_id = ? ORDER BY (status='active') DESC, id DESC LIMIT 1`
       ).get(existingOpen.id)
+      const desyncKind = mp ? 'reactivated_closed_row' : 'created_missing_row'
       if (mp) {
         db.prepare(`UPDATE monitored_positions SET status='active' WHERE id = ?`).run(mp.id)
       } else {
@@ -191,7 +201,18 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
         `).run(symbolName, existingOpen.id, side, entry, sl, tp, thesis, initialRisk,
           adoptedSource, parsed.strategy || null, label || null, getState(db, 'ctrader_account_id'))
       }
-      relinked.push({ symbol: symbolName, positionId: posId, tradeId: existingOpen.id })
+      relinked.push({ symbol: symbolName, positionId: posId, tradeId: existingOpen.id, desyncKind })
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'RECONCILE_DESYNC', '/reconcile',
+          JSON.stringify({
+            symbol: symbolName, positionId: posId, tradeId: existingOpen.id, kind: desyncKind,
+            detail: desyncKind === 'reactivated_closed_row'
+              ? 'monitored_positions row was closed locally while the broker position was still open — re-activated to match broker truth'
+              : 'trade was open with no monitored_positions row at all (fill never got one written) — created fresh',
+          }).slice(0, 2000)
+        )
+      } catch { /* audit best-effort */ }
       continue
     }
 
