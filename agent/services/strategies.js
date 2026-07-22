@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { computeFibSignal } from './fib-strategy.js'
-import { computeCupHandleSignal } from './cup-handle.js'
+import { computeCupHandleSignal, computeInvCupHandleSignal } from './cup-handle.js'
 
 // The three newer strategy modules are loaded defensively: if a module is
 // missing or broken the registry still builds, with a compute that simply
@@ -36,6 +36,7 @@ const computeFibConfluence = await loadCompute('./fib-confluence.js', 'computeFi
 export const STRATEGY_REGISTRY = [
   { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: true,  pendingCapable: true  },
   { key: 'cup_handle',        name: 'Cup & Handle',       compute: computeCupHandleSignal,  defaultOn: false, pendingCapable: false },
+  { key: 'inv_cup_handle',    name: 'Inverted Cup & Handle', compute: computeInvCupHandleSignal, defaultOn: false, pendingCapable: false },
   { key: 'ema_pullback',      name: 'EMA trend-pullback', compute: computeEmaPullback,      defaultOn: false, pendingCapable: false },
   { key: 'donchian_breakout', name: 'Range breakout',     compute: computeDonchianBreakout, defaultOn: false, pendingCapable: false },
   { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: false, pendingCapable: false },

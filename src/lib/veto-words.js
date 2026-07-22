@@ -23,7 +23,7 @@ function relAge(raw) {
 }
 
 // Strategy code → short label, mirroring the desk's STRAT_SHORT.
-const STRAT_LABEL = { fib_618_fade: 'FIB', cup_handle: 'C&H', ema_pullback: 'EMA', donchian_breakout: 'BRK', rsi_meanrev: 'RSI', vwap_trend: 'VWAP', vp_value: 'VP' }
+const STRAT_LABEL = { fib_618_fade: 'FIB', cup_handle: 'C&H', inv_cup_handle: 'Inv C&H', ema_pullback: 'EMA', donchian_breakout: 'BRK', rsi_meanrev: 'RSI', vwap_trend: 'VWAP', vp_value: 'VP' }
 
 const RULES = [
   // Detail groups are OPTIONAL so bare family keys (from the veto-breakdown

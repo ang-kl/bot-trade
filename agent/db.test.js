@@ -285,3 +285,27 @@ test('insertCupHandleDiagnostic: no candidate at all is stored as null, not inve
   assert.equal(row.blocked_at, null)
   assert.equal(row.candidate_json, null)
 })
+
+test('insertCupHandleDiagnostic: bias distinguishes classic (long) vs inverted (short) rows', () => {
+  const db = initDB(':memory:')
+  insertCupHandleDiagnostic(db, {
+    symbol: 'XAUUSD', timeframe: '4h', scanned_at: '2026-07-22T09:00:00.000Z',
+    bias: 'long', uptrend_ok: true, cup_found: false, best_candidate: null,
+  })
+  insertCupHandleDiagnostic(db, {
+    symbol: 'XAUUSD', timeframe: '4h', scanned_at: '2026-07-22T09:00:00.000Z',
+    bias: 'short', uptrend_ok: false, cup_found: false, best_candidate: null,
+  })
+  const rows = db.prepare('SELECT bias, uptrend_ok FROM cup_handle_diagnostics WHERE symbol = ? ORDER BY bias').all('XAUUSD')
+  assert.deepEqual(rows, [{ bias: 'long', uptrend_ok: 1 }, { bias: 'short', uptrend_ok: 0 }])
+})
+
+test('insertCupHandleDiagnostic: bias defaults to null when omitted (pre-inverted-pattern callers)', () => {
+  const db = initDB(':memory:')
+  insertCupHandleDiagnostic(db, {
+    symbol: 'EURUSD', timeframe: '1d', scanned_at: '2026-07-22T09:00:00.000Z',
+    uptrend_ok: true, cup_found: false, best_candidate: null,
+  })
+  const row = db.prepare('SELECT bias FROM cup_handle_diagnostics WHERE symbol = ?').get('EURUSD')
+  assert.equal(row.bias, null)
+})

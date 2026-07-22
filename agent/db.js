@@ -326,6 +326,7 @@ const TABLES = `
     symbol        TEXT NOT NULL,
     timeframe     TEXT,
     scanned_at    TEXT NOT NULL,
+    bias          TEXT,          -- 'long' (classic cup_handle) or 'short' (inv_cup_handle); NULL on old rows predating the inverted pattern
     uptrend_ok    INTEGER,
     cup_found     INTEGER,
     blocked_at    TEXT,          -- best_candidate.blocked_at, or NULL if no candidate at all
@@ -603,6 +604,15 @@ export function initDB(dbPath) {
     db.exec("ALTER TABLE pending_orders ADD COLUMN strategy TEXT");
   }
 
+  // Inverted Cup & Handle (owner-directed 2026-07-22): diagnostics rows now
+  // come from either direction — tag which one so they don't read as
+  // identical (blocked_at values are shared strings across both).
+  const chdCols = db.prepare("PRAGMA table_info(cup_handle_diagnostics)").all();
+  const chdColNames = new Set(chdCols.map(c => c.name));
+  if (!chdColNames.has('bias')) {
+    db.exec("ALTER TABLE cup_handle_diagnostics ADD COLUMN bias TEXT");
+  }
+
   const aCols = db.prepare("PRAGMA table_info(analyses)").all();
   const aColNames = new Set(aCols.map(c => c.name));
   const aMigrations = [
@@ -749,17 +759,21 @@ export function closeTradeRow(db, tradeId, {
 }
 
 /**
- * Persist one Cup & Handle diagnostics trace (see traceCupHandleSearch in
- * services/cup-handle.js). Called only when cup_handle is enabled for the
- * scan — the trace itself is opts-in, computed for free alongside the
- * existing scan, so this is the only new write.
+ * Persist one Cup & Handle diagnostics trace (see traceCupHandleSearch /
+ * traceInvCupHandleSearch in services/cup-handle.js). Called only when
+ * cup_handle and/or inv_cup_handle is enabled for the scan — the trace
+ * itself is opts-in, computed for free alongside the existing scan, so
+ * this is the only new write. `bias` ('long' | 'short') distinguishes
+ * which direction produced the row — required going forward now that two
+ * directions can both write here; null on rows from before the inverted
+ * pattern existed.
  */
-export function insertCupHandleDiagnostic(db, { symbol, timeframe, scanned_at, uptrend_ok, cup_found, best_candidate, loop_id = null }) {
+export function insertCupHandleDiagnostic(db, { symbol, timeframe, scanned_at, bias = null, uptrend_ok, cup_found, best_candidate, loop_id = null }) {
   db.prepare(`
-    INSERT INTO cup_handle_diagnostics (symbol, timeframe, scanned_at, uptrend_ok, cup_found, blocked_at, candidate_json, loop_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO cup_handle_diagnostics (symbol, timeframe, scanned_at, bias, uptrend_ok, cup_found, blocked_at, candidate_json, loop_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    symbol, timeframe || null, scanned_at,
+    symbol, timeframe || null, scanned_at, bias,
     uptrend_ok ? 1 : 0, cup_found ? 1 : 0,
     best_candidate ? (best_candidate.blocked_at ?? null) : null,
     best_candidate ? JSON.stringify(best_candidate) : null,

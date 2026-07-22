@@ -200,6 +200,7 @@ function closedTradeRows(trades) {
 const STRATEGY_NAMES = {
   fib_618_fade: 'Fib 61.8% fade',
   cup_handle: 'Cup & Handle',
+  inv_cup_handle: 'Inverted Cup & Handle',
   ema_pullback: 'EMA pullback',
   donchian_breakout: 'Range breakout',
   rsi_meanrev: 'RSI mean-rev',
