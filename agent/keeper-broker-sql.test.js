@@ -1,16 +1,16 @@
 // node --test agent/keeper-broker-sql.test.js
 //
-// SQL-only integration tests for the broker wiring added in PR-B. These
-// exercise the new prepared statements — selectBrokerContext (JOIN
-// monitored_positions → trades), markTradeClosed, reduceTradeVolume — so
-// schema regressions are caught in CI without needing a live cTrader demo.
+// SQL-only integration tests for the broker wiring added in PR-B, plus
+// closeTradeRow (agent/db.js) — the single converged close-writer used by
+// loop.js's markTradeClosed call sites and reconciler.js's three — so schema
+// regressions are caught in CI without needing a live cTrader demo.
 //
 // The WebSocket path itself is validated at runtime against a Pepperstone
 // demo account; those tests live outside CI.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB } from './db.js'
+import { initDB, closeTradeRow } from './db.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -23,15 +23,6 @@ function prep(db) {
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.id = ?
-    `),
-    markTradeClosed: db.prepare(`
-      UPDATE trades
-      SET status = 'closed', closed_at = datetime('now'),
-          exit_price = COALESCE(?, exit_price),
-          close_reason = ?,
-          gross_pnl = COALESCE(?, gross_pnl),
-          net_pnl = COALESCE(?, net_pnl)
-      WHERE id = ?
     `),
     reduceTradeVolume: db.prepare(`UPDATE trades SET volume = ? WHERE id = ?`),
     readTrade: db.prepare(`SELECT * FROM trades WHERE id = ?`),
@@ -79,13 +70,19 @@ test('selectBrokerContext returns NULL fields for legacy rows (no trade_id)', ()
   assert.equal(ctx.volumeLots, null)
 })
 
-test('markTradeClosed stamps exit_price, pnl, close_reason', () => {
+test('closeTradeRow stamps exit_price, pnl, close_reason, closed_at + closed_at_ms, hold_duration_ms', () => {
   const db = mkDb()
   const s = prep(db)
   const { tradeId } = seedTradeAndMonitor(db, { ctraderPositionId: '111' })
+  const openedAtMs = Date.parse(`${s.readTrade.get(tradeId).opened_at.replace(' ', 'T')}Z`)
 
-  s.markTradeClosed.run(3425.5, 'time_cap_expired', 51.2, 48.6, tradeId)
+  const closedAtMs = openedAtMs + 5 * 60_000
+  const res = closeTradeRow(db, tradeId, {
+    exitPrice: 3425.5, closeReason: 'time_cap_expired', grossPnl: 51.2, netPnl: 48.6, closedAtMs,
+  })
 
+  assert.equal(res.changed, true)
+  assert.equal(res.holdDurationMs, 5 * 60_000)
   const row = s.readTrade.get(tradeId)
   assert.equal(row.status, 'closed')
   assert.equal(row.exit_price, 3425.5)
@@ -93,9 +90,11 @@ test('markTradeClosed stamps exit_price, pnl, close_reason', () => {
   assert.equal(row.gross_pnl, 51.2)
   assert.equal(row.net_pnl, 48.6)
   assert.ok(row.closed_at, 'closed_at must be set')
+  assert.equal(row.closed_at_ms, closedAtMs)
+  assert.equal(row.hold_duration_ms, 5 * 60_000)
 })
 
-test('markTradeClosed preserves existing values when passed null', () => {
+test('closeTradeRow preserves existing values when passed null', () => {
   const db = mkDb()
   const s = prep(db)
   const { tradeId } = seedTradeAndMonitor(db, { ctraderPositionId: '222' })
@@ -103,13 +102,34 @@ test('markTradeClosed preserves existing values when passed null', () => {
   // Pre-seed an exit_price to assert COALESCE keeps it
   db.prepare(`UPDATE trades SET exit_price = 3420, gross_pnl = 40 WHERE id = ?`).run(tradeId)
 
-  s.markTradeClosed.run(null, 'already_closed', null, null, tradeId)
+  closeTradeRow(db, tradeId, { closeReason: 'already_closed' })
 
   const row = s.readTrade.get(tradeId)
   assert.equal(row.exit_price, 3420, 'exit_price should be preserved')
   assert.equal(row.gross_pnl, 40, 'gross_pnl should be preserved')
   assert.equal(row.close_reason, 'already_closed')
   assert.equal(row.status, 'closed')
+})
+
+test('closeTradeRow idempotency: two closes fired for one trade_id result in exactly one write', () => {
+  const db = mkDb()
+  const s = prep(db)
+  const { tradeId } = seedTradeAndMonitor(db, { ctraderPositionId: '333' })
+
+  // Simulates the real race this fixes: the position-manager's FULL_EXIT
+  // path and the reconciler's orphan sweep both reaching the same trade —
+  // loop.js's markTradeClosed had NO status guard before this convergence,
+  // so a second call would silently re-stamp closed_at / overwrite pnl.
+  const first = closeTradeRow(db, tradeId, { exitPrice: 100, closeReason: 'first_writer', grossPnl: 10, netPnl: 9 })
+  const second = closeTradeRow(db, tradeId, { exitPrice: 200, closeReason: 'second_writer', grossPnl: 99, netPnl: 88 })
+
+  assert.equal(first.changed, true)
+  assert.equal(second.changed, false, 'second close must be a no-op — status is no longer open')
+  const row = s.readTrade.get(tradeId)
+  assert.equal(row.exit_price, 100, 'first writer wins — second must not overwrite')
+  assert.equal(row.close_reason, 'first_writer')
+  assert.equal(row.gross_pnl, 10)
+  assert.equal(row.net_pnl, 9)
 })
 
 test('reduceTradeVolume reflects runner leg after partial close', () => {

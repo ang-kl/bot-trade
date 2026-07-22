@@ -25,7 +25,7 @@ import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
-import { getState, setState } from './db.js'
+import { getState, setState, closeTradeRow } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
 
@@ -740,7 +740,7 @@ export async function executeBrokerAction(db, s, pos, eval_) {
         ? ((cpd.grossProfit || 0) - Math.abs(cpd.commission || 0) - Math.abs(cpd.swap || 0)) / 100
         : null
       if (pos.trade_id) {
-        s.markTradeClosed.run(closePrice, eval_.reason || 'position_manager', grossPnl, netPnl, pos.trade_id)
+        closeTradeRow(db, pos.trade_id, { exitPrice: closePrice, closeReason: eval_.reason || 'position_manager', grossPnl, netPnl })
       }
       s.closePosition.run('closed', pos.id)
       return { closedRemotely: true, summary: res.alreadyClosed ? 'already_closed' : `closed @ ${closePrice ?? '?'}` }
@@ -765,7 +765,7 @@ export async function executeBrokerAction(db, s, pos, eval_) {
       })
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (closeRes.alreadyClosed) {
-        if (pos.trade_id) s.markTradeClosed.run(null, 'already_closed', null, null, pos.trade_id)
+        if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
         s.closePosition.run('closed', pos.id)
         return { closedRemotely: true, summary: 'already_closed' }
       }
@@ -859,16 +859,6 @@ export function prepareStatements(db) {
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.id = ?
-    `),
-
-    markTradeClosed: db.prepare(`
-      UPDATE trades
-      SET status = 'closed', closed_at = datetime('now'),
-          exit_price = COALESCE(?, exit_price),
-          close_reason = ?,
-          gross_pnl = COALESCE(?, gross_pnl),
-          net_pnl = COALESCE(?, net_pnl)
-      WHERE id = ?
     `),
 
     reduceTradeVolume: db.prepare(`
@@ -1065,6 +1055,22 @@ async function runLoop(db) {
             }
           } catch (err) {
             log(`Trade lessons sweep failed (non-fatal): ${err.message}`)
+          }
+
+          // Close-completeness sweep — a closed trade that never got a P&L
+          // backfill AND/OR a postmortem is otherwise invisible forever
+          // (confirmed gap: loss-postmortem.js's own query excludes a row
+          // with BOTH net_pnl and exit_price still null). Periodic, not
+          // every cycle — this is a slow-moving completeness check, not a
+          // live safety brake.
+          if (loopCount % 12 === 0) {
+            try {
+              const { runCloseCompletenessSweep } = await import('./services/close-completeness.js')
+              const cc = await runCloseCompletenessSweep(db)
+              if (cc.flagged > 0) log(`Close-completeness: ${cc.flagged} closed trade(s) still missing P&L and/or a postmortem`)
+            } catch (err) {
+              log(`Close-completeness sweep failed (non-fatal): ${err.message}`)
+            }
           }
 
           // Proving sweep — an ARMED strategy with no backtest GO on record

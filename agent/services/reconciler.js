@@ -1,5 +1,5 @@
 import { isOurs, parseLabel } from '../lib/trade-labels.js'
-import { getState } from '../db.js'
+import { getState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 
 // cTrader `tradeData.volume` is in units × 100. The whole risk/keeper stack
@@ -249,11 +249,14 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
       // Owner hit the blank version live: a manual DOW.US short closed in
       // under 5 minutes and the ledger had nothing to say beyond the exit
       // price ("it didn't say what happen").
-      db.prepare(
-        `UPDATE trades SET status = 'closed', closed_at = datetime('now'),
-           close_reason = COALESCE(close_reason, 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot')
-         WHERE ctrader_position_id = ? AND status = 'open'`
-      ).run(String(row.ctrader_position_id))
+      // ctrader_position_id, not a single trade id — could match more than one
+      // 'open' row (the dedup sweep further down handles that garbage case).
+      const openIds = db.prepare(
+        `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open'`
+      ).all(String(row.ctrader_position_id))
+      for (const { id } of openIds) {
+        closeTradeRow(db, id, { closeReason: 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot' })
+      }
       closedDetected.push({ symbol: row.symbol, positionId: row.ctrader_position_id, source: row.source })
     }
   }
@@ -282,13 +285,14 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
              GROUP BY ctrader_position_id
           )`
     ).all()
-    const closeDup = db.prepare(
-      `UPDATE trades SET status='closed', closed_at=datetime('now'),
-         close_reason=COALESCE(close_reason,'duplicate reconcile adoption — superseded by the newest row for this position')
-       WHERE id = ? AND status='open'`
-    )
     const closeDupMon = db.prepare(`UPDATE monitored_positions SET status='closed' WHERE trade_id = ? AND status='active'`)
-    const tx = db.transaction(() => { for (const d of dups) { closeDup.run(d.id); closeDupMon.run(d.id); dupsClosed.push(d) } })
+    const tx = db.transaction(() => {
+      for (const d of dups) {
+        closeTradeRow(db, d.id, { closeReason: 'duplicate reconcile adoption — superseded by the newest row for this position' })
+        closeDupMon.run(d.id)
+        dupsClosed.push(d)
+      }
+    })
     tx()
   } catch { /* dedup best-effort */ }
 
@@ -297,17 +301,12 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     `SELECT id, symbol, ctrader_position_id FROM trades
       WHERE status = 'open' AND ctrader_position_id IS NOT NULL`
   ).all()
-  const closeOrphanTrade = db.prepare(
-    `UPDATE trades SET status = 'closed', closed_at = datetime('now'),
-       close_reason = COALESCE(close_reason, 'stale reconcile: position not open at the broker (orphaned open row, never reconciled)')
-     WHERE id = ? AND status = 'open'`
-  )
   const closeOrphanMon = db.prepare(
     `UPDATE monitored_positions SET status = 'closed' WHERE trade_id = ? AND status = 'active'`
   )
   for (const t of openWithPosId) {
     if (brokerIds.has(String(t.ctrader_position_id))) continue // still live at the broker
-    closeOrphanTrade.run(t.id)
+    closeTradeRow(db, t.id, { closeReason: 'stale reconcile: position not open at the broker (orphaned open row, never reconciled)' })
     closeOrphanMon.run(t.id)
     orphansClosed.push({ tradeId: t.id, symbol: t.symbol, positionId: t.ctrader_position_id })
   }
