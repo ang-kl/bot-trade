@@ -88,6 +88,7 @@ export function classifyLoss(trade, bars, closedAtMs, opts = {}) {
   return {
     classification: 'chop',
     detail: `In ${after.length} bars after the stop, price neither returned to entry nor continued 1R beyond the stop — the market was noise here, and the entry filter let it through.`,
+    afterBars: after.length,
   }
 }
 
@@ -95,12 +96,14 @@ function verdictHunt(nBars) {
   return {
     classification: 'stop_hunt',
     detail: `Price swept the stop, then came back to the entry within ${nBars} bar(s). The direction was right — the stop was too tight or the entry too early.`,
+    nBars,
   }
 }
 function verdictWrong(risk) {
   return {
     classification: 'thesis_wrong',
     detail: `Price continued ≥1R (${risk.toFixed(5)}) beyond the stop. The stop did its job — the idea was wrong, not the exit.`,
+    risk,
   }
 }
 
@@ -186,15 +189,47 @@ export function classifyResult(trade) {
   return Number.isFinite(tp1) ? 'Partial' : 'Win'
 }
 
-/** One imperative lesson line (<15 words) naming the deciding condition. */
+/**
+ * One imperative lesson line (<15 words) naming the deciding condition.
+ *
+ * Owner: "why so many are the same lesson, nothing is contextual" — every
+ * branch here used to return a FIXED string regardless of the trade, so 30
+ * stop-hunts on the same symbol/timeframe read as 30 identical lessons.
+ * Every branch now pulls real per-trade numbers already computed by the
+ * classifier (bars to reclaim, R distances, stop width) — genuinely
+ * DIFFERENT trades produce genuinely different text; only trades that
+ * truly share the same bars-to-reclaim etc. will still read alike, which is
+ * an honest reflection of the market repeating itself, not a template.
+ */
 export function lessonLine(classification, ctx = {}) {
+  const R = (v) => (Number.isFinite(v) ? v.toFixed(2) : null)
   switch (classification) {
-    case 'stop_hunt': return 'Widen stop beyond the sweep zone; direction was right.'
-    case 'thesis_wrong': return `Re-validate ${ctx.strategy || 'the'} entry conditions; price continued against the thesis.`
-    case 'chop': return 'Require a stronger trend filter before entry; market was noise.'
+    case 'stop_hunt': {
+      const bars = Number.isFinite(ctx.nBars) ? `${ctx.nBars} bar(s)` : 'a few bars'
+      const dist = Number.isFinite(ctx.riskDist) ? ` (${ctx.riskDist.toFixed(5)})` : ''
+      return `Widen stop past this sweep${dist}; price reclaimed entry in ${bars}.`
+    }
+    case 'thesis_wrong': {
+      const dist = Number.isFinite(ctx.riskDist) ? ` ${ctx.riskDist.toFixed(5)}` : ''
+      return `Re-validate ${ctx.strategy || 'the'} entry; price ran ≥1R${dist} past the stop.`
+    }
+    case 'chop': {
+      const bars = Number.isFinite(ctx.afterBars) ? `${ctx.afterBars} bars` : 'the aftermath'
+      return `Require a stronger trend filter; ${bars} of noise, no follow-through.`
+    }
     case 'time_cap': return 'Avoid setups needing more time than the cap allows.'
-    case 'gave_back': return 'Bank earlier; peak exceeded the exit by a full R.'
-    case 'clean_win': return 'Repeat this setup; the exit captured the available move.'
+    case 'gave_back': {
+      const mfe = R(ctx.mfeR), real = R(ctx.realizedR)
+      return mfe != null && real != null
+        ? `Bank earlier — peaked +${mfe}R, banked only +${real}R.`
+        : 'Bank earlier; peak exceeded the exit by a full R.'
+    }
+    case 'clean_win': {
+      const mfe = R(ctx.mfeR), real = R(ctx.realizedR)
+      return mfe != null && real != null
+        ? `Repeat this setup; banked +${real}R of +${mfe}R best.`
+        : 'Repeat this setup; the exit captured the available move.'
+    }
     case 'escaped': return `Enter later in the setup; drawdown hit ${ctx.maeR != null ? ctx.maeR.toFixed(1) : '-0.8'}R first.`
     default: return 'Insufficient data; record entry context on future trades.'
   }
@@ -320,7 +355,10 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     // over the PRIOR same-key history, before this row lands.
     const result = classifyResult(t)
     const decay = alphaDecayFlag(db, { symbol: t.symbol, strategy: t.strategy || null, timeframe: tf })
-    const lesson = lessonLine(verdict.classification, { strategy: t.strategy, maeR: verdict.maeR })
+    const lesson = lessonLine(verdict.classification, {
+      strategy: t.strategy, maeR: verdict.maeR, mfeR: verdict.mfeR, realizedR: verdict.realizedR,
+      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist,
+    })
     const eq = entryQuality(t.confluence_count)
     db.prepare(`
       INSERT INTO trade_postmortems

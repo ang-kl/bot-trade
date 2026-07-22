@@ -15,6 +15,8 @@
 // colour for price and TEXT markers (E / SL / X), not red/green coding.
 // ---------------------------------------------------------------------------
 
+import { useState } from 'react'
+
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
 const VERDICTS = {
@@ -101,33 +103,43 @@ export default function LossReview({ postmortems }) {
   )
 }
 
+// Collapsed by default, same accordion pattern as the Risk-Decision veto
+// rows (owner: "create collapse/expand like veto triangle") — with 30
+// postmortems on one symbol/timeframe the old always-expanded cards made
+// the panel unreadably tall; a one-line summary row now expands on demand.
 function Verdict({ r }) {
+  const [open, setOpen] = useState(false)
   const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
+  const pnlText = r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'
   return (
-    <div className="glass-inset rounded-lg p-2 flex flex-wrap items-start gap-3">
-      <div className="min-w-[130px]">
-        <div className="text-[13px] font-semibold">
-          {r.symbol} <span className="font-normal text-[var(--color-text-sub)]">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+    <div className="glass-inset rounded-lg p-2">
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer">
+        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        <span className="font-semibold shrink-0">{r.symbol}</span>
+        <span className="text-[11px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+        <span className="text-[11px] font-bold tracking-wide shrink-0">{v.label}</span>
+        <span className="text-[11px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
+        <span className={`ml-auto text-[12px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
+          {pnlText}{r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap items-start gap-3">
+          <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
+          <div className="flex-1 min-w-[200px]">
+            {/* Structured lesson fields (Trade-Lesson Extraction spec) — the
+                imperative lesson first, then the flat flags controllers read. */}
+            {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+            <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+            <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">
+              {r.result ? `Result: ${r.result}` : null}
+              {r.alpha_decay ? ` · Alpha-decay: ${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay}` : null}
+              {r.entry_quality ? ` · Entry-quality: ${r.entry_quality}` : null}
+            </p>
+          </div>
         </div>
-        <div className="text-[13px] font-bold tracking-wide">{v.label}</div>
-        <div className="text-[11px] text-[var(--color-text-sub)]">{v.hint}</div>
-        <div className="text-[12px] mt-0.5">
-          {r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'}
-          {r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
-        </div>
-      </div>
-      <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-      <div className="flex-1 min-w-[200px]">
-        {/* Structured lesson fields (Trade-Lesson Extraction spec) — the
-            imperative lesson first, then the flat flags controllers read. */}
-        {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-        <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-        <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">
-          {r.result ? `Result: ${r.result}` : null}
-          {r.alpha_decay ? ` · Alpha-decay: ${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay}` : null}
-          {r.entry_quality ? ` · Entry-quality: ${r.entry_quality}` : null}
-        </p>
-      </div>
+      )}
     </div>
   )
 }
