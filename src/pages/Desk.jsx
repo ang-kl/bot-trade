@@ -21,6 +21,7 @@ import Input from '../components/common/Input.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderLedger from '../components/OrderLedger.jsx'
 import LossReview from '../components/LossReview.jsx'
+import SplitFlapClock from '../components/common/SplitFlapClock.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
@@ -749,6 +750,12 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
+        {/* Live wall clock — ticks every second so the panel itself proves the
+            page is live, independent of any controller's own beat. */}
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[11px] text-[var(--color-text-sub)]">Now</span>
+          <SplitFlapClock tickLive className="text-[13px]" />
+        </div>
         {!heartbeats && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
         {heartbeats && (
           // Two-column dot grid — half the height of the old pill list; a
@@ -769,9 +776,16 @@ export default function Desk() {
                       blinking, show that network interaction" — a relative
                       timestamp alone can look static between polls; the run
                       COUNT only ever climbs, so it's undeniable proof this
-                      controller keeps firing, not a hardcoded dot. */}
-                  <span className="ml-auto text-[var(--color-text-sub)] shrink-0">
-                    {c.status === 'idle' ? 'idle' : <>{ago(c.last_run_at)} · {(c.runs ?? 0).toLocaleString()} runs</>}
+                      controller keeps firing, not a hardcoded dot. Last-beat
+                      time now renders as a split-flap HH:MM:SS (airport-board
+                      flip on change) instead of a plain "ago" string. */}
+                  <span className="ml-auto flex items-center gap-1.5 text-[var(--color-text-sub)] shrink-0">
+                    {c.status === 'idle'
+                      ? 'idle'
+                      : <>
+                          <SplitFlapClock iso={c.last_run_at} title={`last beat ${c.last_run_at ?? '—'} (${ago(c.last_run_at)} ago)`} />
+                          <span>· {(c.runs ?? 0).toLocaleString()} runs</span>
+                        </>}
                   </span>
                 </li>
               )
