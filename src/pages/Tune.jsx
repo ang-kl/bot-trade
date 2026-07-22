@@ -1921,7 +1921,12 @@ export default function Tune() {
                 const curated = custom.length > 0 ? custom : (PRESET_GROUPS.find(g => g.key === screenerGroupKey)?.names || [])
                 const title = custom.length > 0 ? 'Custom search' : screenerGroupKey
                 return (
+                  // Key on the curated set's identity (not just title) — a
+                  // fresh mount per group/custom-list change resets the
+                  // internal `selected` Set, so a bulk Add/Remove can never
+                  // act on rows hidden by an earlier switch (Codex review).
                   <WatchlistScreener
+                    key={title === 'Custom search' ? `custom:${curated.join(',')}` : title}
                     title={title}
                     curated={curated}
                     allSymbols={allSymbols}

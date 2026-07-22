@@ -25,26 +25,31 @@
 struct GuardSnapshot {
   bool halt;                 // global kill switch — reject everything
   bool requireBracket;       // reject market orders with no stop attached
+  bool requireTarget;        // reject market orders with no take-profit attached
   double maxOrderVolume;     // reject orders above this volume (0 = no cap)
 };
 
 class OrderGuard {
 public:
-  // Defaults: bracket REQUIRED (capital preservation on by default), not
+  // Defaults: bracket + target REQUIRED (capital preservation on by default,
+  // owner-approved 2026-07-22: an SL-only position isn't "managed"), not
   // halted, no volume cap until the strategy sets one.
   void setHalt(bool v) { halt_.store(v, std::memory_order_relaxed); }
   void setRequireBracket(bool v) { requireBracket_.store(v, std::memory_order_relaxed); }
+  void setRequireTarget(bool v) { requireTarget_.store(v, std::memory_order_relaxed); }
   void setMaxOrderVolume(double v) { maxOrderVolume_.store(v, std::memory_order_relaxed); }
 
   GuardSnapshot snapshot() const {
     return { halt_.load(std::memory_order_relaxed),
              requireBracket_.load(std::memory_order_relaxed),
+             requireTarget_.load(std::memory_order_relaxed),
              maxOrderVolume_.load(std::memory_order_relaxed) };
   }
 
 private:
   std::atomic<bool>   halt_{false};
   std::atomic<bool>   requireBracket_{true};
+  std::atomic<bool>   requireTarget_{true};
   std::atomic<double> maxOrderVolume_{0.0};
 };
 
@@ -58,6 +63,10 @@ struct OrderVerdict {
 // are exempt from the bracket rule here — they carry their SL as a resting
 // distance and are validated on the pending path.
 bool orderHasBracket(const jsn::Value& payload);
+
+// A market order carries a target when it has relativeTakeProfit or an
+// absolute takeProfit. Same LIMIT/STOP exemption as orderHasBracket.
+bool orderHasTarget(const jsn::Value& payload);
 
 // The pure guard. Pass the payload and a GuardSnapshot; get a verdict.
 OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g);

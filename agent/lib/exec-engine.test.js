@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -51,7 +51,7 @@ test('execEngineMode: js by default, cpp only when EXEC_ENGINE=cpp', () => {
 
 test('cpp placeOrder: pushes /connect once, then POST /order with bearer auth', async () => {
   nextResponse = { status: 200, body: JSON.stringify({ ok: true, positionId: 9 }) }
-  const payload = { symbolId: 41, tradeSide: 'BUY', volume: 100000, relativeStopLoss: 50000 }
+  const payload = { symbolId: 41, tradeSide: 'BUY', volume: 100000, relativeStopLoss: 50000, relativeTakeProfit: 50000 }
   const out = await placeOrder(CREDS, payload)
   assert.deepEqual(out, { ok: true, positionId: 9 })
   // First cpp-mode call must push credentials to the sidecar (which holds
@@ -130,12 +130,23 @@ test('bracket guarantee: validateOrderBracket + orderHasBracket cover the cases'
   assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100 }).ok, false)
   assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, allowNaked: true }).ok, true)
   assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100 }).ok, true) // pending exempt
-  assert.equal(validateOrderBracket({ volume: 100, relativeStopLoss: 5 }).ok, true)
+  assert.equal(validateOrderBracket({ volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 }).ok, true)
+})
+
+test('target guarantee: an SL-only market order (no TP) is refused — "a few open trades didn\'t set T/P" (owner-approved 2026-07-22)', () => {
+  assert.equal(orderHasTarget({ relativeTakeProfit: 5 }), true)
+  assert.equal(orderHasTarget({ takeProfit: 1.23 }), true)
+  assert.equal(orderHasTarget({ volume: 100 }), false)
+  const v = validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5 })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /guard_no_target/)
+  assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5, allowNaked: true }).ok, true)
+  assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100, relativeStopLoss: 5 }).ok, true) // pending exempt
 })
 
 test('cpp error mapping preserves broker text: order rejected', async () => {
   nextResponse = { status: 422, body: 'order rejected: MARKET_CLOSED' }
-  await assert.rejects(placeOrder(CREDS, { symbolId: 1, relativeStopLoss: 50000 }), (err) => {
+  await assert.rejects(placeOrder(CREDS, { symbolId: 1, relativeStopLoss: 50000, relativeTakeProfit: 50000 }), (err) => {
     assert.match(err.message, /order rejected/)
     assert.match(err.message, /MARKET_CLOSED/)
     return true
@@ -228,7 +239,7 @@ test('js mode delegates to ctrader-ws exports with identical arguments', async (
   // shape: a bogus host makes them fail, but only AFTER accepting our args —
   // we assert the failure is a connection error, not from the delegator, and
   // that no HTTP request reached the sidecar stub.
-  const p = placeOrder({ ...CREDS, host: '127.0.0.1' }, { symbolId: 1, relativeStopLoss: 50000 })
+  const p = placeOrder({ ...CREDS, host: '127.0.0.1' }, { symbolId: 1, relativeStopLoss: 50000, relativeTakeProfit: 50000 })
   // Must be a network-level failure from the ws layer (proves the call
   // reached ctrader-ws), never an error thrown by the delegator itself.
   await assert.rejects(p, (err) => /ECONNREFUSED|ETIMEDOUT|socket|closed|handshake|connect/i.test(err.message) || /ECONNREFUSED|ETIMEDOUT/.test(err.code || ''))

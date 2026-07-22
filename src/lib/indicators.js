@@ -37,6 +37,83 @@ export function emaSeries(bars, period) {
   return out;
 }
 
+/** Wilder's RSI of a closes array. Array<number|null> aligned to closes, [0,100]. */
+export function rsi(closes, period = 14) {
+  const out = new Array(closes.length).fill(null);
+  if (!Number.isFinite(period) || period < 1 || closes.length <= period) return out;
+  let gainSum = 0;
+  let lossSum = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) gainSum += change;
+    else lossSum -= change;
+  }
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return out;
+}
+
+/** MACD: fast/slow EMA of closes (via emaSeries), signal = EMA of the MACD line.
+ * Returns {macdLine, signalLine, histogram} arrays aligned to closes. */
+export function macd(closes, fast = 12, slow = 26, signal = 9) {
+  const n = closes.length;
+  const bars = closes.map((c) => ({ c }));
+  const fastEma = emaSeries(bars, fast);
+  const slowEma = emaSeries(bars, slow);
+  const macdLine = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (fastEma[i] != null && slowEma[i] != null) macdLine[i] = fastEma[i] - slowEma[i];
+  }
+  const firstValid = macdLine.findIndex((v) => v != null);
+  const signalLine = new Array(n).fill(null);
+  if (firstValid !== -1 && n - firstValid >= signal) {
+    const macdBars = macdLine.slice(firstValid).map((v) => ({ c: v }));
+    const sub = emaSeries(macdBars, signal);
+    for (let i = 0; i < sub.length; i++) signalLine[firstValid + i] = sub[i];
+  }
+  const histogram = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (macdLine[i] != null && signalLine[i] != null) histogram[i] = macdLine[i] - signalLine[i];
+  }
+  return { macdLine, signalLine, histogram };
+}
+
+/** Stochastic oscillator. %K from high/low/close over kPeriod, %D = SMA(%K, dPeriod).
+ * Returns {k, d} arrays aligned to bars, values in [0,100]. */
+export function stochastic(bars, kPeriod = 14, dPeriod = 3) {
+  const n = bars.length;
+  const k = new Array(n).fill(null);
+  for (let i = kPeriod - 1; i < n; i++) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let j = i - kPeriod + 1; j <= i; j++) {
+      if (bars[j].h > hi) hi = bars[j].h;
+      if (bars[j].l < lo) lo = bars[j].l;
+    }
+    const range = hi - lo;
+    k[i] = range === 0 ? 100 : ((bars[i].c - lo) / range) * 100;
+  }
+  const d = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (k[i] == null) continue;
+    const start = i - dPeriod + 1;
+    if (start < 0 || k[start] == null) continue;
+    let sum = 0;
+    for (let j = start; j <= i; j++) sum += k[j];
+    d[i] = sum / dPeriod;
+  }
+  return { k, d };
+}
+
 /** Volume-weighted average price, cumulative from anchor index.
  * Typical price = (h+l+c)/3. Slots before the anchor are null. */
 export function vwapSeries(bars, anchorIdx = 0) {
