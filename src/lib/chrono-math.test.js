@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { priceTravel, rMultiple, slProximity, velocityRPerHr, fmtDuration, elapsedMs } from './chrono-math.js'
+import { priceTravel, rMultiple, slProximity, velocityRPerHr, fmtDuration, elapsedMs, safeTargetR } from './chrono-math.js'
 
 describe('rMultiple', () => {
   it('long: at TP (2R) reads +2, at SL reads −1', () => {
@@ -49,6 +49,22 @@ describe('fmtDuration', () => {
     expect(fmtDuration(65_000)).toBe('1:05')
     expect(fmtDuration(3_725_000)).toBe('1:02:05')
     expect(fmtDuration(null)).toBe('—')
+  })
+})
+
+describe('safeTargetR', () => {
+  it('accepts a sane positive target', () => {
+    expect(safeTargetR(2)).toBe(2)
+    expect(safeTargetR(0.5)).toBe(0.5)
+  })
+  it('rejects a blown-up ratio from a near-zero-risk SL (owner screenshot: "-384.6R")', () => {
+    expect(safeTargetR(-384.6)).toBeNull()
+    expect(safeTargetR(9999)).toBeNull()
+  })
+  it('rejects non-finite or non-positive values', () => {
+    expect(safeTargetR(NaN)).toBeNull()
+    expect(safeTargetR(0)).toBeNull()
+    expect(safeTargetR(null)).toBeNull()
   })
 })
 

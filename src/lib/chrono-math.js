@@ -72,6 +72,20 @@ export function velocityRPerHr({ r, ms }) {
 }
 
 /**
+ * Guard the Target sub-dial's "full" R value. When a position's SL sits at
+ * or near its entry (a data problem — an untracked/adopted position with no
+ * real stop recorded, or a genuine near-zero-risk placeholder), rMultiple's
+ * risk denominator collapses toward zero and the ratio to TP1 explodes into
+ * a meaningless number like "-384.6R" (owner screenshot: exactly this).
+ * Rather than display a number that LOOKS precise but means nothing, this
+ * caps what counts as a sane target — anything past ±`cap` R reads as bad
+ * SL/TP data, not "a moonshot target".
+ */
+export function safeTargetR(rTp, cap = 50) {
+  return Number.isFinite(rTp) && rTp > 0 && rTp <= cap ? rTp : null
+}
+
+/**
  * How close price is to the stop, 0 (at entry or better) → 1 (at the stop).
  * The "danger" sub-dial: 1 means the SL is about to hit.
  */

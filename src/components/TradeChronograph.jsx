@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
-import { polar, priceTravel, rMultiple, slProximity, velocityRPerHr, fmtDuration, elapsedMs, isLong } from '../lib/chrono-math.js'
+import { polar, priceTravel, rMultiple, slProximity, velocityRPerHr, fmtDuration, elapsedMs, isLong, safeTargetR } from '../lib/chrono-math.js'
 
 const C = 160 // centre
 const UP = 'var(--color-up)'
@@ -73,7 +73,12 @@ export default function TradeChronograph({ pos, onClose }) {
   const tpFar = (tp2 != null && Number.isFinite(Number(tp2))) ? Number(tp2) : tp1
   const travel = priceTravel({ entry, sl, tp: tpFar, side, price })
   const r = rMultiple({ entry, sl, side, price })
-  const rTp = Number.isFinite(tp1) ? rMultiple({ entry, sl, side, price: tp1 }) : 2
+  // Guarded: an SL sitting at/near entry (untracked/adopted position with no
+  // real stop, or bad data) makes this ratio explode into a meaningless
+  // number (owner screenshot: "full = -384.6R") — safeTargetR rejects it
+  // rather than display a number that looks precise but means nothing.
+  const rTpRaw = Number.isFinite(tp1) ? rMultiple({ entry, sl, side, price: tp1 }) : 2
+  const rTp = safeTargetR(rTpRaw)
   const ms = elapsedMs(openedAt)
   const vel = velocityRPerHr({ r, ms })
   const slProx = slProximity({ entry, sl, side, price })
@@ -153,10 +158,15 @@ export default function TradeChronograph({ pos, onClose }) {
               </g>
             )
           })}
+          {marks.length === 0 && (
+            <text x={C} y={C - RING + 30} textAnchor="middle" fontSize="9" fill={SUB}>
+              SL/TP marks unavailable — missing SL or TP1 price for this position
+            </text>
+          )}
 
           {/* Sub-dials — each labelled with its UNIT */}
           <SubDial cx={C - 56} cy={C + 4} r={30} frac={timeFrac} label="In trade" unit="dial = 60 min" value={fmtDuration(ms)} color="var(--color-text)" ticks={12} />
-          <SubDial cx={C + 56} cy={C + 4} r={30} frac={rFrac} label="→ target" unit={`R units · full = ${Number.isFinite(rTp) ? rTp.toFixed(1) : '2.0'}R`} value={r == null ? '—' : `${r.toFixed(2)}R`} color={pnlUp ? UP : DOWN} ticks={Math.max(2, Math.round(rTp) || 2)} />
+          <SubDial cx={C + 56} cy={C + 4} r={30} frac={rFrac} label="→ target" unit={rTp != null ? `R units · full = ${rTp.toFixed(1)}R` : 'target R undefined — check TP1/SL'} value={r == null ? '—' : `${r.toFixed(2)}R`} color={pnlUp ? UP : DOWN} ticks={Math.max(2, Math.round(rTp ?? 2) || 2)} />
           <SubDial cx={C} cy={C + 66} r={28} frac={slProx} label="to stop" unit="% of risk left" value={slProx == null ? '—' : `${Math.round((1 - slProx) * 100)}%`} color={slProx != null && slProx > 0.66 ? DOWN : SUB} ticks={5} />
 
           {/* Main velocity sweep hand (thin red chrono hand) */}
@@ -172,6 +182,9 @@ export default function TradeChronograph({ pos, onClose }) {
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[13px] mt-2">
           <span className="text-[var(--color-text-sub)]">Current price</span><span className="tabular-nums text-right font-semibold">{price5(price)}</span>
           <span className="text-[var(--color-text-sub)]">Velocity</span><span className="tabular-nums text-right font-semibold">{vel == null ? '—' : `${vel.toFixed(2)} R/hr`}</span>
+          {/* Owner: "is it better in digits than dial" — the In-trade sub-dial's
+              digit is cramped at this size; a plain row is unambiguous. */}
+          <span className="text-[var(--color-text-sub)]">Time in trade</span><span className="tabular-nums text-right font-semibold">{fmtDuration(ms)}</span>
           <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right font-semibold">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
         </div>
         {/* Legend — what each element means, in words (never colour-only) */}
