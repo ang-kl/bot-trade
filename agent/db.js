@@ -536,6 +536,11 @@ export function initDB(dbPath) {
     ['label_session',    'TEXT'],
     ['label_timeframe',  'TEXT'],
     ['label_regime',     'TEXT'],
+    // Millisecond-precision close timestamp, written in JS (Date.now()) —
+    // closed_at (TEXT via SQLite datetime('now')) is second-precision and
+    // stays for existing readers; this is the one hold_duration_ms and the
+    // close-completeness sweep key off of.
+    ['closed_at_ms',     'INTEGER'],
   ];
   for (const [col, type] of tMigrations) {
     if (!tColNames.has(col)) {
@@ -675,4 +680,51 @@ export function sweepMonitoredPositionsForAccounts(db, keepAccountIds, { sweepNu
  */
 export function sweepMonitoredPositionsForAccount(db, newAccountId) {
   return sweepMonitoredPositionsForAccounts(db, [newAccountId]);
+}
+
+// SQLite's datetime('now') writes 'YYYY-MM-DD HH:MM:SS' (UTC, no offset) —
+// Date.parse needs a 'T' separator and an explicit zone to read it back.
+function sqliteTimeToMs(text) {
+  if (!text) return null;
+  const iso = String(text).includes('T') ? text : `${String(text).replace(' ', 'T')}Z`;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * The ONE place a trade row is marked closed (converges loop.js's
+ * markTradeClosed and reconciler.js's three close sites). Every caller gets
+ * the same idempotency guarantee: `WHERE id = ? AND status = 'open'`, so a
+ * trade already closed by one path can never be double-processed by another
+ * racing to close it too (the loop.js call site had no such guard before —
+ * confirmed gap, "two closes fired for one trade_id must result in exactly
+ * one write").
+ *
+ * Stamps closed_at_ms (Date.now(), millisecond precision) alongside the
+ * existing closed_at (SQLite datetime('now'), second precision, kept for
+ * existing readers) and computes hold_duration_ms from the trade's own
+ * opened_at, parsed the same way closed_at_ms's SQL sibling would be.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {number} tradeId
+ * @param {{exitPrice?: number|null, closeReason?: string|null, grossPnl?: number|null, netPnl?: number|null, closedAtMs?: number}} [opts]
+ * @returns {{changed: boolean, holdDurationMs: number|null}}
+ */
+export function closeTradeRow(db, tradeId, {
+  exitPrice = null, closeReason = null, grossPnl = null, netPnl = null, closedAtMs = Date.now(),
+} = {}) {
+  const row = db.prepare('SELECT opened_at FROM trades WHERE id = ?').get(tradeId);
+  const openedAtMs = row ? sqliteTimeToMs(row.opened_at) : null;
+  const holdDurationMs = openedAtMs != null ? closedAtMs - openedAtMs : null;
+  const info = db.prepare(`
+    UPDATE trades
+    SET status = 'closed', closed_at = datetime('now'), closed_at_ms = ?,
+        hold_duration_ms = COALESCE(?, hold_duration_ms),
+        exit_price = COALESCE(?, exit_price),
+        close_reason = COALESCE(?, close_reason),
+        gross_pnl = COALESCE(?, gross_pnl),
+        net_pnl = COALESCE(?, net_pnl)
+    WHERE id = ? AND status = 'open'
+  `).run(closedAtMs, holdDurationMs, exitPrice, closeReason, grossPnl, netPnl, tradeId);
+  return { changed: info.changes > 0, holdDurationMs };
 }
