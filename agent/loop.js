@@ -1703,8 +1703,23 @@ async function runLoop(db) {
           )
 
           if (check.action === 'EXIT') {
-            s.closePosition.run('closed', pos.id)
-            log(`Position closed (LLM): ${pos.symbol} — ${check.reasoning}`)
+            // BUG FIX (owner: "why are 18 positions not being trimmed" — audit
+            // found this): this branch used to call s.closePosition.run()
+            // directly — a bare DB status flip with NO broker close. The
+            // position stayed open and margin-locked at the broker forever
+            // while the bot's own bookkeeping said 'closed', so nothing
+            // (profit-keeper, trade-guards, this very monitor) ever looked at
+            // it again. Route through the same executeBrokerAction the
+            // deterministic path uses so the broker position actually closes.
+            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning })
+            if (outcome.error) {
+              log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
+            } else if (outcome.skipped) {
+              log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
+              s.closePosition.run('closed', pos.id) // no broker to close against (e.g. not configured) — DB-only, as before
+            } else {
+              log(`Position closed (LLM): ${pos.symbol} — ${outcome.summary} — ${check.reasoning}`)
+            }
           }
         } catch (err) {
           log(`Monitor check failed for ${pos.symbol}:`, err.message)
