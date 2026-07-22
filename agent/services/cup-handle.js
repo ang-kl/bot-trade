@@ -9,8 +9,11 @@
 //   2. healthy cup    — rounded bottom (≥3 bars near the low, not a V),
 //                       depth 15–33% of the rim, volume: sell-off > bottom,
 //                       recovery > bottom (spike → dry-up → rebuild)
-//   3. tight handle   — drift holds the upper ⅓ of the cup, 2–15 bars,
-//                       volume tapering vs the recovery leg
+//   3. tight handle   — retraces at most 50% of the cup's OWN depth (never
+//                       below the cup's midpoint), lasts 10–30% of the
+//                       cup's OWN duration, volume strictly lower than the
+//                       recovery leg — all three calculated dynamically
+//                       from the cup just found, not a static percentage
 //   4. room to run    — right rim at/near the window's highest high
 //   5. sector aligned — NOT computable from broker data; intentionally
 //                       omitted (do it on your stock screener) — never faked
@@ -35,13 +38,19 @@
 import { atr, vwap } from './fib-strategy.js'
 
 const MIN_BARS = 210            // SMA200 + headroom
-const CUP_MIN = 15              // cup length bounds (bars)
+const CUP_MIN = 15              // cup length bounds (bars) — absolute floor/ceiling regardless of the dynamic ratio below
 const CUP_MAX = 120
-const HANDLE_MIN = 2
-const HANDLE_MAX = 15
+const HANDLE_MIN = 2            // absolute bar-count floor/ceiling — the proportional
+const HANDLE_MAX = 15           // ratio below is the real structural constraint
 const DEPTH_MIN = 0.15          // cup depth as fraction of rim price — shared by both directions
 const DEPTH_MAX = 0.33
 const ROUND_BOTTOM_BARS = 3     // bars that must sit near the extreme (U, not V — or dome, not spike)
+// Handle validation (owner-directed 2026-07-22, "verify and update the
+// handle parameters... calculated dynamically based on the preceding
+// cup's dimensions" — shared by both directions, same as DEPTH_MIN/MAX):
+const HANDLE_RETRACE_MAX = 0.5      // handle may retrace at most this fraction of the cup's OWN depth — must not drop below the cup's midpoint, whether the cup is a shallow 15% or a deep 33% one
+const HANDLE_LENGTH_MIN_RATIO = 0.10 // handle duration >= this fraction of the cup's OWN duration
+const HANDLE_LENGTH_MAX_RATIO = 0.30 // handle duration <= this fraction of the cup's OWN duration — the handle is a brief pause, not a second cup
 const BREAKOUT_VOL_X = 1.3      // breakout volume vs handle average
 const MIN_RR = 1.5
 
@@ -128,6 +137,12 @@ function searchCupHandle(bars, timeframe, opts, dir) {
     const extremePrice = dir === 1 ? bars[ex].l : bars[ex].h
     const rim = dir === 1 ? Math.min(bars[lr].h, bars[rr].h) : Math.max(bars[lr].l, bars[rr].l)
 
+    // 3 — proportional handle length: the handle must be a brief pause
+    // relative to THIS cup, not a fixed bar count — a 15-bar handle is
+    // reasonable after a 100-bar cup and absurd after a 20-bar one.
+    const handleLenRatio = handleLen / cupLen
+    if (handleLenRatio < HANDLE_LENGTH_MIN_RATIO || handleLenRatio > HANDLE_LENGTH_MAX_RATIO) continue
+
     // 2 — rounded extreme: several bars near it, not one V-spike (or dome-spike)
     const nearExtreme = dir === 1 ? extremePrice + 0.15 * depthAbs : extremePrice - 0.15 * depthAbs
     let roundBars = 0
@@ -146,15 +161,24 @@ function searchCupHandle(bars, timeframe, opts, dir) {
     const vOut = avgVol(bars, rr - third, rr)
     const volumeShapeOk = vAtExtreme > 0 ? (vInto > vAtExtreme && vOut > vAtExtreme) : false
 
-    // 3 — tight handle: holds the outer ⅓ of the cup (upper for classic,
-    // lower for inverted), volume tapering
+    // 3 — proportional handle retrace: must not drop below the cup's OWN
+    // midpoint (HANDLE_RETRACE_MAX of ITS depth) — a shallow 15% cup and a
+    // deep 33% one each get a handle sized to their own structure, not a
+    // one-size-fits-all percentage.
     const handleFar = dir === 1
       ? Math.min(...bars.slice(rr + 1, last).map(bb => bb.l), Infinity)
       : Math.max(...bars.slice(rr + 1, last).map(bb => bb.h), -Infinity)
-    const handleOk = dir === 1 ? handleFar >= rim - depthAbs / 3 : handleFar <= rim + depthAbs / 3
+    const handleOk = dir === 1
+      ? handleFar >= rim - depthAbs * HANDLE_RETRACE_MAX
+      : handleFar <= rim + depthAbs * HANDLE_RETRACE_MAX
     if (!handleOk) continue
+    // Volume contraction: the handle must show LESS average volume than
+    // the leg advancing into the right rim (vOut) — a real shakeout/
+    // consolidation quiets down; a handle as loud as the advance itself
+    // isn't one. Hard gate, not a conviction nudge.
     const vHandle = avgVol(bars, rr + 1, last - 1)
     const handleTaperOk = vOut > 0 ? vHandle < vOut : false
+    if (!handleTaperOk) continue
 
     // Entry trigger on the LAST bar: breaks the prior-2-bar extreme AND the
     // handle extreme, with volume expansion vs the handle.
@@ -195,11 +219,13 @@ function searchCupHandle(bars, timeframe, opts, dir) {
     if (rrRatio < MIN_RR) continue
 
     // Conviction: 8 when every core check passed (matches the autotrade
-    // bar), +1 room-to-run, +1 strong breakout volume; soft checks that
-    // failed pull it below the bar instead of silently passing.
+    // bar), +1 room-to-run, +1 strong breakout volume; volumeShapeOk is the
+    // one remaining SOFT check — a candidate can reach here without it and
+    // still be a legitimate, if less confirmed, setup. handleTaperOk is no
+    // longer scored here — it's a hard gate above; every candidate past
+    // this point has already satisfied it.
     let conviction = 8
     if (!volumeShapeOk) conviction -= 2
-    if (!handleTaperOk) conviction -= 1
     if (roomToRun) conviction += 1
     if (breakoutVolX >= 1.8) conviction += 1
     conviction = Math.max(0, Math.min(10, conviction))
@@ -262,12 +288,14 @@ export function computeInvCupHandleSignal(bars, timeframe, opts = {}) {
 // than one that failed on gate 1. Not used by computeCupHandleSignal itself.
 const GATE_RANK = {
   no_cup_structure: 0,
-  round_bottom: 1,
-  handle_range: 2,
-  breakout_not_triggered: 3,
-  breakout_volume: 4,
-  rr_floor: 5,
-  null: 6, // would have fired
+  handle_length_ratio: 1,   // handleLen/cupLen outside [HANDLE_LENGTH_MIN_RATIO, HANDLE_LENGTH_MAX_RATIO]
+  round_bottom: 2,
+  handle_range: 3,          // retrace past HANDLE_RETRACE_MAX of the cup's own depth
+  handle_volume: 4,         // handle volume not below the advance/decline leg's volume
+  breakout_not_triggered: 5,
+  breakout_volume: 6,
+  rr_floor: 7,
+  null: 8, // would have fired
 }
 
 /**
@@ -342,6 +370,12 @@ function traceDirection(bars, timeframe, dir) {
     const rim = dir === 1 ? Math.min(bars[lr].h, bars[rr].h) : Math.max(bars[lr].l, bars[rr].l)
     const posInCup = Math.round(((ex - lr) / cupLen) * 1000) / 1000
 
+    const handleLenRatio = Math.round((handleLen / cupLen) * 1000) / 1000
+    if (handleLenRatio < HANDLE_LENGTH_MIN_RATIO || handleLenRatio > HANDLE_LENGTH_MAX_RATIO) {
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, handleLenRatio, blocked_at: 'handle_length_ratio' })
+      continue
+    }
+
     const nearExtreme = dir === 1 ? extremePrice + 0.15 * depthAbs : extremePrice - 0.15 * depthAbs
     let roundBars = 0
     for (let i = lr; i <= rr; i++) {
@@ -350,7 +384,7 @@ function traceDirection(bars, timeframe, dir) {
     }
     const roundBottomOk = roundBars >= ROUND_BOTTOM_BARS
     if (!roundBottomOk) {
-      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, blocked_at: 'round_bottom' })
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, handleLenRatio, roundBars, roundBottomOk, blocked_at: 'round_bottom' })
       continue
     }
 
@@ -363,13 +397,19 @@ function traceDirection(bars, timeframe, dir) {
     const handleFar = dir === 1
       ? Math.min(...bars.slice(rr + 1, last).map(bb => bb.l), Infinity)
       : Math.max(...bars.slice(rr + 1, last).map(bb => bb.h), -Infinity)
-    const handleRangeOk = dir === 1 ? handleFar >= rim - depthAbs / 3 : handleFar <= rim + depthAbs / 3
+    const handleRangeOk = dir === 1
+      ? handleFar >= rim - depthAbs * HANDLE_RETRACE_MAX
+      : handleFar <= rim + depthAbs * HANDLE_RETRACE_MAX
     if (!handleRangeOk) {
-      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, volumeShapeOk, blocked_at: 'handle_range' })
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, handleLenRatio, roundBars, roundBottomOk, volumeShapeOk, blocked_at: 'handle_range' })
       continue
     }
     const vHandle = avgVol(bars, rr + 1, last - 1)
     const handleTaperOk = vOut > 0 ? vHandle < vOut : false
+    if (!handleTaperOk) {
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, handleLenRatio, roundBars, roundBottomOk, volumeShapeOk, handleTaperOk, blocked_at: 'handle_volume' })
+      continue
+    }
 
     const prior2Extreme = dir === 1
       ? Math.max(bars[last - 1].h, bars[last - 2].h)
@@ -379,7 +419,7 @@ function traceDirection(bars, timeframe, dir) {
       : Math.min(prior2Extreme, handleExtreme === Infinity ? Infinity : handleExtreme)
     const breakoutTriggered = dir === 1 ? close > breakoutLevel : close < breakoutLevel
     const breakoutVolX = vHandle > 0 ? Math.round(((bars[last].v || 0) / vHandle) * 100) / 100 : 0
-    const shared = { handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, volumeShapeOk, handleTaperOk, breakoutVolX }
+    const shared = { handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, handleLenRatio, roundBars, roundBottomOk, volumeShapeOk, handleTaperOk, breakoutVolX }
     if (!breakoutTriggered) {
       considerCandidate({ ...shared, blocked_at: 'breakout_not_triggered' })
       continue

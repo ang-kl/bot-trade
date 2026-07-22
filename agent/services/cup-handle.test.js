@@ -191,6 +191,99 @@ test('traceCupHandleSearch (classic) is unaffected by inverted-context bars — 
   assert.equal(t.uptrend_ok, false)
 })
 
+/**
+ * Same shape as cupHandleBars() but with a configurable handle bar count
+ * and handle volume, so the two new dynamic handle gates (length ratio,
+ * volume contraction) can be exercised directly (owner-directed
+ * 2026-07-22 handle-validation audit).
+ */
+function cupHandleBarsWithHandle(handleBars, handleVol) {
+  const bars = []
+  let i = 0
+  let p = 50
+  for (; i < 185; i++) { p += 50 / 185; bars.push(bar(i, p - 0.1, p + 0.3, p - 0.4, p, 1000)) }
+  for (let k = 0; k < 12; k++, i++) { p -= 2.0; bars.push(bar(i, p + 2.0, p + 2.2, p - 0.3, p, 1600 - k * 60)) }
+  for (let k = 0; k < 8; k++, i++) { bars.push(bar(i, p, p + 0.4, p - 0.25, p + 0.1, 500)) }
+  for (let k = 0; k < 12; k++, i++) { p += 2.0; bars.push(bar(i, p - 2.0, p + 0.4, p - 2.1, p, 1200 + k * 40)) }
+  for (let k = 0; k < handleBars; k++, i++) { const hp = p - 0.5 * (k + 1) / 2; bars.push(bar(i, hp + 0.2, hp + 0.5, hp - 0.3, hp, handleVol)) }
+  bars.push(bar(i, p - 1, p + 2.2, p - 1.2, p + 2, 1400))
+  return bars
+}
+
+test('handle_length_ratio: a handle far shorter than 10% of the cup is rejected, not just under-length', () => {
+  const bars = cupHandleBarsWithHandle(1, 600)
+  assert.equal(computeCupHandleSignal(bars, '1d'), null)
+  const t = traceCupHandleSearch(bars, '1d')
+  assert.ok(t.best_candidate)
+  assert.equal(t.best_candidate.blocked_at, 'handle_length_ratio')
+})
+
+test('handle_length_ratio: a proportionally long-enough handle fires', () => {
+  const bars = cupHandleBarsWithHandle(2, 600)
+  const sig = computeCupHandleSignal(bars, '1d')
+  assert.ok(sig, 'expected a signal once the handle is >=10% of the cup duration')
+  const t = traceCupHandleSearch(bars, '1d')
+  assert.equal(t.best_candidate.blocked_at, null)
+})
+
+test('handle_volume: a handle as loud as the advance leg is rejected even with valid geometry', () => {
+  const loud = cupHandleBarsWithHandle(4, 2000)
+  assert.equal(computeCupHandleSignal(loud, '1d'), null)
+  const t = traceCupHandleSearch(loud, '1d')
+  assert.ok(t.best_candidate)
+  assert.equal(t.best_candidate.blocked_at, 'handle_volume')
+})
+
+test('handle_volume: a quiet handle (below the advance leg volume) fires', () => {
+  const quiet = cupHandleBarsWithHandle(4, 600)
+  const sig = computeCupHandleSignal(quiet, '1d')
+  assert.ok(sig, 'expected a signal with a properly contracted handle')
+})
+
+/** Same idea as cupHandleBarsWithHandle() but for the inverted direction. */
+function invCupHandleBarsWithHandle(handleBars, handleVol) {
+  const bars = []
+  let i = 0
+  let p = 150
+  for (; i < 185; i++) { p -= 50 / 185; bars.push(bar(i, p + 0.1, p + 0.4, p - 0.3, p, 1000)) }
+  for (let k = 0; k < 12; k++, i++) { p += 2.2; bars.push(bar(i, p - 2.2, p + 0.3, p - 2.4, p, 1600 - k * 60)) }
+  for (let k = 0; k < 8; k++, i++) { bars.push(bar(i, p, p + 0.25, p - 0.4, p - 0.1, 500)) }
+  for (let k = 0; k < 12; k++, i++) { p -= 2.2; bars.push(bar(i, p + 2.2, p + 2.3, p - 0.4, p, 1200 + k * 40)) }
+  for (let k = 0; k < handleBars; k++, i++) { const hp = p + 0.5 * (k + 1) / 2; bars.push(bar(i, hp - 0.2, hp + 0.3, hp - 0.5, hp, handleVol)) }
+  bars.push(bar(i, p + 1, p + 1.2, p - 2.2, p - 2, 1400))
+  return bars
+}
+
+test('inverted: handle_length_ratio: a handle far shorter than 10% of the cup is rejected', () => {
+  const bars = invCupHandleBarsWithHandle(1, 600)
+  assert.equal(computeInvCupHandleSignal(bars, '1d'), null)
+  const t = traceInvCupHandleSearch(bars, '1d')
+  assert.ok(t.best_candidate)
+  assert.equal(t.best_candidate.blocked_at, 'handle_length_ratio')
+})
+
+test('inverted: handle_length_ratio: a proportionally long-enough handle fires', () => {
+  const bars = invCupHandleBarsWithHandle(2, 600)
+  const sig = computeInvCupHandleSignal(bars, '1d')
+  assert.ok(sig, 'expected a signal once the handle is >=10% of the cup duration')
+  const t = traceInvCupHandleSearch(bars, '1d')
+  assert.equal(t.best_candidate.blocked_at, null)
+})
+
+test('inverted: handle_volume: a handle as loud as the decline leg is rejected even with valid geometry', () => {
+  const loud = invCupHandleBarsWithHandle(4, 2000)
+  assert.equal(computeInvCupHandleSignal(loud, '1d'), null)
+  const t = traceInvCupHandleSearch(loud, '1d')
+  assert.ok(t.best_candidate)
+  assert.equal(t.best_candidate.blocked_at, 'handle_volume')
+})
+
+test('inverted: handle_volume: a quiet handle (below the decline leg volume) fires', () => {
+  const quiet = invCupHandleBarsWithHandle(4, 600)
+  const sig = computeInvCupHandleSignal(quiet, '1d')
+  assert.ok(sig, 'expected a signal with a properly contracted handle')
+})
+
 test('screenBars: passes a strong uptrend, fails the checks it should', () => {
   const good = cupHandleBars()
   const res = screenBars(good, { minPrice: 20 })
