@@ -98,7 +98,15 @@ function Group({ title, rows }) {
 // convention so every table in the app behaves the same way.
 function sortVal(r, key) {
   switch (key) {
-    case 'date': return Date.parse(String(r.trade_closed_at || r.trade_opened_at || r.created_at || '').replace(' ', 'T') + 'Z')
+    case 'date': {
+      // Same normalization as dateTime() above — an ISO string already has a
+      // 'T' and its own zone; only the sqlite " " form needs 'Z' appended.
+      // Codex review: unconditionally appending 'Z' turned ISO rows into
+      // "...ZZ", which Date.parse reads as NaN and leaves them unsorted.
+      const s = String(r.trade_closed_at || r.trade_opened_at || r.created_at || '')
+      const t = Date.parse(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`)
+      return Number.isFinite(t) ? t : null
+    }
     case 'symbol': return r.symbol || null
     case 'classification': return VERDICTS[r.classification]?.label || r.classification || null
     case 'r_multiple': return r.r_multiple

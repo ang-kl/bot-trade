@@ -825,6 +825,23 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/backfill-label-strategy — owner: "every trade must have a
+  // purpose for the edge" (edge-health's Manual/external bucket). Recovers
+  // label_strategy on autopilot trades whose broker label lost attribution
+  // (encoded '-' before a strategy's key existed — see trade-labels.js) by
+  // matching the real, strategy-specific thesis text each module wrote at
+  // open time. No broker call, no live-DB dependency beyond this process's
+  // own DB — safe to run any time; a no-op past the first successful run.
+  router.post('/backfill-label-strategy', async (_req, res) => {
+    try {
+      const { backfillLabelStrategy } = await import('../services/label-backfill.js')
+      const out = backfillLabelStrategy(db)
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/order-cancel — cancel ONE resting order at the broker
   // (the Manage pop-up's Cancel). Marks any matching pending_orders ledger
   // row cancelled so the pending manager doesn't chase a ghost.

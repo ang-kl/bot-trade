@@ -153,6 +153,8 @@ export default function Desk() {
   const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
   const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
   const [sweepNote, setSweepNote] = useState('')
+  const [labelBackfillBusy, setLabelBackfillBusy] = useState(false) // recover label_strategy from thesis fingerprints
+  const [labelBackfillNote, setLabelBackfillNote] = useState('')
   const [brokerErr, setBrokerErr] = useState('')        // live snapshot fetch failure — shown, not swallowed
   const [error, setError] = useState('')
   const [manualSymbol, setManualSymbol] = useState('') // set ONLY by pickSymbol — a deliberate trader pick
@@ -959,7 +961,26 @@ export default function Desk() {
         {alphaDecay && (
           <>
             {/* Band 1 — the auto-bot's LIVE edge */}
-            <div className="text-[12px] font-semibold mb-1">Live edge — auto-bot</div>
+            <div className="flex items-center gap-2 mb-1">
+              <div className="text-[12px] font-semibold">Live edge — auto-bot</div>
+              {/* Owner: "every trade must have a purpose for the edge" — the
+                  unlabelled/autopilot bucket is mostly trades whose broker
+                  label lost attribution before a strategy's key existed
+                  (permanent, broker-side). This recovers what it can from
+                  each trade's own thesis text — a real fingerprint, not a
+                  guess — and leaves anything unmatched alone. */}
+              <Button size="sm" variant="ghost" disabled={labelBackfillBusy} onClick={async () => {
+                setLabelBackfillBusy(true)
+                try {
+                  const r = await agentPost('/actions/backfill-label-strategy', {})
+                  const by = Object.entries(r.byStrategy || {}).map(([k, v]) => `${k}: ${v}`).join(', ')
+                  setLabelBackfillNote(`recovered ${r.updated ?? 0} of ${r.scanned ?? 0} unlabelled autopilot trade(s)${by ? ` (${by})` : ''}`)
+                  load()
+                } catch (e) { setLabelBackfillNote(`failed: ${e.message}`) }
+                setLabelBackfillBusy(false)
+              }}>{labelBackfillBusy ? 'Recovering…' : 'Recover strategy labels'}</Button>
+              {labelBackfillNote && <span className="text-[11px] text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
+            </div>
             {(alphaDecay.strategies?.length ?? 0) === 0 && (
               <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
             )}
