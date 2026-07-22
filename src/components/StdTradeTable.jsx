@@ -115,6 +115,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     { key: 'commission', label: 'Commission', fmt: money2, money: true },
     { key: 'swap', label: 'Swap', fmt: money2, money: true },
     { key: 'positionId', label: 'Position ID', fmt: (v) => String(v) },
+    // DB↔broker cross-check (owner: verify each open position individually
+    // after the LLM-monitor broker-close bug) — only present when the caller
+    // passed a dbByPid map to brokerPositionRows(); 'OK' or a plain-English
+    // drift description.
+    {
+      key: 'integrity', label: 'Integrity',
+      fmt: (v) => <span className={v === 'OK' ? 'text-[var(--color-text-sub)]' : 'text-[var(--color-warning-text)] font-semibold'}>{v}</span>,
+    },
   ]
   const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
   const colCount = 15 + activeOpt.length

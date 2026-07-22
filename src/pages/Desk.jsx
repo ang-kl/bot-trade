@@ -344,20 +344,34 @@ export default function Desk() {
   // section no longer collapses/repopulates, so the page stops jumping.
   const posSig = (broker?.positions || []).map(x => `${x.positionId}:${x.currentPrice ?? ''}:${x.netPnl ?? x.estNetPnl ?? ''}:${x.sl ?? ''}:${x.tp ?? ''}:${x.lots ?? ''}`).join('|')
   const ordSig = (broker?.orders || []).map(x => `${x.orderId}:${x.limitPrice ?? x.stopPrice ?? ''}:${x.sl ?? ''}:${x.tp ?? ''}:${x.lots ?? ''}`).join('|')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true }), [posSig])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
   // Merge the monitor's per-position review record (last_check_*, thesis_status,
   // current_sl from /state/positions) onto the live broker positions, matched by
   // ctrader_position_id, so each gauge card can PROVE it's being reviewed
   // (owner: "how do I know you are reviewing each one ... watch stop-loss").
+  // Same map doubles as the DB↔broker cross-check for brokerPosRows below
+  // (owner: "check individually the 18 positions" after the LLM-monitor
+  // broker-close bug — each broker row gets an Integrity column from this).
   const monitorByPid = useMemo(() => {
     const m = new Map()
     for (const r of positions) if (r.ctrader_position_id != null) m.set(String(r.ctrader_position_id), r)
     return m
   }, [positions])
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid }), [posSig, monitorByPid])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
+
+  // The reverse gap: a DB row still marked 'active' whose position the
+  // broker snapshot doesn't have at all. The reconciler closes these on its
+  // own next pass (closedDetected) — surfaced here so a stale one is VISIBLE
+  // instead of only inferred from an empty broker table.
+  const dbOnlyPositions = useMemo(() => {
+    if (!broker?.positions) return [] // snapshot not loaded yet — don't false-flag
+    const liveIds = new Set(broker.positions.map(p => String(p.positionId)))
+    return positions.filter(r => r.ctrader_position_id != null && !liveIds.has(String(r.ctrader_position_id)))
+  }, [positions, broker?.positions])
   const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
     const mp = monitorByPid.get(String(bp.positionId))
     return mp
@@ -555,6 +569,12 @@ export default function Desk() {
           <p className="text-[11px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
         {brokerErr && <p className="text-[11px] text-[var(--color-warning-text)]">{brokerErr}</p>}
+        {dbOnlyPositions.length > 0 && (
+          <p className="text-[11px] text-[var(--color-warning-text)] mb-1">
+            ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
+            {dbOnlyPositions.map(r => r.symbol).join(', ')} — the reconciler closes these automatically on its next pass.
+          </p>
+        )}
         {(broker?.positions?.length ?? 0) > 0 && (
           <StdTradeTable
             rows={brokerPosRows}

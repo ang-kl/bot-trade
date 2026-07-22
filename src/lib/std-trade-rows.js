@@ -53,8 +53,26 @@ export const priceDp = (v) => {
 }
 const px = (n) => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: priceDp(n) }))
 
-/** Live broker positions → standard rows. manageable=true arms the panel. */
-export function brokerPositionRows(positions, { manageable = false } = {}) {
+// DB↔broker cross-check for one position (owner: "check individually the 18
+// positions" after the LLM-monitor broker-close bug). dbRow is the matching
+// /state/positions record (by ctrader_position_id) or null if the broker
+// holds a position no ACTIVE DB row maps to. A small side/SL/TP epsilon
+// tolerates float noise, not real drift.
+const SIDE_LONG = new Set(['long', 'buy'])
+function integrityOf(p2, dbRow) {
+  if (!dbRow) return 'untracked in DB'
+  const dbSide = SIDE_LONG.has(String(dbRow.side || '').toLowerCase()) ? 'BUY' : 'SELL'
+  if (dbSide !== String(p2.side || '').toUpperCase()) return 'side drift'
+  const near = (a, b) => a == null || b == null ? a == null && b == null : Math.abs(Number(a) - Number(b)) <= Math.max(1e-9, Math.abs(Number(b)) * 1e-4)
+  if (!near(dbRow.current_sl, p2.sl)) return 'SL drift'
+  if (!near(dbRow.current_tp, p2.tp)) return 'TP drift'
+  return 'OK'
+}
+
+/** Live broker positions → standard rows. manageable=true arms the panel.
+ * dbByPid: optional Map<String(ctrader_position_id), dbRow> — when passed,
+ * each row gets an `integrity` field cross-checking DB vs broker truth. */
+export function brokerPositionRows(positions, { manageable = false, dbByPid = null } = {}) {
   return (positions || []).map(p2 => {
     // Broker-truth net P&L first (cTrader's own figure, every asset class);
     // the client-side estimate only fills the gap and is marked as such.
@@ -90,6 +108,7 @@ export function brokerPositionRows(positions, { manageable = false } = {}) {
       // structured label server-side; null for manual/external.
       timeframe: p2.timeframe ?? null,
       strategy: p2.strategy ?? null,
+      integrity: dbByPid ? integrityOf(p2, dbByPid.get(String(p2.positionId)) ?? null) : null,
       durationMs: p2.openedAt ? Math.max(0, Date.now() - toMs(p2.openedAt)) : null,
       reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,

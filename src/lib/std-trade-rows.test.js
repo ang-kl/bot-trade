@@ -26,6 +26,48 @@ describe('broker rows carry strategy + timeframe for segmentation', () => {
   })
 })
 
+describe('brokerPositionRows: DB↔broker integrity cross-check (owner: verify each open position individually)', () => {
+  it('no dbByPid passed → integrity stays null (existing callers unaffected)', () => {
+    const [row] = brokerPositionRows([{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }])
+    expect(row.integrity).toBeNull()
+  })
+
+  it('broker position with no matching active DB row is flagged untracked', () => {
+    const [row] = brokerPositionRows(
+      [{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }],
+      { dbByPid: new Map() }
+    )
+    expect(row.integrity).toBe('untracked in DB')
+  })
+
+  it('matching DB row with the same side/SL/TP is OK', () => {
+    const dbByPid = new Map([['1', { side: 'long', current_sl: 1.09, current_tp: 1.11 }]])
+    const [row] = brokerPositionRows(
+      [{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }],
+      { dbByPid }
+    )
+    expect(row.integrity).toBe('OK')
+  })
+
+  it('a reversed side is flagged as side drift', () => {
+    const dbByPid = new Map([['1', { side: 'long', current_sl: 1.09, current_tp: 1.11 }]])
+    const [row] = brokerPositionRows(
+      [{ positionId: 1, symbol: 'EURUSD', side: 'SELL', sl: 1.11, tp: 1.09 }],
+      { dbByPid }
+    )
+    expect(row.integrity).toBe('side drift')
+  })
+
+  it('a moved SL is flagged as SL drift', () => {
+    const dbByPid = new Map([['1', { side: 'long', current_sl: 1.09, current_tp: 1.11 }]])
+    const [row] = brokerPositionRows(
+      [{ positionId: 1, symbol: 'EURUSD', side: 'BUY', sl: 1.05, tp: 1.11 }],
+      { dbByPid }
+    )
+    expect(row.integrity).toBe('SL drift')
+  })
+})
+
 describe('stratShort', () => {
   it('maps known keys, falls back to the raw key, null for empty', () => {
     expect(stratShort('rsi2_reversion')).toBe('RSI2')
