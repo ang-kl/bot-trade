@@ -12,7 +12,7 @@
 
 import { wsGetTrendbarsBatch, TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import { tfMs } from '../lib/timeframes.js'
-import { computeCupHandleSignal } from './cup-handle.js'
+import { computeCupHandleSignal, traceCupHandleSearch } from './cup-handle.js'
 import { categoriseSymbol } from '../lib/sessions.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
@@ -490,6 +490,12 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   let lastPrice = null
   let lastPriceT = -1
   const now = Date.now()
+  const fns = strategyFns(opts)
+  // Cup & Handle Silence Diagnostics (Part A): rides on the existing
+  // cup_handle enable toggle — only computed when the strategy is actually
+  // armed for this scan, so it costs nothing when the strategy is off.
+  const cupHandleOn = fns.includes(computeCupHandleSignal)
+  const cupHandleTraces = []
   for (const timeframe of scanTfs) {
     const bars = cachedBars(symbolId, timeframe) || []
     const last = bars[bars.length - 1]
@@ -503,20 +509,21 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     // smaller one — a preferred-TF (armed) signal REPLACES a fallback signal.
     const preferred = opts.preferredTfs || null
     const isPreferred = (tf) => !preferred || preferred.includes(tf)
+    const periodMs = tfMs(timeframe) || 0
+    const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
+    if (cupHandleOn) cupHandleTraces.push(traceCupHandleSearch(closed, timeframe))
     if (!signal || (preferred && !signal._preferred)) {
-      const periodMs = tfMs(timeframe) || 0
-      const closed = last && last.t + periodMs > now ? bars.slice(0, -1) : bars
       // Best-conviction across ALL enabled strategies on this timeframe (not
       // "first in registry order wins" — that starved every strategy but fib).
       // All strategies share the one bar fetch/cache above.
-      const cand = pickBestSignal(strategyFns(opts), closed, timeframe, opts)
+      const cand = pickBestSignal(fns, closed, timeframe, opts)
       if (cand) {
         cand._preferred = isPreferred(timeframe)
         if (!signal || (cand._preferred && !signal._preferred)) signal = cand
       }
     }
   }
-  return { symbol, signal, lastPrice, error: null }
+  return { symbol, signal, lastPrice, error: null, cupHandleTraces }
 }
 
 /**
@@ -610,6 +617,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   for (const r of results) if (r.signal) signals[r.symbol] = r.signal
 
   const errors = results.filter(r => r.error).map(r => `${r.symbol}: ${r.error}`)
+  const cupHandleDiagnostics = results.flatMap(r => (r.cupHandleTraces || []).map(t => ({ symbol: r.symbol, ...t })))
   const hot = scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol)
   const warm = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
 
@@ -624,6 +632,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     errors,
     next_cursor: nextCursor,
     coverage: { scanned: scans.length, total: symbols.length },
+    cupHandleDiagnostics,
   }
 }
 

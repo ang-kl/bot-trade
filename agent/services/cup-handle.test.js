@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { computeCupHandleSignal, screenBars, sma } from './cup-handle.js'
+import { computeCupHandleSignal, screenBars, sma, traceCupHandleSearch } from './cup-handle.js'
 
 const HOUR = 3_600_000
 const bar = (i, o, h, l, c, v) => ({ t: i * HOUR, o, h, l, c, v })
@@ -64,6 +64,42 @@ test('sma helper', () => {
   const bars = Array.from({ length: 20 }, (_, i) => ({ c: i + 1 }))
   assert.equal(sma(bars, 20), 10.5)
   assert.equal(sma(bars, 21), null)
+})
+
+test('traceCupHandleSearch: a firing setup reports cup_found with blocked_at null', () => {
+  const t = traceCupHandleSearch(cupHandleBars(), '1d')
+  assert.equal(t.uptrend_ok, true)
+  assert.equal(t.cup_found, true)
+  assert.ok(t.best_candidate)
+  assert.equal(t.best_candidate.blocked_at, null)
+  assert.ok(t.best_candidate.rrRatio >= 1.5)
+})
+
+test('traceCupHandleSearch: handle still forming reports the real blocking gate, not a signal', () => {
+  const bars = cupHandleBars()
+  bars.pop() // remove the breakout bar — same setup as the "no signal" test above
+  assert.equal(computeCupHandleSignal(bars, '1d'), null)
+  const t = traceCupHandleSearch(bars, '1d')
+  assert.equal(t.uptrend_ok, true)
+  assert.equal(t.cup_found, true, 'a valid cup structure was found — just no breakout yet')
+  assert.ok(t.best_candidate, 'a near-miss candidate should still be reported')
+  assert.equal(t.best_candidate.blocked_at, 'breakout_not_triggered')
+})
+
+test('traceCupHandleSearch: downtrend reports uptrend_ok false with no candidate search', () => {
+  const bars = []
+  let p = 200
+  for (let i = 0; i < 260; i++) { p -= 0.3; bars.push(bar(i, p + 0.3, p + 0.5, p - 0.2, p, 1000)) }
+  const t = traceCupHandleSearch(bars, '1d')
+  assert.equal(t.uptrend_ok, false)
+  assert.equal(t.cup_found, false)
+  assert.equal(t.best_candidate, null)
+})
+
+test('traceCupHandleSearch: too few bars is honest, not a crash', () => {
+  const t = traceCupHandleSearch(cupHandleBars().slice(-100), '1d')
+  assert.equal(t.uptrend_ok, false)
+  assert.equal(t.best_candidate, null)
 })
 
 test('screenBars: passes a strong uptrend, fails the checks it should', () => {

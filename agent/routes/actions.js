@@ -842,6 +842,34 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/screener-search — LLM-interpreted free-text screener search
+  // ("AI stocks", "network layer stocks", "P/E > 30", or a chatbot-popup
+  // follow-up). Body: { query, history? }. The universe is the broker's own
+  // symbol map — same source Tune's autocomplete uses — so the LLM can only
+  // ever propose real, currently-offered instruments; anything it proposes
+  // outside that universe is dropped server-side (see screener-search.js).
+  router.post('/screener-search', async (req, res) => {
+    try {
+      const query = String(req.body?.query || '').trim()
+      if (!query) return res.status(400).json({ error: 'query is required' })
+      const history = Array.isArray(req.body?.history) ? req.body.history.slice(-10) : []
+
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected — symbol universe unavailable' })
+      const map = await ensureSymbolMap(db, creds)
+      const universe = Object.keys(map || {})
+      if (universe.length === 0) return res.status(400).json({ error: 'no symbols available from this broker account' })
+
+      const { createLLMClient } = await import('../lib/llm-provider.js')
+      const { searchScreenerSymbols } = await import('../services/screener-search.js')
+      const llmClient = createLLMClient()
+      const result = await searchScreenerSymbols(llmClient, query, universe, { history })
+      res.json({ ok: true, ...result })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/order-cancel — cancel ONE resting order at the broker
   // (the Manage pop-up's Cancel). Marks any matching pending_orders ledger
   // row cancelled so the pending manager doesn't chase a ghost.
