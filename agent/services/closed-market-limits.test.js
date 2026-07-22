@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   buildLimitPayload, loadClosedMarketLimitsConfig, DEFAULT_CLOSED_MARKET_LIMITS,
-  placeClosedMarketLimit,
+  placeClosedMarketLimit, reconcileStaleClosedMarketLimits,
 } from './closed-market-limits.js'
 
 const CREDS = { host: 'demo', clientId: 'c', clientSecret: 's', accessToken: 't', accountId: '42' }
@@ -105,6 +105,79 @@ test('idempotent: a second call while resting at the same level does NOT re-plac
   const r2 = await placeClosedMarketLimit(db, CREDS, 'US30', SYNTH, f)
   assert.equal(r2.skipped, 'already_working')
   assert.equal(f.placed.length, 1) // only the first placed an order
+})
+
+test('reconcileStaleClosedMarketLimits: still working in broker_orders leaves it alone', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
+    VALUES ('US30', '4h', '501', 1, 100, 98, 104, 1, '2026-07-21T00:00:00Z', '2026-07-25T00:00:00Z', 'working', 'pending-closed')
+  `).run()
+  db.prepare(`
+    INSERT INTO broker_orders (order_id, symbol, status) VALUES ('501', 'US30', 'working')
+  `).run()
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  assert.deepEqual(r, { stillWorking: 1, filled: 0, expired: 0 })
+  const row = db.prepare(`SELECT status FROM pending_orders WHERE order_id = '501'`).get()
+  assert.equal(row.status, 'working')
+})
+
+test('reconcileStaleClosedMarketLimits: gone from broker_orders, a trade opened since it was placed becomes filled', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
+    VALUES ('AMZN.US', '1d', '502', -1, 250, 253, 240, 1, '2026-07-21T00:00:00Z', '2026-07-28T00:00:00Z', 'working', 'pending-closed')
+  `).run()
+  // no broker_orders row at all — it already left the book
+  db.prepare(`INSERT INTO trades (symbol, opened_at) VALUES ('AMZN.US', '2026-07-21T12:00:00Z')`).run()
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T00:00:00Z') })
+  assert.deepEqual(r, { stillWorking: 0, filled: 1, expired: 0 })
+  const row = db.prepare(`SELECT status, note FROM pending_orders WHERE order_id = '502'`).get()
+  assert.equal(row.status, 'filled')
+  assert.match(row.note, /adopted as trade/)
+})
+
+test('reconcileStaleClosedMarketLimits: gone from broker_orders, no matching trade becomes expired (the real bug fix)', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
+    VALUES ('TSLA.US', '1w', '503', -1, 381, 420, 251, 1, '2026-07-21T16:58:00Z', '2026-08-04T00:00:00Z', 'working', 'pending-closed')
+  `).run()
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T23:00:00Z') })
+  assert.deepEqual(r, { stillWorking: 0, filled: 0, expired: 1 })
+  const row = db.prepare(`SELECT status, note FROM pending_orders WHERE order_id = '503'`).get()
+  assert.equal(row.status, 'expired')
+  assert.match(row.note, /gone at broker, no fill adopted/)
+})
+
+test('reconcileStaleClosedMarketLimits: never got an order_id waits for its own expiry, then gives up', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
+    VALUES ('HK50', '1w', NULL, -1, 24591, 25490, 22793, 1, '2026-07-22T05:08:00Z', '2026-07-23T00:00:00Z', 'working', 'pending-closed')
+  `).run()
+  // Before its own expiry — too early to judge, left alone.
+  const early = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-22T12:00:00Z') })
+  assert.deepEqual(early, { stillWorking: 1, filled: 0, expired: 0 })
+  // After its own expiry — no order_id ever means no broker lookup is
+  // possible, so this is the only signal left to give up on.
+  const late = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-23T01:00:00Z') })
+  assert.deepEqual(late, { stillWorking: 0, filled: 0, expired: 1 })
+  const row = db.prepare(`SELECT status, note FROM pending_orders WHERE symbol = 'HK50'`).get()
+  assert.equal(row.status, 'expired')
+  assert.match(row.note, /no broker order_id/)
+})
+
+test('reconcileStaleClosedMarketLimits: ignores rows from other notes such as pending-fib', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, placed_at, expires_at, status, note)
+    VALUES ('AUDNOK', '1h', '999', -1, 6.7396, 6.7522, 6.7208, 1, '2026-07-22T12:42:00Z', '2026-07-22T13:42:00Z', 'working', 'pending-fib')
+  `).run()
+  const r = reconcileStaleClosedMarketLimits(db, { nowMs: Date.parse('2026-07-23T00:00:00Z') })
+  assert.deepEqual(r, { stillWorking: 0, filled: 0, expired: 0 })
+  const row = db.prepare(`SELECT status FROM pending_orders WHERE symbol = 'AUDNOK'`).get()
+  assert.equal(row.status, 'working') // untouched — pending-orders.js's own sweep owns this row
 })
 
 test('level moved → cancels the stale order and places a fresh one', async () => {

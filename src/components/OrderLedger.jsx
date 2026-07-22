@@ -10,7 +10,7 @@
 // monitor the trigger take place").
 // ---------------------------------------------------------------------------
 import { useState } from 'react'
-import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, isoWeek } from '../lib/order-ledger-rows.js'
+import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, expiresLabel, isoWeek } from '../lib/order-ledger-rows.js'
 import { dateTimeParts } from '../lib/std-trade-rows.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
@@ -100,8 +100,31 @@ function QueuedRow({ q, onDone }) {
     } catch (e) { window.alert(`Cancel failed: ${e.message}`) }
     setBusy(false)
   }
+  // Owner: "add a column to allow auto-veto or close switch at the first
+  // column" — one tap kills THIS queued setup AND blocks the symbol from
+  // re-queuing (adds it to risk.blockedSymbols), so a recurring signal on a
+  // symbol you don't want doesn't just come back next cycle.
+  const veto = async () => {
+    if (!window.confirm(`Veto ${q.symbol} — cancel this and block it from re-arming?`)) return
+    setBusy(true)
+    try {
+      const { agentPost } = await import('../lib/agent-api.js')
+      await agentPost('/actions/queued-veto', { kind: q.kind, id: q.id, symbol: q.symbol })
+      onDone?.()
+    } catch (e) { window.alert(`Veto failed: ${e.message}`) }
+    setBusy(false)
+  }
   return (
     <tr className="border-t border-[var(--color-border)]">
+      <td className="py-1.5 pr-2 whitespace-nowrap">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={veto}
+          title={`Veto ${q.symbol} — cancel and block re-arming`}
+          className="inline-flex items-center justify-center rounded-[3px] border border-[var(--color-down)] text-[8px] font-bold uppercase leading-none text-[var(--color-down)] px-[3px] py-[1px] hover:bg-[var(--color-down)] hover:text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >veto</button>
+      </td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(q.queued_at)}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
       <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">{q.symbol || '—'}</td>
@@ -125,7 +148,7 @@ function QueuedRow({ q, onDone }) {
       <td className="py-1.5 pr-3 whitespace-nowrap">{q.strategy || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">Bot</td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">
-        waiting{q.expires_at ? ` · expires ${ago(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}
+        waiting{q.expires_at ? ` · expires ${expiresLabel(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}
       </td>
       <td className="py-1.5 whitespace-nowrap">
         {q.id != null && (
@@ -156,6 +179,18 @@ export default function OrderLedger({ orders, onChanged = null }) {
       </tr>
     </thead>
   )
+  // Queued table only — a leading veto column (QueuedRow renders the tiny
+  // switch itself; Working/Recently-gone rows have no equivalent action).
+  const queuedHead = (
+    <thead>
+      <tr className="text-left text-[var(--color-text-sub)]">
+        <th className="py-1.5 pr-2 font-semibold whitespace-nowrap"></th>
+        {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
+          <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
+        ))}
+      </tr>
+    </thead>
+  )
   return (
     <div className="space-y-3">
       {queued.length > 0 && (
@@ -163,7 +198,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
           <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Queued by the bot — not yet at the broker ({queued.length})</div>
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
-              {head}
+              {queuedHead}
               <tbody>{queued.map((q, i) => <QueuedRow key={`q-${i}`} q={q} onDone={onChanged} />)}</tbody>
             </table>
           </div>

@@ -1402,6 +1402,22 @@ async function runLoop(db) {
         await hbeat(db, 'pending_orders', false, err.message)
       }
 
+      // ---------------------------------------------------------------------
+      // CLOSED-MARKET LIMIT SWEEP — pure DB reconciliation, no network call.
+      // Retires pending_orders rows (note='pending-closed') left orphaned by
+      // a rejection/cancel/expiry at the broker. Runs every cycle regardless
+      // of whether any symbol hits the closed-market branch THIS cycle —
+      // before this fix, a row's only exit was that exact symbol signaling
+      // again (owner: "pending order lapse more than a day").
+      // ---------------------------------------------------------------------
+      try {
+        const { reconcileStaleClosedMarketLimits } = await import('./services/closed-market-limits.js')
+        const r = reconcileStaleClosedMarketLimits(db)
+        if (r.filled || r.expired) log(`Closed-market limit sweep: ${r.filled} filled, ${r.expired} expired, ${r.stillWorking} still working`)
+      } catch (err) {
+        log(`Closed-market limit sweep failed (non-fatal): ${err.message}`)
+      }
+
       // BURN-IN MODE — track-record trades (owner-armed): min-size positions
       // through the full auto-trade path with tight time caps, so completed
       // round-trips accumulate fast. Inert unless burn_in_json.on AND

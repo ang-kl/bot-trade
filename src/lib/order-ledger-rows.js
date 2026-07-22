@@ -92,6 +92,23 @@ export function fmtDuration(ms) {
   return hrs % 24 ? `${days}d ${hrs % 24}h` : `${days}d`
 }
 
+// Countdown/elapsed label for an order's expiry timestamp. A queued-order's
+// `expires_at` is almost always in the FUTURE (it hasn't hit yet) — the
+// OrderLedger UI was reusing the "elapsed since" `ago()` helper on it, which
+// computes now-minus-then and clamps negatives to 0, so every still-pending
+// row showed "expires 0s" regardless of whether it expired in 10 minutes or
+// 10 days (owner: "pending order lapse more than a day" — traced to this).
+// Returns "in Xh"-style for a future timestamp, "Xh ago" once it's actually
+// passed, and null for an unparseable/missing input so callers render a dash.
+export function expiresLabel(iso, { nowMs = Date.now() } = {}) {
+  if (!iso) return null
+  const t = Date.parse(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
+  if (!Number.isFinite(t)) return null
+  const diff = t - nowMs
+  if (diff >= 0) return `in ${fmtDuration(diff)}`
+  return `${fmtDuration(-diff)} ago`
+}
+
 // How long an order has sat pending: from when it was first seen resting on
 // the book, to now (still working) or to when it left the book (gone).
 export function orderPendingMs(row, { gone = false } = {}) {

@@ -59,6 +59,65 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
 }
 
 /**
+ * Retire stale closed-market-limit rows independently of a fresh signal ever
+ * recurring on that symbol (owner: "pending order lapse more than a day" —
+ * traced to a real gap). Before this, a `pending-closed` row's ONLY exit was
+ * placeClosedMarketLimit() re-running for that EXACT symbol and finding its
+ * own expiry passed; pending-orders.js's fib sweep explicitly excludes these
+ * rows (see its comment), and the general reconciler's syncBrokerOrders()
+ * only updates the separate broker_orders table, never writes back to
+ * pending_orders. So a row whose order was rejected, cancelled, or expired at
+ * the broker — or whose placeOrder call never even returned an order_id —
+ * could sit "working" forever if that symbol just didn't signal again.
+ *
+ * broker_orders is the authoritative live-broker snapshot (refreshed every
+ * reconcile, regardless of which module placed the order), so this is a pure
+ * DB-only reconciliation against it — no network call of its own.
+ *
+ * @returns {{ stillWorking:number, filled:number, expired:number }}
+ */
+export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}) {
+  const rows = db.prepare(
+    `SELECT * FROM pending_orders WHERE status = 'working' AND note = 'pending-closed'`
+  ).all()
+
+  let stillWorking = 0, filled = 0, expired = 0
+  const markFilled = db.prepare(`UPDATE pending_orders SET status = 'filled', note = ? WHERE id = ?`)
+  const markExpired = db.prepare(`UPDATE pending_orders SET status = 'expired', note = ? WHERE id = ?`)
+
+  for (const row of rows) {
+    if (row.order_id) {
+      const broker = db.prepare(`SELECT status FROM broker_orders WHERE order_id = ?`).get(String(row.order_id))
+      if (broker?.status === 'working') { stillWorking++; continue } // genuinely still resting — leave it
+      // Left the broker's book (filled, rejected, cancelled, or expired
+      // there) — best-effort check for an adopted trade on the same symbol
+      // opened since this order was placed; otherwise it never filled.
+      const adopted = db.prepare(
+        `SELECT id FROM trades WHERE symbol = ? AND opened_at >= ? ORDER BY opened_at ASC LIMIT 1`
+      ).get(row.symbol, row.placed_at || '1970-01-01')
+      if (adopted) {
+        markFilled.run('pending-closed: adopted as trade', row.id)
+        filled++
+      } else {
+        markExpired.run('pending-closed: gone at broker, no fill adopted', row.id)
+        expired++
+      }
+      continue
+    }
+    // Never got an order_id back at all (placeOrder response gap, or the
+    // call itself never truly succeeded) — only give up once its OWN
+    // expiry has passed; too early to judge otherwise.
+    if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
+      markExpired.run('pending-closed: no broker order_id and expiry passed', row.id)
+      expired++
+    } else {
+      stillWorking++
+    }
+  }
+  return { stillWorking, filled, expired }
+}
+
+/**
  * Place (or refresh) a resting limit order for a signal deferred because its
  * market is closed. Returns a small status object; never throws.
  *
