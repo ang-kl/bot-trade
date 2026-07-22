@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import {
   computeSlWidenFactors, refreshLessonTuning, loadLessonTuning, applySlWiden,
+  computeDecayKeys, isDecayed,
   STOP_HUNT_LOOKBACK, SL_WIDEN_FACTOR,
 } from './lessons-tuner.js'
 
@@ -51,4 +52,38 @@ test('applySlWiden: widens the stop away from entry, direction-aware', () => {
   // untouched: unknown strategy, missing sl
   assert.equal(applySlWiden({ strategy: 'other', entry: 100, sl: 98 }, factors).note, null)
   assert.equal(applySlWiden({ strategy: 'fib_618_fade', entry: 100, sl: null }, factors).note, null)
+})
+
+function seedDecay(db, symbol, strategy, timeframe, decayFlag) {
+  db.prepare(`
+    INSERT INTO trade_postmortems (trade_id, symbol, strategy, timeframe, classification, alpha_decay)
+    VALUES (NULL, ?, ?, ?, 'thesis_wrong', ?)
+  `).run(symbol, strategy, timeframe, decayFlag)
+}
+
+test('computeDecayKeys: keys the EXACT Symbol+Strategy+Timeframe, not symbol alone', () => {
+  const db = initDB(':memory:')
+  seedDecay(db, 'EURUSD', 'fib_618_fade', 'M15', 'decay')
+  // same symbol, different strategy — independent edge, must NOT be swept in
+  seedDecay(db, 'EURUSD', 'ema_pullback', 'M15', 'ok')
+  const keys = computeDecayKeys(db)
+  assert.ok(keys.has('EURUSD|fib_618_fade|M15'))
+  assert.ok(!keys.has('EURUSD|ema_pullback|M15'))
+})
+
+test('computeDecayKeys: only the LATEST postmortem per key counts (self-clearing)', () => {
+  const db = initDB(':memory:')
+  seedDecay(db, 'EURUSD', 'fib_618_fade', 'M15', 'decay')
+  seedDecay(db, 'EURUSD', 'fib_618_fade', 'M15', 'ok') // most recent row (higher id) clears it
+  const keys = computeDecayKeys(db)
+  assert.ok(!keys.has('EURUSD|fib_618_fade|M15'))
+})
+
+test('isDecayed: true only for the exact key on cool-off, false otherwise (fails safe)', () => {
+  const db = initDB(':memory:')
+  seedDecay(db, 'EURUSD', 'fib_618_fade', 'M15', 'decay')
+  assert.equal(isDecayed(db, 'EURUSD', 'fib_618_fade', 'M15'), true)
+  assert.equal(isDecayed(db, 'EURUSD', 'fib_618_fade', 'H1'), false)
+  assert.equal(isDecayed(db, 'GBPUSD', 'fib_618_fade', 'M15'), false)
+  assert.equal(isDecayed(null, 'EURUSD', 'fib_618_fade', 'M15'), false)
 })

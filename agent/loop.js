@@ -209,9 +209,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // and DB rows all see the SAME widened stop; risk-based sizing keeps the
   // $ risk constant on the wider distance (fewer lots, same budget).
   try {
-    const { loadLessonTuning, applySlWiden } = await import('./services/lessons-tuner.js')
+    const { loadLessonTuning, applySlWiden, isDecayed } = await import('./services/lessons-tuner.js')
     const tuned = applySlWiden({ strategy: synth.strategy, entry: synth.entry, sl: synth.sl }, loadLessonTuning(db))
     if (tuned.note) { synth.sl = tuned.signal.sl; log(`${symbol}: ${tuned.note}`) }
+    // Alpha-decay cool-off — this EXACT Symbol+Strategy+Timeframe edge's last
+    // postmortem said the edge is decaying. Skip the trade rather than just
+    // display the flag; self-clears the moment a Win/Partial lands.
+    if (isDecayed(db, symbol, synth.strategy, synth.timeframe)) {
+      log(`${symbol}: lesson_tuner: alpha-decay cool-off — skipping ${synth.strategy || 'signal'}/${synth.timeframe || '?'} (last postmortem flagged decay for this exact edge)`)
+      return null
+    }
   } catch { /* tuner is optional — never blocks a trade */ }
 
   const proposal = {
