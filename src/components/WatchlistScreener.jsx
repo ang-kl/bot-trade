@@ -31,7 +31,7 @@ function SortHeader({ label, col, sort, onSort, className = '' }) {
   )
 }
 
-export default function WatchlistScreener({ title = 'Defense stocks', curated, allSymbols, symbols, scanInfo, regimeBy, onAdd, onRemove }) {
+export default function WatchlistScreener({ title = 'Defense stocks', curated, allSymbols, symbols, scanInfo, regimeBy, onAdd, onRemove, onRemoveMany }) {
   const [sort, setSort] = useState({ col: 'symbol', dir: 'asc' })
   const [selected, setSelected] = useState(() => new Set())
   const [expanded, setExpanded] = useState(null)
@@ -103,7 +103,11 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
           </Button>
         )}
         {selToRemove.length > 0 && (
-          <Button size="sm" variant="ghost" onClick={() => { selToRemove.forEach(s => onRemove?.(s)); setSelected(new Set()) }}>
+          // Codex review (PR #267): looping single onRemove calls raced —
+          // each closed over the same render-time watchlist array, so
+          // whichever save landed last silently restored the others. One
+          // batched call, one save.
+          <Button size="sm" variant="ghost" onClick={() => { onRemoveMany?.(selToRemove); setSelected(new Set()) }}>
             Remove {selToRemove.length} from watchlist
           </Button>
         )}

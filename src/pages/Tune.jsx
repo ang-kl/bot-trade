@@ -1035,6 +1035,15 @@ export default function Tune() {
     if (fresh.length) pushSymbols([...symbols, ...fresh])
   }
   const removeSymbolPlain = (name) => pushSymbols(symbols.filter(s => s.symbol !== name))
+  // Batched remove for the screener's bulk action (Codex review, PR #267):
+  // firing removeSymbolPlain once per selected symbol in a loop had every
+  // call close over the SAME render-time `symbols` array, so each saved a
+  // list with only ITS OWN symbol removed — whichever POST resolved last
+  // won and silently restored the rest. One list, one save.
+  const removeSymbolsPlain = (names) => {
+    const drop = new Set(names)
+    pushSymbols(symbols.filter(s => !drop.has(s.symbol)))
+  }
   const toggleGroupEnabled = (key, on) =>
     pushSymbols(symbols.map(s => (s.group === key ? { ...s, enabled: on } : s)))
 
@@ -1890,6 +1899,7 @@ export default function Tune() {
                 regimeBy={regimeBy}
                 onAdd={addSymbolsPlain}
                 onRemove={removeSymbolPlain}
+                onRemoveMany={removeSymbolsPlain}
               />
             </div>
 
