@@ -27,6 +27,7 @@ Node agent; this sidecar just places, amends, closes, and watches positions.
 | `CTRADER_ACCOUNT_ID`    | ctidTraderAccountId to authorize and trade on  |
 | `EXEC_SECRET`           | Shared secret; Node must send it on every call |
 | `PORT`                  | HTTP listen port (default 8091)                |
+| `TELEMETRY_PATH`        | Optional. Path (on a mounted volume, so it survives restarts) for the append-only binary order-telemetry log — every submit/reject/result on `placeOrder`. Unset = disabled, no disk I/O, `/health`'s `telemetryWritten`/`telemetryDropped` report `null`. |
 
 ## How the Node agent delegates
 
@@ -77,3 +78,10 @@ docker build -t cpp-exec .
    `node agent/scripts/exec-parity.js --order` (one min order on DEMO,
    auto-closed). Both must print PASS.
 5. Flip: set `EXEC_ENGINE=cpp` on the Node service. Rollback = unset it.
+6. Optional order telemetry: if this service has a Railway volume attached,
+   set `TELEMETRY_PATH` to a file path under its mount (e.g.
+   `/data/orders.bin`) so the binary submit/reject/result log actually lands
+   on durable storage instead of the ephemeral container disk. Read it back
+   with `test_engine_telemetry.cpp`'s `readBack()` pattern (fixed-size
+   `TelemetryRecord`s, no framing) or just watch `/health`'s
+   `telemetryWritten`/`telemetryDropped` counters.

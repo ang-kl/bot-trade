@@ -13,6 +13,7 @@
 #include "json.hpp"
 #include "ws_client.hpp"
 #include "order_guard.hpp"
+#include "telemetry.hpp"
 
 namespace pt {
 constexpr int HEARTBEAT               = 51;
@@ -69,6 +70,16 @@ public:
   // locking the execution thread; placeOrder reads a lock-free snapshot.
   OrderGuard& guard() { return guard_; }
 
+  // Optional order telemetry sink (item #2 follow-up, owner-directed
+  // 2026-07-22: "wire it into main.cpp so the mounted volume is actually
+  // used"). Not owned — main.cpp constructs the Telemetry against the
+  // deployment's volume mount and keeps it alive for the process lifetime.
+  // Left null (default) when TELEMETRY_PATH isn't configured; every call
+  // site below null-checks before logging, so telemetry is fully optional
+  // and never on the hot path when disabled.
+  void setTelemetry(Telemetry* t) { telemetry_ = t; }
+  Telemetry* telemetry() const { return telemetry_; }
+
   // Blocking loop: connect/auth with capped exponential backoff, reconcile
   // every 30s, heartbeat every 25s of idle. Runs until process exit.
   void runLoop();
@@ -94,4 +105,5 @@ private:
   long long lastReconcileAtMs_ = 0;
 
   OrderGuard guard_; // atomic knobs read on the order hot path
+  Telemetry* telemetry_ = nullptr; // non-owning; null = disabled
 };

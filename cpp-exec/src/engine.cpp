@@ -14,6 +14,31 @@ static void logLine(const std::string& msg) {
   std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
 }
 
+// Maps a guard/transport reason to a small stable int for the binary
+// telemetry record (TelemetryRecord.reason_code is a fixed-width field, not a
+// string) — matched by prefix against the machine codes order_guard.cpp and
+// this file's own errResult() calls actually produce. Unrecognised strings
+// (any live broker errorCode, e.g. "TRADING_BAD_VOLUME") fall through to 0;
+// the raw string still reaches the Node keeper's error/reasoning path, this
+// is only a coarse bucket for the offline binary log.
+static int32_t classifyReasonCode(const std::string& reason) {
+  static const struct { const char* prefix; int32_t code; } kCodes[] = {
+    { "guard_halt", 1 },
+    { "guard_bad_payload", 2 },
+    { "guard_naked_order", 3 },
+    { "guard_no_target", 4 },
+    { "guard_volume_cap", 5 },
+    { "NOT_CONNECTED", 6 },
+    { "SEND_FAILED", 7 },
+    { "DISCONNECTED", 8 },
+    { "TIMEOUT", 9 },
+  };
+  for (const auto& c : kCodes) {
+    if (reason.rfind(c.prefix, 0) == 0) return c.code;
+  }
+  return 0;
+}
+
 static EngineResult errResult(const std::string& code, const std::string& desc,
                               bool brokerError) {
   jsn::Value body{jsn::Object{}};
@@ -186,6 +211,20 @@ static jsn::Value withAccountId(const jsn::Value& payload, long long accountId) 
 }
 
 EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
+  // Telemetry fields read once regardless of outcome — symbolId/volume are
+  // whatever the caller sent (missing → 0/-1, never a crash); price is 0 for
+  // a plain market order (no limitPrice/stopPrice attached).
+  const int32_t symbolId = payload.isObject()
+      ? static_cast<int32_t>(payload.get("symbolId").asNumber(-1)) : -1;
+  const double volume = payload.isObject() ? payload.get("volume").asNumber(0) : 0;
+  double price = 0;
+  if (payload.isObject()) {
+    const jsn::Value& lp = payload.get("limitPrice");
+    const jsn::Value& sp = payload.get("stopPrice");
+    if (lp.isNumber()) price = lp.asNumber(0);
+    else if (sp.isNumber()) price = sp.asNumber(0);
+  }
+
   // Bracket guarantee (#4) + atomic block (#3): validate BEFORE touching the
   // socket. A naked market order (no stop) or a halted/over-cap order is
   // refused here — the last line of defence, independent of anything the
@@ -194,11 +233,25 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   const OrderVerdict v = validateOrder(payload, guard_.snapshot());
   if (!v.ok) {
     logLine("order REJECTED by guard: " + v.reason);
+    if (telemetry_) {
+      telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_REJECT, symbolId,
+                       volume, price, 0, classifyReasonCode(v.reason)});
+    }
     return errResult(v.reason, v.reason, false);
   }
+  if (telemetry_) {
+    telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
+                     volume, price, 1, 0});
+  }
   std::lock_guard lk(mtx_);
-  return request(pt::NEW_ORDER_REQ, withAccountId(payload, accountId_),
-                 pt::EXECUTION_EVENT);
+  EngineResult r = request(pt::NEW_ORDER_REQ, withAccountId(payload, accountId_),
+                          pt::EXECUTION_EVENT);
+  if (telemetry_) {
+    const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
+    telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
+                     volume, price, r.ok ? 1 : 0, classifyReasonCode(reason)});
+  }
+  return r;
 }
 
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
