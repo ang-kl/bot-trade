@@ -11,6 +11,7 @@ import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
+import WatchlistScreener from '../components/WatchlistScreener.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -651,6 +652,11 @@ const PRESET_GROUPS = [
   { key: 'Crypto majors', names: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD'] },
   { key: 'US mega-cap 10', names: ['AAPL.US', 'MSFT.US', 'NVDA.US', 'GOOGL.US', 'AMZN.US', 'META.US', 'TSLA.US', 'AVGO.US', 'LLY.US', 'JPM.US'] },
   { key: 'FTSE 100 top 20', names: ['AZN.UK', 'SHEL.UK', 'HSBA.UK', 'ULVR.UK', 'BP.UK', 'GSK.UK', 'RIO.UK', 'DGE.UK', 'REL.UK', 'BATS.UK', 'AAL.UK', 'LSEG.UK', 'BARC.UK', 'NG.UK', 'VOD.UK', 'PRU.UK', 'LLOY.UK', 'TSCO.UK', 'CPG.UK', 'RR.UK'] },
+  // Owner-curated (no sector data exists anywhere in this app — see the
+  // Defense screener note below): well-known, liquid US aerospace/defense
+  // contractors. Same "intersect with what the broker actually offers"
+  // handling as every other preset group.
+  { key: 'Defense stocks', names: ['LMT.US', 'RTX.US', 'NOC.US', 'GD.US', 'BA.US', 'LHX.US', 'HII.US', 'TXT.US', 'KTOS.US', 'LDOS.US', 'AVAV.US', 'BWXT.US', 'CW.US', 'HEI.US', 'TDY.US'] },
 ]
 
 function Toggle({ on, onClick, label }) {
@@ -750,6 +756,7 @@ export default function Tune() {
     return next
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
+  const [regimeBy, setRegimeBy] = useState(null)     // latest regime (atr_pct, regime type) per symbol — real volatility read for the screener
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
@@ -892,6 +899,11 @@ export default function Tune() {
       for (const s of r?.lastResults?.scans || []) by[s.symbol] = s
       setScanInfo({ at: r?.lastScanAt || null, by })
     }).catch(() => {})
+    agentGet('/state/regime').then(r => {
+      const by = {}
+      for (const row of r?.regimes || []) by[row.symbol] = row
+      setRegimeBy(by)
+    }).catch(() => {})
     // Dynamic per-symbol lot sizing — same math as the live risk gate.
     agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
     // Live per-symbol results — evidence beside the config (owner order).
@@ -1015,6 +1027,14 @@ export default function Tune() {
     pushSymbols([...symbols, ...fresh])
   }
   const removeGroup = (key) => pushSymbols(symbols.filter(s => s.group !== key))
+  // Individual add/remove for the screener (owner: select a handful out of
+  // a curated list, not necessarily the whole preset group at once).
+  const addSymbolsPlain = (names) => {
+    const have = new Set(symbols.map(s => s.symbol))
+    const fresh = names.filter(n => !have.has(n)).map(n => ({ symbol: n, enabled: true }))
+    if (fresh.length) pushSymbols([...symbols, ...fresh])
+  }
+  const removeSymbolPlain = (name) => pushSymbols(symbols.filter(s => s.symbol !== name))
   const toggleGroupEnabled = (key, on) =>
     pushSymbols(symbols.map(s => (s.group === key ? { ...s, enabled: on } : s)))
 
@@ -1849,6 +1869,29 @@ export default function Tune() {
                 </div>
               )
             })()}
+
+            {/* Defense-stocks screener — owner: curate the list down, table
+                with select/sort/click-for-details, and a real (not
+                fabricated) technical advice read per symbol. Doubles as
+                "find new ones to add" and "check which watchlisted symbols
+                are in this set" — it lists every curated ticker this broker
+                offers whether or not it's already on the watchlist. */}
+            <div className="mb-3">
+              <div className="text-[12px] font-semibold mb-1">Defense stocks screener</div>
+              <p className="text-[11px] text-[var(--color-text-sub)] mb-1.5">
+                Advice is a technical read only (bias + confidence from the last scan, ATR% from the regime detector) — not a fundamentals or sector call; it stays blank until a symbol has actually been scanned.
+              </p>
+              <WatchlistScreener
+                title="Defense stocks"
+                curated={PRESET_GROUPS.find(g => g.key === 'Defense stocks')?.names || []}
+                allSymbols={allSymbols}
+                symbols={symbols}
+                scanInfo={scanInfo}
+                regimeBy={regimeBy}
+                onAdd={addSymbolsPlain}
+                onRemove={removeSymbolPlain}
+              />
+            </div>
 
             {/* Cup & Handle screener — the video's funnel, broker-honest:
                 price / avg volume / RelVol>1 / SMA stack. P/E + sector are
