@@ -469,7 +469,7 @@ export default function Desk() {
             >{n}</button>
           ))}
         </div>
-        <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} />
+        <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} />
       </Section>
 
       {/* ---- Chart wall — full width; per-symbol candlestick charts.
