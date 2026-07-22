@@ -72,14 +72,24 @@ function Spark({ bars, entry, sl, exit }) {
   )
 }
 
+// Owner: "collapse and expand the groups (losses, wins)" — same triangle
+// pattern as every other section/row in the app, not just the individual
+// trade rows underneath.
 function Group({ title, rows }) {
+  const [open, setOpen] = useState(true)
   if (rows.length === 0) return null
   return (
     <div>
-      <div className="text-[12px] font-semibold text-[var(--color-text-sub)] mb-1">{title} ({rows.length})</div>
-      <div className="space-y-2">
-        {rows.map((r) => <Verdict key={r.id} r={r} />)}
-      </div>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-[12px] font-semibold text-[var(--color-text-sub)] mb-1">
+        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
+        {title} ({rows.length})
+      </button>
+      {open && (
+        <div className="space-y-2">
+          {rows.map((r) => <Verdict key={r.id} r={r} />)}
+        </div>
+      )}
     </div>
   )
 }

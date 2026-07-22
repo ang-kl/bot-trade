@@ -149,6 +149,7 @@ export default function Desk() {
   const [marketHours, setMarketHours] = useState(null)  // { SYM: { open, next_open_at } }
   const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
   const [postmortems, setPostmortems] = useState(null)  // post-loss playback (/state/postmortems)
+  const [dupeTrades, setDupeTrades] = useState(null)    // duplicate-trade audit (/state/duplicate-trades)
   const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
   const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
   const [sweepNote, setSweepNote] = useState('')
@@ -249,7 +250,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr, dupe] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -264,6 +265,7 @@ export default function Desk() {
         agentGet('/state/orders').catch(() => null),
         agentGet('/state/postmortems').catch(() => null),
         agentGet('/state/correlation').catch(() => null),
+        agentGet('/state/duplicate-trades').catch(() => null),
       ])
       setHealth(h)
       const rows = s.rows || s.scans || []
@@ -280,6 +282,7 @@ export default function Desk() {
       setOrders(ord || null)
       setPostmortems(pms || null)
       setCorrelation(corr || null)
+      setDupeTrades(dupe || null)
       setError('')
     } catch (e) { setError(e.message) }
   }, [historyDays])
@@ -604,6 +607,26 @@ export default function Desk() {
       {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
           after they fill/cancel (and even while switches are OFF), so there's
           always a record of what was set and what became of it. */}
+      {/* Duplicate-trade audit — owner spotted 7 identical AUDUSD rows at
+          the same timestamp in the lessons panel (same symbol/side/entry/
+          exit/net_pnl to the cent, essentially impossible for independent
+          real fills). Read-only warning; nothing is deleted automatically. */}
+      {(dupeTrades?.groups?.length ?? 0) > 0 && (
+        <Card className="text-[12px] border-[var(--color-warning-text)]">
+          <p className="font-semibold text-[var(--color-warning-text)]">
+            ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by ~{dupeTrades.totalExtraPnl >= 0 ? '+' : '−'}${Math.abs(dupeTrades.totalExtraPnl).toFixed(2)}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {dupeTrades.groups.slice(0, 5).map((g, i) => (
+              <li key={i} className="text-[var(--color-text-sub)]">
+                {g.symbol} {g.side} entry {g.entry_price} → exit {g.exit_price} · net {g.net_pnl} · ×{g.count}{g.samePositionId ? ' (same broker position id — confirmed duplicate)' : ''}
+              </li>
+            ))}
+          </ul>
+          {dupeTrades.groups.length > 5 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
+        </Card>
+      )}
+
       {/* Post-loss playback — the bot's homework after every losing trade:
           what did the market DO next, and what does that teach per strategy. */}
       <Section

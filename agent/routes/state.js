@@ -339,6 +339,21 @@ export default function stateRouter(db) {
   function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 
   // -----------------------------------------------------------------------
+  // GET /state/duplicate-trades — read-only audit (owner spotted 7 identical
+  // AUDUSD rows at the same timestamp in the lesson panel). Reports
+  // candidate duplicate CLOSED trade records and how much they'd
+  // double-count in Performance/Edge-health stats — never deletes anything.
+  // -----------------------------------------------------------------------
+  router.get('/duplicate-trades', async (_req, res) => {
+    try {
+      const { findDuplicateTrades } = await import('../services/trade-integrity.js')
+      res.json(findDuplicateTrades(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
   router.get('/metrics', (_req, res) => {
