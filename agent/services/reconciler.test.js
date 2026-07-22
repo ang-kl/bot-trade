@@ -288,10 +288,53 @@ test('re-adoption guard: a broker position with an existing open trade is RE-LIN
   const trades = db.prepare(`SELECT COUNT(*) c FROM trades WHERE ctrader_position_id = '500'`).get()
   assert.equal(trades.c, 1, 'no duplicate trade inserted')
   assert.equal(result.relinked.length, 1)
+  assert.equal(result.relinked[0].desyncKind, 'reactivated_closed_row')
   assert.equal(result.newExternal.length, 0, 'not adopted as new')
   // its monitored row is active again
   const mp = db.prepare(`SELECT status FROM monitored_positions WHERE trade_id = ?`).get(tradeId)
   assert.equal(mp.status, 'active')
+})
+
+test('re-adoption guard: the self-heal is audited into action_log, not just silently fixed', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('EURUSD','BUY',1.1,0.01,'501','autopilot','open', datetime('now'))`
+  ).run().lastInsertRowid
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, status) VALUES ('EURUSD', ?, 'long', 'closed')`).run(tradeId)
+
+  const brokerPos = [makeBrokerPosition({ positionId: '501', symbolName: 'EURUSD' })]
+  reconcilePositions(db, brokerPos, [], setState)
+
+  const row = db.prepare(`SELECT method, path, body FROM action_log WHERE method = 'RECONCILE_DESYNC'`).get()
+  assert.ok(row, 'a RECONCILE_DESYNC audit row was written')
+  const body = JSON.parse(row.body)
+  assert.equal(body.symbol, 'EURUSD')
+  assert.equal(body.positionId, '501')
+  assert.equal(body.kind, 'reactivated_closed_row')
+  assert.match(body.detail, /closed locally while the broker position was still open/)
+})
+
+test('re-adoption guard: a bot fill with NO monitored row at all is also audited (missing-row shape)', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // Trade exists and open, but no monitored_positions row was ever written
+  // for it (the "exec response lacked a positionId" bug) — a different
+  // desync shape from a wrongly-closed row.
+  db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES ('GBPUSD','BUY',1.25,0.01,'502','autopilot','open', datetime('now'))`
+  ).run()
+
+  const brokerPos = [makeBrokerPosition({ positionId: '502', symbolName: 'GBPUSD' })]
+  const result = reconcilePositions(db, brokerPos, [], setState)
+
+  assert.equal(result.relinked[0].desyncKind, 'created_missing_row')
+  const row = db.prepare(`SELECT body FROM action_log WHERE method = 'RECONCILE_DESYNC'`).get()
+  const body = JSON.parse(row.body)
+  assert.equal(body.kind, 'created_missing_row')
+  assert.match(body.detail, /no monitored_positions row at all/)
 })
 
 test('dedup sweep: duplicate open trades sharing a posId are collapsed to the newest', () => {
