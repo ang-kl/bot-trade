@@ -32,6 +32,18 @@ const VERDICTS = {
 }
 const WIN_CLASSES = new Set(['clean_win', 'gave_back', 'escaped'])
 
+// Owner: "so many the same, where is the date, time" — the collapsed row
+// carried no timestamp at all, so a genuinely repeated setup (same symbol,
+// same stop distance, same $ loss, on different days) was indistinguishable
+// from one entry rendered 30 times. day+time, device-local.
+function dateTime(iso) {
+  if (!iso) return null
+  const t = Date.parse(String(iso).includes('T') ? iso : String(iso).replace(' ', 'T') + 'Z')
+  if (!Number.isFinite(t)) return null
+  const d = new Date(t)
+  return `${d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
+}
+
 function Spark({ bars, entry, sl, exit }) {
   if (!Array.isArray(bars) || bars.length < 2) return null
   const W = 220, H = 56, PAD = 4
@@ -116,8 +128,18 @@ function Verdict({ r }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer">
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        {/* The TRADE's own timestamp, not the sweep's row-insertion time —
+            Codex review caught pm.created_at reading as "when classified",
+            which can be identical across many rows from one backfill/sweep
+            pass and defeats the point of showing a date at all. */}
+        <span className="text-[10px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
+          {dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}
+        </span>
         <span className="font-semibold shrink-0">{r.symbol}</span>
-        <span className="text-[11px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'}{r.strategy ? ` · ${r.strategy}` : ''}</span>
+        {/* Strategy is ALWAYS stated, never silently dropped (owner: "if you
+            are using different strategy state it") — 'unlabelled' is an
+            honest bucket (see the Pattern line above), not a blank. */}
+        <span className="text-[11px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {r.strategy || 'unlabelled'}</span>
         <span className="text-[11px] font-bold tracking-wide shrink-0">{v.label}</span>
         <span className="text-[11px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
         <span className={`ml-auto text-[12px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>

@@ -312,9 +312,16 @@ export default function stateRouter(db) {
       // live on trade_postmortems itself, so join back to the trade (lot,
       // TP1, confluence_count) and its analysis (TP2, laddered target).
       // Aliased names only — never shadows pm's own snapshotted prices.
+      // trade_closed_at/trade_opened_at: pm.created_at is when the SWEEP
+      // classified this row, not when the trade happened — backfilling 90
+      // days of history in one run (or one sweep classifying several
+      // trades) stamps many rows with nearly the SAME created_at. Codex
+      // review (PR #265) caught the UI using that for its date/time column,
+      // which defeated the point of adding it. Use the trade's own timestamp.
       rows = db.prepare(
         `SELECT pm.*, t.volume AS lot, t.tp_price AS tp1_price, t.thesis AS setup_thesis,
-                t.confluence_count AS confluence_count, a.tp2_price AS tp2_price
+                t.confluence_count AS confluence_count, a.tp2_price AS tp2_price,
+                t.closed_at AS trade_closed_at, t.opened_at AS trade_opened_at
          FROM trade_postmortems pm
          LEFT JOIN trades t ON t.id = pm.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
