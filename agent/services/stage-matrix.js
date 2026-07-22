@@ -245,9 +245,17 @@ export function stageMatrixStats(db, getState) {
     stats[`${kind}|${key}|${stage}`] = { ok: ok || 0, fail: fail || 0 }
   }
 
+  // No fallback to 'fib_618_fade' in any of the four queries below (owner,
+  // 2026-07-22: caught Pipeline's Fib row silently absorbing every row with
+  // no strategy attribution — the same lost-label rows Edge Health honestly
+  // buckets as "Manual / external" via alpha-decay.js's COALESCE(label_
+  // strategy, strategy) with NO third default). A null/missing strategy here
+  // simply isn't in STRATEGY_KEYS, so `bump()` is skipped for it — the row
+  // is excluded from every strategy's column instead of inflating Fib's.
+
   try {
     const rows = db.prepare(
-      `SELECT COALESCE(strategy, 'fib_618_fade') AS k,
+      `SELECT strategy AS k,
               SUM(CASE WHEN auto_trade = 1 THEN 1 ELSE 0 END) AS ok,
               SUM(CASE WHEN auto_trade = 1 THEN 0 ELSE 1 END) AS fail
          FROM analyses
@@ -270,7 +278,7 @@ export function stageMatrixStats(db, getState) {
 
   try {
     const rows = db.prepare(
-      `SELECT COALESCE(json_extract(proposal_json, '$.strategy'), 'fib_618_fade') AS k,
+      `SELECT json_extract(proposal_json, '$.strategy') AS k,
               SUM(CASE WHEN approved = 1 THEN 1 ELSE 0 END) AS ok,
               SUM(CASE WHEN approved = 1 THEN 0 ELSE 1 END) AS fail
          FROM risk_events
@@ -282,7 +290,7 @@ export function stageMatrixStats(db, getState) {
 
   try {
     const rows = db.prepare(
-      `SELECT COALESCE(label_strategy, strategy, 'fib_618_fade') AS k,
+      `SELECT COALESCE(label_strategy, strategy) AS k,
               SUM(CASE WHEN COALESCE(net_pnl, gross_pnl, 0) > 0 THEN 1 ELSE 0 END) AS ok,
               SUM(CASE WHEN COALESCE(net_pnl, gross_pnl, 0) > 0 THEN 0 ELSE 1 END) AS fail
          FROM trades

@@ -183,6 +183,30 @@ test('stageMatrixStats aggregates the four ledgers per strategy', () => {
   assert.deepEqual(stats['strategy|fib_618_fade|manage'], { ok: 1, fail: 1 })
 })
 
+test('stageMatrixStats never folds unattributed rows into fib_618_fade', () => {
+  const db = initDB(':memory:')
+  // scan: a row with NO strategy label (legacy/lost attribution)
+  db.prepare(
+    `INSERT INTO analyses (symbol, auto_trade, strategy, analyzed_at) VALUES ('EURUSD', 1, NULL, datetime('now'))`
+  ).run()
+  // trade: a risk_event whose proposal_json carries no strategy field
+  db.prepare(
+    `INSERT INTO risk_events (symbol, side, approved, proposal_json, created_at)
+     VALUES ('EURUSD', 'BUY', 1, '{}', datetime('now'))`
+  ).run()
+  // manage: a closed trade with neither label_strategy nor strategy set —
+  // exactly the shape of Edge Health's "Manual / external" autopilot rows
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, net_pnl, label_strategy, strategy, closed_at)
+     VALUES ('EURUSD', 'BUY', 'closed', 10, NULL, NULL, datetime('now'))`
+  ).run()
+
+  const stats = stageMatrixStats(db, getState)
+  assert.equal(stats['strategy|fib_618_fade|scan'], undefined)
+  assert.equal(stats['strategy|fib_618_fade|trade'], undefined)
+  assert.equal(stats['strategy|fib_618_fade|manage'], undefined)
+})
+
 test('stageMatrixStats ignores rows older than the 30-day window', () => {
   const db = initDB(':memory:')
   db.prepare(
