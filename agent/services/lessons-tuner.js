@@ -70,6 +70,36 @@ export function loadLessonTuning(db) {
 }
 
 /**
+ * Alpha-decay CONSUMPTION (owner: the lesson fields must drive controllers,
+ * not just display). Keys whose LATEST postmortem carries alpha_decay='decay'
+ * — the exact Symbol+Strategy+Timeframe edge, judged on its own last-5 record
+ * — are put on a trade cool-off. Self-clearing: the flag is recomputed from
+ * evidence every sweep, so one Win/Partial in the window lifts it.
+ */
+export function computeDecayKeys(db, windowDays = 14) {
+  const rows = db.prepare(`
+    SELECT symbol, strategy, timeframe, alpha_decay,
+           ROW_NUMBER() OVER (PARTITION BY symbol, strategy, timeframe ORDER BY id DESC) AS rn
+    FROM trade_postmortems
+    WHERE created_at >= datetime('now', ?)
+  `).all(`-${windowDays} days`)
+  const out = new Set()
+  for (const r of rows) {
+    if (r.rn === 1 && r.alpha_decay === 'decay') {
+      out.add(`${r.symbol}|${r.strategy ?? ''}|${r.timeframe ?? ''}`)
+    }
+  }
+  return out
+}
+
+/** Is this proposal's exact edge key on decay cool-off? */
+export function isDecayed(db, symbol, strategy, timeframe) {
+  try {
+    return computeDecayKeys(db).has(`${symbol}|${strategy ?? ''}|${timeframe ?? ''}`)
+  } catch { return false }
+}
+
+/**
  * Apply the tuner to one signal BEFORE the risk gate: widen the SL away from
  * entry by the strategy's factor. TP untouched (targets sit at structure) —
  * R:R drops accordingly and the min-RR gate still applies, which is honest:
