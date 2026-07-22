@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { initDB } from './db.js'
+import { initDB, insertCupHandleDiagnostic } from './db.js'
 
 function tmpDbPath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'botdb-')), 'agent.db')
@@ -256,4 +256,32 @@ test('interrupted migration: leftover temp table is self-healed on next boot', (
   })
 
   fs.rmSync(path.dirname(file), { recursive: true, force: true })
+})
+
+test('insertCupHandleDiagnostic: persists a trace row, candidate_json round-trips', () => {
+  const db = initDB(':memory:')
+  const candidate = { handleLen: 2, cupLen: 29, blocked_at: 'breakout_not_triggered' }
+  insertCupHandleDiagnostic(db, {
+    symbol: 'EURUSD', timeframe: '1d', scanned_at: '2026-07-22T09:00:00.000Z',
+    uptrend_ok: true, cup_found: true, best_candidate: candidate, loop_id: 42,
+  })
+  const row = db.prepare('SELECT * FROM cup_handle_diagnostics WHERE symbol = ?').get('EURUSD')
+  assert.equal(row.timeframe, '1d')
+  assert.equal(row.uptrend_ok, 1)
+  assert.equal(row.cup_found, 1)
+  assert.equal(row.blocked_at, 'breakout_not_triggered')
+  assert.equal(row.loop_id, 42)
+  assert.deepEqual(JSON.parse(row.candidate_json), candidate)
+})
+
+test('insertCupHandleDiagnostic: no candidate at all is stored as null, not invented', () => {
+  const db = initDB(':memory:')
+  insertCupHandleDiagnostic(db, {
+    symbol: 'GBPUSD', timeframe: '4h', scanned_at: '2026-07-22T09:00:00.000Z',
+    uptrend_ok: false, cup_found: false, best_candidate: null,
+  })
+  const row = db.prepare('SELECT * FROM cup_handle_diagnostics WHERE symbol = ?').get('GBPUSD')
+  assert.equal(row.uptrend_ok, 0)
+  assert.equal(row.blocked_at, null)
+  assert.equal(row.candidate_json, null)
 })

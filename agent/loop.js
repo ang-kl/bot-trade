@@ -25,7 +25,7 @@ import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
-import { getState, setState, closeTradeRow } from './db.js'
+import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
 
@@ -1242,6 +1242,17 @@ async function runLoop(db) {
     const scanMs = Date.now() - scanT0
     setState(db, 'last_scan_ms', String(scanMs))
     if (scanResult.next_cursor != null) setState(db, 'scan_cursor', String(scanResult.next_cursor))
+
+    // Cup & Handle Silence Diagnostics (Part A, owner-approved 2026-07-22) —
+    // rides on the existing cup_handle enable toggle: only non-empty when the
+    // strategy was actually armed for this scan, so this is a no-op otherwise.
+    for (const t of scanResult.cupHandleDiagnostics || []) {
+      try {
+        insertCupHandleDiagnostic(db, { ...t, loop_id: loopCount })
+      } catch (err) {
+        log(`cup_handle_diagnostics insert failed: ${err.message}`)
+      }
+    }
 
     if (!ctraderCreds.ready) {
       const missing = [

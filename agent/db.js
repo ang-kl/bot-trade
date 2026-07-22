@@ -315,6 +315,24 @@ const TABLES = `
     resolved_at     TEXT,
     resolution_note TEXT
   );
+
+  -- Cup & Handle Silence Diagnostics (Part A, owner-approved 2026-07-22):
+  -- one row per scan cycle per symbol/timeframe cup_handle is evaluated on,
+  -- recording which checklist gate stopped the best-progressed candidate.
+  -- Turns "it hasn't fired in a week" into a diagnosis. Additive only —
+  -- computeCupHandleSignal's own trading logic is untouched.
+  CREATE TABLE IF NOT EXISTS cup_handle_diagnostics (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol        TEXT NOT NULL,
+    timeframe     TEXT,
+    scanned_at    TEXT NOT NULL,
+    uptrend_ok    INTEGER,
+    cup_found     INTEGER,
+    blocked_at    TEXT,          -- best_candidate.blocked_at, or NULL if no candidate at all
+    candidate_json TEXT,         -- full best_candidate object, or NULL
+    loop_id       INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 const INDEXES = `
@@ -332,6 +350,7 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_risk_events_at         ON risk_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_risk_events_symbol     ON risk_events(symbol, created_at);
   CREATE INDEX IF NOT EXISTS idx_pending_signals_status ON pending_signals(status, symbol);
+  CREATE INDEX IF NOT EXISTS idx_cup_handle_diag_symbol_at ON cup_handle_diagnostics(symbol, scanned_at);
 `;
 
 // ---------------------------------------------------------------------------
@@ -727,4 +746,23 @@ export function closeTradeRow(db, tradeId, {
     WHERE id = ? AND status = 'open'
   `).run(closedAtMs, holdDurationMs, exitPrice, closeReason, grossPnl, netPnl, tradeId);
   return { changed: info.changes > 0, holdDurationMs };
+}
+
+/**
+ * Persist one Cup & Handle diagnostics trace (see traceCupHandleSearch in
+ * services/cup-handle.js). Called only when cup_handle is enabled for the
+ * scan — the trace itself is opts-in, computed for free alongside the
+ * existing scan, so this is the only new write.
+ */
+export function insertCupHandleDiagnostic(db, { symbol, timeframe, scanned_at, uptrend_ok, cup_found, best_candidate, loop_id = null }) {
+  db.prepare(`
+    INSERT INTO cup_handle_diagnostics (symbol, timeframe, scanned_at, uptrend_ok, cup_found, blocked_at, candidate_json, loop_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    symbol, timeframe || null, scanned_at,
+    uptrend_ok ? 1 : 0, cup_found ? 1 : 0,
+    best_candidate ? (best_candidate.blocked_at ?? null) : null,
+    best_candidate ? JSON.stringify(best_candidate) : null,
+    loop_id,
+  );
 }

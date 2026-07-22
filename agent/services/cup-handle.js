@@ -175,6 +175,132 @@ export function computeCupHandleSignal(bars, timeframe, opts = {}) {
   return null
 }
 
+// Gate order matters here ONLY for ranking near-misses: a candidate that
+// gets further down this list is a more useful "why didn't it fire" answer
+// than one that failed on gate 1. Not used by computeCupHandleSignal itself.
+const GATE_RANK = {
+  no_cup_structure: 0,
+  round_bottom: 1,
+  handle_range: 2,
+  breakout_not_triggered: 3,
+  breakout_volume: 4,
+  rr_floor: 5,
+  null: 6, // would have fired
+}
+
+/**
+ * Diagnostic twin of computeCupHandleSignal's search loop (Cup & Handle
+ * Silence Diagnostics spec, Part A). Never returns a trade signal — instead
+ * reports, per scan cycle, WHICH gate stopped the best-progressed candidate,
+ * so "hasn't fired in a week" becomes a diagnosis instead of a guess.
+ * computeCupHandleSignal is untouched by this — additive only.
+ */
+export function traceCupHandleSearch(bars, timeframe) {
+  const scanned_at = new Date().toISOString()
+  const base = { timeframe, scanned_at, uptrend_ok: false, cup_found: false, best_candidate: null }
+  if (!Array.isArray(bars) || bars.length < MIN_BARS) return base
+
+  const last = bars.length - 1
+  const close = bars[last].c
+  const s20 = sma(bars, 20); const s50 = sma(bars, 50); const s200 = sma(bars, 200)
+  const uptrend_ok = s20 != null && close > s20 && close > s50 && close > s200
+  if (!uptrend_ok) return { ...base, uptrend_ok }
+
+  let best = null
+  // Keep whichever candidate got furthest through the checklist — that's the
+  // most useful "why didn't it fire" answer, not just the last one scanned.
+  const considerCandidate = (c) => {
+    const rank = GATE_RANK[c.blocked_at ?? 'null']
+    if (!best || rank > GATE_RANK[best.blocked_at ?? 'null']) best = c
+  }
+
+  for (let handleLen = HANDLE_MIN; handleLen <= HANDLE_MAX; handleLen++) {
+    const rr = last - handleLen
+    if (rr < CUP_MIN + 10) break
+    const handleHighArr = bars.slice(rr + 1, last).map(b => b.h)
+    const handleHigh = Math.max(...handleHighArr, -Infinity)
+    if (bars[rr].h <= handleHigh) { // right rim not the local high — not a real candidate
+      considerCandidate({ handleLen, cupLen: null, depthPct: null, posInCup: null, blocked_at: 'no_cup_structure' })
+      continue
+    }
+
+    let lr = -1; let b = -1; let depthAbs = 0; let depth = 0
+    for (let cand = rr - CUP_MIN; cand >= Math.max(rr - CUP_MAX, 0); cand--) {
+      if (bars[cand].h < bars[rr].h * 0.95 || bars[cand].h > bars[rr].h * 1.15) continue
+      const bot = idxMinLow(bars, cand + 1, rr - 1)
+      const rim = Math.min(bars[cand].h, bars[rr].h)
+      const dAbs = rim - bars[bot].l
+      const d = dAbs / rim
+      if (d < DEPTH_MIN || d > DEPTH_MAX) continue
+      const posInCup = (bot - cand) / (rr - cand)
+      if (posInCup < 0.2 || posInCup > 0.8) continue
+      lr = cand; b = bot; depthAbs = dAbs; depth = d
+      break
+    }
+    if (lr < 0) {
+      considerCandidate({ handleLen, cupLen: null, depthPct: null, posInCup: null, blocked_at: 'no_cup_structure' })
+      continue
+    }
+
+    const cupLen = rr - lr
+    const bottom = bars[b].l
+    const rim = Math.min(bars[lr].h, bars[rr].h)
+    const posInCup = Math.round(((b - lr) / cupLen) * 1000) / 1000
+
+    const nearLow = bottom + 0.15 * depthAbs
+    let roundBars = 0
+    for (let i = lr; i <= rr; i++) if (bars[i].l <= nearLow) roundBars++
+    const roundBottomOk = roundBars >= ROUND_BOTTOM_BARS
+    if (!roundBottomOk) {
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, blocked_at: 'round_bottom' })
+      continue
+    }
+
+    const third = Math.max(1, Math.floor(cupLen / 3))
+    const vDecline = avgVol(bars, lr, lr + third)
+    const vBottom = avgVol(bars, b - Math.floor(third / 2), b + Math.floor(third / 2))
+    const vRecovery = avgVol(bars, rr - third, rr)
+    const volumeShapeOk = vBottom > 0 ? (vDecline > vBottom && vRecovery > vBottom) : false
+
+    const handleLow = Math.min(...bars.slice(rr + 1, last).map(bb => bb.l), Infinity)
+    const handleRangeOk = handleLow >= rim - depthAbs / 3
+    if (!handleRangeOk) {
+      considerCandidate({ handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, volumeShapeOk, blocked_at: 'handle_range' })
+      continue
+    }
+    const vHandle = avgVol(bars, rr + 1, last - 1)
+    const handleTaperOk = vRecovery > 0 ? vHandle < vRecovery : false
+
+    const prior2High = Math.max(bars[last - 1].h, bars[last - 2].h)
+    const breakoutLevel = Math.max(prior2High, handleHigh === -Infinity ? 0 : handleHigh)
+    const breakoutTriggered = close > breakoutLevel
+    const breakoutVolX = vHandle > 0 ? Math.round(((bars[last].v || 0) / vHandle) * 100) / 100 : 0
+    const shared = { handleLen, cupLen, depthPct: Math.round(depth * 1000) / 10, posInCup, roundBars, roundBottomOk, volumeShapeOk, handleTaperOk, breakoutVolX }
+    if (!breakoutTriggered) {
+      considerCandidate({ ...shared, blocked_at: 'breakout_not_triggered' })
+      continue
+    }
+    if (breakoutVolX < BREAKOUT_VOL_X) {
+      considerCandidate({ ...shared, blocked_at: 'breakout_volume' })
+      continue
+    }
+
+    const entry = close
+    const a = atr(bars)
+    const sl = a && a > 0 ? entry - 1.5 * a : null
+    const tp1 = sl != null ? Math.max(bars[rr].h, handleHigh) + depthAbs : null
+    const slDist = sl != null ? entry - sl : 0
+    const rrRatio = sl != null && slDist > 0 ? Math.round(((tp1 - entry) / slDist) * 100) / 100 : 0
+    considerCandidate({ ...shared, rrRatio, blocked_at: rrRatio >= MIN_RR ? null : 'rr_floor' })
+  }
+
+  // cup_found answers "did the search find a valid cup structure at all?" —
+  // not "would it have fired": a candidate stuck at no_cup_structure never
+  // found a cup, everything past that gate did.
+  const cup_found = best != null && best.blocked_at !== 'no_cup_structure'
+  return { ...base, uptrend_ok, cup_found, best_candidate: best }
+}
+
 /**
  * Watchlist screener — the video's funnel, restricted to what broker data
  * can honestly answer. Runs on DAILY bars.

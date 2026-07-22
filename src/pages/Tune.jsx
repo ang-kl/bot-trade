@@ -12,6 +12,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
+import ScreenerChat from '../components/ScreenerChat.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -763,6 +764,11 @@ export default function Tune() {
   // for one-off searches that don't belong to a named preset.
   const [screenerGroupKey, setScreenerGroupKey] = useState('Defense stocks')
   const [screenerCustom, setScreenerCustom] = useState('')
+  // LLM free-text search (owner: "AI stock", "network layer stocks", "P.E.
+  // >3") — a result here wins over both the preset group and the typed
+  // custom list until cleared, since it's the most specific choice made.
+  const [screenerChatOpen, setScreenerChatOpen] = useState(false)
+  const [screenerAiSymbols, setScreenerAiSymbols] = useState(null)
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
@@ -1902,7 +1908,7 @@ export default function Tune() {
               <div className="flex flex-wrap items-center gap-2 mb-2">
                 <select
                   value={screenerGroupKey}
-                  onChange={e => { setScreenerGroupKey(e.target.value); setScreenerCustom('') }}
+                  onChange={e => { setScreenerGroupKey(e.target.value); setScreenerCustom(''); setScreenerAiSymbols(null) }}
                   className="glass-inset rounded-[7px] px-2 py-1.5 text-[12px] min-h-[32px]"
                 >
                   {PRESET_GROUPS.map(g => <option key={g.key} value={g.key}>{g.key}</option>)}
@@ -1911,22 +1917,31 @@ export default function Tune() {
                 <input
                   type="text"
                   value={screenerCustom}
-                  onChange={e => setScreenerCustom(e.target.value)}
+                  onChange={e => { setScreenerCustom(e.target.value); setScreenerAiSymbols(null) }}
                   placeholder="e.g. EURUSD, XAUUSD, NVDA.US"
                   className="glass-inset rounded-[7px] px-2 py-1.5 text-[12px] min-h-[32px] flex-1 min-w-[180px]"
                 />
+                <Button size="sm" variant="subtle" onClick={() => setScreenerChatOpen(true)}>
+                  Search by description…
+                </Button>
               </div>
+              {screenerAiSymbols && (
+                <div className="mb-2 text-[11px] text-[var(--color-text-sub)] flex items-center gap-2">
+                  <span>Showing {screenerAiSymbols.length} AI-matched symbol(s).</span>
+                  <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline" onClick={() => setScreenerAiSymbols(null)}>clear</button>
+                </div>
+              )}
               {(() => {
                 const custom = screenerCustom.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
-                const curated = custom.length > 0 ? custom : (PRESET_GROUPS.find(g => g.key === screenerGroupKey)?.names || [])
-                const title = custom.length > 0 ? 'Custom search' : screenerGroupKey
+                const curated = screenerAiSymbols || (custom.length > 0 ? custom : (PRESET_GROUPS.find(g => g.key === screenerGroupKey)?.names || []))
+                const title = screenerAiSymbols ? 'AI search' : (custom.length > 0 ? 'Custom search' : screenerGroupKey)
                 return (
                   // Key on the curated set's identity (not just title) — a
                   // fresh mount per group/custom-list change resets the
                   // internal `selected` Set, so a bulk Add/Remove can never
                   // act on rows hidden by an earlier switch (Codex review).
                   <WatchlistScreener
-                    key={title === 'Custom search' ? `custom:${curated.join(',')}` : title}
+                    key={title === 'Custom search' || title === 'AI search' ? `${title}:${curated.join(',')}` : title}
                     title={title}
                     curated={curated}
                     allSymbols={allSymbols}
@@ -1939,6 +1954,11 @@ export default function Tune() {
                   />
                 )
               })()}
+              <ScreenerChat
+                open={screenerChatOpen}
+                onClose={() => setScreenerChatOpen(false)}
+                onApply={(syms) => { setScreenerAiSymbols(syms); setScreenerChatOpen(false) }}
+              />
             </div>
 
             {/* Cup & Handle screener — the video's funnel, broker-honest:
