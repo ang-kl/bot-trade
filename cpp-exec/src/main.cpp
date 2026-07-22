@@ -170,12 +170,14 @@ int main(int argc, char** argv) {
     const jsn::Value& v = *parsed;
     if (v.get("halt").isBool()) engine.guard().setHalt(v.get("halt").asBool());
     if (v.get("requireBracket").isBool()) engine.guard().setRequireBracket(v.get("requireBracket").asBool());
+    if (v.get("requireTarget").isBool()) engine.guard().setRequireTarget(v.get("requireTarget").asBool());
     if (v.get("maxOrderVolume").isNumber()) engine.guard().setMaxOrderVolume(v.get("maxOrderVolume").asNumber());
     const GuardSnapshot g = engine.guard().snapshot();
     jsn::Value out{jsn::Object{}};
     out.set("ok", true);
     out.set("halt", g.halt);
     out.set("requireBracket", g.requireBracket);
+    out.set("requireTarget", g.requireTarget);
     out.set("maxOrderVolume", g.maxOrderVolume);
     return {200, jsn::dump(out)};
   });

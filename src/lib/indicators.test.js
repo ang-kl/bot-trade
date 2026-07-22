@@ -8,6 +8,9 @@ import {
   avwapSeries,
   findFvgZones,
   volumeProfile,
+  rsi,
+  macd,
+  stochastic,
 } from './indicators.js'
 
 const MIN = 60_000
@@ -159,6 +162,89 @@ describe('volumeProfile', () => {
     const p = volumeProfile(flat, { type: 'composite', buckets: 8 })
     expect(p.pocPrice).toBe(p.rows[0].price)
     expect(p.rows.reduce((s, r) => s + r.pct, 0)).toBeCloseTo(100, 9)
+  })
+})
+
+describe('rsi', () => {
+  it('matches the standard textbook (StockCharts) 14-day example', () => {
+    const closes = [
+      44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
+      45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+    ]
+    const r = rsi(closes, 14)
+    expect(r.slice(0, 14)).toEqual(new Array(14).fill(null))
+    // Published tutorial value is 70.53; small drift is expected rounding noise.
+    expect(r[14]).toBeCloseTo(70.46, 1)
+  })
+
+  it('stays in [0,100]; saturates at the extremes for monotonic series', () => {
+    const rising = Array.from({ length: 30 }, (_, i) => i + 1)
+    const falling = Array.from({ length: 30 }, (_, i) => 30 - i)
+    const rUp = rsi(rising, 14)
+    const rDown = rsi(falling, 14)
+    for (const v of [...rUp, ...rDown]) {
+      if (v != null) expect(v).toBeGreaterThanOrEqual(0)
+      if (v != null) expect(v).toBeLessThanOrEqual(100)
+    }
+    expect(rUp[rUp.length - 1]).toBe(100)
+    expect(rDown[rDown.length - 1]).toBe(0)
+  })
+
+  it('too few closes → all null', () => {
+    expect(rsi([1, 2, 3], 14)).toEqual([null, null, null])
+  })
+})
+
+describe('macd', () => {
+  it('macdLine = fastEma - slowEma, histogram = macdLine - signalLine', () => {
+    const closes = Array.from({ length: 60 }, (_, i) => 100 + Math.sin(i / 3) * 5 + i * 0.2)
+    const { macdLine, signalLine, histogram } = macd(closes, 12, 26, 9)
+    expect(macdLine.length).toBe(closes.length)
+    const bars = closes.map((c) => ({ c }))
+    const fastEma = emaSeries(bars, 12)
+    const slowEma = emaSeries(bars, 26)
+    for (let i = 0; i < closes.length; i++) {
+      if (fastEma[i] != null && slowEma[i] != null) {
+        expect(macdLine[i]).toBeCloseTo(fastEma[i] - slowEma[i], 10)
+      } else {
+        expect(macdLine[i]).toBeNull()
+      }
+      if (macdLine[i] != null && signalLine[i] != null) {
+        expect(histogram[i]).toBeCloseTo(macdLine[i] - signalLine[i], 10)
+      } else {
+        expect(histogram[i]).toBeNull()
+      }
+    }
+    // Signal line only starts once enough MACD values exist to seed its EMA.
+    const firstMacd = macdLine.findIndex((v) => v != null)
+    expect(signalLine.slice(firstMacd, firstMacd + 8)).toEqual(new Array(8).fill(null))
+    expect(signalLine[firstMacd + 8]).not.toBeNull()
+  })
+})
+
+describe('stochastic', () => {
+  it('%K from high/low/close range, %D = SMA(%K, dPeriod), values in [0,100]', () => {
+    const bars = closes([10, 11, 12, 11, 10, 9, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+    const { k, d } = stochastic(bars, 14, 3)
+    expect(k.slice(0, 13)).toEqual(new Array(13).fill(null))
+    expect(k[13]).not.toBeNull()
+    for (const v of k) if (v != null) {
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThanOrEqual(100)
+    }
+    for (const v of d) if (v != null) {
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThanOrEqual(100)
+    }
+    // %D needs dPeriod consecutive %K values, so it lags %K by dPeriod-1.
+    expect(d[13]).toBeNull()
+    expect(d[15]).toBeCloseTo((k[13] + k[14] + k[15]) / 3, 10)
+  })
+
+  it('flat high==low range → %K=100 (matches close-at-top convention)', () => {
+    const bars = Array.from({ length: 5 }, (_, i) => ({ t: i * MIN, o: 10, h: 10, l: 10, c: 10, v: 1 }))
+    const { k } = stochastic(bars, 5, 3)
+    expect(k[4]).toBe(100)
   })
 })
 

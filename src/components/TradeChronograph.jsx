@@ -13,6 +13,20 @@ import { useEffect, useState } from 'react'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
 import { polar, priceTravel, rMultiple, slProximity, velocityRPerHr, fmtDuration, elapsedMs, isLong, safeTargetR } from '../lib/chrono-math.js'
+import { agentPost } from '../lib/agent-api.js'
+
+// Real technical overlays (server-computed, agent/lib/indicators.js — same
+// maths as every other chart in the app), owner: "any of these in the
+// picture (tradingview) that I can choose using the UI dropdown". Always
+// fetches ema20 too, since that's what the Volume/Trend sub-dial reads.
+const INDICATOR_OPTIONS = [
+  { key: 'none', label: 'None' },
+  { key: 'ema20', label: 'EMA 20' },
+  { key: 'rsi14', label: 'RSI (14)' },
+  { key: 'macd', label: 'MACD (12,26,9)' },
+  { key: 'stochastic', label: 'Stochastic (%K/%D)' },
+  { key: 'pivots', label: 'Pivot points (prior bar)' },
+]
 
 const C = 160 // centre
 const UP = 'var(--color-up)'
@@ -54,6 +68,21 @@ export default function TradeChronograph({ pos, onClose }) {
   const [, force] = useState(0)
   useEffect(() => { const t = setInterval(() => force(n => n + 1), 1000); return () => clearInterval(t) }, [])
   const ticks = useLiveTicks(pos?.symbol ? [pos.symbol] : [])
+  const [indicator, setIndicator] = useState('none')
+  const [chartData, setChartData] = useState(null)
+
+  useEffect(() => {
+    if (!pos?.symbol) return
+    let dead = false
+    agentPost('/actions/chart', {
+      symbol: pos.symbol,
+      timeframe: pos.timeframe || pos.tf || '1h',
+      bars: 60,
+      indicators: ['ema20', 'rsi14', 'macd', 'stochastic', 'pivots'],
+    }).then(r => { if (!dead) setChartData(r) }).catch(() => { if (!dead) setChartData(null) })
+    return () => { dead = true }
+  }, [pos?.symbol, pos?.timeframe, pos?.tf])
+
   if (!pos) return null
 
   const entry = Number(pos.entry ?? pos.entry_price)
@@ -83,16 +112,45 @@ export default function TradeChronograph({ pos, onClose }) {
   const vel = velocityRPerHr({ r, ms })
   const slProx = slProximity({ entry, sl, side, price })
   const pnlUp = r != null && r >= 0
+  const price5 = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 5 }))
+
+  // Real trend read for the sub-dial — EMA20 slope over the fetched bars
+  // (not a fabricated label), owner: "sub-dial should be current volume, trend".
+  const ema20 = chartData?.overlays?.ema20
+  const trendVals = ema20?.filter(v => v != null) ?? []
+  const trendDelta = trendVals.length >= 2 ? trendVals[trendVals.length - 1] - trendVals[0] : null
+  const trend = trendDelta == null ? null : trendDelta > 0 ? 'UP' : trendDelta < 0 ? 'DOWN' : 'FLAT'
+
+  // Selected indicator's latest value, plain digits (owner: "is it better in
+  // digits than dial?") — real, server-computed, never fabricated; blank
+  // until bars have actually loaded.
+  const indicatorLine = (() => {
+    if (indicator === 'none' || !chartData) return null
+    const ov = chartData.overlays || {}
+    const last = (arr) => arr?.filter(v => v != null).at(-1) ?? null
+    if (indicator === 'ema20') { const v = last(ov.ema20); return v == null ? null : `EMA20: ${price5(v)}` }
+    if (indicator === 'rsi14') { const v = last(ov.rsi14); return v == null ? null : `RSI(14): ${v.toFixed(1)}${v >= 70 ? ' (overbought)' : v <= 30 ? ' (oversold)' : ''}` }
+    if (indicator === 'macd') {
+      const m = last(ov.macd?.macdLine), s = last(ov.macd?.signalLine)
+      return m == null ? null : `MACD ${m.toFixed(5)} · signal ${s == null ? '—' : s.toFixed(5)}`
+    }
+    if (indicator === 'stochastic') {
+      const k = last(ov.stochastic?.k), d = last(ov.stochastic?.d)
+      return k == null ? null : `%K ${k.toFixed(1)} · %D ${d == null ? '—' : d.toFixed(1)}`
+    }
+    if (indicator === 'pivots') {
+      const pv = ov.pivots
+      return pv == null ? null : `P ${price5(pv.p)} · R1 ${price5(pv.r1)} · S1 ${price5(pv.s1)}`
+    }
+    return null
+  })()
 
   // Tachymeter: velocity R/hr mapped onto the ring (0 → 6 R/hr full sweep).
   const velFrac = vel == null ? null : Math.min(1, Math.abs(vel) / 6)
-  // Time-in-trade sub-dial sweeps once per 60 minutes.
-  const timeFrac = ms == null ? null : (ms % 3_600_000) / 3_600_000
   // R-progress sub-dial: 0 → rTp (target).
   const rFrac = r == null || !rTp ? null : Math.max(0, Math.min(1, r / rTp))
 
   const RING = 148
-  const price5 = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 5 }))
 
   // Price marks on the main dial (SL / TP1 / TP2 / entry) at their travel fracs.
   const marks = []
@@ -107,6 +165,10 @@ export default function TradeChronograph({ pos, onClose }) {
     if (tp2 != null && Number.isFinite(Number(tp2))) {
       marks.push({ f: travel.tp, label: 'TP2', price: Number(tp2), color: UP })
     }
+    // Current price on the bezel too (owner: "where on the bezel are the
+    // TP/SL, current price, entry price") — the bold hand already tracks it,
+    // this labels the exact spot.
+    marks.push({ f: travel.price, label: 'now', price, color: pnlUp ? UP : DOWN })
   }
 
   return (
@@ -124,6 +186,21 @@ export default function TradeChronograph({ pos, onClose }) {
           <button type="button" onClick={onClose} className="text-[var(--color-text-sub)] text-[16px] leading-none px-1" aria-label="Close">×</button>
         </div>
 
+        {/* Indicator dropdown — owner: "any of these in the picture
+            (tradingview) that I can choose by using the UI dropdown". Real,
+            server-computed values only; blank until bars load. */}
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <label htmlFor="chrono-indicator" className="text-[10px] text-[var(--color-text-sub)] uppercase tracking-wide">Indicator</label>
+          <select
+            id="chrono-indicator"
+            value={indicator}
+            onChange={e => setIndicator(e.target.value)}
+            className="glass-inset rounded-[6px] px-1.5 py-0.5 text-[11px]"
+          >
+            {INDICATOR_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+          </select>
+        </div>
+
         <svg viewBox="0 0 320 320" className="w-full" role="img" aria-label={`${pos.symbol} chronograph`}>
           {/* Tachymeter ring — velocity R/hr */}
           <circle cx={C} cy={C} r={RING} fill="none" stroke="var(--color-border)" strokeWidth="1" />
@@ -139,13 +216,7 @@ export default function TradeChronograph({ pos, onClose }) {
           })}
           <text x={C} y={30} textAnchor="middle" fontSize="10" fontWeight="600" fill="var(--color-text)" style={{ letterSpacing: '0.08em' }}>R / HR (velocity)</text>
 
-          {/* Volume readout on the tachymeter */}
-          <g>
-            <text x={C} y={C + RING - 28} textAnchor="middle" fontSize="10" fill="var(--color-text)" style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>Volume</text>
-            <text x={C} y={C + RING - 14} textAnchor="middle" fontSize="15" fontWeight="800" fill="var(--color-text)">{Number(volume).toLocaleString(undefined, { maximumFractionDigits: 2 })} lots</text>
-          </g>
-
-          {/* Main price marks (SL / entry / TP1 / TP2) on an inner arc */}
+          {/* Main price marks (SL / entry / TP1 / TP2 / now) on an inner arc */}
           {marks.map((m, i) => {
             const [x1, y1] = polar(C, C, RING - 16, at(m.f))
             const [x2, y2] = polar(C, C, RING - 30, at(m.f))
@@ -164,8 +235,11 @@ export default function TradeChronograph({ pos, onClose }) {
             </text>
           )}
 
-          {/* Sub-dials — each labelled with its UNIT */}
-          <SubDial cx={C - 56} cy={C + 4} r={30} frac={timeFrac} label="In trade" unit="dial = 60 min" value={fmtDuration(ms)} color="var(--color-text)" ticks={12} />
+          {/* Sub-dials — each labelled with its UNIT. Time-in-trade already
+              has its own digit row below (owner: the dial's digit was too
+              cramped to read), so this sub-dial reads Volume + real trend
+              (EMA20 slope over the fetched bars) instead. */}
+          <SubDial cx={C - 56} cy={C + 4} r={30} frac={null} label="Volume · trend" unit={trend ? `trend: ${trend}` : 'trend: —'} value={`${Number(volume).toLocaleString(undefined, { maximumFractionDigits: 2 })} lots`} color={trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text)'} ticks={12} />
           <SubDial cx={C + 56} cy={C + 4} r={30} frac={rFrac} label="→ target" unit={rTp != null ? `R units · full = ${rTp.toFixed(1)}R` : 'target R undefined — check TP1/SL'} value={r == null ? '—' : `${r.toFixed(2)}R`} color={pnlUp ? UP : DOWN} ticks={Math.max(2, Math.round(rTp ?? 2) || 2)} />
           <SubDial cx={C} cy={C + 66} r={28} frac={slProx} label="to stop" unit="% of risk left" value={slProx == null ? '—' : `${Math.round((1 - slProx) * 100)}%`} color={slProx != null && slProx > 0.66 ? DOWN : SUB} ticks={5} />
 
@@ -187,9 +261,14 @@ export default function TradeChronograph({ pos, onClose }) {
           <span className="text-[var(--color-text-sub)]">Time in trade</span><span className="tabular-nums text-right font-semibold">{fmtDuration(ms)}</span>
           <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right font-semibold">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
         </div>
+        {indicator !== 'none' && (
+          <p className="tabular-nums text-[12px] font-semibold mt-1.5 pt-1.5 border-t border-[var(--color-border)]">
+            {indicatorLine ?? 'loading…'}
+          </p>
+        )}
         {/* Legend — what each element means, in words (never colour-only) */}
         <p className="text-[11px] leading-snug text-[var(--color-text-sub)] mt-1.5">
-          Bold hand = current price on the SL→TP1 travel · thin hand = velocity on the outer R/hr ring · marks show SL / entry / TP1 / TP2 with live prices.
+          Bold hand = current price on the SL→TP1 travel · thin hand = velocity on the outer R/hr ring · marks show SL / entry / TP1 / TP2 / now with live prices.
         </p>
       </div>
     </div>

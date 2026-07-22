@@ -268,7 +268,11 @@ export default function Desk() {
         agentGet('/state/duplicate-trades').catch(() => null),
       ])
       setHealth(h)
-      const rows = s.rows || s.scans || []
+      // lastResults.scans is the CURRENT scan cycle's snapshot — recentScans
+      // is the last 50 DB rows across cycles, which can carry a stale
+      // non-skip row past a later skip for the same symbol, and duplicate
+      // `key={symbol}` rows in lists keyed by symbol (Codex review).
+      const rows = s.lastResults?.scans || []
       setScans(rows)
       setPositions(p.rows || p.positions || [])
       setEvents(r.rows || [])
@@ -603,6 +607,31 @@ export default function Desk() {
           <p className="text-[12px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
         )}
       </Section>
+
+      {/* TP-less open positions — owner: "a few of the open trades didn't set
+          T/P that is dangerous." New market orders now require a Take Profit
+          (guard_no_target), but positions opened before that guard, or
+          adopted verbatim from a manual/foreign broker order, can still be
+          SL-only. Read-only warning — nothing is closed or amended automatically. */}
+      {(() => {
+        const naked = brokerPosRows.filter(r => r.tp == null && !(r.tps?.length))
+        if (naked.length === 0) return null
+        return (
+          <Card className="text-[12px] border-[var(--color-warning-text)]">
+            <p className="font-semibold text-[var(--color-warning-text)]">
+              ⚠ {naked.length} open position(s) have no Take Profit set — risk is capped by the stop, but nothing is locking in a target
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {naked.slice(0, 8).map(r => (
+                <li key={r.id} className="text-[var(--color-text-sub)]">
+                  {r.symbol} {r.side === 'BUY' ? 'Long' : 'Short'} · entry {r.entry} · SL {r.sl ?? '—'}{r.source?.text === 'MANUAL' ? ' (manual/foreign position)' : ''}
+                </li>
+              ))}
+            </ul>
+            {naked.length > 8 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
+          </Card>
+        )
+      })()}
 
       {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
           after they fill/cancel (and even while switches are OFF), so there's

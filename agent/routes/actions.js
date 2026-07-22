@@ -1501,6 +1501,16 @@ export default function actionsRouter(db) {
             overlays.avwap = ind.avwapSeries(bars, anchorT)
           }
           if (wanted.includes('fvg')) overlays.fvg = ind.findFvgZones(bars)
+          if (wanted.includes('rsi14')) overlays.rsi14 = ind.rsi(bars.map(b => b.c), 14)
+          if (wanted.includes('macd')) overlays.macd = ind.macd(bars.map(b => b.c))
+          if (wanted.includes('stochastic')) overlays.stochastic = ind.stochastic(bars)
+          if (wanted.includes('pivots')) {
+            // Classic pivots from the most recent COMPLETE bar of this series —
+            // not daily pivots, so the caller labels it "prior <tf> bar" honestly.
+            const { classicPivots } = await import('../lib/pivot-points.js')
+            const prior = bars[bars.length - 2]
+            if (prior) overlays.pivots = classicPivots({ high: prior.h, low: prior.l, close: prior.c })
+          }
           if (wanted.includes('vp')) {
             const vpType = ['session', 'visible', 'fixed', 'composite'].includes(req.body?.vpType) ? req.body.vpType : 'session'
             // visible/fixed use the caller's range when given, else the full series

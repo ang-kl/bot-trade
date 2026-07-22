@@ -64,3 +64,43 @@ export function orderTriggerPrice(row) {
   if (row.stop_price != null) return Number(row.stop_price)
   return null
 }
+
+// Plain price distances from the order's trigger to its planned TP/SL —
+// doesn't need a live price at all, since a resting order's own trigger IS
+// its reference point (owner: "Set-order ledger: should also have [To
+// TP/SL, to TP, to SL]"). Returns nulls when a level or the trigger itself
+// isn't set yet.
+export function orderTpSlDistance(row) {
+  const trigger = orderTriggerPrice(row)
+  const tp = row?.tp != null ? Number(row.tp) : null
+  const sl = row?.sl != null ? Number(row.sl) : null
+  return {
+    toTp: trigger != null && tp != null ? Math.abs(tp - trigger) : null,
+    toSl: trigger != null && sl != null ? Math.abs(trigger - sl) : null,
+  }
+}
+
+// Coarser-as-it-grows duration string (m → h → d) — mirrors StdTradeTable's
+// fmtDuration so "duration pending" reads the same way everywhere.
+export function fmtDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const mins = Math.round(ms / 60_000)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return mins % 60 ? `${hrs}h ${mins % 60}m` : `${hrs}h`
+  const days = Math.floor(hrs / 24)
+  return hrs % 24 ? `${days}d ${hrs % 24}h` : `${days}d`
+}
+
+// How long an order has sat pending: from when it was first seen resting on
+// the book, to now (still working) or to when it left the book (gone).
+export function orderPendingMs(row, { gone = false } = {}) {
+  const start = Date.parse(String(row?.first_seen || '').includes('T') ? row.first_seen : String(row?.first_seen || '').replace(' ', 'T') + 'Z')
+  if (!Number.isFinite(start)) return null
+  const endIso = gone ? (row?.gone_at || row?.last_seen) : null
+  const end = gone
+    ? Date.parse(String(endIso || '').includes('T') ? endIso : String(endIso || '').replace(' ', 'T') + 'Z')
+    : Date.now()
+  if (!Number.isFinite(end)) return null
+  return Math.max(0, end - start)
+}

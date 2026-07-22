@@ -317,7 +317,11 @@ export default function Trade() {
         agentGet('/state/market-hours').catch(() => null),
       ])
       setHealth(h)
-      setScans(s.rows || s.scans || [])
+      // lastResults.scans is the CURRENT scan cycle's snapshot (one row per
+      // symbol) — recentScans is the last 50 DB rows across cycles, which can
+      // carry a stale non-skip row past a later skip for the same symbol, and
+      // duplicate `key={symbol}` rows in the list below (Codex review).
+      setScans(s.lastResults?.scans || [])
       setPositions(p.rows || p.positions || [])
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])

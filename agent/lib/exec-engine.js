@@ -100,11 +100,24 @@ export function orderHasBracket(p) {
   return num('relativeStopLoss') > 0 || num('stopLoss') > 0
 }
 
+// Owner-approved risk-gate change (2026-07-22): several open positions had
+// no Take Profit at all — SL-only was never enough to call a trade "managed"
+// (owner: "that is dangerous"). Mirrors orderHasBracket's shape exactly.
+export function orderHasTarget(p) {
+  const num = (k) => Number(p?.[k])
+  return num('relativeTakeProfit') > 0 || num('takeProfit') > 0
+}
+
 export function validateOrderBracket(p) {
   const type = (p?.orderType || 'MARKET')
   const isMarket = type === 'MARKET' || type === 'MARKET_RANGE'
-  if (isMarket && !orderHasBracket(p) && p?.allowNaked !== true) {
-    return { ok: false, reason: 'guard_naked_order: market order has no stop loss attached (set allowNaked to override)' }
+  if (isMarket && p?.allowNaked !== true) {
+    if (!orderHasBracket(p)) {
+      return { ok: false, reason: 'guard_naked_order: market order has no stop loss attached (set allowNaked to override)' }
+    }
+    if (!orderHasTarget(p)) {
+      return { ok: false, reason: 'guard_no_target: market order has no take profit attached (set allowNaked to override)' }
+    }
   }
   return { ok: true }
 }

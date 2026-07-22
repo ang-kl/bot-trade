@@ -12,6 +12,11 @@ bool orderHasBracket(const jsn::Value& payload) {
          hasPositiveNumber(payload, "stopLoss");
 }
 
+bool orderHasTarget(const jsn::Value& payload) {
+  return hasPositiveNumber(payload, "relativeTakeProfit") ||
+         hasPositiveNumber(payload, "takeProfit");
+}
+
 OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
   if (g.halt) {
     return { false, "guard_halt: execution halted by kill switch" };
@@ -28,11 +33,16 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
   // #4 bracket guarantee: a MARKET order with no attached stop is a naked
   // position — the one thing the execution core must never let through. A
   // caller that genuinely wants a stopless order must say so explicitly.
-  if (g.requireBracket && isMarket && !orderHasBracket(payload)) {
+  if (isMarket) {
     const jsn::Value& allow = payload.get("allowNaked");
     const bool explicitlyAllowed = allow.isBool() && allow.asBool(false);
-    if (!explicitlyAllowed) {
+    if (g.requireBracket && !orderHasBracket(payload) && !explicitlyAllowed) {
       return { false, "guard_naked_order: market order has no stop loss attached (set allowNaked to override)" };
+    }
+    // Owner-approved 2026-07-22: an SL-only position isn't "managed" either —
+    // several open positions had no Take Profit at all.
+    if (g.requireTarget && !orderHasTarget(payload) && !explicitlyAllowed) {
+      return { false, "guard_no_target: market order has no take profit attached (set allowNaked to override)" };
     }
   }
 
