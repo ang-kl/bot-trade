@@ -128,7 +128,13 @@ function Verdict({ r }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer">
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
-        <span className="text-[10px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.created_at || ''}>{dateTime(r.created_at) || '—'}</span>
+        {/* The TRADE's own timestamp, not the sweep's row-insertion time —
+            Codex review caught pm.created_at reading as "when classified",
+            which can be identical across many rows from one backfill/sweep
+            pass and defeats the point of showing a date at all. */}
+        <span className="text-[10px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
+          {dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}
+        </span>
         <span className="font-semibold shrink-0">{r.symbol}</span>
         {/* Strategy is ALWAYS stated, never silently dropped (owner: "if you
             are using different strategy state it") — 'unlabelled' is an
