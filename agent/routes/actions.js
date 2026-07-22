@@ -2673,9 +2673,15 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   // POST /actions/reset-breaker — reset the circuit breaker after manual review
   // -----------------------------------------------------------------------
-  router.post('/reset-breaker', (_req, res) => {
+  router.post('/reset-breaker', async (_req, res) => {
     setState(db, 'circuit_breaker_tripped_at', null)
     setState(db, 'errors_today', '0')
+    try {
+      const { resetCircuitBreaker } = await import('../loop.js')
+      resetCircuitBreaker()
+    } catch (err) {
+      console.log('[actions] reset-breaker: in-process counter reset failed (non-fatal):', err.message)
+    }
     console.log('[actions] Circuit breaker reset')
     res.json({ ok: true, message: 'Circuit breaker reset — loop will resume on next tick' })
   })
