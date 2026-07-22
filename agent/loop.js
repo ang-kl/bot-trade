@@ -1014,16 +1014,38 @@ async function runLoop(db) {
           // cooldown, and the performance breaker until a human opened the
           // dashboard. Backfill broker-true realized P&L here, in the loop, so
           // every downstream brake this cycle sees the real drawdown. Runs
-          // only when something actually closed at the broker and best-effort
-          // (a deal-history hiccup must never stall the loop).
-          if ((result.closedDetected || []).length > 0) {
-            try {
-              const { backfillClosedPnl } = await import('./services/pnl-backfill.js')
+          // whenever ANY reconcile path closed a trade this cycle — not just
+          // closedDetected. The orphan sweep and dedup sweep (reconciler.js)
+          // also close trades with net_pnl left NULL but never populate
+          // closedDetected, so a trade closed only via those two paths could
+          // never trigger this backfill and sat permanently excluded from
+          // Edge Health (alpha-decay.js's `net_pnl IS NOT NULL` read) — not a
+          // transient gap, a silent one. backfillClosedPnl self-gates on its
+          // own COUNT(*) check, so widening the trigger here adds no
+          // unnecessary broker calls. Best-effort (a deal-history hiccup must
+          // never stall the loop).
+          try {
+            const { backfillClosedPnl, shouldRunPnlBackfill } = await import('./services/pnl-backfill.js')
+            if (shouldRunPnlBackfill(result)) {
+              // Cheap pre-check so the log can tell "nothing was missing"
+              // apart from "something was missing and still is after this
+              // attempt" — those two are otherwise indistinguishable from
+              // bf.backfilled === 0 alone, and the second one is exactly the
+              // stuck-trade case that must stay visible in logs, not silent.
+              const gapBefore = db.prepare(
+                `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL`
+              ).get()?.n || 0
               const bf = await backfillClosedPnl(db, { host, clientId, clientSecret, accessToken, accountId })
-              if (bf.backfilled > 0) log(`P&L backfill: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
-            } catch (err) {
-              log(`P&L backfill failed (non-fatal): ${err.message}`)
+              if (bf.backfilled > 0) {
+                log(`P&L backfill: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
+              } else if (gapBefore === 0) {
+                log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
+              } else {
+                log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after this cycle's attempt — deal history had no matching close (check broker deal-history coverage)`)
+              }
             }
+          } catch (err) {
+            log(`P&L backfill failed (non-fatal): ${err.message}`)
           }
 
           // Post-loss playback — classify what the market did after each
