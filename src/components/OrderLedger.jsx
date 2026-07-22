@@ -10,11 +10,14 @@
 // monitor the trigger take place").
 // ---------------------------------------------------------------------------
 import { useState } from 'react'
-import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, isoWeek } from '../lib/order-ledger-rows.js'
+import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, isoWeek } from '../lib/order-ledger-rows.js'
+import { dateTimeParts } from '../lib/std-trade-rows.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
 
 const parseTs = (iso) => Date.parse(String(iso || '').includes('T') ? iso : String(iso || '').replace(' ', 'T') + 'Z')
+const enteredCell = (iso) => { const w = iso ? dateTimeParts(iso) : null; return w ? `${w.day} ${w.time}` : '—' }
+const COLS = 17 // Entered, Duration, Symbol, Side, Type, Vol, Trigger, SL, TP, To TP/SL, to TP, to SL, TF, Strategy, Source, Status, Action
 
 const num = (v) => {
   if (v == null) return '—'
@@ -40,9 +43,12 @@ function Row({ o, gone, action = null }) {
   const long = String(o.side).toUpperCase() === 'BUY' || String(o.side).toLowerCase() === 'long'
   const strat = orderStrategy(o.label)
   const tf = orderTimeframe(o.label)
+  const { toTp, toSl } = orderTpSlDistance(o)
+  const pendingMs = orderPendingMs(o, { gone })
   return (
     <tr className="border-t border-[var(--color-border)]">
-      <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{ago(o.first_seen)} ago</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(o.first_seen)}</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
       <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">{o.symbol || '—'}</td>
       <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
         {o.side ? (long ? 'Long' : 'Short') : '—'}
@@ -52,6 +58,13 @@ function Row({ o, gone, action = null }) {
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(orderTriggerPrice(o))}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(o.sl)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(o.tp)}</td>
+      {/* Planned distances from the order's own trigger price to its TP/SL —
+          real even before the order fills (owner spec). */}
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+        {toTp != null && toSl != null ? `TP ${num(toTp)} · SL (${num(toSl)})` : toTp != null ? `TP ${num(toTp)}` : toSl != null ? `SL (${num(toSl)})` : '—'}
+      </td>
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">{toTp != null ? num(toTp) : '—'}</td>
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">{toSl != null ? `(${num(toSl)})` : '—'}</td>
       {/* TF then Strategy — same column order as the open-positions table
           (owner: fix the discrepancy between the two). */}
       <td className="py-1.5 pr-3 whitespace-nowrap">{tf || '—'}</td>
@@ -71,6 +84,12 @@ function Row({ o, gone, action = null }) {
 function QueuedRow({ q, onDone }) {
   const long = String(q.side).toUpperCase() === 'BUY'
   const [busy, setBusy] = useState(false)
+  const toTp = q.limit_price != null && q.tp != null ? Math.abs(Number(q.tp) - Number(q.limit_price)) : null
+  const toSl = q.limit_price != null && q.sl != null ? Math.abs(Number(q.limit_price) - Number(q.sl)) : null
+  const pendingMs = (() => {
+    const t = Date.parse(String(q.queued_at || '').includes('T') ? q.queued_at : String(q.queued_at || '').replace(' ', 'T') + 'Z')
+    return Number.isFinite(t) ? Math.max(0, Date.now() - t) : null
+  })()
   const cancel = async () => {
     if (!window.confirm(`Cancel queued ${q.kind === 'closed_market_limit' ? 'limit order' : 'signal'} — ${q.symbol} ${q.side}?`)) return
     setBusy(true)
@@ -83,7 +102,8 @@ function QueuedRow({ q, onDone }) {
   }
   return (
     <tr className="border-t border-[var(--color-border)]">
-      <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{ago(q.queued_at)} ago</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(q.queued_at)}</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
       <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">{q.symbol || '—'}</td>
       <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
         {q.side ? (long ? 'Long' : 'Short') : '—'}
@@ -93,6 +113,11 @@ function QueuedRow({ q, onDone }) {
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.limit_price)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.sl)}</td>
       <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(q.tp)}</td>
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+        {toTp != null && toSl != null ? `TP ${num(toTp)} · SL (${num(toSl)})` : toTp != null ? `TP ${num(toTp)}` : toSl != null ? `SL (${num(toSl)})` : '—'}
+      </td>
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">{toTp != null ? num(toTp) : '—'}</td>
+      <td className="py-1.5 pr-3 text-right whitespace-nowrap">{toSl != null ? `(${num(toSl)})` : '—'}</td>
       {/* TF then Strategy — separate columns, matching Row above and the
           open-positions table (owner: fix the discrepancy between the two;
           these used to be combined into one cell here only). */}
@@ -125,7 +150,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
   const head = (
     <thead>
       <tr className="text-left text-[var(--color-text-sub)]">
-        {['Placed', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
+        {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
           <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
         ))}
       </tr>
@@ -184,7 +209,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                       }).length
                       out.push(
                         <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
-                          <td colSpan={13} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                          <td colSpan={COLS} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
                             {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
                           </td>
                         </tr>
@@ -220,7 +245,7 @@ function WorkingRow({ o, onDone }) {
       } />
       {open && (
         <tr>
-          <td colSpan={13} className="py-2">
+          <td colSpan={COLS} className="py-2">
             <OrderManager o={manageShape} onDone={() => { setOpen(false); onDone?.() }} />
           </td>
         </tr>

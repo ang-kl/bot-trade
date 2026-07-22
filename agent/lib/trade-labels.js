@@ -105,7 +105,15 @@ function invertUpper(obj) {
 export function encodeLabel(parts = {}) {
   const src = SOURCES[parts.source] || SOURCES.manual
   const ver = compact(parts.version || LABEL_VERSION)
-  const strat = STRATEGIES[parts.strategy] || '-'
+  // Owner: "every trade must have a purpose for the edge" — an unrecognised
+  // strategy key (a free-text LLM value that doesn't match the STRATEGIES
+  // vocabulary, or a future registry key not yet added here) used to fall
+  // all the way to '-', baking a PERMANENT blank into the broker label (the
+  // exact bug that hit vp_value/rsi2_reversion before their keys existed).
+  // Falling back to 'other' instead means every trade keeps at least SOME
+  // real attribution — worst case it lands in the "other" bucket, not an
+  // unrecoverable blank.
+  const strat = STRATEGIES[parts.strategy] || (parts.strategy ? STRATEGIES.other : '-')
   const conv = CONVICTION[parts.conviction] || '-'
   const sess = SESSIONS[parts.session] || '-'
   const tf = compact(parts.timeframe || '-')

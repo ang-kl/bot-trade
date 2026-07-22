@@ -268,7 +268,7 @@ export default function Desk() {
         agentGet('/state/duplicate-trades').catch(() => null),
       ])
       setHealth(h)
-      const rows = s.rows || s.scans || []
+      const rows = s.recentScans || []
       setScans(rows)
       setPositions(p.rows || p.positions || [])
       setEvents(r.rows || [])

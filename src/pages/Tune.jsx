@@ -757,6 +757,12 @@ export default function Tune() {
   })
   const [scanInfo, setScanInfo] = useState(null)     // latest scan per symbol — price + signal for the watchlist
   const [regimeBy, setRegimeBy] = useState(null)     // latest regime (atr_pct, regime type) per symbol — real volatility read for the screener
+  // Screener works over ANY preset group (owner: "Defense stocks screener is
+  // an example, you should be able to let me select any stocks or stock
+  // group or FOREX") — group picker + an optional custom ad-hoc symbol list
+  // for one-off searches that don't belong to a named preset.
+  const [screenerGroupKey, setScreenerGroupKey] = useState('Defense stocks')
+  const [screenerCustom, setScreenerCustom] = useState('')
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
@@ -1879,28 +1885,55 @@ export default function Tune() {
               )
             })()}
 
-            {/* Defense-stocks screener — owner: curate the list down, table
-                with select/sort/click-for-details, and a real (not
-                fabricated) technical advice read per symbol. Doubles as
-                "find new ones to add" and "check which watchlisted symbols
-                are in this set" — it lists every curated ticker this broker
-                offers whether or not it's already on the watchlist. */}
+            {/* Screener — owner: "Defense stocks screener is an example, you
+                should be able to let me select any stocks or stock group or
+                FOREX." Works over any PRESET_GROUPS entry (every group above,
+                FX/indices/metals/crypto/equities all included) OR a one-off
+                custom symbol list, typed for an ad-hoc search that doesn't
+                belong to a named preset. Doubles as "find new ones to add"
+                and "check which watchlisted symbols are in this set" — it
+                lists every symbol this broker offers from the chosen set,
+                whether or not it's already on the watchlist. */}
             <div className="mb-3">
-              <div className="text-[12px] font-semibold mb-1">Defense stocks screener</div>
+              <div className="text-[12px] font-semibold mb-1">Screener</div>
               <p className="text-[11px] text-[var(--color-text-sub)] mb-1.5">
                 Advice is a technical read only (bias + confidence from the last scan, ATR% from the regime detector) — not a fundamentals or sector call; it stays blank until a symbol has actually been scanned.
               </p>
-              <WatchlistScreener
-                title="Defense stocks"
-                curated={PRESET_GROUPS.find(g => g.key === 'Defense stocks')?.names || []}
-                allSymbols={allSymbols}
-                symbols={symbols}
-                scanInfo={scanInfo}
-                regimeBy={regimeBy}
-                onAdd={addSymbolsPlain}
-                onRemove={removeSymbolPlain}
-                onRemoveMany={removeSymbolsPlain}
-              />
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <select
+                  value={screenerGroupKey}
+                  onChange={e => { setScreenerGroupKey(e.target.value); setScreenerCustom('') }}
+                  className="glass-inset rounded-[7px] px-2 py-1.5 text-[12px] min-h-[32px]"
+                >
+                  {PRESET_GROUPS.map(g => <option key={g.key} value={g.key}>{g.key}</option>)}
+                </select>
+                <span className="text-[11px] text-[var(--color-text-sub)]">or a custom list:</span>
+                <input
+                  type="text"
+                  value={screenerCustom}
+                  onChange={e => setScreenerCustom(e.target.value)}
+                  placeholder="e.g. EURUSD, XAUUSD, NVDA.US"
+                  className="glass-inset rounded-[7px] px-2 py-1.5 text-[12px] min-h-[32px] flex-1 min-w-[180px]"
+                />
+              </div>
+              {(() => {
+                const custom = screenerCustom.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
+                const curated = custom.length > 0 ? custom : (PRESET_GROUPS.find(g => g.key === screenerGroupKey)?.names || [])
+                const title = custom.length > 0 ? 'Custom search' : screenerGroupKey
+                return (
+                  <WatchlistScreener
+                    title={title}
+                    curated={curated}
+                    allSymbols={allSymbols}
+                    symbols={symbols}
+                    scanInfo={scanInfo}
+                    regimeBy={regimeBy}
+                    onAdd={addSymbolsPlain}
+                    onRemove={removeSymbolPlain}
+                    onRemoveMany={removeSymbolsPlain}
+                  />
+                )
+              })()}
             </div>
 
             {/* Cup & Handle screener — the video's funnel, broker-honest:

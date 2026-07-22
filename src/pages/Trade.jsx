@@ -317,7 +317,7 @@ export default function Trade() {
         agentGet('/state/market-hours').catch(() => null),
       ])
       setHealth(h)
-      setScans(s.rows || s.scans || [])
+      setScans(s.recentScans || [])
       setPositions(p.rows || p.positions || [])
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])

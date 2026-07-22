@@ -107,8 +107,6 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     // when rows carry a parsed label — closed deals / attempts stay lean.
     { key: 'timeframe', label: 'TF', fmt: (v) => v || '—' },
     { key: 'strategy', label: 'Strategy', fmt: (v) => stratShort(v) || '—' },
-    { key: 'updatedAt', label: 'Updated', fmt: timeCell },
-    { key: 'durationMs', label: 'Duration', fmt: fmtDuration },
     { key: 'margin', label: 'Margin Used', fmt: money2, money: true },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
@@ -125,6 +123,12 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     },
   ]
   const activeOpt = OPT_COLS.filter(c => rows.some(r => r[c.key] != null))
+  // Updated/Duration ride right after Symbol (owner spec: "move the Updated
+  // column [to be] the second column and duration column, do the same for
+  // all tables") — Time+Symbol stay the two frozen/sticky columns, these two
+  // are the next fixed columns, shown only when some row actually carries them.
+  const anyUpdated = rows.some(r => r.updatedAt != null)
+  const anyDuration = rows.some(r => r.durationMs != null)
   // The To-TP/SL trio doesn't need a LIVE price specifically — once a trade
   // closes, its recorded EXIT price is the final reference point, so "how
   // close did it come to TP/SL" is still real, computable data (owner
@@ -133,7 +137,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // blank when NEITHER exists anywhere in the table (e.g. a pending-order
   // table with no fill history at all).
   const anyRef = rows.some(r => r.current != null || r.exit != null)
-  const colCount = (anyRef ? 15 : 12) + activeOpt.length
+  const colCount = (anyRef ? 15 : 12) + activeOpt.length + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -146,6 +150,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             <tr className="border-b border-[var(--color-border)]">
               <th aria-sort={ariaSort('time')} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
               <th aria-sort={ariaSort('symbol')} className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
+              {anyUpdated && <th aria-sort={ariaSort('updatedAt')} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn('updatedAt', 'Updated')}</th>}
+              {anyDuration && <th aria-sort={ariaSort('durationMs')} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn('durationMs', 'Duration')}</th>}
               <th aria-sort={ariaSort('result')} className="py-1.5 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
               <th aria-sort={ariaSort('reason')} className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
               <th aria-sort={ariaSort('source')} className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
@@ -213,6 +219,8 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         </span>
                       )}
                     </td>
+                    {anyUpdated && <td className="py-1.5 pr-3 whitespace-nowrap">{r.updatedAt != null ? timeCell(r.updatedAt) : '—'}</td>}
+                    {anyDuration && <td className="py-1.5 pr-3 whitespace-nowrap">{r.durationMs != null ? fmtDuration(r.durationMs) : '—'}</td>}
                     <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
                     {/* Reason rides right after the result (owner: the WHY
                         belongs beside the verdict, not at the far end). */}
@@ -325,7 +333,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
+                  <td colSpan={10 + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
                   <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>

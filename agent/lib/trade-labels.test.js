@@ -33,6 +33,22 @@ test('encodeLabel — missing fields collapse to "-"', () => {
   assert.equal(label, 'AP|v1|-|-|-|-|-')
 })
 
+test('encodeLabel — an unrecognised strategy VALUE falls to "other", not a permanent blank', () => {
+  // A free-text strategy that doesn't match the STRATEGIES vocabulary (e.g.
+  // an LLM-produced label, or a registry key added to strategies.js but not
+  // yet mirrored here) must still get SOME attribution rather than "-" —
+  // "-" round-trips to null forever and can't be fixed after the fact once
+  // it's baked into the broker's label.
+  const label = encodeLabel({ source: 'autopilot', strategy: 'some_future_strategy' })
+  assert.equal(label.split('|')[2], 'OTH')
+  assert.equal(parseLabel(label).strategy, 'other')
+})
+
+test('encodeLabel — no strategy AT ALL still collapses to "-" (not every source, e.g. plain manual, sets one)', () => {
+  const label = encodeLabel({ source: 'autopilot' })
+  assert.equal(label.split('|')[2], '-')
+})
+
 test('encodeLabel — unknown source defaults to manual', () => {
   const label = encodeLabel({ source: 'something-weird' })
   assert.ok(label.startsWith('MAN|'))
