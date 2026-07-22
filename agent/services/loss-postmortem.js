@@ -31,6 +31,13 @@ import { tfMs } from '../lib/timeframes.js'
 
 export const AFTERMATH_BARS = 12   // how many post-exit bars the verdict may use
 export const MIN_AFTER_BARS = 5    // fewer than this → wait (or inconclusive)
+// Owner: "some symbol traded SL so earlier or very close to entry, you need
+// to be honest" — a stop hit within this many bars of entry barely gave the
+// idea room to work. "thesis_wrong" (and stop_hunt) read as if the market
+// had a fair say; when the hold was this short, that's misleading — the
+// lesson should say so plainly instead of implying a considered thesis was
+// tested over a reasonable window.
+export const TIGHT_HOLD_BARS = 2
 
 /**
  * Classify a closed losing trade from its surrounding bars. Pure.
@@ -203,15 +210,21 @@ export function classifyResult(trade) {
  */
 export function lessonLine(classification, ctx = {}) {
   const R = (v) => (Number.isFinite(v) ? v.toFixed(2) : null)
+  // Honest caveat: the stop was hit almost immediately — barely any time for
+  // the idea to work, so a "thesis wrong" / "stop too tight" read is really a
+  // guess either way. Prefix, never silently baked into the main verdict.
+  const tightHold = Number.isFinite(ctx.holdBars) && ctx.holdBars <= TIGHT_HOLD_BARS
+    ? `Stopped within ${ctx.holdBars} bar(s) of entry — barely any room to work. `
+    : ''
   switch (classification) {
     case 'stop_hunt': {
       const bars = Number.isFinite(ctx.nBars) ? `${ctx.nBars} bar(s)` : 'a few bars'
       const dist = Number.isFinite(ctx.riskDist) ? ` (${ctx.riskDist.toFixed(5)})` : ''
-      return `Widen stop past this sweep${dist}; price reclaimed entry in ${bars}.`
+      return `${tightHold}Widen stop past this sweep${dist}; price reclaimed entry in ${bars}.`
     }
     case 'thesis_wrong': {
       const dist = Number.isFinite(ctx.riskDist) ? ` ${ctx.riskDist.toFixed(5)}` : ''
-      return `Re-validate ${ctx.strategy || 'the'} entry; price ran ≥1R${dist} past the stop.`
+      return `${tightHold}Re-validate ${ctx.strategy || 'the'} entry; price ran ≥1R${dist} past the stop.`
     }
     case 'chop': {
       const bars = Number.isFinite(ctx.afterBars) ? `${ctx.afterBars} bars` : 'the aftermath'
@@ -344,6 +357,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     }
 
     const riskDist = t.sl_price != null ? Math.abs(t.entry_price - t.sl_price) : (Number(t.initial_risk) > 0 ? Number(t.initial_risk) : null)
+    const holdBars = Number.isFinite(openedMs) ? Math.max(0, Math.round((closedMs - openedMs) / ms)) : null
     const rMult = riskDist > 0 && t.exit_price != null && t.entry_price != null
       ? (isWin ? 1 : -1) * (Math.abs(t.entry_price - t.exit_price) / riskDist)
       : null
@@ -357,7 +371,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     const decay = alphaDecayFlag(db, { symbol: t.symbol, strategy: t.strategy || null, timeframe: tf })
     const lesson = lessonLine(verdict.classification, {
       strategy: t.strategy, maeR: verdict.maeR, mfeR: verdict.mfeR, realizedR: verdict.realizedR,
-      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist,
+      nBars: verdict.nBars, afterBars: verdict.afterBars, riskDist, holdBars,
     })
     const eq = entryQuality(t.confluence_count)
     db.prepare(`

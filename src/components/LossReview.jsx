@@ -15,7 +15,7 @@
 // colour for price and TEXT markers (E / SL / X), not red/green coding.
 // ---------------------------------------------------------------------------
 
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
@@ -94,10 +94,31 @@ function Group({ title, rows }) {
   )
 }
 
+// Sort accessors — null/undefined always sorts last, matching StdTradeTable's
+// convention so every table in the app behaves the same way.
+function sortVal(r, key) {
+  switch (key) {
+    case 'date': return Date.parse(String(r.trade_closed_at || r.trade_opened_at || r.created_at || '').replace(' ', 'T') + 'Z')
+    case 'symbol': return r.symbol || null
+    case 'classification': return VERDICTS[r.classification]?.label || r.classification || null
+    case 'r_multiple': return r.r_multiple
+    case 'net_pnl': return r.net_pnl
+    default: return null
+  }
+}
+
+// Owner: "the Trade lesson learnt must be capable of sort and filter in
+// different ways" + "create a mini table within each symbol, and also a
+// group table for losses and wins" — filters/sort apply to BOTH views; the
+// view toggle switches how the (already filtered) rows are laid out.
 export default function LossReview({ postmortems }) {
-  const rows = postmortems?.rows || []
+  const allRows = postmortems?.rows || []
   const stats = postmortems?.stats || []
-  if (rows.length === 0) {
+  const [view, setView] = useState('groups') // 'groups' | 'symbol'
+  const [sort, setSort] = useState({ key: 'date', dir: 'desc' })
+  const [filter, setFilter] = useState({ symbol: '', strategy: '', classification: '', side: '' })
+
+  if (allRows.length === 0) {
     return (
       <p className="text-[13px] text-[var(--color-text-sub)]">
         No classified trades yet — the sweep reviews every closed trade (wins AND losses) a few bars after it closes, working back through 90 days of history.
@@ -109,8 +130,31 @@ export default function LossReview({ postmortems }) {
   for (const s of stats) {
     (byStrat[s.strategy] ||= []).push(`${s.n} ${VERDICTS[s.classification]?.label?.toLowerCase() || s.classification}`)
   }
+
+  const symbols = [...new Set(allRows.map(r => r.symbol).filter(Boolean))].sort()
+  const strategies = [...new Set(allRows.map(r => r.strategy).filter(Boolean))].sort()
+  const classifications = [...new Set(allRows.map(r => r.classification).filter(Boolean))].sort()
+
+  const rows = allRows
+    .filter(r => !filter.symbol || r.symbol === filter.symbol)
+    .filter(r => !filter.strategy || r.strategy === filter.strategy)
+    .filter(r => !filter.classification || r.classification === filter.classification)
+    .filter(r => !filter.side || String(r.side).toUpperCase() === filter.side)
+    .sort((a, b) => {
+      const va = sortVal(a, sort.key), vb = sortVal(b, sort.key)
+      if (va == null && vb == null) return 0
+      if (va == null) return 1
+      if (vb == null) return -1
+      const c = typeof va === 'string' ? va.localeCompare(vb) : va - vb
+      return sort.dir === 'desc' ? -c : c
+    })
+
   const losses = rows.filter(r => !WIN_CLASSES.has(r.classification))
   const wins = rows.filter(r => WIN_CLASSES.has(r.classification))
+  const bySymbol = {}
+  for (const r of rows) (bySymbol[r.symbol] ||= []).push(r)
+
+  const selectCls = 'glass-inset rounded-[6px] px-1.5 py-1 text-[11px]'
   return (
     <div className="space-y-3">
       {Object.keys(byStrat).length > 0 && (
@@ -119,8 +163,132 @@ export default function LossReview({ postmortems }) {
           {Object.entries(byStrat).map(([k, v]) => `${k}: ${v.join(' · ')}`).join('  |  ')}
         </div>
       )}
-      <Group title="Losses — what the market did" rows={losses} />
-      <Group title="Wins — what the exit engine did" rows={wins} />
+
+      {/* Sort/filter bar — applies to whichever view is selected below. */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]">
+          {[['groups', 'Losses / Wins'], ['symbol', 'By symbol']].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setView(k)}
+              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-sub)]'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <select className={selectCls} value={filter.symbol} onChange={e => setFilter(f => ({ ...f, symbol: e.target.value }))}>
+          <option value="">All symbols</option>
+          {symbols.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className={selectCls} value={filter.strategy} onChange={e => setFilter(f => ({ ...f, strategy: e.target.value }))}>
+          <option value="">All strategies</option>
+          {strategies.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className={selectCls} value={filter.classification} onChange={e => setFilter(f => ({ ...f, classification: e.target.value }))}>
+          <option value="">All verdicts</option>
+          {classifications.map(c => <option key={c} value={c}>{VERDICTS[c]?.label || c}</option>)}
+        </select>
+        <select className={selectCls} value={filter.side} onChange={e => setFilter(f => ({ ...f, side: e.target.value }))}>
+          <option value="">Long &amp; Short</option>
+          <option value="BUY">Long</option>
+          <option value="SELL">Short</option>
+        </select>
+        <select className={selectCls} value={sort.key} onChange={e => setSort(s => ({ ...s, key: e.target.value }))}>
+          <option value="date">Sort: Date</option>
+          <option value="symbol">Sort: Symbol</option>
+          <option value="classification">Sort: Verdict</option>
+          <option value="r_multiple">Sort: R-multiple</option>
+          <option value="net_pnl">Sort: P&amp;L</option>
+        </select>
+        <button type="button" onClick={() => setSort(s => ({ ...s, dir: s.dir === 'desc' ? 'asc' : 'desc' }))}
+          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer">
+          {sort.dir === 'desc' ? '↓ desc' : '↑ asc'}
+        </button>
+        {(filter.symbol || filter.strategy || filter.classification || filter.side) && (
+          <button type="button" onClick={() => setFilter({ symbol: '', strategy: '', classification: '', side: '' })}
+            className="text-[var(--color-text-sub)] underline cursor-pointer">clear filters</button>
+        )}
+        <span className="text-[var(--color-text-sub)]">{rows.length} of {allRows.length}</span>
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="text-[12px] text-[var(--color-text-sub)]">No trades match this filter.</p>
+      ) : view === 'groups' ? (
+        <>
+          <Group title="Losses — what the market did" rows={losses} />
+          <Group title="Wins — what the exit engine did" rows={wins} />
+        </>
+      ) : (
+        <div className="space-y-2">
+          {Object.entries(bySymbol).map(([symbol, symRows]) => (
+            <SymbolTable key={symbol} symbol={symbol} rows={symRows} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Compact per-symbol mini table (owner spec) — one row per trade, dense
+// columns instead of the accordion cards the Losses/Wins groups use; still
+// expandable per-row for the full FieldGrid + sparkline.
+function SymbolTable({ symbol, rows }) {
+  const [open, setOpen] = useState(true)
+  const [expandedId, setExpandedId] = useState(null)
+  const wins = rows.filter(r => WIN_CLASSES.has(r.classification)).length
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-[12px] font-semibold mb-1">
+        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        {symbol} <span className="text-[var(--color-text-sub)] font-normal">({rows.length} · {wins}W/{rows.length - wins}L)</span>
+      </button>
+      {open && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px] tabular-nums">
+            <thead className="text-[var(--color-text-sub)]">
+              <tr className="border-b border-[var(--color-border)]">
+                {['Date', 'Side', 'TF', 'Strategy', 'Verdict', 'Lesson', 'P&L', 'R'].map(h => (
+                  <th key={h} className="py-1 pr-2 text-left font-semibold whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const v = VERDICTS[r.classification] || { label: r.classification, hint: '' }
+                const pnlText = r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'
+                const isOpen = expandedId === r.id
+                return (
+                  <Fragment key={r.id}>
+                    <tr className="border-b border-[var(--color-border)] cursor-pointer" onClick={() => setExpandedId(isOpen ? null : r.id)}>
+                      <td className="py-1 pr-2 whitespace-nowrap">{dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}</td>
+                      <td className="py-1 pr-2">{r.side}</td>
+                      <td className="py-1 pr-2">{r.timeframe || '—'}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{r.strategy || 'unlabelled'}</td>
+                      <td className="py-1 pr-2 font-semibold whitespace-nowrap">{v.label}</td>
+                      <td className="py-1 pr-2 max-w-[260px] truncate text-[var(--color-text-sub)]" title={r.lesson || v.hint}>{r.lesson || v.hint}</td>
+                      <td className={`py-1 pr-2 text-right whitespace-nowrap ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>{pnlText}</td>
+                      <td className="py-1 pr-2 text-right whitespace-nowrap">{r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : '—'}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="border-b border-[var(--color-border)]">
+                        <td colSpan={8} className="py-2">
+                          <div className="flex flex-wrap items-start gap-3">
+                            <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
+                            <div className="flex-1 min-w-[200px]">
+                              {r.lesson && <p className="text-[12px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+                              <p className="text-[12px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+                              <FieldGrid r={r} />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

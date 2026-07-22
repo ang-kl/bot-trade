@@ -263,6 +263,26 @@ test('lessonLine: genuinely contextual — different trades read differently (ow
   assert.notEqual(chop1, chop2)
 })
 
+test('lessonLine: tight-hold caveat — owner: "some symbol traded SL so earlier ... you need to be honest"', async () => {
+  const { lessonLine, TIGHT_HOLD_BARS } = await import('./loss-postmortem.js')
+  // Stopped within the threshold → prefixed with the honest caveat, on both
+  // classifications that read the market's post-stop behaviour as if the
+  // idea had a fair trial.
+  const quick = lessonLine('thesis_wrong', { strategy: 'fib_618_fade', holdBars: 1 })
+  assert.match(quick, /^Stopped within 1 bar\(s\) of entry — barely any room to work\./)
+  assert.match(quick, /fib_618_fade/)
+
+  const quickHunt = lessonLine('stop_hunt', { nBars: 2, holdBars: TIGHT_HOLD_BARS })
+  assert.match(quickHunt, new RegExp(`^Stopped within ${TIGHT_HOLD_BARS} bar\\(s\\) of entry`))
+
+  // Past the threshold, or no holdBars data at all → no caveat, unchanged text.
+  const normal = lessonLine('thesis_wrong', { strategy: 'fib_618_fade', holdBars: TIGHT_HOLD_BARS + 1 })
+  assert.doesNotMatch(normal, /Stopped within/)
+  const noData = lessonLine('thesis_wrong', { strategy: 'fib_618_fade' })
+  assert.doesNotMatch(noData, /Stopped within/)
+  assert.equal(normal, noData)
+})
+
 test('sweep persists the flat lesson fields', async () => {
   const db = initDB(':memory:')
   db.prepare(`
@@ -283,5 +303,7 @@ test('sweep persists the flat lesson fields', async () => {
   assert.equal(pm.result, 'Miss')
   assert.equal(pm.alpha_decay, 'insufficient_history')
   assert.equal(pm.entry_quality, 'Watch')       // confluence_count = 2
-  assert.match(pm.lesson, /^Widen stop/)        // stop_hunt verdict
+  // stop_hunt verdict — this trade held only 1 bar (opened 3h ago, closed 2h
+  // ago, 1h timeframe), so the honest tight-hold caveat prefixes it.
+  assert.match(pm.lesson, /^Stopped within 1 bar\(s\) of entry.*Widen stop/)
 })
