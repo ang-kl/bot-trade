@@ -11,6 +11,7 @@ import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
+import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 
@@ -454,7 +455,14 @@ const RISK_CONTROLS = {
   maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10, 15, 25, 50, 100, 200].map(n => [n, String(n)]) },
   symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
   maxConsecutiveLosses: { type: 'select', options: [[0, 'off — no streak breaker'], ...[2, 3, 4, 5, 6].map(n => [n, String(n)])] },
-  cooldownMinutes: { type: 'select', options: [[0, 'off — resume next cycle'], [30, '30 min'], [60, '1 hour — default'], [120, '2 hours'], [240, '4 hours']] },
+  // Free-text duration (owner: "can I type 5m/5s/5h") instead of a fixed
+  // preset list — parseDurationToMinutes/formatMinutesShort in
+  // src/lib/duration-input.js do the s/m/h <-> minutes conversion; the
+  // stored value is still plain minutes (possibly fractional), same as
+  // every other consumer of this field expects (risk.js: cooldownMinutes *
+  // 60_000). Values under ~1 loop cycle won't have a practical effect since
+  // the cooldown is only re-checked when a new proposal is evaluated.
+  cooldownMinutes: { type: 'duration' },
   minSLDistancePct: { type: 'slider', min: 0.01, max: 0.5, step: 0.01, fmt: v => `${Number(v).toFixed(2)}%` },
   maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
   maxClusterExposure: { type: 'select', options: [[0, 'off — no cluster gate'], [1, '±1 — one bet per cluster'], [2, '±2 — default'], [3, '±3'], [4, '±4 — loose']] },
@@ -462,8 +470,50 @@ const RISK_CONTROLS = {
   maxMarginUsagePct: { type: 'slider', min: 0.001, max: 1, step: 0.0001, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
 }
 
+// Free-text "5m" / "30s" / "2h" duration field (owner spec) — keeps its own
+// local text so typing isn't fought by the parsed-value round-trip; only
+// re-syncs from `value` when it changed from something OTHER than our own
+// last emit (e.g. "Reset to defaults"). Re-sync happens during render (the
+// React-recommended "adjusting state when a prop changes" pattern), not in
+// an effect, so reformatting mid-keystroke never stomps on what's typed and
+// never cascades an extra render.
+function DurationInput({ label, hint, value, onChange }) {
+  const [text, setText] = useState(() => formatMinutesShort(value))
+  const [invalid, setInvalid] = useState(false)
+  const [lastEmitted, setLastEmitted] = useState(value)
+  if (value !== lastEmitted) {
+    setLastEmitted(value)
+    setText(formatMinutesShort(value))
+    setInvalid(false)
+  }
+  return (
+    <label className="block text-[12px]" title={hint}>
+      <span className="text-[var(--color-text-sub)]">{label}</span>
+      <Input
+        type="text"
+        value={text}
+        onChange={e => {
+          const raw = e.target.value
+          setText(raw)
+          const mins = parseDurationToMinutes(raw)
+          if (mins == null) { setInvalid(true); return }
+          setInvalid(false)
+          setLastEmitted(mins)
+          onChange(mins)
+        }}
+        placeholder="e.g. 5m, 30s, 2h, or off"
+        className={invalid ? 'border-[var(--color-down)]' : ''}
+      />
+      {invalid && <span className="text-[11px] text-[var(--color-down)]">Use a number, or number + s/m/h — e.g. 90s, 5m, 2h</span>}
+    </label>
+  )
+}
+
 function RiskControl({ k, label, hint, value, onChange }) {
   const ctl = RISK_CONTROLS[k]
+  if (ctl?.type === 'duration') {
+    return <DurationInput label={label} hint={hint} value={value} onChange={onChange} />
+  }
   if (ctl?.type === 'slider') {
     // Percent-style fields edit in % but the model stays a fraction where
     // flagged (perTradeRiskPct/dailyLossPct/maxMarginUsagePct are fractions;
