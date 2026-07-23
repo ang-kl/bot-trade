@@ -12,9 +12,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
-    <!-- W3.CSS (CDN) — opt-in w3-* utility classes used by the Risk page's
-         responsive grid/cards; additive on top of the Tailwind theme. -->
-    <link rel="stylesheet" href="https://www.w3schools.com/w3css/4/w3.css" />
+    <!-- W3.CSS moved into src/index.css under a low-priority cascade layer.
+         As a plain <link> here it was UNLAYERED css, which beats every
+         layered Tailwind v4 utility regardless of specificity — its
+         normalize (aside/nav/header{display:block}, h1-h6 sizes) broke the
+         whole mobile layout. Do not re-add it as a <link>. -->
     <!-- GSAP (CDN) + ScrollTrigger — animation layer. Pages guard on
          window.gsap so a blocked CDN degrades to a static (still fully
          functional) UI rather than breaking anything. -->

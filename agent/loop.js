@@ -10,7 +10,7 @@ import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
-import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance } from './services/risk.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -648,6 +648,15 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
 
   let fired = false
   if (getState(db, 'autotrade_enabled') === 'true' && synth.auto_trade && synth.entry) {
+    // Portfolio margin pre-gate — ONE cheap aggregate check before any
+    // per-account sizing work. When open positions already consume the
+    // whole margin cap, every proposal ends in the same insufficient_margin
+    // veto AFTER the full strategize+size pipeline has run (owner
+    // 2026-07-24: 67 identical margin vetoes in a day — "waste all the
+    // effort to strategise"). Skip the dispatch outright and record ONE
+    // risk event per loop cycle instead of one per symbol. Broker-truth
+    // margin when the snapshot is fresh (see portfolioMarginStatus).
+    if (portfolioMarginExhausted(db)) return { fired: false, synth }
     const apAccounts = getAutopilotAccounts(db)
     for (const acct of apAccounts) {
       const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
@@ -665,6 +674,39 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     }
   }
   return { fired, synth }
+}
+
+// Per-cycle memo for the portfolio margin pre-gate: the aggregate is the
+// same for every symbol within one loop cycle, so compute it once and
+// journal the exhausted state once — not per dispatched symbol.
+let marginGateLoop = -1
+let marginGateExhausted = false
+function portfolioMarginExhausted(db) {
+  if (marginGateLoop === loopCount) return marginGateExhausted
+  marginGateLoop = loopCount
+  marginGateExhausted = false
+  try {
+    const config = loadRiskConfig(db)
+    const balance = getAccountBalance(db)
+    if (!(balance > 0)) return false
+    const pm = portfolioMarginStatus(db, config, { balance, leverage: getAccountLeverage(db, config) })
+    if (pm && pm.headroom <= 0) {
+      marginGateExhausted = true
+      log(`Autotrade dispatch paused this cycle: portfolio margin exhausted — ${pm.source} used $${pm.usedMargin.toFixed(2)} vs cap $${pm.cap.toFixed(2)} (maxMarginUsagePct=${config.maxMarginUsagePct}). No sizing attempted; close/shrink positions or raise the cap to resume.`)
+      try {
+        persistRiskEvent(db, { symbol: 'PORTFOLIO', side: '—' }, {
+          approved: false,
+          veto_reason: `portfolio_margin_exhausted used=${pm.usedMargin.toFixed(2)} cap=${pm.cap.toFixed(2)} source=${pm.source}`,
+          checks: {
+            margin_used_usd: Number(pm.usedMargin.toFixed(2)),
+            margin_cap_usd: Number(pm.cap.toFixed(2)),
+            margin_source: pm.source,
+          },
+        })
+      } catch { /* journaling is best-effort */ }
+    }
+  } catch { /* the pre-gate must never break dispatch on its own error */ }
+  return marginGateExhausted
 }
 
 // ---------------------------------------------------------------------------
