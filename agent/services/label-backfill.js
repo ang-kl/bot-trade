@@ -19,11 +19,25 @@
 // Verbatim fragments from each strategy's own thesis template (see the
 // `strategy:`/`thesis:` pair in each file) — kept in sync by hand since
 // there's no shared constant to import without coupling these modules.
+//
+// Extended 2026-07-22 (owner: only 4 of 10 strategies had a fingerprint —
+// the other 6 were structurally unrecoverable into Edge Health's Manual/
+// external bucket even though their thesis text sat right there in the DB).
+// Each fragment below was checked against EVERY OTHER strategy's thesis
+// template to confirm no cross-match — e.g. ema_pullback and vwap_trend both
+// say "buying the pullback", so the fingerprint anchors on "EMA20 above/below
+// EMA50" (vwap_trend's equivalent line says "VWAP line", never "EMA20").
 const FINGERPRINTS = [
   { strategy: 'vp_value', re: /value-area (low|high)/i },       // vp-value.js
   { strategy: 'rsi2_reversion', re: /RSI\(2\)/ },                // rsi2-reversion.js
   { strategy: 'vwap_trend', re: /VWAP line/i },                  // vwap-trend.js
   { strategy: 'fib_confluence', re: /Fibonacci confluence/i },   // fib-confluence.js
+  { strategy: 'fib_618_fade', re: /61\.8% Fib fade/ },           // fib-strategy.js
+  { strategy: 'inv_cup_handle', re: /Inverted Cup & Handle breakdown/ }, // cup-handle.js (dir=-1) — checked BEFORE cup_handle below, since its text contains "Cup & Handle" as a substring
+  { strategy: 'cup_handle', re: /Cup & Handle breakout/ },       // cup-handle.js (dir=1)
+  { strategy: 'ema_pullback', re: /EMA20 (above|below) EMA50/ }, // ema-pullback.js
+  { strategy: 'donchian_breakout', re: /range height/i },        // donchian-breakout.js
+  { strategy: 'rsi_meanrev', re: /50-bar average/ },             // rsi-meanrev.js
 ]
 
 /**
