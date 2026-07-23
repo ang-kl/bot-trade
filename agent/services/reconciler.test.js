@@ -357,8 +357,10 @@ test('dedup sweep: duplicate open trades sharing a posId are collapsed to the ne
   const open = db.prepare(`SELECT COUNT(*) c FROM trades WHERE ctrader_position_id='600' AND status='open'`).get()
   assert.equal(open.c, 1, 'only the newest open trade survives')
   assert.equal(result.dupsClosed.length, 2)
-  const closed = db.prepare(`SELECT close_reason FROM trades WHERE ctrader_position_id='600' AND status='closed' LIMIT 1`).get()
-  assert.match(closed.close_reason, /duplicate reconcile adoption/)
+  // Duplicates are REJECTED (not closed) so pnl-backfill can never stamp the
+  // same broker P&L onto them — the 4x USDIDR double-count bug.
+  const rejected = db.prepare(`SELECT close_reason FROM trades WHERE ctrader_position_id='600' AND status='rejected' LIMIT 1`).get()
+  assert.match(rejected.close_reason, /duplicate reconcile adoption/)
 })
 
 test('broker_orders ledger: reconcile records resting orders as working', () => {
@@ -543,4 +545,53 @@ test('tamper watch: a manual REVERSAL flips the managed side and rewrites the th
   assert.equal(row.current_sl, 104)
   assert.equal(row.current_tp, 96)
   assert.match(row.thesis, /MANUAL REVERSAL/)
+})
+
+// --- duplicate-P&L repair (owner: 4 identical USDIDR cards, -$487.76 each,
+// reading as ~$2k of losses from ONE real broker position) -----------------
+
+test('dedup sweep marks extra open rows for one positionId as REJECTED, not closed', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // Three open trades all claiming broker position 42 (pre-guard garbage).
+  for (let i = 0; i < 3; i++) {
+    db.prepare(
+      `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+       VALUES ('USDIDR', 'BUY', 17947, 0.76, '42', 'external', 'open', datetime('now'))`
+    ).run()
+  }
+  // Position 42 is still live at the broker.
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '42', symbolName: 'USDIDR' })], [], setState)
+  const byStatus = db.prepare(`SELECT status, COUNT(*) AS n FROM trades GROUP BY status`).all()
+  const rejected = byStatus.find(r => r.status === 'rejected')
+  const open = byStatus.find(r => r.status === 'open')
+  assert.equal(rejected?.n, 2)  // duplicates rejected — never eligible for P&L backfill
+  assert.equal(open?.n, 1)      // the newest row stays open and managed
+})
+
+test('repair: closed duplicates sharing one positionId + identical net_pnl keep only the original', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  // Four closed rows, same position, same stamped P&L — the double-counting
+  // signature (each -487.76 was ONE real loss backfilled onto every row).
+  for (let i = 0; i < 4; i++) {
+    db.prepare(
+      `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, closed_at, net_pnl)
+       VALUES ('USDIDR', 'BUY', 17947, 0.76, '42', 'external', 'closed', datetime('now'), datetime('now'), -487.76)`
+    ).run()
+  }
+  // A legitimate closed trade on another position must be untouched.
+  db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at, closed_at, net_pnl)
+     VALUES ('EURUSD', 'BUY', 1.1, 0.1, '77', 'autopilot', 'closed', datetime('now'), datetime('now'), 25.5)`
+  ).run()
+  reconcilePositions(db, [], [], setState)
+  const usdidr = db.prepare(`SELECT status, net_pnl FROM trades WHERE symbol='USDIDR' ORDER BY id`).all()
+  assert.equal(usdidr.filter(r => r.status === 'closed').length, 1)   // original kept
+  assert.equal(usdidr.filter(r => r.status === 'rejected').length, 3) // dupes out of every stat
+  const eur = db.prepare(`SELECT status FROM trades WHERE symbol='EURUSD'`).get()
+  assert.equal(eur.status, 'closed')
+  // Idempotent: a second pass changes nothing further.
+  reconcilePositions(db, [], [], setState)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status='rejected'`).get().n, 3)
 })

@@ -325,6 +325,7 @@ export default function stateRouter(db) {
          FROM trade_postmortems pm
          LEFT JOIN trades t ON t.id = pm.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
+         WHERE t.id IS NULL OR t.status <> 'rejected'
          ORDER BY pm.id DESC LIMIT ?`
       ).all(limit)
     } catch { /* table appears on first boot after migration */ }
@@ -805,6 +806,21 @@ export default function stateRouter(db) {
       snapshot: parse('broker_snapshot_cache_json'),
       history: parse('broker_history_cache_json'),
     })
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/strategy-insights?days=N — per-strategy forecast-vs-actual
+  // over closed trades (owner: "how the strategy forecast to actual
+  // win/lost"). Same rows Performance counts; 'rejected' repairs excluded.
+  // -----------------------------------------------------------------------
+  router.get('/strategy-insights', async (req, res) => {
+    try {
+      const { strategyInsights } = await import('../services/strategy-insights.js')
+      const days = Number(req.query.days) > 0 ? Number(req.query.days) : null
+      res.json({ ok: true, rows: strategyInsights(db, { sinceDays: days }) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
   })
 
   // -----------------------------------------------------------------------

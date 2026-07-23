@@ -2298,6 +2298,7 @@ export default function actionsRouter(db) {
             out.health = {
               balance: flatBal, equity: flatBal, usedMargin: 0, freeMargin: flatBal, marginLevelPct: null,
               unrealizedNetPnl: 0, unrealizedNetPnlPct: 0,
+              positionsInProfit: 0, positionsInLoss: 0,
               slGrossTotal: null, slNetTotal: null, tpGrossTotal: null, tpNetTotal: null,
               slNetTotalPct: null, tpNetTotalPct: null,
             }
@@ -2524,6 +2525,10 @@ export default function actionsRouter(db) {
             marginLevelPct,
             unrealizedNetPnl: floatingNet,
             unrealizedNetPnlPct: pctOfBalance(floatingNet),
+            // Open-book shape at a glance (owner: "how many -ve lost and
+            // how many +ve win") — counts from the same per-position netPnl.
+            positionsInProfit: out.positions.filter(p => (p.netPnl ?? 0) > 0).length,
+            positionsInLoss: out.positions.filter(p => (p.netPnl ?? 0) < 0).length,
             slGrossTotal: out.positions.some(p => p.slGrossImpact != null) ? sumPositions(p => p.slGrossImpact) : null,
             slNetTotal: out.positions.some(p => p.slNetImpact != null) ? sumPositions(p => p.slNetImpact) : null,
             tpGrossTotal: out.positions.some(p => p.tpGrossImpact != null) ? sumPositions(p => p.tpGrossImpact) : null,
