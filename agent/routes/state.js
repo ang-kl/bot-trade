@@ -809,6 +809,49 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/risk-full — everything the Risk page shows in ONE call:
+  // effective risk config vs defaults (so the UI can mark what's overridden),
+  // account balance/leverage, the broker's real stop-out level, guardian /
+  // weekend-bank toggles, the C++ exec-guard knobs, and VPO settings.
+  // -----------------------------------------------------------------------
+  router.get('/risk-full', async (_req, res) => {
+    try {
+      const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage } = await import('../services/risk.js')
+      const effective = loadRiskConfig(db)
+      const overridden = Object.keys(DEFAULT_RISK_CONFIG).filter(
+        k => JSON.stringify(effective[k]) !== JSON.stringify(DEFAULT_RISK_CONFIG[k])
+      )
+      const parse = (k, dflt) => { try { return JSON.parse(getState(db, k) || dflt) } catch { return JSON.parse(dflt) } }
+      res.json({
+        ok: true,
+        risk: { effective, defaults: DEFAULT_RISK_CONFIG, overridden },
+        account: {
+          balance: getAccountBalance(db),
+          leverage: getAccountLeverage(db, effective),
+          // Pepperstone forces liquidation at 50% margin level on this
+          // account — real observed history (risk.js: owner hit 16 open,
+          // margin level 126% vs 50% stop-out). Broker-set, not editable.
+          brokerStopOutPct: 50,
+          accountId: getState(db, 'ctrader_account_id') || null,
+          isLive: getState(db, 'ctrader_is_live') === 'true',
+        },
+        guardian: {
+          enabled: (getState(db, 'guardian') || 'true') !== 'false',
+          movePct: Number(getState(db, 'guardian_move_pct')) || 0.05,
+        },
+        weekendBank: (getState(db, 'weekend_bank') || 'true') !== 'false',
+        execGuard: parse('exec_guard_json', '{}'),
+        vpo: {
+          enabled: (getState(db, 'vpo_enabled') || 'false') === 'true',
+          config: parse('vpo_config_json', '[]'),
+        },
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/strategy-insights?days=N — per-strategy forecast-vs-actual
   // over closed trades (owner: "how the strategy forecast to actual
   // win/lost"). Same rows Performance counts; 'rejected' repairs excluded.

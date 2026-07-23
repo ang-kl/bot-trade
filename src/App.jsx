@@ -6,6 +6,7 @@ import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
 import Tune from './pages/Tune.jsx'
+import Risk from './pages/Risk.jsx'
 import Connect from './pages/Connect.jsx'
 import AccountSwitcher from './components/AccountSwitcher.jsx'
 import { useTheme } from './lib/theme.js'
@@ -29,6 +30,7 @@ const NAV_GROUPS = [
     title: 'Setup',
     items: [
       { to: '/tune', label: 'Tune', icon: '⚙️' },
+      { to: '/risk', label: 'Risk', icon: '🛡️' },
       { to: '/connect', label: 'Connect', icon: '🔗' },
     ],
   },
@@ -155,6 +157,7 @@ export default function App() {
             <Route path="/trade" element={<Trade />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/tune" element={<Tune />} />
+            <Route path="/risk" element={<Risk />} />
             <Route path="/connect" element={<Connect />} />
             {/* Spotware OAuth redirect URI (registered on the cTrader app) */}
             <Route path="/link-up" element={<Connect />} />
