@@ -168,9 +168,9 @@ int main(int argc, char** argv) {
     // and defaults to 5; it's needed to scale relativeStopLoss/
     // relativeTakeProfit into cTrader's wire units correctly (see
     // vpo_dispatcher.cpp's relativePoints() — a flat ×100000 is WRONG for
-    // any symbol whose precision isn't 5 digits). Only vwap_trend/vp_value
-    // are real ports; any other key is logged and skipped rather than
-    // silently registering a stub that never arms.
+    // any symbol whose precision isn't 5 digits). All seven strategies are
+    // real ports now (see vpo_strategies.hpp); any other/misspelled key is
+    // logged and skipped rather than silently registering nothing.
     std::stringstream ss(vpoSymbolsSpec);
     std::string entry;
     while (std::getline(ss, entry, ',')) {
@@ -193,8 +193,13 @@ int main(int argc, char** argv) {
       std::unique_ptr<vpo::StrategyModule> strat;
       if (key == "vwap_trend") strat = std::make_unique<vpo::VwapTrendStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "vp_value") strat = std::make_unique<vpo::VpValueStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "ema_pullback") strat = std::make_unique<vpo::EmaPullbackStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "donchian_breakout") strat = std::make_unique<vpo::DonchianBreakoutStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "cup_handle") strat = std::make_unique<vpo::CupHandleStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "fib_confluence") strat = std::make_unique<vpo::FibConfluenceStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "rsi2_reversion") strat = std::make_unique<vpo::Rsi2ReversionStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else {
-        logLine("VPO_SYMBOLS: unknown/unported strategy key '" + key + "' — skipping (only vwap_trend, vp_value are real ports)");
+        logLine("VPO_SYMBOLS: unknown strategy key '" + key + "' — skipping");
         continue;
       }
       vpoSymbolIds.push_back(symbolId);

@@ -1119,6 +1119,21 @@ async function runLoop(db) {
             log(`Weekend bank check failed: ${err.message}`)
             await hbeat(db, 'weekend_bank', false, err.message)
           }
+
+          // Weekend loss flag — same window, but for LOSING positions.
+          // Deliberately never closes anything (weekend-bank.js's own
+          // reasoning against selling losers into a thin pre-close market
+          // still holds); this only makes them visible — action_log +
+          // Telegram — so the owner can decide manually before the close.
+          try {
+            const { runWeekendLossFlag } = await import('./services/weekend-loss-flag.js')
+            const wl = await runWeekendLossFlag(db, { host, clientId, clientSecret, accessToken, accountId }, positions)
+            if (wl.flagged?.length) log(`Weekend loss flag: ${wl.flagged.map(f => `${f.symbol} ${f.movePct}%`).join(', ')} ahead of the long closure — left open, owner notified`)
+            await hbeat(db, 'weekend_loss_flag', true)
+          } catch (err) {
+            log(`Weekend loss flag check failed: ${err.message}`)
+            await hbeat(db, 'weekend_loss_flag', false, err.message)
+          }
           log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
 
           // Tamper watch — the owner changed a bot-tracked position in the

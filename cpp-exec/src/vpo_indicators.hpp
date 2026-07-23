@@ -47,4 +47,22 @@ struct VolumeProfileResult {
 // the only mode the C++ strategies need for a single evaluation window).
 VolumeProfileResult volumeProfile(const std::vector<Bar>& bars, int buckets = 24);
 
+// Simple moving average of closes over `period` bars ending at `endIdx`
+// (default: the last bar). Mirrors agent/services/cup-handle.js's sma().
+// Returns NaN when there aren't enough bars before endIdx to fill the window.
+double sma(const std::vector<Bar>& bars, int period, int endIdx = -1);
+
+// Exponential moving average, seeded with an SMA of the first `period`
+// closes then the standard recursive formula — mirrors agent/services/
+// ema-pullback.js's emaSeries() bar-for-bar, but returns only the LAST
+// value (VPO strategies only ever need "where does EMA sit right now",
+// never the historical series). Returns NaN when there aren't enough bars
+// to seed the average.
+double ema(const std::vector<Bar>& bars, int period);
+
+// Wilder-smoothed RSI over closes — mirrors agent/services/fib-strategy.js's
+// rsi() bar-for-bar (NOT the simple/unsmoothed averaging atr() above uses).
+// Returns NaN when there aren't at least period+1 bars.
+double rsi(const std::vector<Bar>& bars, int period = 14);
+
 } // namespace vpo

@@ -848,6 +848,7 @@ export default function stateRouter(db) {
           movePct: Number(getState(db, 'guardian_move_pct')) || 0.05,
         },
         weekendBank: (getState(db, 'weekend_bank') || 'true') !== 'false',
+        weekendLossFlag: (getState(db, 'weekend_loss_flag') || 'true') !== 'false',
         execGuard: parse('exec_guard_json', '{}'),
         vpo: {
           enabled: (getState(db, 'vpo_enabled') || 'false') === 'true',

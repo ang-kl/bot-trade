@@ -348,6 +348,18 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/weekend-loss-flag — { on } toggles the pre-closure LOSS
+  // visibility sweep: never closes anything, just flags (action_log +
+  // Telegram) any losing position inside the same pre-closure window.
+  // -----------------------------------------------------------------------
+  router.post('/weekend-loss-flag', (req, res) => {
+    const on = req.body?.on !== false
+    setState(db, 'weekend_loss_flag', on ? 'true' : 'false')
+    console.log(`[actions] weekend loss flag → ${on ? 'ON' : 'off'}`)
+    res.json({ ok: true, on })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/guardian-move-pct — { pct } sets the tick guardian's
   // significant-move threshold (% of price) that triggers an immediate
   // position sweep between the normal 30s ticks, instead of the 0.05%
@@ -1030,6 +1042,38 @@ export default function actionsRouter(db) {
       }
       const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
       res.json({ ok: true, positionId, closedVolume: volume, partial: volume < (pos.tradeData?.volume ?? volume), deal: exec.deal ?? null })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/close-all — emergency mass-close: close EVERY open
+  // position at the broker, bot-placed or manual. Requires { confirm: true }
+  // in the body so a stray click/fat-fingered call can't trigger it.
+  // Re-reconciles fresh (never trusts a stale local cache, same as
+  // findLivePosition) and closes each position independently — one failure
+  // doesn't stop the rest, and the response reports both closed and failed
+  // so the caller knows exactly what still needs manual attention.
+  router.post('/close-all', async (req, res) => {
+    try {
+      if (req.body?.confirm !== true) return res.status(400).json({ error: 'confirm: true is required' })
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const rec = await execReconcile(creds)
+      const positions = rec.position || []
+      const closed = []
+      const failures = []
+      for (const p of positions) {
+        const td = p.tradeData || {}
+        try {
+          const exec = await execClosePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
+          closed.push({ positionId: p.positionId, symbol: p.symbolName || null, volume: td.volume, deal: exec.deal ?? null })
+        } catch (err) {
+          failures.push({ positionId: p.positionId, symbol: p.symbolName || null, error: err.message })
+        }
+      }
+      console.log(`[actions] close-all: ${closed.length} closed, ${failures.length} failed`)
+      res.json({ ok: failures.length === 0, closed, failures, ranAt: new Date().toISOString() })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
