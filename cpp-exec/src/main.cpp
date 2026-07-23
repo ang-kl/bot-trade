@@ -196,6 +196,7 @@ int main(int argc, char** argv) {
       else if (key == "ema_pullback") strat = std::make_unique<vpo::EmaPullbackStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "donchian_breakout") strat = std::make_unique<vpo::DonchianBreakoutStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "cup_handle") strat = std::make_unique<vpo::CupHandleStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "inv_cup_handle") strat = std::make_unique<vpo::InvCupHandleStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "fib_confluence") strat = std::make_unique<vpo::FibConfluenceStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else if (key == "rsi2_reversion") strat = std::make_unique<vpo::Rsi2ReversionStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
       else {
