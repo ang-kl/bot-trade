@@ -822,11 +822,19 @@ export default function stateRouter(db) {
         k => JSON.stringify(effective[k]) !== JSON.stringify(DEFAULT_RISK_CONFIG[k])
       )
       const parse = (k, dflt) => { try { return JSON.parse(getState(db, k) || dflt) } catch { return JSON.parse(dflt) } }
+      // BROKER truth wins for balance (owner saw a stale figure: the stored
+      // account_balance_usd lags the broker between loop refreshes). Use the
+      // latest broker snapshot when it's fresh; fall back to the stored value.
+      const snap = parse('broker_snapshot_cache_json', 'null')
+      const snapAgeMs = snap?.fetchedAt ? Date.now() - new Date(snap.fetchedAt).getTime() : Infinity
+      const brokerBalance = snapAgeMs < 15 * 60 * 1000 ? (snap?.account?.health?.balance ?? snap?.account?.balance ?? null) : null
       res.json({
         ok: true,
         risk: { effective, defaults: DEFAULT_RISK_CONFIG, overridden },
         account: {
-          balance: getAccountBalance(db),
+          balance: brokerBalance ?? getAccountBalance(db),
+          balanceSource: brokerBalance != null ? 'broker' : 'stored',
+          balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
           leverage: getAccountLeverage(db, effective),
           // Pepperstone forces liquidation at 50% margin level on this
           // account — real observed history (risk.js: owner hit 16 open,

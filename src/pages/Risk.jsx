@@ -6,14 +6,43 @@
 // Writes go through the same routes the agent already enforces:
 // /actions/risk-config, /actions/balance, /actions/guardian-move-pct,
 // /actions/weekend-bank, /actions/exec-guard, /actions/vpo-settings.
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
-const fmt$ = (n, d = 2) => (n == null || Number.isNaN(Number(n)) ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }))
+// W3C-style international number formatting (owner: "use w3 international
+// setup") — everything DISPLAYED goes through Intl.NumberFormat in the
+// viewer's own locale (thousands separators, decimal marks); inputs stay
+// plain machine numbers.
+const nf = (d = 2) => new Intl.NumberFormat(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
+const fmt$ = (n, d = 2) => (n == null || Number.isNaN(Number(n)) ? '—' : nf(d).format(Number(n)))
+
+// GSAP is loaded from the CDN in index.html; everything animation-related
+// guards on window.gsap so a blocked CDN degrades to a static page.
+const gsap = () => (typeof window !== 'undefined' ? window.gsap : null)
+
+// Number that TWEENS to its new value (GSAP) instead of snapping — the
+// example panels recompute as fields are edited, and the motion makes the
+// cause→effect link visible.
+function AnimatedNumber({ value, decimals = 2, className = '' }) {
+  const ref = useRef(null)
+  const prev = useRef(value)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const g = gsap()
+    const from = Number(prev.current) || 0
+    const to = Number(value) || 0
+    prev.current = value
+    if (!g || from === to) { el.textContent = fmt$(to, decimals); return }
+    const obj = { v: from }
+    g.to(obj, { v: to, duration: 0.6, ease: 'power2.out', onUpdate: () => { el.textContent = fmt$(obj.v, decimals) } })
+  }, [value, decimals])
+  return <span ref={ref} className={className}>{fmt$(value, decimals)}</span>
+}
 
 // Tiny bordered pill toggle (same convention as Tune's genuine toggles).
 function Pill({ on, label, onClick }) {
@@ -131,6 +160,38 @@ export default function Risk() {
   const overridden = new Set(data?.risk?.overridden || [])
   const mark = (k) => overridden.has(k) ? '' : ' (default)'
 
+  // GSAP entrance + scroll reveals (guarded — static page if the CDN is
+  // blocked). Runs once after the first successful data load.
+  const animated = useRef(false)
+  useEffect(() => {
+    const g = gsap()
+    if (!g || animated.current || !data) return
+    animated.current = true
+    const cards = document.querySelectorAll('[data-risk-card]')
+    g.fromTo(cards, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.08, ease: 'power2.out' })
+    if (window.ScrollTrigger) {
+      g.registerPlugin(window.ScrollTrigger)
+      document.querySelectorAll('[data-risk-reveal]').forEach(el => {
+        g.fromTo(el, { opacity: 0.3, scale: 0.985 }, {
+          opacity: 1, scale: 1, duration: 0.4, ease: 'power1.out',
+          scrollTrigger: { trigger: el, start: 'top 92%' },
+        })
+      })
+    }
+  }, [data])
+
+  // Save-button pulse: little success beat on whichever section just saved.
+  const lastSaved = useRef('')
+  useEffect(() => {
+    const g = gsap()
+    if (!g) return
+    if (saving) { lastSaved.current = saving; return }
+    if (!lastSaved.current) return
+    const el = document.querySelector(`[data-save-pulse="${lastSaved.current}"]`)
+    lastSaved.current = ''
+    if (el) g.fromTo(el, { scale: 1 }, { scale: 1.06, duration: 0.12, yoyo: true, repeat: 1, ease: 'power1.inOut' })
+  }, [saving])
+
   // ---- Worked examples, recomputed from what's ON SCREEN -----------------
   const bal = Number(acct.balance) || 10000
   const entry = 1.1
@@ -155,13 +216,20 @@ export default function Risk() {
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
-      <Card>
+      <Card data-risk-card className="w3-hover-shadow">
         <SectionTitle badge={data?.account?.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}>
           Global Account — cTrader risk configuration
         </SectionTitle>
         <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
-          <Field label="Account balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
-            hint="The balance every % figure below is computed from. Kept in sync by the loop; override here if it drifts." />
+          <div>
+            <Field label="Account balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
+              hint="The balance every % figure below is computed from." />
+            <div className="text-[10px] text-[var(--color-text-sub)] mt-0.5">
+              {data?.account?.balanceSource === 'broker'
+                ? `live from the broker (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}) — edits here override until the next sync`
+                : 'stored value — connect/refresh the broker for live truth'}
+            </div>
+          </div>
           <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
             hint="Used for margin-headroom checks before approving a position." />
           <div className="text-[12px]">
@@ -173,13 +241,15 @@ export default function Risk() {
             <span className="text-[var(--color-text-sub)]">Account </span>
             <span className="font-semibold">{data?.account?.accountId || '—'}</span>
           </div>
-          <Button size="sm" onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
+          <span data-save-pulse="account">
+            <Button size="sm" onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
+          </span>
         </div>
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr_280px] gap-4 items-start">
         {/* ---- Account Risk Configuration (left) ---- */}
-        <Card>
+        <Card data-risk-card className="w3-hover-shadow">
           <SectionTitle>Account risk configuration</SectionTitle>
           <div className="space-y-2">
             <Field label={`Daily loss cap${mark('dailyLossPct')}`} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
@@ -207,13 +277,13 @@ export default function Risk() {
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[12px]" />
             </label>
-            <Button size="sm" onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button>
+            <span data-save-pulse="risk"><Button size="sm" onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
           </div>
         </Card>
 
         {/* ---- Middle column: Bot Trade + Cpp ---- */}
         <div className="space-y-4">
-          <Card>
+          <Card data-risk-card className="w3-hover-shadow">
             <SectionTitle>Bot Trade risk configuration</SectionTitle>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-2">
               <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
@@ -261,14 +331,14 @@ export default function Risk() {
               </div>
             </div>
             <div className="mt-3">
-              <Button size="sm" onClick={() => {
+              <span data-save-pulse="risk"><Button size="sm" onClick={() => {
                 saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize', 'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxOpenPositions', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
-              }}>Save bot risk</Button>
+              }}>Save bot risk</Button></span>
             </div>
           </Card>
 
-          <Card>
+          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>Cpp risk configuration</SectionTitle>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
               <div className="flex items-center justify-between text-[12px]">
@@ -298,26 +368,26 @@ export default function Risk() {
               </div>
             </div>
             <div className="mt-3">
-              <Button size="sm" onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button>
+              <span data-save-pulse="exec-guard"><Button size="sm" onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button></span>
             </div>
           </Card>
         </div>
 
         {/* ---- Right column: worked examples ---- */}
         <div className="space-y-4">
-          <Card>
+          <Card data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example trade — bot-trade live</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
             <div className="text-[11px] space-y-1 mt-2">
               <div>Sample: EURUSD long at {entry.toFixed(4)}, balance {fmt$(bal, 0)} USD.</div>
               <div>SL {sl.toFixed(4)} (min distance {Number(risk.minSLDistancePct) || 0.15}%) · TP {tp.toFixed(4)} ({Number(risk.minRR) || 1.5}R).</div>
-              <div>Risk budget: <span className="font-semibold">{fmt$(budget)}</span>{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <span className="font-semibold">{lots.toFixed(2)} lots</span> at ~{fmt$(usdPerLot)}/lot.</div>
+              <div>Risk budget: <AnimatedNumber value={budget} className="font-semibold" />{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <AnimatedNumber value={lots} className="font-semibold" /> lots at ~<AnimatedNumber value={usdPerLot} />/lot.</div>
               <div className="text-[var(--color-text-sub)]">
                 Then the gate still checks: daily cap, loss streak, max {risk.maxOpenPositions ?? 5} open, one-per-symbol, spread ≤ {((Number(risk.maxSpreadFracOfSL) || 0.25) * 100).toFixed(0)}% of SL, cluster/currency exposure, margin headroom at 1:{acct.leverage || 100} — ANY failure vetoes with a logged reason.
               </div>
             </div>
           </Card>
-          <Card>
+          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle>Example trade — cpp configuration</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} trigger={entry - slDist * 0.4} />
             <div className="text-[11px] space-y-1 mt-2">
