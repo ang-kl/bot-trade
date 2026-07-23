@@ -1,28 +1,11 @@
-// TradeGaugeWall — per-open-position instrument cluster, replacing the P&L
-// line chart (owner: "change ... from chart to gauges, each trade will have
-// Attitude Indicator gauge style"). Two aviation-style gauges per trade,
-// each paired with a graduated numeric scale (owner: "where are the numeric
-// intervals, indicators, and text arranged on a dial chart to clearly
-// communicate progress toward a KPI or target value"):
-//
-//   Attitude Indicator — the horizon tilts with this trade's progress in
-//     RISK units (R-multiple: how far price has moved from entry, scaled by
-//     the distance to this trade's own stop) — blue sky rises on the
-//     profit side, orange ground on the loss side. R is computed straight
-//     from a LIVE price tick against entry/SL, not from the broker's
-//     polled dollar P&L, so it updates the instant a tick arrives and needs
-//     no per-instrument contract-value conversion (unlike a dollar figure,
-//     "price moved half its stop-distance" means the same thing on every
-//     symbol). The scale strip below reads the current R directly. The
-//     fixed aircraft "wings" don't rotate — their length reads position
-//     SIZE (lots); the wingtip shows an arrow when trending, a dot when
-//     choppy/flat.
-//   Vertical Speed Indicator — needle + scale strip read how fast R is
-//     changing right now (R per minute) — flat sits at 9 o'clock, a fast
-//     mover swings toward 12 (accelerating in profit) or 6 (accelerating
-//     against). Sampled from the SAME live ticks, so it moves sub-second
-//     while the market's active instead of waiting on a poll.
-//
+// TradeGaugeWall — per-open-position COCKPIT cluster (owner 2026-07-23:
+// "change the Open Trades present dials to be cockpit layout", Gulfstream
+// G700 PFD / McLaren F1 dash reference). Each tile is a CockpitPFD:
+// attitude = the trade (horizon level at ENTRY, profit sky above, loss
+// ground below; bank RIGHT = converging on the TP, LEFT = diverging),
+// P&L-in-R tape left, price tape with TP/entry/SL bugs right, and a
+// track-to-target strip along the bottom. The full-size version opens in
+// the TradeChronograph pop-up. Previous twin-gauge design below replaced:
 // Grid selector semantics (owner: "one chart means one overview combination
 // of all open trade symbols, four means four trade symbol"): 1 = a single
 // COMBINED portfolio tile (lots-weighted average R across every open
@@ -33,17 +16,15 @@
 // figure (unchanged) — R and its rate are a live, instrument-agnostic
 // PROXY for "how is this trade doing right now," not a replacement for the
 // exact money number.
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
 import TradeChronograph from './TradeChronograph.jsx'
+import CockpitPFD from './CockpitPFD.jsx'
 
-const UP = 'var(--color-up)'
-const DOWN = 'var(--color-down)'
 const MAX_SAMPLES = 40 // ~2 min of tick-driven samples — enough for a rate-of-change
 const SIZE = 116 // owner: "make it bigger for me to understand"
 
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const money = (v) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const isLong = (side) => side === 'BUY' || side === 'Long' || side === 'long'
 
@@ -54,211 +35,6 @@ function rMultiple(entry, sl, side, price) {
   if (!(risk > 0)) return null
   const dir = isLong(side) ? 1 : -1
   return ((price - entry) * dir) / risk
-}
-
-// Graduated scale strip: tick marks + numbers + a filled bar from zero to
-// the current value. This is the "numeric intervals/indicators" the plain
-// dials were missing — the dial shows shape, this shows the actual number
-// against a fixed, labelled range.
-function ScaleStrip({ value, min, max, ticks, width = 108, height = 22 }) {
-  const w = width - 6
-  const x = (v) => 3 + clamp((v - min) / (max - min), 0, 1) * w
-  const up = (value ?? 0) >= 0
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={value == null ? 'no reading yet' : `${value.toFixed(2)}`}>
-      <line x1={x(min)} y1="8" x2={x(max)} y2="8" stroke="var(--color-border)" strokeWidth="2" />
-      {ticks.map(t => (
-        <g key={t}>
-          <line x1={x(t)} y1="4" x2={x(t)} y2="12" stroke="var(--color-text-sub)" strokeWidth="1" />
-          <text x={x(t)} y={height - 1} fontSize="6.5" textAnchor="middle" fill="var(--color-text-sub)">{t > 0 ? `+${t}` : t}</text>
-        </g>
-      ))}
-      {value != null && (
-        <>
-          <line x1={x(0)} y1="8" x2={x(clamp(value, min, max))} y2="8" stroke={up ? UP : DOWN} strokeWidth="3.5" strokeLinecap="round" />
-          <circle cx={x(clamp(value, min, max))} cy="8" r="4" fill={up ? UP : DOWN} stroke="var(--color-bg)" strokeWidth="1" />
-        </>
-      )}
-    </svg>
-  )
-}
-
-// Fixed roll-index tick marks around a bezel rim — the part of a real
-// attitude indicator that reads as "instrument", not a plain circle. Marks
-// at 0/±10/±20/±30/±45/±60°, longer at 0/±30/±60, with a fixed pointer
-// triangle at 12 o'clock (owner: "lacks the professional dial").
-const ROLL_MARKS = [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]
-function BezelTicks({ cx, r, size }) {
-  return (
-    <>
-      {ROLL_MARKS.map(deg => {
-        const long = deg === 0 || Math.abs(deg) === 30 || Math.abs(deg) === 60
-        const rad = ((deg - 90) * Math.PI) / 180
-        const rOuter = r
-        const rInner = r - (long ? size * 0.09 : size * 0.05)
-        return (
-          <line
-            key={deg}
-            x1={cx + rOuter * Math.cos(rad)} y1={cx + rOuter * Math.sin(rad)}
-            x2={cx + rInner * Math.cos(rad)} y2={cx + rInner * Math.sin(rad)}
-            stroke="var(--color-text-sub)" strokeWidth={long ? 1.4 : 1} opacity="0.8"
-          />
-        )
-      })}
-      {/* fixed top pointer — the instrument's own reference index, never rotates */}
-      <path d={`M ${cx} ${cx - r + size * 0.02} l ${size * 0.045} ${size * 0.07} l ${-size * 0.09} 0 z`} fill="var(--color-text-sub)" />
-    </>
-  )
-}
-
-function AttitudeGauge({ r, volume, trending, noReason, size = SIZE }) {
-  // ±2R maps to the dial's full ±42° tilt — tanh-free since R is already a
-  // bounded, meaningful unit (unlike a raw dollar figure).
-  const bank = clamp((r ?? 0) * 21, -42, 42)
-  const wing = clamp(size * 0.08 + Math.sqrt(Math.max(volume || 0, 0)) * (size * 0.14), size * 0.08, size * 0.47)
-  const up = (r ?? 0) >= 0
-  const cx = size / 2
-  const uid = useId()
-  const clipId = `ai-clip-${uid}`
-  const skyId = `ai-sky-${uid}`
-  const groundId = `ai-ground-${uid}`
-  const bezelId = `ai-bezel-${uid}`
-  const shineId = `ai-shine-${uid}`
-  return (
-    <div className="flex flex-col items-center">
-      <svg
-        width={size} height={size} viewBox={`0 0 ${size} ${size}`}
-        style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.35))' }}
-        role="img" aria-label={`Attitude: ${r == null ? (noReason || 'no reading yet') : `${r.toFixed(2)}R`}, ${trending ? 'trending' : 'choppy'}, volume ${volume}`}
-      >
-        <defs>
-          <linearGradient id={skyId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={UP} stopOpacity="0.5" />
-            <stop offset="100%" stopColor={UP} stopOpacity="0.22" />
-          </linearGradient>
-          <linearGradient id={groundId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={DOWN} stopOpacity="0.22" />
-            <stop offset="100%" stopColor={DOWN} stopOpacity="0.5" />
-          </linearGradient>
-          {/* Chrome bezel — dark→mid→dark ring plus a bright glass-shine arc,
-              the standard "metal instrument housing" trick (owner: "lacks
-              the professional dial" — the old subtle border-tinted ring
-              washed out, especially in light theme). */}
-          <linearGradient id={bezelId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="var(--color-text)" stopOpacity="0.95" />
-            <stop offset="45%" stopColor="var(--color-text-sub)" stopOpacity="0.55" />
-            <stop offset="55%" stopColor="var(--color-text-sub)" stopOpacity="0.55" />
-            <stop offset="100%" stopColor="var(--color-text)" stopOpacity="0.95" />
-          </linearGradient>
-          <linearGradient id={shineId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#fff" stopOpacity="0.9" />
-            <stop offset="35%" stopColor="#fff" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {/* metal bezel ring — thick, dual-tone, unmistakably an instrument housing */}
-        <circle cx={cx} cy={cx} r={cx - 2} fill="none" stroke={`url(#${bezelId})`} strokeWidth="5" />
-        <path d={`M ${cx - (cx - 2) * 0.7} ${cx - (cx - 2) * 0.7} A ${cx - 2} ${cx - 2} 0 0 1 ${cx + (cx - 2) * 0.3} ${cx - (cx - 2) * 0.95}`}
-          fill="none" stroke={`url(#${shineId})`} strokeWidth="5" strokeLinecap="round" />
-        <circle cx={cx} cy={cx} r={cx - 5} fill="none" stroke="var(--color-border)" strokeWidth="1.5" opacity="0.7" />
-        <clipPath id={clipId}><circle cx={cx} cy={cx} r={cx - 7.5} /></clipPath>
-        <g clipPath={`url(#${clipId})`}>
-          <g transform={`rotate(${bank} ${cx} ${cx})`}>
-            <rect x={-cx * 0.4} y={-cx * 2} width={size * 1.4} height={size * 1.5} fill={`url(#${skyId})`} />
-            <rect x={-cx * 0.4} y={cx} width={size * 1.4} height={size * 1.5} fill={`url(#${groundId})`} />
-            <line x1={-cx * 0.4} y1={cx} x2={size * 1.2} y2={cx} stroke={up ? UP : DOWN} strokeWidth="2" />
-          </g>
-        </g>
-        <BezelTicks cx={cx} r={cx - 7} size={size} />
-        {/* fixed aircraft symbol — wings stay level; only the horizon behind them tilts */}
-        <line x1={cx - wing} y1={cx} x2={cx - size * 0.06} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        <line x1={cx + size * 0.06} y1={cx} x2={cx + wing} y2={cx} stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-        <circle cx={cx} cy={cx} r={size * 0.03} fill="currentColor" />
-        {trending
-          ? <path d={`M ${cx + wing} ${cx} l ${size * 0.08} ${-size * 0.05} l 0 ${size * 0.1} z`} fill="currentColor" />
-          : <circle cx={cx + wing + size * 0.05} cy={cx} r={size * 0.025} fill="currentColor" opacity="0.55" />}
-      </svg>
-      <ScaleStrip value={r} min={-2} max={2} ticks={[-2, -1, 0, 1, 2]} width={size - 6} />
-      {/* Unit line for the scale (owner: "label each unit") */}
-      <span className="text-[8px] text-[var(--color-text-sub)] leading-none">scale: R (risk multiples — 1R = the SL distance)</span>
-      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
-        Attitude — {r == null ? (noReason || 'no reading yet') : `${r >= 0 ? '+' : ''}${r.toFixed(2)}R`}<br />{(volume || 0).toFixed(2)} lots · {trending ? 'trending' : 'choppy'}
-      </span>
-    </div>
-  )
-}
-
-// Fixed graduation marks along the VSI's semicircular scale — 9 o'clock
-// (dormant) through 12 (climbing) to 6 (falling), at the same angles the
-// needle can reach, so the dial reads as calibrated rather than empty.
-const VSI_MARKS = [-1, -0.5, 0, 0.5, 1]
-function VsiTicks({ cx, r, size }) {
-  return VSI_MARKS.map(v => {
-    const deg = 180 - clamp(v, -1, 1) * 90
-    const rad = (deg * Math.PI) / 180
-    const long = v === 0 || Math.abs(v) === 1
-    const rOuter = r
-    const rInner = r - (long ? size * 0.08 : size * 0.05)
-    return (
-      <line
-        key={v}
-        x1={cx + rOuter * Math.cos(rad)} y1={cx - rOuter * Math.sin(rad)}
-        x2={cx + rInner * Math.cos(rad)} y2={cx - rInner * Math.sin(rad)}
-        stroke="var(--color-text-sub)" strokeWidth={long ? 1.4 : 1} opacity="0.8"
-      />
-    )
-  })
-}
-
-function VsiGauge({ rate, ratePerMin, size = SIZE }) {
-  // rate is normalized -1..1 for the needle. 0 = 9 o'clock (dormant), +1 =
-  // 12 o'clock (climbing fast), -1 = 6 o'clock (dropping fast).
-  const deg = 180 - clamp(rate, -1, 1) * 90
-  const rad = (deg * Math.PI) / 180
-  const cx = size / 2
-  const r = cx * 0.82
-  const nx = cx + r * Math.cos(rad)
-  const ny = cx - r * Math.sin(rad)
-  const up = rate >= 0
-  const uid = useId()
-  const bezelId = `vsi-bezel-${uid}`
-  const shineId = `vsi-shine-${uid}`
-  return (
-    <div className="flex flex-col items-center">
-      <svg
-        width={size} height={size} viewBox={`0 0 ${size} ${size}`}
-        style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.35))' }}
-        role="img" aria-label={`Activity: ${ratePerMin == null ? 'settling' : `${ratePerMin.toFixed(2)}R per minute`}`}
-      >
-        <defs>
-          <linearGradient id={bezelId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="var(--color-text)" stopOpacity="0.95" />
-            <stop offset="45%" stopColor="var(--color-text-sub)" stopOpacity="0.55" />
-            <stop offset="55%" stopColor="var(--color-text-sub)" stopOpacity="0.55" />
-            <stop offset="100%" stopColor="var(--color-text)" stopOpacity="0.95" />
-          </linearGradient>
-          <linearGradient id={shineId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#fff" stopOpacity="0.9" />
-            <stop offset="35%" stopColor="#fff" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <circle cx={cx} cy={cx} r={cx - 2} fill="none" stroke={`url(#${bezelId})`} strokeWidth="5" />
-        <path d={`M ${cx - (cx - 2) * 0.7} ${cx - (cx - 2) * 0.7} A ${cx - 2} ${cx - 2} 0 0 1 ${cx + (cx - 2) * 0.3} ${cx - (cx - 2) * 0.95}`}
-          fill="none" stroke={`url(#${shineId})`} strokeWidth="5" strokeLinecap="round" />
-        <circle cx={cx} cy={cx} r={cx - 5} fill="none" stroke="var(--color-border)" strokeWidth="1.5" opacity="0.7" />
-        <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 1 ${cx} ${cx - r}`} fill="none" stroke={UP} strokeWidth="3" opacity="0.45" />
-        <path d={`M ${cx - r} ${cx} A ${r} ${r} 0 0 0 ${cx} ${cx + r}`} fill="none" stroke={DOWN} strokeWidth="3" opacity="0.45" />
-        <VsiTicks cx={cx} r={r + size * 0.06} size={size} />
-        <line x1={cx} y1={cx} x2={nx} y2={ny} stroke={up ? UP : DOWN} strokeWidth="3" strokeLinecap="round" />
-        <circle cx={cx} cy={cx} r={size * 0.045} fill="var(--color-bg)" stroke="currentColor" strokeWidth="1.5" />
-        <circle cx={cx} cy={cx} r={size * 0.02} fill="currentColor" />
-      </svg>
-      <ScaleStrip value={ratePerMin} min={-1} max={1} ticks={[-1, -0.5, 0, 0.5, 1]} width={size - 6} />
-      <span className="text-[8px] text-[var(--color-text-sub)] leading-none">scale: R/min (how fast R is changing)</span>
-      <span className="text-[9px] text-[var(--color-text-sub)] leading-tight text-center mt-0.5">
-        Activity — {ratePerMin == null ? 'settling…' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}
-      </span>
-    </div>
-  )
 }
 
 /**
@@ -308,8 +84,8 @@ function minsSince(iso) {
   return Math.max(0, Math.round((Date.now() - t) / 60000))
 }
 
-function GaugeTile({ label, side, r, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen }) {
-  const { rate, ratePerMin, trending } = useTileSeries(r)
+function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen }) {
+  const { ratePerMin } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
   // Proof the monitor is actually reviewing THIS position (owner: "how do I know
   // you are reviewing each one ... watch stop-loss"). Green when reviewed
@@ -353,11 +129,14 @@ function GaugeTile({ label, side, r, noReason, marketClosed, volume, pnl, strate
         </span>
         {side != null && <span className={isLong(side) ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{isLong(side) ? 'Long' : 'Short'}</span>}
       </div>
-      <div className="flex items-center justify-center gap-2 flex-wrap">
-        <AttitudeGauge r={r} volume={volume} trending={trending} noReason={noReason} />
-        <VsiGauge rate={rate} ratePerMin={ratePerMin} />
+      <div className="flex items-center justify-center">
+        <CockpitPFD entry={entry} sl={sl} tp={tp} side={side} price={price}
+          pnl={pnlOk ? pnl : null} lots={volume} noReason={noReason} width={SIZE * 2 + 16} />
       </div>
-      <div className="text-center text-[13px] font-bold mt-1">{pnlOk ? money(pnl) : '—'}</div>
+      <div className="text-center text-[13px] font-bold mt-1">
+        {pnlOk ? money(pnl) : '—'}
+        <span className="text-[9px] font-normal text-[var(--color-text-sub)] ml-1">{ratePerMin == null ? '' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}</span>
+      </div>
       {/* Monitor review record — the verifiable proof each position is watched. */}
       <div className="mt-1 pt-1 border-t border-[var(--color-border)] text-[9px] leading-tight flex items-center justify-between gap-1">
         <span style={{ color: reviewColor }} className="truncate" title={lastCheckAt ? `Last monitor review at ${lastCheckAt}` : 'The monitor has not reviewed this position yet'}>
@@ -418,6 +197,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
           label={`Portfolio · ${positions.length} open (${longs}L/${positions.length - longs}S)`}
           side={null}
           r={weightedR}
+          entry={0} sl={-1} tp={null} price={weightedR ?? null}
           volume={totalLots}
           pnl={totalPnl}
         />
@@ -438,7 +218,10 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
     <div>
       <div className={`grid ${cols} gap-2 max-h-[70vh] overflow-y-auto overscroll-contain pr-1`}>
         {withR.map(({ p, r, pnl, marketClosed, noReason }) => (
-          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r} noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} onOpen={() => setSelected(p)} />
+          <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r}
+            entry={p.entry ?? null} sl={p.monitorSl ?? p.sl ?? null} tp={p.tp1 ?? p.tp ?? null}
+            price={liveMid(ticks, p.symbol) ?? p.currentPrice ?? null}
+            noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} onOpen={() => setSelected(p)} />
         ))}
       </div>
       {withR.length > gridN && (
