@@ -660,19 +660,25 @@ const PRESET_GROUPS = [
   { key: 'Defense stocks', names: ['LMT.US', 'RTX.US', 'NOC.US', 'GD.US', 'BA.US', 'LHX.US', 'HII.US', 'TXT.US', 'KTOS.US', 'LDOS.US', 'AVAV.US', 'BWXT.US', 'CW.US', 'HEI.US', 'TDY.US'] },
 ]
 
+// Owner spec (2026-07-22): shrink every genuine on/off control app-wide —
+// tiny bordered curved-square, background matched to the page (not a fixed
+// color, so it reads correctly in both themes), minimal text-to-border
+// padding, and the ON/OFF word itself dropped — state is carried by color +
+// weight + case alone (bold uppercase = off, normal titlecase = on) instead
+// of spelling it out, since that's the actual "estate" being reclaimed.
 function Toggle({ on, onClick, label }) {
   return (
     <button
-      type="button"
+      type="button" role="switch" aria-checked={on}
       onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-[7px] border px-3 py-1.5 text-[13px] font-semibold min-h-[36px] cursor-pointer transition-colors ${
+      title={`${label}: ${on ? 'ON' : 'OFF'}`}
+      className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer transition-colors px-[3px] py-[1px] bg-[var(--color-bg)] ${
         on
-          ? 'bg-[var(--color-accent)] text-white border-transparent'
-          : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)]'
+          ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+          : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
       }`}
     >
-      <span className={`inline-block w-2 h-2 rounded-full ${on ? 'bg-white' : 'bg-[var(--color-muted)]'}`} />
-      {label}: {on ? 'ON' : 'OFF'}
+      {label}
     </button>
   )
 }
@@ -1461,7 +1467,11 @@ export default function Tune() {
                     await agentPost('/actions/monitor-interval', { minutes: m })
                     setConfig(c => ({ ...c, monitor_interval_min: m }))
                   }, `Position monitor every ${m}m (volume-scaled)`)}
-                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${(config?.monitor_interval_min ?? 1) === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[4px] py-[3px] ${
+                    (config?.monitor_interval_min ?? 1) === m
+                      ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+                      : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
+                  }`}
                 >{m}m</button>
               ))}
               <span className="text-[12px] text-[var(--color-text-sub)]">
@@ -1870,16 +1880,18 @@ export default function Tune() {
                       const empty = g.avail.length === 0
                       return (
                         <button
-                          key={g.key} type="button" disabled={empty && !selected}
+                          key={g.key} type="button" role="switch" aria-checked={selected} disabled={empty && !selected}
                           title={empty
                             ? 'None of these tickers exist on this broker account — use Browse below for broker-truth categories'
                             : selected ? 'In the watchlist — tap to remove the group' : g.avail.join(' · ')}
                           onClick={() => selected ? removeGroup(g.key) : addGroup(g.key, g.avail)}
-                          className={`rounded-full px-2.5 py-1 min-h-[32px] text-[12px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-default ${
-                            selected ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)] hover:text-[var(--color-text)]'
+                          className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[3px] py-[1px] disabled:opacity-40 disabled:cursor-default ${
+                            selected
+                              ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+                              : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
                           }`}
                         >
-                          {selected ? '✓ ' : '+ '}{g.key} ({g.avail.length})
+                          {g.key} ({g.avail.length})
                         </button>
                       )
                     })}
