@@ -286,15 +286,69 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
           )`
     ).all()
     const closeDupMon = db.prepare(`UPDATE monitored_positions SET status='closed' WHERE trade_id = ? AND status='active'`)
+    // Duplicates are marked REJECTED, not closed: a 'closed' dup row with
+    // net_pnl NULL gets the SAME broker P&L stamped onto it by pnl-backfill
+    // (it matches by ctrader_position_id), so one real loss was counted once
+    // per duplicate row — the owner saw 4 identical USDIDR lesson cards,
+    // -$487.76 each, reading as a ~$2k loss that never happened. 'rejected'
+    // rows are excluded from every closed-trade stat and from backfill.
+    const rejectDup = db.prepare(
+      `UPDATE trades SET status='rejected', closed_at = datetime('now'),
+              close_reason = 'duplicate reconcile adoption — superseded by the newest row for this position'
+        WHERE id = ? AND status = 'open'`
+    )
     const tx = db.transaction(() => {
       for (const d of dups) {
-        closeTradeRow(db, d.id, { closeReason: 'duplicate reconcile adoption — superseded by the newest row for this position' })
+        rejectDup.run(d.id)
         closeDupMon.run(d.id)
         dupsClosed.push(d)
       }
     })
     tx()
   } catch { /* dedup best-effort */ }
+
+  // REPAIR historical duplicate-P&L garbage (idempotent): before the
+  // 'rejected' change above, duplicate rows ended up status='closed' and
+  // pnl-backfill stamped each with the SAME broker P&L — one real loss
+  // counted N times in Performance. Any group of closed trades sharing one
+  // ctrader_position_id with identical net_pnl keeps its ORIGINAL row (the
+  // real adoption, MIN(id)) and rejects the rest, deleting their duplicate
+  // postmortem/lesson cards. Partial closes are safe: the bot stamps those
+  // on a single row, never as multiple rows per position id.
+  const dupPnlRepaired = []
+  try {
+    const badRows = db.prepare(
+      `SELECT t.id, t.symbol, t.ctrader_position_id FROM trades t
+        WHERE t.status = 'closed' AND t.ctrader_position_id IS NOT NULL AND t.net_pnl IS NOT NULL
+          AND t.id NOT IN (
+            SELECT MIN(id) FROM trades
+             WHERE status = 'closed' AND ctrader_position_id IS NOT NULL AND net_pnl IS NOT NULL
+             GROUP BY ctrader_position_id, net_pnl
+          )
+          AND EXISTS (
+            SELECT 1 FROM trades o
+             WHERE o.ctrader_position_id = t.ctrader_position_id
+               AND o.net_pnl = t.net_pnl AND o.status = 'closed' AND o.id < t.id
+          )`
+    ).all()
+    const rejectRepair = db.prepare(
+      `UPDATE trades SET status='rejected',
+              close_reason = COALESCE(close_reason, '') || ' | repaired: duplicate row double-counting one broker P&L'
+        WHERE id = ?`
+    )
+    const dropPm = db.prepare(`DELETE FROM trade_postmortems WHERE trade_id = ?`)
+    const tx2 = db.transaction(() => {
+      for (const r of badRows) {
+        rejectRepair.run(r.id)
+        try { dropPm.run(r.id) } catch { /* postmortems table may not exist yet */ }
+        dupPnlRepaired.push(r)
+      }
+    })
+    tx2()
+    if (dupPnlRepaired.length > 0) {
+      console.log(`[reconciler] repaired ${dupPnlRepaired.length} duplicate-P&L trade row(s): ${dupPnlRepaired.map(r => `${r.symbol}#${r.ctrader_position_id}`).join(', ')}`)
+    }
+  } catch { /* repair best-effort */ }
 
   const orphansClosed = []
   const openWithPosId = db.prepare(

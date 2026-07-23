@@ -44,8 +44,17 @@ export default function AccountHealth({ acct }) {
         <div className="text-[12px] font-semibold">Account health</div>
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
         {acct.traderLogin && <span className="text-[11px] text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
-        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
-          Margin level: <span className="font-semibold text-[var(--color-text)]">{h.marginLevelPct != null ? `${h.marginLevelPct.toFixed(0)}%` : '— (no open positions)'}</span>
+        <span className="ml-auto flex items-center gap-2 text-[11px] text-[var(--color-text-sub)]">
+          {(h.positionsInProfit != null || h.positionsInLoss != null) && (
+            <span>
+              Open book: <span className="font-semibold text-[var(--color-up)]">{h.positionsInProfit ?? 0} winning</span>
+              {' · '}
+              <span className="font-semibold text-[var(--color-down)]">{h.positionsInLoss ?? 0} losing</span>
+            </span>
+          )}
+          <span>
+            Margin level: <span className="font-semibold text-[var(--color-text)]">{h.marginLevelPct != null ? `${h.marginLevelPct.toFixed(0)}%` : '— (no open positions)'}</span>
+          </span>
         </span>
       </div>
       <div className="overflow-x-auto">

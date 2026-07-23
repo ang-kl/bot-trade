@@ -13,6 +13,7 @@ import OrderManager from '../components/OrderManager.jsx'
 import AccountHealth from '../components/AccountHealth.jsx'
 import AccountPivot from '../components/AccountPivot.jsx'
 import MarketClock from '../components/MarketClock.jsx'
+import StrategyInsights from '../components/StrategyInsights.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
@@ -162,6 +163,8 @@ export default function Accounts() {
 
       {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}
       {others && others.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
+
+      <StrategyInsights />
 
       <p className="text-[12px] text-[var(--color-text-sub)]">
         *Est. P&L is the price move in the symbol's quote currency (lots × contract size × Δprice), excluding swap and commission — cTrader's own app shows the exact figure.
