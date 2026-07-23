@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, isoWeek } from './order-ledger-rows.js'
+import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, expiresLabel, isoWeek } from './order-ledger-rows.js'
 
 describe('orderStrategy', () => {
   it('extracts the strategy code from a structured bot label', () => {
@@ -69,6 +69,21 @@ describe('fmtDuration', () => {
   it('returns an em dash for invalid input', () => {
     expect(fmtDuration(null)).toBe('—')
     expect(fmtDuration(-5)).toBe('—')
+  })
+})
+
+describe('expiresLabel', () => {
+  const now = Date.parse('2026-07-22T12:00:00Z')
+  it('shows a countdown for a future expiry, not "0s"', () => {
+    expect(expiresLabel('2026-07-22T13:30:00Z', { nowMs: now })).toBe('in 1h 30m')
+    expect(expiresLabel('2026-07-25T12:00:00Z', { nowMs: now })).toBe('in 3d')
+  })
+  it('shows elapsed time once the expiry has actually passed', () => {
+    expect(expiresLabel('2026-07-22T10:00:00Z', { nowMs: now })).toBe('2h ago')
+  })
+  it('returns null for missing/unparseable input', () => {
+    expect(expiresLabel(null)).toBe(null)
+    expect(expiresLabel('not-a-date')).toBe(null)
   })
 })
 

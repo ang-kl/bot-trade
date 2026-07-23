@@ -796,6 +796,51 @@ export default function actionsRouter(db) {
     }
   })
 
+  // POST /actions/queued-veto — one-tap "kill this AND stop it recurring":
+  // cancels the queued row exactly like /queued-cancel, then adds the symbol
+  // to risk.blockedSymbols so autopilot can't re-queue/re-arm it (owner: the
+  // tiny switch on the queued-orders table's first column — "auto-veto or
+  // close"). Idempotent: re-vetoing an already-blocked symbol just no-ops the
+  // config half. Body: { kind: 'closed_market_limit'|'queued_signal', id, symbol }.
+  router.post('/queued-veto', async (req, res) => {
+    try {
+      const { kind, id, symbol } = req.body || {}
+      if (!id || !['closed_market_limit', 'queued_signal'].includes(kind) || !symbol) {
+        return res.status(400).json({ error: "kind ('closed_market_limit'|'queued_signal'), id and symbol required" })
+      }
+      let cancelled = false
+      if (kind === 'queued_signal') {
+        const r = db.prepare(
+          `UPDATE pending_signals SET status='expired', resolved_at=datetime('now'),
+             resolution_note='vetoed by owner' WHERE id = ? AND status = 'pending'`
+        ).run(id)
+        cancelled = r.changes > 0
+      } else {
+        const row = db.prepare(`SELECT * FROM pending_orders WHERE id = ? AND status = 'working'`).get(id)
+        if (row) {
+          if (row.order_id) {
+            const creds = getCtraderCreds(db)
+            if (creds.ready) {
+              const { cancelOrder } = await import('../lib/exec-engine.js')
+              try { await cancelOrder(creds, { orderId: row.order_id }) } catch { /* already gone at broker */ }
+            }
+          }
+          db.prepare(`UPDATE pending_orders SET status='cancelled', note = COALESCE(note,'') || ' · vetoed by owner' WHERE id = ?`).run(id)
+          cancelled = true
+        }
+      }
+      const current = loadRiskConfig(db)
+      const blocked = new Set((Array.isArray(current.blockedSymbols) ? current.blockedSymbols : []).map(s => String(s).toUpperCase()))
+      const sym = String(symbol).toUpperCase()
+      blocked.add(sym)
+      const next = { ...current, blockedSymbols: [...blocked] }
+      setState(db, 'risk_config_json', JSON.stringify(next))
+      res.json({ ok: true, cancelled, blockedSymbols: next.blockedSymbols })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   // POST /actions/postmortem-sweep — on-demand Trade-lessons sweep (owner:
   // "create one PR to sweep the lesson learn"). Runs a BIG batch now instead
   // of waiting for the loop's gradual 6-per-cycle back-fill. Body:
