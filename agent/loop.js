@@ -2080,5 +2080,11 @@ export function startLoop(db) {
   import('./services/guardian.js')
     .then(m => m.startGuardian(db, getCtraderCreds))
     .catch(err => log('guardian failed to start:', err.message))
+  // Virtual Pending Order feeder — pushes real trendbars + real risk.js
+  // sizing to the C++ sidecar (agent_state `vpo_enabled`, off by default).
+  // No-ops immediately (cheap agent_state read) when VPO isn't configured.
+  import('./services/vpo-feeder.js')
+    .then(m => m.startVpoFeeder(db))
+    .catch(err => log('vpo-feeder failed to start:', err.message))
   return { getLoopCount: () => loopCount }
 }

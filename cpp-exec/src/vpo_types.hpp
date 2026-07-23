@@ -52,9 +52,15 @@ struct VirtualPendingOrder {
   const std::string symbol;
   const std::string timeframe; // the MICRO timeframe this order fires on
   const long long symbolId = 0;
+  // Symbol price precision (decimal digits) — needed to scale
+  // relativeStopLoss/relativeTakeProfit into cTrader's wire units at fire
+  // time (see vpo_dispatcher.cpp's relativePoints(), mirroring agent/lib/
+  // lot-sizing.js's relativePoints()). Defaults to 5 (most FX majors) for
+  // callers that don't have the real per-symbol value yet.
+  const int digits = 5;
 
-  VirtualPendingOrder(std::string sym, std::string tf, long long symId)
-      : symbol(std::move(sym)), timeframe(std::move(tf)), symbolId(symId) {}
+  VirtualPendingOrder(std::string sym, std::string tf, long long symId, int dig = 5)
+      : symbol(std::move(sym)), timeframe(std::move(tf)), symbolId(symId), digits(dig) {}
 };
 
 } // namespace vpo

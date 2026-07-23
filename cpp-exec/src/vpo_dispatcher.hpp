@@ -23,6 +23,13 @@
 
 namespace vpo {
 
+// Mirrors agent/lib/lot-sizing.js's relativePoints(priceDistance, digits) —
+// cTrader's relativeStopLoss/relativeTakeProfit wire fields are NOT a flat
+// ×100000 of the price distance; they're additionally snapped to a step
+// derived from the symbol's own decimal precision. Exposed (not file-local)
+// so it's independently unit-testable, same as vpo_indicators.hpp's math.
+double relativePoints(double priceDistance, int digits);
+
 // Supplies bars to the background recompute thread. Returning an empty
 // vector is treated as "no data yet" (recompute() will disarm on too-few-
 // bars, same as every strategy already does).
