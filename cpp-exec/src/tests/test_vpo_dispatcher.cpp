@@ -6,6 +6,7 @@
 // sizing refusal path (no volumeResolver => never places a fabricated
 // order).
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 
 #include "../engine.hpp"
@@ -15,6 +16,18 @@
 using vpo::Bar;
 using vpo::Side;
 using vpo::VposState;
+
+static bool near(double a, double b, double eps = 1e-9) { return std::fabs(a - b) < eps; }
+
+static void test_relative_points_scales_and_snaps_to_symbol_precision() {
+  // 5-digit EURUSD: a 0.0012 price distance -> 120 wire units, no snapping needed.
+  assert(near(vpo::relativePoints(0.0012, 5), 120.0));
+  // 3-digit USDJPY: step = 10^(5-3) = 100 -> snaps to the nearest 100.
+  assert(near(vpo::relativePoints(0.012, 3), 1200.0));
+  assert(near(vpo::relativePoints(0.0121, 3), 1200.0)); // snaps down within the 100-unit step
+  // Never below one full step, even for a near-zero distance.
+  assert(near(vpo::relativePoints(0.0000001, 5), 1.0));
+}
 
 // Manually arms a strategy's order (bypassing recompute()) so onTick's fire
 // path can be tested in isolation, deterministically, without depending on
@@ -103,6 +116,7 @@ static void test_sell_side_fires_on_bid_rising_to_trigger() {
 }
 
 int main() {
+  test_relative_points_scales_and_snaps_to_symbol_precision();
   test_onTick_fires_on_touch_and_rearms_to_idle();
   test_onTick_ignores_other_symbols();
   test_onTick_refuses_to_fire_without_resolvable_volume();

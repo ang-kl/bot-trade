@@ -1,7 +1,7 @@
 # Virtual Pending Order Engine (VWAP + Volume Profile) — C++ sidecar
 
 Repo: `ang-kl/bot-trade` · Module: `cpp-exec/src/vpo_*.{hpp,cpp}`
-Status: **v1 built, NOT wired into `main.cpp`/live trading yet — needs manual review before that step**
+Status: **wired into `main.cpp`, OFF by default (`VPO_ENABLED` unset) — needs manual review + explicit owner sign-off before turning it on against a real account (see "Wiring update" below)**
 Prepared: 22-07-'26, following review of `cpp-exec/src/engine.{hpp,cpp}`,
 `order_guard.{hpp,cpp}`, `main.cpp`, `doc_reference/pending-order-mode.md`,
 and the two source prompts (owner-supplied, 2026-07-22, "Strategy: Clear"
@@ -47,6 +47,81 @@ hot tick thread, atomic CAS fire, race-safety explained inline). Tests:
   against a live socket. Wiring this in is the next step and should get
   its own review pass given it's the point where this starts actually
   placing real market orders.
+
+## Wiring update (23-07-'26) — owner: "proceed with VPO"
+
+This is the wiring step §"Deliberately NOT done" above flagged as needing
+its own review. It connects the dispatcher to a live tick feed and real
+Node-computed data, but is **OFF by default** — nothing arms or fires
+unless `VPO_ENABLED=true` and `VPO_SYMBOLS` are explicitly set in the
+sidecar's environment. Owner sign-off on turning it on for real is still
+required; this only makes that switch possible.
+
+**New pieces:**
+- `spot_feed.{hpp,cpp}` — a **second, dedicated** WS connection (separate
+  from `ExecEngine`'s request/response connection) that auths and
+  subscribes to the configured symbolIds, delivering every `SPOT_EVENT` to
+  the dispatcher's `onTick()`. Kept separate deliberately: `ExecEngine`'s
+  single connection blocks awaiting one specific response type at a time
+  (`placeOrder`, `reconcile`, …) and silently logs+drops anything else that
+  arrives meanwhile — a tick landing during that window would never reach
+  the dispatcher. A subscribe-only connection is always free to read.
+  Reconnects with capped exponential backoff, same shape as `ExecEngine::
+  runLoop()`. Missing sides on a `SPOT_EVENT` are held at "unknown" (not
+  defaulted to 0) until both bid and ask have been seen at least once —
+  a 0 would otherwise read as a false touch on the very first tick.
+- `vpo_config_store.{hpp,cpp}` — thread-safe cache of bars-per-(symbol,
+  timeframe) and volume-per-strategy-key, **pushed in** by the Node keeper
+  via a new `POST /vpo-config`. Entries older than 5 minutes are treated as
+  ABSENT (empty bars / volume -1), not served stale — a dead Node feeder
+  makes the dispatcher fail SAFE (disarm / refuse to fire) rather than
+  arming off minutes-old data.
+- `agent/services/vpo-feeder.js` (+ `startVpoFeeder` wired into
+  `loop.js`'s boot sequence, next to `startGuardian`) — the ONLY place that
+  fetches trendbars or computes position size for VPO. Runs every 60s (only
+  when agent_state `vpo_enabled` is `'true'` and `vpo_config_json` has
+  entries), fetches macro+micro trendbars via the existing
+  `wsGetTrendbarsBatch`, sizes with the SAME `computeRiskBasedVolume`
+  the live risk gate uses (tightest-allowed-stop convention, same as
+  `sizing-preview.js`), converts lots→wire volume via `lotsToVolume`, and
+  POSTs the result to the sidecar. No parallel sizing/indicator logic is
+  invented in C++ or in this feeder — see `vpo_config_store.hpp`'s header.
+- `main.cpp`: env-driven registration — `VPO_ENABLED` (default false),
+  `VPO_SYMBOLS` = `SYMBOL:SYMBOLID:STRATEGYKEY[:DIGITS],...` (DIGITS
+  optional, defaults to 5), `VPO_MACRO_TF`/`VPO_MICRO_TF` (default 4h/15m),
+  `VPO_RECOMPUTE_MS` (default 5000). `POST /connect` (re)starts the spot
+  feed against the freshly pushed session credentials — the old feed is
+  stopped and joined BEFORE the object is replaced (swapping it out from
+  under a still-running thread would be a use-after-free). `POST
+  /vpo-config` is always registered (harmless no-op store when VPO isn't
+  enabled).
+
+**Also fixed while wiring (a real correctness bug, not scope creep):**
+`vpo_strategies.cpp` stores `relativeStopLoss`/`relativeTakeProfit` as
+plain price distances, but cTrader's wire format needs those additionally
+snapped to a step derived from the symbol's own decimal precision — mirrors
+`agent/lib/lot-sizing.js`'s `relativePoints(distance, digits)` exactly, NOT
+a flat ×100000 (that's only correct for a 5-digit symbol). Added `digits`
+to `VirtualPendingOrder`/`StrategyModule` (defaults to 5, set from
+`VPO_SYMBOLS`'s optional 4th field) and a `vpo::relativePoints()` — applied
+at the one place an order is actually built (`vpo_dispatcher.cpp`'s
+`tryFire`), not duplicated at the strategy level. This was silently wrong
+in the merged v1 for any non-5-digit symbol (e.g. JPY pairs); nothing had
+exercised the fire path against real units yet since nothing called it.
+
+**Still NOT done, still flagged rather than invented:**
+- The 5 stub strategies (EMA/BRK/C&H/FIBC/RSI) still never arm — same
+  posture as before, unchanged by this wiring pass.
+- No live-fire verification against a real (even demo) account — `make
+  test` covers the pure logic (dispatcher fire mechanics, config store
+  staleness, relativePoints scaling) but nothing here has placed a real
+  order end-to-end yet. That should happen deliberately, on demo, with the
+  owner watching, before `VPO_ENABLED=true` ever points at a live account.
+- `vpo_config_json` (Node) and `VPO_SYMBOLS` (cpp-exec env) are two
+  separately-configured lists that must name the same symbol/symbolId/key
+  triples or the sidecar has bars/volume with nowhere to file and the
+  dispatcher has strategies with nothing pushed to them — there's no
+  single source of truth enforcing they match yet.
 
 ---
 

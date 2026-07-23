@@ -16,8 +16,8 @@ namespace vpo {
 
 class StrategyModule {
 public:
-  StrategyModule(std::string key, std::string symbol, std::string microTimeframe, long long symbolId)
-      : key_(std::move(key)), order_(symbol, microTimeframe, symbolId) {}
+  StrategyModule(std::string key, std::string symbol, std::string microTimeframe, long long symbolId, int digits = 5)
+      : key_(std::move(key)), order_(symbol, microTimeframe, symbolId, digits) {}
   virtual ~StrategyModule() = default;
 
   // Registry key — matches the equivalent Node strategy's key in
