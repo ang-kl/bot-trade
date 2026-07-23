@@ -43,6 +43,7 @@ export const CONTROLLERS = {
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3 },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
   weekend_bank:     { label: 'Weekend profit bank',    tiedToLoop: true, loopMultiplier: 3, factor: 4 },
+  weekend_loss_flag: { label: 'Weekend loss flag',     tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   guardian:         { label: 'Tick guardian',          expectedSec: 30,   factor: 10 },
   cpp_exec:         { label: 'C++ exec engine',        expectedSec: 120,  factor: 3 },
 }

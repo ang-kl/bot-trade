@@ -101,4 +101,40 @@ VolumeProfileResult volumeProfile(const std::vector<Bar>& bars, int buckets) {
   return r;
 }
 
+double sma(const std::vector<Bar>& bars, int period, int endIdx) {
+  const int e = endIdx >= 0 ? endIdx : static_cast<int>(bars.size()) - 1;
+  if (e + 1 < period) return std::numeric_limits<double>::quiet_NaN();
+  double s = 0.0;
+  for (int i = e - period + 1; i <= e; i++) s += bars[i].c;
+  return s / period;
+}
+
+double ema(const std::vector<Bar>& bars, int period) {
+  if (static_cast<int>(bars.size()) < period) return std::numeric_limits<double>::quiet_NaN();
+  double sum = 0.0;
+  for (int i = 0; i < period; i++) sum += bars[i].c;
+  double e = sum / period;
+  const double k = 2.0 / (period + 1);
+  for (int i = period; i < static_cast<int>(bars.size()); i++) e = bars[i].c * k + e * (1.0 - k);
+  return e;
+}
+
+double rsi(const std::vector<Bar>& bars, int period) {
+  if (static_cast<int>(bars.size()) < period + 1) return std::numeric_limits<double>::quiet_NaN();
+  double gain = 0.0, loss = 0.0;
+  for (int i = 1; i <= period; i++) {
+    const double d = bars[i].c - bars[i - 1].c;
+    if (d >= 0) gain += d; else loss -= d;
+  }
+  double avgGain = gain / period;
+  double avgLoss = loss / period;
+  for (int i = period + 1; i < static_cast<int>(bars.size()); i++) {
+    const double d = bars[i].c - bars[i - 1].c;
+    avgGain = (avgGain * (period - 1) + std::max(d, 0.0)) / period;
+    avgLoss = (avgLoss * (period - 1) + std::max(-d, 0.0)) / period;
+  }
+  if (avgLoss == 0.0) return 100.0;
+  return 100.0 - 100.0 / (1.0 + avgGain / avgLoss);
+}
+
 } // namespace vpo

@@ -1,27 +1,36 @@
 // cpp-exec/src/vpo_strategies.hpp
 //
 // Concrete StrategyModule implementations for the Virtual Pending Order
-// engine. Two are REAL, ported implementations (VwapTrendStrategy,
-// VpValueStrategy) — the two the owner's prompts named directly ("VWAP and
-// Volume Profile"). The other five requested names (EMA, BRK, C&H, FIBC,
-// RSI) are honest STUBS: they compile, register, and report their key, but
-// recompute() never arms them. Faking their trading logic without porting
-// and verifying it against the real JS strategies (ema-pullback.js,
-// donchian-breakout.js, cup-handle.js, fib-confluence.js, rsi2-reversion.js)
-// would be exactly the "fake results" the owner has repeatedly asked this
-// codebase to avoid — each needs its own porting pass before it's real.
+// engine. All seven of the owner's named strategies ("VWAP and Volume
+// Profile", then "EMA, BRK, C&H, FIBC, RSI") are now real, ported
+// implementations — see vpo_strategies.cpp for each one's provenance
+// comment citing the JS module it was ported from
+// (ema-pullback.js/donchian-breakout.js/cup-handle.js/fib-confluence.js/
+// rsi2-reversion.js) and exactly which gates carried over vs. had to be
+// adapted for the arm-before-touch model (see note below).
 //
 // IMPORTANT — indicator math vs. arm/trigger logic:
-//   vpo_indicators.{hpp,cpp}'s atr()/vwapAnchored()/volumeProfile() are
-//   byte-parity ports of agent/lib/indicators.js — same contract as
-//   backtest.hpp's fib port.
-//   The ARM/trigger decision below is NOT a byte-identical port of
-//   vwap-trend.js / vp-value.js — those compute a SIGNAL on an already-
-//   confirmed closed bar (the pullback already happened). A virtual
+//   vpo_indicators.{hpp,cpp}'s atr()/vwapAnchored()/volumeProfile()/sma()/
+//   ema()/rsi() are byte-parity ports of the equivalent JS indicator
+//   helpers — same contract as backtest.hpp's fib port.
+//   The ARM/trigger decision in each recompute() below is NOT a byte-
+//   identical port of the JS strategy files — those compute a SIGNAL on an
+//   already-confirmed closed bar (the setup already happened). A virtual
 //   pending order instead has to ARM *before* the touch and wait — that is
 //   the entire point of this engine — so recompute() here decides "is the
-//   trend/profile setup currently valid" and arms the LEVEL itself as the
-//   trigger, rather than requiring the touch to have already occurred.
+//   setup currently valid" and arms the LEVEL itself as the trigger, rather
+//   than requiring the touch/breakout to have already occurred. Two
+//   consequences worth knowing when reading each implementation:
+//     1. Gates that can only be evaluated on the breakout/touch bar ITSELF
+//        (e.g. donchian-breakout.js's and cup-handle.js's breakout-volume
+//        checks) cannot be pre-verified before that bar exists, so they are
+//        dropped rather than faked — each strategy's comment says so
+//        explicitly where it applies.
+//     2. Strategies whose JS signal already means "act at the current
+//        price right now" (fib-confluence.js, rsi2-reversion.js) arm at the
+//        CURRENT close as the trigger — the engine's next tick fires it
+//        near-immediately, which is the faithful analogue of "this is
+//        already true, trade it."
 #pragma once
 
 #include "vpo_strategy.hpp"
@@ -52,21 +61,87 @@ public:
   void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
 };
 
-// Honest stubs — see file header. Each simply reports its key and never
-// arms until it gets its own real porting pass.
-#define VPO_STUB_STRATEGY(ClassName) \
-  class ClassName : public StrategyModule { \
-  public: \
-    using StrategyModule::StrategyModule; \
-    void recompute(const std::vector<Bar>&, const std::vector<Bar>&) override { disarm(); } \
-  }
+// EMA20/EMA50 trend-pullback, as a virtual pending order: ported from
+// agent/services/ema-pullback.js. Trend = EMA20 vs EMA50 order (20 above 50
+// = uptrend). JS fires once the closed bar has ALREADY dipped to and closed
+// back above EMA20 with the trend intact; this engine instead arms at the
+// EMA20 price the moment that trend+proximity condition holds (close still
+// on the trend side of the line, not yet pulled back more than
+// MAX_PULLBACK_ATR), waiting for the next touch — same distToLine/
+// kMaxPullbackAtr pattern as VwapTrendStrategy, using EMA20 as the line
+// instead of anchored VWAP. Runs on the MICRO bars (a 20/50-period EMA
+// cross needs the faster series to stay current intrabar).
+class EmaPullbackStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="ema_pullback"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
 
-VPO_STUB_STRATEGY(EmaPullbackStrategy);       // key="ema_pullback"  — TODO: port ema-pullback.js
-VPO_STUB_STRATEGY(DonchianBreakoutStrategy);  // key="donchian_breakout" (owner's "BRK") — TODO: port donchian-breakout.js
-VPO_STUB_STRATEGY(CupHandleStrategy);         // key="cup_handle" (owner's "C&H") — TODO: port cup-handle.js
-VPO_STUB_STRATEGY(FibConfluenceStrategy);     // key="fib_confluence" (owner's "FIBC") — TODO: port fib-confluence.js
-VPO_STUB_STRATEGY(Rsi2ReversionStrategy);     // key="rsi2_reversion" (owner's "RSI") — TODO: port rsi2-reversion.js
+// Donchian 20-bar range breakout ("BRK"), ported from
+// agent/services/donchian-breakout.js. JS fires when the closed bar has
+// ALREADY closed beyond the prior-20 high/low band on expanding volume;
+// this engine arms at whichever band edge (hi for a long breakout, lo for a
+// short one) price is currently closest to and waiting to test, same
+// catch-radius pattern as VpValueStrategy's value-area edges. The volume
+// filter cannot be pre-verified (it reads the breakout bar's OWN volume,
+// which doesn't exist yet before the touch) so it's dropped rather than
+// faked — see vpo_strategies.hpp's file header, point 1. Runs on the MICRO
+// bars (channel + touch need to react to the faster series).
+class DonchianBreakoutStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="donchian_breakout"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
 
-#undef VPO_STUB_STRATEGY
+// Cup & Handle breakout ("C&H"), ported from agent/services/cup-handle.js —
+// classic (bullish) direction only, matching this engine's single
+// `cup_handle` key (the JS file's separate `inv_cup_handle` key has no VPO
+// counterpart). JS fires when the closed bar has ALREADY broken above the
+// handle/prior-2-bar high on expanding volume; this engine searches the
+// same cup+handle structure (trend, rim, depth, round-bottom, handle
+// length/retrace/taper gates — all evaluable from bars already observed)
+// and, on the first qualifying candidate, arms at the breakout level
+// itself, waiting for the touch. The breakout-volume gate is dropped for
+// the same reason as DonchianBreakoutStrategy (needs the not-yet-existing
+// breakout bar's own volume) — see file header, point 1. Runs on the MACRO
+// bars: a 15-120 bar cup is a slow structure, the same reasoning
+// VpValueStrategy uses for its profile.
+class CupHandleStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="cup_handle"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
+
+// Multi-Fibonacci confluence ("FIBC"), ported from
+// agent/services/fib-confluence.js. Unlike the breakout strategies above,
+// this JS signal already means "price is INSIDE a confluence zone right
+// now, trade it" — there's no future touch to wait for, so this engine
+// arms at the CURRENT close as the trigger (file header, point 2); the
+// engine's next tick fires it almost immediately, the faithful analogue of
+// "this is already true." relativeStopLoss/relativeTakeProfit are derived
+// from the actual zone width (not a flat ATR multiple), mirroring the JS's
+// zoneLo/zoneHi-based stop exactly. Runs on the MICRO bars (swing pivots
+// need the faster series to stay current).
+class FibConfluenceStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="fib_confluence"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
+
+// Connors RSI(2) mean-reversion ("RSI"), ported from
+// agent/services/rsi2-reversion.js. Same "already true, trade it now"
+// shape as FibConfluenceStrategy — arms at the current close the instant
+// the oversold/overbought-against-trend condition holds. The JS's
+// MIN_TF_MIN=60 floor (the 2026-07-21 walk-forward lesson: this edge lives
+// on 1h+ timeframes, not 5m-30m) has no direct timeframe string to check
+// against here, so it's enforced structurally instead: this strategy reads
+// the MACRO bars (VPO_MACRO_TF, default 4h — comfortably above the floor),
+// never the micro series. Deploying this key requires VPO_MACRO_TF stay
+// >=1h; there is no runtime guard for a misconfigured deployment.
+class Rsi2ReversionStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="rsi2_reversion"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
 
 } // namespace vpo

@@ -5,7 +5,8 @@
 // numbers always show what the CURRENT settings would actually do.
 // Writes go through the same routes the agent already enforces:
 // /actions/risk-config, /actions/balance, /actions/guardian-move-pct,
-// /actions/weekend-bank, /actions/exec-guard, /actions/vpo-settings.
+// /actions/weekend-bank, /actions/weekend-loss-flag, /actions/exec-guard,
+// /actions/vpo-settings, /actions/close-all.
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -129,7 +130,10 @@ export default function Risk() {
   const [guard, setGuard] = useState({})
   const [guardianPct, setGuardianPct] = useState(0.05)
   const [weekendBank, setWeekendBank] = useState(true)
+  const [weekendLossFlag, setWeekendLossFlag] = useState(true)
   const [vpoEnabled, setVpoEnabled] = useState(false)
+  const [closeAllResult, setCloseAllResult] = useState(null)
+  const [closingAll, setClosingAll] = useState(false)
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -141,6 +145,7 @@ export default function Risk() {
       setGuard({ requireBracket: true, requireTarget: true, halt: false, maxOrderVolume: 0, ...r.execGuard })
       setGuardianPct(r.guardian.movePct)
       setWeekendBank(r.weekendBank)
+      setWeekendLossFlag(r.weekendLossFlag)
       setVpoEnabled(r.vpo.enabled)
       setError('')
     } catch (e) { setError(e.message) }
@@ -156,6 +161,17 @@ export default function Risk() {
     for (const k of keys) body[k] = risk[k]
     return agentPost('/actions/risk-config', body)
   })
+
+  const closeAll = async () => {
+    if (!window.confirm('Close EVERY open position at the broker — bot and manual trades alike. This cannot be undone. Continue?')) return
+    setClosingAll(true)
+    setCloseAllResult(null)
+    try {
+      const r = await agentPost('/actions/close-all', { confirm: true })
+      setCloseAllResult(r)
+      await load()
+    } catch (e) { setError(e.message) } finally { setClosingAll(false) }
+  }
 
   const overridden = new Set(data?.risk?.overridden || [])
   const mark = (k) => overridden.has(k) ? '' : ' (default)'
@@ -329,6 +345,14 @@ export default function Risk() {
                   save('weekend-bank', () => agentPost('/actions/weekend-bank', { on: next }))
                 }} />
               </div>
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag</span>
+                <Pill on={weekendLossFlag} label="On" onClick={() => {
+                  const next = !weekendLossFlag
+                  setWeekendLossFlag(next)
+                  save('weekend-loss-flag', () => agentPost('/actions/weekend-loss-flag', { on: next }))
+                }} />
+              </div>
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
@@ -367,9 +391,25 @@ export default function Risk() {
                 VPO pairs: {data?.vpo?.config?.length ? data.vpo.config.map(c => `${c.symbol}·${c.key}`).join(', ') : 'none configured'} — set via /actions/vpo-settings; the sidecar's VPO_SYMBOLS env must match.
               </div>
             </div>
-            <div className="mt-3">
+            <div className="mt-3 flex items-center gap-2">
               <span data-save-pulse="exec-guard"><Button size="sm" onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button></span>
             </div>
+          </Card>
+
+          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+            <SectionTitle badge={<Badge tone="down">Emergency</Badge>}>Close all positions</SectionTitle>
+            <p className="text-[12px] text-[var(--color-text-sub)] mb-2">
+              Closes every open position at the broker right now — bot-placed and manual alike. Halt (above) only blocks NEW orders; this ends existing ones. Irreversible.
+            </p>
+            <Button size="sm" variant="danger" disabled={closingAll} onClick={closeAll}>
+              {closingAll ? 'Closing…' : 'Close ALL positions'}
+            </Button>
+            {closeAllResult && (
+              <div className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+                Closed {closeAllResult.closed?.length || 0}
+                {closeAllResult.failures?.length ? `, ${closeAllResult.failures.length} failed: ${closeAllResult.failures.map(f => `${f.symbol || f.positionId} (${f.error})`).join('; ')}` : ''}
+              </div>
+            )}
           </Card>
         </div>
 
