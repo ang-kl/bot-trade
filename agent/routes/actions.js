@@ -367,6 +367,49 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/vpo-settings — { enabled, config } turns the VPO feeder
+  // (agent/services/vpo-feeder.js) on/off and sets which symbol/strategy
+  // pairs it fetches bars + sizing for. This is agent_state (a DB write),
+  // NOT the same thing as the cpp-exec sidecar's VPO_ENABLED/VPO_SYMBOLS
+  // env vars — those are a separate service and control whether the
+  // dispatcher itself arms/fires. Both need to be set, and `config` here
+  // must name the SAME symbol/symbolId/key triples as the sidecar's
+  // VPO_SYMBOLS, or the feeder pushes bars/volume the dispatcher has no
+  // registered strategy to receive (owner hit this: set VPO_CONFIG_JSON as
+  // a Railway env var, which this code never reads — it's DB state, set
+  // here, not an env var).
+  // -----------------------------------------------------------------------
+  router.post('/vpo-settings', (req, res) => {
+    const { enabled, config } = req.body || {}
+    if (enabled !== undefined) {
+      setState(db, 'vpo_enabled', enabled ? 'true' : 'false')
+    }
+    if (config !== undefined) {
+      if (!Array.isArray(config)) {
+        return res.status(400).json({ error: 'config must be an array of { key, symbol, symbolId, macroTf?, microTf? }' })
+      }
+      for (const entry of config) {
+        if (!entry?.key || !entry?.symbol || !entry?.symbolId) {
+          return res.status(400).json({ error: 'each config entry needs key, symbol, and symbolId' })
+        }
+      }
+      setState(db, 'vpo_config_json', JSON.stringify(config))
+    }
+    const nowEnabled = (getState(db, 'vpo_enabled') || 'false') === 'true'
+    let nowConfig = []
+    try { nowConfig = JSON.parse(getState(db, 'vpo_config_json') || '[]') } catch { /* leave [] */ }
+    console.log(`[actions] vpo settings → enabled=${nowEnabled} entries=${nowConfig.length}`)
+    res.json({ ok: true, enabled: nowEnabled, config: nowConfig })
+  })
+
+  router.get('/vpo-settings', (_req, res) => {
+    const enabled = (getState(db, 'vpo_enabled') || 'false') === 'true'
+    let config = []
+    try { config = JSON.parse(getState(db, 'vpo_config_json') || '[]') } catch { /* leave [] */ }
+    res.json({ ok: true, enabled, config })
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/asset-controller — { class, beTriggerR?, partialTriggerR?,
   // runnerTriggerR?, runnerTrailR? } sets one asset class's trade-management
   // triggers (owner: "separate controllers for forex/indices/commodities").
