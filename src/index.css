@@ -1,3 +1,15 @@
+/* W3.CSS demoted into the WEAKEST cascade layer. Loaded as a plain <link>
+   in index.html it was unlayered CSS, which the cascade ranks above ALL
+   layered styles — so its normalize (aside/nav/header{display:block},
+   h1{36px}…h3{24px}) silently overrode Tailwind v4's layered utilities:
+   `hidden` stopped hiding the desktop sidebar on phones, `flex` nav rows
+   stacked vertically into a giant blob, and 12px section <h2>s rendered
+   at 30px (owner's iPhone screenshots, 2026-07-24). Declaring the w3base
+   layer BEFORE Tailwind's layers makes every w3-* class still work while
+   guaranteeing Tailwind (and this file's unlayered rules) always win a
+   conflict. */
+@layer w3base;
+@import url('https://www.w3schools.com/w3css/4/w3.css') layer(w3base);
 @import "tailwindcss";
 
 /* Global type — Google "Inter" everywhere (owner spec). Override the Tailwind
@@ -229,17 +241,21 @@
    FLAT 16px at every breakpoint, in the accent colour, so they read as
    headers regardless of viewport. Body text is bumped ~10% to compensate
    for the loss of the old escalating scale. */
-.t-heading { font-size: 16px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
+/* Owner (2026-07-24): "the heading style should be just 20% more than the
+   body" — .t-heading is pinned to 1.2× .t-body at EVERY breakpoint below
+   (15→18, 17→20, 20→24, 22→26). Change body sizes and these must move
+   with them. */
+.t-heading { font-size: 18px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
 .t-body    { font-size: 15px; font-weight: 500; line-height: 1.5; }
 .t-label   { font-size: 14px; font-weight: 600; line-height: 1.5; }
 .t-sub     { font-size: 13px; font-weight: 400; line-height: 1.6; }
 .t-meta    { font-size: 12px; font-weight: 400; line-height: 1.65; }
 
-@media (min-width: 768px)  { html { font-size: 15px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
+@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 20px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } .t-label { font-size: 15px; } .t-sub { font-size: 15px; } .t-meta { font-size: 14px; } }
 @media (min-width: 1153px) { html { zoom: 1.1; } }
-@media (min-width: 2000px) { html { font-size: 18px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
-@media (min-width: 2560px) { html { font-size: 20px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
+@media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
+@media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 26px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
 
 /* Uppercase section label helper */
 .t-section-label {

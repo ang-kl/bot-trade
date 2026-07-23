@@ -311,8 +311,11 @@ function Verdict({ r }) {
   const pnlText = r.net_pnl != null ? `${r.net_pnl < 0 ? '−' : ''}$${Math.abs(r.net_pnl).toFixed(2)}` : '—'
   return (
     <div className="glass-inset rounded-lg p-2">
+      {/* overflow-x-auto: a row whose fixed-width (shrink-0) spans exceed a
+          phone viewport scrolls sideways instead of bleeding off the card
+          (owner iPhone screenshots, 2026-07-24: P&L amounts clipped). */}
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer">
+        className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer overflow-x-auto whitespace-nowrap">
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
         {/* The TRADE's own timestamp, not the sweep's row-insertion time —
             Codex review caught pm.created_at reading as "when classified",

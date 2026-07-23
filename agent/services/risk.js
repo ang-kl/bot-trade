@@ -129,6 +129,55 @@ export function requiredMargin(symbol, volumeLots, price, leverage, rates = null
   return { notional, marginRequired }
 }
 
+// Broker snapshot fresher than this still counts as truth; older falls back
+// to the local estimate. The monitor refreshes it every ~30s, so 5 minutes
+// of grace only matters across agent restarts / broker-route hiccups.
+const BROKER_MARGIN_MAX_AGE_MS = 5 * 60_000
+
+/**
+ * Portfolio margin status — BROKER TRUTH FIRST. cTrader reports each open
+ * position's real margin (summed into broker_snapshot_cache_json.account
+ * .health.usedMargin by /actions/broker-positions, refreshed ~30s by the
+ * monitor); our own requiredMargin() sum is only an estimate that drifts
+ * from the broker (owner 2026-07-24: estimated used margin sat 28% above
+ * the cap while the pipeline kept strategizing trades that could never
+ * pass). Falls back to the estimate only when the snapshot is missing or
+ * stale — never silently, `source` says which figure was used.
+ *
+ * Returns { usedMargin, cap, headroom, source: 'broker'|'estimate' },
+ * or null when balance is unknown (margin checks are skipped then, same
+ * as the gate itself).
+ */
+export function portfolioMarginStatus(db, config, { balance, leverage, openPositions = null, rates = null } = {}) {
+  if (!(balance > 0)) return null
+  let usedMargin = null
+  let source = 'broker'
+  try {
+    const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+    const bm = snap?.account?.health?.usedMargin
+    const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
+    if (Number.isFinite(bm) && bm >= 0 && ageMs < BROKER_MARGIN_MAX_AGE_MS) usedMargin = bm
+  } catch { /* unreadable snapshot → estimate */ }
+  if (usedMargin == null) {
+    source = 'estimate'
+    usedMargin = 0
+    const rows = openPositions ?? db.prepare(`
+      SELECT mp.symbol, mp.entry_price, t.volume AS volume
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.status = 'active'
+    `).all()
+    for (const p of rows) {
+      if (!(Number(p.volume) > 0) || !(Number(p.entry_price) > 0)) continue
+      try {
+        usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates).marginRequired || 0
+      } catch { /* skip a row we can't price — never block sizing on one bad row */ }
+    }
+  }
+  const cap = balance * config.maxMarginUsagePct
+  return { usedMargin, cap, headroom: cap - usedMargin, source }
+}
+
 // ---------------------------------------------------------------------------
 // Currency-exposure helpers
 // ---------------------------------------------------------------------------
@@ -604,18 +653,15 @@ export function evaluateTrade(db, proposal, configOverride) {
     let { notional, marginRequired } = requiredMargin(
       proposal.symbol, volume, entry, leverage, rates,
     )
-    // Sum margin already committed by open positions (best-effort per row).
-    let usedMargin = 0
-    for (const p of openPositions) {
-      if (!(Number(p.volume) > 0) || !(Number(p.entry_price) > 0)) continue
-      try {
-        usedMargin += requiredMargin(p.symbol, Number(p.volume), Number(p.entry_price), leverage, rates).marginRequired || 0
-      } catch { /* skip a row we can't price — never block sizing on one bad row */ }
-    }
-    const marginCap = balance * config.maxMarginUsagePct
-    const headroom = marginCap - usedMargin
+    // Margin already committed — broker truth when the snapshot is fresh,
+    // the per-row estimate otherwise (see portfolioMarginStatus).
+    const pm = portfolioMarginStatus(db, config, { balance, leverage, openPositions, rates })
+    const usedMargin = pm.usedMargin
+    const marginCap = pm.cap
+    const headroom = pm.headroom
     checks.margin_used_usd = Number(usedMargin.toFixed(2))
     checks.margin_cap_usd = Number(marginCap.toFixed(2))
+    checks.margin_source = pm.source
 
     if (headroom <= 0) {
       // Existing positions alone already consume the whole cap — no amount

@@ -15,6 +15,7 @@ import {
   getAccountBalance,
   getAccountLeverage,
   requiredMargin,
+  portfolioMarginStatus,
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -735,6 +736,51 @@ test('margin gate — AGGREGATE: the same new trade approves with no open positi
   const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.checks.margin_used_usd, 0)
+  assert.equal(res.checks.margin_source, 'estimate')
+})
+
+test('margin gate — BROKER TRUTH: a fresh broker snapshot overrides the local estimate', () => {
+  // The local estimate sums our own requiredMargin() per row — it drifts
+  // from the broker's real figure (owner 2026-07-24: estimated used margin
+  // 28% over the cap). When the monitor's snapshot is fresh, its
+  // health.usedMargin is the number the gate must use.
+  const db = freshDB()
+  setBalance(db, 10000)  // cap = $5000
+  setLeverage(db, 100)
+  // No local open positions at all (estimate would say used=0)…
+  // …but the broker says $6000 is already locked — over the cap on its own.
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { usedMargin: 6000 } }, fetchedAt: new Date().toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /insufficient_margin/)
+  assert.match(res.veto_reason, /no headroom left to shrink into/)
+  assert.equal(res.checks.margin_source, 'broker')
+  assert.equal(res.checks.margin_used_usd, 6000)
+})
+
+test('margin gate — BROKER TRUTH: a STALE broker snapshot falls back to the estimate', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  setLeverage(db, 100)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { usedMargin: 6000 } }, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.25 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `stale snapshot must not veto: ${res.veto_reason}`)
+  assert.equal(res.checks.margin_source, 'estimate')
+  assert.equal(res.checks.margin_used_usd, 0)
+})
+
+test('portfolioMarginStatus: reports headroom and source for the loop pre-gate', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { usedMargin: 5200 } }, fetchedAt: new Date().toISOString() }))
+  const pm = portfolioMarginStatus(db, DEFAULT_RISK_CONFIG, { balance: 10000, leverage: 100 })
+  assert.equal(pm.source, 'broker')
+  assert.equal(pm.usedMargin, 5200)
+  assert.equal(pm.cap, 5000)
+  assert.ok(pm.headroom < 0, 'exhausted portfolio must report negative headroom')
 })
 
 test('empty blockedSymbols allows everything budget supports', () => {
