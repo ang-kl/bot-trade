@@ -31,6 +31,40 @@ test('recovers rsi2_reversion, vwap_trend, fib_confluence from their own fingerp
   assert.deepEqual(res.byStrategy, { rsi2_reversion: 1, vwap_trend: 1, fib_confluence: 1 })
 })
 
+test('recovers the 6 strategies added 2026-07-22 (fib_618_fade, cup_handle, inv_cup_handle, ema_pullback, donchian_breakout, rsi_meanrev)', () => {
+  const db = initDB(':memory:')
+  insertTrade(db, { thesis: '61.8% Fib fade — swing up 1.1050 → 1.0980, reacting at 1.1023 on 4h. Targeting return to 1.1050.' })
+  insertTrade(db, { thesis: 'Cup & Handle breakout on 1d — cup 100→75.7→100 (depth 21%, 31 bars), 4-bar handle, breakout vol 1.4× handle. Target 124.3 (measured move), SL 1.5×ATR.' })
+  insertTrade(db, { thesis: 'Inverted Cup & Handle breakdown on 1d — dome 150→126→100 (depth 17%, 31 bars), 4-bar handle, breakdown vol 1.4× handle. Target 76 (measured move), SL 1.5×ATR.' })
+  insertTrade(db, { thesis: 'Uptrend on 4h (EMA20 above EMA50). Price dipped to the EMA20 line and closed back above it — buying the pullback, stop below the dip and EMA50, targets at 2R and 3R.' })
+  insertTrade(db, { thesis: 'Price closed above the 20-bar range on 2.3x volume. Target is one range height up; stop is 1.5 ATR behind entry.' })
+  insertTrade(db, { thesis: 'RSI washed out below 30 and turned back up while price holds above the 50-bar average — buying the dip back to the 20-bar mean (RSI 24.10 → 32.50).' })
+  const res = backfillLabelStrategy(db)
+  assert.equal(res.updated, 6)
+  assert.deepEqual(res.byStrategy, {
+    fib_618_fade: 1, cup_handle: 1, inv_cup_handle: 1,
+    ema_pullback: 1, donchian_breakout: 1, rsi_meanrev: 1,
+  })
+})
+
+test('cup_handle and inv_cup_handle fingerprints never cross-match each other', () => {
+  const db = initDB(':memory:')
+  const cupId = insertTrade(db, { thesis: 'Cup & Handle breakout on 4h — cup 100→90→105 (depth 10%, 40 bars), 5-bar handle, breakout vol 1.6× handle. Target 115 (measured move), SL 1.5×ATR.' })
+  const invId = insertTrade(db, { thesis: 'Inverted Cup & Handle breakdown on 4h — dome 105→115→100 (depth 10%, 40 bars), 5-bar handle, breakdown vol 1.6× handle. Target 90 (measured move), SL 1.5×ATR.' })
+  backfillLabelStrategy(db)
+  assert.equal(db.prepare('SELECT label_strategy FROM trades WHERE id = ?').get(cupId).label_strategy, 'cup_handle')
+  assert.equal(db.prepare('SELECT label_strategy FROM trades WHERE id = ?').get(invId).label_strategy, 'inv_cup_handle')
+})
+
+test('ema_pullback fingerprint does not cross-match vwap_trend\'s near-identical "buying the pullback" wording', () => {
+  const db = initDB(':memory:')
+  const vwapId = insertTrade(db, { thesis: 'Uptrend on 1h above a rising VWAP. Price pulled back to the VWAP line and closed above it — buying the pullback, stop below the dip, targets 2R/3R.' })
+  const emaId = insertTrade(db, { thesis: 'Uptrend on 1h (EMA20 above EMA50). Price dipped to the EMA20 line and closed back above it — buying the pullback, stop below the dip and EMA50, targets at 2R and 3R.' })
+  backfillLabelStrategy(db)
+  assert.equal(db.prepare('SELECT label_strategy FROM trades WHERE id = ?').get(vwapId).label_strategy, 'vwap_trend')
+  assert.equal(db.prepare('SELECT label_strategy FROM trades WHERE id = ?').get(emaId).label_strategy, 'ema_pullback')
+})
+
 test('never overwrites an existing label_strategy', () => {
   const db = initDB(':memory:')
   const id = insertTrade(db, {
