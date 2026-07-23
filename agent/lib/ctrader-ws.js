@@ -486,12 +486,26 @@ export function wsGetAccountsByToken(host, clientId, clientSecret, accessToken, 
 /**
  * Fetch the full light symbol list for an account via SYMBOLS_LIST_REQ.
  * Returns `{ symbol: [{ symbolId, symbolName, ... }] }`.
+ *
+ * The broker's symbol catalogue is effectively static (names/ids don't churn
+ * hour to hour), but every account snapshot was re-fetching it from scratch
+ * — a full WS auth handshake each time, and the dominant cost when the
+ * Accounts page snapshots several accounts (owner: "loading accounts is
+ * very very slow"). Cache the in-flight/resolved promise per host for a
+ * while; a failure is never cached so a bad fetch retries next call.
  */
+const symbolsListCache = new Map() // host -> { at, promise }
+const SYMBOLS_LIST_TTL_MS = 6 * 60 * 60 * 1000
 export function wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId, timeoutMs = 30_000) {
-  return withRetry(() => wsRun(host, [
+  const cached = symbolsListCache.get(host)
+  if (cached && Date.now() - cached.at < SYMBOLS_LIST_TTL_MS) return cached.promise
+  const promise = withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.SYMBOLS_LIST_REQ, payload: { ctidTraderAccountId: parseInt(accountId), includeArchivedSymbols: false } }, expect: PT.SYMBOLS_LIST_RES },
   ], timeoutMs), 2, 'wsGetSymbolsList')
+  symbolsListCache.set(host, { at: Date.now(), promise })
+  promise.catch(() => { if (symbolsListCache.get(host)?.promise === promise) symbolsListCache.delete(host) })
+  return promise
 }
 
 /**

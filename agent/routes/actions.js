@@ -9,7 +9,7 @@ import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-c
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsPlaceOrder, wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
-import { getActiveSessions } from '../lib/sessions.js'
+import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
@@ -2163,14 +2163,19 @@ export default function actionsRouter(db) {
       brokerTitle: a.brokerTitleShort || a.brokerName || null,
       balance: null,
     }))
-    // Enrich each account with its balance (best effort — a failure just
-    // leaves balance null for that account).
+    // Enrich each account with its balance + full trader object (best effort
+    // — a failure just leaves balance null for that account). The trader
+    // object is cached on the account (`_trader`) so a later snapshot in
+    // this same request doesn't re-fetch it — TRADER_REQ is a fresh WS auth
+    // handshake per account (~seconds each), and was previously fetched
+    // TWICE per account per snapshot (here, then again in snapshotAccount).
     await Promise.all(accounts.map(async (a) => {
       try {
         const host = a.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
         const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, a.accountId)
         const bal = traderBalance(trader)
         if (bal != null) a.balance = bal
+        a._trader = trader
       } catch { /* leave null */ }
     }))
     return accounts
@@ -2202,7 +2207,7 @@ export default function actionsRouter(db) {
       if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
-      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl } = await import('../lib/ctrader-ws.js')
+      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl, traderBalance } = await import('../lib/ctrader-ws.js')
 
       let accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
@@ -2214,10 +2219,12 @@ export default function actionsRouter(db) {
 
       const snapshotAccount = async (acct) => {
         const host = acct.isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
+        const { _trader, ...acctPublic } = acct
         const out = {
-          ...acct,
+          ...acctPublic,
           selected: String(acct.accountId) === String(selectedId),
           currency: null,
+          moneyDigits: _trader?.moneyDigits ?? 2,
           positions: [],
           orders: [],
           error: null,
@@ -2230,17 +2237,29 @@ export default function actionsRouter(db) {
 
           // Deposit currency: trader.depositAssetId resolved via the asset list.
           // The full asset map also names each symbol's QUOTE currency below.
+          // Reuse the trader object listCtraderAccounts already fetched
+          // (TRADER_REQ is a fresh WS auth handshake — don't pay for it twice).
           const assetNameById = {}
           try {
             const [trader, assets] = await Promise.all([
-              wsGetTrader(host, clientId, clientSecret, accessToken, acct.accountId),
+              _trader ? Promise.resolve(_trader) : wsGetTrader(host, clientId, clientSecret, accessToken, acct.accountId),
               wsGetAssets(host, clientId, clientSecret, accessToken, acct.accountId),
             ])
             for (const a of (assets.asset || [])) assetNameById[a.assetId] = a.displayName || a.name || null
             out.currency = assetNameById[trader.depositAssetId] || null
+            out.moneyDigits = trader.moneyDigits ?? 2
           } catch { /* currency stays null */ }
 
-          if (rawPositions.length === 0 && rawOrders.length === 0) return out
+          if (rawPositions.length === 0 && rawOrders.length === 0) {
+            const flatBal = traderBalance({ balance: _trader?.balance, moneyDigits: out.moneyDigits }) ?? acct.balance ?? null
+            out.health = {
+              balance: flatBal, equity: flatBal, usedMargin: 0, freeMargin: flatBal, marginLevelPct: null,
+              unrealizedNetPnl: 0, unrealizedNetPnlPct: 0,
+              slGrossTotal: null, slNetTotal: null, tpGrossTotal: null, tpNetTotal: null,
+              slNetTotalPct: null, tpNetTotalPct: null,
+            }
+            return out
+          }
 
           const symbolIds = [...new Set([
             ...rawPositions.map(p => p.tradeData?.symbolId),
@@ -2350,6 +2369,25 @@ export default function actionsRouter(db) {
             // Broker truth wins; estimate only fills the gap.
             const brokerPnl = pnlMap[String(p.positionId)] || null
             const netPnl = brokerPnl?.net ?? estNetPnl
+            // Gross/net dollar impact IF the SL or TP level is hit — same
+            // price-move math as estPnlQuote/estNetPnl above, just evaluated
+            // at the stop/target price instead of the current price. Reuses
+            // the real symMeta (lot size, FX quote/deposit conversion)
+            // already fetched for this account — no per-instrument point
+            // value table to guess (owner: "gross and nett for SL and TP").
+            const impactAt = (targetPrice) => {
+              if (targetPrice == null || lots == null || unitsPerLot == null) return { gross: null, net: null }
+              const moveQuote = Math.round((targetPrice - p.price) * dir * lots * unitsPerLot * 100) / 100
+              let moveDeposit = null
+              if (quoteCcy === 'USD') moveDeposit = moveQuote
+              else if (isFxPair && symName.startsWith('USD') && targetPrice > 0) moveDeposit = moveQuote / targetPrice
+              const net = moveDeposit != null
+                ? Math.round((moveDeposit + (swapMoney || 0) + (commissionMoney || 0)) * 100) / 100
+                : null
+              return { gross: moveDeposit, net }
+            }
+            const slImpact = impactAt(p.stopLoss ?? null)
+            const tpImpact = impactAt(p.takeProfit ?? null)
             // TP ladder: closing limit orders carry the app's TP2/TP3 with
             // their per-level quantity; the position's native TP covers the
             // leftover volume. Sorted nearest-first in the profit direction.
@@ -2388,6 +2426,10 @@ export default function actionsRouter(db) {
               digits: meta.digits ?? null,
               sl: p.stopLoss ?? null,
               tp: p.takeProfit ?? null,
+              slGrossImpact: slImpact.gross, // deposit-ccy P&L if SL hit, price-move only
+              slNetImpact: slImpact.net,     // ...incl. swap + commission
+              tpGrossImpact: tpImpact.gross, // deposit-ccy P&L if TP hit, price-move only
+              tpNetImpact: tpImpact.net,     // ...incl. swap + commission
               tps: ladder.length ? ladder : null,
               bid: spots[td.symbolId]?.bid ?? null,
               ask: spots[td.symbolId]?.ask ?? null,
@@ -2409,8 +2451,43 @@ export default function actionsRouter(db) {
               timeframe: parseLabel(td.label || '').timeframe || null,
               comment: td.comment || null,
               guaranteedSl: !!p.guaranteedStopLoss,
+              // For the market-open/closed pivot (owner: "columns of ...
+              // market open trading, market close trading").
+              marketOpen: meta.symbolName ? isSymbolMarketOpen(meta.symbolName).open : null,
             }
           })
+
+          // Account Health aggregates — balance/equity/margin/buffer plus
+          // total SL/TP dollar impact, all derived from the SAME per-position
+          // figures above (not a second, possibly-inconsistent calculation —
+          // this is what caused the earlier 3-way P&L mismatch the owner saw
+          // across bot-trade/cTrader/Pepperstone).
+          const bal = traderBalance({ balance: _trader?.balance, moneyDigits: out.moneyDigits }) ?? acct.balance ?? null
+          const sumPositions = (fn) => out.positions.reduce((s, p) => {
+            const v = fn(p)
+            return v == null ? s : s + v
+          }, 0)
+          const floatingNet = out.positions.some(p => p.netPnl != null) ? sumPositions(p => p.netPnl) : null
+          const usedMarginTotal = out.positions.some(p => p.usedMargin != null) ? sumPositions(p => p.usedMargin) : null
+          const equity = bal != null ? Math.round((bal + (floatingNet || 0)) * 100) / 100 : null
+          const freeMargin = equity != null && usedMarginTotal != null ? Math.round((equity - usedMarginTotal) * 100) / 100 : null
+          const marginLevelPct = equity != null && usedMarginTotal ? Math.round((equity / usedMarginTotal) * 10000) / 100 : null
+          const pctOfBalance = (v) => (v == null || !bal) ? null : Math.round((v / bal) * 10000) / 100
+          out.health = {
+            balance: bal,
+            equity,
+            usedMargin: usedMarginTotal,
+            freeMargin,
+            marginLevelPct,
+            unrealizedNetPnl: floatingNet,
+            unrealizedNetPnlPct: pctOfBalance(floatingNet),
+            slGrossTotal: out.positions.some(p => p.slGrossImpact != null) ? sumPositions(p => p.slGrossImpact) : null,
+            slNetTotal: out.positions.some(p => p.slNetImpact != null) ? sumPositions(p => p.slNetImpact) : null,
+            tpGrossTotal: out.positions.some(p => p.tpGrossImpact != null) ? sumPositions(p => p.tpGrossImpact) : null,
+            tpNetTotal: out.positions.some(p => p.tpNetImpact != null) ? sumPositions(p => p.tpNetImpact) : null,
+          }
+          out.health.slNetTotalPct = pctOfBalance(out.health.slNetTotal)
+          out.health.tpNetTotalPct = pctOfBalance(out.health.tpNetTotal)
 
           out.orders = entryOrders.map(o => {
             const td = o.tradeData || {}
