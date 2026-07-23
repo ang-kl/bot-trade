@@ -220,19 +220,26 @@
 @media (min-width: 2000px) { :root { --content-max: 1200px; } }
 @media (min-width: 2560px) { :root { --content-max: 1320px; } }
 
-/* -- Typography classes -- */
-.t-heading { font-size: 17px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; }
-.t-body    { font-size: 14px; font-weight: 500; line-height: 1.5; }
-.t-label   { font-size: 13px; font-weight: 600; line-height: 1.5; }
-.t-sub     { font-size: 12px; font-weight: 400; line-height: 1.6; }
-.t-meta    { font-size: 11px; font-weight: 400; line-height: 1.65; }
+/* -- Typography classes --
+   Owner (2026-07-23): headers were rendering far larger than intended
+   (.t-heading escalated 17px -> 24px across breakpoints, ON TOP of the
+   1.1 zoom below, while every h1/h2 using it also had no color rule of
+   its own, so it fell back to the same body text color — a "header row"
+   that read as indistinguishable from any other row). Headers are now a
+   FLAT 16px at every breakpoint, in the accent colour, so they read as
+   headers regardless of viewport. Body text is bumped ~10% to compensate
+   for the loss of the old escalating scale. */
+.t-heading { font-size: 16px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
+.t-body    { font-size: 15px; font-weight: 500; line-height: 1.5; }
+.t-label   { font-size: 14px; font-weight: 600; line-height: 1.5; }
+.t-sub     { font-size: 13px; font-weight: 400; line-height: 1.6; }
+.t-meta    { font-size: 12px; font-weight: 400; line-height: 1.65; }
 
-@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 18px; } .t-body { font-size: 15px; } .t-sub { font-size: 13px; } }
-@media (min-width: 1024px) { html { font-size: 16px; } .t-heading { font-size: 20px; } .t-label { font-size: 14px; } .t-sub { font-size: 14px; } .t-meta { font-size: 13px; } }
+@media (min-width: 768px)  { html { font-size: 15px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
+@media (min-width: 1024px) { html { font-size: 16px; } .t-label { font-size: 15px; } .t-sub { font-size: 15px; } .t-meta { font-size: 14px; } }
 @media (min-width: 1153px) { html { zoom: 1.1; } }
-@media (min-width: 1280px) { .t-heading { font-size: 21px; } }
-@media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } /* 24px dashboard cap */ .t-body { font-size: 18px; } .t-label { font-size: 15px; } .t-sub { font-size: 16px; } .t-meta { font-size: 14px; } }
-@media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 24px; } /* capped */ .t-body { font-size: 20px; } .t-label { font-size: 17px; } .t-sub { font-size: 17px; } .t-meta { font-size: 15px; } }
+@media (min-width: 2000px) { html { font-size: 18px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
+@media (min-width: 2560px) { html { font-size: 20px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
 
 /* Uppercase section label helper */
 .t-section-label {
