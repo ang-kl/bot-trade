@@ -1467,7 +1467,11 @@ export default function Tune() {
                     await agentPost('/actions/monitor-interval', { minutes: m })
                     setConfig(c => ({ ...c, monitor_interval_min: m }))
                   }, `Position monitor every ${m}m (volume-scaled)`)}
-                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${(config?.monitor_interval_min ?? 1) === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[4px] py-[3px] ${
+                    (config?.monitor_interval_min ?? 1) === m
+                      ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+                      : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
+                  }`}
                 >{m}m</button>
               ))}
               <span className="text-[12px] text-[var(--color-text-sub)]">
