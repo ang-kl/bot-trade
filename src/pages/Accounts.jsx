@@ -10,6 +10,9 @@ import Button from '../components/common/Button.jsx'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
+import AccountHealth from '../components/AccountHealth.jsx'
+import AccountPivot from '../components/AccountPivot.jsx'
+import MarketClock from '../components/MarketClock.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
@@ -22,31 +25,40 @@ function fmt(n, digits) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits ?? priceDp(n) })
 }
 
-function AccountCard({ acct, defaultOpen, marketHours, onChanged }) {
+function AccountCard({ acct, marketHours, onChanged }) {
   // Manage pop-ups only on the SELECTED account — the position/order action
   // endpoints act through the bot's creds on that account, so offering
   // Manage on other accounts would hit the wrong one.
   const manageable = !!acct.selected
-  const busyCount = (acct.positions?.length ?? 0) + (acct.orders?.length ?? 0)
-  const [open, setOpen] = useState(defaultOpen || busyCount > 0)
+  // Live positions/orders table starts CLOSED regardless of how busy the
+  // account is (owner: "close the current live positions table") — Account
+  // Health above is now the at-a-glance view; the raw table is opt-in.
+  const [open, setOpen] = useState(false)
   return (
     <Card>
-      <button type="button" onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-          <span className="text-[13px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
-          {acct.brokerTitle && <span className="text-[12px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
-          {acct.balance != null && <span className="text-[13px] font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
-          {acct.selected && <Badge tone="up">BOT TRADES THIS ONE</Badge>}
-          <span className="ml-auto text-[12px] text-[var(--color-text-sub)]">
-            {acct.positions?.length ?? 0} open · {acct.orders?.length ?? 0} pending {open ? '▾' : '▸'}
-          </span>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
+        <span className="text-[13px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
+        {acct.brokerTitle && <span className="text-[12px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
+        {acct.balance != null && <span className="text-[13px] font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
+        {acct.selected && <Badge tone="up">BOT TRADES THIS ONE</Badge>}
+      </div>
+      {acct.error && <div className="text-[13px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
+      {acct.metaError && <div className="text-[13px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}
+
+      <AccountHealth acct={acct} />
+      <div className="mt-3">
+        <AccountPivot acct={acct} />
+      </div>
+
+      <button type="button" onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
+        <div className="flex items-center gap-2 text-[12px] text-[var(--color-text-sub)] border-t border-[var(--glass-edge)] pt-2">
+          <span className="font-semibold">Live positions &amp; pending orders</span>
+          <span className="ml-auto">{acct.positions?.length ?? 0} open · {acct.orders?.length ?? 0} pending {open ? '▾ hide' : '▸ show'}</span>
         </div>
       </button>
       {open && (
         <div className="mt-1">
-          {acct.error && <div className="text-[13px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
-          {acct.metaError && <div className="text-[13px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}
           {acct.positions?.length > 0 && (
             <>
               <div className="text-[12px] font-semibold mt-1 mb-1">Live positions</div>
@@ -98,6 +110,18 @@ export default function Accounts() {
     } catch (e) { setError(e.message) }
   }, [])
 
+  // Instant paint — owner: "don't have to keep loading, I want to see now."
+  // A fresh snapshot is ~4 authenticated WS round-trips (seconds, not
+  // instant); the DB already holds the last one (refreshed by this same
+  // route + the 30s monitor loop), so paint that FIRST, then let loadBot's
+  // live call replace it a moment later.
+  useEffect(() => {
+    if (!agentConfigured()) return
+    agentGet('/state/broker-cache').then(r => {
+      if (r?.snapshot?.account) setBot(prev => prev ?? r.snapshot.account)
+    }).catch(() => {})
+  }, [])
+
   const loadAll = useCallback(async () => {
     setLoadingAll(true)
     try {
@@ -131,8 +155,10 @@ export default function Accounts() {
       </div>
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
+      <MarketClock />
+
       {!bot && !error && <Card className="text-[13px] text-[var(--color-text-sub)]">Loading the bot's account from the broker…</Card>}
-      {bot && <AccountCard acct={bot} defaultOpen marketHours={marketHours} onChanged={loadBot} />}
+      {bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}
 
       {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}
       {others && others.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
