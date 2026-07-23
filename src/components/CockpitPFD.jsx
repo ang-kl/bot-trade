@@ -103,10 +103,17 @@ export default function CockpitPFD({
   const clipRt = `pfd-r-${uid}`
   const up = (r ?? 0) >= 0
 
+  // Explicit height (derived from the internal W:H ratio) — an <svg> with a
+  // viewBox but no height attribute defaults inconsistently across browsers
+  // (Safari falls back to a fixed ~150px box instead of honouring the
+  // viewBox aspect ratio), squashing the whole instrument vertically and
+  // smearing every glyph into unreadable overlapping shapes (owner: "See
+  // the instrument very awful"). block+preserveAspectRatio locks it down.
+  const height = Math.round(width * (H / W))
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} width={width} role="img"
+    <svg viewBox={`0 0 ${W} ${H}`} width={width} height={height} preserveAspectRatio="xMidYMid meet" role="img"
       aria-label={`PFD: ${r == null ? (noReason || 'no reading') : `${r.toFixed(2)}R`}, ${roll > 5 ? 'converging on TP' : roll < -5 ? 'diverging from TP' : 'holding course'}`}
-      style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.4))' }}>
+      style={{ display: 'block', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.4))' }}>
       <defs>
         <clipPath id={clipA}><rect x={AX} y={AY} width={AW} height={AH} rx="8" /></clipPath>
         <clipPath id={clipL}><rect x={2} y={AY} width={28} height={AH} rx="4" /></clipPath>
