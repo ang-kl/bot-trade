@@ -410,6 +410,40 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/exec-guard — { halt?, requireBracket?, requireTarget?,
+  // maxOrderVolume? } stores the C++ sidecar's atomic order-guard knobs and
+  // pushes them to the sidecar (best-effort — in js exec mode there is no
+  // sidecar and the stored values simply wait until one exists). These were
+  // previously settable ONLY by hand-calling the sidecar's own /config —
+  // no UI, no persistence across sidecar restarts.
+  // -----------------------------------------------------------------------
+  router.post('/exec-guard', async (req, res) => {
+    try {
+      const body = req.body || {}
+      let stored = {}
+      try { stored = JSON.parse(getState(db, 'exec_guard_json') || '{}') } catch { /* fresh */ }
+      for (const k of ['halt', 'requireBracket', 'requireTarget']) {
+        if (typeof body[k] === 'boolean') stored[k] = body[k]
+      }
+      if (body.maxOrderVolume !== undefined) {
+        const v = Number(body.maxOrderVolume)
+        if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: 'maxOrderVolume must be a non-negative number' })
+        stored.maxOrderVolume = v
+      }
+      setState(db, 'exec_guard_json', JSON.stringify(stored))
+      let pushed = null
+      try {
+        const { setExecGuard } = await import('../lib/exec-engine.js')
+        pushed = await setExecGuard(getCtraderCreds(db), stored)
+      } catch (err) { pushed = { error: err.message } }
+      console.log('[actions] exec guard updated:', stored)
+      res.json({ ok: true, guard: stored, pushed })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/asset-controller — { class, beTriggerR?, partialTriggerR?,
   // runnerTriggerR?, runnerTrailR? } sets one asset class's trade-management
   // triggers (owner: "separate controllers for forex/indices/commodities").
