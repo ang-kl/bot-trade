@@ -150,6 +150,7 @@ export default function Desk() {
   const [orders, setOrders] = useState(null)            // durable set-order ledger (/state/orders)
   const [postmortems, setPostmortems] = useState(null)  // post-loss playback (/state/postmortems)
   const [dupeTrades, setDupeTrades] = useState(null)    // duplicate-trade audit (/state/duplicate-trades)
+  const [weekendFlags, setWeekendFlags] = useState([])  // pre-closure losing positions (/state/weekend-loss-flags)
   const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
   const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
   const [sweepNote, setSweepNote] = useState('')
@@ -252,7 +253,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr, dupe] = await Promise.all([
+      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr, dupe, wlf] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -268,6 +269,7 @@ export default function Desk() {
         agentGet('/state/postmortems').catch(() => null),
         agentGet('/state/correlation').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
+        agentGet('/state/weekend-loss-flags').catch(() => null),
       ])
       setHealth(h)
       // lastResults.scans is the CURRENT scan cycle's snapshot — recentScans
@@ -289,6 +291,7 @@ export default function Desk() {
       setPostmortems(pms || null)
       setCorrelation(corr || null)
       setDupeTrades(dupe || null)
+      setWeekendFlags(wlf?.flags || [])
       setError('')
     } catch (e) { setError(e.message) }
   }, [historyDays])
@@ -634,6 +637,30 @@ export default function Desk() {
           </Card>
         )
       })()}
+
+      {/* Weekend loss flags — losing positions the pre-closure sweep flagged
+          (weekend-loss-flag.js) and deliberately left open: selling a loser
+          into a thin pre-close market locks the worst price. The flags come
+          from the sweep's own self-expiring markers, so this banner clears
+          itself once the closure passes — read-only, nothing auto-closes. */}
+      {weekendFlags.length > 0 && (
+        <Card className="text-[12px] border-[var(--color-warning-text)]">
+          <p className="font-semibold text-[var(--color-warning-text)]">
+            ⚠ {weekendFlags.length} losing position(s) flagged ahead of a long market closure — left open per policy, review before the close
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {weekendFlags.slice(0, 8).map(f => {
+              const stillOpen = brokerPosRows.some(r => r.id === `bp-${f.positionId}`)
+              return (
+                <li key={f.positionId} className="text-[var(--color-text-sub)]">
+                  {f.symbol} {f.side === 'SELL' ? 'Short' : 'Long'} · {f.movePct}% · entry {f.entry}{f.closureHrs ? ` · ${f.closureHrs}h closure` : ''}{stillOpen ? '' : ' (since closed)'}
+                </li>
+              )
+            })}
+          </ul>
+          {weekendFlags.length > 8 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
+        </Card>
+      )}
 
       {/* Durable SET-ORDER LEDGER — resting orders keep a lifecycle record even
           after they fill/cancel (and even while switches are OFF), so there's

@@ -21,6 +21,28 @@
 import { getState, setState } from '../db.js'
 import { nextCloseInfo } from './symbol-hours.js'
 
+/**
+ * Pure: turn raw `wl_flagged_*` agent_state rows ({key, value}) into the
+ * UI's flag list. Keeps only unexpired markers that carry the display
+ * fields (pre-enrichment markers stored `{until}` only — filtered out
+ * harmlessly). Exported for the /state/weekend-loss-flags route and tests.
+ */
+export function parseWeekendFlags(rows, now = Date.now()) {
+  const flags = []
+  for (const r of rows || []) {
+    try {
+      const m = JSON.parse(r.value)
+      if (!m || !(m.until > now) || !m.symbol) continue
+      flags.push({
+        positionId: String(r.key).replace('wl_flagged_', ''),
+        symbol: m.symbol, side: m.side, entry: m.entry, price: m.price,
+        movePct: m.movePct, closureHrs: m.closureHrs ?? null, flaggedAt: m.flaggedAt ?? null,
+      })
+    } catch { /* unreadable marker — skip */ }
+  }
+  return flags
+}
+
 /** Pure decision: flag this losing position now? */
 export function shouldFlag({ open, closesInSec, closureSec, side, entry, price, windowMin = 75, minClosureHrs = 12, maxMovePct = 0 }) {
   if (open !== true) return false
@@ -68,7 +90,15 @@ export async function runWeekendLossFlag(db, creds, positions, { windowMin = 75,
       if (!shouldFlag({ open: true, closesInSec: info.closes_in_sec, closureSec: info.closure_sec, side, entry: p.price, price, windowMin, minClosureHrs })) continue
 
       const movePct = Math.round(((price - p.price) * (side === 'SELL' ? -1 : 1) / p.price) * 10000) / 100
-      setState(db, key, JSON.stringify({ until: Date.now() + (info.closes_in_sec + info.closure_sec) * 1000 }))
+      // Marker doubles as the UI's data source (GET /state/weekend-loss-flags
+      // reads these until they self-expire) — store the display fields, not
+      // just the one-shot expiry.
+      setState(db, key, JSON.stringify({
+        until: Date.now() + (info.closes_in_sec + info.closure_sec) * 1000,
+        symbol, side, entry: p.price, price, movePct,
+        closureHrs: Math.round(info.closure_sec / 3600),
+        flaggedAt: new Date().toISOString(),
+      }))
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
           'WEEKEND_LOSS_FLAG', '/weekend-loss-flag',

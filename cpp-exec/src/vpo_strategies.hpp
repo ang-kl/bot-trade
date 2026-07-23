@@ -93,10 +93,8 @@ public:
   void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
 };
 
-// Cup & Handle breakout ("C&H"), ported from agent/services/cup-handle.js —
-// classic (bullish) direction only, matching this engine's single
-// `cup_handle` key (the JS file's separate `inv_cup_handle` key has no VPO
-// counterpart). JS fires when the closed bar has ALREADY broken above the
+// Cup & Handle breakout ("C&H"), ported from agent/services/cup-handle.js.
+// JS fires when the closed bar has ALREADY broken above the
 // handle/prior-2-bar high on expanding volume; this engine searches the
 // same cup+handle structure (trend, rim, depth, round-bottom, handle
 // length/retrace/taper gates — all evaluable from bars already observed)
@@ -106,9 +104,24 @@ public:
 // breakout bar's own volume) — see file header, point 1. Runs on the MACRO
 // bars: a 15-120 bar cup is a slow structure, the same reasoning
 // VpValueStrategy uses for its profile.
+//
+// Both directions share ONE dir-parameterized search (vpo_strategies.cpp's
+// recomputeCupHandle) so the gating logic can never drift between them —
+// the exact structure cup-handle.js itself uses (searchCupHandle(dir)).
 class CupHandleStrategy : public StrategyModule {
 public:
   using StrategyModule::StrategyModule; // key="cup_handle"
+  void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
+};
+
+// Inverted (bearish) Cup & Handle — cup-handle.js's dir=-1 branch, own
+// `inv_cup_handle` key matching the Node registry, mirroring the classic
+// pattern top-for-bottom: a rounded DOME between two roughly-level low
+// rims, a handle drifting back up toward the rim, arming a SELL at the
+// breakdown level (min of prior-2-bar lows and the handle low).
+class InvCupHandleStrategy : public StrategyModule {
+public:
+  using StrategyModule::StrategyModule; // key="inv_cup_handle"
   void recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& microBars) override;
 };
 

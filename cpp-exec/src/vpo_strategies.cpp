@@ -140,6 +140,11 @@ int idxMinLow(const std::vector<Bar>& bars, int from, int to) {
   for (int i = from; i <= to; i++) if (bars[i].l < bars[best].l) best = i;
   return best;
 }
+int idxMaxHigh(const std::vector<Bar>& bars, int from, int to) {
+  int best = from;
+  for (int i = from; i <= to; i++) if (bars[i].h > bars[best].h) best = i;
+  return best;
+}
 double avgVolRange(const std::vector<Bar>& bars, int from, int to) {
   if (to < from) return 0.0;
   double s = 0.0;
@@ -277,68 +282,101 @@ void DonchianBreakoutStrategy::recompute(const std::vector<Bar>& /*macroBars*/, 
   disarm();
 }
 
-void CupHandleStrategy::recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& /*microBars*/) {
-  if (static_cast<int>(macroBars.size()) < kChMinBars) { disarm(); return; }
+namespace {
+// Shared dir-parameterized cup+handle search — mirrors cup-handle.js's
+// searchCupHandle(bars, tf, opts, dir) so the gating logic can never drift
+// between the classic (dir=+1: rounded bottom, breaks UP) and inverted
+// (dir=-1: rounded dome, breaks DOWN) directions. Sets the strategy's
+// order atomics directly (order() is public; IDLE store == disarm()).
+void recomputeCupHandle(StrategyModule& s, const std::vector<Bar>& macroBars, int dir) {
+  auto& o = s.order();
+  const auto idle = [&o] { o.state.store(VposState::IDLE, std::memory_order_relaxed); };
+
+  if (static_cast<int>(macroBars.size()) < kChMinBars) { idle(); return; }
   const int last = static_cast<int>(macroBars.size()) - 1;
   const double close = macroBars[last].c;
 
   const double s20 = sma(macroBars, 20);
   const double s50 = sma(macroBars, 50);
   const double s200 = sma(macroBars, 200);
-  if (std::isnan(s20) || std::isnan(s50) || std::isnan(s200)
-      || !(close > s20 && close > s50 && close > s200)) { disarm(); return; }
+  const bool trendOk = !std::isnan(s20) && !std::isnan(s50) && !std::isnan(s200)
+      && (dir == 1 ? (close > s20 && close > s50 && close > s200)
+                   : (close < s20 && close < s50 && close < s200));
+  if (!trendOk) { idle(); return; }
 
   for (int handleLen = kChHandleMin; handleLen <= kChHandleMax; handleLen++) {
     const int rr = last - handleLen;
     if (rr < kChCupMin + 10) break;
 
-    // Right rim must be a local high vs. the handle bars after it.
-    double handleExtreme = -std::numeric_limits<double>::infinity();
-    for (int i = rr + 1; i < last; i++) if (macroBars[i].h > handleExtreme) handleExtreme = macroBars[i].h;
-    if (!(macroBars[rr].h > handleExtreme)) continue;
+    // Right rim must be the local extreme vs. the handle bars after it — a
+    // local HIGH for the classic pattern, a local LOW for the inverted one.
+    double handleExtreme = dir == 1 ? -std::numeric_limits<double>::infinity()
+                                    : std::numeric_limits<double>::infinity();
+    for (int i = rr + 1; i < last; i++) {
+      if (dir == 1) { if (macroBars[i].h > handleExtreme) handleExtreme = macroBars[i].h; }
+      else { if (macroBars[i].l < handleExtreme) handleExtreme = macroBars[i].l; }
+    }
+    const bool rimHolds = dir == 1 ? macroBars[rr].h > handleExtreme
+                                   : macroBars[rr].l < handleExtreme;
+    if (!rimHolds) continue;
 
     // Cup: left rim first (roughly level with the right rim), then the
-    // lowest low between the rims, matching cup-handle.js's searchCupHandle
-    // exactly (dir=1 branch only — see vpo_strategies.hpp comment).
+    // extreme (lowest low classic / highest high inverted) BETWEEN the rims.
     int lr = -1, ex = -1;
-    double depthAbs = 0.0, depth = 0.0;
+    double depthAbs = 0.0;
     for (int cand = rr - kChCupMin; cand >= std::max(rr - kChCupMax, 0); cand--) {
-      const double candRim = macroBars[cand].h;
-      const double rrRim = macroBars[rr].h;
+      const double candRim = dir == 1 ? macroBars[cand].h : macroBars[cand].l;
+      const double rrRim = dir == 1 ? macroBars[rr].h : macroBars[rr].l;
+      // leveling check, not a price mirror — the same relative band applies
+      // to highs (classic) or lows (inverted), matching the JS exactly.
       if (candRim < rrRim * 0.95 || candRim > rrRim * 1.15) continue;
-      const int exIdx = idxMinLow(macroBars, cand + 1, rr - 1);
-      const double rim = std::min(macroBars[cand].h, macroBars[rr].h);
-      const double exPrice = macroBars[exIdx].l;
-      const double dAbs = rim - exPrice;
+      const int exIdx = dir == 1 ? idxMinLow(macroBars, cand + 1, rr - 1)
+                                 : idxMaxHigh(macroBars, cand + 1, rr - 1);
+      const double rim = dir == 1 ? std::min(macroBars[cand].h, macroBars[rr].h)
+                                  : std::max(macroBars[cand].l, macroBars[rr].l);
+      const double exPrice = dir == 1 ? macroBars[exIdx].l : macroBars[exIdx].h;
+      const double dAbs = dir == 1 ? rim - exPrice : exPrice - rim;
       const double d = dAbs / rim;
       if (d < kChDepthMin || d > kChDepthMax) continue;
       const double posInCup = static_cast<double>(exIdx - cand) / (rr - cand);
       if (posInCup < 0.2 || posInCup > 0.8) continue;
-      lr = cand; ex = exIdx; depthAbs = dAbs; depth = d;
+      lr = cand; ex = exIdx; depthAbs = dAbs;
       break;
     }
     if (lr < 0) continue;
-    (void)depth; // kept for parity with the JS shape; not needed past this point
     const int cupLen = rr - lr;
-    const double extremePrice = macroBars[ex].l;
-    const double rim = std::min(macroBars[lr].h, macroBars[rr].h);
+    const double extremePrice = dir == 1 ? macroBars[ex].l : macroBars[ex].h;
+    const double rim = dir == 1 ? std::min(macroBars[lr].h, macroBars[rr].h)
+                                : std::max(macroBars[lr].l, macroBars[rr].l);
 
     const double handleLenRatio = static_cast<double>(handleLen) / cupLen;
     if (handleLenRatio < kChHandleLenMinRatio || handleLenRatio > kChHandleLenMaxRatio) continue;
 
-    const double nearExtreme = extremePrice + 0.15 * depthAbs;
+    // Rounded extreme: several bars near it, not one V-spike (dome-spike).
+    const double nearExtreme = dir == 1 ? extremePrice + 0.15 * depthAbs
+                                        : extremePrice - 0.15 * depthAbs;
     int roundBars = 0;
-    for (int i = lr; i <= rr; i++) if (macroBars[i].l <= nearExtreme) roundBars++;
+    for (int i = lr; i <= rr; i++) {
+      const bool touches = dir == 1 ? macroBars[i].l <= nearExtreme
+                                    : macroBars[i].h >= nearExtreme;
+      if (touches) roundBars++;
+    }
     if (roundBars < kChRoundBottomBars) continue;
 
-    // Handle retrace: must not drop below the cup's own midpoint. Handle
-    // volume taper: quieter than the advance into the right rim — both
-    // fully evaluable from already-observed bars, so both stay hard gates
+    // Handle retrace: must not cross the cup's own midpoint. Handle volume
+    // taper: quieter than the advance into the right rim — both fully
+    // evaluable from already-observed bars, so both stay hard gates
     // (unlike the breakout-volume check, which needs the not-yet-existing
     // breakout bar's own volume and is dropped — see file header, point 1).
-    double handleFar = std::numeric_limits<double>::infinity();
-    for (int i = rr + 1; i < last; i++) if (macroBars[i].l < handleFar) handleFar = macroBars[i].l;
-    if (!(handleFar >= rim - depthAbs * kChHandleRetraceMax)) continue;
+    double handleFar = dir == 1 ? std::numeric_limits<double>::infinity()
+                                : -std::numeric_limits<double>::infinity();
+    for (int i = rr + 1; i < last; i++) {
+      if (dir == 1) { if (macroBars[i].l < handleFar) handleFar = macroBars[i].l; }
+      else { if (macroBars[i].h > handleFar) handleFar = macroBars[i].h; }
+    }
+    const bool handleOk = dir == 1 ? handleFar >= rim - depthAbs * kChHandleRetraceMax
+                                   : handleFar <= rim + depthAbs * kChHandleRetraceMax;
+    if (!handleOk) continue;
 
     const int third = std::max(1, cupLen / 3);
     const double vOut = avgVolRange(macroBars, rr - third, rr);
@@ -352,21 +390,32 @@ void CupHandleStrategy::recompute(const std::vector<Bar>& macroBars, const std::
     const double rrRatio = tp / sl;
     if (rrRatio < kChMinRR) continue;
 
-    // Breakout level this engine arms at and waits for a touch, rather than
-    // requiring (as cup-handle.js does) that the touch already happened on
-    // the just-closed bar.
-    const double prior2Extreme = std::max(macroBars[last - 1].h, macroBars[last - 2].h);
-    const double breakoutLevel = std::max(prior2Extreme, handleExtreme);
+    // Breakout/breakdown level this engine arms at and waits for a touch,
+    // rather than requiring (as cup-handle.js does) that the touch already
+    // happened on the just-closed bar.
+    const double prior2Extreme = dir == 1
+        ? std::max(macroBars[last - 1].h, macroBars[last - 2].h)
+        : std::min(macroBars[last - 1].l, macroBars[last - 2].l);
+    const double breakoutLevel = dir == 1 ? std::max(prior2Extreme, handleExtreme)
+                                          : std::min(prior2Extreme, handleExtreme);
 
-    auto& o = order();
     o.triggerPrice.store(breakoutLevel, std::memory_order_relaxed);
-    o.side.store(Side::Buy, std::memory_order_relaxed);
+    o.side.store(dir == 1 ? Side::Buy : Side::Sell, std::memory_order_relaxed);
     o.relativeStopLoss.store(sl, std::memory_order_relaxed);
     o.relativeTakeProfit.store(tp, std::memory_order_relaxed);
     o.state.store(VposState::ARMED, std::memory_order_relaxed);
     return;
   }
-  disarm();
+  idle();
+}
+} // namespace
+
+void CupHandleStrategy::recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& /*microBars*/) {
+  recomputeCupHandle(*this, macroBars, 1);
+}
+
+void InvCupHandleStrategy::recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& /*microBars*/) {
+  recomputeCupHandle(*this, macroBars, -1);
 }
 
 void FibConfluenceStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const std::vector<Bar>& microBars) {

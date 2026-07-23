@@ -221,6 +221,46 @@ static void test_cup_handle_disarms_when_no_trend() {
   assert(s.order().state.load() == VposState::IDLE);
 }
 
+// --- InvCupHandleStrategy ----------------------------------------------------
+
+// The verified classic fixture, price-reflected around a pivot: every bar's
+// o/h/l/c becomes P−x (highs and lows swap roles), volumes unchanged. This
+// turns the cup into a dome, the up-handle into a down-handle, and the
+// breakout into a breakdown — with the pivot chosen (260) the depth
+// fraction dAbs/rim lands at ~0.24, inside the same [0.15, 0.33] gate the
+// classic candidate passes, so the mirrored candidate must qualify too.
+static std::vector<Bar> invCupHandleBars() {
+  std::vector<Bar> bars = cupHandleBars();
+  const double P = 260.0;
+  for (auto& b : bars) {
+    const double h = b.h, l = b.l;
+    b.o = P - b.o;
+    b.c = P - b.c;
+    b.h = P - l;
+    b.l = P - h;
+  }
+  return bars;
+}
+
+static void test_inv_cup_handle_arms_at_breakdown_level() {
+  vpo::InvCupHandleStrategy s("inv_cup_handle", "EURUSD", "15m", 1);
+  std::vector<Bar> micro;
+  s.recompute(invCupHandleBars(), micro);
+  assert(s.order().state.load() == VposState::ARMED);
+  assert(s.order().side.load() == Side::Sell);
+  assert(s.order().triggerPrice.load() > 0.0);
+  assert(s.order().relativeStopLoss.load() > 0.0);
+  assert(s.order().relativeTakeProfit.load() > 0.0);
+}
+
+static void test_inv_cup_handle_disarms_when_no_downtrend() {
+  vpo::InvCupHandleStrategy s("inv_cup_handle", "EURUSD", "15m", 1);
+  std::vector<Bar> macro, micro;
+  for (int i = 0; i < 220; i++) macro.push_back({double(i), 100, 100.5, 99.5, 100, 1000}); // flat — fails the below-SMA20/50/200 gate
+  s.recompute(macro, micro);
+  assert(s.order().state.load() == VposState::IDLE);
+}
+
 // --- FibConfluenceStrategy ---------------------------------------------------
 
 // Two up-legs sharing a common swing low (100) so their retracement grids
@@ -309,6 +349,8 @@ int main() {
   test_donchian_breakout_disarms_on_micro_range();
   test_cup_handle_arms_at_breakout_level();
   test_cup_handle_disarms_when_no_trend();
+  test_inv_cup_handle_arms_at_breakdown_level();
+  test_inv_cup_handle_disarms_when_no_downtrend();
   test_fib_confluence_arms_at_current_price();
   test_fib_confluence_disarms_on_too_few_bars();
   test_rsi2_reversion_arms_at_current_price();

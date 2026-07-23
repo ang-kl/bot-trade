@@ -384,6 +384,21 @@ export default function stateRouter(db) {
     res.json({ rows })
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/weekend-loss-flags — losing positions flagged ahead of a
+  // long market closure (weekend-loss-flag.js). Reads the sweep's own
+  // one-shot `wl_flagged_*` markers, which self-expire once the closure
+  // passes — so this list empties itself, no dismiss plumbing needed.
+  router.get('/weekend-loss-flags', async (_req, res) => {
+    try {
+      const { parseWeekendFlags } = await import('../services/weekend-loss-flag.js')
+      const rows = db.prepare("SELECT key, value FROM agent_state WHERE key LIKE 'wl_flagged_%'").all()
+      res.json({ flags: parseWeekendFlags(rows) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/backtest-reports — saved run reports (newest first). Reads
   // the SAME resolved directory saveBacktestReport writes to (persistent
   // volume on Railway via DB_PATH, cwd in local dev).
