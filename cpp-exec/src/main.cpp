@@ -8,14 +8,21 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "backtest.hpp"
 #include "engine.hpp"
 #include "http_server.hpp"
 #include "json.hpp"
+#include "spot_feed.hpp"
 #include "telemetry.hpp"
+#include "vpo_config_store.hpp"
+#include "vpo_dispatcher.hpp"
+#include "vpo_strategies.hpp"
 
 static void logLine(const std::string& msg) {
   std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
@@ -125,6 +132,84 @@ int main(int argc, char** argv) {
   std::thread engineThread([&engine] { engine.runLoop(); });
   engineThread.detach();
 
+  // -------------------------------------------------------------------
+  // Virtual Pending Order engine (owner-authorized 2026-07-22 build; this
+  // is the wiring step flagged in doc_reference/cpp-virtual-pending-order-
+  // engine.md as needing its own review pass before it can fire real
+  // orders). Bars and per-strategy sizing are PUSHED IN by the Node keeper
+  // via POST /vpo-config — this binary never fetches trendbars or computes
+  // position size itself (see vpo_config_store.hpp for why: no parallel,
+  // unaudited sizing source of truth). Off by default (VPO_ENABLED unset).
+  // -------------------------------------------------------------------
+  const bool vpoEnabled = envOr("VPO_ENABLED", "false") == "true";
+  const std::string vpoSymbolsSpec = envOr("VPO_SYMBOLS", ""); // "EURUSD:1:vwap_trend,GBPUSD:2:vp_value"
+  const std::string vpoMacroTf = envOr("VPO_MACRO_TF", "4h");
+  const std::string vpoMicroTf = envOr("VPO_MICRO_TF", "15m");
+  const int vpoRecomputeMs = std::atoi(envOr("VPO_RECOMPUTE_MS", "5000").c_str());
+
+  vpo::VpoConfigStore vpoStore;
+  std::unique_ptr<vpo::VpoDispatcher> vpoDispatcher;
+  std::vector<long long> vpoSymbolIds;
+  std::unique_ptr<SpotFeed> spotFeed;
+  std::thread spotFeedThread;
+  std::mutex vpoMtx; // guards spotFeed/spotFeedThread across concurrent /connect calls
+
+  if (vpoEnabled && !vpoSymbolsSpec.empty()) {
+    vpo::BarProvider barProvider = [&vpoStore](const std::string& symbol, const std::string& timeframe) {
+      return vpoStore.getBars(symbol, timeframe);
+    };
+    vpo::VolumeResolver volumeResolver = [&vpoStore](const vpo::StrategyModule& s) {
+      return vpoStore.getVolume(s.key() + ":" + s.order().symbol);
+    };
+    vpoDispatcher = std::make_unique<vpo::VpoDispatcher>(engine, barProvider, volumeResolver, vpoMacroTf, vpoMicroTf);
+
+    // "SYMBOL:SYMBOLID:STRATEGYKEY[:DIGITS],..." — DIGITS (the symbol's
+    // decimal price precision, e.g. 5 for EURUSD, 3 for USDJPY) is optional
+    // and defaults to 5; it's needed to scale relativeStopLoss/
+    // relativeTakeProfit into cTrader's wire units correctly (see
+    // vpo_dispatcher.cpp's relativePoints() — a flat ×100000 is WRONG for
+    // any symbol whose precision isn't 5 digits). Only vwap_trend/vp_value
+    // are real ports; any other key is logged and skipped rather than
+    // silently registering a stub that never arms.
+    std::stringstream ss(vpoSymbolsSpec);
+    std::string entry;
+    while (std::getline(ss, entry, ',')) {
+      std::vector<std::string> fields;
+      std::stringstream es(entry);
+      std::string field;
+      while (std::getline(es, field, ':')) fields.push_back(field);
+      if (fields.size() < 3) {
+        logLine("VPO_SYMBOLS: skipping malformed entry '" + entry + "'");
+        continue;
+      }
+      const std::string& symbol = fields[0];
+      const long long symbolId = std::strtoll(fields[1].c_str(), nullptr, 10);
+      const std::string& key = fields[2];
+      const int digits = fields.size() >= 4 ? std::atoi(fields[3].c_str()) : 5;
+      if (symbolId <= 0) {
+        logLine("VPO_SYMBOLS: bad symbolId in '" + entry + "'");
+        continue;
+      }
+      std::unique_ptr<vpo::StrategyModule> strat;
+      if (key == "vwap_trend") strat = std::make_unique<vpo::VwapTrendStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else if (key == "vp_value") strat = std::make_unique<vpo::VpValueStrategy>(key, symbol, vpoMicroTf, symbolId, digits);
+      else {
+        logLine("VPO_SYMBOLS: unknown/unported strategy key '" + key + "' — skipping (only vwap_trend, vp_value are real ports)");
+        continue;
+      }
+      vpoSymbolIds.push_back(symbolId);
+      vpoDispatcher->registerStrategy(std::move(strat));
+    }
+
+    if (vpoDispatcher->strategyCount() > 0) {
+      vpoDispatcher->start(vpoRecomputeMs);
+      logLine("VPO dispatcher started with " + std::to_string(vpoDispatcher->strategyCount()) + " strategy/ies");
+    } else {
+      logLine("VPO_ENABLED but no valid strategies parsed from VPO_SYMBOLS — dispatcher not started");
+      vpoDispatcher.reset();
+    }
+  }
+
   HttpServer server(port, execSecret);
 
   server.route("GET", "/health", [&engine](const HttpRequest&) -> HttpResponse {
@@ -153,7 +238,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -171,7 +256,64 @@ int main(int argc, char** argv) {
     engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
                           clientId, clientSecret, accessToken, accountId);
     logLine("credentials updated via /connect");
+
+    // (Re)start the VPO tick feed against the freshly pushed session — the
+    // sidecar holds no credentials of its own until /connect delivers them,
+    // same as ExecEngine above. Stop-then-join the old feed BEFORE
+    // replacing the pointer: SpotFeed::runLoop() runs on a detached-less
+    // thread against `*spotFeed`, so swapping the object out from under a
+    // still-running thread would be a use-after-free.
+    if (vpoDispatcher && !vpoSymbolIds.empty()) {
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      if (spotFeed) {
+        spotFeed->stop();
+        if (spotFeedThread.joinable()) spotFeedThread.join();
+      }
+      vpo::VpoDispatcher* dispatcherPtr = vpoDispatcher.get();
+      spotFeed = std::make_unique<SpotFeed>(
+          host.empty() ? "live.ctraderapi.com" : host, clientId, clientSecret, accessToken, accountId,
+          vpoSymbolIds,
+          [dispatcherPtr](long long symbolId, double bid, double ask) { dispatcherPtr->onTick(symbolId, bid, ask); });
+      SpotFeed* feedPtr = spotFeed.get();
+      spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
+      logLine("VPO spot feed (re)started for " + std::to_string(vpoSymbolIds.size()) + " symbol(s)");
+    }
     return {200, "{\"ok\":true}"};
+  });
+
+  // Node pushes trendbars + real risk.js-resolved position sizes here on a
+  // timer (see agent/services/vpo-feeder.js) — this binary never fetches
+  // bars or computes sizing itself. Safe to call whether or not VPO is
+  // enabled/running (a no-op store nobody reads yet).
+  server.route("POST", "/vpo-config", [&vpoStore](const HttpRequest& req) -> HttpResponse {
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    const jsn::Value& v = *parsed;
+    int barsUpdated = 0, volsUpdated = 0;
+    for (const auto& entry : v.get("bars").asArray()) {
+      const std::string symbol = entry.get("symbol").asString();
+      const std::string timeframe = entry.get("timeframe").asString();
+      if (symbol.empty() || timeframe.empty()) continue;
+      std::vector<vpo::Bar> bars;
+      for (const auto& b : entry.get("bars").asArray()) {
+        bars.push_back(vpo::Bar{b.get("t").asNumber(0), b.get("o").asNumber(0), b.get("h").asNumber(0),
+                                b.get("l").asNumber(0), b.get("c").asNumber(0), b.get("v").asNumber(0)});
+      }
+      vpoStore.setBars(symbol, timeframe, std::move(bars));
+      barsUpdated++;
+    }
+    for (const auto& entry : v.get("volumes").asArray()) {
+      const std::string key = entry.get("key").asString();
+      if (key.empty()) continue;
+      vpoStore.setVolume(key, entry.get("volume").asNumber(-1));
+      volsUpdated++;
+    }
+    jsn::Value out{jsn::Object{}};
+    out.set("ok", true);
+    out.set("barsUpdated", barsUpdated);
+    out.set("volumesUpdated", volsUpdated);
+    return {200, jsn::dump(out)};
   });
 
   server.route("POST", "/order", [&engine](const HttpRequest& req) {

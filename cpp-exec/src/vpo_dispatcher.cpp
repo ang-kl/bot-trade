@@ -20,10 +20,18 @@
 //   from tryFire's own call site) ever clears it back to IDLE.
 #include "vpo_dispatcher.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
 namespace vpo {
+
+double relativePoints(double priceDistance, int digits) {
+  const int d = std::max(0, std::min(5, digits));
+  const double step = std::pow(10.0, 5 - d);
+  const double snapped = std::round((priceDistance * 100000.0) / step) * step;
+  return std::max(step, snapped);
+}
 
 VpoDispatcher::VpoDispatcher(ExecEngine& engine, BarProvider barProvider, VolumeResolver volumeResolver,
                              std::string macroTimeframe, std::string microTimeframe)
@@ -93,8 +101,8 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
   payload.set("tradeSide", side == Side::Buy ? std::string("BUY") : std::string("SELL"));
   payload.set("orderType", std::string("MARKET"));
   payload.set("volume", volume);
-  payload.set("relativeStopLoss", o.relativeStopLoss.load(std::memory_order_relaxed));
-  payload.set("relativeTakeProfit", o.relativeTakeProfit.load(std::memory_order_relaxed));
+  payload.set("relativeStopLoss", relativePoints(o.relativeStopLoss.load(std::memory_order_relaxed), o.digits));
+  payload.set("relativeTakeProfit", relativePoints(o.relativeTakeProfit.load(std::memory_order_relaxed), o.digits));
   payload.set("label", std::string("vpo:") + s.key());
 
   const EngineResult result = engine_.placeOrder(payload);
