@@ -159,6 +159,29 @@ test('probeCppExec: an answering HTTP server no longer masks a dead broker sessi
   assert.match(row.last_error, /stalled/)
 })
 
+test('probeCppExec: credential-less live sidecar triggers a re-push (M4 self-heal)', async () => {
+  // A sidecar that restarted alone loses its creds while the agent's push
+  // memo still matches — the probe must force a re-push, or the broker
+  // session never returns until the next agent redeploy.
+  const db = initDB(':memory:')
+  let pushedWith = null
+  const exec = {
+    execEngineMode: () => 'cpp',
+    pingSidecar: async () => ({ ok: true, mode: 'cpp', connected: false, hasCredentials: false }),
+    pushSidecarSession: async (creds) => { pushedWith = creds; return true },
+  }
+  const r = await probeCppExec(db, { exec, now: T0 })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /no credentials/)
+  assert.match(r.error, /re-pushed/)
+  assert.ok(pushedWith && typeof pushedWith === 'object', 'pushSidecarSession called with assembled creds')
+  // The reconnecting case (creds present) must NOT re-push.
+  pushedWith = null
+  exec.pingSidecar = async () => ({ ok: true, mode: 'cpp', connected: false, hasCredentials: true })
+  await probeCppExec(db, { exec, now: T0 })
+  assert.equal(pushedWith, null)
+})
+
 test('pingSidecar (exec-engine): js mode is trivially alive with no HTTP call', async () => {
   const { pingSidecar } = await import('../lib/exec-engine.js')
   delete process.env.EXEC_ENGINE

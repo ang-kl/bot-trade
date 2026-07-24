@@ -41,6 +41,25 @@ async function sidecar(method, path, body) {
 // account id live in the keeper's DB. Push them before the first call and
 // again whenever they change (token refresh, account switch).
 let lastPushedKey = ''
+
+// M4 finding (2026-07-24): when the SIDECAR alone restarts (env change,
+// crash, Railway redeploy of just that service) it loses its credentials,
+// but this memo still matches — so every ensureSidecarSession call returns
+// without pushing and the broker session never comes back until the AGENT
+// restarts. The heartbeat probe calls this when it sees hasCredentials:false
+// on a live sidecar, forcing the next ensure (or its own re-push) through.
+export function invalidateSidecarSession() {
+  lastPushedKey = ''
+}
+
+// Explicit re-push for the probe path: invalidate + ensure in one call.
+// Safe to call with not-ready creds (returns false, pushes nothing).
+export async function pushSidecarSession(creds) {
+  if (!creds?.ready) return false
+  invalidateSidecarSession()
+  await ensureSidecarSession(creds)
+  return true
+}
 async function ensureSidecarSession(creds) {
   // M2: the sidecar multiplexes many ctidTraderAccountIds on ONE session
   // (same host+token). Re-pushing /connect for another account under the

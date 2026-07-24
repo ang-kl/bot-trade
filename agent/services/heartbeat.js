@@ -217,6 +217,20 @@ export async function probeCppExec(db, deps = {}) {
     error = r.hasCredentials === false
       ? 'broker session down — no credentials pushed to the sidecar yet'
       : 'broker session down — sidecar is reconnecting to cTrader'
+    // M4 self-heal: a live sidecar with NO credentials means it restarted
+    // and lost them while the agent (and its push memo) kept running —
+    // nothing else would ever re-push, because ensureSidecarSession
+    // memoizes on the unchanged (host, roster, token) key. Re-push here so
+    // the broker session returns within one probe interval (~30s) instead
+    // of waiting for the next agent redeploy. Best-effort: a failed push
+    // keeps the heartbeat red and retries on the next probe.
+    if (r.hasCredentials === false) {
+      try {
+        const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+        const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(getCtraderCreds(db)) : false
+        if (pushed) error += ' — credentials re-pushed, session should return shortly'
+      } catch { /* creds not ready or sidecar went away — next probe retries */ }
+    }
   } else if (ok && r.connected === true && r.lastReconcileAt == null) {
     ok = false
     error = 'connected but no reconcile pass has completed yet'
