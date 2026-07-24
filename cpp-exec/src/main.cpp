@@ -29,6 +29,33 @@ static void logLine(const std::string& msg) {
   std::fprintf(stderr, "[cpp-exec] %s\n", msg.c_str());
 }
 
+// Crash handler (2026-07-24 staging incident: the sidecar died repeatedly
+// with ZERO log output — a naked SIGSEGV kills the process before anything
+// prints, so every restart was unattributable). On fatal signals, write the
+// signal name and a raw backtrace to stderr with async-signal-safe calls
+// only, then re-raise so the exit code stays honest. Symbol names may be
+// mangled/bare addresses in a stripped binary — addresses are still enough
+// to map against the build with addr2line.
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
+extern "C" void fatalSignalHandler(int sig) {
+  const char* name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT"
+                   : sig == SIGBUS ? "SIGBUS" : sig == SIGFPE ? "SIGFPE" : "FATAL";
+  // write() is async-signal-safe; fprintf is not.
+  (void)!write(STDERR_FILENO, "[cpp-exec] FATAL ", 17);
+  (void)!write(STDERR_FILENO, name, std::strlen(name));
+  (void)!write(STDERR_FILENO, " — backtrace:\n", 16);
+  void* frames[48];
+  const int n = backtrace(frames, 48);
+  backtrace_symbols_fd(frames, n, STDERR_FILENO);
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+static void installCrashHandler() {
+  for (int sig : { SIGSEGV, SIGABRT, SIGBUS, SIGFPE }) signal(sig, fatalSignalHandler);
+}
+
 static std::string envOr(const char* name, const std::string& dflt) {
   const char* v = std::getenv(name);
   return v && *v ? v : dflt;
@@ -72,6 +99,7 @@ static HttpResponse handleBacktest(const std::string& body) {
 }
 
 int main(int argc, char** argv) {
+  installCrashHandler();
   // CLI mode: `cpp-exec --backtest` reads one JSON object from stdin and
   // writes {trades,stats,wf} to stdout. Checked BEFORE env validation —
   // this mode needs no EXEC_SECRET (tests / parity harness).
