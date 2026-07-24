@@ -263,3 +263,53 @@ test('adaptive spike: ratchet-only survives — an already-tighter SL stays put'
   })
   assert.equal(out.action, null)
 })
+
+// ---- option 4: trail-spec handoff to the C++ tick ratchet ------------------
+
+test('decide exposes trail {distance, peakPrice} when adaptive-armed', () => {
+  const out = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.918, atr: 0.05, balance: 50_000,
+  })
+  // trail distance 2.5×0.05; peak price = entry - peak$/(lots×units) = 2.2795
+  assert.ok(Math.abs(out.trail.distance - 0.125) < 1e-12)
+  assert.ok(Math.abs(out.trail.peakPrice - 2.2795) < 1e-12)
+  // Not armed → no trail exposed.
+  const cold = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.86, peak: 0, currentSl: null, atr: 0.05, balance: 50_000,
+  })
+  assert.equal(cold.trail, undefined)
+})
+
+test('runProfitKeeper pushes armed trail specs to the sidecar (full replace)', async () => {
+  const db = mkKeeperDb()
+  setState(db, 'profit_keeper_json', JSON.stringify({
+    on: true, scope: 'external', mode: 'adaptive', atrTimeframe: '1h', atrPeriod: 14,
+    armAtrMult: 1, armBalancePct: 0, trailAtrMult: 2.5, spikeTightenEnabled: false,
+  }))
+  const bars = Array.from({ length: 30 }, () => ({ h: 2.35, l: 2.30, c: 2.32 })) // ATR 0.05
+  let pushed = null
+  const deps = keeperDeps()
+  deps.ws.wsGetTrendbarsBatch = async () => ({ '1h': bars })
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  const out = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out.checked, 1)
+  assert.ok(Array.isArray(pushed) && pushed.length === 1, `expected one spec, got ${JSON.stringify(pushed)}`)
+  const s = pushed[0]
+  assert.equal(s.positionId, 9001)
+  assert.equal(s.symbolId, 1)
+  assert.equal(s.dir, -1) // short
+  assert.ok(Math.abs(s.trailDistance - 0.125) < 1e-12)
+  assert.equal(s.digits, 3)
+  assert.equal(out.trailPushed, 1)
+})
+
+test('runProfitKeeper pushes an EMPTY set when nothing is armed (clears stale trails)', async () => {
+  const db = mkKeeperDb() // fixed mode fixture — no adaptive trail
+  let pushed = null
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
+  await runProfitKeeper(db, CREDS, deps)
+  assert.ok(Array.isArray(pushed) && pushed.length === 0)
+})
