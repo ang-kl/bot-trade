@@ -76,13 +76,19 @@ export function loadLessonTuning(db) {
  * — are put on a trade cool-off. Self-clearing: the flag is recomputed from
  * evidence every sweep, so one Win/Partial in the window lifts it.
  */
-export function computeDecayKeys(db, windowDays = 14) {
+export function computeDecayKeys(db, windowDays = 14, accountId = null) {
+  // M1 scoping (plan D5): lessons tune only the account that produced them —
+  // demo postmortems must never cool live edges off (or vice versa). NULL
+  // rows are legacy single-account history and count everywhere. Defaults
+  // to the selected account so existing callers stay unchanged.
+  const acct = accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
   const rows = db.prepare(`
     SELECT symbol, strategy, timeframe, alpha_decay,
            ROW_NUMBER() OVER (PARTITION BY symbol, strategy, timeframe ORDER BY id DESC) AS rn
     FROM trade_postmortems
     WHERE created_at >= datetime('now', ?)
-  `).all(`-${windowDays} days`)
+      AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+  `).all(`-${windowDays} days`, acct, acct)
   const out = new Set()
   for (const r of rows) {
     if (r.rn === 1 && r.alpha_decay === 'decay') {

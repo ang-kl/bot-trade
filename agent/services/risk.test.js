@@ -31,7 +31,8 @@ function freshDB() {
       gross_pnl REAL, net_pnl REAL,
       status TEXT DEFAULT 'open',
       close_reason TEXT, thesis TEXT, strategy TEXT, conviction REAL,
-      ctrader_position_id TEXT, analysis_id INTEGER, label_strategy TEXT
+      ctrader_position_id TEXT, analysis_id INTEGER, label_strategy TEXT,
+      account_id TEXT
     );
     CREATE TABLE monitored_positions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +43,7 @@ function freshDB() {
       be_moved INTEGER, scaled_out INTEGER, strategy TEXT,
       last_check_action TEXT, last_check_reasoning TEXT,
       last_check_at TEXT, thesis_status TEXT, paused INTEGER,
+      account_id TEXT,
       status TEXT DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );

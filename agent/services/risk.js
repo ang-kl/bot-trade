@@ -161,12 +161,18 @@ export function portfolioMarginStatus(db, config, { balance, leverage, openPosit
   if (usedMargin == null) {
     source = 'estimate'
     usedMargin = 0
+    // M1 scoping: margin is a per-account quantity. NOTE the broker-truth
+    // branch above reads the SELECTED account's snapshot — per-account
+    // snapshots arrive with M2's workers; until then callers evaluating a
+    // non-selected account get the estimate path via this filter.
+    const acct = getState(db, 'ctrader_account_id') || null
     const rows = openPositions ?? db.prepare(`
       SELECT mp.symbol, mp.entry_price, t.volume AS volume
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active'
-    `).all()
+        AND (mp.account_id = ? OR mp.account_id IS NULL OR ? IS NULL)
+    `).all(acct, acct)
     for (const p of rows) {
       if (!(Number(p.volume) > 0) || !(Number(p.entry_price) > 0)) continue
       try {
@@ -265,14 +271,18 @@ export function riskBudgetUsd(balance, cfg, ddFactor = 1) {
  * Anti-tilt de-risk multiplier: 1 normally, or cfg.deriskMult when realized net
  * PnL over the last cfg.deriskWindowHours is worse than −(balance × trigger).
  */
-export function drawdownDeriskFactor(db, balance, cfg) {
+export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
   if (!cfg?.deriskOnDrawdown || !(balance > 0)) return 1
   try {
+    // M1 scoping: the anti-tilt window looks at THIS account's realized
+    // P&L, not the whole book (NULL legacy rows count everywhere).
+    const acct = accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
     const row = db.prepare(
       `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
        WHERE status = 'closed' AND net_pnl IS NOT NULL
-         AND closed_at >= datetime('now', ?)`
-    ).get(`-${Math.max(1, Math.round(cfg.deriskWindowHours || 24))} hours`)
+         AND closed_at >= datetime('now', ?)
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+    ).get(`-${Math.max(1, Math.round(cfg.deriskWindowHours || 24))} hours`, acct, acct)
     const pnl = row?.pnl ?? 0
     return pnl <= -(balance * (cfg.deriskTriggerPct ?? 1)) ? (cfg.deriskMult ?? 1) : 1
   } catch { return 1 }
@@ -371,19 +381,36 @@ export function evaluateTrade(db, proposal, configOverride) {
   const config = configOverride || loadRiskConfig(db)
   const balance = getAccountBalance(db)
   const leverage = getAccountLeverage(db, config)
-  const checks = { balance, leverage }
+  // M1 scoped reads: every per-account query below filters to the account
+  // this proposal is FOR (proposal.accountId when a worker passes one, else
+  // the selected account), NULL-tolerantly — legacy unstamped rows count
+  // for every account, which only makes guards stricter, never looser.
+  // In the single-account era (backfill stamped everything to the one
+  // account) this is behaviour-identical to the previous global queries.
+  const acct = proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null)
+  const checks = { balance, leverage, account_id: acct }
 
   // ---- 1. Daily loss limit ------------------------------------------------
   // Prefer % of balance when set; fall back to absolute USD cap.
   const dayStart = new Date()
   dayStart.setUTCHours(0, 0, 0, 0)
   const dayStartISO = dayStart.toISOString()
+  // Format-proof timestamp comparison — REAL BUG caught by the M1
+  // contamination test (2026-07-24): closeTradeRow writes closed_at via
+  // SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS" (space), while this
+  // query compared against toISOString() → "YYYY-MM-DDTHH:…". The space
+  // (0x20) sorts BEFORE 'T' (0x54), so every production-closed trade of
+  // the day compared LESS-THAN the day-start string and was silently
+  // EXCLUDED from the daily-loss sum — the daily cap was blind to them.
+  // Normalizing the 'T' away makes both formats compare correctly.
+  const dayStartSql = `${dayStartISO.slice(0, 10)} 00:00:00`
   const todayRow = db
     .prepare(
       `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
-       WHERE status = 'closed' AND closed_at >= ?`
+       WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
     )
-    .get(dayStartISO)
+    .get(dayStartSql, acct, acct)
   const todayPnl = todayRow?.pnl || 0
   checks.daily_pnl = todayPnl
   const effectiveDailyCap = balance != null
@@ -406,9 +433,10 @@ export function evaluateTrade(db, proposal, configOverride) {
         .prepare(
           `SELECT net_pnl, closed_at FROM trades
            WHERE status = 'closed' AND closed_at IS NOT NULL
+             AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
            ORDER BY closed_at DESC LIMIT ?`
         )
-        .all(streakLimit)
+        .all(acct, acct, streakLimit)
     : []
   let streak = 0
   for (const t of recentClosed) {
@@ -436,8 +464,9 @@ export function evaluateTrade(db, proposal, configOverride) {
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.status = 'active'
+        AND (mp.account_id = ? OR mp.account_id IS NULL OR ? IS NULL)
     `)
-    .all()
+    .all(acct, acct)
   checks.open_positions = openPositions.length
   if (openPositions.length >= config.maxOpenPositions) {
     return veto(`max_positions=${openPositions.length}/${config.maxOpenPositions}`, checks, proposal)
