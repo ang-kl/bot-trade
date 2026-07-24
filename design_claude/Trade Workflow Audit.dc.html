@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060913;--gl:rgba(18,24,46,.62);--gbd:rgba(140,165,255,.22);--edg:rgba(90,110,200,.24);--acc:#4f8cff;--acs:rgba(79,140,255,.14);--up:#4f8cff;--dn:#ff4d6d;--dns:rgba(255,77,109,.12);--tx:#e8edfb;--sb:#9aa8cc;--mu:#6b7899;--vio:#a855f7;--wrn:#ffc466;--gsh:0 8px 40px rgba(0,0,0,.45)}
+[data-theme="light"]{--bg:#eef1fb;--gl:rgba(255,255,255,.66);--gbd:rgba(255,255,255,.8);--edg:rgba(100,120,190,.26);--acc:#2b5cff;--acs:rgba(59,108,255,.12);--up:#2b5cff;--dn:#e11d48;--dns:rgba(225,29,72,.1);--tx:#131a2e;--sb:#47536f;--mu:#5a6785;--vio:#7c3aed;--wrn:#a3510a;--gsh:0 8px 32px rgba(60,80,180,.14)}
+body{margin:0;background:var(--bg);font-family:'Inter',system-ui,sans-serif;color:var(--tx)}
+body::before{content:'';position:fixed;inset:-20%;z-index:0;background:radial-gradient(42% 38% at 18% 18%,rgba(56,99,255,.28),transparent 70%),radial-gradient(36% 42% at 82% 12%,rgba(147,51,234,.22),transparent 70%);pointer-events:none}
+a{color:var(--acc)}a:hover{color:var(--vio)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</helmet>
+<div style="position:relative;z-index:1;max-width:1660px;margin:0 auto;padding:14px 16px;display:flex;flex-direction:column;gap:8px">
+
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <span style="font-size:16px;font-weight:800;letter-spacing:-.02em">bot-trade · Workflow audit</span>
+  <span style="display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:2px 8px"><span style="width:6px;height:6px;border-radius:50%;background:var(--acc);animation:pulse 1.6s infinite"></span>LIVE</span>
+  <span style="font-size:10.5px;color:var(--sb)">which trades fulfilled the Lab → Bridge → Market pipeline · every early stop with its reasoning</span>
+  <a href="Performance Dashboard.dc.html" style="margin-left:auto;font-size:10.5px;font-weight:600">← Performance</a>
+  <button onClick="{{ toggleTheme }}" style="cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;color:var(--tx);background:var(--acs);border:1px solid var(--gbd);border-radius:10px;padding:4px 10px">{{ themeLabel }}</button>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px">
+  <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:8px 11px;display:flex;flex-direction:column;gap:3px">
+    <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--acc)">Phase 1 · The Lab</span><span style="font-size:9px;color:var(--sb)">research / backtest → strategy</span><span style="margin-left:auto;font-size:9.5px;font-weight:800;color:var(--up)">{{ p1pass }}</span></div>
+    <span style="font-size:8.5px;line-height:1.45;color:var(--sb)"><b style="color:var(--tx)">O</b> — historical price action, order blocks, volume profiles mined for a statistical edge; rules frozen into code. <b style="color:var(--tx)">I</b> — backtest proves the past only: it assumes perfect liquidity, zero latency, zero slippage. <b style="color:var(--tx)">A</b> — final parameters: quadrant criteria, entry triggers, risk sizing.</span>
+  </div>
+  <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:8px 11px;display:flex;flex-direction:column;gap:3px">
+    <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--wrn)">Phase 2 · The Bridge</span><span style="font-size:9px;color:var(--sb)">forward test — the missing step</span><span style="margin-left:auto;font-size:9.5px;font-weight:800;color:var(--up)">{{ p2pass }}</span></div>
+    <span style="font-size:8.5px;line-height:1.45;color:var(--sb)"><b style="color:var(--tx)">O</b> — history can't simulate news-event spread widening or broker delays. <b style="color:var(--tx)">I</b> — a bot overfitted to the past fails live. <b style="color:var(--tx)">A</b> — demo / micro-lot deployment must reproduce backtest behavior on live feeds before real size.</span>
+  </div>
+  <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:8px 11px;display:flex;flex-direction:column;gap:3px">
+    <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--vio)">Phase 3 · The Market</span><span style="font-size:9px;color:var(--sb)">pending → live → manage → close</span><span style="margin-left:auto;font-size:9.5px;font-weight:800;color:var(--up)">{{ p3pass }}</span></div>
+    <span style="font-size:8.5px;line-height:1.45;color:var(--sb)"><b style="color:var(--tx)">O</b> — limit/stop orders convert to live positions; risk managed until SL/TP or manual close. <b style="color:var(--tx)">I</b> — automation removes emotion; trailing stops &amp; partial scale-outs run as coded. <b style="color:var(--tx)">A</b> — manual closure is an emergency circuit breaker only, never routine.</span>
+  </div>
+</div>
+
+<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+  <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--mu)">Show</span>
+  <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+    <button onClick="{{ f.sel }}" style="cursor:pointer;font-family:inherit;font-size:10px;font-weight:700;color:{{ f.col }};background:{{ f.bg }};border:1px solid {{ f.bd }};border-radius:999px;padding:3px 11px">{{ f.label }} <span style="opacity:.65">{{ f.n }}</span></button>
+  </sc-for>
+  <span style="margin-left:auto;font-size:9px;color:var(--mu)">30D closed trades · ✓ passed · ✕ violated · pipeline: pending → live → managed → close</span>
+</div>
+
+<div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:8px 10px;display:flex;flex-direction:column;gap:1px;overflow-x:auto">
+  <div style="display:grid;grid-template-columns:100px 80px 88px 30px 38px 138px 60px minmax(185px,1fr) 68px;gap:6px;font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);border-bottom:1px solid var(--edg);padding-bottom:3px">
+    <span>Date · in→out</span><span>Symbol · side</span><span>Strategy</span><span>Lab</span><span>Brdg</span><span>Market path</span><span>Close</span><span>Early-stop reasoning / audit note</span><span style="text-align:right">P&L</span>
+  </div>
+  <sc-for list="{{ rows }}" as="t" hint-placeholder-count="16">
+    <div style="display:grid;grid-template-columns:100px 80px 88px 30px 38px 138px 60px minmax(185px,1fr) 68px;gap:6px;align-items:center;border-bottom:1px solid var(--edg);padding:4px 0;font-variant-numeric:tabular-nums;background:{{ t.rowBg }}">
+      <span style="font-size:8.5px;line-height:1.35;color:var(--sb)">{{ t.when }}</span>
+      <span style="display:flex;flex-direction:column"><span style="font-size:10px;font-weight:800">{{ t.sym }}</span><span style="font-size:8px;color:{{ t.sideCol }}">{{ t.sd }}</span></span>
+      <span style="font-size:9px;color:var(--sb);text-transform:capitalize">{{ t.strat }}</span>
+      <span style="font-size:10px;font-weight:800;color:{{ t.labCol }}">{{ t.lab }}</span>
+      <span style="font-size:10px;font-weight:800;color:{{ t.brCol }}">{{ t.br }}</span>
+      <span class="wf" style="display:flex;align-items:center;padding:12px 2px 10px;position:relative">
+        <sc-for list="{{ t.path }}" as="s" hint-placeholder-count="4">
+          <span style="display:flex;align-items:center;flex:{{ s.grow }};min-width:0;position:relative">
+            <span style="display:{{ s.segShow }};position:absolute;left:0;right:11px;top:-9px;text-align:center;font-size:6.5px;font-weight:700;font-variant-numeric:tabular-nums;color:{{ s.tCol }}">{{ s.t }}</span>
+            <span class="wf-seg" style="display:{{ s.segShow }};flex:1;height:2px;border-radius:2px;background:{{ s.segBg }};transform-origin:left center"></span>
+            <span style="position:relative;display:flex;justify-content:center">
+              <span class="{{ s.cls }}" style="width:9px;height:9px;border-radius:{{ s.rad }};background:{{ s.fill }};border:1.5px solid {{ s.bd }};box-shadow:0 0 6px {{ s.glow }}"></span>
+              <span style="position:absolute;top:12px;font-size:6.5px;font-weight:700;letter-spacing:.02em;color:{{ s.col }};white-space:nowrap">{{ s.k }}</span>
+            </span>
+          </span>
+        </sc-for>
+      </span>
+      <span style="font-size:9px;font-weight:700;color:{{ t.closeCol }}">{{ t.close }}</span>
+      <span style="font-size:8.5px;line-height:1.4;color:{{ t.noteCol }}">{{ t.note }}</span>
+      <span style="font-size:10.5px;font-weight:800;text-align:right;color:{{ t.col }}">{{ t.pnl }}</span>
+    </div>
+  </sc-for>
+</div>
+
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+  <sc-for list="{{ verdicts }}" as="v" hint-placeholder-count="3">
+    <div style="flex:1;min-width:280px;background:var(--gl);border:1px solid {{ v.bd }};border-radius:12px;padding:7px 10px;display:flex;flex-direction:column;gap:2px">
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:10px;font-weight:800;color:{{ v.tcol }}">{{ v.title }}</span><span style="margin-left:auto;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ v.ncol }}">{{ v.stat }}</span></div>
+      <span style="font-size:8.5px;line-height:1.4;color:var(--sb)">{{ v.txt }}</span>
+    </div>
+  </sc-for>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'dark'|'light'&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, flt: 'all' }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.curTheme()); this.anim() }
+  componentDidUpdate(pp, ps) { if (ps.flt !== this.state.flt) this.anim() }
+  anim() {
+    if (!window.gsap) { setTimeout(() => this.anim(), 300); return }
+    clearTimeout(this._at); this._at = setTimeout(() => {
+      gsap.killTweensOf('.wf-seg,.wf-node,.wf-end,.wf-bad')
+      gsap.fromTo('.wf-seg', { scaleX: 0 }, { scaleX: 1, duration: .5, ease: 'power2.out', stagger: { each: .04, from: 'start' } })
+      gsap.fromTo('.wf-node,.wf-end,.wf-bad', { scale: 0 }, { scale: 1, duration: .4, ease: 'back.out(2.5)', stagger: .04 })
+      gsap.to('.wf-end', { boxShadow: '0 0 12px rgba(79,140,255,.9)', scale: 1.25, duration: .9, ease: 'sine.inOut', repeat: -1, yoyo: true, delay: .6 })
+      gsap.to('.wf-bad', { boxShadow: '0 0 14px rgba(255,77,109,1)', scale: 1.35, rotation: 45, duration: .55, ease: 'sine.inOut', repeat: -1, yoyo: true, delay: .6 })
+    }, 60)
+  }
+  componentWillUnmount() { clearTimeout(this._at); if (window.gsap) gsap.killTweensOf('.wf-seg,.wf-node,.wf-end,.wf-bad') }
+  curTheme() { return this.state.theme || (this.props.theme ?? 'dark') }
+  m(n) { return (n < 0 ? '−' : '+') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
+  c(n) { return n >= 0 ? 'var(--up)' : 'var(--dn)' }
+  D() {
+    if (this._d) return this._d
+    let seed = 77712
+    const rnd = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+    const SY = [['BTCUSD', 'LONG'], ['ETHUSD', 'SHORT'], ['EURUSD', 'LONG'], ['USDJPY', 'SHORT'], ['XAUUSD', 'LONG'], ['GER40', 'SHORT'], ['US500', 'LONG'], ['GBPJPY', 'SHORT'], ['AUDUSD', 'LONG'], ['NAS100', 'LONG'], ['WTI', 'SHORT'], ['HK50', 'LONG']]
+    const ST = ['fib 61.8% fade', 'cup & handle', 'ema pullback', 'donchian breakout', 'rsi mean-rev']
+    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
+    const now = Date.now()
+    // close kinds: tp, trail (trailing stop), sl (planned SL), early-ok (circuit breaker, justified), early-bad (premature, no reasoning)
+    const KINDS = ['tp', 'tp', 'trail', 'sl', 'tp', 'sl', 'early-ok', 'trail', 'early-bad', 'tp', 'sl', 'early-ok', 'tp', 'trail', 'early-bad', 'sl']
+    const REASONS_OK = [
+      'circuit breaker: surprise CB intervention headline (JPY) — spread widened 6× · exit before SL zone, saved ~1.2R vs modeled slippage',
+      'circuit breaker: geopolitical shock during illiquid Asia open — book de-risked across all pairs per emergency rule §4',
+      'regime invalidation: gold spiked while USD rallied = Q2 repricing against a Q4 thesis — coded invalidation, not discretionary']
+    const REASONS_BAD = [
+      'PREMATURE: manual close 22 min after entry, price never within 0.4R of SL · no news event logged · violates Phase-3 "circuit breaker only" — corrupts the statistical edge',
+      'PREMATURE: closed on 5m noise against a valid 15m signal · quadrant bias still confirmed at exit · emotional override flagged — outcome would have been TP (+1.8R)']
+    const trades = KINDS.map((kind, i) => {
+      const [sym, side] = SY[i % SY.length]
+      const d = new Date(now - (1 + i * 1.9) * 86400000)
+      const dur = 25 + Math.floor(rnd() * 400)
+      const ft = ms => { const x = new Date(ms); return String(x.getUTCHours()).padStart(2, '0') + ':' + String(x.getUTCMinutes()).padStart(2, '0') }
+      const risk = 60 + rnd() * 80
+      let pnl, close, note
+      if (kind === 'tp') { pnl = risk * (1.4 + rnd()); close = 'TP hit'; note = 'clean pipeline — trailing updates ran as coded, closed at full target' }
+      else if (kind === 'trail') { pnl = risk * (.5 + rnd() * .7); close = 'Trail stop'; note = 'partial scale-out at 1R, trailing stop captured the rest — as programmed' }
+      else if (kind === 'sl') { pnl = -risk * (.9 + rnd() * .15); close = 'SL hit'; note = 'planned invalidation — loss within sized risk, edge intact' }
+      else if (kind === 'early-ok') { pnl = (rnd() - .55) * risk; close = 'Manual'; note = REASONS_OK[i % REASONS_OK.length] }
+      else { pnl = (rnd() - .5) * risk * .6; close = 'Manual'; note = REASONS_BAD[i % REASONS_BAD.length] }
+      const bridge = i !== 8
+      const p2l = Math.round(3 + rnd() * 110), l2m = Math.round(dur * (.25 + rnd() * .3)), m2c = dur - l2m
+      return { kind, sym, sd: side + ' ' + (0.3 + rnd() * 1.5).toFixed(1) + ' lots', side, strat: ST[i % ST.length], when: d.getUTCDate() + ' ' + MO[d.getUTCMonth()] + ' ' + ft(d.getTime() - dur * 60000) + '→' + ft(d.getTime()), pnl, close, note, bridge, managed: kind !== 'early-bad', p2l, l2m, m2c, dur }
+    })
+    this._d = trades
+    return trades
+  }
+  renderVals() {
+    const trades = this.D(), flt = this.state.flt
+    const isEarly = t => t.kind === 'early-ok' || t.kind === 'early-bad'
+    const FL = [['all', 'All trades', t => true], ['clean', 'Full pipeline', t => !isEarly(t)], ['early-ok', 'Early stop · justified', t => t.kind === 'early-ok'], ['early-bad', 'Early stop · premature', t => t.kind === 'early-bad']]
+    const filters = FL.map(([id, label, fn]) => { const on = flt === id; return { label, n: trades.filter(fn).length, col: on ? '#fff' : 'var(--tx)', bg: on ? 'var(--acc)' : 'transparent', bd: on ? 'var(--acc)' : 'var(--edg)', sel: () => this.setState({ flt: id }) } })
+    const fn = FL.find(f => f[0] === flt)[2]
+    const fmtD = m => m >= 60 ? Math.floor(m / 60) + 'h' + (m % 60 ? String(m % 60).padStart(2, '0') : '') : m + 'm'
+    const node = (k, i, state, segT, segTCol) => { // state: on | off | end | warn | bad
+      const P = { on: ['var(--acc)', 'var(--acc)', 'transparent', 'wf-node'], off: ['var(--edg)', 'var(--mu)', 'transparent', 'wf-node'], end: ['var(--acc)', 'var(--acc)', 'rgba(79,140,255,.6)', 'wf-end'], warn: ['var(--wrn)', 'var(--wrn)', 'rgba(255,196,102,.6)', 'wf-end'], bad: ['var(--dn)', 'var(--dn)', 'rgba(255,77,109,.7)', 'wf-bad'] }[state]
+      return { k, grow: i === 0 ? '0' : '1', segShow: i === 0 ? 'none' : 'block', segBg: state === 'off' ? 'var(--edg)' : 'linear-gradient(90deg,var(--edg),' + P[0] + ')', fill: state === 'off' ? 'transparent' : P[0], bd: P[0], col: P[1], glow: P[2], rad: state === 'bad' ? '2px' : '50%', cls: P[3], t: segT || '', tCol: segTCol || 'var(--mu)' }
+    }
+    const rows = trades.filter(fn).map(t => {
+      const bad = t.kind === 'early-bad'
+      const manual = t.kind.startsWith('early')
+      const last = bad ? 'bad' : t.kind === 'early-ok' ? 'warn' : 'end'
+      const lastTCol = bad ? 'var(--dn)' : manual ? 'var(--wrn)' : 'var(--mu)'
+      return { when: t.when, sym: t.sym, sd: t.sd + ' · total ' + fmtD(t.dur), sideCol: t.side === 'LONG' ? 'var(--up)' : 'var(--dn)', strat: t.strat,
+        lab: '✓', labCol: 'var(--up)', br: t.bridge ? '✓' : '✕', brCol: t.bridge ? 'var(--up)' : 'var(--dn)',
+        path: [node('pending', 0, 'on'), node('live', 1, 'on', fmtD(t.p2l)), node('managed', 2, t.managed ? 'on' : 'off', fmtD(t.l2m), t.managed ? 'var(--mu)' : 'var(--dn)'), node(manual ? 'early' : 'closed', 3, last, fmtD(t.m2c), lastTCol)],
+        close: t.close, closeCol: t.close === 'Manual' ? (bad ? 'var(--dn)' : 'var(--wrn)') : t.close === 'SL hit' ? 'var(--dn)' : 'var(--up)',
+        note: t.note, noteCol: bad ? 'var(--dn)' : t.kind === 'early-ok' ? 'var(--wrn)' : 'var(--sb)',
+        rowBg: bad ? 'var(--dns)' : 'transparent', pnl: this.m(t.pnl), col: this.c(t.pnl) }
+    })
+    const nEok = trades.filter(t => t.kind === 'early-ok').length, nEbad = trades.filter(t => t.kind === 'early-bad').length
+    const clean = trades.filter(t => !t.kind.startsWith('early'))
+    const verdicts = [
+      { title: 'Pipeline integrity', stat: Math.round(100 * clean.length / trades.length) + '%', txt: clean.length + ' of ' + trades.length + ' trades ran pending → live → managed → close untouched. The edge only exists while this number stays high.', bd: 'var(--gbd)', tcol: 'var(--acc)', ncol: 'var(--up)' },
+      { title: 'Early stops — justified', stat: String(nEok), txt: 'All carried a coded or documented circuit-breaker reason (news shock, regime invalidation). These protect the edge rather than corrupt it.', bd: 'rgba(255,196,102,.4)', tcol: 'var(--wrn)', ncol: 'var(--wrn)' },
+      { title: 'Early stops — premature', stat: String(nEbad), txt: 'Manual closes with no logged event and thesis still valid. Each one degrades the statistical sample — flagged red in the table with full reasoning.', bd: 'rgba(255,77,109,.4)', tcol: 'var(--dn)', ncol: 'var(--dn)' }]
+    return { filters, rows, verdicts,
+      p1pass: trades.length + '/' + trades.length + ' ✓', p2pass: trades.filter(t => t.bridge).length + '/' + trades.length + ' ✓', p3pass: (trades.length - nEbad) + '/' + trades.length + ' ✓',
+      themeLabel: this.curTheme() === 'dark' ? '☾ Dark' : '☀ Light',
+      toggleTheme: () => { const nt = this.curTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', nt); this.setState({ theme: nt }) } }
+  }
+}
+</script>
+</body>
+</html>

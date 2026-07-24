@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060913;--gl:rgba(18,24,46,.72);--gbd:rgba(140,165,255,.22);--edg:rgba(90,110,200,.24);--acc:#4f8cff;--acs:rgba(79,140,255,.14);--up:#4f8cff;--dn:#ff4d6d;--dns:rgba(255,77,109,.12);--tx:#e8edfb;--sb:#9aa8cc;--mu:#6b7899;--vio:#a855f7;--wrn:#ffc466;--scr:linear-gradient(160deg,#0a1022 0%,#060913 55%,#0d0a1e 100%)}
+[data-theme="light"]{--bg:#eef1fb;--gl:rgba(255,255,255,.72);--gbd:rgba(120,140,200,.35);--edg:rgba(100,120,190,.26);--acc:#2b5cff;--acs:rgba(59,108,255,.12);--up:#2b5cff;--dn:#e11d48;--dns:rgba(225,29,72,.1);--tx:#131a2e;--sb:#47536f;--mu:#5a6785;--vio:#7c3aed;--wrn:#a3510a;--scr:linear-gradient(160deg,#f4f6ff 0%,#eef1fb 55%,#f4efff 100%)}
+body{margin:0;background:var(--bg);font-family:'Inter',system-ui,sans-serif;color:var(--tx)}
+body::before{content:'';position:fixed;inset:-20%;z-index:0;background:radial-gradient(42% 38% at 18% 18%,rgba(56,99,255,.28),transparent 70%),radial-gradient(36% 42% at 82% 12%,rgba(147,51,234,.22),transparent 70%);pointer-events:none}
+a{color:var(--acc)}a:hover{color:var(--vio)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</helmet>
+<section style="position:relative;z-index:1;padding:26px 28px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;align-items:baseline;gap:10px"><span style="font:600 13px Inter,system-ui,sans-serif">bot-trade · Workflow audit — iPhone</span><span style="font:400 11.5px Inter,system-ui,sans-serif;color:var(--sb)">O-I-A pipeline compliance &amp; early-stop reasoning · same data as <a href="Trade Workflow Audit.dc.html">desktop audit</a> · <a href="Performance Mobile.dc.html">mobile performance</a></span></div>
+<div style="display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap">
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n430 }}" height="{{ n932 }}" hint-size="430px,932px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 14px 40px;display:flex;flex-direction:column;gap:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <div style="display:flex;flex-direction:column"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Workflow audit</span><span style="font-size:10px;color:var(--sb)">Lab → Bridge → Market · 30D closed</span></div>
+      <span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:2px 7px"><span style="width:5px;height:5px;border-radius:50%;background:var(--acc);animation:pulse 1.6s infinite"></span>LIVE</span>
+      <button onClick="{{ toggleTheme }}" style="cursor:pointer;font-family:inherit;margin-left:auto;font-size:10px;font-weight:700;color:var(--tx);background:var(--acs);border:1px solid var(--gbd);border-radius:999px;padding:4px 10px">{{ themeLabel }}</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px">
+      <sc-for list="{{ phases }}" as="p" hint-placeholder-count="3">
+        <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:10px;padding:6px 8px;display:flex;flex-direction:column;gap:1px">
+          <span style="font-size:8.5px;font-weight:800;color:{{ p.col }}">{{ p.name }}</span>
+          <span style="font-size:10.5px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--up)">{{ p.stat }}</span>
+          <span style="font-size:7px;color:var(--mu)">{{ p.sub }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap">
+      <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+        <button onClick="{{ f.sel }}" style="cursor:pointer;font-family:inherit;font-size:8.5px;font-weight:700;color:{{ f.col }};background:{{ f.bg }};border:1px solid {{ f.bd }};border-radius:999px;padding:3px 9px">{{ f.label }} <span style="opacity:.65">{{ f.n }}</span></button>
+      </sc-for>
+    </div>
+    <sc-for list="{{ rows }}" as="t" hint-placeholder-count="8">
+      <div style="background:{{ t.cardBg }};border:1px solid {{ t.cardBd }};border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;gap:3px">
+        <div style="display:flex;align-items:baseline;gap:6px;font-variant-numeric:tabular-nums">
+          <span style="font-size:11px;font-weight:800">{{ t.sym }}</span>
+          <span style="font-size:8.5px;font-weight:700;color:{{ t.sideCol }};white-space:nowrap">{{ t.sd }}</span>
+          <span style="margin-left:auto;font-size:11px;font-weight:800;color:{{ t.col }}">{{ t.pnl }}</span>
+        </div>
+        <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:8px;color:var(--sb);font-variant-numeric:tabular-nums">{{ t.when }}</span><span style="font-size:8px;color:var(--mu);text-transform:capitalize">{{ t.strat }}</span><span style="margin-left:auto;font-size:8px;font-weight:700">Lab <span style="color:{{ t.labCol }}">{{ t.lab }}</span> · Bridge <span style="color:{{ t.brCol }}">{{ t.br }}</span> · <span style="color:{{ t.closeCol }}">{{ t.close }}</span></span></div>
+        <span class="wf" style="display:flex;align-items:center;padding:12px 2px 10px;position:relative">
+          <sc-for list="{{ t.path }}" as="s" hint-placeholder-count="4">
+            <span style="display:flex;align-items:center;flex:{{ s.grow }};min-width:0;position:relative">
+              <span style="display:{{ s.segShow }};position:absolute;left:0;right:11px;top:-9px;text-align:center;font-size:6.5px;font-weight:700;font-variant-numeric:tabular-nums;color:{{ s.tCol }}">{{ s.t }}</span>
+              <span class="wf-seg" style="display:{{ s.segShow }};flex:1;height:2px;border-radius:2px;background:{{ s.segBg }};transform-origin:left center"></span>
+              <span style="position:relative;display:flex;justify-content:center">
+                <span class="{{ s.cls }}" style="width:9px;height:9px;border-radius:{{ s.rad }};background:{{ s.fill }};border:1.5px solid {{ s.bd }};box-shadow:0 0 6px {{ s.glow }}"></span>
+                <span style="position:absolute;top:12px;font-size:6.5px;font-weight:700;color:{{ s.col }};white-space:nowrap">{{ s.k }}</span>
+              </span>
+            </span>
+          </sc-for>
+        </span>
+        <span style="font-size:8px;line-height:1.45;color:{{ t.noteCol }}">{{ t.note }}</span>
+      </div>
+    </sc-for>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <sc-for list="{{ verdicts }}" as="v" hint-placeholder-count="3">
+        <div style="background:var(--gl);border:1px solid {{ v.bd }};border-radius:10px;padding:6px 9px;display:flex;flex-direction:column;gap:1px">
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:9px;font-weight:800;color:{{ v.tcol }}">{{ v.title }}</span><span style="margin-left:auto;font-size:10px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ v.ncol }}">{{ v.stat }}</span></div>
+          <span style="font-size:7.5px;line-height:1.4;color:var(--sb)">{{ v.txt }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</x-import>
+
+</div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'dark'|'light'&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, flt: 'all' }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.curTheme()); this.anim() }
+  componentDidUpdate(pp, ps) { if (ps.flt !== this.state.flt) this.anim() }
+  anim(tries) {
+    tries = tries || 0
+    if ((!window.gsap || !document.querySelector('.wf-seg')) && tries < 40) { clearTimeout(this._at); this._at = setTimeout(() => this.anim(tries + 1), 300); return }
+    if (!window.gsap || !document.querySelector('.wf-seg')) return
+    clearTimeout(this._at); this._at = setTimeout(() => {
+      gsap.killTweensOf('.wf-seg,.wf-node,.wf-end,.wf-bad')
+      gsap.fromTo('.wf-seg', { scaleX: 0 }, { scaleX: 1, duration: .5, ease: 'power2.out', stagger: .03 })
+      gsap.fromTo('.wf-node,.wf-end,.wf-bad', { scale: 0 }, { scale: 1, duration: .4, ease: 'back.out(2.5)', stagger: .03 })
+      gsap.to('.wf-end', { boxShadow: '0 0 12px rgba(79,140,255,.9)', scale: 1.25, duration: .9, ease: 'sine.inOut', repeat: -1, yoyo: true, delay: .5 })
+      gsap.to('.wf-bad', { boxShadow: '0 0 14px rgba(255,77,109,1)', scale: 1.35, rotation: 45, duration: .55, ease: 'sine.inOut', repeat: -1, yoyo: true, delay: .5 })
+    }, 60)
+  }
+  componentWillUnmount() { clearTimeout(this._at); if (window.gsap) gsap.killTweensOf('.wf-seg,.wf-node,.wf-end,.wf-bad') }
+  curTheme() { return this.state.theme || this.props.theme || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') }
+  m(n) { return (n < 0 ? '−' : '+') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 }) }
+  c(n) { return n >= 0 ? 'var(--up)' : 'var(--dn)' }
+  D() {
+    if (this._d) return this._d
+    let seed = 77712
+    const rnd = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+    const SY = [['BTCUSD', 'LONG'], ['ETHUSD', 'SHORT'], ['EURUSD', 'LONG'], ['USDJPY', 'SHORT'], ['XAUUSD', 'LONG'], ['GER40', 'SHORT'], ['US500', 'LONG'], ['GBPJPY', 'SHORT'], ['AUDUSD', 'LONG'], ['NAS100', 'LONG'], ['WTI', 'SHORT'], ['HK50', 'LONG']]
+    const ST = ['fib 61.8% fade', 'cup & handle', 'ema pullback', 'donchian breakout', 'rsi mean-rev']
+    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
+    const now = Date.now()
+    const KINDS = ['tp', 'tp', 'trail', 'sl', 'tp', 'sl', 'early-ok', 'trail', 'early-bad', 'tp', 'sl', 'early-ok', 'tp', 'trail', 'early-bad', 'sl']
+    const REASONS_OK = [
+      'circuit breaker: surprise CB intervention headline (JPY) — spread widened 6× · exit before SL zone, saved ~1.2R vs modeled slippage',
+      'circuit breaker: geopolitical shock during illiquid Asia open — book de-risked across all pairs per emergency rule §4',
+      'regime invalidation: gold spiked while USD rallied = Q2 repricing against a Q4 thesis — coded invalidation, not discretionary']
+    const REASONS_BAD = [
+      'PREMATURE: manual close 22 min after entry, price never within 0.4R of SL · no news event logged · violates Phase-3 "circuit breaker only" — corrupts the statistical edge',
+      'PREMATURE: closed on 5m noise against a valid 15m signal · quadrant bias still confirmed at exit · emotional override flagged — outcome would have been TP (+1.8R)']
+    this._d = KINDS.map((kind, i) => {
+      const [sym, side] = SY[i % SY.length]
+      const d = new Date(now - (1 + i * 1.9) * 86400000)
+      const dur = 25 + Math.floor(rnd() * 400)
+      const ft = ms => { const x = new Date(ms); return String(x.getUTCHours()).padStart(2, '0') + ':' + String(x.getUTCMinutes()).padStart(2, '0') }
+      const risk = 60 + rnd() * 80
+      let pnl, close, note
+      if (kind === 'tp') { pnl = risk * (1.4 + rnd()); close = 'TP hit'; note = 'clean pipeline — trailing updates ran as coded, closed at full target' }
+      else if (kind === 'trail') { pnl = risk * (.5 + rnd() * .7); close = 'Trail stop'; note = 'partial scale-out at 1R, trailing stop captured the rest — as programmed' }
+      else if (kind === 'sl') { pnl = -risk * (.9 + rnd() * .15); close = 'SL hit'; note = 'planned invalidation — loss within sized risk, edge intact' }
+      else if (kind === 'early-ok') { pnl = (rnd() - .55) * risk; close = 'Manual'; note = REASONS_OK[i % REASONS_OK.length] }
+      else { pnl = (rnd() - .5) * risk * .6; close = 'Manual'; note = REASONS_BAD[i % REASONS_BAD.length] }
+      const p2l = Math.round(3 + rnd() * 110), l2m = Math.round(dur * (.25 + rnd() * .3))
+      return { kind, sym, sd: side + ' ' + (0.3 + rnd() * 1.5).toFixed(1) + ' lots', side, strat: ST[i % ST.length], when: d.getUTCDate() + ' ' + MO[d.getUTCMonth()] + ' ' + ft(d.getTime() - dur * 60000) + '→' + ft(d.getTime()), pnl, close, note, bridge: i !== 8, managed: kind !== 'early-bad', p2l, l2m, m2c: dur - l2m, dur }
+    })
+    return this._d
+  }
+  renderVals() {
+    const trades = this.D(), flt = this.state.flt
+    const isEarly = t => t.kind.startsWith('early')
+    const FL = [['all', 'All', t => true], ['clean', 'Full pipeline', t => !isEarly(t)], ['early-ok', 'Early · justified', t => t.kind === 'early-ok'], ['early-bad', 'Early · premature', t => t.kind === 'early-bad']]
+    const filters = FL.map(([id, label, fn]) => { const on = flt === id; return { label, n: trades.filter(fn).length, col: on ? '#fff' : 'var(--tx)', bg: on ? 'var(--acc)' : 'transparent', bd: on ? 'var(--acc)' : 'var(--edg)', sel: () => this.setState({ flt: id }) } })
+    const fn = FL.find(f => f[0] === flt)[2]
+    const fmtD = m => m >= 60 ? Math.floor(m / 60) + 'h' + (m % 60 ? String(m % 60).padStart(2, '0') : '') : m + 'm'
+    const node = (k, i, state, segT, segTCol) => {
+      const P = { on: ['var(--acc)', 'var(--acc)', 'transparent', 'wf-node'], off: ['var(--edg)', 'var(--mu)', 'transparent', 'wf-node'], end: ['var(--acc)', 'var(--acc)', 'rgba(79,140,255,.6)', 'wf-end'], warn: ['var(--wrn)', 'var(--wrn)', 'rgba(255,196,102,.6)', 'wf-end'], bad: ['var(--dn)', 'var(--dn)', 'rgba(255,77,109,.7)', 'wf-bad'] }[state]
+      return { k, grow: i === 0 ? '0' : '1', segShow: i === 0 ? 'none' : 'block', segBg: state === 'off' ? 'var(--edg)' : 'linear-gradient(90deg,var(--edg),' + P[0] + ')', fill: state === 'off' ? 'transparent' : P[0], bd: P[0], col: P[1], glow: P[2], rad: state === 'bad' ? '2px' : '50%', cls: P[3], t: segT || '', tCol: segTCol || 'var(--mu)' }
+    }
+    const rows = trades.filter(fn).map(t => {
+      const bad = t.kind === 'early-bad', manual = isEarly(t)
+      const last = bad ? 'bad' : t.kind === 'early-ok' ? 'warn' : 'end'
+      return { sym: t.sym, sd: t.sd, sideCol: t.side === 'LONG' ? 'var(--up)' : 'var(--dn)', strat: t.strat, when: t.when + ' · total ' + fmtD(t.dur),
+        lab: '✓', labCol: 'var(--up)', br: t.bridge ? '✓' : '✕', brCol: t.bridge ? 'var(--up)' : 'var(--dn)',
+        close: t.close, closeCol: t.close === 'Manual' ? (bad ? 'var(--dn)' : 'var(--wrn)') : t.close === 'SL hit' ? 'var(--dn)' : 'var(--up)',
+        path: [node('pending', 0, 'on'), node('live', 1, 'on', fmtD(t.p2l)), node('managed', 2, t.managed ? 'on' : 'off', fmtD(t.l2m), t.managed ? 'var(--mu)' : 'var(--dn)'), node(manual ? 'early' : 'closed', 3, last, fmtD(t.m2c), bad ? 'var(--dn)' : manual ? 'var(--wrn)' : 'var(--mu)')],
+        note: t.note, noteCol: bad ? 'var(--dn)' : t.kind === 'early-ok' ? 'var(--wrn)' : 'var(--sb)',
+        cardBg: bad ? 'var(--dns)' : 'var(--gl)', cardBd: bad ? 'rgba(255,77,109,.4)' : t.kind === 'early-ok' ? 'rgba(255,196,102,.35)' : 'var(--gbd)',
+        pnl: this.m(t.pnl), col: this.c(t.pnl) }
+    })
+    const nEok = trades.filter(t => t.kind === 'early-ok').length, nEbad = trades.filter(t => t.kind === 'early-bad').length
+    const clean = trades.length - nEok - nEbad
+    const verdicts = [
+      { title: 'Pipeline integrity', stat: Math.round(100 * clean / trades.length) + '%', txt: clean + ' of ' + trades.length + ' ran pending → live → managed → close untouched — the edge only exists while this stays high.', bd: 'var(--gbd)', tcol: 'var(--acc)', ncol: 'var(--up)' },
+      { title: 'Early stops — justified', stat: String(nEok), txt: 'Coded/documented circuit breakers (news shock, regime invalidation) — protect the edge.', bd: 'rgba(255,196,102,.4)', tcol: 'var(--wrn)', ncol: 'var(--wrn)' },
+      { title: 'Early stops — premature', stat: String(nEbad), txt: 'No logged event, thesis still valid — each degrades the statistical sample. Red cards above.', bd: 'rgba(255,77,109,.4)', tcol: 'var(--dn)', ncol: 'var(--dn)' }]
+    const isDark = this.curTheme() === 'dark'
+    return { filters, rows, verdicts,
+      phases: [
+        { name: 'P1 · Lab', stat: trades.length + '/' + trades.length + ' ✓', sub: 'backtest → coded params', col: 'var(--acc)' },
+        { name: 'P2 · Bridge', stat: trades.filter(t => t.bridge).length + '/' + trades.length + ' ✓', sub: 'forward-tested on demo', col: 'var(--wrn)' },
+        { name: 'P3 · Market', stat: (trades.length - nEbad) + '/' + trades.length + ' ✓', sub: 'autonomous management', col: 'var(--vio)' }],
+      isDark, themeLabel: isDark ? '☾' : '☀',
+      toggleTheme: () => { const nt = this.curTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', nt); this.setState({ theme: nt }) },
+      n430: 430, n932: 932 }
+  }
+}
+</script>
+</body>
+</html>
