@@ -28,6 +28,7 @@ void DepthBook::applyEvent(const jsn::Value& payload, long long nowMs) {
     if (!d.isNumber()) continue;
     byId_.erase(static_cast<std::uint64_t>(d.asNumber(0)));
   }
+  if (byId_.size() > kMaxEntries) byId_.clear(); // OOM guard — see header
   lastAtMs_ = nowMs;
 }
 

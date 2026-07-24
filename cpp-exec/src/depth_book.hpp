@@ -36,8 +36,17 @@ public:
   std::string snapshotJson(int maxLevels) const;
 
   bool empty() const { return byId_.empty(); }
+  size_t size() const { return byId_.size(); }
   long long lastAtMs() const { return lastAtMs_; }
   void clear() { byId_.clear(); lastAtMs_ = 0; }
+
+  // OOM guard (2026-07-24 staging incident: the sidecar was silently
+  // SIGKILLed ~10 min after depth went live — no crash logs, the classic
+  // out-of-memory signature). Broker depth quote ids CHURN; if deletes ever
+  // lag the adds this map grows without bound. A real book is ~10 levels a
+  // side, so anything past this cap is accumulated garbage: reset and let
+  // the live stream rebuild the true book within a few events.
+  static constexpr size_t kMaxEntries = 512;
 
 private:
   struct Entry {
