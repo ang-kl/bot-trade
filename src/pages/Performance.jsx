@@ -55,6 +55,21 @@ const SESSIONS = [
 const sessionActive = (s, utcHour) =>
   s.from <= s.to ? utcHour >= s.from && utcHour < s.to : utcHour >= s.from || utcHour < s.to
 
+// Market-session buckets for the owner's today-by-market stats (SYD, SG,
+// HK, JPN, EUR, NY). Fixed UTC windows from each exchange's cash hours at
+// current DST offsets — documented approximations, not a tz database.
+// Windows OVERLAP (Asia trades in several at once): a trade counts in every
+// session whose window contains its CLOSE time, so rows don't sum to total.
+// (Distinct from SESSIONS above — that's the FX session clock design spec.)
+const STAT_SESSIONS = [
+  { key: 'SYD', hint: 'ASX 10:00–16:00 AEST', fromMin: 0, toMin: 360 },
+  { key: 'SG', hint: 'SGX 09:00–17:00 SGT', fromMin: 60, toMin: 540 },
+  { key: 'HK', hint: 'HKEX 09:30–16:00 HKT', fromMin: 90, toMin: 480 },
+  { key: 'JPN', hint: 'TSE 09:00–15:00 JST', fromMin: 0, toMin: 360 },
+  { key: 'EUR', hint: 'London 08:00–16:30 BST', fromMin: 420, toMin: 930 },
+  { key: 'NY', hint: 'NYSE 09:30–16:00 EDT', fromMin: 810, toMin: 1200 },
+]
+
 // Most recent 22:00 UTC — the trading-day anchor, same maths as the agent.
 const dayAnchorMs = (nowMs) => {
   const d = new Date(nowMs)
@@ -291,22 +306,76 @@ function CryptoBody({ crypto }) {
   )
 }
 
+// Price / volume formatters for the open-trade tables. Prices arrive
+// already descaled; trim float noise without inventing precision. Volume is
+// the daily bar's broker tick volume, compacted (12.3k) to fit the column.
+const fmtPx = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : String(Number(Number(v).toFixed(5))))
+const fmtVol = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'm'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
+  return String(Math.round(n))
+}
+
+const OPEN_COLS = '64px 76px 84px 64px minmax(150px,1fr) 48px 52px 84px'
 function OpenTableBody({ rows }) {
   return (
-    <div>
-      <div style={{ display: 'grid', gridTemplateColumns: '70px 84px 1fr 64px 100px', gap: 6, fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
-        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Mkt</span><span>SL / TP away</span>
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ minWidth: 660 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span>Mkt</span><span>SL / TP away</span>
       </div>
       {rows.map(p2 => (
-        <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry · market state: ${p2.marketSource || 'unknown'}`}
-          style={{ display: 'grid', gridTemplateColumns: '70px 84px 1fr 64px 100px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+        <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry · market state: ${p2.marketSource || 'unknown'}${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
+          style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
           <span style={{ fontSize: 11, fontWeight: 800 }}>{p2.sym}</span>
           <span style={{ fontSize: 9.5, fontWeight: 700, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
           <span style={{ fontSize: 11, fontWeight: 800, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+          <span style={{ fontSize: 9.5, fontWeight: 700 }}>{fmtPx(p2.price)}</span>
+          <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+            <span style={{ fontSize: 9.5, color: P_SB }}>O {fmtPx(p2.day?.o)} · H {fmtPx(p2.day?.h)}</span>
+            <span style={{ fontSize: 9.5, color: P_SB }}>L {fmtPx(p2.day?.l)} · C {fmtPx(p2.day?.c)}</span>
+          </span>
+          <span style={{ fontSize: 9.5, color: P_MU }}>{fmtVol(p2.day?.v)}</span>
           <span style={{ fontSize: 9.5, fontWeight: 700, color: p2.marketOpen === false ? P_WRN : p2.marketOpen ? P_ACC : P_MU }}>{p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'}</span>
           <span style={{ fontSize: 9.5, color: P_MU }}>{p2.sld} / {p2.tpd}</span>
         </div>
       ))}
+      </div>
+    </div>
+  )
+}
+
+// Today-by-market-session stats table (owner's column list: Trades #, +$,
+// −$, highest, lowest, average, sum — plus median for the second central
+// figure, since "average" and "mean" name the same number).
+const SESS_COLS = '58px 52px repeat(7, minmax(64px, 1fr))'
+function SessionStatsBody({ stats }) {
+  const rows = [
+    ...stats.buckets,
+    { key: 'OFF', hint: 'today’s closes outside all six windows', ...stats.off },
+    { key: 'ALL', hint: 'every closed trade today', ...stats.total },
+  ]
+  const cell = (v, col) => (v == null
+    ? <span style={{ fontSize: 9.5, color: P_MU, textAlign: 'right' }}>—</span>
+    : <span style={{ fontSize: 9.5, fontWeight: 700, textAlign: 'right', color: col ?? (v > 0 ? P_UP : v < 0 ? P_DN : P_SB) }}>{signed(v)}</span>)
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ minWidth: 700 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+          <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>+$</span><span style={{ textAlign: 'right' }}>−$</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>
+        </div>
+        {rows.map(s => (
+          <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
+            <span style={{ fontSize: 10, fontWeight: 800 }}>{s.key}</span>
+            <span style={{ fontSize: 9.5, fontWeight: 700, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
+            {s.n
+              ? <>{cell(s.pos, P_UP)}{cell(s.neg, P_DN)}{cell(s.high)}{cell(s.low)}{cell(s.avg)}{cell(s.sum)}{cell(s.median)}</>
+              : <>{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}</>}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -597,6 +666,39 @@ export default function Performance() {
     }
   }, [scopedClosed, loadedAt])
 
+  // Today's closed-trade stats per market session (owner: "all the
+  // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
+  // time frame)"). Same day anchor + trade scope as the Today block so the
+  // numbers reconcile; each trade is bucketed by its CLOSE time (when the
+  // P&L was realized).
+  const sessionStats = useMemo(() => {
+    const anchor = dayAnchorMs(loadedAt)
+    const rows = scopedClosed
+      .map(t2 => ({ ms: closedMs(t2), pnl: Number(t2.net_pnl) }))
+      .filter(r => r.ms != null && r.ms >= anchor && Number.isFinite(r.pnl))
+    const minOfDay = (ms) => { const d = new Date(ms); return d.getUTCHours() * 60 + d.getUTCMinutes() }
+    const stat = (list) => {
+      if (!list.length) return { n: 0 }
+      const pnls = list.map(r => r.pnl).sort((a, b) => a - b)
+      const sum = pnls.reduce((s, v) => s + v, 0)
+      const mid = pnls.length >> 1
+      return {
+        n: pnls.length,
+        pos: pnls.filter(v => v > 0).reduce((s, v) => s + v, 0),
+        neg: pnls.filter(v => v < 0).reduce((s, v) => s + v, 0),
+        high: pnls[pnls.length - 1],
+        low: pnls[0],
+        avg: sum / pnls.length,
+        sum,
+        median: pnls.length % 2 ? pnls[mid] : (pnls[mid - 1] + pnls[mid]) / 2,
+      }
+    }
+    const inWin = (m, s) => m >= s.fromMin && m < s.toMin
+    const buckets = STAT_SESSIONS.map(s => ({ ...s, ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
+    const off = stat(rows.filter(r => !STAT_SESSIONS.some(s => inWin(minOfDay(r.ms), s))))
+    return { buckets, off, total: stat(rows) }
+  }, [scopedClosed, loadedAt])
+
   // Per-account cards for the accounts detail row (prototype ACC block).
   // Real sources only: registry row + that account's ledger balance/30D +
   // today's strictly-stamped trades + risk config dailyLossPct; equity and
@@ -649,6 +751,10 @@ export default function Performance() {
         marketOpen: p2.market_open, marketSource: p2.market_source || null,
         pnl: p2.live_pnl != null ? Number(p2.live_pnl) : null,
         pnlAt: p2.live_pnl_at || null,
+        // Owner: current price + daily OHLCV per open trade. For a closed
+        // market these are the last computed values before/at close.
+        price: p2.live_price ?? null,
+        day: p2.day || null,
       }
     })
     const floating = rows.filter(r => r.marketOpen !== false)
@@ -1166,13 +1272,33 @@ export default function Performance() {
                 {positions[0]?.live_pnl_at && <span style={{ fontSize: 9.5, color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
               </div>
               {t2.note && <span style={{ fontSize: 9.5, color: P_WRN }}>{t2.note}</span>}
-              <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
-                toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
+              <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
+                toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
                 render={() => <OpenTableBody rows={t2.rows} />} />
               {t2.rows.length > 0 && <OpenTableBody rows={t2.rows} />}
             </div>
           ))}
         </div>
+
+        {/* Today by market session — owner's stats spec (Trades #, +$, −$,
+            highest, lowest, average, sum, median) across SYD / SG / HK /
+            JPN / EUR / NY exchange windows. Windows overlap, so session
+            rows exceed the ALL row by design; OFF catches everything else. */}
+        <Card>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="t-h3">Today by market session</h3>
+            <span style={{ fontSize: 9.5, color: P_MU }}>closed trades since 22:00 UTC · bucketed by close time · fixed UTC windows (current DST) · sessions overlap</span>
+            <SectionTools id="sessions" title="Today by market session" window="today"
+              data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
+              toText={() => ['Today by market session',
+                ...[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]
+                  .map(s => s.n
+                    ? `${s.key} · ${s.n} trades · +${(s.pos ?? 0).toFixed(2)} / ${(s.neg ?? 0).toFixed(2)} · high ${s.high.toFixed(2)} · low ${s.low.toFixed(2)} · avg ${s.avg.toFixed(2)} · sum ${s.sum.toFixed(2)} · median ${s.median.toFixed(2)}`
+                    : `${s.key} · no closed trades`)].join('\n')}
+              render={() => <SessionStatsBody stats={sessionStats} />} />
+          </div>
+          <div className="mt-2"><SessionStatsBody stats={sessionStats} /></div>
+        </Card>
 
         {/* Account filter chips — exact prototype two-line buttons. */}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>

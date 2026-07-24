@@ -239,6 +239,13 @@ export default function stateRouter(db) {
         ...r, market_open, market_source,
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
         live_pnl_at: sp ? snapAt : null,
+        // Owner (open-trade tables): current price + latest daily OHLCV.
+        // For a closed market these are the last computed values before/at
+        // close — day.t says which session the bar belongs to.
+        live_price: sp?.currentPrice ?? null,
+        live_bid: sp?.bid ?? null,
+        live_ask: sp?.ask ?? null,
+        day: sp?.day ?? null,
       }
     })
 

@@ -648,6 +648,45 @@ export function wsGetLastCloses(host, clientId, clientSecret, accessToken, accou
 }
 
 /**
+ * Latest DAILY bar per symbol — same single-connection batch shape as
+ * wsGetLastCloses, but returning the full OHLCV of the most recent 1d
+ * trendbar: { [symbolId]: {t,o,h,l,c,v} }. For a closed market this is the
+ * last session's bar — the caller labels it, never fakes a fresher one.
+ * `v` is the broker's tick volume for the bar.
+ */
+export function wsGetDailyOhlcv(host, clientId, clientSecret, accessToken, accountId, symbolIds, timeoutMs = 30_000) {
+  const now = Date.now()
+  const spec = TRENDBAR_PERIODS['1d']
+  const steps = symbolIds.map(symbolId => ({
+    send: {
+      payloadType: PT.GET_TRENDBARS_REQ,
+      payload: {
+        ctidTraderAccountId: parseInt(accountId),
+        symbolId: parseInt(symbolId),
+        period: spec.code,
+        fromTimestamp: now - spec.ms * 10, // covers weekends/holiday gaps
+        toTimestamp: now,
+        count: 2,
+      },
+    },
+    expect: PT.GET_TRENDBARS_RES,
+  }))
+  return withRetry(async () => {
+    const payloads = await wsRun(host, [
+      ...authSteps(clientId, clientSecret, accessToken, accountId),
+      ...steps,
+    ], timeoutMs, true)
+    const barPayloads = payloads.slice(-symbolIds.length)
+    const out = {}
+    symbolIds.forEach((id, i) => {
+      const bars = decodeTrendbars(barPayloads[i])
+      if (bars.length > 0) out[id] = bars[bars.length - 1]
+    })
+    return out
+  }, 2, 'wsGetDailyOhlcv')
+}
+
+/**
  * Long-lived spot-price stream. Opens one WS, authenticates, subscribes to
  * the given symbolIds, and calls `onTick({symbolId, bid, ask, t})` for every
  * SPOT_EVENT until `close()` is called or the socket drops (then `onClose`
