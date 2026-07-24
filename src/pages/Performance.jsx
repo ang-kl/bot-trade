@@ -300,50 +300,50 @@ function FilterChips({ accounts, acct, setAcct, tall = false }) {
   )
 }
 
-// Mobile ledger card — a tappable timeframe row that expands to the six
-// market mini-cells + insight (design: Ledger phone screen).
+// Mobile ledger card — exact port of the Ledger phone screen's row:
+// 76px 1fr 82px grid, carry in → carry out line, expand → 3-col market
+// mini-cells on the accent tint + the insight line.
 function MobileWindowCard({ w }) {
   const [open, setOpen] = useState(false)
   const empty = !w.trades
   return (
-    <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-      className={`w-full text-left glass-inset rounded-[12px] px-3 py-2.5 min-h-[44px] cursor-pointer ${empty ? 'opacity-60' : ''}`}>
-      <div className="flex items-baseline gap-2">
-        <span className="text-[13px] font-extrabold">{w.label}</span>
-        <span className={`text-[9px] ${SUB}`}>{dRange(w.from, w.to)}</span>
-        <span className={`ml-auto text-[13px] font-extrabold tabular-nums ${pnlTone(empty ? null : w.net)}`}>{empty ? '—' : signed(w.net)}</span>
-      </div>
-      <div className={`text-[10px] tabular-nums ${SUB}`}>
-        {money(w.carryIn)} → {money(w.carryOut)}{empty ? '' : ` · ${w.trades}t · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · edge ${w.edge != null ? `${signed(w.edge, 1)}%` : '—'}`}
-      </div>
+    <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, overflow: 'hidden', opacity: empty ? 0.65 : 1 }}>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        style={{ cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', color: P_TX, display: 'grid', gridTemplateColumns: '76px 1fr 82px', gap: 6, alignItems: 'center', padding: '7px 11px', fontVariantNumeric: 'tabular-nums', minHeight: 44 }}>
+        <span style={{ display: 'flex', flexDirection: 'column' }}>
+          <span style={{ fontSize: 11.5, fontWeight: 800 }}>{w.label}</span>
+          <span style={{ fontSize: 8, color: P_ACC }}>{dRange(w.from, w.to)}</span>
+        </span>
+        <span style={{ display: 'flex', flexDirection: 'column' }}>
+          <span style={{ fontSize: 9, color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: 800, color: P_TX }}>{money(w.carryOut)}</span></span>
+          <span style={{ fontSize: 8.5, color: P_MU }}>{empty ? 'no closed trades' : `${w.trades} · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · TP/SL ${w.tp + w.part}/${w.sl} · edge `}<span style={{ fontWeight: 800, color: w.edge == null ? P_MU : w.edge >= 0 ? P_UP : P_DN }}>{empty ? '' : (w.edge != null ? `${signed(w.edge, 1)}%` : '—')}</span></span>
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 800, textAlign: 'right', color: empty ? P_MU : w.net >= 0 ? P_UP : P_DN }}>{empty ? '—' : signed(w.net)}</span>
+      </button>
       {open && (
-        <div className="mt-2">
+        <div style={{ borderTop: `1px solid ${P_EDG}`, background: P_ACS, padding: '6px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {empty
-            ? <p className={`text-[11px] ${SUB}`}>No closed trades in this window.</p>
+            ? <span style={{ fontSize: 9, color: P_SB }}>No closed trades in this window.</span>
             : (
-              <div className="grid grid-cols-3 gap-1.5">
-                {MARKET_COLS.map(m => {
-                  const st = w.markets?.[m.key]
-                  return (
-                    <div key={m.key} className="rounded-[8px] border border-[var(--glass-edge)] px-1.5 py-1">
-                      <div className={`text-[8.5px] uppercase font-bold ${SUB}`}>{m.label}</div>
-                      {st?.trades
-                        ? (
-                          <>
-                            <div className={`text-[11px] font-bold tabular-nums ${pnlTone(st.net)}`}>{signed(st.net)}</div>
-                            <div className={`text-[8.5px] tabular-nums ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}</div>
-                          </>
-                        )
-                        : <div className={`text-[11px] ${SUB}`}>—</div>}
-                    </div>
-                  )
-                })}
-                {insight(w) && <div className={`col-span-3 text-[10px] ${SUB}`}>{insight(w)}</div>}
-              </div>
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
+                  {MARKET_COLS.map(m => {
+                    const st = w.markets?.[m.key]
+                    return (
+                      <span key={m.key} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${P_EDG}`, borderRadius: 8, padding: '4px 7px' }}>
+                        <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>{m.label}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: st?.trades ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
+                        <span style={{ fontSize: 7.5, color: P_MU }}>{st?.trades ? `PF ${st.pf != null ? nf(1).format(st.pf) : '—'} · ${st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}` : ''}</span>
+                      </span>
+                    )
+                  })}
+                </div>
+                {insight(w) && <span style={{ fontSize: 9, lineHeight: 1.4, color: P_SB }}>{insight(w)}</span>}
+              </>
             )}
         </div>
       )}
-    </button>
+    </div>
   )
 }
 
@@ -740,54 +740,93 @@ export default function Performance() {
 
       {error && <Card><p className="text-[12px] font-semibold text-[var(--color-down)]">{error}</p></Card>}
 
-      {/* ================= MOBILE (below lg): the design's phone screens ==== */}
+      {/* ================= MOBILE (below lg): the design's phone screens ====
+          Exact ports of Performance Mobile.dc.html. Pill nav uses the
+          prototype's chip styles with the README's ≥44px tap minimum. */}
       <div className="lg:hidden space-y-3">
-        <nav className="flex gap-1.5 overflow-x-auto scrollbar-none" aria-label="Performance sections">
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {MOBILE_SCREENS.map(s => (
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
               aria-current={screen === s.key ? 'page' : undefined}
-              className={`rounded-full px-4 min-h-[44px] text-[12px] font-bold shrink-0 cursor-pointer ${screen === s.key
-                ? 'bg-[var(--color-accent)] text-white shadow-[var(--glow-accent)]'
-                : `glass-inset ${SUB}`}`}>
+              style={screen === s.key
+                ? { fontSize: 9.5, fontWeight: 800, color: '#fff', background: P_ACC, borderRadius: 999, padding: '3px 10px', border: 'none', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }
+                : { fontSize: 9.5, fontWeight: 600, color: P_SB, border: `1px solid ${P_EDG}`, background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }}>
               {s.label}
             </button>
           ))}
-        </nav>
+        </div>
 
         {screen === 'now' && (
           <>
-            <Card>
-              <h3 className="t-h3 mb-1">Today</h3>
-              <div className={`text-[22px] font-black tabular-nums ${pnlTone(today.n ? today.net : null)}`}>{today.n ? signed(today.net) : '—'}</div>
-              <p className={`text-[10px] ${SUB}`}>closed P&L since 22:00 UTC · {today.n} trade{today.n === 1 ? '' : 's'}{ledger?.balance != null ? ` · balance ${money(ledger.balance)}` : ''}</p>
-            </Card>
-            <Card>
-              <h3 className="t-h3 mb-1.5">Open now</h3>
-              {positions.length === 0 && <p className={`text-[12px] ${SUB}`}>No open positions.</p>}
-              <div className="space-y-1.5">
-                {positions.map(p2 => (
-                  <div key={p2.id} className="glass-inset rounded-[12px] px-3 py-2">
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-[12px] font-extrabold">{p2.symbol}</span>
-                      <span className={`text-[10px] font-semibold ${String(p2.side).toUpperCase() === 'BUY' ? UP : DOWN}`}>{p2.side}{p2.volume != null ? ` · ${p2.volume}` : ''}</span>
-                      <span className={`ml-auto text-[10px] ${SUB}`}>{p2.strategy || '—'}</span>
-                    </div>
-                    <div className={`text-[10px] tabular-nums ${SUB}`}>
-                      entry {money(p2.entry_price, 5)} · SL {money(p2.current_sl, 5)} · TP {money(p2.current_tp, 5)}
-                    </div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              <SessionClock />
+            </div>
+            {acctCards.map(a => (
+              <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 17, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
+                  <span style={{ fontSize: 10, color: P_SB }}>eq {a.equity != null ? money(a.equity) : '—'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 10, color: P_SB }}>live <span style={{ fontWeight: 800, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> · {a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>TP nett</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>SL nett</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>30D pace</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <div style={{ height: 4, borderRadius: 999, background: P_EDG }}>
+                    <div style={{ height: 4, borderRadius: 999, width: `${Math.max(a.used ?? 0, a.used != null ? 1 : 0)}%`, background: a.usedCol }} />
                   </div>
-                ))}
+                  <span style={{ fontSize: 8.5, color: P_MU }}>loss-cap used <span style={{ fontWeight: 800, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · at 100% bot closes all &amp; disarms</span>
+                </div>
               </div>
-            </Card>
+            ))}
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since 22:00 UTC</span>
+                <span style={{ marginLeft: 'auto', fontSize: 15, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
+              </div>
+              <span style={{ fontSize: 9.5, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
+            </div>
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Open positions — floating</span>
+                <span style={{ marginLeft: 'auto', fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_MU }}>{positions.length ? `${positions.length} open · —` : 'flat'}</span>
+              </div>
+              {openCols.flatMap(g => g.rows).map(p2 => (
+                <div key={p2.id} style={{ display: 'grid', gridTemplateColumns: '74px 66px 1fr 96px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 5, fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 11, fontWeight: 800 }}>{p2.sym}</span><span style={{ fontSize: 8.5, color: P_MU }}>{p2.strat}</span></span>
+                  <span style={{ fontSize: 9, fontWeight: 700, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: P_MU }}>—</span>
+                    <span title="SL→TP progress needs a live price — not streamed to this page" style={{ position: 'relative', height: 4, borderRadius: 999, background: P_EDG, display: 'block' }} />
+                  </span>
+                  <span style={{ fontSize: 8.5, color: P_MU, textAlign: 'right' }}>SL {p2.sld} · TP {p2.tpd}</span>
+                </div>
+              ))}
+            </div>
           </>
         )}
 
         {screen === 'ledger' && (
           <>
-            <FilterChips accounts={accounts} acct={acct} setAcct={setAcct} tall />
-            <div className="space-y-1.5">
-              {windows.map(w => <MobileWindowCard key={w.key} w={w} />)}
+            <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>Acct</span>
+              {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
+                const on = acct === f.id
+                return (
+                  <button key={f.id} type="button" onClick={() => setAcct(f.id)}
+                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 8.5, fontWeight: 700, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                    {f.label}
+                  </button>
+                )
+              })}
             </div>
+            {windows.map(w => <MobileWindowCard key={w.key} w={w} />)}
           </>
         )}
 
