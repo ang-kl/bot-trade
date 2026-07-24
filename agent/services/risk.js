@@ -19,6 +19,7 @@ import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
 import { evaluateGlobalGuards } from './global-guards.js'
+import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -81,6 +82,15 @@ export const DEFAULT_RISK_CONFIG = {
   // broker require the other side of the spread / a confirming quote before
   // firing the stop — the tick-speed remedy for sub-3s wick sweeps.
   stopTriggerMethod: null,
+  // News-window entry gate (owner-approved 2026-07-24): veto NEW entries
+  // whose symbol's currencies have a scheduled release inside the window —
+  // most sub-3s FX spikes are timed prints, and news spreads widen exactly
+  // when stops are most touchable. Uses the CACHED calendar only (sync, no
+  // network in the trade path); no data = no block. Default OFF.
+  newsGateEnabled: false,
+  newsGateMinBefore: 15,           // minutes before the release
+  newsGateMinAfter: 15,            // minutes after it
+  newsGateImpacts: ['High'],       // add 'Medium' to widen coverage
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -420,6 +430,22 @@ export function evaluateTrade(db, proposal, configOverride) {
   const gg = evaluateGlobalGuards(db)
   Object.assign(checks, gg.checks)
   if (!gg.ok) return veto(gg.reason, checks, proposal)
+
+  // ---- 0b. News-window entry gate (config-gated, default OFF) -------------
+  // Pure in-memory check against the cached calendar — microseconds, no
+  // network. Missing/stale data means no block, never a stuck veto.
+  if (config.newsGateEnabled) {
+    const ev = newsWindowEvent(cachedEventsSync(db), proposal.symbol, Date.now(), {
+      minBefore: Number(config.newsGateMinBefore) || 15,
+      minAfter: Number(config.newsGateMinAfter) || 15,
+      impacts: Array.isArray(config.newsGateImpacts) && config.newsGateImpacts.length
+        ? config.newsGateImpacts : ['High'],
+    })
+    if (ev) {
+      checks.news_window = `${ev.country} ${ev.title} @ ${new Date(ev.t).toISOString()}`
+      return veto(`news_window: ${ev.impact} ${ev.country} ${ev.title}`, checks, proposal)
+    }
+  }
 
   // ---- 1. Daily loss limit ------------------------------------------------
   // Prefer % of balance when set; fall back to absolute USD cap.
