@@ -12,6 +12,7 @@
 //    tracked in the DB) → exact panel with an honest empty state;
 //  - data feed panel: real values where the APIs provide them, '—' else.
 import { useState } from 'react'
+import SectionTools from './common/SectionTools.jsx'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -85,7 +86,7 @@ function QuadCard({ q }) {
 }
 
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
-export function RegimeMatrix({ trades30, positions, accounts }) {
+export function RegimeMatrix({ trades30, positions, accounts, inModal = false }) {
   const [rAcct, setRAcct] = useState('all')
   const dots = RGM.map(([name, fn, gx, iy]) => {
     const l = trades30.filter(fn)
@@ -123,6 +124,12 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
         <span style={{ fontSize: 12, fontWeight: 800, color: ACC }}>Macro regime matrix — where the book sits</span>
         <span style={{ fontSize: 10, color: SB }}>growth × inflation, not static correlations · ring = volatility band · dot color = 30D net for that group · hover a dot</span>
         <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: WRN }}>quadrant playbooks are the design's reference copy — the bot does not compute a live regime read yet</span>
+        {!inModal && (
+          <SectionTools id="regime" title="Macro regime matrix — where the book sits" window="30D"
+            data={dots.map(d => ({ group: d.name, net30d: d.pnl }))}
+            toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')}
+            render={() => <RegimeMatrix trades30={trades30} positions={positions} accounts={accounts} inModal />} />
+        )}
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: MU }}>Account</span>
@@ -196,13 +203,18 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
   )
 }
 
-export function BalanceInOut() {
+export function BalanceInOut({ inModal = false }) {
   return (
     <div style={{ ...panel, gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: ACC }}>Balance in / out — deposits, withdrawals &amp; transfers</span>
         <span style={{ fontSize: 10, color: SB }}>non-trading cash flows · excluded from P&amp;L, carry-forward adjusts on the transaction date</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>net —</span>
+        {!inModal && (
+          <SectionTools id="balance-in-out" title="Balance in / out" data={[]}
+            toText={() => 'Balance in / out — no transfers recorded (cash-flow ingestion not built yet)'}
+            render={() => <BalanceInOut inModal />} />
+        )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
         <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
@@ -215,7 +227,7 @@ export function BalanceInOut() {
 }
 
 /** Real values where the APIs provide them; '—' where not collected. */
-export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock }) {
+export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : '$' + Math.round(v).toLocaleString('en-US'))
@@ -224,6 +236,11 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-special-text)' }}>Data feed — core universal essentials</span>
         <span style={{ fontSize: 10, color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
+        {!inModal && (
+          <SectionTools id="data-feed" title="Data feed — core universal essentials"
+            data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet }]}
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} clock={clock} inModal />} />
+        )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
         <div style={box}>
