@@ -20,6 +20,7 @@
 #include "json.hpp"
 #include "spot_feed.hpp"
 #include "telemetry.hpp"
+#include "trail_engine.hpp"
 #include "vpo_config_store.hpp"
 #include "vpo_dispatcher.hpp"
 #include "vpo_strategies.hpp"
@@ -150,6 +151,15 @@ int main(int argc, char** argv) {
   // Off by default: broker depth support per symbol/account is unverified,
   // and SpotFeed treats a rejected depth subscribe as spots-only anyway.
   const bool depthFeedEnabled = envOr("DEPTH_FEED_ENABLED", "false") == "true";
+  // Tick-level SL trailing (owner option 4). Off by default; when on, the
+  // spot feed starts even without VPO strategies (empty symbol list — the
+  // trail engine's /trail-config pushes deliver symbols dynamically).
+  const bool trailTickEnabled = envOr("TRAIL_TICK_ENABLED", "false") == "true";
+  TrailEngine trailEngine;
+  if (trailTickEnabled) {
+    trailEngine.start(engine);
+    logLine("tick-level trail engine started (TRAIL_TICK_ENABLED)");
+  }
 
   vpo::VpoConfigStore vpoStore;
   std::unique_ptr<vpo::VpoDispatcher> vpoDispatcher;
@@ -270,7 +280,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, depthFeedEnabled](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, depthFeedEnabled, &trailEngine, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -307,23 +317,75 @@ int main(int argc, char** argv) {
     // replacing the pointer: SpotFeed::runLoop() runs on a detached-less
     // thread against `*spotFeed`, so swapping the object out from under a
     // still-running thread would be a use-after-free.
-    if (vpoDispatcher && !vpoSymbolIds.empty()) {
+    if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled) {
       std::lock_guard<std::mutex> lk(vpoMtx);
       if (spotFeed) {
         spotFeed->stop();
         if (spotFeedThread.joinable()) spotFeedThread.join();
       }
       vpo::VpoDispatcher* dispatcherPtr = vpoDispatcher.get();
+      TrailEngine* trailPtr = trailTickEnabled ? &trailEngine : nullptr;
       spotFeed = std::make_unique<SpotFeed>(
           host.empty() ? "live.ctraderapi.com" : host, clientId, clientSecret, accessToken, accountId,
           vpoSymbolIds,
-          [dispatcherPtr](long long symbolId, double bid, double ask) { dispatcherPtr->onTick(symbolId, bid, ask); },
+          [dispatcherPtr, trailPtr](long long symbolId, double bid, double ask) {
+            if (dispatcherPtr) dispatcherPtr->onTick(symbolId, bid, ask);
+            if (trailPtr) trailPtr->onTick(symbolId, bid, ask);
+          },
           depthFeedEnabled);
+      if (trailPtr) spotFeed->ensureSymbols(trailEngine.symbolIds());
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
-      logLine("VPO spot feed (re)started for " + std::to_string(vpoSymbolIds.size()) + " symbol(s)");
+      logLine("spot feed (re)started: " + std::to_string(vpoSymbolIds.size()) + " VPO symbol(s)" +
+              (trailPtr ? " + trail engine fan-out" : ""));
     }
     return {200, "{\"ok\":true}"};
+  });
+
+  // Tick-trailing spec push (owner option 4): Node's profit keeper is the
+  // POLICY authority — it computes armed state + trail distance and pushes
+  // the full tracked set here every pass; this engine only executes the
+  // ratchet at tick speed between pushes. Body:
+  //   {positions: [{positionId, ctidTraderAccountId, symbolId, dir,
+  //                 trailDistance, peakPrice?, currentSl?, digits?}]}
+  // Full replace: positions absent from the push stop tick-trailing.
+  server.route("POST", "/trail-config", [&trailEngine, &spotFeed, &vpoMtx, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
+    if (!trailTickEnabled)
+      return {503, "{\"error\":\"TRAIL_TICK_ENABLED not set\"}"};
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    std::vector<std::pair<long long, TrailSpec>> specs;
+    for (const auto& p : parsed->get("positions").asArray()) {
+      const long long posId = static_cast<long long>(p.get("positionId").asNumber(0));
+      TrailSpec s;
+      s.accountId = static_cast<long long>(p.get("ctidTraderAccountId").asNumber(0));
+      s.symbolId = static_cast<long long>(p.get("symbolId").asNumber(0));
+      s.dir = p.get("dir").asNumber(0) < 0 ? -1 : 1;
+      s.trailDist = p.get("trailDistance").asNumber(0);
+      s.peakPrice = p.get("peakPrice").asNumber(0);
+      const jsn::Value& sl = p.get("currentSl");
+      if (sl.isNumber()) { s.lastSl = sl.asNumber(0); s.hasSl = true; }
+      s.digits = static_cast<int>(p.get("digits").asNumber(5));
+      if (posId > 0 && s.symbolId > 0 && s.trailDist > 0) specs.emplace_back(posId, s);
+    }
+    trailEngine.configure(specs);
+    {
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      if (spotFeed) spotFeed->ensureSymbols(trailEngine.symbolIds());
+    }
+    jsn::Value out{jsn::Object{}};
+    out.set("ok", true);
+    out.set("tracked", static_cast<double>(trailEngine.tracked()));
+    return {200, jsn::dump(out)};
+  });
+
+  server.route("GET", "/trail-status", [&trailEngine, trailTickEnabled](const HttpRequest&) -> HttpResponse {
+    if (!trailTickEnabled)
+      return {200, "{\"enabled\":false}"};
+    std::string body = trailEngine.statusJson();
+    body.insert(1, "\"enabled\":true,");
+    return {200, body};
   });
 
   // L2 depth snapshot for one symbol (POST mirrors the per-account

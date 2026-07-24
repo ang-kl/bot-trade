@@ -50,6 +50,14 @@ public:
   // True once the current connection's depth subscription was accepted.
   bool depthActive() const { return depthActive_.load(std::memory_order_relaxed); }
 
+  // Add symbols to the live subscription (trail engine's open-position
+  // symbols beyond VPO_SYMBOLS). Thread-safe: ids are queued here and the
+  // subscribe frames are sent from the FEED thread on its next loop slice —
+  // never from the caller's thread, since the WS is single-consumer.
+  // Already-subscribed ids are ignored; queued ids survive reconnects
+  // (they're folded into symbolIds_ before sending).
+  void ensureSymbols(const std::vector<long long>& ids);
+
   // Snapshot of a symbol's current book as JSON ("null" when the symbol has
   // no book yet — depth off, subscription rejected, or no events seen).
   // Thread-safe; callable from the HTTP server thread.
@@ -75,4 +83,9 @@ private:
   std::atomic<bool> depthActive_{false};
   std::mutex depthMtx_;
   std::map<long long, DepthBook> books_;
+
+  // Dynamic subscription queue (see ensureSymbols).
+  std::mutex symMtx_;
+  std::vector<long long> pendingSubs_;
+  void drainPendingSubs(); // feed thread only
 };
