@@ -185,7 +185,10 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
 
     ws.on('error', (err) => {
       cleanup()
-      reject(new Error(`cTrader WS error: ${err.message}`))
+      // Step context so callers can tell a pre-submission failure from one
+      // AFTER a non-idempotent request went out (see wsPlaceOrder's noRetry).
+      const sent = steps[stepIdx]?.send.payloadType
+      reject(new Error(`cTrader WS error: ${err.message}${sent != null && stepIdx > 0 ? ` — after sending ${sent}` : ''}`))
     })
   })
 }
@@ -201,7 +204,7 @@ function authSteps(clientId, clientSecret, accessToken, accountId) {
   ]
 }
 
-async function withRetry(fn, maxRetries = 2, label = 'ws') {
+export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null) {
   let lastErr
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -210,6 +213,7 @@ async function withRetry(fn, maxRetries = 2, label = 'ws') {
       lastErr = err
       const msg = err.message || ''
       if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
+      if (noRetry && noRetry(err)) throw err
       if (attempt < maxRetries) {
         const delay = (attempt + 1) * 2000
         console.log(`[${label}] retry ${attempt + 1}/${maxRetries} in ${delay}ms — ${msg}`)
@@ -226,10 +230,16 @@ async function withRetry(fn, maxRetries = 2, label = 'ws') {
  * label, …). Returns the EXECUTION_EVENT payload.
  */
 export function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload, timeoutMs = 20_000) {
+  // L3: NEW_ORDER_REQ is NOT idempotent. A timeout or socket drop AFTER the
+  // request went out is ambiguous — the broker may well have filled it, only
+  // the EXECUTION_EVENT was lost — and blindly resubmitting is exactly how
+  // duplicate positions happen (the 4x USDIDR incident). Retry only failures
+  // that provably occurred BEFORE the order request was sent (connect/auth).
+  const orderSent = (err) => (err?.message || '').includes(`after sending ${PT.NEW_ORDER_REQ}`)
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.NEW_ORDER_REQ, payload: orderPayload }, expect: PT.EXECUTION_EVENT },
-  ], timeoutMs), 2, 'wsPlaceOrder')
+  ], timeoutMs), 2, 'wsPlaceOrder', orderSent)
 }
 
 /**

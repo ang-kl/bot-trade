@@ -376,10 +376,36 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     }
   }
 
+  // L3 submission idempotency (the 4x-duplicate USDIDR incident class): a
+  // just-recorded trade on the same account+symbol+side within the window
+  // means THIS submission is a duplicate — a re-dispatch, a retry echo, or
+  // two paths racing. The broker call is not idempotent, so the dedupe has
+  // to happen before it, from our own ledger.
+  const dupe = db.prepare(`
+    SELECT id, opened_at FROM trades
+    WHERE symbol = ? AND side = ? AND opened_at >= datetime('now', '-3 minutes')
+      AND (account_id = ? OR account_id IS NULL)
+    ORDER BY id DESC LIMIT 1
+  `).get(symbol, side, String(accountId))
+  if (dupe) {
+    const reason = `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (3-minute idempotency window)`
+    persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+    try {
+      const { recordDecision } = await import('./services/decision-log.js')
+      recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'submission_dedupe', decision: 'veto', reason })
+    } catch { /* provenance never blocks */ }
+    log(`RISK VETO ${symbol} ${side}: ${reason}`)
+    return null
+  }
+
   log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
 
   try {
-    const exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId }, orderPayload)
+    // execGuard rides along so the 5A kill switch / volume cap enforce on
+    // this hand-assembled creds path exactly like getCtraderCreds callers.
+    let execGuard = null
+    try { execGuard = JSON.parse(getState(db, 'exec_guard_json') || 'null') } catch { /* no guard */ }
+    const exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard }, orderPayload)
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
