@@ -358,9 +358,31 @@ const TABLES = `
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- 3A decision provenance (multi-account plan, non-negotiable): every
+  -- controller decision that today only reaches stdout — SKIPS included —
+  -- becomes queryable. risk_events already covers risk-gate vetoes; this
+  -- table covers everything upstream of the gate (dispatch/style/decay/
+  -- override gates) and is deliberately generic so later milestones stamp
+  -- more stages without schema changes. Written by services/decision-log.js.
+  CREATE TABLE IF NOT EXISTS decision_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id   TEXT,
+    symbol       TEXT,
+    timeframe    TEXT,
+    strategy     TEXT,
+    stage        TEXT NOT NULL,   -- e.g. 'dispatch', 'style_filter', 'lesson_decay', 'watchlist_override'
+    decision     TEXT NOT NULL,   -- 'skip' | 'veto' | 'proceed'
+    reason       TEXT,
+    detail_json  TEXT,
+    loop_id      INTEGER,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 const INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_decision_log_at        ON decision_log (created_at);
+  CREATE INDEX IF NOT EXISTS idx_decision_log_sym_stage ON decision_log (symbol, stage, created_at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);
   CREATE INDEX IF NOT EXISTS idx_analyses_symbol_at     ON analyses(symbol, analyzed_at);
   CREATE INDEX IF NOT EXISTS idx_signals_symbol_at      ON signals (symbol, recorded_at);

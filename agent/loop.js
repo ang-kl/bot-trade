@@ -248,6 +248,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // display the flag; self-clears the moment a Win/Partial lands.
     if (isDecayed(db, symbol, synth.strategy, synth.timeframe)) {
       log(`${symbol}: lesson_tuner: alpha-decay cool-off — skipping ${synth.strategy || 'signal'}/${synth.timeframe || '?'} (last postmortem flagged decay for this exact edge)`)
+      try {
+        const { recordDecision } = await import('./services/decision-log.js')
+        recordDecision(db, { symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'lesson_decay', decision: 'skip', reason: 'alpha_decay_cooloff' })
+      } catch { /* provenance never blocks */ }
       return null
     }
   } catch { /* tuner is optional — never blocks a trade */ }
@@ -485,6 +489,10 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const st = wItem.allowed_styles
     if (st.scalp === false && st.day === false && st.swing === false && st.mid_term === false) {
       log(`Style filter: ${sym} — all styles disabled, skipping analysis`)
+      try {
+        const { recordDecision } = await import('./services/decision-log.js')
+        recordDecision(db, { symbol: sym, stage: 'style_filter', decision: 'skip', reason: 'all_styles_disabled' })
+      } catch { /* provenance never blocks */ }
       return { fired: false, synth: null }
     }
   }
@@ -618,6 +626,12 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   // Human override: if override_bias is set, use it instead of AI's
   if (wItem.override_bias && ['long', 'short', 'neutral', 'skip'].includes(wItem.override_bias)) {
     if (wItem.override_bias === 'skip' || wItem.override_bias === 'neutral') {
+      if (synth.auto_trade) {
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, { symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'watchlist_override', decision: 'skip', reason: `override_bias=${wItem.override_bias}` })
+        } catch { /* provenance never blocks */ }
+      }
       synth.auto_trade = false
     } else {
       synth.consensus_bias = wItem.override_bias
@@ -2137,7 +2151,9 @@ async function runLoop(db) {
       const d2 = db.prepare('DELETE FROM signals WHERE recorded_at < ?').run(cutoff30d)
       const d3 = db.prepare('DELETE FROM regimes WHERE computed_at < ?').run(cutoff30d)
       const d4 = db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d)
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events`)
+      const { pruneDecisionLog } = await import('./services/decision-log.js')
+      const d5 = pruneDecisionLog(db)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions`)
     } catch (err) {
       log('Housekeeping error:', err.message)
     }

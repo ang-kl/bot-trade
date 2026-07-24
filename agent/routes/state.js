@@ -402,6 +402,26 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/decisions — 3A decision provenance: recent controller
+  // decisions (skips included), newest first. ?symbol= &stage= &limit=
+  // filter. Risk-gate vetoes remain in risk_events; this covers the stages
+  // upstream of the gate.
+  router.get('/decisions', async (req, res) => {
+    try {
+      const { recentDecisions } = await import('../services/decision-log.js')
+      res.json({
+        decisions: recentDecisions(db, {
+          symbol: req.query.symbol ? String(req.query.symbol).toUpperCase() : null,
+          stage: req.query.stage ? String(req.query.stage) : null,
+          limit: req.query.limit,
+        }),
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/weekend-loss-flags — losing positions flagged ahead of a
   // long market closure (weekend-loss-flag.js). Reads the sweep's own
   // one-shot `wl_flagged_*` markers, which self-expire once the closure
