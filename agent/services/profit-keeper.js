@@ -162,6 +162,11 @@ export function decideProfitKeeper(cfg, {
       out.action = { close: true, reason: `chandelier peak=${out.newPeak.toFixed(2)} trail=${slTarget} now=${price}` }
       return out
     }
+    // Armed and not breached: expose the live trail parameters so the
+    // caller can hand them to the C++ tick-level ratchet (option 4). This
+    // is the POLICY output — distance already reflects spike tightening.
+    out.trail = { distance: trailMult * atr, peakPrice }
+
     const action = {}
     if (Number(cfg.scaleOutFrac) > 0 && !scaledOut) action.scaleOutFrac = Math.min(0.9, Number(cfg.scaleOutFrac))
     if (tighter(slTarget)) {
@@ -259,6 +264,11 @@ export async function runProfitKeeper(db, creds, deps = {}) {
     )
     const updScaled = db.prepare('UPDATE monitored_positions SET scaled_out = 1 WHERE id = ?')
 
+    // Option 4: trail specs for the sidecar's tick-level ratchet, collected
+    // as we decide. Pushed even when EMPTY — /trail-config is full-replace,
+    // so an empty push clears positions that closed or disarmed.
+    const trailSpecs = []
+
     for (const { r, bp } of involved) {
       const td = bp.tradeData || {}
       const price = prices[td.symbolId]
@@ -286,6 +296,19 @@ export async function runProfitKeeper(db, creds, deps = {}) {
         bars: barsBySymbolId[td.symbolId] ?? null,
       })
       if (decision.newPeak !== (r.peak_profit_usd || 0)) updPeak.run(decision.newPeak, r.id)
+      if (decision.trail && !decision.action?.close) {
+        const s = String(r.side || '').toUpperCase()
+        trailSpecs.push({
+          positionId: parseInt(r.position_id),
+          ctidTraderAccountId: Number(creds.accountId) || undefined,
+          symbolId: td.symbolId,
+          dir: s === 'LONG' || s === 'BUY' ? 1 : -1,
+          trailDistance: decision.trail.distance,
+          peakPrice: decision.trail.peakPrice,
+          currentSl: bp.stopLoss ?? r.current_sl ?? null,
+          digits: meta.digits,
+        })
+      }
       if (!decision.action) continue
 
       if (decision.action.close) {
@@ -322,6 +345,11 @@ export async function runProfitKeeper(db, creds, deps = {}) {
         }
       }
     }
+
+    // Hand the armed set to the C++ tick ratchet (best-effort by contract).
+    try {
+      summary.trailPushed = exec.pushTrailConfig && await exec.pushTrailConfig(creds, trailSpecs) ? trailSpecs.length : null
+    } catch { summary.trailPushed = null }
 
     if (summary.slMoves || summary.closes || summary.scaleOuts) {
       try {

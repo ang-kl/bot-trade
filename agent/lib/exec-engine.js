@@ -84,6 +84,22 @@ async function ensureSidecarSession(creds) {
   lastPushedKey = key
 }
 
+// Option 4: hand the profit keeper's trail specs to the sidecar's
+// tick-level ratchet (POST /trail-config, full replace — push [] to clear).
+// cpp mode only; BEST-EFFORT by contract: any failure returns false and the
+// keeper carries on — its own 3s ratchet remains the fallback. Never
+// throws, never blocks the keeper on a broken sidecar.
+export async function pushTrailConfig(creds, positions) {
+  if (execEngineMode() !== 'cpp') return false
+  try {
+    await ensureSidecarSession(creds)
+    await sidecar('POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
+    return true
+  } catch {
+    return false // sidecar down or TRAIL_TICK_ENABLED unset — keeper's own ratchet still runs
+  }
+}
+
 // Backtest fast-path: cpp mode POSTs the payload to the sidecar's /backtest
 // (no /connect push — the backtester needs no broker session) and returns the
 // parsed {trades, stats, wf} body; a non-2xx response throws so the caller
