@@ -402,6 +402,21 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/perf-ledger — the Performance Ledger aggregation (design_
+  // claude PR B): timeframe windows × market categories × account, with
+  // carry-forward. ?account=<id>|all (default all).
+  router.get('/perf-ledger', async (req, res) => {
+    try {
+      const { buildPerfLedger } = await import('../services/perf-ledger.js')
+      res.json(buildPerfLedger(db, {
+        accountId: req.query.account ? String(req.query.account) : null,
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/decisions — 3A decision provenance: recent controller
   // decisions (skips included), newest first. ?symbol= &stage= &limit=
   // filter. Risk-gate vetoes remain in risk_events; this covers the stages
