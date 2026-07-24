@@ -24,12 +24,19 @@ export function getCtraderCreds(db, accountOverride) {
     ? !!accountOverride.isLive
     : getState(db, 'ctrader_is_live') === 'true'
 
+  // 5A: the exec guard (halt kill switch, max order volume) travels WITH the
+  // credentials so exec-engine.placeOrder can enforce it on the js path too —
+  // previously only the C++ sidecar's order_guard saw these knobs.
+  let execGuard = null
+  try { execGuard = JSON.parse(getState(db, 'exec_guard_json') || 'null') } catch { /* unreadable → no guard */ }
+
   return {
     host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
     clientId,
     clientSecret,
     accessToken,
     accountId,
+    execGuard: execGuard && typeof execGuard === 'object' ? execGuard : null,
     ready: !!(clientId && clientSecret && accessToken && accountId),
   }
 }
