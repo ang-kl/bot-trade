@@ -216,6 +216,19 @@ const dRange = (fromIso, toIso) => {
   return `${one(f)} → ${one(t)}`
 }
 
+// Owner (2026-07-24): "1H ledger row should show last time it filled in" —
+// an empty rolling window still names the scope's most recent close instead
+// of reading as a stalled/broken table.
+function agoLabel(iso, nowMs) {
+  if (!iso) return null
+  const ms = new Date(iso).getTime()
+  if (!Number.isFinite(ms)) return null
+  const mins = Math.max(0, Math.round((nowMs - ms) / 60_000))
+  if (mins < 60) return `${mins}m ago`
+  if (mins < 24 * 60) return `${Math.round(mins / 60)}h ago`
+  return `${Math.round(mins / (24 * 60))}d ago`
+}
+
 // Shared expanded-window detail: TP/SL plan vs actual + per-market lines.
 function WindowDetail({ w }) {
   const note = insight(w)
@@ -367,6 +380,87 @@ function OpenTableBody({ rows }) {
   )
 }
 
+// Owner (2026-07-24 evening): "TODAY", "OPEN NOW — FLOATING", "OPEN TRADE
+// BUT MARKET CLOSED" tables had uncontrolled length — cap the on-page card
+// view to 4 visible rows with BOTH pagination and a scrollbar (vertical for
+// a partial last page, horizontal inherited from the wrapped table). The
+// ⤢ expand pop-up still renders the FULL, unpaginated table — pagination is
+// a card-view space constraint, not a data limit.
+function PagedRows({ rows, pageSize = 4, maxHeight = 150, children }) {
+  const [page, setPage] = useState(0)
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const p = Math.min(page, pages - 1)
+  const pageRows = rows.slice(p * pageSize, p * pageSize + pageSize)
+  const btn = { cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`, borderRadius: 6, padding: '1px 6px' }
+  return (
+    <div>
+      <div style={{ maxHeight, overflowY: 'auto', overflowX: 'auto' }}>
+        {children(pageRows)}
+      </div>
+      {rows.length > pageSize && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <button type="button" disabled={p === 0} onClick={() => setPage(p - 1)} style={{ ...btn, opacity: p === 0 ? 0.4 : 1 }}>‹</button>
+          <span style={{ fontSize: 12, color: P_MU }}>Page {p + 1} / {pages}</span>
+          <button type="button" disabled={p >= pages - 1} onClick={() => setPage(p + 1)} style={{ ...btn, opacity: p >= pages - 1 ? 0.4 : 1 }}>›</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Weekend 24H-symbols table (owner: "two columns, remove MKT column since is
+// 24 HR, a lock if it cannot be traded") — a 2-column card grid instead of
+// the wide single-column table; the Mkt text column is replaced by a small
+// 🔒 that only appears in the rare case the broker reports this "24h" symbol
+// as currently untradable (otherwise the slot is blank, not a redundant
+// "OPEN" label).
+const WEEKEND_ROW_COLS = '58px 68px 1fr 58px 16px'
+function Weekend24Body({ rows }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))', gap: '2px 16px', minWidth: 560 }}>
+        {rows.map(p2 => (
+          <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
+            style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 12, fontWeight: 800 }}>{p2.sym}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+            <span style={{ fontSize: 12, color: P_MU }}>{fmtPx(p2.price)} · O{fmtPx(p2.day?.o)} H{fmtPx(p2.day?.h)} L{fmtPx(p2.day?.l)} C{fmtPx(p2.day?.c)} · v{fmtVol(p2.day?.v)} · SL {p2.sld}/TP {p2.tpd}</span>
+            <span style={{ fontSize: 12, fontWeight: 800, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+            <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Today's hourly breakdown (owner: "the today card cannot be empty... show
+// across a 24 hours (1hr timeframe) the Open balance, P/L, Close balance,
+// trades, close trades") — one row per elapsed hour since FX day open, so
+// the card always has structure even before the first close of the day.
+const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
+function TodayHourlyBody({ rows }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ minWidth: 420 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+          <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
+        </div>
+        {rows.map(r => (
+          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 12, color: P_MU }}>{new Date(r.from).toISOString().slice(11, 16)}</span>
+            <span style={{ fontSize: 12, color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>{r.closedN ? signed(r.net) : '—'}</span>
+            <span style={{ fontSize: 12, color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{r.openedN || '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{r.closedN || '—'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // Today-by-market-session stats table (owner's column list: Trades #, +$,
 // −$, highest, lowest, average, sum — plus median for the second central
 // figure, since "average" and "mean" name the same number).
@@ -388,7 +482,12 @@ function SessionStatsBody({ stats }) {
         </div>
         {rows.map(s => (
           <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
-            <span style={{ fontSize: 12, fontWeight: 800 }}>{s.key}</span>
+            <span>
+              <span style={{ fontSize: 12, fontWeight: 800 }}>{s.key}</span>
+              {s.open === false && (
+                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 6, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+              )}
+            </span>
             <span style={{ fontSize: 12, fontWeight: 700, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
             {s.n
               ? <>{cell(s.pos, P_UP)}{cell(s.neg, P_DN)}{cell(s.high)}{cell(s.low)}{cell(s.avg)}{cell(s.sum)}{cell(s.median)}</>
@@ -454,14 +553,14 @@ function AcctCardsGrid({ acctCards }) {
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
-    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}`)
+    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
   return ['Timeframe ledger', ...lines].join('\n')
 }
 
 // The ledger table body — one component for both the card and the expanded
 // modal (variant prop, never forked markup). The modal adds the owner's
 // "expand all / collapse all" toggle driving every row's detail.
-function LedgerBody({ variant, windows, ledger, error }) {
+function LedgerBody({ variant, windows, ledger, error, nowMs }) {
   const [expandAll, setExpandAll] = useState(false)
   const modal = variant === 'modal'
   return (
@@ -488,7 +587,7 @@ function LedgerBody({ variant, windows, ledger, error }) {
               </tr>
             </thead>
             <tbody>
-              {windows.map(w => <LedgerRow key={w.key} w={w} forceOpen={modal ? (expandAll || null) : null} />)}
+              {windows.map(w => <LedgerRow key={w.key} w={w} nowMs={nowMs} forceOpen={modal ? (expandAll || null) : null} />)}
             </tbody>
           </table>
         </div>
@@ -503,10 +602,11 @@ function LedgerBody({ variant, windows, ledger, error }) {
 // One desktop ledger row, expandable into the market breakdown.
 // `forceOpen` (boolean) overrides the internal state — the expanded modal's
 // "expand all / collapse all" toggle drives it.
-function LedgerRow({ w, forceOpen = null }) {
+function LedgerRow({ w, forceOpen = null, nowMs }) {
   const [openState, setOpen] = useState(false)
   const open = forceOpen ?? openState
   const empty = !w.trades
+  const last = empty ? agoLabel(w.lastTradeAt, nowMs) : null
   return (
     <>
       <tr onClick={() => setOpen(o => !o)}
@@ -517,7 +617,9 @@ function LedgerRow({ w, forceOpen = null }) {
           <div className={`ml-3 text-[9px] ${SUB}`}>{dRange(w.from, w.to)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[11px] ${SUB}`}>{money(w.carryIn)}</td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-[12px] font-extrabold ${pnlTone(empty ? null : w.net)}`}>{empty ? '—' : signed(w.net)}</td>
+        <td className={`py-1.5 px-2 text-right tabular-nums text-[12px] font-extrabold ${pnlTone(empty ? null : w.net)}`}>
+          {empty ? <span title={w.lastTradeAt ? `last fill ${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : undefined}>{last ? `last ${last}` : '—'}</span> : signed(w.net)}
+        </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[11px] ${SUB}`}>{money(w.carryOut)}</td>
         <td className="py-1.5 px-2 text-right tabular-nums text-[11px]">
           {empty ? <span className={SUB}>—</span> : (
@@ -541,7 +643,7 @@ function LedgerRow({ w, forceOpen = null }) {
         <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-soft)]/40">
           <td colSpan={6 + MARKET_COLS.length} className="py-2 px-3">
             {empty
-              ? <p className={`text-[11px] ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — carry appears once a balance is stamped for this scope' : ''}.</p>
+              ? <p className={`text-[11px] ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — carry appears once a balance is stamped for this scope' : ''}{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
               : <WindowDetail w={w} />}
           </td>
         </tr>
@@ -604,6 +706,57 @@ const MOBILE_SCREENS = [
   { key: 'trades', label: 'Trades' },
   { key: 'accounts', label: 'Accounts' },
 ]
+
+// Owner (2026-07-24): "this page is pack with information but I need
+// sub-navigation for the page FAB on the side bar" — desktop-only floating
+// jump-to-section button; the ledger's own DOM ids (added to each section's
+// wrapper above, distinct from SectionTools' `id` prop which is deep-link
+// state only, not a real DOM id) are the scroll targets.
+const PERF_SECTIONS = [
+  { id: 'sec-accounts', label: 'Accounts' },
+  { id: 'sec-today-open', label: 'Today & open' },
+  { id: 'sec-weekend24', label: 'Weekend 24H' },
+  { id: 'sec-sessions', label: 'Market sessions' },
+  { id: 'sec-ledger', label: 'Timeframe ledger' },
+  { id: 'sec-gradients', label: 'Gradients' },
+  { id: 'sec-fx-bands', label: 'FX bands' },
+  { id: 'sec-strategy-matrix', label: 'Strategy × market' },
+  { id: 'sec-crypto', label: 'Crypto' },
+  { id: 'sec-winlag', label: 'Winners & laggards' },
+  { id: 'sec-regime', label: 'Regime' },
+  { id: 'sec-balance', label: 'Balance in/out' },
+  { id: 'sec-datafeed', label: 'Data feed' },
+  { id: 'sec-tiles', label: 'Tiles & equity' },
+]
+
+function PerfSideNav() {
+  const [open, setOpen] = useState(false)
+  const jump = (id) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setOpen(false)
+  }
+  return (
+    <div className="hidden lg:block" style={{ position: 'fixed', right: 18, bottom: 74, zIndex: 40 }}>
+      {open && (
+        <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
+          {PERF_SECTIONS.map(s => (
+            <button key={s.id} type="button" onClick={() => jump(s.id)}
+              style={{ display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 700, color: P_TX, background: 'transparent', border: 'none', borderRadius: 8, padding: '5px 10px' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = P_GL }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <button type="button" onClick={() => setOpen(v => !v)} aria-label="Jump to section" title="Jump to section"
+        className="glass-panel"
+        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: `1px solid ${P_GBD}`, color: P_ACC, fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {open ? '×' : '☰'}
+      </button>
+    </div>
+  )
+}
 
 export default function Performance() {
   const [ledger, setLedger] = useState(null)
@@ -686,6 +839,36 @@ export default function Performance() {
     }
   }, [scopedClosed, loadedAt])
 
+  // Owner (2026-07-24 evening): "the today card cannot be empty... it
+  // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
+  // Close balance, trades, close trades" — a zero-trade day still has 24
+  // hourly slots since the FX day open; each carries the account's balance
+  // forward/backward from the current stamped balance the same way the
+  // Timeframe ledger's carry-in/carry-out does, so an hour with no closes
+  // still shows a real (flat) balance line instead of nothing at all.
+  const todayHourly = useMemo(() => {
+    const anchor = dayAnchorMs(loadedAt)
+    const curBal = ledger?.balance ?? null
+    const H = 60 * 60 * 1000
+    const slots = []
+    for (let from = anchor; from < loadedAt; from += H) slots.push({ from, to: Math.min(from + H, loadedAt) })
+    const withStats = slots.map(s => {
+      const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
+      const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
+      return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
+    })
+    let closeBal = curBal
+    const withBal = []
+    for (let i = withStats.length - 1; i >= 0; i--) {
+      const s = withStats[i]
+      const cb = closeBal
+      const ob = cb != null ? Number((cb - s.net).toFixed(2)) : null
+      withBal.unshift({ ...s, openBal: ob, closeBal: cb })
+      closeBal = ob
+    }
+    return withBal
+  }, [scopedClosed, loadedAt, ledger])
+
   // Today's closed-trade stats per market session (owner: "all the
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
   // time frame)"). Same day anchor + trade scope as the Today block so the
@@ -714,7 +897,14 @@ export default function Performance() {
       }
     }
     const inWin = (m, s) => m >= s.fromMin && m < s.toMin
-    const buckets = STAT_SESSIONS.map(s => ({ ...s, ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
+    const nowMin = minOfDay(loadedAt)
+    // Owner (2026-07-24): "put in the last computation... and a tiny closed
+    // sign like SYD closed" — the stats themselves are already the last
+    // computed value (historical closes, frozen once the session ends); what
+    // was missing was a live open/closed flag per session, evaluated at the
+    // current minute, so a closed market can be labeled instead of looking
+    // like a stalled table.
+    const buckets = STAT_SESSIONS.map(s => ({ ...s, open: inWin(nowMin, s), ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
     const off = stat(rows.filter(r => !STAT_SESSIONS.some(s => inWin(minOfDay(r.ms), s))))
     return { buckets, off, total: stat(rows) }
   }, [scopedClosed, loadedAt])
@@ -994,6 +1184,7 @@ export default function Performance() {
 
   return (
     <div className="space-y-3">
+      <PerfSideNav />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>
@@ -1254,7 +1445,7 @@ export default function Performance() {
             equity + live floating, TP/SL nett today, 30D forecast pace, and
             the loss-cap line (real dailyLossPct config × stamped balance). */}
         {acctCards.length > 0 && (
-          <>
+          <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
             <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — capital safety"
@@ -1263,25 +1454,22 @@ export default function Performance() {
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
           <AcctCardsGrid acctCards={acctCards} />
-          </>
+          </div>
         )}
 
         {/* Today + Open now — exact prototype row. */}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148 }}>
+        <div id="sec-today-open" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148, flex: '1 1 420px' }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
-              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={[today]}
-                toText={() => `Today · since FX day open (5pm NY) · net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`}
-                render={() => (
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</div>
-                    <div style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</div>
-                  </div>
-                )} />
+              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={todayHourly}
+                toText={() => ['Today · since FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
+                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`)].join('\n')}
+                render={() => <TodayHourlyBody rows={todayHourly} />} />
             </span>
             <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
             <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
+            <PagedRows rows={todayHourly}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
           </div>
           {[{
             key: 'float', title: 'Open now — floating', rows: openSplit.floating, tot: openSplit.floatTot,
@@ -1304,7 +1492,9 @@ export default function Performance() {
               <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
                 toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
                 render={() => <OpenTableBody rows={t2.rows} />} />
-              {t2.rows.length > 0 && <OpenTableBody rows={t2.rows} />}
+              {t2.rows.length > 0 && (
+                <PagedRows rows={t2.rows}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
+              )}
             </div>
           ))}
         </div>
@@ -1314,7 +1504,7 @@ export default function Performance() {
             expand) for 24 hours trading symbols"). Native <details> gives
             the triangle marker. Only rendered during the FX weekend. */}
         {openSplit.weekend24.length > 0 && (
-          <details open style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px' }}>
+          <details id="sec-weekend24" open style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px' }}>
             <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8, listStyle: 'revert' }}>
               <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
               <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: openSplit.weekendTot == null ? P_MU : openSplit.weekendTot >= 0 ? P_UP : P_DN }}>
@@ -1326,8 +1516,8 @@ export default function Performance() {
               <SectionTools id="open-weekend24" title="24H symbols — weekend trading"
                 data={openSplit.weekend24.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, slAway: p2.sld, tpAway: p2.tpd }))}
                 toText={() => ['24H symbols — weekend trading', ...openSplit.weekend24.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
-                render={() => <OpenTableBody rows={openSplit.weekend24} />} />
-              <OpenTableBody rows={openSplit.weekend24} />
+                render={() => <Weekend24Body rows={openSplit.weekend24} />} />
+              <Weekend24Body rows={openSplit.weekend24} />
             </div>
           </details>
         )}
@@ -1336,7 +1526,7 @@ export default function Performance() {
             highest, lowest, average, sum, median) across SYD / SG / HK /
             JPN / EUR / NY exchange windows. Windows overlap, so session
             rows exceed the ALL row by design; OFF catches everything else. */}
-        <Card>
+        <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
             <span style={{ fontSize: 12, color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap</span>
@@ -1372,22 +1562,22 @@ export default function Performance() {
         {/* The core: timeframe ledger. Three-lens model — time rows here,
             market columns across, per-window detail on expand; totals
             reconcile, nothing is double-counted. */}
-        <Card>
+        <Card id="sec-ledger">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Timeframe ledger</h3>
             <span className={`text-[11px] ${SUB}`}>
               carry in → net → carry out · day rolls at FX open (5pm NY) here · server ledger windows still anchor 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
             </span>
             <SectionTools id="ledger" title="Timeframe ledger" data={windows} toText={ledgerToText}
-              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} />} />
+              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
           </div>
-          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} />
+          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />
         </Card>
 
         {/* Performance gradients — exact prototype panels (timeframe ×
             account, asset class × account heat tables; column count follows
             the real registry). */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, alignItems: 'start' }}>
+        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, alignItems: 'start' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Performance gradient — timeframe × account</span>
@@ -1412,7 +1602,7 @@ export default function Performance() {
 
         {/* FX banded panel + Strategy × market — exact prototype grid (the
             right column also hosts the crypto panel in a later slice). */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 8, alignItems: 'start' }}>
+        <div id="sec-fx-bands" style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 8, alignItems: 'start' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Forex — banded, all pairs</span>
@@ -1424,7 +1614,7 @@ export default function Performance() {
             <FxBandsBody fxBands={fxBands} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div id="sec-strategy-matrix" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 12, color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
@@ -1436,7 +1626,7 @@ export default function Performance() {
             </div>
             {/* Crypto 24/7 — exact prototype panel; live price/Δ not
                 streamed to this page → honest —. */}
-            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Crypto — runs 24/7</span>
                 <span style={{ fontSize: 12, color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
@@ -1459,7 +1649,7 @@ export default function Performance() {
         {/* Winners & Laggards explained — exact prototype pair, real
             best/worst 30D closed trades with the collect-forward forensics
             line (out-side context not recorded yet → —). */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' }}>
+        <div id="sec-winlag" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' }}>
           {[{ title: 'Winners explained — best closed trades, 30D', tcol: P_UP, sub: 'full anatomy: time in → out, side, lots, plan, volume context at open/close', rows: winLag.win },
             { title: 'Laggards explained — worst closed trades, 30D', tcol: P_DN, sub: 'same anatomy — what went wrong and under what volume conditions', rows: winLag.lag }].map(panel => (
             <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -1477,28 +1667,32 @@ export default function Performance() {
 
         {/* Macro regime matrix + quadrant cards, Balance in/out, Data feed —
             the final Page-1 sections (exact ports, see PerfMacroSections). */}
-        <RegimeMatrix
-          trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
-          positions={positions}
-          accounts={accounts}
-        />
-        <BalanceInOut />
-        <DataFeed
-          balance={riskFull?.account?.balance ?? null}
-          freeMargin={riskFull?.margin?.freeMargin ?? null}
-          equity={riskFull?.margin?.equity ?? null}
-          openCount={positions.length}
-          dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
-          equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
-          slSet={positions.filter(p2 => p2.current_sl != null).length}
-          tpSet={positions.filter(p2 => p2.current_tp != null).length}
-          clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
-        />
+        <div id="sec-regime">
+          <RegimeMatrix
+            trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
+            positions={positions}
+            accounts={accounts}
+          />
+        </div>
+        <div id="sec-balance"><BalanceInOut /></div>
+        <div id="sec-datafeed">
+          <DataFeed
+            balance={riskFull?.account?.balance ?? null}
+            freeMargin={riskFull?.margin?.freeMargin ?? null}
+            equity={riskFull?.margin?.equity ?? null}
+            openCount={positions.length}
+            dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+            equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
+            slSet={positions.filter(p2 => p2.current_sl != null).length}
+            tpSet={positions.filter(p2 => p2.current_tp != null).length}
+            clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
+          />
+        </div>
 
         {/* Migrated from Desk: the original stat tiles + decisions/equity
             chart (owner: "move the performance in the desk to a page by its
             own"). */}
-        <Card>
+        <Card id="sec-tiles">
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
             {tiles && <span className={`text-[12px] ${SUB}`}>{tiles.closed.length} closed · {signed(tiles.total)}</span>}

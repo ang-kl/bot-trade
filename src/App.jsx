@@ -158,7 +158,7 @@ export default function App() {
 
         <AgentDownBanner />
 
-        <main className="px-4 py-5 lg:pr-6 max-w-[1720px]">
+        <main className="px-4 py-5 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
           <Routes>
             <Route path="/" element={<Navigate to="/performance" replace />} />
             <Route path="/performance" element={<Performance />} />
@@ -177,15 +177,23 @@ export default function App() {
             <Route path="/link-up" element={<Connect />} />
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
-          <footer className="mt-8 pt-4 border-t border-[var(--color-border)] text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
-            <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
-            {/* Keep this line TRUE: 5 registry strategies armed per-stage in
-                Tune; entries/risk gate are deterministic, but the position
-                monitor has an LLM fallback — never claim "no LLM" outright. */}
-            <span>5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
-            <span>trading involves risk — demo first, never money you can't lose</span>
-          </footer>
         </main>
+        {/* Owner (2026-07-24): "I cannot see the footer in this HD notebook,
+            dynamically adjust up the footer... allow there for both the
+            side bar and footer and ensure scrolling is behind it like
+            Liquid Glass" — fixed to the viewport bottom (not page-flow end)
+            so it's always visible on short screens; lg:left-56 clears the
+            sticky sidebar; page content scrolls underneath the translucent
+            glass-bar material. main's bottom padding above keeps real
+            content from ending up permanently hidden under it. */}
+        <footer className="glass-bar fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
+          <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
+          {/* Keep this line TRUE: 5 registry strategies armed per-stage in
+              Tune; entries/risk gate are deterministic, but the position
+              monitor has an LLM fallback — never claim "no LLM" outright. */}
+          <span>5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
+          <span>trading involves risk — demo first, never money you can't lose</span>
+        </footer>
       </div>
     </div>
   )
