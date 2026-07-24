@@ -121,7 +121,34 @@ export function ensureAccountRegistry(db) {
 const BACKFILL_TABLES = [
   'trades', 'signals', 'pending_orders', 'broker_orders', 'risk_events',
   'trade_postmortems', 'pending_signals', 'performance_snapshots',
+  // monitored_positions has carried the column for a while, but rows from
+  // before the reconciler started stamping it are NULL — same single-account
+  // provenance, same backfill.
+  'monitored_positions',
 ]
+
+/**
+ * Resolve the account a read/write should scope to: an explicit id when the
+ * caller carries one (per-account workers, proposal.accountId), else the
+ * currently-selected account. The M1 scoped-read convention is
+ * `(account_id = ? OR account_id IS NULL)` — NULL rows are legacy/global
+ * and count for EVERY account, which only ever makes guards stricter,
+ * never looser.
+ */
+export function resolveAccountId(db, explicit = null) {
+  if (explicit != null && explicit !== '') return String(explicit)
+  const id = getState(db, 'ctrader_account_id')
+  return id ? String(id) : null
+}
+
+/** Per-account agent_state key namespace (plan M1: `acct:<id>:<key>`). */
+export const acctKey = (accountId, key) => `acct:${accountId}:${key}`
+export function getAccountState(db, accountId, key) {
+  return getState(db, acctKey(String(accountId), key))
+}
+export function setAccountState(db, accountId, key, value) {
+  return setState(db, acctKey(String(accountId), key), value)
+}
 
 /**
  * One-time M1 backfill (idempotent, boot-time): stamp every historical

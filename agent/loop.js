@@ -1907,9 +1907,14 @@ async function runLoop(db) {
         const cap = balance != null ? balance * stopPct : riskCfg.dailyLossLimit
         const dayStart = new Date()
         dayStart.setUTCHours(0, 0, 0, 0)
+        // Format-proof comparison — same REAL BUG as the risk gate's daily
+        // loss check (found 2026-07-24): closeTradeRow stores closed_at as
+        // "YYYY-MM-DD HH:MM:SS" (space) which sorts BEFORE the ISO 'T'
+        // form, so production-closed trades were invisible to this equity
+        // stop. REPLACE normalizes both formats before comparing.
         const todayPnl = db
-          .prepare(`SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades WHERE status = 'closed' AND closed_at >= ?`)
-          .get(dayStart.toISOString())?.pnl || 0
+          .prepare(`SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?`)
+          .get(`${dayStart.toISOString().slice(0, 10)} 00:00:00`)?.pnl || 0
         const todayUTCDate = new Date().toISOString().slice(0, 10)
         const alreadyTripped = (getState(db, 'equity_stop_tripped_at') || '').slice(0, 10) === todayUTCDate
         const botPositions = s.selectActivePositions.all('active').filter(p => p.source !== 'external')
