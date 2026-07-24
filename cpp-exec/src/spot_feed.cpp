@@ -95,6 +95,47 @@ void SpotFeed::stop() {
   ws_.close();
 }
 
+void SpotFeed::ensureSymbols(const std::vector<long long>& ids) {
+  std::lock_guard<std::mutex> lk(symMtx_);
+  for (long long id : ids) {
+    if (id <= 0) continue;
+    bool known = false;
+    for (long long s : symbolIds_) if (s == id) { known = true; break; }
+    for (long long s : pendingSubs_) if (s == id) { known = true; break; }
+    if (!known) pendingSubs_.push_back(id);
+  }
+}
+
+// Feed thread only: fold queued ids into the subscription. Fire-and-forget
+// sends — the 2128/2157 acks land in the read loop as ignored types, and a
+// broker error frame drops the connection, whose reconnect re-subscribes
+// the full (now larger) list.
+void SpotFeed::drainPendingSubs() {
+  std::vector<long long> add;
+  {
+    std::lock_guard<std::mutex> lk(symMtx_);
+    if (pendingSubs_.empty()) return;
+    add.swap(pendingSubs_);
+    for (long long id : add) symbolIds_.push_back(id);
+  }
+  jsn::Array ids;
+  for (long long id : add) ids.push_back(jsn::Value(static_cast<double>(id)));
+  jsn::Value sub{jsn::Object{}};
+  sub.set("ctidTraderAccountId", accountId_);
+  sub.set("symbolId", jsn::Value(ids));
+  jsn::Value frame{jsn::Object{}};
+  frame.set("payloadType", kSubscribeSpotsReq);
+  frame.set("payload", sub);
+  ws_.sendText(jsn::dump(frame));
+  if (depthEnabled_) {
+    jsn::Value dframe{jsn::Object{}};
+    dframe.set("payloadType", kSubscribeDepthReq);
+    dframe.set("payload", sub);
+    ws_.sendText(jsn::dump(dframe));
+  }
+  logLine("subscribed " + std::to_string(add.size()) + " additional symbol(s)");
+}
+
 bool SpotFeed::connectAuthSubscribe() {
   if (!ws_.connect(host_)) {
     logLine("connect failed: " + ws_.lastError());
@@ -116,17 +157,28 @@ bool SpotFeed::connectAuthSubscribe() {
     ws_.close();
     return false;
   }
-  jsn::Value sub{jsn::Object{}};
-  sub.set("ctidTraderAccountId", accountId_);
-  jsn::Array ids;
-  for (long long id : symbolIds_) ids.push_back(jsn::Value(static_cast<double>(id)));
-  sub.set("symbolId", jsn::Value(ids));
-  if (!sendAndWait(ws_, kSubscribeSpotsReq, sub, kSubscribeSpotsRes)) {
-    logLine("subscribe spots failed");
-    ws_.close();
-    return false;
+  // Fold any queued dynamic symbols in BEFORE subscribing, so a reconnect
+  // covers everything the trail engine asked for while we were down.
+  {
+    std::lock_guard<std::mutex> lk(symMtx_);
+    for (long long id : pendingSubs_) symbolIds_.push_back(id);
+    pendingSubs_.clear();
   }
-  logLine("subscribed to " + std::to_string(symbolIds_.size()) + " symbol(s) on " + host_);
+  if (!symbolIds_.empty()) {
+    jsn::Value sub{jsn::Object{}};
+    sub.set("ctidTraderAccountId", accountId_);
+    jsn::Array ids;
+    for (long long id : symbolIds_) ids.push_back(jsn::Value(static_cast<double>(id)));
+    sub.set("symbolId", jsn::Value(ids));
+    if (!sendAndWait(ws_, kSubscribeSpotsReq, sub, kSubscribeSpotsRes)) {
+      logLine("subscribe spots failed");
+      ws_.close();
+      return false;
+    }
+    logLine("subscribed to " + std::to_string(symbolIds_.size()) + " symbol(s) on " + host_);
+  } else {
+    logLine("no symbols yet — feed idles until ensureSymbols() delivers some");
+  }
 
   // L2 depth is best-effort on top of a healthy spot subscription: broker
   // support per symbol/account is not documented, so a rejection here is
@@ -134,7 +186,7 @@ bool SpotFeed::connectAuthSubscribe() {
   // connection. Quote ids are per-subscription — clear any book state left
   // from a previous connection before new events arrive.
   depthActive_.store(false, std::memory_order_relaxed);
-  if (depthEnabled_) {
+  if (depthEnabled_ && !symbolIds_.empty()) {
     {
       std::lock_guard<std::mutex> lk(depthMtx_);
       books_.clear();
@@ -170,6 +222,7 @@ void SpotFeed::runOnce() {
 
   auto lastSend = steady_clock::now();
   while (!stopped_.load(std::memory_order_relaxed) && ws_.isOpen()) {
+    drainPendingSubs(); // trail-engine symbols queued since the last slice
     auto text = ws_.recvText(5000);
     auto now = steady_clock::now();
     if (ws_.isOpen() && now - lastSend >= seconds(25)) {
