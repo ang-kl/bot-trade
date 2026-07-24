@@ -398,11 +398,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
           status, ctrader_position_id, analysis_id, strategy, conviction,
           label_raw, source, label_version, label_strategy, label_conviction,
-          label_session, label_timeframe, label_regime, confluence_count
+          label_session, label_timeframe, label_regime, confluence_count,
+          account_id
         ) VALUES (
           ?, ?, ?, ?, ?, ?, datetime('now'),
           'open', ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?
         )
       `).run(
         symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
@@ -411,6 +413,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
         parsedLabel.timeframe, parsedLabel.regime,
         synth.confluenceCount ?? null,
+        String(accountId),
       )
       const tradeId = tradeInsert.lastInsertRowid
 

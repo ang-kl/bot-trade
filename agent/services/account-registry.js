@@ -15,7 +15,7 @@
 // writer). Everything else reads.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
 
 const now = () => new Date().toISOString()
 
@@ -112,6 +112,34 @@ export function ensureAccountRegistry(db) {
   if (enabled === 0 && id) syncSelectedAccount(db, id, isLive, traderLogin)
   const total = db.prepare('SELECT COUNT(*) AS n FROM accounts').get().n
   return { total, enabled: db.prepare('SELECT account_id FROM accounts WHERE enabled = 1').get()?.account_id ?? null }
+}
+
+// Tables whose historical rows belong to the account they were created
+// under. In the single-account era that is unambiguously the currently-
+// selected account. scans/analyses/cup_handle_diagnostics deliberately stay
+// NULL — they are account-independent market observations (plan M1).
+const BACKFILL_TABLES = [
+  'trades', 'signals', 'pending_orders', 'broker_orders', 'risk_events',
+  'trade_postmortems', 'pending_signals', 'performance_snapshots',
+]
+
+/**
+ * One-time M1 backfill (idempotent, boot-time): stamp every historical
+ * NULL-account row with the current account id. Retries on later boots
+ * until an account id exists; runs exactly once after that.
+ */
+export function backfillAccountIds(db) {
+  if (getState(db, 'm1_account_backfill_v1')) return { skipped: 'done' }
+  const id = getState(db, 'ctrader_account_id')
+  if (!id) return { skipped: 'no account selected yet' }
+  let total = 0
+  for (const t of BACKFILL_TABLES) {
+    try {
+      total += db.prepare(`UPDATE ${t} SET account_id = ? WHERE account_id IS NULL`).run(String(id)).changes
+    } catch { /* table may predate a migration on very old DBs — skip */ }
+  }
+  setState(db, 'm1_account_backfill_v1', new Date().toISOString())
+  return { backfilled: total, accountId: String(id) }
 }
 
 /**

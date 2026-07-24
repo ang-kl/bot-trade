@@ -15,6 +15,7 @@ import {
   listAccounts,
   getEnabledAccounts,
   registryAutopilotAccounts,
+  backfillAccountIds,
 } from './account-registry.js'
 
 const fresh = () => initDB(':memory:')
@@ -94,4 +95,42 @@ test('registryAutopilotAccounts: legacy roles shape; paused/param-disabled rows 
   // A paused account is enabled but not active → excluded.
   db.prepare(`UPDATE accounts SET params = '{}', mode = 'paused' WHERE account_id = 'A'`).run()
   assert.deepEqual(registryAutopilotAccounts(db), [])
+})
+
+test('backfillAccountIds: stamps historical NULL rows once, leaves global tables alone', () => {
+  const db = fresh()
+  setState(db, 'ctrader_account_id', 'ACC1')
+  db.prepare(`INSERT INTO trades (symbol, status) VALUES ('EURUSD', 'closed')`).run()
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at) VALUES ('EURUSD', 'BUY', 0, datetime('now'))`).run()
+  db.prepare(`INSERT INTO scans (symbol, scanned_at) VALUES ('EURUSD', datetime('now'))`).run()
+  const r = backfillAccountIds(db)
+  assert.equal(r.backfilled, 2)
+  assert.equal(db.prepare(`SELECT account_id FROM trades`).get().account_id, 'ACC1')
+  assert.equal(db.prepare(`SELECT account_id FROM risk_events`).get().account_id, 'ACC1')
+  // scans stay NULL — account-independent market observations by design.
+  assert.equal(db.prepare(`SELECT account_id FROM scans`).get().account_id, null)
+  // Idempotent: a later row is NOT swept up by a re-run.
+  db.prepare(`INSERT INTO trades (symbol, status) VALUES ('GBPUSD', 'closed')`).run()
+  assert.deepEqual(backfillAccountIds(db), { skipped: 'done' })
+  assert.equal(db.prepare(`SELECT account_id FROM trades WHERE symbol='GBPUSD'`).get().account_id, null)
+})
+
+test('backfillAccountIds: waits for an account id instead of stamping garbage', () => {
+  const db = fresh()
+  db.prepare(`INSERT INTO trades (symbol, status) VALUES ('EURUSD', 'closed')`).run()
+  assert.equal(backfillAccountIds(db).skipped, 'no account selected yet')
+  // Flag NOT set — a later boot with an account id still backfills.
+  setState(db, 'ctrader_account_id', 'ACC9')
+  assert.equal(backfillAccountIds(db).backfilled, 1)
+})
+
+test('persistRiskEvent stamps the deciding account (proposal override wins)', async () => {
+  const { persistRiskEvent } = await import('./risk.js')
+  const db = fresh()
+  setState(db, 'ctrader_account_id', 'SEL')
+  persistRiskEvent(db, { symbol: 'EURUSD', side: 'BUY' }, { approved: false, veto_reason: 'x', checks: {} })
+  persistRiskEvent(db, { symbol: 'EURUSD', side: 'BUY', accountId: 'OTHER' }, { approved: true, checks: {} })
+  const rows = db.prepare(`SELECT account_id FROM risk_events ORDER BY id`).all()
+  assert.equal(rows[0].account_id, 'SEL')
+  assert.equal(rows[1].account_id, 'OTHER')
 })

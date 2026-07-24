@@ -721,8 +721,8 @@ function veto(reason, checks) {
  */
 export function persistRiskEvent(db, proposal, result) {
   db.prepare(
-    `INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, account_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     proposal.symbol,
     proposal.side,
@@ -730,6 +730,10 @@ export function persistRiskEvent(db, proposal, result) {
     result.veto_reason || null,
     JSON.stringify(result.checks || {}),
     JSON.stringify(proposal),
+    // M1 provenance: which account this decision was evaluated FOR — the
+    // proposal's own account when the caller carries one, else the
+    // currently-selected account (identical in the single-account era).
+    proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null),
     new Date().toISOString()
   )
 }
