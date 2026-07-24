@@ -279,6 +279,11 @@ thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }
 /* Sort-button labels inside header cells inherit the opposite colour too. */
 thead th button { color: inherit; }
 
+/* Dense mode for the Risk page (owner 2026-07-24: "can squeeze more into
+   screen page") — tighter card padding than the app-wide default, so all
+   four config cards + both worked examples fit one desktop screen. */
+[data-risk-dense] .glass-panel { padding: 10px 14px; }
+
 /* Tiny inline "explain" icon next to field labels (owner 2026-07-24:
    "a tiny ℹ️ next to explain"). The literal ask was 20% of body size —
    3px at a 15px body, which no screen can render legibly — so this is the
