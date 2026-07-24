@@ -385,6 +385,23 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/accounts — the Account Registry (multi-account plan, M0).
+  // Read-only view: which accounts exist, which one is enabled, mode,
+  // metadata. The registry itself is written only by
+  // services/account-registry.js.
+  router.get('/accounts', async (_req, res) => {
+    try {
+      const { listAccounts } = await import('../services/account-registry.js')
+      res.json({
+        accounts: listAccounts(db),
+        selectedAccountId: getState(db, 'ctrader_account_id') || null,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/weekend-loss-flags — losing positions flagged ahead of a
   // long market closure (weekend-loss-flag.js). Reads the sweep's own
   // one-shot `wl_flagged_*` markers, which self-expire once the closure

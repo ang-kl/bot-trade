@@ -334,6 +334,30 @@ const TABLES = `
     loop_id       INTEGER,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Account Registry (multi-account migration plan, Phase 1 R1 / milestone
+  -- M0). Single source of truth for which cTrader accounts exist and which
+  -- may trade. account_id is cTrader's INTERNAL ctidTraderAccountId (the
+  -- one every API call takes); trader_login is the human-facing number the
+  -- cTrader app shows (e.g. 1251247, 5306502). In M0 exactly ONE row is
+  -- enabled at a time, mirroring today's single-account behaviour; later
+  -- milestones lift that. Managed by services/account-registry.js — no
+  -- other writer.
+  CREATE TABLE IF NOT EXISTS accounts (
+    account_id      TEXT PRIMARY KEY,
+    trader_login    TEXT,
+    broker_label    TEXT NOT NULL DEFAULT 'cTrader',
+    is_live         INTEGER NOT NULL DEFAULT 0,
+    base_currency   TEXT,
+    leverage        INTEGER,
+    enabled         INTEGER NOT NULL DEFAULT 0,
+    mode            TEXT NOT NULL DEFAULT 'manage_only', -- 'active' | 'manage_only' | 'paused'
+    risk_profile    TEXT,
+    symbol_universe TEXT,
+    params          TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 const INDEXES = `
