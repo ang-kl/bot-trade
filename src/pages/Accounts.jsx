@@ -14,6 +14,7 @@ import AccountHealth from '../components/AccountHealth.jsx'
 import AccountPivot from '../components/AccountPivot.jsx'
 import MarketClock from '../components/MarketClock.jsx'
 import StrategyInsights from '../components/StrategyInsights.jsx'
+import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
@@ -155,6 +156,8 @@ export default function Accounts() {
         </span>
       </div>
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
+
+      <AccountsSubNav />
 
       <MarketClock />
 
