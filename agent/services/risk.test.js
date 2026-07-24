@@ -931,3 +931,17 @@ test('drawdownDeriskFactor: halves after a losing window, 1 otherwise', () => {
   // disabled → always 1
   assert.equal(drawdownDeriskFactor(db, 10000, { ...cfg, deriskOnDrawdown: false }), 1)
 })
+
+test('fxDayOpenMs/fxDayStartSql — anchors at the last 17:00 New York', async () => {
+  const { fxDayOpenMs, fxDayStartSql } = await import('./risk.js')
+  // 2026-07-24 is EDT (UTC-4): 17:00 NY = 21:00 UTC.
+  const before = Date.parse('2026-07-24T20:59:00Z') // 16:59 NY → anchor = prev day 21:00 UTC
+  assert.equal(new Date(fxDayOpenMs(before)).toISOString(), '2026-07-23T21:00:00.000Z')
+  const after = Date.parse('2026-07-24T21:01:00Z') // 17:01 NY → anchor = today 21:00 UTC
+  assert.equal(new Date(fxDayOpenMs(after)).toISOString(), '2026-07-24T21:00:00.000Z')
+  // January is EST (UTC-5): 17:00 NY = 22:00 UTC.
+  const winter = Date.parse('2026-01-15T23:30:00Z')
+  assert.equal(new Date(fxDayOpenMs(winter)).toISOString(), '2026-01-15T22:00:00.000Z')
+  // SQL form matches closeTradeRow's space-separated format.
+  assert.equal(fxDayStartSql(after), '2026-07-24 21:00:00')
+})

@@ -2035,15 +2035,15 @@ async function runLoop(db) {
       // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions.
       // risk.js's dailyLossPct only vetoes NEW trades; this closes everything
       // and disarms autotrade when today's realized PnL breaches the cap.
-      // Fires at most once per UTC day.
+      // Fires at most once per FX day (17:00 NY roll — owner sign-off
+      // 2026-07-24, same anchor as the risk gate's daily-loss check).
       // ---------------------------------------------------------------------
       try {
         const riskCfg = loadRiskConfig(db)
         const stopPct = riskCfg.equityStopPct ?? riskCfg.dailyLossPct
         const balance = getAccountBalance(db)
         const cap = balance != null ? balance * stopPct : riskCfg.dailyLossLimit
-        const dayStart = new Date()
-        dayStart.setUTCHours(0, 0, 0, 0)
+        const { fxDayStartSql, fxDayOpenMs } = await import('./services/risk.js')
         // Format-proof comparison — same REAL BUG as the risk gate's daily
         // loss check (found 2026-07-24): closeTradeRow stores closed_at as
         // "YYYY-MM-DD HH:MM:SS" (space) which sorts BEFORE the ISO 'T'
@@ -2051,9 +2051,9 @@ async function runLoop(db) {
         // stop. REPLACE normalizes both formats before comparing.
         const todayPnl = db
           .prepare(`SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?`)
-          .get(`${dayStart.toISOString().slice(0, 10)} 00:00:00`)?.pnl || 0
-        const todayUTCDate = new Date().toISOString().slice(0, 10)
-        const alreadyTripped = (getState(db, 'equity_stop_tripped_at') || '').slice(0, 10) === todayUTCDate
+          .get(fxDayStartSql())?.pnl || 0
+        const trippedAtMs = Date.parse(getState(db, 'equity_stop_tripped_at') || '')
+        const alreadyTripped = Number.isFinite(trippedAtMs) && trippedAtMs >= fxDayOpenMs()
         const botPositions = s.selectActivePositions.all('active').filter(p => p.source !== 'external')
 
         if (!alreadyTripped && todayPnl <= -Math.abs(cap) && botPositions.length > 0) {
