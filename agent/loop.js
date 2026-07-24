@@ -426,6 +426,16 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       ? (side === 'BUY' ? executionPrice - synth.entry : synth.entry - executionPrice)
       : null
     let rvolOpen = null, vwapSideOpen = null
+    let depthJson = null, depthImb = null
+    try {
+      // L2 depth at entry (slice 2): the sidecar's book snapshot as close to
+      // the fill as we can get it. Nulls whenever depth is off/rejected/
+      // unreachable — captureDepthAtEntry never throws and never blocks.
+      const { captureDepthAtEntry } = await import('./services/depth-capture.js')
+      const d = await captureDepthAtEntry(symbolId)
+      depthJson = d.depthJson
+      depthImb = d.depthImbalance
+    } catch { /* depth optional */ }
     try {
       const [{ relVolFromBars }, ind] = await Promise.all([
         import('./services/fast-monitor.js'), import('./lib/indicators.js'),
@@ -457,13 +467,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           label_raw, source, label_version, label_strategy, label_conviction,
           label_session, label_timeframe, label_regime, confluence_count,
           account_id,
-          slippage_price, spread_at_entry, entry_latency_ms, rvol_open, vwap_side_open
+          slippage_price, spread_at_entry, entry_latency_ms, rvol_open, vwap_side_open,
+          depth_json, depth_imbalance
         ) VALUES (
           ?, ?, ?, ?, ?, ?, datetime('now'),
           'open', ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?, ?, ?,
           ?,
-          ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?,
+          ?, ?
         )
       `).run(
         symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
@@ -474,6 +486,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         synth.confluenceCount ?? null,
         String(accountId),
         slippagePrice, entrySpread, entryLatencyMs, rvolOpen, vwapSideOpen,
+        depthJson, depthImb,
       )
       const tradeId = tradeInsert.lastInsertRowid
 

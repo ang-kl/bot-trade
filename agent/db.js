@@ -716,6 +716,11 @@ export function initDB(dbPath) {
       ['rvol_open', 'REAL'],           // relative 1m volume at open
       ['vwap_side_open', 'TEXT'],      // 'above' | 'below' session VWAP at open
       ['obv_open', 'TEXT'],            // reserved (no OBV series helper yet)
+      // L2 depth at entry (slice 2, 2026-07-24): sidecar book snapshot at
+      // submit + size imbalance over the top levels. NULL until the operator
+      // enables DEPTH_FEED_ENABLED on the sidecar — never fabricated.
+      ['depth_json', 'TEXT'],
+      ['depth_imbalance', 'REAL'],
     ]) {
       if (!cols.has(name)) db.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
     }
