@@ -11,7 +11,7 @@ import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
-import { registryAutopilotAccounts } from './services/account-registry.js'
+import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -1229,12 +1229,20 @@ async function runLoop(db) {
           }
 
           // Refresh the real account balance so risk sizing tracks equity as
-          // trades close (linking set it once; this keeps it live).
+          // trades close (linking set it once; this keeps it live). M1c: the
+          // same values are stamped under acct:<id>: keys so per-account
+          // guard reads resolve the RIGHT equity once multiple accounts run.
           try {
             const { wsGetTrader, traderBalance } = await import('./lib/ctrader-ws.js')
             const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
             const bal = traderBalance(trader)
-            if (bal != null) setState(db, 'account_balance_usd', String(bal))
+            if (bal != null) {
+              setState(db, 'account_balance_usd', String(bal))
+              setAccountState(db, accountId, 'account_balance_usd', String(bal))
+            }
+            if (trader?.leverageInCents > 0) {
+              setAccountState(db, accountId, 'account_leverage', String(trader.leverageInCents / 100))
+            }
           } catch { /* best effort */ }
 
           if (result.newExternal.length > 0 && process.env.TELEGRAM_BOT_TOKEN) {

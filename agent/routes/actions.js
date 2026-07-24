@@ -2782,11 +2782,14 @@ export default function actionsRouter(db) {
       try {
         const trader = await wsGetTrader(host, clientId, clientSecret, accessToken, accountId)
         balance = traderBalance(trader)
+        const { setAccountState } = await import('../services/account-registry.js')
         if (balance != null) {
           setState(db, 'account_balance_usd', String(balance))
+          setAccountState(db, accountId, 'account_balance_usd', String(balance))
         }
         if (trader.leverageInCents != null) {
           setState(db, 'account_leverage', String(trader.leverageInCents / 100))
+          setAccountState(db, accountId, 'account_leverage', String(trader.leverageInCents / 100))
         }
       } catch (e) {
         console.warn('[actions/ctrader-select-account] balance fetch failed:', e.message)
