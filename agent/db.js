@@ -614,6 +614,17 @@ export function initDB(dbPath) {
     }
   }
 
+  // Carry-cost awareness: swap rates ride along with the symbol-hours
+  // refresh (same ProtoOASymbol fetch — zero extra broker calls). Stored in
+  // the broker's own units (points per lot per night, moneyDigits-scaled
+  // upstream); NULL until the next refresh touches the symbol.
+  const shCols = new Set(db.prepare("PRAGMA table_info(symbol_hours)").all().map(c => c.name));
+  for (const [col, type] of [
+    ['swap_long', 'REAL'], ['swap_short', 'REAL'], ['swap_rollover_3days', 'INTEGER'],
+  ]) {
+    if (!shCols.has(col)) db.exec(`ALTER TABLE symbol_hours ADD COLUMN ${col} ${type}`);
+  }
+
   // Signals table migration
   const sCols = db.prepare("PRAGMA table_info(signals)").all();
   const sColNames = new Set(sCols.map(c => c.name));

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import {
   secondsIntoWeek, isOpenBySchedule, refreshSymbolHours, isSymbolOpenCached,
+  getSwapInfo,
 } from './symbol-hours.js'
 
 const HOUR = 3600
@@ -67,6 +68,56 @@ test('refreshSymbolHours upserts schedule + tz from an injected broker fetch', a
   assert.equal(row.symbol_id, 20)
   assert.equal(row.tz, 'America/New_York')
   assert.ok(JSON.parse(row.schedule_json).length === 1)
+  // Broker omitted swap fields → NULL (unknown), never defaulted to 0.
+  assert.equal(row.swap_long, null)
+  assert.equal(row.swap_short, null)
+})
+
+test('refreshSymbolHours captures swap rates when the broker provides them', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ USDTRY: 7 }))
+  const fetchStub = async (ids) => ({
+    symbol: ids.map(id => ({
+      symbolId: id, scheduleTimeZone: 'UTC', schedule: [],
+      swapLong: -412.7, swapShort: 118.3, swapRollover3Days: 3,
+    })),
+  })
+  await refreshSymbolHours(db, { ready: true }, { fetch: fetchStub, getState })
+  const info = getSwapInfo(db, 'usdtry')
+  assert.equal(info.swapLong, -412.7)
+  assert.equal(info.swapShort, 118.3)
+  assert.equal(info.rollover3Days, 3)
+  // Unknown symbol → null, and a swap-free 0 survives as 0 (not null).
+  assert.equal(getSwapInfo(db, 'BTCUSD'), null)
+})
+
+test('risk gate: carryGateEnabled vetoes negative_carry side-aware; off by default; unknown = no block', async () => {
+  const { initDB, setState } = await import('../db.js')
+  const { evaluateTrade, evaluateCarryCost, DEFAULT_RISK_CONFIG } = await import('./risk.js')
+  const db = initDB(':memory:')
+  setState(db, 'account_balance_usd', '10000')
+  setState(db, 'ctrader_account_id', 'A')
+  setState(db, 'symbol_id_map', JSON.stringify({ USDTRY: 7 }))
+  await refreshSymbolHours(db, { ready: true }, {
+    fetch: async (ids) => ({ symbol: ids.map(id => ({ symbolId: id, scheduleTimeZone: 'UTC', schedule: [], swapLong: -412.7, swapShort: 118.3 })) }),
+    getState,
+  })
+  const proposal = { symbol: 'USDTRY', side: 'BUY', entry: 32.5, sl: 32.2, tp1: 33.1, requestedVolume: 0.01, accountId: 'A' }
+  // Default config: gate OFF → no carry veto.
+  const off = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG })
+  assert.ok(!/negative_carry/.test(off.veto_reason || ''), 'gate must be off by default')
+  // Enabled with threshold: the long side (-412.7) is below -50 → vetoed.
+  const cfg = { ...DEFAULT_RISK_CONFIG, carryGateEnabled: true, carryMaxNegativeSwapPoints: -50 }
+  const on = evaluateTrade(db, proposal, cfg)
+  assert.equal(on.approved, false)
+  assert.match(on.veto_reason, /negative_carry: swapLong -412\.7/)
+  // The SHORT side earns +118.3 → passes the carry check.
+  assert.equal(evaluateCarryCost(db, { symbol: 'USDTRY', side: 'SELL' }, -50).vetoReason, undefined)
+  // Unknown symbol swap → null, never a block.
+  assert.equal(evaluateCarryCost(db, { symbol: 'EURUSD', side: 'BUY' }, -50), null)
+  // Enabled but threshold null → gate is a no-op.
+  const noThresh = evaluateTrade(db, proposal, { ...DEFAULT_RISK_CONFIG, carryGateEnabled: true })
+  assert.ok(!/negative_carry/.test(noThresh.veto_reason || ''))
 })
 
 test('isSymbolOpenCached: uses broker table when present, heuristic when not', () => {

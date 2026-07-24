@@ -20,6 +20,27 @@ import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } fr
 import { minRrFor } from './strategies.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
+import { getSwapInfo } from './symbol-hours.js'
+
+/**
+ * Carry-cost check (pure apart from the sync symbol_hours read). Returns
+ * null when swap data is unknown (never a block), otherwise
+ * { detail, vetoReason? } — vetoReason set when the proposal's side pays a
+ * nightly swap below `maxNegative` (broker points per lot per night).
+ */
+export function evaluateCarryCost(db, proposal, maxNegative) {
+  const info = getSwapInfo(db, proposal.symbol)
+  if (!info) return null
+  const side = String(proposal.side || '')
+  const isLong = side === 'long' || side === 'BUY' || side === 'buy'
+  const sideSwap = isLong ? info.swapLong : info.swapShort
+  if (sideSwap == null || !Number.isFinite(Number(sideSwap))) return null
+  const detail = `${isLong ? 'long' : 'short'} swap ${sideSwap} pts/night (limit ${maxNegative})`
+  if (Number(sideSwap) < maxNegative) {
+    return { detail, vetoReason: `negative_carry: ${isLong ? 'swapLong' : 'swapShort'} ${sideSwap} pts/night < ${maxNegative}` }
+  }
+  return { detail }
+}
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -91,6 +112,14 @@ export const DEFAULT_RISK_CONFIG = {
   newsGateMinBefore: 15,           // minutes before the release
   newsGateMinAfter: 15,            // minutes after it
   newsGateImpacts: ['High'],       // add 'Medium' to widen coverage
+  // Carry-cost gate (approved data-plan item 3): veto NEW entries whose
+  // side pays a nightly swap worse than the threshold — swing entries on
+  // heavy-negative-carry instruments bleed even when the price thesis is
+  // right. Rates come from the broker's own ProtoOASymbol (cached in
+  // symbol_hours by the hours refresh, points per lot per night). Unknown
+  // swap = no block, never a stuck veto. Default OFF.
+  carryGateEnabled: false,
+  carryMaxNegativeSwapPoints: null, // e.g. -10 vetoes when the side's swap < −10 pts/night; null = gate stays a no-op even when enabled
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -444,6 +473,20 @@ export function evaluateTrade(db, proposal, configOverride) {
     if (ev) {
       checks.news_window = `${ev.country} ${ev.title} @ ${new Date(ev.t).toISOString()}`
       return veto(`news_window: ${ev.impact} ${ev.country} ${ev.title}`, checks, proposal)
+    }
+  }
+
+  // ---- 0c. Carry-cost gate (config-gated, default OFF) --------------------
+  // Side-aware nightly swap check against the broker rates cached in
+  // symbol_hours. Sync DB read only. Unknown/missing swap data = no block.
+  // (null threshold must NOT coerce to 0 — Number(null) === 0 would veto
+  // every negative-swap side; same bug class the perf-ledger tests caught.)
+  if (config.carryGateEnabled && config.carryMaxNegativeSwapPoints != null
+    && Number.isFinite(Number(config.carryMaxNegativeSwapPoints))) {
+    const cc = evaluateCarryCost(db, proposal, Number(config.carryMaxNegativeSwapPoints))
+    if (cc) {
+      checks.carry_cost = cc.detail
+      if (cc.vetoReason) return veto(cc.vetoReason, checks, proposal)
     }
   }
 
