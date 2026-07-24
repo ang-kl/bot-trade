@@ -279,6 +279,24 @@ thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }
 /* Sort-button labels inside header cells inherit the opposite colour too. */
 thead th button { color: inherit; }
 
+/* Tiny inline "explain" icon next to field labels (owner 2026-07-24:
+   "a tiny ℹ️ next to explain"). The literal ask was 20% of body size —
+   3px at a 15px body, which no screen can render legibly — so this is the
+   smallest size that still reads as an icon (9px ≈ 60% of body). Tap/click
+   toggles the explanation inline; hover shows it as a tooltip. */
+.info-i {
+  font-size: 9px;
+  line-height: 1;
+  vertical-align: super;
+  margin-left: 3px;
+  cursor: pointer;
+  opacity: 0.75;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.info-i:hover { opacity: 1; }
+
 /* Uppercase section label helper */
 .t-section-label {
   font-size: 10px;
