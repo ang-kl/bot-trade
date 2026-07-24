@@ -246,6 +246,45 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/depth?symbol=EURUSD | ?symbolId=1 [&levels=10] — L2 depth
+  // probe. Proxies the C++ sidecar's /depth (the agent holds EXEC_SECRET;
+  // dashboards and operators hold only AGENT_SECRET) and returns the raw
+  // {enabled, active, book} verbatim: enabled:false = DEPTH_FEED_ENABLED
+  // unset sidecar-side, active:false = feed not running or broker rejected
+  // the subscription, book:null = subscribed but no events yet. Used to
+  // verify depth empirically on staging before trusting captured rows.
+  // -----------------------------------------------------------------------
+  router.get('/depth', async (req, res) => {
+    let symbolId = Number(req.query.symbolId)
+    const symbol = String(req.query.symbol || '').toUpperCase()
+    if (!Number.isFinite(symbolId) || symbolId <= 0) {
+      symbolId = null
+      if (symbol) {
+        try {
+          const map = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+          if (Number.isFinite(Number(map[symbol]))) symbolId = Number(map[symbol])
+        } catch { symbolId = null }
+      }
+    }
+    if (!symbolId) {
+      res.status(400).json({ error: 'need symbolId, or symbol present in symbol_id_map' })
+      return
+    }
+    const levels = Math.min(50, Math.max(1, Number(req.query.levels) || 10))
+    try {
+      const { fetchDepthRaw } = await import('../services/depth-capture.js')
+      const raw = await fetchDepthRaw(symbolId, { levels, timeoutMs: 5000 })
+      if (!raw) {
+        res.status(503).json({ error: 'no depth response (js exec mode, or sidecar unreachable)', execEngine: process.env.EXEC_ENGINE || 'js', symbolId })
+        return
+      }
+      res.json({ symbolId, ...raw })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/orders — the broker resting-order ledger (working + recently
   // gone). Owner: "keep records of these" — resting entry orders fill even when
   // the bot's switches are OFF, so they get a durable record with lifecycle.

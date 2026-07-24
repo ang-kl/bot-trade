@@ -49,10 +49,30 @@ export function depthImbalance(book, levels = 10) {
  */
 export async function captureDepthAtEntry(symbolId, { levels = 10, timeoutMs = 1500 } = {}) {
   const none = { depthJson: null, depthImbalance: null }
+  const body = await fetchDepthRaw(symbolId, { levels, timeoutMs })
+  // `active` distinguishes a live subscription from off/rejected; a null
+  // book under an active subscription is "no events yet" — still null.
+  if (!body || body.active !== true || !body.book || typeof body.book !== 'object') return none
+  const imb = depthImbalance(body.book, levels)
+  return { depthJson: JSON.stringify(body.book), depthImbalance: imb }
+}
+
+/**
+ * The sidecar's raw /depth response ({enabled, active, book}) or null when
+ * it can't answer (js exec mode, bad symbolId, unreachable, error status).
+ * Split out from captureDepthAtEntry so the /state/depth probe route can
+ * show the flags verbatim — "enabled:false" vs "active:false" vs "book:
+ * null" are three different diagnoses.
+ *
+ * @param {number} symbolId cTrader symbol id
+ * @param {{levels?: number, timeoutMs?: number}} [opts]
+ * @returns {Promise<{enabled?: boolean, active?: boolean, book?: object|null}|null>}
+ */
+export async function fetchDepthRaw(symbolId, { levels = 10, timeoutMs = 1500 } = {}) {
   // Depth books live in the C++ sidecar only — in js exec mode there is no
   // process holding one, so the honest answer is "not collected".
-  if (process.env.EXEC_ENGINE !== 'cpp') return none
-  if (!Number.isFinite(Number(symbolId)) || Number(symbolId) <= 0) return none
+  if (process.env.EXEC_ENGINE !== 'cpp') return null
+  if (!Number.isFinite(Number(symbolId)) || Number(symbolId) <= 0) return null
   try {
     const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
     const res = await fetch(`${base}/depth`, {
@@ -64,14 +84,10 @@ export async function captureDepthAtEntry(symbolId, { levels = 10, timeoutMs = 1
       body: JSON.stringify({ symbolId: Number(symbolId), levels }),
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!res.ok) return none
+    if (!res.ok) return null
     const body = await res.json()
-    // `active` distinguishes a live subscription from off/rejected; a null
-    // book under an active subscription is "no events yet" — still null.
-    if (!body || body.active !== true || !body.book || typeof body.book !== 'object') return none
-    const imb = depthImbalance(body.book, levels)
-    return { depthJson: JSON.stringify(body.book), depthImbalance: imb }
+    return body && typeof body === 'object' ? body : null
   } catch {
-    return none // unreachable/timeout — capture never blocks the trade write
+    return null // unreachable/timeout — capture never blocks the trade write
   }
 }
