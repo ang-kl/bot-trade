@@ -16,6 +16,7 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
+import WorkflowAudit from '../components/WorkflowAudit.jsx'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -342,6 +343,7 @@ export default function Performance() {
   const [allTrades, setAllTrades] = useState([])
   const [events, setEvents] = useState([])
   const [positions, setPositions] = useState([])
+  const [postmortems, setPostmortems] = useState([])
   const [screen, setScreen] = useState('now') // mobile pill nav
   const [error, setError] = useState('')
   // "Now" for the derived windows below — stamped at each data load so the
@@ -352,12 +354,13 @@ export default function Performance() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
     try {
-      const [led, ac, t, r, p] = await Promise.all([
+      const [led, ac, t, r, p, pms] = await Promise.all([
         agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
         agentGet('/state/accounts').catch(() => null),
         agentGet('/state/trades').catch(() => null),
         agentGet('/state/risk-events?limit=200').catch(() => null),
         agentGet('/state/positions').catch(() => null),
+        agentGet('/state/postmortems?limit=100').catch(() => null),
       ])
       setLedger(led)
       setAccounts(ac?.accounts || [])
@@ -365,6 +368,7 @@ export default function Performance() {
       setAllTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
       setPositions(p?.rows || p?.positions || [])
+      setPostmortems(pms?.rows || pms?.postmortems || [])
       setLoadedAt(Date.now())
       setError('')
     } catch (e) { setError(e.message) }
@@ -627,6 +631,16 @@ export default function Performance() {
           {!tiles && <p className={`text-[12px] mb-2 ${SUB}`}>No closed trades yet — tiles and chart fill from the first completed round-trip.</p>}
           {tilesRow}
           <ReportChart allTrades={allTrades} events={events} />
+        </Card>
+
+        {/* Trade Workflow Audit — O-I-A pipeline compliance & early-stop
+            audit (design_claude screen 3). */}
+        <Card>
+          <div className="flex items-center gap-2 flex-wrap mb-1.5">
+            <h3 className="t-h3">Trade workflow audit</h3>
+            <span className={`text-[11px] ${SUB}`}>Lab → Bridge → Market · did each trade run the full pipeline, and were early stops justified?</span>
+          </div>
+          <WorkflowAudit allTrades={allTrades} postmortems={postmortems} />
         </Card>
       </div>
     </div>
