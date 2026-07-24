@@ -98,13 +98,20 @@ export async function refreshSymbolHours(db, creds, deps = {}) {
   })
 
   const idToName = new Map(entries.map(([name, id]) => [String(id), name]))
+  // Swap rates ride the same ProtoOASymbol fetch (carry-cost awareness):
+  // swapLong/swapShort are the broker's nightly swap in points per lot,
+  // swapRollover3Days the triple-swap weekday. NULL when the broker omits
+  // them — never defaulted to 0 (0 means "genuinely swap-free").
   const upsert = db.prepare(`
-    INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz, source, updated_at)
-    VALUES (?, ?, ?, ?, 'ctrader', datetime('now'))
+    INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz, swap_long, swap_short, swap_rollover_3days, source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'ctrader', datetime('now'))
     ON CONFLICT(symbol) DO UPDATE SET
       symbol_id = excluded.symbol_id, schedule_json = excluded.schedule_json,
-      tz = excluded.tz, source = 'ctrader', updated_at = datetime('now')
+      tz = excluded.tz, swap_long = excluded.swap_long, swap_short = excluded.swap_short,
+      swap_rollover_3days = excluded.swap_rollover_3days,
+      source = 'ctrader', updated_at = datetime('now')
   `)
+  const numOrNull = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v))
 
   const BATCH = Number(deps.batchSize) || 50
   for (let i = 0; i < entries.length; i += BATCH) {
@@ -117,7 +124,10 @@ export async function refreshSymbolHours(db, creds, deps = {}) {
         if (!name) continue
         const schedule = normSchedule(sym)
         const tz = sym.scheduleTimeZone || 'UTC'
-        upsert.run(String(name).toUpperCase(), Number(sym.symbolId) || null, JSON.stringify(schedule), tz)
+        upsert.run(
+          String(name).toUpperCase(), Number(sym.symbolId) || null, JSON.stringify(schedule), tz,
+          numOrNull(sym.swapLong), numOrNull(sym.swapShort), numOrNull(sym.swapRollover3Days)
+        )
         out.updated++
       }
     } catch (err) {
@@ -125,6 +135,26 @@ export async function refreshSymbolHours(db, creds, deps = {}) {
     }
   }
   return out
+}
+
+/**
+ * Broker swap rates for SYMBOL from the symbol_hours cache (carry-cost
+ * awareness). Returns { swapLong, swapShort, rollover3Days, updatedAt } or
+ * null when the symbol was never refreshed / carries no swap data —
+ * callers must treat null as "unknown", never as zero.
+ */
+export function getSwapInfo(db, symbol) {
+  let row = null
+  try {
+    row = db.prepare(
+      `SELECT swap_long, swap_short, swap_rollover_3days, updated_at FROM symbol_hours WHERE symbol = ?`
+    ).get(String(symbol || '').toUpperCase())
+  } catch { row = null }
+  if (!row || (row.swap_long == null && row.swap_short == null)) return null
+  return {
+    swapLong: row.swap_long, swapShort: row.swap_short,
+    rollover3Days: row.swap_rollover_3days, updatedAt: row.updated_at,
+  }
 }
 
 /**
