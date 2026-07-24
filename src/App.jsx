@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import { getAgentConn, agentConfigured } from './lib/agent-api.js'
+import Performance from './pages/Performance.jsx'
 import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
@@ -16,9 +17,17 @@ const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
 
 // Grouped left navigation (desktop) — compliance-dashboard style.
 const NAV_GROUPS = [
-  // Desk absorbed Monitor — one screen for charts, live broker state,
-  // closed history and risk decisions. /monitor redirects here.
-  { title: 'Overview', items: [{ to: '/desk', label: 'Desk', icon: '🖥️' }] },
+  // Performance leads (owner: "it will be before desk") — the ledger is
+  // the first thing seen. Desk absorbed Monitor — one screen for charts,
+  // live broker state, closed history and risk decisions. /monitor
+  // redirects there.
+  {
+    title: 'Overview',
+    items: [
+      { to: '/performance', label: 'Performance', icon: '📊' },
+      { to: '/desk', label: 'Desk', icon: '🖥️' },
+    ],
+  },
   {
     title: 'Trading',
     items: [
@@ -150,7 +159,8 @@ export default function App() {
 
         <main className="px-4 py-5 lg:pr-6 max-w-[1720px]">
           <Routes>
-            <Route path="/" element={<Navigate to="/desk" replace />} />
+            <Route path="/" element={<Navigate to="/performance" replace />} />
+            <Route path="/performance" element={<Performance />} />
             <Route path="/desk" element={<Desk />} />
             {/* Monitor merged into Desk — old links keep working */}
             <Route path="/monitor" element={<Navigate to="/desk" replace />} />

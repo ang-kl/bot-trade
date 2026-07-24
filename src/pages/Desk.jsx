@@ -13,7 +13,6 @@ import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
-import ReportChart from '../components/ReportChart.jsx'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -136,7 +135,6 @@ export default function Desk() {
   const [scans, setScans] = useState([])
   const [positions, setPositions] = useState([])   // bot-tracked rows (chart lines)
   const [events, setEvents] = useState([])
-  const [allTrades, setAllTrades] = useState([])
   const [armed, setArmed] = useState(null)
   const [config, setConfig] = useState(null)
   const [broker, setBroker] = useState(null)             // selected account at the BROKER
@@ -253,14 +251,13 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, t, hb, ls, ad, mh, ord, pms, corr, dupe, wlf] = await Promise.all([
+      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, dupe, wlf] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
         agentGet('/state/risk-events?limit=200'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/config').catch(() => null),
-        agentGet('/state/trades').catch(() => null),
         agentGet('/state/heartbeats').catch(() => null),
         agentGet('/state/llm-spend').catch(() => null),
         agentGet('/state/alpha-decay').catch(() => null),
@@ -280,7 +277,6 @@ export default function Desk() {
       setScans(rows)
       setPositions(p.rows || p.positions || [])
       setEvents(r.rows || [])
-      setAllTrades(t?.rows || t?.trades || [])
       setArmed(atf)
       setConfig(c)
       setHeartbeats(hb?.controllers ?? null)
@@ -1185,58 +1181,9 @@ export default function Desk() {
         </Section>
       )}
 
-      {/* Performance — stat tiles first (they work from trade #1, no
-          3-day chart warm-up), the decisions/equity chart below. */}
-      <Section
-        id="performance"
-        title="Performance"
-        summary={(() => {
-          const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-          if (closed.length === 0) return null
-          const total = closed.reduce((s2, t2) => s2 + Number(t2.net_pnl), 0)
-          return `${closed.length} closed · ${total >= 0 ? '+' : ''}${total.toFixed(2)}`
-        })()}
-        defaultOpen={false}
-      >
-        {(() => {
-          const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-          if (closed.length === 0) {
-            return <p className="text-[12px] text-[var(--color-text-sub)] mb-2">No closed trades yet — tiles and chart fill from the first completed round-trip.</p>
-          }
-          const pnls = closed.map(t2 => Number(t2.net_pnl))
-          const wins = pnls.filter(v => v > 0)
-          const losses = pnls.filter(v => v <= 0)
-          const total = pnls.reduce((s2, v) => s2 + v, 0)
-          const grossWin = wins.reduce((s2, v) => s2 + v, 0)
-          const grossLoss = Math.abs(losses.reduce((s2, v) => s2 + v, 0))
-          const pf = grossLoss > 0 ? grossWin / grossLoss : null
-          // Max drawdown on the cumulative closed-trade equity curve.
-          let peak = 0; let equity = 0; let mdd = 0
-          for (const v of pnls) { equity += v; peak = Math.max(peak, equity); mdd = Math.max(mdd, peak - equity) }
-          const tile = (label, value, tone) => (
-            <div key={label} className="glass-inset rounded-[9px] px-2.5 py-1.5 min-w-[92px]">
-              <div className="text-[10px] text-[var(--color-text-sub)]">{label}</div>
-              <div className={`text-[13px] font-bold tabular-nums ${tone ?? ''}`}>{value}</div>
-            </div>
-          )
-          const up = 'text-[var(--color-up)]'
-          const down = 'text-[var(--color-down)]'
-          return (
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {tile('Net P&L', `${total >= 0 ? '+' : ''}${total.toFixed(2)}`, total >= 0 ? up : down)}
-              {tile('Trades', String(closed.length))}
-              {tile('Win rate', `${((wins.length / closed.length) * 100).toFixed(0)}%`)}
-              {tile('Profit factor', pf != null ? pf.toFixed(2) : wins.length ? '∞' : '—', pf == null || pf >= 1 ? up : down)}
-              {tile('Expectancy', `${(total / closed.length).toFixed(2)}/trade`, total >= 0 ? up : down)}
-              {tile('Avg win', wins.length ? `+${(grossWin / wins.length).toFixed(2)}` : '—', up)}
-              {tile('Avg loss', losses.length ? `−${(grossLoss / losses.length).toFixed(2)}` : '—', down)}
-              {tile('Max drawdown', mdd > 0 ? `−${mdd.toFixed(2)}` : '—', down)}
-              {tile('Best / worst', `${Math.max(...pnls).toFixed(2)} / ${Math.min(...pnls).toFixed(2)}`)}
-            </div>
-          )
-        })()}
-        <ReportChart allTrades={allTrades} events={events} />
-      </Section>
+      {/* Performance moved to its own page (owner: "move the performance
+          in the desk to a page by its own") — /performance now leads the
+          nav with the full timeframe × market × account ledger. */}
     </div>
   )
 }
