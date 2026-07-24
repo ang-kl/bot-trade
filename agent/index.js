@@ -420,12 +420,15 @@ async function start() {
       if (!haveBalance) {
         const trader = await wsGetTrader(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId);
         const bal = traderBalance(trader);
+        const { setAccountState } = await import('./services/account-registry.js');
         if (bal != null) {
           setState(db, 'account_balance_usd', String(bal));
+          setAccountState(db, creds.accountId, 'account_balance_usd', String(bal));
           console.log(`[boot] cTrader self-link: balance ${bal}`);
         }
         if (trader.leverageInCents != null) {
           setState(db, 'account_leverage', String(trader.leverageInCents / 100));
+          setAccountState(db, creds.accountId, 'account_leverage', String(trader.leverageInCents / 100));
         }
       }
     } catch (err) {

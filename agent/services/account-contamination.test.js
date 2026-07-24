@@ -82,6 +82,35 @@ test('contamination: legacy NULL rows count for every account (stricter, never l
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
 })
 
+test('contamination: balance and leverage resolve per-account (M1c seam)', () => {
+  const db = fresh() // global balance 10000, leverage 100, selected account A
+  // B carries its own stamped equity — a small $1,000 account at 1:200.
+  setState(db, 'acct:B:account_balance_usd', '1000')
+  setState(db, 'acct:B:account_leverage', '200')
+
+  const cfg = { ...DEFAULT_RISK_CONFIG, dailyLossPct: 0.03 }
+  // A has no scoped keys → falls back to the legacy global values.
+  const resA = evaluateTrade(db, proposalFor('A'), cfg)
+  assert.equal(resA.checks.balance, 10000)
+  assert.equal(resA.checks.leverage, 100)
+  assert.equal(resA.checks.daily_cap_usd, 300)
+
+  // B's gate sizes off B's OWN equity: cap = 3% of 1000, not of 10000.
+  const resB = evaluateTrade(db, proposalFor('B'), cfg)
+  assert.equal(resB.checks.balance, 1000, 'B must size off its own stamped balance')
+  assert.equal(resB.checks.leverage, 200)
+  assert.equal(resB.checks.daily_cap_usd, 30)
+
+  // A $50 loss is nothing to A but breaches B's 3% cap ($30) — the SAME
+  // loss row gates differently because the equity context differs.
+  insertClosedTrade(db, { account: 'B', pnl: -50, closedAgoMin: 5 })
+  const resB2 = evaluateTrade(db, proposalFor('B'), cfg)
+  assert.equal(resB2.approved, false)
+  assert.match(resB2.veto_reason, /daily_loss_limit_hit/)
+  const resA2 = evaluateTrade(db, proposalFor('A'), cfg)
+  assert.equal(resA2.checks.daily_pnl, 0, 'B loss must not appear in A daily sum')
+})
+
 test('contamination: drawdown de-risk and lesson decay stay per-account', () => {
   const db = fresh()
   // A tilts: −$600 in the window → factor 0.5 for A…

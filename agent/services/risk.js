@@ -99,7 +99,15 @@ export function loadRiskConfig(db) {
  * Read the configured account balance (USD) from agent_state, or null when
  * unset. Any non-positive or malformed value is treated as unset.
  */
-export function getAccountBalance(db) {
+export function getAccountBalance(db, accountId = null) {
+  // M1c: per-account balance seam. When a worker passes an account id, its
+  // `acct:<id>:account_balance_usd` value (stamped by the loop's balance
+  // refresh) wins; the legacy global key remains the fallback so the
+  // single-account era behaves identically.
+  if (accountId != null) {
+    const scoped = Number(getState(db, `acct:${accountId}:account_balance_usd`))
+    if (Number.isFinite(scoped) && scoped > 0) return scoped
+  }
   const raw = getState(db, 'account_balance_usd')
   if (raw == null) return null
   const n = Number(raw)
@@ -111,7 +119,11 @@ export function getAccountBalance(db) {
  * Read the configured account leverage (e.g. 200 → 1:200). Falls back to the
  * config default when unset or malformed. Leverage ≤0 is ignored.
  */
-export function getAccountLeverage(db, config) {
+export function getAccountLeverage(db, config, accountId = null) {
+  if (accountId != null) {
+    const scoped = Number(getState(db, `acct:${accountId}:account_leverage`))
+    if (Number.isFinite(scoped) && scoped > 0) return scoped
+  }
   const raw = getState(db, 'account_leverage')
   if (raw == null) return config.leverage
   const n = Number(raw)
@@ -379,8 +391,6 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
  */
 export function evaluateTrade(db, proposal, configOverride) {
   const config = configOverride || loadRiskConfig(db)
-  const balance = getAccountBalance(db)
-  const leverage = getAccountLeverage(db, config)
   // M1 scoped reads: every per-account query below filters to the account
   // this proposal is FOR (proposal.accountId when a worker passes one, else
   // the selected account), NULL-tolerantly — legacy unstamped rows count
@@ -388,6 +398,10 @@ export function evaluateTrade(db, proposal, configOverride) {
   // In the single-account era (backfill stamped everything to the one
   // account) this is behaviour-identical to the previous global queries.
   const acct = proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null)
+  // M1c: balance/leverage resolve per-account too (acct:<id>: keys when
+  // stamped, legacy global keys otherwise) so caps size off the right equity.
+  const balance = getAccountBalance(db, acct)
+  const leverage = getAccountLeverage(db, config, acct)
   const checks = { balance, leverage, account_id: acct }
 
   // ---- 1. Daily loss limit ------------------------------------------------
