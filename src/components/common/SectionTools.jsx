@@ -1,25 +1,22 @@
 // SectionTools — the owner's structural requirement (Performance handoff,
-// 2026-07-24): EVERY section header carries an ⤢ expand button (opens the
-// section in a modal window) and a ⧉ copy button (copy as text / as JSON).
-// One shared component so no panel can be built without them.
+// 2026-07-24, revised same day): EVERY section header carries ⧉ copy and
+// ⤢ expand.
 //
 //   <SectionTools id="ledger" title="Timeframe ledger" data={rows}
 //     toText={(rows) => '…'} render={({ variant }) => <LedgerBody …/>} />
 //
-// - Modal: portal to document.body, overlay inset:0 with the spec backdrop,
-//   .glass-panel chrome, width min(96vw,1720px) / height min(92vh), internal
-//   scroll, closes on Esc / ✕ / backdrop click, focus moves into the panel.
-//   `render({ variant: 'modal' })` re-renders the SAME component expanded
-//   (zoom bumps the type one step — inline px styles scale with it).
-// - Copy: popover with "Copy as text" (per-section toText(data)) and
-//   "Copy as JSON" ({ section, generatedAt, window, rows }); the last choice
-//   is remembered (localStorage) and a plain click reuses it; the button
-//   flashes ✓ Copied for ~1.2s.
-// - Deep link: ?expand=<id> opens the matching modal on first mount.
-import { useCallback, useEffect, useRef, useState } from 'react'
+// - ⧉ Copy opens the copy POP-UP WINDOW (CopyPopup): the section's content
+//   as selectable text with Text/JSON tabs and a Copy button — the owner's
+//   "copy pop-up window", replacing the old silent clipboard write.
+// - ⤢ Expand opens the section in a REAL browser pop-up window (the owner:
+//   the in-page expand modal "is wrong"): window.open + a portal rendering
+//   the SAME `render({ variant: 'modal' })` component, with the app's
+//   stylesheets cloned across. If the browser blocks the popup (or on a
+//   ?expand=<id> deep link, where no user gesture exists), it falls back to
+//   the in-page modal so the content is never unreachable.
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-
-const LS_KEY = 'perf_copy_mode' // 'text' | 'json'
+import CopyPopup from './CopyPopup.jsx'
 
 function genericText(title, data) {
   const rows = Array.isArray(data) ? data : data != null ? [data] : []
@@ -31,12 +28,14 @@ function genericText(title, data) {
 }
 
 export default function SectionTools({ id, title, window: windowLabel = null, data = null, toText = null, render }) {
-  const [open, setOpen] = useState(false)
-  const [pop, setPop] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [open, setOpen] = useState(false) // in-page fallback modal
+  const [copyOpen, setCopyOpen] = useState(false)
+  const [popupHost, setPopupHost] = useState(null) // portal target inside the popup window
   const panelRef = useRef(null)
+  const winRef = useRef(null)
 
-  // Deep-link nicety: ?expand=<id> opens this section's modal on load.
+  // Deep-link nicety: ?expand=<id> opens this section on load — as the
+  // in-page modal, since browsers block window.open without a user gesture.
   useEffect(() => {
     try {
       if (new URLSearchParams(window.location.search).get('expand') === id) setOpen(true)
@@ -52,20 +51,34 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
     return () => document.removeEventListener('keydown', onKey)
   }, [open])
 
-  const doCopy = useCallback(async (mode) => {
-    try { localStorage.setItem(LS_KEY, mode) } catch { /* private mode */ }
-    const payload = mode === 'json'
-      ? JSON.stringify({ section: id, generatedAt: new Date().toISOString(), window: windowLabel, rows: data }, null, 2)
-      : (toText ? toText(data) : genericText(title, data))
-    try {
-      await navigator.clipboard.writeText(payload)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
-    } catch { /* clipboard denied — nothing to fake */ }
-    setPop(false)
-  }, [id, title, windowLabel, data, toText])
+  // Close the popup window when this section unmounts (page navigation).
+  useEffect(() => () => { try { winRef.current?.close() } catch { /* gone */ } }, [])
 
-  const lastMode = () => { try { return localStorage.getItem(LS_KEY) || 'text' } catch { return 'text' } }
+  const openExpand = () => {
+    let win = null
+    try { win = window.open('', '', 'popup=yes,width=1280,height=860') } catch { win = null }
+    if (!win) { setOpen(true); return } // blocked → in-page modal
+    winRef.current = win
+    const doc = win.document
+    doc.title = title
+    const base = doc.createElement('base')
+    base.href = document.baseURI
+    doc.head.appendChild(base)
+    // Clone the app's styles so the same component renders identically.
+    document.querySelectorAll('style, link[rel="stylesheet"]').forEach(n => doc.head.appendChild(n.cloneNode(true)))
+    doc.documentElement.className = document.documentElement.className
+    doc.body.className = document.body.className
+    doc.body.style.margin = '0'
+    doc.body.style.background = 'var(--color-bg, #0b0f19)'
+    const host = doc.createElement('div')
+    host.style.padding = '14px 16px'
+    doc.body.appendChild(host)
+    win.addEventListener('beforeunload', () => { setPopupHost(null); winRef.current = null })
+    setPopupHost(host)
+  }
+
+  const textPayload = () => (toText ? toText(data) : genericText(title, data))
+  const jsonPayload = () => JSON.stringify({ section: id, generatedAt: new Date().toISOString(), window: windowLabel, rows: data }, null, 2)
 
   const btn = {
     cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, lineHeight: 1,
@@ -75,31 +88,32 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
 
   return (
     <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
-      <button type="button" title="Copy section as text or JSON" aria-label={`Copy ${title}`} style={btn}
-        onClick={() => doCopy(lastMode())}
-        onContextMenu={(e) => { e.preventDefault(); setPop(p => !p) }}>
-        {copied ? '✓ Copied' : '⧉'}
-      </button>
-      <button type="button" title="Choose copy format" aria-label="Copy format" style={{ ...btn, padding: '3px 4px' }}
-        onClick={() => setPop(p => !p)}>▾</button>
-      <button type="button" title={`Expand ${title}`} aria-label={`Expand ${title}`} style={btn}
-        onClick={() => setOpen(true)}>⤢</button>
-      {pop && (
-        <span style={{ position: 'absolute', top: '110%', right: 0, zIndex: 60, display: 'flex', flexDirection: 'column', gap: 2, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 10, padding: 4, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(12px)' }}>
-          <button type="button" style={{ ...btn, border: 'none', textAlign: 'left', whiteSpace: 'nowrap' }} onClick={() => doCopy('text')}>Copy as text</button>
-          <button type="button" style={{ ...btn, border: 'none', textAlign: 'left', whiteSpace: 'nowrap' }} onClick={() => doCopy('json')}>Copy as JSON</button>
-        </span>
+      <button type="button" title="Copy — opens the copy pop-up (text / JSON)" aria-label={`Copy ${title}`} style={btn}
+        onClick={() => setCopyOpen(true)}>⧉</button>
+      <button type="button" title={`Open ${title} in a pop-up window`} aria-label={`Expand ${title}`} style={btn}
+        onClick={openExpand}>⤢</button>
+      {copyOpen && (
+        <CopyPopup title={title} text={textPayload()} json={jsonPayload()} onClose={() => setCopyOpen(false)} />
+      )}
+      {popupHost && createPortal(
+        <div className="glass-panel" style={{ borderRadius: 16, padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 800 }}>{title}</span>
+          </div>
+          {render ? render({ variant: 'modal' }) : null}
+        </div>,
+        popupHost
       )}
       {open && createPortal(
         <div role="dialog" aria-modal="true" aria-label={title}
           onMouseDown={(e) => { if (e.target === e.currentTarget) setOpen(false) }}
           style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(6,9,19,.55)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div ref={panelRef} tabIndex={-1} className="glass-panel"
-            style={{ width: 'min(96vw, 1720px)', height: 'min(92vh, 1100px)', borderRadius: 16, padding: '14px 16px', overflow: 'auto', outline: 'none', zoom: 1.15 }}>
+            style={{ width: 'min(96vw, 1720px)', height: 'min(92vh, 1100px)', borderRadius: 16, padding: '14px 16px', overflow: 'auto', outline: 'none' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>{title}</span>
               <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
-                <button type="button" title="Copy section" style={btn} onClick={() => doCopy(lastMode())}>{copied ? '✓ Copied' : '⧉ Copy'}</button>
+                <button type="button" title="Copy section" style={btn} onClick={() => setCopyOpen(true)}>⧉ Copy</button>
                 <button type="button" title="Close (Esc)" aria-label="Close" style={btn} onClick={() => setOpen(false)}>✕</button>
               </span>
             </div>
