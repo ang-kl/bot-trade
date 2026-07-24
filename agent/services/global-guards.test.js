@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { loadGlobalGuards, evaluateGlobalGuards, DEFAULT_GLOBAL_GUARDS } from './global-guards.js'
 import { evaluateTrade, DEFAULT_RISK_CONFIG } from './risk.js'
+import { fmtGuards, setGlobalHalt } from './telegram-control.js'
 
 function fresh() {
   const db = initDB(':memory:')
@@ -99,6 +100,47 @@ test('total open-position cap counts across ALL accounts', () => {
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /portfolio_position_cap/)
   assert.equal(res.checks.portfolio_open_positions, 3)
+})
+
+test('telegram /haltall & /resumeall: flip only the halt knob, preserve other stored guards', () => {
+  const db = fresh()
+  setState(db, 'global_guards_json', JSON.stringify({ portfolioDailyLossUsd: 500 }))
+  const on = setGlobalHalt(db, true)
+  assert.equal(on.ok, true)
+  assert.match(on.reply, /GLOBAL HALT/)
+  assert.deepEqual(loadGlobalGuards(db), { ...DEFAULT_GLOBAL_GUARDS, halt: true, portfolioDailyLossUsd: 500 })
+  const resHalted = evaluateTrade(db, proposal('A'), { ...DEFAULT_RISK_CONFIG })
+  assert.match(resHalted.veto_reason, /global_halt/)
+  const off = setGlobalHalt(db, false)
+  assert.equal(off.ok, true)
+  assert.deepEqual(loadGlobalGuards(db), { ...DEFAULT_GLOBAL_GUARDS, halt: false, portfolioDailyLossUsd: 500 })
+})
+
+test('telegram /resumeall refuses to overwrite an unreadable config (fail-safe halt stays)', () => {
+  const db = fresh()
+  setState(db, 'global_guards_json', '{corrupt!!')
+  const out = setGlobalHalt(db, false)
+  assert.equal(out.ok, false)
+  assert.match(out.reply, /unreadable/)
+  // Fail-safe halt still enforced.
+  assert.equal(loadGlobalGuards(db).halt, true)
+  // …but /haltall on a corrupt config IS allowed (halting is always safe).
+  const on = setGlobalHalt(db, true)
+  assert.equal(on.ok, true)
+  assert.equal(loadGlobalGuards(db).halt, true)
+})
+
+test('telegram /guards panel reflects config and live portfolio numbers', () => {
+  const db = fresh()
+  insertClosedTrade(db, { account: 'A', pnl: -120 })
+  insertOpenTrade(db, { account: 'B', symbol: 'XAUUSD' })
+  setState(db, 'global_guards_json', JSON.stringify({ portfolioDailyLossUsd: 500, maxTotalOpenPositions: 4 }))
+  const text = fmtGuards(db)
+  assert.match(text, /halt: off/)
+  assert.match(text, /\$500/)
+  assert.match(text, /today across accounts: \$-120\.00/)
+  assert.match(text, /open positions across accounts: 1/)
+  assert.match(text, /allowing new entries/)
 })
 
 test('asymmetric merge: global guards never loosen a per-account veto', () => {
