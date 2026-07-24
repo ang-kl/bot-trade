@@ -229,11 +229,11 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
     <span className="wf" style={{ display: 'flex', alignItems: 'center', padding: '12px 2px 10px', position: 'relative' }}>
       {path.map(s => (
         <span key={s.k} style={{ display: 'flex', alignItems: 'center', flex: s.grow, minWidth: 0, position: 'relative' }}>
-          <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 6.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
+          <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 9.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
           <span className="wf-seg" style={{ display: s.segShow, flex: 1, height: 2, borderRadius: 2, background: s.segBg, transformOrigin: 'left center' }} />
           <span style={{ position: 'relative', display: 'flex', justifyContent: 'center' }}>
             <span className={s.cls} style={{ width: 9, height: 9, borderRadius: s.rad, background: s.fill, border: `1.5px solid ${s.bd}`, boxShadow: `0 0 6px ${s.glow}` }} />
-            <span style={{ position: 'absolute', top: 12, fontSize: 6.5, fontWeight: 700, letterSpacing: '.02em', color: s.col, whiteSpace: 'nowrap' }}>{s.k}</span>
+            <span style={{ position: 'absolute', top: 12, fontSize: 9.5, fontWeight: 700, letterSpacing: '.02em', color: s.col, whiteSpace: 'nowrap' }}>{s.k}</span>
           </span>
         </span>
       ))}
@@ -247,16 +247,16 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 5 }}>
           {phases.map(p => (
             <div key={p.name} style={{ background: GL, border: `1px solid ${GBD}`, borderRadius: 10, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
-              <span style={{ fontSize: 8.5, fontWeight: 800, color: p.col }}>{p.name}</span>
-              <span style={{ fontSize: 10.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: UP }}>{p.stat}</span>
-              <span style={{ fontSize: 7, color: MU }}>{p.sub}</span>
+              <span style={{ fontSize: 9.5, fontWeight: 800, color: p.col }}>{p.name}</span>
+              <span style={{ fontSize: 10, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: UP }}>{p.stat}</span>
+              <span style={{ fontSize: 9.5, color: MU }}>{p.sub}</span>
             </div>
           ))}
         </div>
         <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
           {filters.map(f => (
             <button key={f.id} type="button" onClick={() => setFlt(f.id)} aria-pressed={flt === f.id}
-              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 8.5, fontWeight: 700, color: f.col, background: f.bg, border: `1px solid ${f.bd}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9.5, fontWeight: 700, color: f.col, background: f.bg, border: `1px solid ${f.bd}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
               {MOBILE_LABELS[f.id]} <span style={{ opacity: 0.65 }}>{f.n}</span>
             </button>
           ))}
@@ -266,26 +266,26 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
           <div key={t.id} style={{ background: t.cardBg, border: `1px solid ${t.cardBd}`, borderRadius: 12, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontVariantNumeric: 'tabular-nums' }}>
               <span style={{ fontSize: 11, fontWeight: 800 }}>{t.sym}</span>
-              <span style={{ fontSize: 8.5, fontWeight: 700, color: t.sideCol, whiteSpace: 'nowrap' }}>{t.sd}</span>
+              <span style={{ fontSize: 9.5, fontWeight: 700, color: t.sideCol, whiteSpace: 'nowrap' }}>{t.sd}</span>
               <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, color: t.col }}>{t.pnl}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 8, color: SB, fontVariantNumeric: 'tabular-nums' }}>{t.when}</span>
-              <span style={{ fontSize: 8, color: MU, textTransform: 'capitalize' }}>{t.strat}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 8, fontWeight: 700 }}>Lab <span style={{ color: t.labCol }}>{t.lab}</span> · Bridge <span style={{ color: t.brCol }}>{t.br}</span> · <span style={{ color: t.closeCol }}>{t.close}</span></span>
+              <span style={{ fontSize: 9.5, color: SB, fontVariantNumeric: 'tabular-nums' }}>{t.when}</span>
+              <span style={{ fontSize: 9.5, color: MU, textTransform: 'capitalize' }}>{t.strat}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 700 }}>Lab <span style={{ color: t.labCol }}>{t.lab}</span> · Bridge <span style={{ color: t.brCol }}>{t.br}</span> · <span style={{ color: t.closeCol }}>{t.close}</span></span>
             </div>
             {stepper(t.path)}
-            <span style={{ fontSize: 8, lineHeight: 1.45, color: t.noteCol }}>{t.note}</span>
+            <span style={{ fontSize: 9.5, lineHeight: 1.45, color: t.noteCol }}>{t.note}</span>
           </div>
         ))}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {mobileVerdicts.map(v => (
             <div key={v.title} style={{ background: GL, border: `1px solid ${v.bd}`, borderRadius: 10, padding: '6px 9px', display: 'flex', flexDirection: 'column', gap: 1 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ fontSize: 9, fontWeight: 800, color: v.tcol }}>{v.title}</span>
-                <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
+                <span style={{ fontSize: 9.5, fontWeight: 800, color: v.tcol }}>{v.title}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
               </div>
-              <span style={{ fontSize: 7.5, lineHeight: 1.4, color: SB }}>{v.txt}</span>
+              <span style={{ fontSize: 9.5, lineHeight: 1.4, color: SB }}>{v.txt}</span>
             </div>
           ))}
         </div>
@@ -298,72 +298,72 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <span style={{ fontSize: 11, fontWeight: 800, color: ACC }}>Phase 1 · The Lab</span>
-            <span style={{ fontSize: 9, color: SB }}>research / backtest → strategy</span>
+            <span style={{ fontSize: 9.5, color: SB }}>research / backtest → strategy</span>
             <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 800, color: UP }}>{trades.length ? `${nLab}/${trades.length} ✓` : '—'}</span>
           </div>
-          <span style={{ fontSize: 8.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — historical price action, order blocks, volume profiles mined for a statistical edge; rules frozen into code. <b style={{ color: TX }}>I</b> — backtest proves the past only: it assumes perfect liquidity, zero latency, zero slippage. <b style={{ color: TX }}>A</b> — final parameters: quadrant criteria, entry triggers, risk sizing.</span>
+          <span style={{ fontSize: 9.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — historical price action, order blocks, volume profiles mined for a statistical edge; rules frozen into code. <b style={{ color: TX }}>I</b> — backtest proves the past only: it assumes perfect liquidity, zero latency, zero slippage. <b style={{ color: TX }}>A</b> — final parameters: quadrant criteria, entry triggers, risk sizing.</span>
         </div>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <span style={{ fontSize: 11, fontWeight: 800, color: WRN }}>Phase 2 · The Bridge</span>
-            <span style={{ fontSize: 9, color: SB }}>forward test — the missing step</span>
+            <span style={{ fontSize: 9.5, color: SB }}>forward test — the missing step</span>
             <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 800, color: UP }}>{trades.length ? `${nBridge}/${trades.length} ✓` : '—'}</span>
           </div>
-          <span style={{ fontSize: 8.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — history can't simulate news-event spread widening or broker delays. <b style={{ color: TX }}>I</b> — a bot overfitted to the past fails live. <b style={{ color: TX }}>A</b> — demo / micro-lot deployment must reproduce backtest behavior on live feeds before real size.</span>
+          <span style={{ fontSize: 9.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — history can't simulate news-event spread widening or broker delays. <b style={{ color: TX }}>I</b> — a bot overfitted to the past fails live. <b style={{ color: TX }}>A</b> — demo / micro-lot deployment must reproduce backtest behavior on live feeds before real size.</span>
         </div>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <span style={{ fontSize: 11, fontWeight: 800, color: VIO }}>Phase 3 · The Market</span>
-            <span style={{ fontSize: 9, color: SB }}>pending → live → manage → close</span>
+            <span style={{ fontSize: 9.5, color: SB }}>pending → live → manage → close</span>
             <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 800, color: UP }}>{trades.length ? `${trades.length - nEbad}/${trades.length} ✓` : '—'}</span>
           </div>
-          <span style={{ fontSize: 8.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — limit/stop orders convert to live positions; risk managed until SL/TP or manual close. <b style={{ color: TX }}>I</b> — automation removes emotion; trailing stops &amp; partial scale-outs run as coded. <b style={{ color: TX }}>A</b> — manual closure is an emergency circuit breaker only, never routine.</span>
+          <span style={{ fontSize: 9.5, lineHeight: 1.45, color: SB }}><b style={{ color: TX }}>O</b> — limit/stop orders convert to live positions; risk managed until SL/TP or manual close. <b style={{ color: TX }}>I</b> — automation removes emotion; trailing stops &amp; partial scale-outs run as coded. <b style={{ color: TX }}>A</b> — manual closure is an emergency circuit breaker only, never routine.</span>
         </div>
       </div>
 
       {/* Filter chips — exact styles. */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: MU }}>Show</span>
+        <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: MU }}>Show</span>
         {filters.map(f => (
           <button key={f.id} type="button" onClick={() => setFlt(f.id)} aria-pressed={flt === f.id}
-            style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700, color: f.col, background: f.bg, border: `1px solid ${f.bd}`, borderRadius: 999, padding: '3px 11px' }}>
+            style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9.5, fontWeight: 700, color: f.col, background: f.bg, border: `1px solid ${f.bd}`, borderRadius: 999, padding: '3px 11px' }}>
             {f.label} <span style={{ opacity: 0.65 }}>{f.n}</span>
           </button>
         ))}
-        <span style={{ marginLeft: 'auto', fontSize: 9, color: MU }}>closed trades · ✓ passed · ✕ violated · pipeline: pending → live → managed → close</span>
+        <span style={{ marginLeft: 'auto', fontSize: 9.5, color: MU }}>closed trades · ✓ passed · ✕ violated · pipeline: pending → live → managed → close</span>
       </div>
 
       {/* Audit table — exact grid + cell styles. */}
       <div style={{ ...glass, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 1, overflowX: 'auto' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 3 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, fontSize: 9.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 3 }}>
           <span>Date · in→out</span><span>Symbol · side</span><span>Strategy</span><span>Lab</span><span>Brdg</span><span>Market path</span><span>Close</span><span>Early-stop reasoning / audit note</span><span style={{ textAlign: 'right' }}>P&amp;L</span>
         </div>
         {rows.length === 0 && <span style={{ fontSize: 9.5, color: SB, padding: '6px 0' }}>No closed trades in this bucket yet — rows appear from the first completed round-trip.</span>}
         {rows.map(t => (
           <div key={t.id} style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '4px 0', fontVariantNumeric: 'tabular-nums', background: t.rowBg }}>
-            <span style={{ fontSize: 8.5, lineHeight: 1.35, color: SB }}>{t.when}</span>
+            <span style={{ fontSize: 9.5, lineHeight: 1.35, color: SB }}>{t.when}</span>
             <span style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: 10, fontWeight: 800 }}>{t.sym}</span>
-              <span style={{ fontSize: 8, color: t.sideCol }}>{t.sd}</span>
+              <span style={{ fontSize: 9.5, fontWeight: 800 }}>{t.sym}</span>
+              <span style={{ fontSize: 9.5, color: t.sideCol }}>{t.sd}</span>
             </span>
-            <span style={{ fontSize: 9, color: SB, textTransform: 'capitalize' }}>{t.strat}</span>
-            <span style={{ fontSize: 10, fontWeight: 800, color: t.labCol }}>{t.lab}</span>
-            <span style={{ fontSize: 10, fontWeight: 800, color: t.brCol }}>{t.br}</span>
+            <span style={{ fontSize: 9.5, color: SB, textTransform: 'capitalize' }}>{t.strat}</span>
+            <span style={{ fontSize: 9.5, fontWeight: 800, color: t.labCol }}>{t.lab}</span>
+            <span style={{ fontSize: 9.5, fontWeight: 800, color: t.brCol }}>{t.br}</span>
             <span className="wf" style={{ display: 'flex', alignItems: 'center', padding: '12px 2px 10px', position: 'relative' }}>
               {t.path.map(s => (
                 <span key={s.k} style={{ display: 'flex', alignItems: 'center', flex: s.grow, minWidth: 0, position: 'relative' }}>
-                  <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 6.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
+                  <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 9.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
                   <span className="wf-seg" style={{ display: s.segShow, flex: 1, height: 2, borderRadius: 2, background: s.segBg, transformOrigin: 'left center' }} />
                   <span style={{ position: 'relative', display: 'flex', justifyContent: 'center' }}>
                     <span className={s.cls} style={{ width: 9, height: 9, borderRadius: s.rad, background: s.fill, border: `1.5px solid ${s.bd}`, boxShadow: `0 0 6px ${s.glow}` }} />
-                    <span style={{ position: 'absolute', top: 12, fontSize: 6.5, fontWeight: 700, letterSpacing: '.02em', color: s.col, whiteSpace: 'nowrap' }}>{s.k}</span>
+                    <span style={{ position: 'absolute', top: 12, fontSize: 9.5, fontWeight: 700, letterSpacing: '.02em', color: s.col, whiteSpace: 'nowrap' }}>{s.k}</span>
                   </span>
                 </span>
               ))}
             </span>
-            <span style={{ fontSize: 9, fontWeight: 700, color: t.closeCol }}>{t.close}</span>
-            <span style={{ fontSize: 8.5, lineHeight: 1.4, color: t.noteCol }}>{t.note}</span>
-            <span style={{ fontSize: 10.5, fontWeight: 800, textAlign: 'right', color: t.col }}>{t.pnl}</span>
+            <span style={{ fontSize: 9.5, fontWeight: 700, color: t.closeCol }}>{t.close}</span>
+            <span style={{ fontSize: 9.5, lineHeight: 1.4, color: t.noteCol }}>{t.note}</span>
+            <span style={{ fontSize: 10, fontWeight: 800, textAlign: 'right', color: t.col }}>{t.pnl}</span>
           </div>
         ))}
       </div>
@@ -373,16 +373,16 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
         {verdicts.map(v => (
           <div key={v.title} style={{ flex: 1, minWidth: 280, background: GL, border: `1px solid ${v.bd}`, borderRadius: 12, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 10, fontWeight: 800, color: v.tcol }}>{v.title}</span>
+              <span style={{ fontSize: 9.5, fontWeight: 800, color: v.tcol }}>{v.title}</span>
               <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
             </div>
-            <span style={{ fontSize: 8.5, lineHeight: 1.4, color: SB }}>{v.txt}</span>
+            <span style={{ fontSize: 9.5, lineHeight: 1.4, color: SB }}>{v.txt}</span>
           </div>
         ))}
       </div>
       </div>
 
-      <span style={{ fontSize: 9, color: MU }}>
+      <span style={{ fontSize: 9.5, color: MU }}>
         Lab ✓ = an analysis/strategy is attached · Bridge ✓ = placed through the bot's risk-gated pipeline · segment times: submit→fill latency (collected from the forensics build forward), managed span (not yet recorded — shows —), total hold · premature strictly means a manual close with no recorded rationale.
       </span>
     </div>
