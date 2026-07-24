@@ -30,12 +30,32 @@ export function getCtraderCreds(db, accountOverride) {
   let execGuard = null
   try { execGuard = JSON.parse(getState(db, 'exec_guard_json') || 'null') } catch { /* unreadable → no guard */ }
 
+  // M2: the enabled-account roster from the registry, restricted to accounts
+  // on the SAME live/demo side as these creds (one sidecar session = one
+  // host). ensureSidecarSession forwards it so the sidecar pre-authorizes
+  // every enabled account in one push. Primary always leads; single-account
+  // registries produce a one-entry roster, which the sidecar treats exactly
+  // like the legacy single-account push.
+  let accountIds = null
+  try {
+    const rows = db.prepare(
+      'SELECT account_id FROM accounts WHERE enabled = 1 AND is_live = ? ORDER BY account_id'
+    ).all(isLive ? 1 : 0).map(r => String(r.account_id))
+    if (accountId != null) {
+      const primary = String(accountId)
+      accountIds = [primary, ...rows.filter(id => id !== primary)]
+    } else if (rows.length) {
+      accountIds = rows
+    }
+  } catch { /* accounts table may predate this — roster stays null */ }
+
   return {
     host: isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com',
     clientId,
     clientSecret,
     accessToken,
     accountId,
+    accountIds,
     execGuard: execGuard && typeof execGuard === 'object' ? execGuard : null,
     ready: !!(clientId && clientSecret && accessToken && accountId),
   }
