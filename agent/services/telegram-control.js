@@ -12,6 +12,10 @@
 //              NOT closed — closing real positions from a chat command is
 //              a bigger hammer than travel needs; the app's Kill all does that)
 //   /pending — list working pending orders
+//   /guards  — 5A global-guard panel (halt state, portfolio caps, today's
+//              cross-account P&L)
+//   /haltall — 5A GLOBAL HALT: no new entries on ANY account (positions and
+//              their SL/TP untouched); /resumeall lifts it
 //   /help    — this list
 
 //   /chart   — /chart <SYMBOL> [tf=1h] [+ai]: render a self-contained HTML
@@ -22,6 +26,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { getState, setState } from '../db.js'
+import { loadGlobalGuards, evaluateGlobalGuards } from './global-guards.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -138,6 +143,50 @@ function ownerChatId() {
   return String(process.env.TELEGRAM_OWNER_CHAT_ID || process.env.TELEGRAM_CHAT_ID || '')
 }
 
+// --- 5A global-guard commands (pure helpers, unit-tested without Telegram) --
+
+/** /guards — the portfolio protection panel, phone-sized. */
+export function fmtGuards(db) {
+  const g = loadGlobalGuards(db)
+  const out = evaluateGlobalGuards(db, g)
+  const lines = [
+    `🛡 Global guards (all accounts)`,
+    `halt: ${g.halt === true ? '🔴 ON — no new entries' : 'off'}${g._failsafe ? ` (FAIL-SAFE: ${g._failsafe})` : ''}`,
+    `portfolio daily-loss cap: ${g.portfolioDailyLossUsd > 0 ? `$${g.portfolioDailyLossUsd}` : 'off'}`,
+    `total open-position cap: ${g.maxTotalOpenPositions > 0 ? g.maxTotalOpenPositions : 'off'}`,
+  ]
+  if (out.checks.portfolio_daily_pnl !== undefined) lines.push(`today across accounts: $${out.checks.portfolio_daily_pnl.toFixed(2)}`)
+  if (out.checks.portfolio_open_positions !== undefined) lines.push(`open positions across accounts: ${out.checks.portfolio_open_positions}`)
+  lines.push(out.ok ? 'gate: allowing new entries' : `gate: BLOCKING — ${out.reason}`)
+  return lines.join('\n')
+}
+
+/**
+ * /haltall and /resumeall — flip ONLY the halt knob, preserving the other
+ * stored guard values. /resumeall refuses to touch an unreadable config:
+ * silently replacing it would discard protections the owner set — repair it
+ * via POST /actions/global-guards first (fail-safe halt stays active).
+ */
+export function setGlobalHalt(db, on) {
+  const raw = getState(db, 'global_guards_json')
+  let stored = {}
+  if (raw) {
+    try { stored = JSON.parse(raw) } catch {
+      if (!on) return { ok: false, reply: '⚠️ global_guards_json is unreadable — the fail-safe halt stays ON. Repair it via POST /actions/global-guards, then /resumeall.' }
+      stored = {}
+    }
+    if (!stored || typeof stored !== 'object') stored = {}
+  }
+  stored.halt = !!on
+  setState(db, 'global_guards_json', JSON.stringify(stored))
+  return {
+    ok: true,
+    reply: on
+      ? '🔴 GLOBAL HALT — no new entries on ANY account until /resumeall. Open positions and their SL/TP are untouched.'
+      : '🟢 Global halt lifted — per-account and portfolio caps still apply.',
+  }
+}
+
 function fmtStatus(db) {
   const on = (k, dflt) => (getState(db, k) ?? dflt)
   let matrix = {}
@@ -246,6 +295,12 @@ export async function pollTelegramCommands(db, deps = {}) {
               .run('TG', cmd, JSON.stringify({ from: 'telegram', filename: res.filename }))
           } catch { /* logging never blocks */ }
         }
+      } else if (cmd === '/guards') {
+        reply = fmtGuards(db)
+      } else if (cmd === '/haltall') {
+        reply = setGlobalHalt(db, true).reply
+      } else if (cmd === '/resumeall') {
+        reply = setGlobalHalt(db, false).reply
       } else if (cmd === '/news') {
         const symArg = msg.text.trim().split(/\s+/)[1]
         const { newsLinesFor } = await import('./news-calendar.js')
@@ -254,7 +309,7 @@ export async function pollTelegramCommands(db, deps = {}) {
           ? `📰 ${symArg ? symArg.toUpperCase() : 'EURUSD'} — scheduled news (±24h):\n${lines.join('\n')}`
           : 'No high/medium-impact scheduled news in the window (or the feed is unreachable).'
       } else if (cmd === '/help' || cmd === '/start') {
-        reply = 'Commands: /status /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
+        reply = 'Commands: /status /guards /haltall /resumeall /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
       }
       if (reply) {
         handled++
