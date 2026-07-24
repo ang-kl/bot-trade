@@ -28,6 +28,12 @@ constexpr int kSubscribeSpotsReq = 2127;
 constexpr int kSubscribeSpotsRes = 2128;
 constexpr int kSpotEvent = 2131;
 constexpr int kErrorRes = 2142;
+// L2 depth — numbers verified against spotware/openapi-proto-messages'
+// ProtoOAPayloadType enum (not present in ctrader-ws.js, which has no depth
+// support yet; when Node grows depth these must stay in sync).
+constexpr int kDepthEvent = 2155;
+constexpr int kSubscribeDepthReq = 2156;
+constexpr int kSubscribeDepthRes = 2157;
 constexpr double kPointsPerPrice = 100000.0;
 
 void logLine(const std::string& msg) {
@@ -70,10 +76,19 @@ std::optional<jsn::Value> sendAndWait(CtraderWs& ws, int reqType, const jsn::Val
 
 SpotFeed::SpotFeed(std::string host, std::string clientId, std::string clientSecret,
                    std::string accessToken, long long accountId,
-                   std::vector<long long> symbolIds, SpotTickCallback onTick)
+                   std::vector<long long> symbolIds, SpotTickCallback onTick,
+                   bool depthEnabled)
     : host_(std::move(host)), clientId_(std::move(clientId)),
       clientSecret_(std::move(clientSecret)), accessToken_(std::move(accessToken)),
-      accountId_(accountId), symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)) {}
+      accountId_(accountId), symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)),
+      depthEnabled_(depthEnabled) {}
+
+std::string SpotFeed::depthSnapshotJson(long long symbolId, int maxLevels) {
+  std::lock_guard<std::mutex> lk(depthMtx_);
+  auto it = books_.find(symbolId);
+  if (it == books_.end() || it->second.empty()) return "null";
+  return it->second.snapshotJson(maxLevels);
+}
 
 void SpotFeed::stop() {
   stopped_.store(true);
@@ -112,6 +127,33 @@ bool SpotFeed::connectAuthSubscribe() {
     return false;
   }
   logLine("subscribed to " + std::to_string(symbolIds_.size()) + " symbol(s) on " + host_);
+
+  // L2 depth is best-effort on top of a healthy spot subscription: broker
+  // support per symbol/account is not documented, so a rejection here is
+  // logged and the feed carries on spots-only rather than dropping the
+  // connection. Quote ids are per-subscription — clear any book state left
+  // from a previous connection before new events arrive.
+  depthActive_.store(false, std::memory_order_relaxed);
+  if (depthEnabled_) {
+    {
+      std::lock_guard<std::mutex> lk(depthMtx_);
+      books_.clear();
+    }
+    jsn::Value dsub{jsn::Object{}};
+    dsub.set("ctidTraderAccountId", accountId_);
+    jsn::Array dids;
+    for (long long id : symbolIds_) dids.push_back(jsn::Value(static_cast<double>(id)));
+    dsub.set("symbolId", jsn::Value(dids));
+    if (sendAndWait(ws_, kSubscribeDepthReq, dsub, kSubscribeDepthRes)) {
+      depthActive_.store(true, std::memory_order_relaxed);
+      logLine("depth subscribed for " + std::to_string(symbolIds_.size()) + " symbol(s)");
+    } else if (ws_.isOpen()) {
+      logLine("depth subscribe rejected — continuing spots-only");
+    } else {
+      logLine("connection dropped during depth subscribe");
+      return false;
+    }
+  }
   return true;
 }
 
@@ -143,6 +185,17 @@ void SpotFeed::runOnce() {
       const auto& p = msg->get("payload");
       logLine("broker error: " + p.get("errorCode").asString() + " " + p.get("description").asString());
       break; // drop the connection; runLoop's backoff reconnects
+    }
+    if (type == kDepthEvent) {
+      const auto& p = msg->get("payload");
+      long long symbolId = static_cast<long long>(p.get("symbolId").asNumber(0));
+      if (symbolId != 0) {
+        const long long nowMs = duration_cast<milliseconds>(
+            system_clock::now().time_since_epoch()).count();
+        std::lock_guard<std::mutex> lk(depthMtx_);
+        books_[symbolId].applyEvent(p, nowMs);
+      }
+      continue;
     }
     if (type != kSpotEvent) continue;
 
