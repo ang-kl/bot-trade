@@ -71,7 +71,7 @@ function Field({ label, value, onChange, pct = false, hint, placeholder = 'not s
   return (
     <div className="text-[12px]">
       <label className="flex items-center justify-between gap-2">
-        <span className="text-[var(--color-text-sub)] min-w-0 truncate">
+        <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
           {label}
           {hint && (
             <button type="button" aria-label={`Explain: ${label}`} title={hint}
@@ -132,7 +132,7 @@ function MiniChart({ entry, sl, tp, side = 'long', trigger = null }) {
 
 function SectionTitle({ children, badge }) {
   return (
-    <div className="flex items-center gap-2 mb-2">
+    <div className="flex items-center gap-2 mb-1">
       <h3 className="t-h3">{children}</h3>
       {badge}
     </div>
@@ -242,7 +242,7 @@ export default function Risk() {
   const volCapped = guard.maxOrderVolume > 0 && cppVolumeUnits > guard.maxOrderVolume
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3" data-risk-dense>
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-[14px] font-bold t-heading">Risk</h1>
         <span className="text-[12px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
@@ -282,7 +282,7 @@ export default function Risk() {
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr_280px] gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[270px_1fr_270px] gap-3 items-start">
         {/* ---- Account Risk Configuration (left) ---- */}
         <Card data-risk-card className="w3-hover-shadow">
           <SectionTitle>Account risk configuration</SectionTitle>
@@ -317,10 +317,10 @@ export default function Risk() {
         </Card>
 
         {/* ---- Middle column: Bot Trade + Cpp ---- */}
-        <div className="space-y-4">
+        <div className="space-y-3">
           <Card data-risk-card className="w3-hover-shadow">
             <SectionTitle>Bot Trade risk configuration</SectionTitle>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-1">
               <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                 hint="% of balance one trade may lose at its SL." />
               <Field label={`Per-trade risk $ override${mark('perTradeRiskUsd')}`} value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
@@ -431,7 +431,7 @@ export default function Risk() {
 
           <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>Cpp risk configuration</SectionTitle>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-1">
               <div className="flex items-center justify-between text-[12px]">
                 <span className="text-[var(--color-text-sub)]" title="Kill switch: the C++ engine refuses EVERY order while halted.">Halt (kill switch)</span>
                 <Pill on={!!guard.halt} label={guard.halt ? 'Halted — no orders' : 'Off'} onClick={() => setGuard(g => ({ ...g, halt: !g.halt }))} />
@@ -481,7 +481,7 @@ export default function Risk() {
         </div>
 
         {/* ---- Right column: worked examples ---- */}
-        <div className="space-y-4">
+        <div className="space-y-3">
           <Card data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example trade — bot-trade live</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
