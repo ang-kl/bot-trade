@@ -83,6 +83,13 @@ SpotFeed::SpotFeed(std::string host, std::string clientId, std::string clientSec
       accountId_(accountId), symbolIds_(std::move(symbolIds)), onTick_(std::move(onTick)),
       depthEnabled_(depthEnabled) {}
 
+size_t SpotFeed::depthEntriesTotal() {
+  std::lock_guard<std::mutex> lk(depthMtx_);
+  size_t n = 0;
+  for (const auto& [id, b] : books_) n += b.size();
+  return n;
+}
+
 std::string SpotFeed::depthSnapshotJson(long long symbolId, int maxLevels) {
   std::lock_guard<std::mutex> lk(depthMtx_);
   auto it = books_.find(symbolId);

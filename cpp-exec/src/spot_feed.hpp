@@ -63,6 +63,11 @@ public:
   // Thread-safe; callable from the HTTP server thread.
   std::string depthSnapshotJson(long long symbolId, int maxLevels);
 
+  // Total depth-book entries across all symbols — the OOM-leak telemetry
+  // (a real book is tens of entries; unbounded growth means quote-id churn
+  // is outrunning deletes). Thread-safe.
+  size_t depthEntriesTotal();
+
 private:
   // One connect+auth+subscribe+read cycle. Returns when the connection
   // drops or stop() fires; the caller (runLoop) decides whether to retry.

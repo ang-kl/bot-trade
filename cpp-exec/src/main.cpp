@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx](const HttpRequest&) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
@@ -251,6 +251,15 @@ int main(int argc, char** argv) {
     } else {
       v.set("telemetryWritten", jsn::Value(nullptr));
       v.set("telemetryDropped", jsn::Value(nullptr));
+    }
+    // OOM-leak telemetry (2026-07-24 silent-SIGKILL incident): total depth
+    // book entries — watch this across uptime; unbounded growth names the
+    // leak. Null when the spot feed isn't running.
+    {
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      v.set("depthBookEntries", spotFeed
+          ? jsn::Value(static_cast<double>(spotFeed->depthEntriesTotal()))
+          : jsn::Value(nullptr));
     }
     return {200, jsn::dump(v)};
   });

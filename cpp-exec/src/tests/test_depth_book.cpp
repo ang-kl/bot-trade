@@ -90,6 +90,21 @@ void testEmptyAndClear() {
   assert(b.lastAtMs() == 0);
 }
 
+
+void testOomGuardCap() {
+  // Simulated quote-id churn without deletes: past kMaxEntries the book
+  // resets instead of growing without bound (the silent-SIGKILL guard).
+  DepthBook b;
+  for (int i = 1; i <= 600; ++i) {
+    b.applyEvent(payload("{\"newQuotes\":[{\"id\":" + std::to_string(i) +
+                         ",\"size\":1,\"bid\":100000}]}"), i);
+    assert(b.size() <= DepthBook::kMaxEntries);
+  }
+  // The book still works after a reset.
+  b.applyEvent(payload("{\"newQuotes\":[{\"id\":9001,\"size\":5,\"bid\":100000}]}"), 999);
+  assert(!b.empty());
+}
+
 } // namespace
 
 int main() {
@@ -97,6 +112,7 @@ int main() {
   testUpdateByIdAndDelete();
   testLevelCapAndMalformed();
   testEmptyAndClear();
+  testOomGuardCap();
   std::puts("test_depth_book: OK");
   return 0;
 }
