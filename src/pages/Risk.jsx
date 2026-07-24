@@ -58,13 +58,17 @@ function Pill({ on, label, onClick }) {
 }
 
 // Compact labelled field. `pct` fields edit in % but store fractions.
-function Field({ label, value, onChange, pct = false, hint, width = 'w-[110px]' }) {
+// EVERY entry field is the SAME fixed width (owner 2026-07-24: "the size of
+// field-entry must be uniform as I am OCD") — the `width` prop is accepted
+// for backward compatibility but deliberately ignored.
+const FIELD_W = 'w-[120px]'
+function Field({ label, value, onChange, pct = false, hint }) {
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
   return (
     <label className="flex items-center justify-between gap-2 text-[12px]" title={hint}>
       <span className="text-[var(--color-text-sub)]">{label}</span>
       <span className="flex items-center gap-1">
-        <Input type="number" step="any" value={display} className={`${width} !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right`}
+        <Input type="number" step="any" value={display} className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right`}
           onChange={e => {
             const raw = e.target.value
             if (raw === '') { onChange(null); return }
@@ -114,7 +118,7 @@ function MiniChart({ entry, sl, tp, side = 'long', trigger = null }) {
 function SectionTitle({ children, badge }) {
   return (
     <div className="flex items-center gap-2 mb-2">
-      <div className="text-[12px] font-semibold">{children}</div>
+      <h3 className="t-h3">{children}</h3>
       {badge}
     </div>
   )
@@ -334,7 +338,7 @@ export default function Risk() {
               </div>
               <label className="flex items-center justify-between gap-2 text-[12px]" title="Tick move that wakes the guardian between sweeps.">
                 <span className="text-[var(--color-text-sub)]">Guardian move %</span>
-                <Input type="number" step="any" value={guardianPct} className="w-[110px] !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right"
+                <Input type="number" step="any" value={guardianPct} className="w-[120px] !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right"
                   onChange={e => setGuardianPct(Number(e.target.value))} />
               </label>
               <div className="flex items-center justify-between text-[12px]">
@@ -363,6 +367,57 @@ export default function Risk() {
           </Card>
 
           <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+            <SectionTitle badge={<Badge tone="info">Sizing</Badge>}>Lot calculation</SectionTitle>
+            {(() => {
+              const mode = Number(risk.perTradeRiskUsd) > 0 ? 'absolute' : 'percent'
+              const bal = Number(acct.balance) || 0
+              const budget = mode === 'absolute' ? Number(risk.perTradeRiskUsd) : bal * (Number(risk.perTradeRiskPct) || 0)
+              const m = data?.margin
+              const cap = bal * (Number(risk.maxMarginUsagePct) || 0)
+              const headroom = m?.usedMargin != null ? cap - m.usedMargin : null
+              return (
+                <div className="text-[12px] space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[var(--color-text-sub)]" title="Percentage: risk budget = balance × per-trade %. Absolute: a fixed $ amount (3-decimal precision) overrides the %.">Sizing mode</span>
+                    <span className="flex gap-1">
+                      <Pill on={mode === 'percent'} label="Percentage" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: null }))} />
+                      <Pill on={mode === 'absolute'} label="Absolute $" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: r.perTradeRiskUsd > 0 ? r.perTradeRiskUsd : Number((bal * (r.perTradeRiskPct || 0.05)).toFixed(3)) }))} />
+                    </span>
+                  </div>
+                  {mode === 'absolute' && (
+                    <Field label="Absolute risk per trade $" value={risk.perTradeRiskUsd}
+                      onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v == null ? null : Number(Number(v).toFixed(3)) }))}
+                      hint="Fixed $ risked at the SL per trade, 3-decimal precision. Overrides the percentage while set." />
+                  )}
+                  <div className="glass-inset rounded-[8px] p-2 leading-relaxed text-[var(--color-text-sub)]">
+                    <span className="font-semibold text-[var(--color-text)]">How a lot size is calculated</span><br />
+                    1. Risk budget = {mode === 'absolute'
+                      ? <>fixed <b>${fmt$(budget, 3)}</b> (absolute mode)</>
+                      : <>balance ${fmt$(bal)} × {fmt$((risk.perTradeRiskPct || 0) * 100, 3)}% = <b>${fmt$(budget, 3)}</b></>}, capped by the hard caps and the drawdown de-risk factor.<br />
+                    2. Lots = budget ÷ $-loss-per-lot at the forecast SL distance, floored to broker 0.01-lot granularity.<br />
+                    3. Margin fit: the new position's margin must fit the <b>real-time headroom</b> = (balance × max-margin {fmt$((risk.maxMarginUsagePct || 0) * 100, 1)}% = ${fmt$(cap, 3)}) − broker-reported used margin. It shrinks to fit; if even the minimum lot doesn't fit, the trade is skipped before any sizing work.
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <span className="text-[var(--color-text-sub)]">Used margin (broker, live)</span>
+                    <span className="text-right tabular-nums">{m?.usedMargin != null ? `$${fmt$(m.usedMargin, 3)}` : 'no snapshot yet'}</span>
+                    <span className="text-[var(--color-text-sub)]">Margin cap</span>
+                    <span className="text-right tabular-nums">${fmt$(cap, 3)}</span>
+                    <span className="text-[var(--color-text-sub)]">Headroom left for new lots</span>
+                    <span className={`text-right tabular-nums font-semibold ${headroom != null && headroom <= 0 ? 'text-[var(--color-down)]' : ''}`}>
+                      {headroom != null ? `$${fmt$(headroom, 3)}` : '—'}{headroom != null && headroom <= 0 ? ' — no new entries' : ''}
+                    </span>
+                    <span className="text-[var(--color-text-sub)]">Free margin (broker equity −used)</span>
+                    <span className="text-right tabular-nums">{m?.freeMargin != null ? `$${fmt$(m.freeMargin, 3)}` : '—'}</span>
+                  </div>
+                  <div className="mt-1">
+                    <span data-save-pulse="risk"><Button size="sm" onClick={() => saveRisk(['perTradeRiskPct', 'perTradeRiskUsd'])}>Save sizing mode</Button></span>
+                  </div>
+                </div>
+              )
+            })()}
+          </Card>
+
+          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>Cpp risk configuration</SectionTitle>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
               <div className="flex items-center justify-between text-[12px]">
@@ -378,7 +433,7 @@ export default function Risk() {
                 <Pill on={guard.requireTarget !== false} label="On" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
               <Field label="Max order volume (units×100)" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
-                hint="Hard cap on a single order's cTrader volume. 0 = no cap." width="w-[130px]" />
+                hint="Hard cap on a single order's cTrader volume. 0 = no cap." />
               <div className="flex items-center justify-between text-[12px]">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
                 <Pill on={vpoEnabled} label="On" onClick={() => {

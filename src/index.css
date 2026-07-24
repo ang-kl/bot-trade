@@ -241,21 +241,43 @@
    FLAT 16px at every breakpoint, in the accent colour, so they read as
    headers regardless of viewport. Body text is bumped ~10% to compensate
    for the loss of the old escalating scale. */
-/* Owner (2026-07-24): "the heading style should be just 20% more than the
-   body" — .t-heading is pinned to 1.2× .t-body at EVERY breakpoint below
-   (15→18, 17→20, 20→24, 22→26). Change body sizes and these must move
-   with them. */
-.t-heading { font-size: 18px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
+/* Owner (2026-07-24): Word-style heading hierarchy in 0.2×-of-body steps —
+   H1 = 1.6× body, H2 = 1.4× body, H3 = 1.2× body, all in the accent colour
+   so any heading reads as a heading. .t-heading stays as an alias of .t-h1
+   for the page titles that already use it. Change body sizes and every
+   level below must move with them (values are 1.6/1.4/1.2 × .t-body,
+   rounded to whole px, at each breakpoint). */
+.t-h1, .t-heading { font-size: 24px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
+.t-h2  { font-size: 21px; font-weight: 700; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-accent); }
+.t-h3  { font-size: 18px; font-weight: 700; line-height: 1.25; color: var(--color-accent); }
 .t-body    { font-size: 15px; font-weight: 500; line-height: 1.5; }
 .t-label   { font-size: 14px; font-weight: 600; line-height: 1.5; }
 .t-sub     { font-size: 13px; font-weight: 400; line-height: 1.6; }
 .t-meta    { font-size: 12px; font-weight: 400; line-height: 1.65; }
 
-@media (min-width: 768px)  { html { font-size: 15px; } .t-heading { font-size: 20px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
+@media (min-width: 768px)  { html { font-size: 15px; } .t-h1, .t-heading { font-size: 27px; } .t-h2 { font-size: 24px; } .t-h3 { font-size: 20px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } .t-label { font-size: 15px; } .t-sub { font-size: 15px; } .t-meta { font-size: 14px; } }
 @media (min-width: 1153px) { html { zoom: 1.1; } }
-@media (min-width: 2000px) { html { font-size: 18px; } .t-heading { font-size: 24px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
-@media (min-width: 2560px) { html { font-size: 20px; } .t-heading { font-size: 26px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
+@media (min-width: 2000px) { html { font-size: 18px; } .t-h1, .t-heading { font-size: 32px; } .t-h2 { font-size: 28px; } .t-h3 { font-size: 24px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
+@media (min-width: 2560px) { html { font-size: 20px; } .t-h1, .t-heading { font-size: 35px; } .t-h2 { font-size: 31px; } .t-h3 { font-size: 26px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
+
+/* Table head rows (owner 2026-07-24): a contrasting solid background so
+   the header row can never be mistaken for a data row, header text in the
+   OPPOSITE colour to that background, and internal vertical column
+   separators also in the opposite colour so they cut against the fill.
+   Element selectors here are unlayered, so they beat any per-table
+   Tailwind classes — one rule styles every table in the app. */
+thead th {
+  background: var(--color-accent);
+  color: #fff;
+  border-right: 1px solid rgba(255, 255, 255, 0.55);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+thead th:first-child { border-top-left-radius: 8px; }
+thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }
+/* Sort-button labels inside header cells inherit the opposite colour too. */
+thead th button { color: inherit; }
 
 /* Uppercase section label helper */
 .t-section-label {

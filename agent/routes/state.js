@@ -864,6 +864,23 @@ export default function stateRouter(db) {
         },
         weekendBank: (getState(db, 'weekend_bank') || 'true') !== 'false',
         weekendLossFlag: (getState(db, 'weekend_loss_flag') || 'true') !== 'false',
+        // Real-time margin (broker truth) — the monitor refreshes the broker
+        // snapshot ~30s; the Risk page's lot-sizing card explains sizing
+        // against THESE numbers, the same ones the risk gate now uses.
+        margin: (() => {
+          try {
+            const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+            const h = snap?.account?.health
+            if (!h) return null
+            return {
+              usedMargin: h.usedMargin ?? null,
+              freeMargin: h.freeMargin ?? null,
+              equity: h.equity ?? null,
+              marginLevelPct: h.marginLevelPct ?? null,
+              fetchedAt: snap.fetchedAt ?? null,
+            }
+          } catch { return null }
+        })(),
         execGuard: parse('exec_guard_json', '{}'),
         vpo: {
           enabled: (getState(db, 'vpo_enabled') || 'false') === 'true',

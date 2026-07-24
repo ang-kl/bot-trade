@@ -75,7 +75,7 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
     <Card>
       <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
         <span aria-hidden="true" className="w-3 text-[10px] shrink-0">{open ? '▾' : '▸'}</span>
-        <h2 className="text-[12px] font-semibold">{title}</h2>
+        <h2 className="t-h3">{title}</h2>
         {summary && <span className="ml-auto text-[12px] text-[var(--color-text-sub)] truncate">{summary}</span>}
       </button>
       {open && <div className="mt-1.5">{children}</div>}
