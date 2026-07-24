@@ -16,9 +16,12 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
+#include "depth_book.hpp"
 #include "ws_client.hpp"
 
 // (symbolId, bid, ask) — bid/ask already descaled to real price units.
@@ -28,15 +31,29 @@ using SpotTickCallback = std::function<void(long long symbolId, double bid, doub
 
 class SpotFeed {
 public:
+  // depthEnabled additionally subscribes the same symbol list to L2 depth
+  // quotes (ProtoOASubscribeDepthQuotesReq, 2156 — verified against
+  // spotware/openapi-proto-messages). Depth is best-effort: if the broker
+  // rejects the subscription the feed logs it and carries on spots-only, so
+  // enabling depth can never cost the VPO hot path its ticks.
   SpotFeed(std::string host, std::string clientId, std::string clientSecret,
            std::string accessToken, long long accountId,
-           std::vector<long long> symbolIds, SpotTickCallback onTick);
+           std::vector<long long> symbolIds, SpotTickCallback onTick,
+           bool depthEnabled = false);
 
   // Blocking: connect -> auth -> subscribe -> read frames -> onTick(), with
   // capped exponential backoff across drops. Runs until stop() is called.
   // Call from its own dedicated thread.
   void runLoop();
   void stop();
+
+  // True once the current connection's depth subscription was accepted.
+  bool depthActive() const { return depthActive_.load(std::memory_order_relaxed); }
+
+  // Snapshot of a symbol's current book as JSON ("null" when the symbol has
+  // no book yet — depth off, subscription rejected, or no events seen).
+  // Thread-safe; callable from the HTTP server thread.
+  std::string depthSnapshotJson(long long symbolId, int maxLevels);
 
 private:
   // One connect+auth+subscribe+read cycle. Returns when the connection
@@ -50,4 +67,12 @@ private:
   SpotTickCallback onTick_;
   CtraderWs ws_;
   std::atomic<bool> stopped_{false};
+
+  // L2 depth state. Quote ids are per-subscription, so books are cleared on
+  // every (re)connect; depthMtx_ guards books_ between the feed thread
+  // (writes) and the HTTP thread (snapshot reads).
+  bool depthEnabled_ = false;
+  std::atomic<bool> depthActive_{false};
+  std::mutex depthMtx_;
+  std::map<long long, DepthBook> books_;
 };

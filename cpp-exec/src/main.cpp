@@ -146,6 +146,10 @@ int main(int argc, char** argv) {
   const std::string vpoMacroTf = envOr("VPO_MACRO_TF", "4h");
   const std::string vpoMicroTf = envOr("VPO_MICRO_TF", "15m");
   const int vpoRecomputeMs = std::atoi(envOr("VPO_RECOMPUTE_MS", "5000").c_str());
+  // L2 depth rides the VPO spot feed's connection for the same symbol list.
+  // Off by default: broker depth support per symbol/account is unverified,
+  // and SpotFeed treats a rejected depth subscribe as spots-only anyway.
+  const bool depthFeedEnabled = envOr("DEPTH_FEED_ENABLED", "false") == "true";
 
   vpo::VpoConfigStore vpoStore;
   std::unique_ptr<vpo::VpoDispatcher> vpoDispatcher;
@@ -266,7 +270,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, depthFeedEnabled](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -313,12 +317,45 @@ int main(int argc, char** argv) {
       spotFeed = std::make_unique<SpotFeed>(
           host.empty() ? "live.ctraderapi.com" : host, clientId, clientSecret, accessToken, accountId,
           vpoSymbolIds,
-          [dispatcherPtr](long long symbolId, double bid, double ask) { dispatcherPtr->onTick(symbolId, bid, ask); });
+          [dispatcherPtr](long long symbolId, double bid, double ask) { dispatcherPtr->onTick(symbolId, bid, ask); },
+          depthFeedEnabled);
       SpotFeed* feedPtr = spotFeed.get();
       spotFeedThread = std::thread([feedPtr] { feedPtr->runLoop(); });
       logLine("VPO spot feed (re)started for " + std::to_string(vpoSymbolIds.size()) + " symbol(s)");
     }
     return {200, "{\"ok\":true}"};
+  });
+
+  // L2 depth snapshot for one symbol (POST mirrors the per-account
+  // /positions precedent — the route table is exact-match, no query
+  // strings). Body: {symbolId, levels?}. Response distinguishes "depth not
+  // enabled/subscribed" from "subscribed but no book yet" so the Node
+  // capture path (slice 2) can record honestly rather than treating every
+  // null as market silence.
+  server.route("POST", "/depth", [&spotFeed, &vpoMtx, depthFeedEnabled](const HttpRequest& req) -> HttpResponse {
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    const jsn::Value& sym = parsed->get("symbolId");
+    long long symbolId = sym.isNumber() ? (long long)sym.asNumber()
+                                        : std::strtoll(sym.asString().c_str(), nullptr, 10);
+    if (symbolId <= 0)
+      return {400, "{\"error\":\"need symbolId\"}"};
+    int levels = static_cast<int>(parsed->get("levels").asNumber(10));
+    if (levels < 1) levels = 1;
+    if (levels > 50) levels = 50;
+
+    jsn::Value out{jsn::Object{}};
+    out.set("enabled", depthFeedEnabled);
+    std::lock_guard<std::mutex> lk(vpoMtx); // spotFeed pointer swaps under vpoMtx
+    const bool active = spotFeed && spotFeed->depthActive();
+    out.set("active", active);
+    std::string book = spotFeed ? spotFeed->depthSnapshotJson(symbolId, levels) : "null";
+    // snapshotJson returns ready-made JSON; splice it in rather than
+    // re-parsing (parse is only for validation-free trusted local output).
+    std::string body = jsn::dump(out);
+    body.insert(body.size() - 1, ",\"book\":" + book);
+    return {200, body};
   });
 
   // Node pushes trendbars + real risk.js-resolved position sizes here on a
