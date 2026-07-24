@@ -351,13 +351,17 @@ const fmtVol = (v) => {
   return String(Math.round(n))
 }
 
-const OPEN_COLS = '64px 76px 84px 64px minmax(150px,1fr) 48px 52px 84px'
+// Owner (2026-07-24): "AUDIT all the pages to ensure there are entry price
+// and current OHLC and current price columns" — Entry was previously
+// tooltip-only here; it's now its own visible column alongside current
+// Price and OHLC (1d).
+const OPEN_COLS = '64px 76px 84px 64px 64px minmax(150px,1fr) 48px 16px 84px'
 function OpenTableBody({ rows }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: 660 }}>
+      <div style={{ minWidth: 700 }}>
       <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
-        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span>Mkt</span><span>SL / TP away</span>
+        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span></span><span>SL / TP away</span>
       </div>
       {rows.map(p2 => (
         <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry · market state: ${p2.marketSource || 'unknown'}${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
@@ -365,13 +369,18 @@ function OpenTableBody({ rows }) {
           <span style={{ fontSize: 12, fontWeight: 800 }}>{p2.sym}</span>
           <span style={{ fontSize: 12, fontWeight: 700, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
           <span style={{ fontSize: 12, fontWeight: 800, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+          <span style={{ fontSize: 12, color: P_MU }}>{p2.entry}</span>
           <span style={{ fontSize: 12, fontWeight: 700 }}>{fmtPx(p2.price)}</span>
           <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
             <span style={{ fontSize: 12, color: P_SB }}>O {fmtPx(p2.day?.o)} · H {fmtPx(p2.day?.h)}</span>
             <span style={{ fontSize: 12, color: P_SB }}>L {fmtPx(p2.day?.l)} · C {fmtPx(p2.day?.c)}</span>
           </span>
           <span style={{ fontSize: 12, color: P_MU }}>{fmtVol(p2.day?.v)}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: p2.marketOpen === false ? P_WRN : p2.marketOpen ? P_ACC : P_MU }}>{p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'}</span>
+          {/* Owner (2026-07-24 evening): "OPEN NOW — FLOATING to show
+              current open trade but market is closed so show the locked
+              sign" — same 🔒 convention as the weekend 24H table, replacing
+              the old OPEN/CLOSED/? text label. */}
+          <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
           <span style={{ fontSize: 12, color: P_MU }}>{p2.sld} / {p2.tpd}</span>
         </div>
       ))}
