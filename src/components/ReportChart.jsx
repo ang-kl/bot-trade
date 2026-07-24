@@ -9,6 +9,10 @@ import Card from './common/Card.jsx'
 const W = 860, H = 300, PL = 46, PR = 16, PT = 14, PB = 30
 const DAY = 86_400_000
 
+// Owner (2026-07-24): "set one filter for 2 days, therefore is
+// 2,7,14,30,60,90,180,all" — replaces the old 7D/30D/All trio.
+const RANGE_DAYS = { '2D': 2, '7D': 7, '14D': 14, '30D': 30, '60D': 60, '90D': 90, '180D': 180, All: null }
+
 function fmtN(v, d = 2) {
   if (v == null || Number.isNaN(v)) return '—'
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: d })
@@ -25,7 +29,8 @@ export default function ReportChart({ allTrades, events }) {
   const svgRef = useRef(null)
 
   const model = useMemo(() => {
-    const cutoff = range === 'All' ? 0 : Date.now() - (range === '7D' ? 7 : 30) * DAY
+    const rangeDays = RANGE_DAYS[range]
+    const cutoff = rangeDays == null ? 0 : Date.now() - rangeDays * DAY
 
     // Day buckets across all series so the x-axis is shared.
     const days = new Map() // key -> { t, approved, vetoed, pnl }
@@ -95,7 +100,7 @@ export default function ReportChart({ allTrades, events }) {
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <h2 className="text-[13px] font-semibold">Activity — decisions & equity</h2>
         <div className="flex gap-1 ml-1">
-          {['7D', '30D', 'All'].map(r => (
+          {Object.keys(RANGE_DAYS).map(r => (
             <button key={r} type="button" onClick={() => setRange(r)}
               className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold cursor-pointer ${range === r ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{r}</button>
           ))}
