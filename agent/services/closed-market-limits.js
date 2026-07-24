@@ -21,6 +21,7 @@ import { encodeLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-label
 import { tradePrice } from './alert-format.js'
 import { getActiveSessions } from '../lib/sessions.js'
 import { expiryMsFor } from './pending-signals.js'
+import { stopTriggerField } from '../lib/order-protection.js'
 
 export const DEFAULT_CLOSED_MARKET_LIMITS = {
   on: true, // owner: on by default — closed-market setups get locked in
@@ -40,7 +41,7 @@ export function loadClosedMarketLimitsConfig(db) {
  * to the symbol's digits (raw levels carry float noise the broker rejects) and
  * SL/TP ride as relative point distances, same as the market-order path.
  */
-export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl, tp, digits, expiresAtMs, label, relativePoints }) {
+export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl, tp, digits, expiresAtMs, label, relativePoints, riskCfg = null }) {
   const slDistance = sl != null && entry != null ? Math.abs(entry - sl) : null
   const tpDistance = tp != null && entry != null ? Math.abs(tp - entry) : null
   return {
@@ -52,6 +53,7 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
     limitPrice: tradePrice(entry, digits),
     ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, digits) } : {}),
     ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, digits) } : {}),
+    ...stopTriggerField(riskCfg),
     expirationTimestamp: expiresAtMs,
     label,
     comment: 'pending-closed',
@@ -210,6 +212,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     accountId: creds.accountId, symbolId, side, volume: sized.volume,
     entry: synth.entry, sl: synth.sl, tp: synth.tp1, digits, expiresAtMs, label,
     relativePoints: sizing.relativePoints ?? ((d, dg) => Math.round(d * Math.pow(10, dg))),
+    riskCfg,
   })
 
   try {
