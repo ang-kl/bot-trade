@@ -16,6 +16,7 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
+import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -1118,6 +1119,26 @@ export default function Performance() {
             </div>
           ))}
         </div>
+
+        {/* Macro regime matrix + quadrant cards, Balance in/out, Data feed —
+            the final Page-1 sections (exact ports, see PerfMacroSections). */}
+        <RegimeMatrix
+          trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
+          positions={positions}
+          accounts={accounts}
+        />
+        <BalanceInOut />
+        <DataFeed
+          balance={riskFull?.account?.balance ?? null}
+          freeMargin={riskFull?.margin?.freeMargin ?? null}
+          equity={riskFull?.margin?.equity ?? null}
+          openCount={positions.length}
+          dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+          equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
+          slSet={positions.filter(p2 => p2.current_sl != null).length}
+          tpSet={positions.filter(p2 => p2.current_tp != null).length}
+          clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
+        />
 
         {/* Migrated from Desk: the original stat tiles + decisions/equity
             chart (owner: "move the performance in the desk to a page by its
