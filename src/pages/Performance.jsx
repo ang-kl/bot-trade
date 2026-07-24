@@ -89,6 +89,8 @@ const FX_BANDS = [
   ['Asia & exotics', ['USDSGD', 'USDHKD', 'USDCNH', 'USDZAR', 'USDTRY', 'USDMXN']],
 ]
 
+const CRYPTO_SYMS = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD']
+
 // Prototype agg(): win%, PF, TP/part/SL counts, planned R:R → edge.
 function aggRows(list) {
   const n = list.length
@@ -554,10 +556,16 @@ export default function Performance() {
       const rr = [e, s, tp].every(Number.isFinite) && Math.abs(e - s) !== 0 ? Math.abs(tp - e) / Math.abs(e - s) : null
       const tpHit = isTp(t2.close_reason) && !isSl(t2.close_reason)
       const slHit = isSl(t2.close_reason) && !isTp(t2.close_reason)
+      const openedAt = closedMs({ closed_at: t2.opened_at })
+      const tEnd = closedMs(t2)
       return {
-        t: closedMs(t2), pnl: Number(t2.net_pnl), sym: String(t2.symbol || '').toUpperCase(),
+        t: tEnd, pnl: Number(t2.net_pnl), sym: String(t2.symbol || '').toUpperCase(),
         strat: t2.label_strategy || t2.strategy || null, rr, tpHit, slHit,
         part: /partial|scale/.test(String(t2.close_reason || '').toLowerCase()),
+        side: String(t2.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT',
+        lots: t2.volume != null ? String(t2.volume) : '—',
+        openedAt, durMin: t2.hold_duration_ms != null ? Math.round(t2.hold_duration_ms / 60000) : (openedAt != null && tEnd != null ? Math.round((tEnd - openedAt) / 60000) : null),
+        rvO: t2.rvol_open ?? null, vwO: t2.vwap_side_open ?? null, obv: t2.obv_open ?? null,
       }
     }).filter(t2 => t2.t != null)
   }, [scopedClosed])
@@ -602,6 +610,50 @@ export default function Performance() {
         }),
       }
     })
+  }, [shapedTrades, loadedAt])
+
+  // Crypto 24/7 panel — prototype cryptoK chips + rows. Live price/Δ are
+  // simulated ticks in the prototype; this page has no price stream, so
+  // those cells show — (never simulated). P&L and win stats are real.
+  const crypto = useMemo(() => {
+    const k = [[24, '24H'], [168, '7D'], [720, '30D']].map(([h, kk]) => {
+      const l = shapedTrades.filter(t2 => catOf(t2.sym) === 'crypto' && t2.t >= loadedAt - h * 36e5)
+      const p = l.reduce((s, t2) => s + t2.pnl, 0)
+      return { k: kk, v: l.length ? signed(p) : '—', col: l.length ? (p >= 0 ? P_UP : P_DN) : P_MU }
+    })
+    const rows = CRYPTO_SYMS.map(sym => {
+      const a = aggRows(shapedTrades.filter(t2 => t2.sym === sym && t2.t >= loadedAt - 7 * D))
+      return {
+        sym,
+        pnl: a.n ? signed(a.pnl) : '—', col: a.n ? (a.pnl >= 0 ? P_UP : P_DN) : P_MU,
+        meta: a.n ? `${a.n} tr · ${a.wr}% win · PF ${Number.isFinite(a.pf) ? a.pf.toFixed(2) : '∞'}` : 'no closed trades 7D',
+      }
+    })
+    return { k, rows }
+  }, [shapedTrades, loadedAt])
+
+  // Winners & Laggards explained — the prototype's anat() over the REAL
+  // best/worst closed trades (30D): outcome · planned R:R · risked · held,
+  // plus the forensics line (RVOL/VWAP at open; out-side not collected yet).
+  const winLag = useMemo(() => {
+    const MO2 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const ft = (ms) => { const d2 = new Date(ms); return String(d2.getUTCHours()).padStart(2, '0') + ':' + String(d2.getUTCMinutes()).padStart(2, '0') }
+    const anat = (t2) => {
+      const d2 = new Date(t2.t)
+      const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
+      const risked = t2.slHit ? Math.abs(t2.pnl) : (t2.rr ? Math.abs(t2.pnl / t2.rr) : null)
+      const held = t2.durMin == null ? '—' : (t2.durMin >= 60 ? `${Math.floor(t2.durMin / 60)}h ` : '') + `${t2.durMin % 60}m`
+      const inSide = t2.rvO != null || t2.vwO ? `RVOL ${t2.rvO != null ? `${nf(1).format(t2.rvO)}×` : '—'} · ${t2.vwO ? `${t2.vwO} VWAP` : '—'} · OBV ${t2.obv || '—'}` : '—'
+      return {
+        when: `${d2.getUTCDate()} ${MO2[d2.getUTCMonth()]} · ${t2.openedAt != null ? ft(t2.openedAt) : '—'} → ${ft(t2.t)} UTC`,
+        sym: t2.sym, sd: `${t2.side} ${t2.lots} lots`, strat: t2.strat || '—',
+        why: `${out} · planned ${t2.rr != null ? `${nf(1).format(t2.rr)}:1` : '—'} · risked ${risked != null ? money(risked, 0) : '—'} · held ${held}`,
+        ind: `in: ${inSide}  →  out: —`,
+        pnl: signed(t2.pnl), col: t2.pnl >= 0 ? P_UP : P_DN,
+      }
+    }
+    const sorted30 = [...shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D)].sort((a, b) => a.pnl - b.pnl)
+    return { lag: sorted30.slice(0, 6).map(anat), win: sorted30.slice(-6).reverse().map(anat) }
   }, [shapedTrades, loadedAt])
 
   // Performance gradients — exact prototype maths (cell alpha pow(|v|/max,.6),
@@ -1006,7 +1058,65 @@ export default function Performance() {
                 </div>
               ))}
             </div>
+            {/* Crypto 24/7 — exact prototype panel; live price/Δ not
+                streamed to this page → honest —. */}
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 9.5, color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
+                  {crypto.k.map(k2 => (
+                    <span key={k2.k} style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
+                      <span style={{ color: P_MU }}>{k2.k} </span><span style={{ fontVariantNumeric: 'tabular-nums', color: k2.col }}>{k2.v}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+                <span>Symbol</span><span>Live price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
+              </div>
+              {crypto.rows.map(c2 => (
+                <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 800 }}>{c2.sym}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 800, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 9.5, fontWeight: 700, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 800, color: c2.col }}>{c2.pnl}</span>
+                  <span style={{ fontSize: 9.5, color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
+                </div>
+              ))}
+            </div>
           </div>
+        </div>
+
+        {/* Winners & Laggards explained — exact prototype pair, real
+            best/worst 30D closed trades with the collect-forward forensics
+            line (out-side context not recorded yet → —). */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'start' }}>
+          {[{ title: 'Winners explained — best closed trades, 30D', tcol: P_UP, sub: 'full anatomy: time in → out, side, lots, plan, volume context at open/close', rows: winLag.win },
+            { title: 'Laggards explained — worst closed trades, 30D', tcol: P_DN, sub: 'same anatomy — what went wrong and under what volume conditions', rows: winLag.lag }].map(panel => (
+            <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: panel.tcol }}>{panel.title}</span>
+                <span style={{ fontSize: 9, color: P_MU }}>{panel.sub}</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '170px 74px 96px 1fr 76px', gap: 8, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+                <span>Date · in → out (UTC)</span><span>Symbol</span><span>Side · lots</span><span>Outcome · plan · RVOL / VWAP / OBV</span><span style={{ textAlign: 'right' }}>P&amp;L</span>
+              </div>
+              {panel.rows.length === 0 && <span style={{ fontSize: 9.5, color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
+              {panel.rows.map((t2, ti) => (
+                <div key={ti} style={{ display: 'grid', gridTemplateColumns: '170px 74px 96px 1fr 76px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ fontSize: 9.5, color: P_SB }}>{t2.when}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: 800 }}>{t2.sym}</span>
+                  <span style={{ fontSize: 9.5, color: P_SB }}>{t2.sd}</span>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={{ fontSize: 9.5, color: P_MU }}>{t2.why} · {t2.strat}</span>
+                    <span style={{ fontSize: 9, color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 800, textAlign: 'right', color: t2.col }}>{t2.pnl}</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
 
         {/* Migrated from Desk: the original stat tiles + decisions/equity
