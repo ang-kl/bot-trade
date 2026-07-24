@@ -1343,6 +1343,14 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 1. SCAN PHASE — scan all enabled symbols
     // -----------------------------------------------------------------------
+    // Keep the economic-calendar cache warm for the news-window gate (6h
+    // TTL server-side; this is a no-op most cycles and NEVER blocks — the
+    // gate itself only ever reads the cache synchronously).
+    try {
+      const { refreshNewsCalendar } = await import('./services/news-calendar.js')
+      await refreshNewsCalendar(db)
+    } catch { /* no data = no gate */ }
+
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
     const client = getAnthropicClient()
