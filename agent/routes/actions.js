@@ -13,7 +13,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
-import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile } from '../lib/exec-engine.js'
+import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
@@ -3204,6 +3204,13 @@ export default function actionsRouter(db) {
         ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
       }
 
+      // 5A: manual/autopilot execute paths obey the exec guard (halt kill
+      // switch + volume cap) exactly like the engine chokepoint does.
+      const gv1 = validateExecGuard(orderPayload, getCtraderCreds(db).execGuard)
+      if (!gv1.ok) {
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: gv1.reason })
+        return res.json({ ok: false, vetoed: true, reason: gv1.reason })
+      }
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
@@ -3319,6 +3326,12 @@ export default function actionsRouter(db) {
         ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
       }
 
+      // 5A: same exec-guard enforcement as the engine chokepoint.
+      const gv2 = validateExecGuard(orderPayload, creds.execGuard)
+      if (!gv2.ok) {
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: gv2.reason })
+        return res.json({ ok: false, vetoed: true, reason: gv2.reason })
+      }
       const exec = await wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null

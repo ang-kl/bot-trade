@@ -4,7 +4,7 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget } from './exec-engine.js'
+import { execEngineMode, placeOrder, amendPosition, closePosition, cancelOrder, reconcile, backtestRemote, validateOrderBracket, orderHasBracket, orderHasTarget, validateExecGuard } from './exec-engine.js'
 
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'ci', clientSecret: 'cs', accessToken: 'at', accountId: '123' }
 
@@ -142,6 +142,49 @@ test('target guarantee: an SL-only market order (no TP) is refused — "a few op
   assert.match(v.reason, /guard_no_target/)
   assert.equal(validateOrderBracket({ orderType: 'MARKET', volume: 100, relativeStopLoss: 5, allowNaked: true }).ok, true)
   assert.equal(validateOrderBracket({ orderType: 'LIMIT', volume: 100, relativeStopLoss: 5 }).ok, true) // pending exempt
+})
+
+test('exec guard: halt kill switch refuses orders in BOTH engine modes (5A parity with cpp order_guard)', async () => {
+  const halted = { ...CREDS, execGuard: { halt: true } }
+  const payload = { symbolId: 1, tradeSide: 'BUY', volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 }
+  for (const mode of ['cpp', 'js']) {
+    if (mode === 'js') delete process.env.EXEC_ENGINE; else process.env.EXEC_ENGINE = 'cpp'
+    requests = []
+    await assert.rejects(placeOrder(halted, payload), (err) => {
+      assert.match(err.message, /guard_halt/)
+      return true
+    })
+    assert.equal(requests.length, 0, 'a halted order must never leave the process')
+  }
+  process.env.EXEC_ENGINE = 'cpp'
+})
+
+test('exec guard: volume cap refuses oversized orders; verdicts mirror order_guard.cpp', async () => {
+  // Pure-function verdicts, same reason strings the C++ guard emits.
+  assert.equal(validateExecGuard({ volume: 100 }, null).ok, true)
+  assert.equal(validateExecGuard({ volume: 100 }, {}).ok, true)
+  assert.equal(validateExecGuard({ volume: 100 }, { maxOrderVolume: 0 }).ok, true) // 0 = no cap
+  assert.equal(validateExecGuard({ volume: 100 }, { maxOrderVolume: 100 }).ok, true) // at cap = allowed
+  const over = validateExecGuard({ volume: 101 }, { maxOrderVolume: 100 })
+  assert.equal(over.ok, false)
+  assert.match(over.reason, /guard_volume_cap/)
+  const halted = validateExecGuard({ volume: 1 }, { halt: true })
+  assert.equal(halted.ok, false)
+  assert.match(halted.reason, /guard_halt/)
+
+  // And the chokepoint enforces it before any network call.
+  requests = []
+  await assert.rejects(
+    placeOrder({ ...CREDS, execGuard: { maxOrderVolume: 100 } },
+      { symbolId: 1, tradeSide: 'BUY', volume: 200, relativeStopLoss: 5, relativeTakeProfit: 5 }),
+    (err) => { assert.match(err.message, /guard_volume_cap/); return true },
+  )
+  assert.equal(requests.length, 0)
+  // Within the cap → goes through as normal.
+  nextResponse = { status: 200, body: '{"ok":true}' }
+  const out = await placeOrder({ ...CREDS, execGuard: { maxOrderVolume: 100 } },
+    { symbolId: 1, tradeSide: 'BUY', volume: 100, relativeStopLoss: 5, relativeTakeProfit: 5 })
+  assert.deepEqual(out, { ok: true })
 })
 
 test('cpp error mapping preserves broker text: order rejected', async () => {

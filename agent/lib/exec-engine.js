@@ -122,7 +122,29 @@ export function validateOrderBracket(p) {
   return { ok: true }
 }
 
+// 5A global-guard enforcement on the JS path (multi-account plan): the C++
+// order_guard enforces halt + maxOrderVolume atomically, but the default js
+// exec path went straight to the broker — the kill switch only worked when
+// EXEC_ENGINE=cpp. This mirrors order_guard.cpp's halt/volume-cap verdicts
+// (same reason strings — callers match substrings) so BOTH engines refuse
+// identically. The guard rides in on creds.execGuard (attached by
+// getCtraderCreds from exec_guard_json); callers that assemble creds by hand
+// simply have no guard, exactly as before.
+export function validateExecGuard(orderPayload, guard) {
+  if (!guard || typeof guard !== 'object') return { ok: true }
+  if (guard.halt === true) {
+    return { ok: false, reason: 'guard_halt: execution halted by kill switch' }
+  }
+  const cap = Number(guard.maxOrderVolume)
+  if (cap > 0 && Number(orderPayload?.volume) > cap) {
+    return { ok: false, reason: 'guard_volume_cap: order volume exceeds the configured max' }
+  }
+  return { ok: true }
+}
+
 export async function placeOrder(creds, orderPayload) {
+  const g = validateExecGuard(orderPayload, creds?.execGuard)
+  if (!g.ok) throw new Error(g.reason)
   const v = validateOrderBracket(orderPayload)
   if (!v.ok) throw new Error(v.reason)
   if (execEngineMode() === 'cpp') {
