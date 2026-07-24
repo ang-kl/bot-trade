@@ -193,7 +193,7 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/positions — active monitored positions
   // -----------------------------------------------------------------------
-  router.get('/positions', (_req, res) => {
+  router.get('/positions', async (_req, res) => {
     // Volume + broker fill time + ctrader_position_id live on the linked
     // trades row — joined in so the Open positions table can show Qty, the
     // real opened time, AND match the live-broker enrichment map (P&L, ccy,
@@ -211,7 +211,38 @@ export default function stateRouter(db) {
       )
       .all()
 
-    res.json({ positions: rows })
+    // Owner (2026-07-24, Friday evening): open trades were stuck over a
+    // market closure the UI never surfaced — every open position now carries
+    // its market state (broker-truth symbol_hours schedule, heuristic
+    // fallback) plus the latest computed P&L from the broker snapshot cache
+    // (the ~30s monitor refresh), so the UI can split OPEN/FLOATING from
+    // OPEN-BUT-MARKET-CLOSED and show real numbers. Best effort — a failure
+    // here must never break the positions list.
+    let snapPositions = new Map()
+    let snapAt = null
+    try {
+      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+      snapAt = snap?.fetchedAt ?? null
+      for (const p of snap?.account?.positions || []) {
+        if (p?.positionId != null) snapPositions.set(String(p.positionId), p)
+      }
+    } catch { snapPositions = new Map() }
+    let isOpenFn = null
+    try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
+    const enriched = rows.map(r => {
+      let market_open = null, market_source = null
+      try {
+        if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
+      } catch { market_open = null }
+      const sp = r.ctrader_position_id != null ? snapPositions.get(String(r.ctrader_position_id)) : null
+      return {
+        ...r, market_open, market_source,
+        live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
+        live_pnl_at: sp ? snapAt : null,
+      }
+    })
+
+    res.json({ positions: enriched, snapshotAt: snapAt })
   })
 
   // -----------------------------------------------------------------------

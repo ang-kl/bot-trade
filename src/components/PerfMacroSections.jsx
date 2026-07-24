@@ -70,16 +70,16 @@ function QuadCard({ q }) {
         <span style={{ fontSize: 10, fontWeight: 800 }}>{q.title}</span>
         <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>{q.tot}</span>
       </div>
-      <span style={{ fontSize: 8, lineHeight: 1.4, color: SB }}>{q.txt}</span>
+      <span style={{ fontSize: 10, lineHeight: 1.4, color: SB }}>{q.txt}</span>
       {q.rows.map((r, ri) => (
         <div key={ri} style={{ display: 'flex', alignItems: 'baseline', gap: 5, borderTop: `1px solid ${EDG}`, paddingTop: 3, fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 9.5, fontWeight: 800 }}>{r.sym}</span>
-          <span style={{ fontSize: 8, color: SB }}>{r.sd}</span>
-          <span style={{ fontSize: 8, color: MU }}>{r.acct}</span>
-          <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 800, color: MU }}>{r.pnl}</span>
+          <span style={{ fontSize: 10, fontWeight: 800 }}>{r.sym}</span>
+          <span style={{ fontSize: 10, color: SB }}>{r.sd}</span>
+          <span style={{ fontSize: 10, color: MU }}>{r.acct}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, color: MU }}>{r.pnl}</span>
         </div>
       ))}
-      {q.rows.length === 0 && <span style={{ fontSize: 8.5, color: MU, borderTop: `1px solid ${EDG}`, paddingTop: 3 }}>no open trades in this quadrant</span>}
+      {q.rows.length === 0 && <span style={{ fontSize: 10, color: MU, borderTop: `1px solid ${EDG}`, paddingTop: 3 }}>no open trades in this quadrant</span>}
     </div>
   )
 }
@@ -121,21 +121,21 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
     <div style={{ ...panel, gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: ACC }}>Macro regime matrix — where the book sits</span>
-        <span style={{ fontSize: 9.5, color: SB }}>growth × inflation, not static correlations · ring = volatility band · dot color = 30D net for that group · hover a dot</span>
-        <span style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 700, color: WRN }}>quadrant playbooks are the design's reference copy — the bot does not compute a live regime read yet</span>
+        <span style={{ fontSize: 10, color: SB }}>growth × inflation, not static correlations · ring = volatility band · dot color = 30D net for that group · hover a dot</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: WRN }}>quadrant playbooks are the design's reference copy — the bot does not compute a live regime read yet</span>
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: MU }}>Account</span>
+        <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: MU }}>Account</span>
         {rOpts.map(o => {
           const on = rAcct === o.id
           return (
             <button key={o.id} type="button" onClick={() => setRAcct(o.id)}
-              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9.5, fontWeight: 700, color: on ? '#fff' : TX, background: on ? ACC : 'transparent', border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '3px 11px' }}>
+              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700, color: on ? '#fff' : TX, background: on ? ACC : 'transparent', border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '3px 11px' }}>
               {o.label}
             </button>
           )
         })}
-        <span style={{ fontSize: 8.5, color: MU }}>filters the four quadrant cards — where this account's open trades sit right now{unmapped ? ` · ${unmapped} open position${unmapped === 1 ? '' : 's'} outside the quadrant map` : ''}</span>
+        <span style={{ fontSize: 10, color: MU }}>filters the four quadrant cards — where this account's open trades sit right now{unmapped ? ` · ${unmapped} open position${unmapped === 1 ? '' : 's'} outside the quadrant map` : ''}</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr 330px', gap: 10, alignItems: 'stretch' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -143,12 +143,12 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
         </div>
         <svg viewBox="0 0 720 410" style={{ width: '80%', justifySelf: 'center', alignSelf: 'center', overflow: 'visible' }}>
           <g>
-            <text x="30" y="52" fontSize="8.5" fontWeight="700" fill={SB}>Lo Vol</text>
+            <text x="30" y="52" fontSize="10" fontWeight="700" fill={SB}>Lo Vol</text>
             <rect x="62" y="44" width="16" height="10" rx="2" fill="rgba(79,140,255,.35)" />
             <rect x="78" y="44" width="16" height="10" rx="2" fill="rgba(255,196,102,.4)" />
             <rect x="94" y="44" width="16" height="10" rx="2" fill="rgba(255,140,90,.4)" />
             <rect x="110" y="44" width="16" height="10" rx="2" fill="rgba(255,77,109,.45)" />
-            <text x="132" y="52" fontSize="8.5" fontWeight="700" fill={DN}>Hi Vol</text>
+            <text x="132" y="52" fontSize="10" fontWeight="700" fill={DN}>Hi Vol</text>
           </g>
           <ellipse cx="360" cy="205" rx="330" ry="188" fill="rgba(255,77,109,.16)" />
           <ellipse cx="360" cy="205" rx="264" ry="150" fill="rgba(255,77,109,.14)" />
@@ -161,16 +161,16 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
           <text x="360" y="410" textAnchor="middle" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Slowing inflation</text>
           <text x="14" y="197" textAnchor="start" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Slowing growth</text>
           <text x="706" y="197" textAnchor="end" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Accelerating growth</text>
-          <text x="300" y="207" textAnchor="end" fontSize="9" fontWeight="700" fill={SB} dominantBaseline="middle">lo vol</text>
-          <text x="668" y="195" textAnchor="end" fontSize="9" fontWeight="700" fill={SB}>hi vol</text>
-          <text x="30" y="26" fontSize="9.5" fontWeight="800" fill={SB}>Q2 STAGFLATION <tspan fontWeight="600" fill={MU}>· USD ↑ safe-haven · gold ↑/↔</tspan></text>
-          <text x="30" y="38" fontSize="8" fontWeight="600" fill={MU}>long commodities · TIPS · cash — short equities &amp; growth</text>
-          <text x="690" y="26" textAnchor="end" fontSize="9.5" fontWeight="800" fill={WRN}>Q1 OVERHEATING <tspan fontWeight="600" fill={MU}>· USD ↔/↓ real yields · gold ↑ hedge</tspan></text>
-          <text x="690" y="38" textAnchor="end" fontSize="8" fontWeight="600" fill={MU}>long commodities · energy · value — short long-duration bonds</text>
-          <text x="30" y="380" fontSize="9.5" fontWeight="800" fill={SB}>Q3 DEFLATION / RECESSION <tspan fontWeight="600" fill={MU}>· USD ↑↑ flight to safety · gold ↓/↔</tspan></text>
-          <text x="30" y="392" fontSize="8" fontWeight="600" fill={MU}>long Treasuries · defensives — short commodities · AUD &amp; NZD</text>
-          <text x="690" y="380" textAnchor="end" fontSize="9.5" fontWeight="800" fill={SB}>Q4 GOLDILOCKS / RECOVERY <tspan fontWeight="600" fill={MU}>· USD ↓ risk-on outflow · gold ↓</tspan></text>
-          <text x="690" y="392" textAnchor="end" fontSize="8" fontWeight="600" fill={MU}>long tech/growth · crypto · high-yield — short USD · CHF · JPY</text>
+          <text x="300" y="207" textAnchor="end" fontSize="10" fontWeight="700" fill={SB} dominantBaseline="middle">lo vol</text>
+          <text x="668" y="195" textAnchor="end" fontSize="10" fontWeight="700" fill={SB}>hi vol</text>
+          <text x="30" y="26" fontSize="10" fontWeight="800" fill={SB}>Q2 STAGFLATION <tspan fontWeight="600" fill={MU}>· USD ↑ safe-haven · gold ↑/↔</tspan></text>
+          <text x="30" y="38" fontSize="10" fontWeight="600" fill={MU}>long commodities · TIPS · cash — short equities &amp; growth</text>
+          <text x="690" y="26" textAnchor="end" fontSize="10" fontWeight="800" fill={WRN}>Q1 OVERHEATING <tspan fontWeight="600" fill={MU}>· USD ↔/↓ real yields · gold ↑ hedge</tspan></text>
+          <text x="690" y="38" textAnchor="end" fontSize="10" fontWeight="600" fill={MU}>long commodities · energy · value — short long-duration bonds</text>
+          <text x="30" y="380" fontSize="10" fontWeight="800" fill={SB}>Q3 DEFLATION / RECESSION <tspan fontWeight="600" fill={MU}>· USD ↑↑ flight to safety · gold ↓/↔</tspan></text>
+          <text x="30" y="392" fontSize="10" fontWeight="600" fill={MU}>long Treasuries · defensives — short commodities · AUD &amp; NZD</text>
+          <text x="690" y="380" textAnchor="end" fontSize="10" fontWeight="800" fill={SB}>Q4 GOLDILOCKS / RECOVERY <tspan fontWeight="600" fill={MU}>· USD ↓ risk-on outflow · gold ↓</tspan></text>
+          <text x="690" y="392" textAnchor="end" fontSize="10" fontWeight="600" fill={MU}>long tech/growth · crypto · high-yield — short USD · CHF · JPY</text>
           {dots.map(p => (
             <g key={p.name}>
               <title>{p.tip}</title>
@@ -183,12 +183,12 @@ export function RegimeMatrix({ trades30, positions, accounts }) {
           <QuadCard q={quadCards[1]} /><QuadCard q={quadCards[3]} />
         </div>
       </div>
-      <span style={{ fontSize: 8.5, color: MU }}>positions are the classic growth × inflation playbook for each group the bot trades — center = cash-like calm, outer ring = highest volatility · blue label = group is net positive over 30D, red = net negative</span>
+      <span style={{ fontSize: 10, color: MU }}>positions are the classic growth × inflation playbook for each group the bot trades — center = cash-like calm, outer ring = highest volatility · blue label = group is net positive over 30D, red = net negative</span>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, borderTop: `1px solid ${EDG}`, paddingTop: 5 }}>
         {OIA.map(([title, txt, topBorder]) => (
           <div key={title} style={{ display: 'flex', flexDirection: 'column', gap: 2, ...(topBorder ? { borderTop: `1px solid ${EDG}`, paddingTop: 4 } : {}) }}>
-            <span style={{ fontSize: 9.5, fontWeight: 800 }}>{title}</span>
-            <span style={{ fontSize: 8.5, lineHeight: 1.45, color: SB }}>{txt}</span>
+            <span style={{ fontSize: 10, fontWeight: 800 }}>{title}</span>
+            <span style={{ fontSize: 10, lineHeight: 1.45, color: SB }}>{txt}</span>
           </div>
         ))}
       </div>
@@ -201,13 +201,13 @@ export function BalanceInOut() {
     <div style={{ ...panel, gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: ACC }}>Balance in / out — deposits, withdrawals &amp; transfers</span>
-        <span style={{ fontSize: 9.5, color: SB }}>non-trading cash flows · excluded from P&amp;L, carry-forward adjusts on the transaction date</span>
+        <span style={{ fontSize: 10, color: SB }}>non-trading cash flows · excluded from P&amp;L, carry-forward adjusts on the transaction date</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>net —</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
         <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
       </div>
-      <span style={{ fontSize: 9.5, color: MU, padding: '4px 0' }}>
+      <span style={{ fontSize: 10, color: MU, padding: '4px 0' }}>
         No transfers recorded — the agent does not ingest broker cash-flow events yet. Rows appear collect-forward once deposit/withdrawal tracking is built; nothing here is ever reconstructed by guesswork.
       </span>
     </div>
@@ -217,40 +217,40 @@ export function BalanceInOut() {
 /** Real values where the APIs provide them; '—' where not collected. */
 export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
-  const chip = { fontSize: 8.5, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
+  const chip = { fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : '$' + Math.round(v).toLocaleString('en-US'))
   return (
     <div style={{ ...panel, gap: 4 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-special-text)' }}>Data feed — core universal essentials</span>
-        <span style={{ fontSize: 9.5, color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
+        <span style={{ fontSize: 10, color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
         <div style={box}>
           <span style={{ fontSize: 10, fontWeight: 800 }}>OHLCV data</span>
-          <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>Open · High · Low · Close · Volume across multiple timeframes</span>
+          <span style={{ fontSize: 10, color: SB, lineHeight: 1.4 }}>Open · High · Low · Close · Volume across multiple timeframes</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {['1m', '15m', '1h', '4h', '1D'].map(tf => <span key={tf} style={chip}>{tf}</span>)}
           </div>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>watchlist symbols stream per scan cycle · {clock}</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>watchlist symbols stream per scan cycle · {clock}</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 10, fontWeight: 800 }}>Account &amp; portfolio state</span>
-          <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>Live cash, available margin, open positions, unrealized P&amp;L</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>cash {money(balance)} · margin avail {money(freeMargin)}</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount} open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
+          <span style={{ fontSize: 10, color: SB, lineHeight: 1.4 }}>Live cash, available margin, open positions, unrealized P&amp;L</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>cash {money(balance)} · margin avail {money(freeMargin)}</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount} open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 10, fontWeight: 800 }}>Execution parameters</span>
-          <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>Bid-ask spreads, fees, latency, slippage thresholds</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>spread &amp; fees recorded per trade (forensics columns) — no live feed here</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>latency <span style={{ fontWeight: 800, color: ACC }}>—</span> · captured at entry per trade</span>
+          <span style={{ fontSize: 10, color: SB, lineHeight: 1.4 }}>Bid-ask spreads, fees, latency, slippage thresholds</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>spread &amp; fees recorded per trade (forensics columns) — no live feed here</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>latency <span style={{ fontWeight: 800, color: ACC }}>—</span> · captured at entry per trade</span>
         </div>
         <div style={box}>
           <span style={{ fontSize: 10, fontWeight: 800 }}>Risk controls</span>
-          <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>Stop-loss limits, take-profit triggers, max drawdown caps</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>SL set {slSet}/{openCount} open · TP set {tpSet}/{openCount}</span>
-          <span style={{ fontSize: 8.5, color: MU, fontVariantNumeric: 'tabular-nums' }}>max drawdown {dailyLossPct != null ? `${(dailyLossPct * 100).toFixed(0)}%/day` : '—'} · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed ? 'armed' : 'off'}</span></span>
+          <span style={{ fontSize: 10, color: SB, lineHeight: 1.4 }}>Stop-loss limits, take-profit triggers, max drawdown caps</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>SL set {slSet}/{openCount} open · TP set {tpSet}/{openCount}</span>
+          <span style={{ fontSize: 10, color: MU, fontVariantNumeric: 'tabular-nums' }}>max drawdown {dailyLossPct != null ? `${(dailyLossPct * 100).toFixed(0)}%/day` : '—'} · equity stop <span style={{ fontWeight: 800, color: ACC }}>{equityStopArmed ? 'armed' : 'off'}</span></span>
         </div>
       </div>
     </div>
