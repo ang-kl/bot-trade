@@ -187,6 +187,37 @@ export function setGlobalHalt(db, on) {
   }
 }
 
+/**
+ * M3 account tags: one line per enabled registry account — login (or internal
+ * id), LIVE/demo, balance from the acct: namespace (global key fallback for
+ * the selected account), and its open-position count (NULL-account legacy
+ * rows count for the selected account). Empty array when the registry has
+ * fewer than two enabled rows — the single-account /status stays untouched.
+ */
+export function fmtAccountLines(db) {
+  let accounts = []
+  try {
+    accounts = db.prepare(
+      'SELECT account_id, trader_login, is_live FROM accounts WHERE enabled = 1 ORDER BY is_live DESC, account_id'
+    ).all()
+  } catch { return [] }
+  if (accounts.length < 2) return []
+  const selected = getState(db, 'ctrader_account_id') || null
+  return accounts.map(a => {
+    const id = String(a.account_id)
+    const scoped = Number(getState(db, `acct:${id}:account_balance_usd`))
+    const bal = Number.isFinite(scoped) && scoped > 0
+      ? scoped
+      : (id === selected ? Number(getState(db, 'account_balance_usd')) || null : null)
+    const isSelected = id === selected
+    const open = db.prepare(
+      `SELECT COUNT(*) AS n FROM trades WHERE status = 'open'
+        AND (account_id = ? ${isSelected ? 'OR account_id IS NULL' : ''})`
+    ).get(id).n
+    return `  ${isSelected ? '▶' : '·'} ${a.trader_login || id} ${a.is_live ? 'LIVE' : 'demo'} · $${bal != null ? bal.toFixed(2) : '?'} · ${open} open`
+  })
+}
+
 function fmtStatus(db) {
   const on = (k, dflt) => (getState(db, k) ?? dflt)
   let matrix = {}
@@ -204,6 +235,10 @@ function fmtStatus(db) {
     `working pending orders: ${pend.map(p => `${p.symbol} ${p.timeframe}`).join(', ') || 'none'}`,
     `open positions: ${pos.map(p => `${p.symbol} ${String(p.side).toUpperCase()}`).join(', ') || 'flat'}`,
     `balance: $${Number(getState(db, 'account_balance_usd')) || '?'}`,
+    ...(() => {
+      const lines = fmtAccountLines(db)
+      return lines.length ? ['accounts:', ...lines] : []
+    })(),
     `last error: ${on('last_loop_error', 'none')}`,
   ].join('\n')
 }

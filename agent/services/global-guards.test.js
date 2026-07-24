@@ -153,3 +153,27 @@ test('asymmetric merge: global guards never loosen a per-account veto', () => {
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
 })
+
+test('telegram /status account lines: only with 2+ enabled accounts, per-account balance and opens', async () => {
+  const { fmtAccountLines } = await import('./telegram-control.js')
+  const db = fresh() // selected account A, global balance 10000
+  const { syncSelectedAccount, upsertAccount } = await import('./account-registry.js')
+  // Single enabled account → no lines (legacy /status untouched).
+  syncSelectedAccount(db, 'A', false, '5306502')
+  assert.deepEqual(fmtAccountLines(db), [])
+  // Enable a second account with its own stamped balance.
+  upsertAccount(db, { accountId: 'B', traderLogin: '5268549', isLive: false })
+  db.prepare(`UPDATE accounts SET enabled = 1 WHERE account_id = 'B'`).run()
+  setState(db, 'acct:B:account_balance_usd', '538.58')
+  insertOpenTrade(db, { account: 'B', symbol: 'XAUUSD' })
+  insertOpenTrade(db, { account: null, symbol: 'US30' }) // legacy NULL → selected A
+  const lines = fmtAccountLines(db)
+  assert.equal(lines.length, 2)
+  const a = lines.find(l => l.includes('5306502'))
+  const b = lines.find(l => l.includes('5268549'))
+  assert.match(a, /▶/)
+  assert.match(a, /\$10000\.00/)
+  assert.match(a, /1 open/, 'legacy NULL open trade counts for the selected account')
+  assert.match(b, /\$538\.58/)
+  assert.match(b, /1 open/)
+})
