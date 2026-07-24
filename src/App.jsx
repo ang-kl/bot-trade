@@ -6,6 +6,7 @@ import Performance from './pages/Performance.jsx'
 import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
 import Accounts from './pages/Accounts.jsx'
+import AccountsAudit from './pages/AccountsAudit.jsx'
 import Tune from './pages/Tune.jsx'
 import Risk from './pages/Risk.jsx'
 import Connect from './pages/Connect.jsx'
@@ -166,6 +167,9 @@ export default function App() {
             <Route path="/monitor" element={<Navigate to="/desk" replace />} />
             <Route path="/trade" element={<Trade />} />
             <Route path="/accounts" element={<Accounts />} />
+            {/* Sub-page of Accounts (owner: "Trade audit will be a sub
+                page in accounts") — shares the Accounts nav tab. */}
+            <Route path="/accounts/audit" element={<AccountsAudit />} />
             <Route path="/tune" element={<Tune />} />
             <Route path="/risk" element={<Risk />} />
             <Route path="/connect" element={<Connect />} />
