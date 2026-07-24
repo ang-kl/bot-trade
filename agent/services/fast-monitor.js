@@ -149,7 +149,13 @@ export async function runFastMonitor(db, creds, deps = {}) {
           const spikeExpiry = spikeUntil.get(pos.symbol)
           if (spikeExpiry && now() < spikeExpiry) relVol = Math.max(relVol || 0, 2)
         }
-        const due = now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
+        // During an active spike window the per-position cadence is bypassed
+        // entirely — the position re-prices on EVERY ticker tick (default 3s)
+        // so profit-banking/exit rules act inside the spike, not after it
+        // (owner 2026-07-24: sub-3-second spike losses).
+        const spikeActive = (spikeUntil.get(pos.symbol) || 0) > now()
+        const due = spikeActive ||
+          now() - (lastCheckAt.get(pos.id) || 0) >= effectiveCadenceMs(overrideMin, relVol, baseMin)
         if (!due) continue
         lastCheckAt.set(pos.id, now())
 
@@ -217,6 +223,12 @@ export async function runFastMonitor(db, creds, deps = {}) {
  */
 export function startFastMonitor(db, getCreds, deps = {}) {
   let tick = 0
+  // Owner 2026-07-24: default tick 3s (was 30s) so spike windows re-price at
+  // tick speed; FAST_MONITOR_MS overrides, floored at 1s. Sub-task cadences
+  // below are TIME-based (everyTicks) so a faster ticker doesn't multiply
+  // pnl-watch / watchdog / cpp-probe traffic.
+  const tickMs = deps.tickMs ?? Math.max(1_000, Number(process.env.FAST_MONITOR_MS) || 3_000)
+  const everyTicks = (secs) => Math.max(1, Math.round((secs * 1000) / tickMs))
   const t = setInterval(async () => {
     tick++
     let tickErr = null
@@ -245,7 +257,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     }
     // P&L drift watch — every 2nd tick (~60s): Telegram warns when an open
     // trade crosses ±N% of balance (owner audit: nothing warned on drift).
-    if (tick % 2 === 0) {
+    if (tick % everyTicks(60) === 0) {
       try {
         const creds = getCreds(db)
         if (creds?.ready) {
@@ -259,8 +271,8 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
       hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
-      if (tick % 4 === 0) await hb.probeCppExec(db)
-      if (tick % 2 === 0) {
+      if (tick % everyTicks(120) === 0) await hb.probeCppExec(db)
+      if (tick % everyTicks(60) === 0) {
         hb.checkHeartbeats(db, {
           notify: (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
@@ -268,7 +280,10 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] watchdog failed:', err.message)
     }
-  }, deps.tickMs ?? Math.max(5_000, Number(process.env.FAST_MONITOR_MS) || 30_000))
+  // Owner 2026-07-24: default tick 3s (was 30s) so profit-banking and stop
+  // management react inside spike moves; FAST_MONITOR_MS overrides, floored
+  // at 1s to keep broker RPC volume inside the 50 req/s connection budget.
+  }, tickMs)
   t.unref?.()
   return () => clearInterval(t)
 }
