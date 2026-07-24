@@ -968,6 +968,12 @@ export default function Performance() {
       }
     })
     let floating = rows.filter(r => r.marketOpen !== false)
+    // Owner (2026-07-24): "give market open trades as priority in the
+    // table" — confirmed-open-market rows first, unknown-market rows
+    // (marketOpen == null) after; a stable sort keeps everything else in
+    // its existing order.
+    const priority = (r) => (r.marketOpen === true ? 0 : 1)
+    floating = [...floating].sort((a, b) => priority(a) - priority(b))
     const closed = rows.filter(r => r.marketOpen === false)
     // Owner (2026-07-24): during the FX weekend (Fri 17:00 NY → Sun 17:00
     // NY) the symbols still trading are the 24h ones — they get their own
@@ -1459,7 +1465,12 @@ export default function Performance() {
 
         {/* Today + Open now — exact prototype row. */}
         <div id="sec-today-open" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148, flex: '1 1 420px' }}>
+          {/* Owner (2026-07-24): "Today... should be squeezed to just
+              right, give more space for the other two tables" — shrink to
+              its content width instead of claiming an even flex share; the
+              hourly table still scrolls horizontally inside it rather than
+              stretching the card. */}
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148, maxWidth: 280, flex: '0 1 260px' }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
               <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={todayHourly}
@@ -1480,7 +1491,7 @@ export default function Performance() {
             border: 'var(--color-warning-border)', titleCol: P_WRN,
             note: 'market closed — the bot cannot exit these until their market reopens; P&L is the latest computed value before/at close',
           }].filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => (
-            <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 320 }}>
+            <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                 <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
