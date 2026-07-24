@@ -690,6 +690,26 @@ export function initDB(dbPath) {
     }
   }
 
+  // Trade forensics (2026-07-24, Performance Ledger collect-forward): the
+  // execution-quality and market-context fields the dashboard's trade
+  // anatomy shows. Captured at fill time going FORWARD; historical rows stay
+  // NULL and render as "—" — never fabricated.
+  {
+    const cols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    for (const [name, type] of [
+      ['slippage_price', 'REAL'],      // signed, adverse-positive, price units
+      ['spread_at_entry', 'REAL'],     // bid/ask spread when the order fired
+      ['entry_latency_ms', 'INTEGER'], // submit → execution-event round trip
+      ['commission', 'REAL'],          // broker commission (from deal history)
+      ['swap', 'REAL'],                // swap/rollover cost (from deal history)
+      ['rvol_open', 'REAL'],           // relative 1m volume at open
+      ['vwap_side_open', 'TEXT'],      // 'above' | 'below' session VWAP at open
+      ['obv_open', 'TEXT'],            // reserved (no OBV series helper yet)
+    ]) {
+      if (!cols.has(name)) db.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
+    }
+  }
+
   // Now that all columns exist, create indexes
   db.exec(INDEXES);
 

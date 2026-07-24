@@ -53,3 +53,21 @@ test('pruneDecisionLog removes only rows past retention', () => {
   assert.equal(left.length, 1)
   assert.equal(left[0].symbol, 'EURUSD')
 })
+
+test('forensics columns exist on trades and accept a collect-forward row', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, status, opened_at,
+      slippage_price, spread_at_entry, entry_latency_ms, rvol_open, vwap_side_open, commission, swap)
+    VALUES ('EURUSD', 'BUY', 1.1, 'open', datetime('now'), 0.00012, 0.00008, 342, 1.4, 'above', -0.7, -0.12)
+  `).run()
+  const row = db.prepare(`SELECT * FROM trades`).get()
+  assert.equal(row.vwap_side_open, 'above')
+  assert.equal(row.entry_latency_ms, 342)
+  assert.equal(row.rvol_open, 1.4)
+  // Historical rows keep NULLs — the UI shows "—", never fabricated numbers.
+  db.prepare(`INSERT INTO trades (symbol, side, entry_price, status, opened_at) VALUES ('US30','SELL',40000,'open',datetime('now'))`).run()
+  const old = db.prepare(`SELECT slippage_price, vwap_side_open FROM trades WHERE symbol='US30'`).get()
+  assert.equal(old.slippage_price, null)
+  assert.equal(old.vwap_side_open, null)
+})
