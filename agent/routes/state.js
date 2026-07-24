@@ -899,6 +899,7 @@ export default function stateRouter(db) {
           } catch { return null }
         })(),
         execGuard: parse('exec_guard_json', '{}'),
+        globalGuards: parse('global_guards_json', '{}'),
         vpo: {
           enabled: (getState(db, 'vpo_enabled') || 'false') === 'true',
           config: parse('vpo_config_json', '[]'),
