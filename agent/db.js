@@ -649,6 +649,25 @@ export function initDB(dbPath) {
     }
   }
 
+  // Multi-account migration, milestone M1 (docs/multi-account-migration-
+  // plan.md Phase 3 M1): every per-account table gains a nullable
+  // account_id column, additively. NULL means "written before scoping (or
+  // by a global, account-independent pass)" — the boot backfill in
+  // services/account-registry.js stamps historical rows with the account
+  // they were created under (single-account era ⇒ unambiguous). scans and
+  // analyses are account-independent market observations and may stay NULL
+  // ("global") by design.
+  for (const table of [
+    'trades', 'scans', 'analyses', 'signals', 'pending_orders',
+    'broker_orders', 'risk_events', 'trade_postmortems', 'pending_signals',
+    'cup_handle_diagnostics', 'performance_snapshots',
+  ]) {
+    const cols = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+    if (!cols.has('account_id')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN account_id TEXT`);
+    }
+  }
+
   // Now that all columns exist, create indexes
   db.exec(INDEXES);
 

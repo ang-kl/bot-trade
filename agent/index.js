@@ -118,9 +118,11 @@ if (envAccountId && !getState(db, 'ctrader_account_id')) {
 // currently-selected account exists in the registry and is the single
 // enabled row — behaviour-identical to the pre-registry boot.
 try {
-  const { ensureAccountRegistry } = await import('./services/account-registry.js')
+  const { ensureAccountRegistry, backfillAccountIds } = await import('./services/account-registry.js')
   const reg = ensureAccountRegistry(db)
   console.log(`[boot] account registry: ${reg.total} account(s), enabled=${reg.enabled ?? 'none'}`)
+  const bf = backfillAccountIds(db)
+  if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
 } catch (e) {
   console.warn('[boot] account registry init failed (non-fatal):', e.message)
 }

@@ -294,7 +294,7 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
   const rows = db.prepare(`
     SELECT t.id, t.symbol, t.side, t.entry_price, t.exit_price, t.sl_price,
            t.net_pnl, t.close_reason, t.opened_at, t.closed_at, t.tp_price,
-           t.confluence_count,
+           t.confluence_count, t.account_id,
            COALESCE(t.label_strategy, t.strategy) AS strategy,
            t.label_timeframe AS timeframe,
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
@@ -378,13 +378,16 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       INSERT INTO trade_postmortems
         (trade_id, symbol, strategy, timeframe, side, entry_price, exit_price, sl_price,
          net_pnl, r_multiple, classification, detail, bars_json,
-         result, lesson, alpha_decay, entry_quality)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         result, lesson, alpha_decay, entry_quality, account_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       t.id, t.symbol, t.strategy || null, tf, t.side, t.entry_price, t.exit_price, t.sl_price,
       t.net_pnl, rMult, verdict.classification, verdict.detail,
       JSON.stringify(replay.map(b => [b.t, b.o, b.h, b.l, b.c, b.v ?? null])),
       result, lesson, decay, eq,
+      // M1 lesson scoping (plan D5): the lesson inherits its TRADE's account
+      // so demo lessons can never tune the live account once reads scope.
+      t.account_id ?? null,
     )
     classified++
   }
