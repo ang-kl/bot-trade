@@ -2356,7 +2356,7 @@ export default function actionsRouter(db) {
       if (!accessToken) throw Object.assign(new Error('No access token stored — connect cTrader first'), { httpStatus: 400 })
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
-      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl, traderBalance } = await import('../lib/ctrader-ws.js')
+      const { wsReconcile, wsSymbolsByIds, wsGetSymbolsList, wsGetLastCloses, wsGetDailyOhlcv, wsGetTrader, wsGetAssets, wsGetUnrealizedPnl, traderBalance } = await import('../lib/ctrader-ws.js')
 
       let accounts = await listCtraderAccounts(accessToken)
       const selectedId = getState(db, 'ctrader_account_id')
@@ -2450,14 +2450,22 @@ export default function actionsRouter(db) {
           } catch { /* fall back to estimates */ }
           // Live bid/ask for position symbols only (cTrader's compulsory
           // columns) — a handful of one-shot quotes, fetched in parallel.
+          const posSymbolIds = [...new Set(rawPositions.map(p => p.tradeData?.symbolId).filter(Boolean))]
           let spots = {}
           try {
-            const posSymbolIds = [...new Set(rawPositions.map(p => p.tradeData?.symbolId).filter(Boolean))]
             const rs2 = await Promise.all(posSymbolIds.map(id =>
               wsGetSpotOnce(host, clientId, clientSecret, accessToken, acct.accountId, id).then(q => [id, q]).catch(() => [id, null])
             ))
             spots = Object.fromEntries(rs2)
           } catch { /* bid/ask omitted */ }
+          // Latest daily OHLCV per position symbol (owner: open-trade tables
+          // need current price, OHLC, volume). For a closed market this is
+          // the LAST SESSION's bar — labeled by its own timestamp, never
+          // passed off as live. Best-effort like every enrichment here.
+          let dailyBars = {}
+          try {
+            dailyBars = await wsGetDailyOhlcv(host, clientId, clientSecret, accessToken, acct.accountId, posSymbolIds)
+          } catch { /* OHLCV omitted */ }
 
           const money = (v) => (v == null ? null : v / Math.pow(10, acct.moneyDigits ?? 2))
           // volume and lotSize are both in cents-of-units, so lots is their
@@ -2583,6 +2591,8 @@ export default function actionsRouter(db) {
               tps: ladder.length ? ladder : null,
               bid: spots[td.symbolId]?.bid ?? null,
               ask: spots[td.symbolId]?.ask ?? null,
+              day: dailyBars[td.symbolId] ?? null, // latest 1d bar {t,o,h,l,c,v}
+
               swap: swapMoney,
               commission: commissionMoney,
               usedMargin: money(p.usedMargin),
