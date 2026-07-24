@@ -90,11 +90,26 @@ function ageSecOf(row, now) {
  * fast-monitor ticker so it survives a dead main loop. Returns the events it
  * raised (tests assert on these).
  */
-export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec = null } = {}) {
+// Deploy grace window (owner 2026-07-24: every merge → Railway restart →
+// a burst of STALLED/RECOVERED pairs; "these are common?"). For the first
+// GRACE_SEC after process boot the watchdog stays quiet: stalls caused by
+// the rebuild gap are expected, recoveries clear silently, and ONE
+// "service restarted" notice replaces the flood. Real stalls that persist
+// past the grace window alert exactly as before.
+export const BOOT_GRACE_SEC = 300
+let bootAtMs = Date.now()
+let restartNoticeSent = false
+export function _resetBootStateForTests(ms = Date.now()) { bootAtMs = ms; restartNoticeSent = false }
+
+export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec = null, bootMs = null } = {}) {
   const lsec = loopSec ?? loopSecFrom(db)
   const say = (text) => { try { notify?.(text) } catch { /* alerting must never throw */ } }
   const events = []
   const rows = db.prepare('SELECT * FROM controller_heartbeats').all()
+  // Negative elapsed (injected past `now` in tests, or clock skew) is NOT
+  // grace — grace only covers the real minutes right after this boot.
+  const bootElapsedSec = (now.getTime() - (bootMs ?? bootAtMs)) / 1000
+  const inGrace = bootElapsedSec >= 0 && bootElapsedSec < BOOT_GRACE_SEC
   for (const row of rows) {
     const def = CONTROLLERS[row.name]
     if (!def) continue
@@ -103,12 +118,28 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
     const age = ageSecOf(row, now)
 
     if (age > limit && !row.stalled) {
+      if (inGrace) {
+        // Deploy gap — expected. One consolidated notice instead of a
+        // per-controller flood; the stalled flag stays clear so the later
+        // recovery is silent too. A stall persisting past the grace window
+        // trips the normal alert on a later pass.
+        if (!restartNoticeSent) {
+          restartNoticeSent = true
+          say(`♻️ Service restarted (deploy) — controllers resuming. Stall alerts paused for the first ${Math.round(BOOT_GRACE_SEC / 60)} minutes; anything still stalled after that will alert.`)
+          events.push({ name: row.name, event: 'restart_notice' })
+        }
+        continue
+      }
       db.prepare('UPDATE controller_heartbeats SET stalled = 1 WHERE name = ?').run(row.name)
       const ageMin = Math.round(age / 60)
       say(`🔴 CONTROLLER STALLED: ${def.label} last ran ${ageMin}m ago (expected every ~${Math.round(expected / 60) || 1}m). Positions may be unmanaged — check the Railway service.`)
       events.push({ name: row.name, event: 'stalled', ageSec: Math.round(age) })
     } else if (age <= limit && row.stalled) {
       db.prepare('UPDATE controller_heartbeats SET stalled = 0 WHERE name = ?').run(row.name)
+      if (inGrace) {
+        events.push({ name: row.name, event: 'recovered_silent' })
+        continue
+      }
       say(`🔵 CONTROLLER RECOVERED: ${def.label} is beating again.`)
       events.push({ name: row.name, event: 'recovered' })
     }

@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
-  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec,
+  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, _resetBootStateForTests,
 } from './heartbeat.js'
 
 const T0 = new Date('2026-07-17T12:00:00Z')
@@ -163,4 +163,36 @@ test('pingSidecar (exec-engine): js mode is trivially alive with no HTTP call', 
   const { pingSidecar } = await import('../lib/exec-engine.js')
   delete process.env.EXEC_ENGINE
   assert.deepEqual(await pingSidecar(), { ok: true, mode: 'js' })
+})
+
+test('deploy grace window: one restart notice, silent recoveries, real stalls alert after grace', () => {
+  _resetBootStateForTests()
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  // Two controllers whose last beat predates the "restart" by far.
+  beat(db, 'main_loop', { now: T0 })
+  beat(db, 'autopilot', { now: T0 })
+  const bootMs = plus(2000).getTime() // process "booted" at T0+2000s
+
+  // First watchdog pass 60s after boot (in grace): ONE restart notice, no
+  // per-controller stall alerts, no stalled flags written.
+  const ev1 = checkHeartbeats(db, { now: plus(2060), notify, loopSec: 300, bootMs })
+  assert.equal(ev1.filter(e => e.event === 'restart_notice').length, 1)
+  assert.equal(ev1.filter(e => e.event === 'stalled').length, 0)
+  assert.equal(alerts.length, 1)
+  assert.match(alerts[0], /restarted/)
+  assert.equal(db.prepare(`SELECT COUNT(*) n FROM controller_heartbeats WHERE stalled = 1`).get().n, 0)
+
+  // Controllers resume inside grace → nothing further said.
+  beat(db, 'main_loop', { now: plus(2100) })
+  beat(db, 'autopilot', { now: plus(2100) })
+  const ev2 = checkHeartbeats(db, { now: plus(2160), notify, loopSec: 300, bootMs })
+  assert.deepEqual(ev2, [])
+  assert.equal(alerts.length, 1)
+
+  // A controller STILL dead after the grace window alerts normally.
+  const ev3 = checkHeartbeats(db, { now: plus(2000 + 400 + 3000), notify, loopSec: 300, bootMs })
+  assert.ok(ev3.some(e => e.event === 'stalled'))
+  assert.ok(alerts.some(a => /STALLED/.test(a)))
 })
