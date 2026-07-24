@@ -70,11 +70,31 @@ const STAT_SESSIONS = [
   { key: 'NY', hint: 'NYSE 09:30–16:00 EDT', fromMin: 810, toMin: 1200 },
 ]
 
-// Most recent 22:00 UTC — the trading-day anchor, same maths as the agent.
+// Trading-day anchor — see dayAnchorMs above (FX day open, 17:00 NY).
+// Owner (2026-07-24): "the cut off of new day based on Forex open new day"
+// — the FX trading day rolls at 17:00 America/New_York (5pm NY), DST-aware
+// via the browser's tz database rather than a fixed UTC hour. Computed from
+// the NY wall clock: distance since the last 17:00 NY, subtracted from now.
+const FX_DAY_OPEN_NY_MIN = 17 * 60
+const nyWallClockMin = (nowMs) => {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(nowMs))
+  const get = (t) => parts.find(p => p.type === t)?.value
+  return { wd: get('weekday'), min: (Number(get('hour')) % 24) * 60 + Number(get('minute')) }
+}
 const dayAnchorMs = (nowMs) => {
-  const d = new Date(nowMs)
-  const today22 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 22)
-  return nowMs >= today22 ? today22 : today22 - D
+  const { min } = nyWallClockMin(nowMs)
+  const sinceAnchorMin = min >= FX_DAY_OPEN_NY_MIN ? min - FX_DAY_OPEN_NY_MIN : min + (24 * 60 - FX_DAY_OPEN_NY_MIN)
+  const secondsPastMin = (Math.floor(nowMs / 1000) % 60) + (nowMs % 1000) / 1000
+  return nowMs - sinceAnchorMin * 60_000 - secondsPastMin * 1000
+}
+// FX weekend: from Friday 17:00 NY to Sunday 17:00 NY the FX market is
+// closed — only 24h-trading symbols (crypto) still move.
+const isFxWeekend = (nowMs) => {
+  const { wd, min } = nyWallClockMin(nowMs)
+  if (wd === 'Sat') return true
+  if (wd === 'Fri') return min >= FX_DAY_OPEN_NY_MIN
+  if (wd === 'Sun') return min < FX_DAY_OPEN_NY_MIN
+  return false
 }
 const closedMs = (row) => {
   const raw = String(row.closed_at || '').replace(' ', 'T')
@@ -757,11 +777,20 @@ export default function Performance() {
         day: p2.day || null,
       }
     })
-    const floating = rows.filter(r => r.marketOpen !== false)
+    let floating = rows.filter(r => r.marketOpen !== false)
     const closed = rows.filter(r => r.marketOpen === false)
+    // Owner (2026-07-24): during the FX weekend (Fri 17:00 NY → Sun 17:00
+    // NY) the symbols still trading are the 24h ones — they get their own
+    // collapsible table instead of mixing into the floating list. Broker
+    // truth decides: market_open === true on a weekend IS the 24h test.
+    let weekend24 = []
+    if (isFxWeekend(loadedAt)) {
+      weekend24 = floating.filter(r => r.marketOpen === true)
+      floating = floating.filter(r => r.marketOpen !== true)
+    }
     const tot = (l) => (l.some(r => r.pnl != null) ? l.reduce((s, r) => s + (r.pnl ?? 0), 0) : null)
-    return { floating, closed, floatTot: tot(floating), closedTot: tot(closed) }
-  }, [positions])
+    return { floating, closed, weekend24, floatTot: tot(floating), closedTot: tot(closed), weekendTot: tot(weekend24) }
+  }, [positions, loadedAt])
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
@@ -1025,7 +1054,7 @@ export default function Performance() {
             ))}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since 22:00 UTC</span>
+                <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
                 <span style={{ marginLeft: 'auto', fontSize: 15, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
               </div>
               <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
@@ -1241,9 +1270,9 @@ export default function Performance() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since 22:00 UTC</span>
-              <SectionTools id="today" title="Today · since 22:00 UTC" data={[today]}
-                toText={() => `Today · since 22:00 UTC · net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`}
+              <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
+              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={[today]}
+                toText={() => `Today · since FX day open (5pm NY) · net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`}
                 render={() => (
                   <div>
                     <div style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</div>
@@ -1280,6 +1309,29 @@ export default function Performance() {
           ))}
         </div>
 
+        {/* Weekend-only: 24h-trading symbols in their own collapsible table
+            (owner: "weekend has a separate table (with triangle collapse/
+            expand) for 24 hours trading symbols"). Native <details> gives
+            the triangle marker. Only rendered during the FX weekend. */}
+        {openSplit.weekend24.length > 0 && (
+          <details open style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px' }}>
+            <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8, listStyle: 'revert' }}>
+              <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
+              <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: openSplit.weekendTot == null ? P_MU : openSplit.weekendTot >= 0 ? P_UP : P_DN }}>
+                {openSplit.weekend24.length} open · {openSplit.weekendTot != null ? signed(openSplit.weekendTot) : 'P&L —'}
+              </span>
+              <span style={{ fontSize: 12, color: P_MU }}>these markets trade through the weekend — the bot can still exit them</span>
+            </summary>
+            <div style={{ marginTop: 5 }}>
+              <SectionTools id="open-weekend24" title="24H symbols — weekend trading"
+                data={openSplit.weekend24.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, slAway: p2.sld, tpAway: p2.tpd }))}
+                toText={() => ['24H symbols — weekend trading', ...openSplit.weekend24.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
+                render={() => <OpenTableBody rows={openSplit.weekend24} />} />
+              <OpenTableBody rows={openSplit.weekend24} />
+            </div>
+          </details>
+        )}
+
         {/* Today by market session — owner's stats spec (Trades #, +$, −$,
             highest, lowest, average, sum, median) across SYD / SG / HK /
             JPN / EUR / NY exchange windows. Windows overlap, so session
@@ -1287,7 +1339,7 @@ export default function Performance() {
         <Card>
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 12, color: P_MU }}>closed trades since 22:00 UTC · bucketed by close time · fixed UTC windows (current DST) · sessions overlap</span>
+            <span style={{ fontSize: 12, color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap</span>
             <SectionTools id="sessions" title="Today by market session" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
@@ -1324,7 +1376,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Timeframe ledger</h3>
             <span className={`text-[11px] ${SUB}`}>
-              carry in → net → carry out · day rolls 22:00 UTC · week anchors Sun 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
+              carry in → net → carry out · day rolls at FX open (5pm NY) here · server ledger windows still anchor 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
             </span>
             <SectionTools id="ledger" title="Timeframe ledger" data={windows} toText={ledgerToText}
               render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} />} />
