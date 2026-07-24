@@ -456,6 +456,34 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/global-guards — { halt?, portfolioDailyLossUsd?,
+  // maxTotalOpenPositions? } sets the 5A portfolio-wide capital-protection
+  // knobs (evaluated across ALL accounts inside the risk gate). null/0
+  // clears a numeric knob back to off. All knobs default off.
+  // -----------------------------------------------------------------------
+  router.post('/global-guards', (req, res) => {
+    try {
+      const body = req.body || {}
+      let stored = {}
+      try { stored = JSON.parse(getState(db, 'global_guards_json') || '{}') } catch { /* fresh */ }
+      if (typeof body.halt === 'boolean') stored.halt = body.halt
+      for (const k of ['portfolioDailyLossUsd', 'maxTotalOpenPositions']) {
+        if (body[k] !== undefined) {
+          if (body[k] === null || Number(body[k]) === 0) { stored[k] = null; continue }
+          const v = Number(body[k])
+          if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: `${k} must be a non-negative number or null` })
+          stored[k] = v
+        }
+      }
+      setState(db, 'global_guards_json', JSON.stringify(stored))
+      console.log('[actions] global guards updated:', stored)
+      res.json({ ok: true, guards: stored })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/asset-controller — { class, beTriggerR?, partialTriggerR?,
   // runnerTriggerR?, runnerTrailR? } sets one asset class's trade-management
   // triggers (owner: "separate controllers for forex/indices/commodities").

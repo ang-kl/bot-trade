@@ -18,6 +18,7 @@ import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
+import { evaluateGlobalGuards } from './global-guards.js'
 
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
@@ -403,6 +404,16 @@ export function evaluateTrade(db, proposal, configOverride) {
   const balance = getAccountBalance(db, acct)
   const leverage = getAccountLeverage(db, config, acct)
   const checks = { balance, leverage, account_id: acct }
+
+  // ---- 0. 5A global capital protection -----------------------------------
+  // Portfolio-wide guards evaluated across ALL accounts' rows before any
+  // per-account rule: a global halt, a portfolio daily-loss cap, and a total
+  // open-position cap. Asymmetric by design — this layer can only ADD a
+  // veto, never loosen a per-account one. All knobs default OFF (no
+  // global_guards_json → no-op).
+  const gg = evaluateGlobalGuards(db)
+  Object.assign(checks, gg.checks)
+  if (!gg.ok) return veto(gg.reason, checks, proposal)
 
   // ---- 1. Daily loss limit ------------------------------------------------
   // Prefer % of balance when set; fall back to absolute USD cap.
