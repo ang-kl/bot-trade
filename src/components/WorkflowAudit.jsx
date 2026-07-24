@@ -186,9 +186,113 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
     const on = flt === id
     return { id, label, n: trades.filter(filterFn).length, col: on ? '#fff' : TX, bg: on ? ACC : 'transparent', bd: on ? ACC : EDG }
   })
+  // Mobile chip labels — verbatim from the mobile prototype's FL.
+  const MOBILE_LABELS = { all: 'All', clean: 'Full pipeline', 'early-ok': 'Early · justified', 'early-bad': 'Early · premature' }
+  // Mobile phase stat chips — exact copy from the mobile prototype.
+  const phases = [
+    { name: 'P1 · Lab', stat: trades.length ? `${nLab}/${trades.length} ✓` : '—', sub: 'backtest → coded params', col: ACC },
+    { name: 'P2 · Bridge', stat: trades.length ? `${nBridge}/${trades.length} ✓` : '—', sub: 'forward-tested on demo', col: WRN },
+    { name: 'P3 · Market', stat: trades.length ? `${trades.length - nEbad}/${trades.length} ✓` : '—', sub: 'autonomous management', col: VIO },
+  ]
+  // Mobile card rows — cardBg/cardBd + '· total' on the when line, per the
+  // mobile prototype's renderVals.
+  const mobileRows = trades.filter(fn).map(t => {
+    const bad = t.kind === 'early-bad'
+    const manual = t.kind.startsWith('early')
+    const last = bad ? 'bad' : t.kind === 'early-ok' ? 'warn' : 'end'
+    return {
+      id: t.id, sym: t.sym, sd: t.sd, sideCol: t.side === 'LONG' ? UP : DN, strat: t.strat,
+      when: t.when + ' · total ' + fmtD(t.dur),
+      lab: t.lab ? '✓' : '✕', labCol: t.lab ? UP : DN,
+      br: t.bridge ? '✓' : '✕', brCol: t.bridge ? UP : DN,
+      close: t.close, closeCol: t.close === 'Manual' ? (bad ? DN : WRN) : t.close === 'SL hit' ? DN : UP,
+      path: [
+        node('pending', 0, 'on'),
+        node('live', 1, 'on', fmtD(t.p2l)),
+        node('managed', 2, t.managed ? 'on' : 'off', fmtD(t.l2m), t.managed ? MU : DN),
+        node(manual ? 'early' : 'closed', 3, last, fmtD(t.m2c), bad ? DN : manual ? WRN : MU),
+      ],
+      note: t.note, noteCol: bad ? DN : t.kind === 'early-ok' ? WRN : SB,
+      cardBg: bad ? DNS : GL, cardBd: bad ? 'rgba(255,77,109,.4)' : t.kind === 'early-ok' ? 'rgba(255,196,102,.35)' : GBD,
+      pnl: mUsd(t.pnl), col: cCol(t.pnl),
+    }
+  })
+  // Mobile verdicts — the prototype's shortened copy + mobile paddings.
+  const mobileVerdicts = trades.length ? [
+    { title: 'Pipeline integrity', stat: Math.round(100 * clean.length / trades.length) + '%', txt: clean.length + ' of ' + trades.length + ' ran pending → live → managed → close untouched — the edge only exists while this stays high.', bd: GBD, tcol: ACC, ncol: UP },
+    { title: 'Early stops — justified', stat: String(nEok), txt: 'Coded/documented circuit breakers (news shock, regime invalidation) — protect the edge.', bd: 'rgba(255,196,102,.4)', tcol: WRN, ncol: WRN },
+    { title: 'Early stops — premature', stat: String(nEbad), txt: 'No logged event, thesis still valid — each degrades the statistical sample. Red cards above.', bd: 'rgba(255,77,109,.4)', tcol: DN, ncol: DN },
+  ] : []
+
+  // The stepper markup is IDENTICAL in both prototypes — one renderer.
+  const stepper = (path) => (
+    <span className="wf" style={{ display: 'flex', alignItems: 'center', padding: '12px 2px 10px', position: 'relative' }}>
+      {path.map(s => (
+        <span key={s.k} style={{ display: 'flex', alignItems: 'center', flex: s.grow, minWidth: 0, position: 'relative' }}>
+          <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 6.5, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
+          <span className="wf-seg" style={{ display: s.segShow, flex: 1, height: 2, borderRadius: 2, background: s.segBg, transformOrigin: 'left center' }} />
+          <span style={{ position: 'relative', display: 'flex', justifyContent: 'center' }}>
+            <span className={s.cls} style={{ width: 9, height: 9, borderRadius: s.rad, background: s.fill, border: `1.5px solid ${s.bd}`, boxShadow: `0 0 6px ${s.glow}` }} />
+            <span style={{ position: 'absolute', top: 12, fontSize: 6.5, fontWeight: 700, letterSpacing: '.02em', color: s.col, whiteSpace: 'nowrap' }}>{s.k}</span>
+          </span>
+        </span>
+      ))}
+    </span>
+  )
 
   return (
     <div ref={wrapRef} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* ============ MOBILE (below lg): the iPhone card layout ============ */}
+      <div className="lg:hidden" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 5 }}>
+          {phases.map(p => (
+            <div key={p.name} style={{ background: GL, border: `1px solid ${GBD}`, borderRadius: 10, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <span style={{ fontSize: 8.5, fontWeight: 800, color: p.col }}>{p.name}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: UP }}>{p.stat}</span>
+              <span style={{ fontSize: 7, color: MU }}>{p.sub}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+          {filters.map(f => (
+            <button key={f.id} type="button" onClick={() => setFlt(f.id)} aria-pressed={flt === f.id}
+              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 8.5, fontWeight: 700, color: f.col, background: f.bg, border: `1px solid ${f.bd}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+              {MOBILE_LABELS[f.id]} <span style={{ opacity: 0.65 }}>{f.n}</span>
+            </button>
+          ))}
+        </div>
+        {mobileRows.length === 0 && <span style={{ fontSize: 9.5, color: SB }}>No closed trades in this bucket yet.</span>}
+        {mobileRows.map(t => (
+          <div key={t.id} style={{ background: t.cardBg, border: `1px solid ${t.cardBd}`, borderRadius: 12, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ fontSize: 11, fontWeight: 800 }}>{t.sym}</span>
+              <span style={{ fontSize: 8.5, fontWeight: 700, color: t.sideCol, whiteSpace: 'nowrap' }}>{t.sd}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, color: t.col }}>{t.pnl}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ fontSize: 8, color: SB, fontVariantNumeric: 'tabular-nums' }}>{t.when}</span>
+              <span style={{ fontSize: 8, color: MU, textTransform: 'capitalize' }}>{t.strat}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 8, fontWeight: 700 }}>Lab <span style={{ color: t.labCol }}>{t.lab}</span> · Bridge <span style={{ color: t.brCol }}>{t.br}</span> · <span style={{ color: t.closeCol }}>{t.close}</span></span>
+            </div>
+            {stepper(t.path)}
+            <span style={{ fontSize: 8, lineHeight: 1.45, color: t.noteCol }}>{t.note}</span>
+          </div>
+        ))}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {mobileVerdicts.map(v => (
+            <div key={v.title} style={{ background: GL, border: `1px solid ${v.bd}`, borderRadius: 10, padding: '6px 9px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, color: v.tcol }}>{v.title}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: v.ncol }}>{v.stat}</span>
+              </div>
+              <span style={{ fontSize: 7.5, lineHeight: 1.4, color: SB }}>{v.txt}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ DESKTOP (lg+): the full audit table ============ */}
+      <div className="hidden lg:flex" style={{ flexDirection: 'column', gap: 8 }}>
       {/* Phase cards — exact copy from the prototype. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 8 }}>
         <div style={{ ...glass, padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -276,6 +380,8 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
           </div>
         ))}
       </div>
+      </div>
+
       <span style={{ fontSize: 9, color: MU }}>
         Lab ✓ = an analysis/strategy is attached · Bridge ✓ = placed through the bot's risk-gated pipeline · segment times: submit→fill latency (collected from the forensics build forward), managed span (not yet recorded — shows —), total hold · premature strictly means a manual close with no recorded rationale.
       </span>
