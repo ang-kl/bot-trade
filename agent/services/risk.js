@@ -131,6 +131,36 @@ export const DEFAULT_RISK_CONFIG = {
 /**
  * Load risk config from agent_state JSON, merging over DEFAULT_RISK_CONFIG.
  */
+/**
+ * The FX trading day opens at 17:00 America/New_York (owner sign-off
+ * 2026-07-24: "move the loss-cap anchor too" — matching the dashboard's
+ * FX-day cutoff). DST-aware via Node's tz database: the distance since the
+ * last 17:00 NY wall-clock is subtracted from `nowMs`.
+ *
+ * @param {number} [nowMs]
+ * @returns {number} epoch ms of the most recent FX day open
+ */
+export function fxDayOpenMs(nowMs = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(nowMs))
+  const get = (t) => Number(parts.find(p => p.type === t)?.value)
+  const min = (get('hour') % 24) * 60 + get('minute')
+  const anchorMin = 17 * 60
+  const sinceMin = min >= anchorMin ? min - anchorMin : min + 24 * 60 - anchorMin
+  return nowMs - sinceMin * 60_000 - get('second') * 1000 - (nowMs % 1000)
+}
+
+/**
+ * The FX day open as a "YYYY-MM-DD HH:MM:SS" UTC string for closed_at
+ * comparisons (the REPLACE(closed_at,'T',' ') form both writers sort
+ * correctly against).
+ */
+export function fxDayStartSql(nowMs = Date.now()) {
+  return new Date(fxDayOpenMs(nowMs)).toISOString().slice(0, 19).replace('T', ' ')
+}
+
 export function loadRiskConfig(db) {
   const raw = getState(db, 'risk_config_json')
   if (!raw) return { ...DEFAULT_RISK_CONFIG }
@@ -492,18 +522,16 @@ export function evaluateTrade(db, proposal, configOverride) {
 
   // ---- 1. Daily loss limit ------------------------------------------------
   // Prefer % of balance when set; fall back to absolute USD cap.
-  const dayStart = new Date()
-  dayStart.setUTCHours(0, 0, 0, 0)
-  const dayStartISO = dayStart.toISOString()
-  // Format-proof timestamp comparison — REAL BUG caught by the M1
-  // contamination test (2026-07-24): closeTradeRow writes closed_at via
-  // SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS" (space), while this
+  // Day anchor = FX day open, 17:00 NY (owner sign-off 2026-07-24) — was
+  // UTC midnight. Format-proof timestamp comparison — REAL BUG caught by
+  // the M1 contamination test (2026-07-24): closeTradeRow writes closed_at
+  // via SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS" (space), while this
   // query compared against toISOString() → "YYYY-MM-DDTHH:…". The space
   // (0x20) sorts BEFORE 'T' (0x54), so every production-closed trade of
   // the day compared LESS-THAN the day-start string and was silently
   // EXCLUDED from the daily-loss sum — the daily cap was blind to them.
   // Normalizing the 'T' away makes both formats compare correctly.
-  const dayStartSql = `${dayStartISO.slice(0, 10)} 00:00:00`
+  const dayStartSql = fxDayStartSql()
   const todayRow = db
     .prepare(
       `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
