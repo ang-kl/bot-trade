@@ -254,9 +254,58 @@ export async function pollTelegramCommands(db, deps = {}) {
   let handled = 0
   try {
     const offset = Number(getState(db, 'tg_update_offset')) || 0
-    const updates = await tg('getUpdates', { offset: offset + 1, timeout: 0, allowed_updates: ['message'] })
+    const updates = await tg('getUpdates', { offset: offset + 1, timeout: 0, allowed_updates: ['message', 'callback_query'] })
     for (const u of updates) {
       setState(db, 'tg_update_offset', String(u.update_id))
+
+      // ---- Inline-button taps (owner 2026-07-24: one-tap Chart/Arm) ------
+      if (u.callback_query) {
+        const cq = u.callback_query
+        try {
+          if (String(cq.message?.chat?.id) !== owner) { // strangers ignored
+            await tg('answerCallbackQuery', { callback_query_id: cq.id })
+            continue
+          }
+          const parts = String(cq.data || '').split('|')
+          let toast = 'Done'
+          if (parts[0] === 'chart') {
+            const [, sym, tf] = parts
+            await tg('answerCallbackQuery', { callback_query_id: cq.id, text: `Drawing ${sym} ${tf}…` })
+            const res = await handleChartCommand(db, deps.creds, `${sym} ${tf}`, deps.chartDeps || {})
+            if (!res.ok && res.reply) await tg('sendMessage', { chat_id: owner, text: res.reply })
+            handled++
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TG_BTN', 'chart', JSON.stringify({ sym, tf }))
+            } catch { /* audit best-effort */ }
+            continue
+          }
+          if (parts[0] === 'arm') {
+            const [, strat, sym, tf] = parts
+            const read = (k) => { try { return JSON.parse(getState(db, k) || 'null') } catch { return null } }
+            const enabled = new Set(read('enabled_strategies_json') || ['fib_618_fade'])
+            enabled.add(strat)
+            setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
+            const matrix = read('autotrade_matrix_json') || {}
+            matrix[sym.toUpperCase()] = [...new Set([...(matrix[sym.toUpperCase()] || []), tf])]
+            setState(db, 'autotrade_matrix_json', JSON.stringify(matrix))
+            toast = `✅ armed ${strat} on ${sym} ${tf}`
+            await tg('answerCallbackQuery', { callback_query_id: cq.id, text: toast, show_alert: false })
+            await tg('sendMessage', { chat_id: owner, text: `${toast}. /status to review, /pause to stop everything.` })
+            handled++
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TG_BTN', 'arm', JSON.stringify({ strat, sym, tf }))
+            } catch { /* audit best-effort */ }
+            continue
+          }
+          await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Unknown button' })
+        } catch (e) {
+          try { await tg('answerCallbackQuery', { callback_query_id: cq.id, text: `Failed: ${String(e.message).slice(0, 150)}` }) } catch { /* best effort */ }
+        }
+        continue
+      }
+
       const msg = u.message
       if (!msg?.text) continue
       if (String(msg.chat?.id) !== owner) continue // strangers are ignored silently

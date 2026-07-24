@@ -82,3 +82,17 @@ test('risk gate: newsGateEnabled vetoes news_window from the CACHED calendar; of
   const jpy = evaluateTrade(db, { ...proposal, symbol: 'AUS200' }, { ...DEFAULT_RISK_CONFIG, newsGateEnabled: true })
   assert.ok(!/news_window/.test(jpy.veto_reason || ''))
 })
+
+test('signalButtons + tvSymbol: rows, callback data, TV mapping', async () => {
+  const { signalButtons, tvSymbol } = await import('./alert-format.js')
+  assert.equal(tvSymbol('US30'), 'DJI')
+  assert.equal(tvSymbol('MCHP.US'), 'MCHP')
+  assert.equal(tvSymbol('EURUSD'), 'EURUSD')
+  const rows = signalButtons({ sym: 'MCHP.US', tf: '1d', strategy: 'fib_618_fade' })
+  assert.equal(rows.length, 1)
+  const [chart, arm, tv] = rows[0]
+  assert.equal(chart.callback_data, 'chart|MCHP.US|1d')
+  assert.equal(arm.callback_data, 'arm|fib_618_fade|MCHP.US|1d')
+  assert.match(tv.url, /tradingview\.com\/chart\/\?symbol=MCHP$/)
+  assert.ok(rows[0].every(b => (b.callback_data || '').length <= 64))
+})

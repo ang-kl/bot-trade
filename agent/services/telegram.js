@@ -140,7 +140,7 @@ function versionFooter() {
   return _version ? `\n\n_bot-trade v${_version}_` : ''
 }
 
-export async function sendMessage(text) {
+export async function sendMessage(text, opts = {}) {
   const botToken = getToken()
   const chatId = getChatId()
   const msg = await tgPost(botToken, 'sendMessage', {
@@ -148,6 +148,9 @@ export async function sendMessage(text) {
     text: text + versionFooter(),
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    // Inline keyboard (owner 2026-07-24: one-tap Chart/Arm/TradingView on
+    // signal alerts). Shape: [[{text, url|callback_data}, …], …].
+    ...(opts.buttons ? { reply_markup: { inline_keyboard: opts.buttons } } : {}),
   })
   return { ok: true, messageId: msg.message_id }
 }
