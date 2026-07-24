@@ -224,3 +224,42 @@ test('on by default; explicit off still wins; config merges saved values', () =>
   const off = decideProfitKeeper({ ...CFG, on: false }, { ...NATGAS, price: 2.30, peak: 0, currentSl: null })
   assert.equal(off.action, null)
 })
+
+// ---- spike-aware tightening (owner, 2026-07-24: EUSTX50 vertical spike) ----
+
+test('adaptive spike: a recent wide-range bar tightens the trail to spikeTrailAtrMult', () => {
+  // ATR 0.05 → spike threshold 2×ATR = 0.10 range. Peak $60 → peak price
+  // 2.2795. Normal trail 2.5×0.05 → SL 2.4045; spike trail 1×0.05 → 2.3295.
+  const spikeBar = { h: 2.45, l: 2.30, c: 2.31 } // range 0.15 ≥ 0.10
+  const out = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.918, atr: 0.05, balance: 50_000,
+    bars: [{ h: 2.50, l: 2.47, c: 2.48 }, spikeBar],
+  })
+  assert.ok(Math.abs(out.action.sl - 2.33) < 0.001, `got ${out.action?.sl}`)
+  assert.equal(out.action.spike, true)
+})
+
+test('adaptive spike: quiet bars keep the normal 2.5×ATR trail', () => {
+  const out = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.918, atr: 0.05, balance: 50_000,
+    bars: [{ h: 2.32, l: 2.29, c: 2.30 }, { h: 2.31, l: 2.28, c: 2.30 }],
+  })
+  assert.ok(Math.abs(out.action.sl - 2.405) < 0.001, `got ${out.action?.sl}`)
+  assert.equal(out.action.spike, undefined)
+})
+
+test('adaptive spike: spikeTightenEnabled=false ignores the spike', () => {
+  const out = decideProfitKeeper({ ...ADAPTIVE, spikeTightenEnabled: false }, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.918, atr: 0.05, balance: 50_000,
+    bars: [{ h: 2.45, l: 2.30, c: 2.31 }],
+  })
+  assert.ok(Math.abs(out.action.sl - 2.405) < 0.001, `got ${out.action?.sl}`)
+})
+
+test('adaptive spike: ratchet-only survives — an already-tighter SL stays put', () => {
+  const out = decideProfitKeeper(ADAPTIVE, {
+    ...NATGAS, price: 2.30, peak: 60, currentSl: 2.32, atr: 0.05, balance: 50_000,
+    bars: [{ h: 2.45, l: 2.30, c: 2.31 }],
+  })
+  assert.equal(out.action, null)
+})

@@ -52,6 +52,16 @@ export const DEFAULT_PROFIT_KEEPER = {
   armBalancePct: 0.1,     // …and at least this % of balance (noise floor)
   trailAtrMult: 2.5,      // Chandelier: SL trails this × ATR behind the peak price
   scaleOutFrac: 0,        // fraction closed once armed (0 = off, 0.5 = half)
+  // Spike-aware tightening (owner, 2026-07-24, after the EUSTX50 trade
+  // where a vertical spike ran while the trail sat a full 2.5 ATR back):
+  // when a recent bar's range blows past spikeRangeAtrMult × ATR, the move
+  // IS the peak more often than not — hug it with a tighter trail while the
+  // spike condition holds. Ratchet-only semantics are unchanged: when the
+  // spike passes the distance relaxes again but the stop never widens.
+  spikeTightenEnabled: true,
+  spikeRangeAtrMult: 2,   // a bar with range ≥ this × ATR counts as a spike
+  spikeTrailAtrMult: 1,   // trail distance (× ATR) while the spike holds
+  spikeBars: 3,           // how many recent bars are checked for a spike
   // fixed mode
   armProfitUsd: 50,
   givebackPct: 40,
@@ -104,7 +114,7 @@ function quoteInfo(symbol, price) {
  */
 export function decideProfitKeeper(cfg, {
   side, entry, price, lots, unitsPerLot, symbol, peak, currentSl, digits,
-  atr = null, balance = null, scaledOut = false,
+  atr = null, balance = null, scaledOut = false, bars = null,
 }) {
   const out = { newPeak: peak || 0, profitUsd: null, action: null }
   if (!cfg?.on || !(price > 0) || !(entry > 0) || !(lots > 0) || !(unitsPerLot > 0)) return out
@@ -133,9 +143,20 @@ export function decideProfitKeeper(cfg, {
     const armUsd = Math.max(armUsdAtr, armUsdBal)
     if (!(armUsd > 0) || out.newPeak < armUsd) return out
 
-    // Chandelier trail: SL sits trailAtrMult × ATR behind the PEAK price.
+    // Chandelier trail: SL sits trailAtrMult × ATR behind the PEAK price —
+    // unless a recent bar spiked, in which case the tighter spike trail
+    // applies while the condition holds (see config comment above).
+    let trailMult = Number(cfg.trailAtrMult)
+    let spiked = false
+    if (cfg.spikeTightenEnabled !== false && Array.isArray(bars) && bars.length > 0) {
+      const look = Math.max(1, Math.floor(Number(cfg.spikeBars) || 3))
+      spiked = bars.slice(-look).some(b =>
+        b && Number.isFinite(b.h) && Number.isFinite(b.l) &&
+        (b.h - b.l) >= Number(cfg.spikeRangeAtrMult || 2) * atr)
+      if (spiked) trailMult = Math.min(trailMult, Number(cfg.spikeTrailAtrMult || 1))
+    }
     const peakPrice = entry + dir * q.toQuote(out.newPeak) / (lots * unitsPerLot)
-    const slTarget = roundToDigits(peakPrice - dir * Number(cfg.trailAtrMult) * atr, digits)
+    const slTarget = roundToDigits(peakPrice - dir * trailMult * atr, digits)
     const breached = dir === 1 ? price <= slTarget : price >= slTarget
     if (breached) {
       out.action = { close: true, reason: `chandelier peak=${out.newPeak.toFixed(2)} trail=${slTarget} now=${price}` }
@@ -146,6 +167,7 @@ export function decideProfitKeeper(cfg, {
     if (tighter(slTarget)) {
       action.sl = slTarget
       action.lockUsd = Math.round(q.toUsd((slTarget - entry) * dir * lots * unitsPerLot) * 100) / 100
+      if (spiked) action.spike = true // for the notify message — policy, not extra risk
     }
     out.action = Object.keys(action).length ? action : null
     return out
@@ -211,8 +233,10 @@ export async function runProfitKeeper(db, creds, deps = {}) {
       creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolIds
     )
 
-    // ATR per symbol (adaptive mode only) — one bar fetch per symbol per pass.
+    // ATR per symbol (adaptive mode only) — one bar fetch per symbol per
+    // pass. The bar tail rides along for the spike-tighten check.
     const atrBySymbolId = {}
+    const barsBySymbolId = {}
     if (cfg.mode === 'adaptive') {
       for (const id of symbolIds) {
         try {
@@ -220,7 +244,9 @@ export async function runProfitKeeper(db, creds, deps = {}) {
             creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
             id, [cfg.atrTimeframe], Math.max(cfg.atrPeriod * 3, 50)
           )
-          atrBySymbolId[id] = atrFromBars(bars?.[cfg.atrTimeframe] || [], cfg.atrPeriod)
+          const list = bars?.[cfg.atrTimeframe] || []
+          atrBySymbolId[id] = atrFromBars(list, cfg.atrPeriod)
+          barsBySymbolId[id] = list.slice(-Math.max(1, Math.floor(Number(cfg.spikeBars) || 3)))
         } catch { atrBySymbolId[id] = null /* falls back to fixed thresholds */ }
       }
     }
@@ -257,6 +283,7 @@ export async function runProfitKeeper(db, creds, deps = {}) {
         atr: atrBySymbolId[td.symbolId] ?? null,
         balance,
         scaledOut: !!r.scaled_out,
+        bars: barsBySymbolId[td.symbolId] ?? null,
       })
       if (decision.newPeak !== (r.peak_profit_usd || 0)) updPeak.run(decision.newPeak, r.id)
       if (!decision.action) continue
@@ -287,7 +314,7 @@ export async function runProfitKeeper(db, creds, deps = {}) {
           await exec.amendPosition(creds, { positionId: parseInt(r.position_id), stopLoss: decision.action.sl })
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++
-          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}`)
+          notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}`)
         } catch (err) {
           summary.errors.push(`${r.symbol} SL: ${err.message}`)
           // Broker refused the stop (too close to market?) — retried next
