@@ -13,15 +13,19 @@ function fmtMoney(n, ccy) {
   const s = Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return ccy ? `${s} ${ccy}` : s
 }
-function fmtPct(n) {
+function fmtPct(n, signed = true) {
   if (n == null || Number.isNaN(Number(n))) return '—'
-  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`
+  return `${signed && n > 0 ? '+' : ''}${n.toFixed(2)}%`
 }
 function toneFor(n) {
   if (n == null) return 'neutral'
   return n > 0 ? 'up' : n < 0 ? 'down' : 'neutral'
 }
 
+// Owner (2026-07-24): fill the "% of balance" column for EVERY row —
+// rows without a server-computed pct derive it client-side from the same
+// balance figure (v / balance × 100). Signed rows keep their +/-; the
+// stock rows (balance/equity/margin) read as plain percentages.
 const ROWS = [
   { key: 'balance', label: 'Account balance', pctKey: null },
   { key: 'equity', label: 'Equity (balance + floating P/L)', pctKey: null },
@@ -76,7 +80,9 @@ export default function AccountHealth({ acct }) {
                     {fmtMoney(v, ccy)}
                   </td>
                   <td className="py-1 tabular-nums text-[var(--color-text-sub)]">
-                    {r.pctKey ? fmtPct(h[r.pctKey]) : '—'}
+                    {r.pctKey
+                      ? fmtPct(h[r.pctKey])
+                      : fmtPct(Number(h.balance) > 0 && v != null ? (Number(v) / Number(h.balance)) * 100 : null, !!r.signed)}
                   </td>
                 </tr>
               )
