@@ -59,26 +59,41 @@ function Pill({ on, label, onClick }) {
 
 // Compact labelled field. `pct` fields edit in % but store fractions.
 // EVERY entry field is the SAME fixed width (owner 2026-07-24: "the size of
-// field-entry must be uniform as I am OCD") — the `width` prop is accepted
-// for backward compatibility but deliberately ignored.
-const FIELD_W = 'w-[120px]'
-function Field({ label, value, onChange, pct = false, hint }) {
+// field-entry must be uniform as I am OCD"). The !important prefix is
+// load-bearing: the Input component's own base class is `w-full`, which was
+// silently winning over a plain w-[120px] — that is exactly why the fields
+// rendered full-width and "Guardian move %" wrapped onto two lines in the
+// owner's screenshot.
+const FIELD_W = '!w-[120px]'
+function Field({ label, value, onChange, pct = false, hint, placeholder = 'not set' }) {
+  const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
   return (
-    <label className="flex items-center justify-between gap-2 text-[12px]" title={hint}>
-      <span className="text-[var(--color-text-sub)]">{label}</span>
-      <span className="flex items-center gap-1">
-        <Input type="number" step="any" value={display} className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right`}
-          onChange={e => {
-            const raw = e.target.value
-            if (raw === '') { onChange(null); return }
-            const n = Number(raw)
-            if (!Number.isFinite(n)) return
-            onChange(pct ? n / 100 : n)
-          }} />
-        {pct && <span className="text-[11px] text-[var(--color-text-sub)]">%</span>}
-      </span>
-    </label>
+    <div className="text-[12px]">
+      <label className="flex items-center justify-between gap-2">
+        <span className="text-[var(--color-text-sub)] min-w-0 truncate">
+          {label}
+          {hint && (
+            <button type="button" aria-label={`Explain: ${label}`} title={hint}
+              onClick={e => { e.preventDefault(); setShowHint(s => !s) }}
+              className="info-i">ℹ️</button>
+          )}
+        </span>
+        <span className="flex items-center gap-1 shrink-0">
+          <Input type="number" step="any" value={display} placeholder={placeholder}
+            className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right`}
+            onChange={e => {
+              const raw = e.target.value
+              if (raw === '') { onChange(null); return }
+              const n = Number(raw)
+              if (!Number.isFinite(n)) return
+              onChange(pct ? n / 100 : n)
+            }} />
+          {pct && <span className="text-[11px] text-[var(--color-text-sub)]">%</span>}
+        </span>
+      </label>
+      {showHint && <p className="text-[10px] text-[var(--color-text-sub)] mt-0.5 leading-snug">{hint}</p>}
+    </div>
   )
 }
 
@@ -309,11 +324,11 @@ export default function Risk() {
               <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                 hint="% of balance one trade may lose at its SL." />
               <Field label={`Per-trade risk $ override${mark('perTradeRiskUsd')}`} value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
-                hint="Absolute $ risk per trade; when set, overrides the %." />
+                hint="Absolute $ risk per trade; when set, overrides the %." placeholder="empty = % applies" />
               <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                 hint="Never risk more than this % of balance regardless of other settings." />
               <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
-                hint="Optional absolute $ ceiling per trade." />
+                hint="Optional absolute $ ceiling per trade." placeholder="empty = no $ ceiling" />
               <Field label={`Min lot size${mark('minLotSize')}`} value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))} />
               <Field label={`Min R:R${mark('minRR')}`} value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                 hint="TP must be at least this multiple of the SL distance." />
@@ -336,11 +351,8 @@ export default function Risk() {
                 <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
                 <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
               </div>
-              <label className="flex items-center justify-between gap-2 text-[12px]" title="Tick move that wakes the guardian between sweeps.">
-                <span className="text-[var(--color-text-sub)]">Guardian move %</span>
-                <Input type="number" step="any" value={guardianPct} className="w-[120px] !min-h-[26px] !py-0.5 !px-2 !text-[12px] text-right"
-                  onChange={e => setGuardianPct(Number(e.target.value))} />
-              </label>
+              <Field label="Guardian move %" value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
+                hint="Tick move that wakes the guardian between sweeps." />
               <div className="flex items-center justify-between text-[12px]">
                 <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
                 <Pill on={weekendBank} label="On" onClick={() => {
