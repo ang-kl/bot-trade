@@ -501,6 +501,53 @@ export default function Performance() {
   const windows = useMemo(() => ledger?.windows || [], [ledger])
   const byKey = useMemo(() => Object.fromEntries(windows.map(w => [w.key, w])), [windows])
 
+  // Performance gradients — exact prototype maths (cell alpha pow(|v|/max,.6),
+  // rgba(79,140,255,…)/rgba(255,77,109,…) fills, per-column peak scaling,
+  // k-notation values). Columns = registry accounts + Overall; rows use the
+  // ledger's own window bounds. Trades without an account stamp count only
+  // in Overall (never guessed onto an account).
+  const gradients = useMemo(() => {
+    const CATP = {
+      crypto: /^(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB|DOT|LINK|AVAX|TRX)[A-Z]{3,4}$/,
+      metal: /^X(AU|AG|PT|PD)[A-Z]{3}$|^COPPER/,
+      energy: /^(NATGAS|SPOTCRUDE|BRENT|UKOIL|USOIL|OIL|WTI)/,
+      grain: /^(WHEAT|CORN|SOYBEAN|SUGAR|COFFEE|COCOA|COTTON|OATS|RICE)/,
+      index: /^(US30|US500|NAS100|USTEC|US2000|GER40|UK100|FRA40|JPN225|AUS200|EUSTX|VIX|DOW|HK50|CHINA50|SPAIN35|ITALY40|SWISS20|NETH25)/,
+    }
+    const catOf = (sym) => {
+      const s = String(sym || '').toUpperCase()
+      if (CATP.crypto.test(s)) return 'crypto'
+      if (CATP.metal.test(s)) return 'metal'
+      if (CATP.energy.test(s)) return 'energy'
+      if (CATP.grain.test(s)) return 'grain'
+      if (CATP.index.test(s) || /\.(US|UK|DE|AU)$/.test(s)) return 'index'
+      if (/^[A-Z]{6}$/.test(s)) return 'fx'
+      return 'other'
+    }
+    const rows = allTrades
+      .filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
+      .map(t2 => ({ t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol), acc: t2.account_id != null ? String(t2.account_id) : null }))
+      .filter(t2 => t2.t != null)
+    const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
+    const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
+    const cell = (v, max) => {
+      const a2 = Math.pow(Math.abs(v) / (max || 1), 0.6)
+      return { v: kf(v), bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.07 + 0.78 * a2).toFixed(2) + ')', col: a2 > 0.45 ? '#fff' : P_TX }
+    }
+    const build = (rowDefs) => {
+      const raw = rowDefs.map(r => AC3.map(c => r.list.reduce((s2, t2) => s2 + (c.id == null || t2.acc === c.id ? t2.pnl : 0), 0)))
+      const colMax = AC3.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
+      return rowDefs.map((r, ri) => ({ label: r.label, cells: raw[ri].map((v, ci) => cell(v, colMax[ci])) }))
+    }
+    const wDefs = windows.map(w => {
+      const from = Date.parse(w.from), to = Date.parse(w.to)
+      return { label: w.label, list: rows.filter(t2 => t2.t >= from && t2.t < to) }
+    })
+    const cut30 = loadedAt - 30 * D
+    const aDefs = MARKET_COLS.map(m => ({ label: m.label, list: rows.filter(t2 => t2.cat === m.key && t2.t >= cut30) }))
+    return { cols: AC3.map(x => ({ name: x.name })), t: build(wDefs), a: build(aDefs) }
+  }, [allTrades, accounts, windows, loadedAt])
+
   const tilesRow = tiles && (
     <div className="flex flex-wrap gap-1.5 mb-2">
       {[
@@ -769,6 +816,46 @@ export default function Performance() {
             Rolling windows (1H…12M) end now; Yesterday/3D/WTD/MTD use the 22:00-UTC trading-day anchor. Carry-forward reconstructs balances backwards from the current stamped balance — windows older than the recorded history show the maths honestly rather than guessing. Unknown symbols count in totals but not the six market columns.
           </p>
         </Card>
+
+        {/* Performance gradients — exact prototype panels (timeframe ×
+            account, asset class × account heat tables; column count follows
+            the real registry). */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, alignItems: 'start' }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Performance gradient — timeframe × account</span>
+              <span style={{ fontSize: 9.5, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: `86px repeat(${gradients.cols.length},1fr)`, gap: 3, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
+              <span>Window</span>
+              {gradients.cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
+            </div>
+            {gradients.t.map(r => (
+              <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `86px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+                <span style={{ fontSize: 10, fontWeight: 700 }}>{r.label}</span>
+                {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 9.5, fontWeight: 700, textAlign: 'center', padding: '3px 0', borderRadius: 6, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
+              </div>
+            ))}
+            <span style={{ fontSize: 8.5, color: P_MU }}>blue = net gain · red = net loss · each account column shaded against its own peak window</span>
+          </div>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Performance gradient — asset class × account</span>
+              <span style={{ fontSize: 9.5, color: P_SB }}>rolling 30 days</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: `74px repeat(${gradients.cols.length},1fr)`, gap: 3, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
+              <span>Asset</span>
+              {gradients.cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
+            </div>
+            {gradients.a.map(r => (
+              <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `74px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+                <span style={{ fontSize: 10, fontWeight: 700 }}>{r.label}</span>
+                {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 9.5, fontWeight: 700, textAlign: 'center', padding: '5px 0', borderRadius: 6, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
+              </div>
+            ))}
+            <span style={{ fontSize: 8.5, color: P_MU }}>same closed-trade ledger, account dimension — totals reconcile with the Overall column</span>
+          </div>
+        </div>
 
         {/* Migrated from Desk: the original stat tiles + decisions/equity
             chart (owner: "move the performance in the desk to a page by its
