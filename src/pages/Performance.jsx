@@ -254,52 +254,6 @@ function LedgerRow({ w }) {
   )
 }
 
-// Accounts registry cards — shared by both layouts. Balance is only known
-// for the scope the ledger was built for (collect-forward: no per-account
-// balance history yet → "—").
-function AccountsPanel({ accounts, selectedAccountId, acct, ledger }) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-      {accounts.map(a => {
-        const isScope = acct === a.account_id || (acct === 'all' && a.account_id === selectedAccountId)
-        return (
-          <div key={a.account_id} className="glass-inset rounded-[10px] px-2.5 py-2">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <Badge tone={a.is_live ? 'down' : 'info'}>{a.is_live ? 'LIVE' : 'DEMO'}</Badge>
-              <span className="text-[12px] font-extrabold tabular-nums">{a.trader_login || a.account_id}</span>
-              {a.account_id === selectedAccountId && <Badge tone="special">selected</Badge>}
-              {a.enabled === 1
-                ? <Badge tone="up">{a.mode === 'active' ? 'active' : a.mode}</Badge>
-                : <Badge>off</Badge>}
-            </div>
-            <div className={`mt-1 text-[10px] tabular-nums ${SUB}`}>
-              {a.base_currency || '—'} · 1:{a.leverage ?? '—'} · balance {isScope && ledger?.balance != null ? money(ledger.balance) : '—'}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// Account filter chips — refilter the ledger; carry-forward switches to
-// that account's stamped balance. ≥44px targets on mobile.
-function FilterChips({ accounts, acct, setAcct, tall = false }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5" role="radiogroup" aria-label="Account filter">
-      {[{ id: 'all', label: 'All accounts' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ${a.trader_login || a.account_id}` }))].map(c => (
-        <button key={c.id} type="button" role="radio" aria-checked={acct === c.id}
-          onClick={() => setAcct(c.id)}
-          className={`rounded-full px-3 py-1 ${tall ? 'min-h-[44px]' : 'min-h-[28px]'} text-[11px] font-semibold cursor-pointer ${acct === c.id
-            ? 'bg-[var(--color-accent)] text-white shadow-[var(--glow-accent)]'
-            : `glass-inset ${SUB}`}`}>
-          {c.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
 // Mobile ledger card — exact port of the Ledger phone screen's row:
 // 76px 1fr 82px grid, carry in → carry out line, expand → 3-col market
 // mini-cells on the accent tint + the insight line.
@@ -343,35 +297,6 @@ function MobileWindowCard({ w }) {
             )}
         </div>
       )}
-    </div>
-  )
-}
-
-// One closed trade's anatomy for the mobile Trades screen — forensics
-// fields render "—" until collect-forward fills them.
-function TradeAnatomy({ t }) {
-  const ms = closedMs(t)
-  const when = ms ? new Date(ms).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'
-  const held = (() => {
-    const o = closedMs({ closed_at: t.opened_at })
-    if (!ms || !o) return '—'
-    const min = Math.max(0, Math.round((ms - o) / 60000))
-    return min < 60 ? `${min}m` : min < 1440 ? `${Math.round(min / 60)}h` : `${Math.round(min / 1440)}d`
-  })()
-  const pnl = t.net_pnl == null ? null : Number(t.net_pnl)
-  return (
-    <div className="glass-inset rounded-[12px] px-3 py-2">
-      <div className="flex items-baseline gap-2">
-        <span className="text-[12px] font-extrabold">{t.symbol}</span>
-        <span className={`text-[10px] font-semibold ${SUB}`}>{t.side}</span>
-        <span className={`ml-auto text-[13px] font-extrabold tabular-nums ${pnlTone(pnl)}`}>{signed(pnl)}</span>
-      </div>
-      <div className={`text-[10px] tabular-nums ${SUB}`}>
-        {when} · held {held} · {t.label_strategy || t.strategy || '—'}
-      </div>
-      <div className={`text-[9px] tabular-nums ${SUB}`}>
-        spread {t.spread_at_entry != null ? nf(5).format(t.spread_at_entry) : '—'} · slip {t.slippage_price != null ? nf(5).format(t.slippage_price) : '—'} · RVOL {t.rvol_open != null ? nf(1).format(t.rvol_open) : '—'} · VWAP {t.vwap_side_open || '—'}
-      </div>
     </div>
   )
 }
@@ -517,13 +442,6 @@ export default function Performance() {
     return [rows.slice(0, 3), rows.slice(3, 6), rows.slice(6, 9)].map(r => ({ rows: r }))
   }, [positions])
 
-  // Winners & laggards (30D) for the mobile Trades screen.
-  const wl = useMemo(() => {
-    const cut = loadedAt - 30 * D
-    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= cut })
-    const sorted = [...rows].sort((a, b) => Number(b.net_pnl) - Number(a.net_pnl))
-    return { winners: sorted.filter(t2 => Number(t2.net_pnl) > 0).slice(0, 4), laggards: sorted.filter(t2 => Number(t2.net_pnl) < 0).reverse().slice(0, 4) }
-  }, [scopedClosed, loadedAt])
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
   // they work from trade #1 with no warm-up.
@@ -543,7 +461,6 @@ export default function Performance() {
   }, [allTrades])
 
   const windows = useMemo(() => ledger?.windows || [], [ledger])
-  const byKey = useMemo(() => Object.fromEntries(windows.map(w => [w.key, w])), [windows])
 
   // Shared client-side aggregation for the FX bands / strategy matrix —
   // mirrors the server ledger's stats (win%, PF, planned R:R → required
@@ -830,59 +747,142 @@ export default function Performance() {
           </>
         )}
 
+        {(screen === 'markets' || screen === 'trades') && (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>Acct</span>
+            {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
+              const on = acct === f.id
+              return (
+                <button key={f.id} type="button" onClick={() => setAcct(f.id)}
+                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 8.5, fontWeight: 700, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                  {f.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {screen === 'markets' && (
           <>
-            <FilterChips accounts={accounts} acct={acct} setAcct={setAcct} tall />
-            <div className="space-y-1.5">
-              {MARKET_COLS.map(m => {
-                const w30 = byKey['30d']?.markets?.[m.key]
-                return (
-                  <Card key={m.key}>
-                    <div className="flex items-baseline gap-2">
-                      <h3 className="t-h3">{m.label}</h3>
-                      <span className={`ml-auto text-[14px] font-extrabold tabular-nums ${pnlTone(w30?.trades ? w30.net : null)}`}>{w30?.trades ? signed(w30.net) : '—'}</span>
-                    </div>
-                    <div className="flex gap-1.5 mt-1">
-                      {[['12H', '12h'], ['1W', '1w'], ['30D', '30d']].map(([lab, key]) => {
-                        const st = byKey[key]?.markets?.[m.key]
-                        return (
-                          <span key={key} className={`rounded-full border border-[var(--glass-edge)] px-2 py-0.5 text-[10px] tabular-nums ${st?.trades ? pnlTone(st.net) : SUB}`}>
-                            {lab} {st?.trades ? signed(st.net) : '—'}
-                          </span>
-                        )
-                      })}
-                    </div>
-                    <p className={`mt-1 text-[10px] tabular-nums ${SUB}`}>
-                      30D: {w30?.trades ? `${w30.trades}t · win ${w30.winPct != null ? `${nf(0).format(w30.winPct)}%` : '—'} · PF ${w30.pf != null ? nf(2).format(w30.pf) : '—'}` : 'no closed trades'}
-                    </p>
-                  </Card>
-                )
-              })}
+            {/* Crypto — exact mobile panel (price/Δ not streamed → —). */}
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC }}>Crypto — runs 24/7</span>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                  {crypto.k.map(k2 => (
+                    <span key={k2.k} style={{ fontSize: 8.5, fontWeight: 700, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
+                      <span style={{ color: P_MU }}>{k2.k} </span><span style={{ fontVariantNumeric: 'tabular-nums', color: k2.col }}>{k2.v}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, fontSize: 7.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+                <span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
+              </div>
+              {crypto.rows.map(c2 => (
+                <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ fontSize: 10, fontWeight: 800 }}>{c2.sym}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 8.5, fontWeight: 700, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: c2.col }}>{c2.pnl}</span>
+                  <span style={{ fontSize: 8, color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
+                </div>
+              ))}
+            </div>
+            {/* Forex bands — exact mobile panel. */}
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC }}>Forex — banded, all pairs</span>
+              {fxBands.map(b => (
+                <div key={b.band} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 800 }}>{b.band}</span>
+                    <span style={{ fontSize: 8, color: P_MU }}>{b.meta}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                    {b.pairs.map(p2 => (
+                      <span key={p2.sym} title={p2.tip} style={{ fontSize: 8.5, fontWeight: 600, padding: '1px 5px', borderRadius: 5, border: `1px solid ${P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+                        {p2.sym} <span style={{ fontWeight: 800, color: p2.col }}>{p2.v}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           </>
         )}
 
         {screen === 'trades' && (
           <>
-            <FilterChips accounts={accounts} acct={acct} setAcct={setAcct} tall />
-            <Card>
-              <h3 className="t-h3 mb-1.5">Winners (30D)</h3>
-              {wl.winners.length === 0 && <p className={`text-[12px] ${SUB}`}>None in the last 30 days.</p>}
-              <div className="space-y-1.5">{wl.winners.map(t2 => <TradeAnatomy key={t2.id} t={t2} />)}</div>
-            </Card>
-            <Card>
-              <h3 className="t-h3 mb-1.5">Laggards (30D)</h3>
-              {wl.laggards.length === 0 && <p className={`text-[12px] ${SUB}`}>None in the last 30 days.</p>}
-              <div className="space-y-1.5">{wl.laggards.map(t2 => <TradeAnatomy key={t2.id} t={t2} />)}</div>
-            </Card>
+            {[{ title: 'Winners — best closed', tcol: P_UP, rows: winLag.win },
+              { title: 'Laggards — worst closed', tcol: P_DN, rows: winLag.lag }].map(panel => (
+              <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: panel.tcol }}>{panel.title}</span>
+                {panel.rows.length === 0 && <span style={{ fontSize: 8.5, color: P_MU }}>No closed trades in the last 30 days.</span>}
+                {panel.rows.map((t2, ti) => (
+                  <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                      <span style={{ fontSize: 10.5, fontWeight: 800 }}>{t2.sym}</span>
+                      <span style={{ fontSize: 8.5, color: P_SB }}>{t2.sd}</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.col }}>{t2.pnl}</span>
+                    </div>
+                    <span style={{ fontSize: 8.5, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>{t2.when}</span>
+                    <span style={{ fontSize: 8.5, color: P_MU }}>{t2.why} · {t2.strat}</span>
+                    <span style={{ fontSize: 8, color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </>
         )}
 
         {screen === 'accounts' && (
           <>
-            {accounts.length
-              ? <Card><h3 className="t-h3 mb-1.5">Accounts</h3><AccountsPanel accounts={accounts} selectedAccountId={selectedAccountId} acct={acct} ledger={ledger} /></Card>
-              : <Card><p className={`text-[12px] ${SUB}`}>No accounts in the registry yet.</p></Card>}
+            {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC }}>Gradient — timeframe × account</span>
+              <div style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, fontSize: 7, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.03em', color: P_MU }}>
+                <span>Window</span>
+                {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
+              </div>
+              {gradients.t.map(r => (
+                <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+                  <span style={{ fontSize: 9, fontWeight: 700 }}>{r.label}</span>
+                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 8, fontWeight: 700, textAlign: 'center', padding: '2px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                </div>
+              ))}
+              <span style={{ fontSize: 7.5, color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
+            </div>
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC }}>Gradient — asset × account · 30D</span>
+              {gradients.a.map(r => (
+                <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+                  <span style={{ fontSize: 9, fontWeight: 700 }}>{r.label}</span>
+                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 8, fontWeight: 700, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                </div>
+              ))}
+            </div>
+            {/* Regime + balance + data feed — the desktop exact-port
+                components render responsively here (the mobile prototype's
+                variants share their data model; the desktop components carry
+                the same honest-— rules). */}
+            <RegimeMatrix
+              trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
+              positions={positions}
+              accounts={accounts}
+            />
+            <BalanceInOut />
+            <DataFeed
+              balance={riskFull?.account?.balance ?? null}
+              freeMargin={riskFull?.margin?.freeMargin ?? null}
+              equity={riskFull?.margin?.equity ?? null}
+              openCount={positions.length}
+              dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
+              equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
+              slSet={positions.filter(p2 => p2.current_sl != null).length}
+              tpSet={positions.filter(p2 => p2.current_tp != null).length}
+              clock={`last refresh ${new Date(loadedAt).toUTCString().slice(17, 25)} UTC`}
+            />
             <Card>
               <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
               {!tiles && <p className={`text-[12px] mb-2 ${SUB}`}>No closed trades yet.</p>}
