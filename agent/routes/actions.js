@@ -2831,6 +2831,37 @@ export default function actionsRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/registry-account — { accountId, enabled, mode? ,
+  // confirmLive? } enables/disables one registry row (M4: lifts the M0
+  // sole-enabled invariant). SAFETY CARVE-OUT: enabling a LIVE account is
+  // the M5 cutover gesture and requires confirmLive:true explicitly — the
+  // owner's word, never a default.
+  // -----------------------------------------------------------------------
+  router.post('/registry-account', async (req, res) => {
+    try {
+      const { accountId, enabled, mode, confirmLive } = req.body || {}
+      if (accountId == null || typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'need accountId and enabled:boolean' })
+      }
+      const { setAccountEnabled, listAccounts } = await import('../services/account-registry.js')
+      const target = listAccounts(db).find(a => String(a.account_id) === String(accountId))
+      if (enabled && target?.is_live === 1 && confirmLive !== true) {
+        return res.status(403).json({ error: 'enabling a LIVE account requires confirmLive:true (M5 cutover carve-out)' })
+      }
+      const out = setAccountEnabled(db, accountId, enabled, mode || null)
+      if (!out.ok) return res.status(400).json({ error: out.error })
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+          .run('POST', '/actions/registry-account', JSON.stringify(out).slice(0, 2000))
+      } catch { /* audit best-effort */ }
+      console.log('[actions] registry account updated:', out)
+      res.json({ ok: true, ...out, accounts: listAccounts(db) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/ctrader-config', (req, res) => {
     try {
       const { accessToken, accounts } = req.body || {}

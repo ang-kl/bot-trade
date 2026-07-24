@@ -98,6 +98,27 @@ export function syncSelectedAccount(db, accountId, isLive, traderLogin = null) {
 }
 
 /**
+ * M4: deliberately lift the M0 sole-enabled invariant — enable or disable
+ * ONE account row without touching the others. This is the registry gesture
+ * behind multi-account operation: the selected account stays the primary
+ * (legacy state keys unchanged); additional enabled rows join the sidecar
+ * roster, the reconcile sweep, and the autopilot dispatch. The row must
+ * already exist (created by selection or an accounts push) — enabling an
+ * unknown id is refused rather than inventing a row with no metadata.
+ */
+export function setAccountEnabled(db, accountId, enabled, mode = null) {
+  if (accountId == null) return { ok: false, error: 'accountId required' }
+  const id = String(accountId)
+  const row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(id)
+  if (!row) return { ok: false, error: `unknown account ${id} — select it once or push the account list first` }
+  const m = mode || (enabled ? 'active' : 'manage_only')
+  if (!['active', 'manage_only', 'paused'].includes(m)) return { ok: false, error: `invalid mode ${m}` }
+  db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
+    .run(enabled ? 1 : 0, m, now(), id)
+  return { ok: true, accountId: id, enabled: !!enabled, mode: m, isLive: row.is_live === 1 }
+}
+
+/**
  * Boot-time bootstrap (idempotent): guarantee the currently-selected legacy
  * account exists in the registry and, when NO row is enabled yet (fresh
  * migration), enable exactly that one — so the very first boot after this
