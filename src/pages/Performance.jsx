@@ -334,6 +334,34 @@ function WlBody({ rows }) {
   )
 }
 
+
+// Accounts detail cards grid — shared by the card view and the ⤢ modal.
+function AcctCardsGrid({ acctCards }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+            {acctCards.map(a => (
+              <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
+                  <span style={{ fontSize: 10, color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 10, color: P_SB }}>live <span style={{ fontWeight: 800, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> = <span style={{ fontWeight: 800, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span> of balance</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>TP nett today</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
+                </div>
+                <span style={{ fontSize: 10, color: P_MU }}>loss-cap used <span style={{ fontWeight: 800, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
+              </div>
+            ))}
+    </div>
+  )
+}
+
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
@@ -1091,33 +1119,32 @@ export default function Performance() {
             equity + live floating, TP/SL nett today, 30D forecast pace, and
             the loss-cap line (real dailyLossPct config × stamped balance). */}
         {acctCards.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
-            {acctCards.map(a => (
-              <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
-                  <span style={{ fontSize: 10, color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 10, color: P_SB }}>live <span style={{ fontWeight: 800, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> = <span style={{ fontWeight: 800, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span> of balance</span>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>TP nett today</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 11, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
-                </div>
-                <span style={{ fontSize: 10, color: P_MU }}>loss-cap used <span style={{ fontWeight: 800, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
-              </div>
-            ))}
+          <>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Accounts — capital safety</span>
+            <SectionTools id="accounts" title="Accounts — capital safety"
+              data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
+              toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
+              render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
+          <AcctCardsGrid acctCards={acctCards} />
+          </>
         )}
 
         {/* Today + Open now — exact prototype row. */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since 22:00 UTC</span>
+            <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since 22:00 UTC</span>
+              <SectionTools id="today" title="Today · since 22:00 UTC" data={[today]}
+                toText={() => `Today · since 22:00 UTC · net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`}
+                render={() => (
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</div>
+                    <div style={{ fontSize: 11, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</div>
+                  </div>
+                )} />
+            </span>
             <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
             <span style={{ fontSize: 10, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
           </div>
@@ -1297,6 +1324,15 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
             {tiles && <span className={`text-[12px] ${SUB}`}>{tiles.closed.length} closed · {signed(tiles.total)}</span>}
+            <SectionTools id="tiles" title="All-time tiles &amp; equity"
+              data={tiles ? [{ net: tiles.total, trades: tiles.closed.length, winRatePct: Math.round((tiles.wins.length / tiles.closed.length) * 100), profitFactor: tiles.pf, maxDrawdown: tiles.mdd }] : []}
+              toText={() => (tiles ? `All-time · net ${signed(tiles.total)} · ${tiles.closed.length} trades · win ${Math.round((tiles.wins.length / tiles.closed.length) * 100)}% · PF ${tiles.pf != null ? tiles.pf.toFixed(2) : '—'} · maxDD −${tiles.mdd.toFixed(2)}` : 'All-time — no closed trades yet')}
+              render={() => (
+                <div>
+                  {tilesRow}
+                  <ReportChart allTrades={allTrades} events={events} />
+                </div>
+              )} />
           </div>
           {!tiles && <p className={`text-[12px] mb-2 ${SUB}`}>No closed trades yet — tiles and chart fill from the first completed round-trip.</p>}
           {tilesRow}

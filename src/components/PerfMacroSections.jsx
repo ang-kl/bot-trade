@@ -88,14 +88,25 @@ function QuadCard({ q }) {
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
 export function RegimeMatrix({ trades30, positions, accounts, inModal = false }) {
   const [rAcct, setRAcct] = useState('all')
+  // Linked highlighting (owner spec A2): one shared selectedKey — legend row
+  // click/hover highlights its dot (1.6×, others dim to .35) and dot click
+  // highlights the legend row.
+  const [selectedKey, setSelectedKey] = useState(null)
+  // Owner-assigned legend keys (spec A2). 'P Long commodities/TIPS' is
+  // playbook copy with no plotted trade group — legend footnote, not a dot.
+  const KEYS = { 'Energy WTI/Gas': 'A', 'Alt crypto SOL/XRP': 'B', 'Crypto BTC/ETH': 'C', 'Comdoll AUD/NZD': 'D', 'Asia indices JPN/HK/AUS': 'E', 'EU indices GER40/UK100': 'F', 'US indices': 'G', 'USD majors': 'H', 'JPY crosses': 'J', 'Gold XAU': 'K', 'Silver XAG': 'L', 'Grains': 'M', 'Exotics ZAR/TRY/MXN': 'N' }
   const dots = RGM.map(([name, fn, gx, iy]) => {
     const l = trades30.filter(fn)
     const p = l.reduce((s, t) => s + t.pnl, 0)
-    const cx = 360 + gx * 300, cy = 205 - iy * 168
+    // Taller plot (spec A1): 720×620 viewBox, center (360, 310) — the
+    // volatility rings become visibly concentric instead of squashed.
+    const cx = 360 + gx * 300, cy = 310 - iy * 258
     const col = l.length ? (p >= 0 ? UP : DN) : MU
+    const r2 = Math.max(Math.abs(gx), Math.abs(iy))
     return {
-      name, cx, cy, tx: cx + (gx > 0.6 ? -8 : 8), anc: gx > 0.6 ? 'end' : 'start',
+      key: KEYS[name] || '·', name, cx, cy, tx: cx + (gx > 0.6 ? -9 : 9), anc: gx > 0.6 ? 'end' : 'start',
       pnl: l.length ? signed(p) : 'no trades', col, dot: col,
+      volBand: r2 < 0.35 ? 'low' : r2 < 0.6 ? 'mid' : 'high',
       tip: `${name} · 30D ${l.length ? `${signed(p)} · ${l.length} trades` : 'no trades'}`,
     }
   })
@@ -148,7 +159,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <QuadCard q={quadCards[0]} /><QuadCard q={quadCards[2]} />
         </div>
-        <svg viewBox="0 0 720 410" style={{ width: '80%', justifySelf: 'center', alignSelf: 'center', overflow: 'visible' }}>
+        <svg viewBox="0 0 720 620" style={{ width: '92%', justifySelf: 'center', alignSelf: 'center', overflow: 'visible', aspectRatio: '3 / 2', minHeight: 520 }}>
           <g>
             <text x="30" y="52" fontSize="10" fontWeight="700" fill={SB}>Lo Vol</text>
             <rect x="62" y="44" width="16" height="10" rx="2" fill="rgba(79,140,255,.35)" />
@@ -157,38 +168,61 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
             <rect x="110" y="44" width="16" height="10" rx="2" fill="rgba(255,77,109,.45)" />
             <text x="132" y="52" fontSize="10" fontWeight="700" fill={DN}>Hi Vol</text>
           </g>
-          <ellipse cx="360" cy="205" rx="330" ry="188" fill="rgba(255,77,109,.16)" />
-          <ellipse cx="360" cy="205" rx="264" ry="150" fill="rgba(255,77,109,.14)" />
-          <ellipse cx="360" cy="205" rx="198" ry="113" fill="rgba(255,196,102,.16)" />
-          <ellipse cx="360" cy="205" rx="132" ry="75" fill="rgba(255,196,102,.2)" />
-          <ellipse cx="360" cy="205" rx="66" ry="38" fill="rgba(79,140,255,.22)" />
-          <line x1="360" y1="8" x2="360" y2="402" stroke={EDG} strokeWidth="1.5" />
-          <line x1="18" y1="205" x2="702" y2="205" stroke={EDG} strokeWidth="1.5" />
-          <text x="360" y="0" textAnchor="middle" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Rising inflation</text>
-          <text x="360" y="410" textAnchor="middle" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Slowing inflation</text>
-          <text x="14" y="197" textAnchor="start" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Slowing growth</text>
-          <text x="706" y="197" textAnchor="end" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX}>Accelerating growth</text>
-          <text x="300" y="207" textAnchor="end" fontSize="10" fontWeight="700" fill={SB} dominantBaseline="middle">lo vol</text>
-          <text x="668" y="195" textAnchor="end" fontSize="10" fontWeight="700" fill={SB}>hi vol</text>
-          <text x="30" y="26" fontSize="10" fontWeight="800" fill={SB}>Q2 STAGFLATION <tspan fontWeight="600" fill={MU}>· USD ↑ safe-haven · gold ↑/↔</tspan></text>
-          <text x="30" y="38" fontSize="10" fontWeight="600" fill={MU}>long commodities · TIPS · cash — short equities &amp; growth</text>
-          <text x="690" y="26" textAnchor="end" fontSize="10" fontWeight="800" fill={WRN}>Q1 OVERHEATING <tspan fontWeight="600" fill={MU}>· USD ↔/↓ real yields · gold ↑ hedge</tspan></text>
-          <text x="690" y="38" textAnchor="end" fontSize="10" fontWeight="600" fill={MU}>long commodities · energy · value — short long-duration bonds</text>
-          <text x="30" y="380" fontSize="10" fontWeight="800" fill={SB}>Q3 DEFLATION / RECESSION <tspan fontWeight="600" fill={MU}>· USD ↑↑ flight to safety · gold ↓/↔</tspan></text>
-          <text x="30" y="392" fontSize="10" fontWeight="600" fill={MU}>long Treasuries · defensives — short commodities · AUD &amp; NZD</text>
-          <text x="690" y="380" textAnchor="end" fontSize="10" fontWeight="800" fill={SB}>Q4 GOLDILOCKS / RECOVERY <tspan fontWeight="600" fill={MU}>· USD ↓ risk-on outflow · gold ↓</tspan></text>
-          <text x="690" y="392" textAnchor="end" fontSize="10" fontWeight="600" fill={MU}>long tech/growth · crypto · high-yield — short USD · CHF · JPY</text>
-          {dots.map(p => (
-            <g key={p.name}>
-              <title>{p.tip}</title>
-              <circle cx={p.cx} cy={p.cy} r="5" fill={p.dot} stroke="var(--color-bg)" strokeWidth="1.5" />
-              <text x={p.tx} y={p.cy} textAnchor={p.anc} dominantBaseline="middle" fontSize="10.5" fontWeight="700" fill={TX}>{p.name} <tspan fontWeight="800" fill={p.col}>{p.pnl}</tspan></text>
-            </g>
-          ))}
+          <ellipse cx="360" cy="310" rx="330" ry="290" fill="rgba(255,77,109,.16)" />
+          <ellipse cx="360" cy="310" rx="264" ry="232" fill="rgba(255,77,109,.14)" />
+          <ellipse cx="360" cy="310" rx="198" ry="174" fill="rgba(255,196,102,.16)" />
+          <ellipse cx="360" cy="310" rx="132" ry="116" fill="rgba(255,196,102,.2)" />
+          <ellipse cx="360" cy="310" rx="66" ry="58" fill="rgba(79,140,255,.22)" />
+          <line x1="360" y1="12" x2="360" y2="608" stroke={EDG} strokeWidth="1.5" />
+          <line x1="18" y1="310" x2="702" y2="310" stroke={EDG} strokeWidth="1.5" />
+          {/* Axis labels — 8px padding off the plot edge + a bg stroke so
+              ring fills never make them illegible (spec A4). */}
+          <text x="360" y="8" textAnchor="middle" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX} stroke="var(--color-bg)" strokeWidth="3" paintOrder="stroke">Rising inflation</text>
+          <text x="360" y="616" textAnchor="middle" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX} stroke="var(--color-bg)" strokeWidth="3" paintOrder="stroke">Slowing inflation</text>
+          <text x="22" y="300" textAnchor="start" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX} stroke="var(--color-bg)" strokeWidth="3" paintOrder="stroke">Slowing growth</text>
+          <text x="698" y="300" textAnchor="end" fontSize="11" fontWeight="800" fontStyle="italic" fill={TX} stroke="var(--color-bg)" strokeWidth="3" paintOrder="stroke">Accelerating growth</text>
+          {/* Quadrant corners: Q number + 2-word name ONLY (spec A3) — the
+              full playbook text lives in the side cards, never on canvas. */}
+          <text x="30" y="30" fontSize="10" fontWeight="800" fill={MU}>Q2 · Stagflation</text>
+          <text x="690" y="30" textAnchor="end" fontSize="10" fontWeight="800" fill={MU}>Q1 · Overheating</text>
+          <text x="30" y="600" fontSize="10" fontWeight="800" fill={MU}>Q3 · Deflation</text>
+          <text x="690" y="600" textAnchor="end" fontSize="10" fontWeight="800" fill={MU}>Q4 · Goldilocks</text>
+          {dots.map(p => {
+            const sel = selectedKey === p.key
+            const dim = selectedKey != null && !sel
+            return (
+              <g key={p.name} style={{ cursor: 'pointer', opacity: dim ? 0.35 : 1 }}
+                onClick={() => setSelectedKey(sel ? null : p.key)}>
+                <title>{p.tip}</title>
+                <circle cx={p.cx} cy={p.cy} r={sel ? 8 : 5} fill={p.dot} stroke="var(--color-bg)" strokeWidth="1.5" />
+                <text x={p.tx} y={p.cy} textAnchor={p.anc} dominantBaseline="middle" fontSize="10.5" fontWeight={sel ? 800 : 700} fill={TX} stroke="var(--color-bg)" strokeWidth="2.5" paintOrder="stroke" fontVariant="tabular-nums">{p.key} <tspan fontWeight="800" fill={p.col}>{p.pnl}</tspan></text>
+              </g>
+            )
+          })}
         </svg>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <QuadCard q={quadCards[1]} /><QuadCard q={quadCards[3]} />
         </div>
+      </div>
+      {/* Legend table (spec A2): key · full group name · 30D net · vol band.
+          Click a row ↔ its dot — one shared selectedKey state. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '2px 10px', borderTop: `1px solid ${EDG}`, paddingTop: 5 }}>
+        {dots.map(d => {
+          const sel = selectedKey === d.key
+          return (
+            <button key={d.key} type="button"
+              onClick={() => setSelectedKey(sel ? null : d.key)}
+              onMouseEnter={() => setSelectedKey(d.key)}
+              onMouseLeave={() => setSelectedKey(k => (k === d.key ? null : k))}
+              style={{ cursor: 'pointer', fontFamily: 'inherit', display: 'grid', gridTemplateColumns: '22px 1fr 84px 44px', gap: 6, alignItems: 'baseline', textAlign: 'left', background: sel ? ACS : 'transparent', border: `1px solid ${sel ? ACC : 'transparent'}`, borderRadius: 8, padding: '2px 6px' }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: d.dot }}>●{d.key}</span>
+              <span style={{ fontSize: 10.5, color: TX }}>{d.name}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', textAlign: 'right', color: d.col }}>{d.pnl}</span>
+              <span style={{ fontSize: 10, color: MU, textAlign: 'right' }}>{d.volBand}</span>
+            </button>
+          )
+        })}
+        <span style={{ gridColumn: '1 / -1', fontSize: 10, color: MU }}>P · Long commodities/TIPS — playbook reference only, no traded group is plotted for it</span>
       </div>
       <span style={{ fontSize: 10, color: MU }}>positions are the classic growth × inflation playbook for each group the bot trades — center = cash-like calm, outer ring = highest volatility · blue label = group is net positive over 30D, red = net negative</span>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, borderTop: `1px solid ${EDG}`, paddingTop: 5 }}>
