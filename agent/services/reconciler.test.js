@@ -595,3 +595,71 @@ test('repair: closed duplicates sharing one positionId + identical net_pnl keep 
   reconcilePositions(db, [], [], setState)
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trades WHERE status='rejected'`).get().n, 3)
 })
+
+// ---------------------------------------------------------------------------
+// M2 per-account scoping — one account's broker snapshot must never judge
+// another account's rows.
+// ---------------------------------------------------------------------------
+
+function seedAccountPosition(db, { account, symbol, positionId }) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, account_id, status, opened_at)
+     VALUES (?, 'BUY', 100, 0.01, ?, 'autopilot', ?, 'open', datetime('now'))`
+  ).run(symbol, positionId, account).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, thesis, source, account_id, status)
+     VALUES (?, ?, 'long', 100, 'test', 'autopilot', ?, 'active')`
+  ).run(symbol, tradeId, account)
+  return tradeId
+}
+
+test('contamination: account B empty snapshot never closes account A positions', () => {
+  const db = mkDb()
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  const aTrade = seedAccountPosition(db, { account: 'A', symbol: 'XAUUSD', positionId: '42' })
+  // B has nothing at the broker — an EMPTY snapshot scoped to B.
+  const res = reconcilePositions(db, [], [], mkSetState(db), { accountId: 'B' })
+  assert.equal(res.closedDetected.length, 0)
+  assert.equal((res.orphansClosed || []).length, 0)
+  assert.equal(db.prepare(`SELECT status FROM trades WHERE id = ?`).get(aTrade).status, 'open',
+    'account A trade must survive account B reconcile')
+  assert.equal(db.prepare(`SELECT status FROM monitored_positions WHERE trade_id = ?`).get(aTrade).status, 'active')
+  // …while A's own empty snapshot DOES close it (its position is truly gone).
+  const resA = reconcilePositions(db, [], [], mkSetState(db), { accountId: 'A' })
+  assert.equal(resA.closedDetected.length, 1)
+  assert.equal(db.prepare(`SELECT status FROM trades WHERE id = ?`).get(aTrade).status, 'closed')
+})
+
+test('contamination: legacy NULL-account rows belong to the SELECTED account only', () => {
+  const db = mkDb()
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  const legacy = seedKnownPosition(db, { symbol: 'US30', positionId: '77' }) // account_id NULL
+  // B's sweep must not touch the legacy row…
+  reconcilePositions(db, [], [], mkSetState(db), { accountId: 'B' })
+  assert.equal(db.prepare(`SELECT status FROM trades WHERE id = ?`).get(legacy).status, 'open')
+  // …the selected account A owns it.
+  const resA = reconcilePositions(db, [], [], mkSetState(db), { accountId: 'A' })
+  assert.equal(resA.closedDetected.length, 1)
+})
+
+test('contamination: adoption stamps the sweep account on BOTH rows', () => {
+  const db = mkDb()
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '900', symbolName: 'EURUSD' })], [], mkSetState(db), { accountId: 'B' })
+  const t = db.prepare(`SELECT account_id FROM trades WHERE ctrader_position_id = '900'`).get()
+  const m = db.prepare(`SELECT mp.account_id FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id WHERE t.ctrader_position_id = '900'`).get()
+  assert.equal(t.account_id, 'B')
+  assert.equal(m.account_id, 'B')
+})
+
+test('contamination: broker_orders gone-sweep is account-scoped', () => {
+  const db = mkDb()
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', 'A')`).run()
+  // A has a working order; B's empty snapshot must not mark it gone.
+  syncBrokerOrders(db, [{ orderId: '500', symbolName: 'EURUSD', side: 'BUY', orderType: 'LIMIT' }], { accountId: 'A', includeNull: true })
+  syncBrokerOrders(db, [], { accountId: 'B', includeNull: false })
+  assert.equal(db.prepare(`SELECT status FROM broker_orders WHERE order_id = '500'`).get().status, 'working')
+  // A's own empty snapshot does.
+  const gone = syncBrokerOrders(db, [], { accountId: 'A', includeNull: true })
+  assert.deepEqual(gone, ['500'])
+})

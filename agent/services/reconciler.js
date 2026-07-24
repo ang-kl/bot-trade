@@ -32,17 +32,35 @@ export function brokerVolumeToLots(bp, symbol) {
  * @param {Array} brokerPositions — from RECONCILE_RES, enriched with symbolName
  * @param {Array} brokerOrders — pending limit/stop orders from RECONCILE_RES
  * @param {(key: string, value: string) => void} setState
+ * @param {{accountId?: string|number}} [opts] — M2: scope this pass to ONE
+ *   account. The broker snapshot passed in is one account's truth, so every
+ *   absence-implies-closed sweep below (closed detection, orphan sweep,
+ *   orders-gone) must only judge THAT account's rows — otherwise account B's
+ *   snapshot "closes" account A's perfectly-live positions. NULL-account
+ *   legacy rows belong to the SELECTED account only (they predate stamping,
+ *   which only ever happened while that account was the one trading).
  * @returns {{ newExternal: Array, closedDetected: Array, manualChanges: Array, pendingOrders: Array }}
  */
-export function reconcilePositions(db, brokerPositions, brokerOrders, setState) {
+export function reconcilePositions(db, brokerPositions, brokerOrders, setState, opts = {}) {
+  const selected = getState(db, 'ctrader_account_id') || null
+  const acct = opts.accountId != null ? String(opts.accountId) : selected
+  const includeNull = acct == null || acct === selected
+  // SQL fragment + params scoping a table's rows to this pass's account.
+  const scope = (col) => acct == null
+    ? { sql: '', params: [] }
+    : includeNull
+      ? { sql: `AND (${col} = ? OR ${col} IS NULL)`, params: [acct] }
+      : { sql: `AND ${col} = ?`, params: [acct] }
+
+  const mpScope = scope('mp.account_id')
   const knownRows = db.prepare(
     `SELECT mp.id, mp.symbol, mp.source, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
             mp.broker_volume_units, mp.broker_sl, mp.broker_tp, mp.trade_id,
             t.ctrader_position_id, t.volume AS tradeVolume
      FROM monitored_positions mp
      LEFT JOIN trades t ON t.id = mp.trade_id
-     WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL`
-  ).all()
+     WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
+  ).all(...mpScope.params)
 
   const knownIds = new Set(knownRows.map(r => String(r.ctrader_position_id)))
   const knownById = new Map(knownRows.map(r => [String(r.ctrader_position_id), r]))
@@ -199,7 +217,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
             thesis, initial_risk, source, strategy, label_raw, account_id, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
         `).run(symbolName, existingOpen.id, side, entry, sl, tp, thesis, initialRisk,
-          adoptedSource, parsed.strategy || null, label || null, getState(db, 'ctrader_account_id'))
+          adoptedSource, parsed.strategy || null, label || null, acct)
       }
       relinked.push({ symbol: symbolName, positionId: posId, tradeId: existingOpen.id, desyncKind })
       try {
@@ -217,12 +235,15 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
     }
 
     const inserted = db.transaction(() => {
+      // account_id stamped on BOTH rows (the trades stamp was missing until
+      // M2 — adopted trades landed with NULL account and leaned on the
+      // backfill's selected-account assumption).
       const tradeInsert = db.prepare(`
         INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-          ctrader_position_id, source, label_raw, label_strategy, status)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, 'open')
+          ctrader_position_id, source, label_raw, label_strategy, account_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 'open')
       `).run(symbolName, side === 'long' ? 'BUY' : 'SELL', entry, sl, tp, volume, posId,
-        adoptedSource, label || null, parsed.strategy || null)
+        adoptedSource, label || null, parsed.strategy || null, acct)
       const tradeId = tradeInsert.lastInsertRowid
 
       db.prepare(`
@@ -230,7 +251,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
           thesis, initial_risk, source, strategy, label_raw, account_id, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
       `).run(symbolName, tradeId, side, entry, sl, tp, thesis, initialRisk,
-        adoptedSource, parsed.strategy || null, label || null, getState(db, 'ctrader_account_id'))
+        adoptedSource, parsed.strategy || null, label || null, acct)
 
       return tradeId
     })()
@@ -351,10 +372,11 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   } catch { /* repair best-effort */ }
 
   const orphansClosed = []
+  const tScope = scope('account_id')
   const openWithPosId = db.prepare(
     `SELECT id, symbol, ctrader_position_id FROM trades
-      WHERE status = 'open' AND ctrader_position_id IS NOT NULL`
-  ).all()
+      WHERE status = 'open' AND ctrader_position_id IS NOT NULL ${tScope.sql}`
+  ).all(...tScope.params)
   const closeOrphanMon = db.prepare(
     `UPDATE monitored_positions SET status = 'closed' WHERE trade_id = ? AND status = 'active'`
   )
@@ -410,7 +432,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
   // of the bot's scan/autotrade switches (owner: "even if ... OFF, these
   // pending orders will execute"), so record each one and its lifecycle
   // (working → gone) so a fill is tracked and the history survives a restart.
-  const ordersGone = syncBrokerOrders(db, pendingOrders)
+  const ordersGone = syncBrokerOrders(db, pendingOrders, { accountId: acct, includeNull })
 
   return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed }
 }
@@ -423,16 +445,27 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState) 
  * this pass, so the caller can log/act on likely fills. Best-effort: a DB hiccup
  * never blocks reconciliation.
  */
-export function syncBrokerOrders(db, pendingOrders = []) {
+export function syncBrokerOrders(db, pendingOrders = [], opts = {}) {
   try {
+    // M2 scoping: this snapshot is ONE account's book, so only that
+    // account's 'working' rows may be judged gone by absence from it.
+    const acct = opts.accountId != null ? String(opts.accountId) : null
+    const includeNull = opts.includeNull !== false
+    const goneScope = acct == null
+      ? { sql: '', params: [] }
+      : includeNull
+        ? { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [acct] }
+        : { sql: 'AND account_id = ?', params: [acct] }
+
     const upsert = db.prepare(
       `INSERT INTO broker_orders
-         (order_id, symbol, side, order_type, volume, limit_price, stop_price, sl, tp, label, is_bot, status, last_seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', datetime('now'))
+         (order_id, symbol, side, order_type, volume, limit_price, stop_price, sl, tp, label, is_bot, account_id, status, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', datetime('now'))
        ON CONFLICT(order_id) DO UPDATE SET
          symbol=excluded.symbol, side=excluded.side, order_type=excluded.order_type,
          volume=excluded.volume, limit_price=excluded.limit_price, stop_price=excluded.stop_price,
          sl=excluded.sl, tp=excluded.tp, label=excluded.label, is_bot=excluded.is_bot,
+         account_id=COALESCE(excluded.account_id, account_id),
          status='working', last_seen=datetime('now'), gone_at=NULL`
     )
     const presentIds = []
@@ -444,14 +477,15 @@ export function syncBrokerOrders(db, pendingOrders = []) {
         upsert.run(
           id, o.symbolName || null, o.side || null, o.orderType || null,
           o.volume ?? o.volumeUnits ?? null, o.limitPrice ?? null, o.stopPrice ?? null,
-          o.sl ?? null, o.tp ?? null, o.label || null, isOurs(o.label) ? 1 : 0,
+          o.sl ?? null, o.tp ?? null, o.label || null, isOurs(o.label) ? 1 : 0, acct,
         )
       }
     })
     tx()
 
     // Anything still 'working' but not in this snapshot has left the book.
-    const wasWorking = db.prepare(`SELECT order_id FROM broker_orders WHERE status = 'working'`).all().map(r => String(r.order_id))
+    const wasWorking = db.prepare(`SELECT order_id FROM broker_orders WHERE status = 'working' ${goneScope.sql}`)
+      .all(...goneScope.params).map(r => String(r.order_id))
     const presentSet = new Set(presentIds)
     const gone = wasWorking.filter(id => !presentSet.has(id))
     if (gone.length) {

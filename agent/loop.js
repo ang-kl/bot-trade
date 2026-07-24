@@ -1293,6 +1293,44 @@ async function runLoop(db) {
               }
             } catch { /* non-fatal */ }
           }
+
+          // ---- M2: reconcile every OTHER enabled same-side account --------
+          // The registry's enabled roster (minus the selected primary, minus
+          // cross-side accounts — a demo account never rides the live
+          // session). Each account's snapshot reconciles with account-scoped
+          // sweeps (reconciler opts.accountId), so one account's truth can
+          // never close another's rows; its state keys land under the
+          // acct:<id>: namespace. Best-effort per account — one broken
+          // account must not take down the others' reconciliation.
+          try {
+            const { getEnabledAccounts, setAccountState } = await import('./services/account-registry.js')
+            const others = getEnabledAccounts(db).filter(a =>
+              String(a.account_id) !== String(accountId) && (a.is_live === 1) === isLive)
+            for (const acc of others) {
+              try {
+                const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })
+                // The primary pass only fetched the symbol-name list when IT
+                // had positions — fetch on demand if this account has rows
+                // the map can't name.
+                const needsNames = [...(rd.position || []), ...(rd.order || [])]
+                  .some(x => x.tradeData?.symbolId && !symbolNameMap[x.tradeData.symbolId])
+                if (needsNames) {
+                  try {
+                    const symData = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, acc.account_id)
+                    for (const s2 of (symData.symbol || [])) symbolNameMap[s2.symbolId] = s2.symbolName
+                  } catch { /* names degrade to ID:x */ }
+                }
+                const pos2 = (rd.position || []).map(p => ({ ...p, symbolName: symbolNameMap[p.tradeData?.symbolId] || null }))
+                const ord2 = (rd.order || []).map(o => ({ ...o, symbolName: symbolNameMap[o.tradeData?.symbolId] || null }))
+                const r2 = reconcilePositions(db, pos2, ord2,
+                  (k, v) => setAccountState(db, acc.account_id, k, v),
+                  { accountId: acc.account_id })
+                log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
+              } catch (e) {
+                log(`Reconcile[${acc.account_id}] failed (non-fatal): ${e.message}`)
+              }
+            }
+          } catch { /* registry optional on old DBs */ }
         }
       } catch (err) {
         log('Reconcile phase error:', err.message)
