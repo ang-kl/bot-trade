@@ -16,6 +16,7 @@ import {
   getEnabledAccounts,
   registryAutopilotAccounts,
   backfillAccountIds,
+  setAccountEnabled,
 } from './account-registry.js'
 
 const fresh = () => initDB(':memory:')
@@ -133,4 +134,25 @@ test('persistRiskEvent stamps the deciding account (proposal override wins)', as
   const rows = db.prepare(`SELECT account_id FROM risk_events ORDER BY id`).all()
   assert.equal(rows[0].account_id, 'SEL')
   assert.equal(rows[1].account_id, 'OTHER')
+})
+
+test('M4 setAccountEnabled: lifts sole-enabled, refuses unknown ids, modes validated', () => {
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', 'A')
+  syncSelectedAccount(db, 'A', false, '111')
+  upsertAccount(db, { accountId: 'B', traderLogin: '222', isLive: false })
+  // Enable B alongside A — two enabled rows now coexist.
+  const out = setAccountEnabled(db, 'B', true)
+  assert.equal(out.ok, true)
+  assert.equal(out.mode, 'active')
+  const enabled = getEnabledAccounts(db).map(a => a.account_id).sort()
+  assert.deepEqual(enabled, ['A', 'B'])
+  // A stays selected/primary; roles include both.
+  assert.equal(registryAutopilotAccounts(db).length, 2)
+  // Disable B → back to sole-enabled without touching A.
+  assert.equal(setAccountEnabled(db, 'B', false).mode, 'manage_only')
+  assert.deepEqual(getEnabledAccounts(db).map(a => a.account_id), ['A'])
+  // Unknown id refused; bad mode refused.
+  assert.equal(setAccountEnabled(db, 'ZZZ', true).ok, false)
+  assert.equal(setAccountEnabled(db, 'B', true, 'bogus').ok, false)
 })
