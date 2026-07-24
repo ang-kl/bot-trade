@@ -3261,6 +3261,7 @@ export default function actionsRouter(db) {
         // the broker (INVALID_REQUEST on 2-3 digit symbols like BTCUSD).
         ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, volMeta.digits) } : {}),
         ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
+        ...(await import('../lib/order-protection.js')).stopTriggerField(loadRiskConfig(db)),
       }
 
       // 5A: manual/autopilot execute paths obey the exec guard (halt kill
@@ -3383,6 +3384,7 @@ export default function actionsRouter(db) {
         // the broker (INVALID_REQUEST on 2-3 digit symbols like BTCUSD).
         relativeStopLoss: relativePoints(slDistance, volMeta.digits),
         ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, volMeta.digits) } : {}),
+        ...(await import('../lib/order-protection.js')).stopTriggerField(loadRiskConfig(db)),
       }
 
       // 5A: same exec-guard enforcement as the engine chokepoint.

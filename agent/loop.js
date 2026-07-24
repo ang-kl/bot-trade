@@ -349,6 +349,9 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // 2-3 digit symbols allow and the broker rejects it (INVALID_REQUEST).
     ...(slDistance ? { relativeStopLoss: relativePoints(slDistance, symbolDigits) } : {}),
     ...(tpDistance ? { relativeTakeProfit: relativePoints(tpDistance, symbolDigits) } : {}),
+    // Spike protection: broker-side stop trigger method (config-gated no-op
+    // when unset — see lib/order-protection.js).
+    ...(await import('./lib/order-protection.js')).stopTriggerField(riskCfg),
   }
 
   const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'

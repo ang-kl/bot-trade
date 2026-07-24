@@ -335,6 +335,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       // sizing mocks that don't provide relativePoints.
       ...(slDistance ? { relativeStopLoss: (sizing.relativePoints ?? ((d) => Math.round(d * POINTS)))(slDistance, priceDigits) } : {}),
       ...(tpDistance ? { relativeTakeProfit: (sizing.relativePoints ?? ((d) => Math.round(d * POINTS)))(tpDistance, priceDigits) } : {}),
+      ...(await import('../lib/order-protection.js')).stopTriggerField(riskCfg),
       expirationTimestamp: expiresAtMs,
       label,
       comment: 'pending-fib',

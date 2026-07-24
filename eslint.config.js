@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // design_claude/ holds design-reference mockups uploaded via the GitHub
+  // web UI — not app code, not bundled; linting them broke every PR's CI.
+  globalIgnores(['dist', 'design_claude']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

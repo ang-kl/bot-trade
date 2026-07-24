@@ -75,6 +75,12 @@ export const DEFAULT_RISK_CONFIG = {
   // Override via POST /actions/balance { leverage: 500 }.
   leverage: 100,
   maxMarginUsagePct: 0.5,          // Max % of balance locked in margin.
+  // Broker-side spike protection (owner 2026-07-24): stop trigger method for
+  // entry orders' SL. null = broker default (TRADE — touch-triggered, spike-
+  // sensitive). 'OPPOSITE' | 'DOUBLE_TRADE' | 'DOUBLE_OPPOSITE' make the
+  // broker require the other side of the spread / a confirming quote before
+  // firing the stop — the tick-speed remedy for sub-3s wick sweeps.
+  stopTriggerMethod: null,
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is

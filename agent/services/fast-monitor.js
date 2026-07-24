@@ -268,7 +268,7 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] watchdog failed:', err.message)
     }
-  }, deps.tickMs ?? 30_000)
+  }, deps.tickMs ?? Math.max(5_000, Number(process.env.FAST_MONITOR_MS) || 30_000))
   t.unref?.()
   return () => clearInterval(t)
 }
