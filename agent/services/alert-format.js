@@ -73,10 +73,41 @@ export function formatAnalysisAlert(db, { sym, synth, signal, armed = {}, newsLi
     willAct
       ? `🤖 BOT WILL ACT: ${tf} is armed and conviction clears the 8/10 bar — the risk gate is the last word.`
       : `🤖 Bot will NOT act: ${!armed.autotrade ? 'autotrade is off' : !tfArmed ? `${tf || 'this timeframe'} is not armed for ${sym}` : `conviction ${conv}/10 is below the 8/10 bar`}.`,
-    `🧭 Your options: do nothing (default) · /arm fib_618_fade ${sym} ${tf || '<tf>'} to arm this combo · /pause to stop the bot · /chart ${sym} ${tf || '1h'} to see it drawn.`,
+    `🧭 Your options: buttons below (or type /arm fib_618_fade ${sym} ${tf || '<tf>'} · /pause · /chart ${sym} ${tf || '1h'}).`,
     `📏 How to read conviction: 6-7 = zone touched but shallow, most fail; 8+ = deep in the zone, the only grade the bot trades.`,
     marketLine(sym),
     ...(newsLines.length ? ['', '📰 Nearby scheduled news (ForexFactory):', ...newsLines] : []),
   ]
   return lines.filter(l => l !== undefined).join('\n')
+}
+
+// TradingView ticker mapping — CFD names that don't resolve 1:1 on TV.
+// Everything else passes through unchanged (EURUSD, XAUUSD, MCHP…);
+// .US/.UK/.DE/.AU suffixes are stripped to the bare ticker.
+const TV_MAP = {
+  US30: 'DJI', US500: 'SPX', NAS100: 'NDX', USTEC: 'NDX', US2000: 'RUT',
+  GER40: 'DAX', UK100: 'UKX', FRA40: 'PX1', JPN225: 'NI225', AUS200: 'XJO',
+  NATGAS: 'NATURALGAS', SPOTCRUDE: 'USOIL', BRENT: 'UKOIL',
+}
+export function tvSymbol(symbol) {
+  const s = String(symbol || '').toUpperCase()
+  if (TV_MAP[s]) return TV_MAP[s]
+  const m = s.match(/^([A-Z0-9]+)\.(US|UK|DE|AU)$/)
+  return m ? m[1] : s
+}
+
+/**
+ * Inline-keyboard rows for one signal (owner 2026-07-24: one-tap instead of
+ * typing /chart and /arm). callback_data is pipe-delimited and ≤64 bytes per
+ * Telegram's limit — symbols/timeframes are short, but guard anyway.
+ */
+export function signalButtons({ sym, tf, strategy }) {
+  const t = tf || '1h'
+  const cap = (s) => s.slice(0, 64)
+  const row = [
+    { text: '📊 Chart', callback_data: cap(`chart|${sym}|${t}`) },
+    { text: `✅ Arm ${t}`, callback_data: cap(`arm|${strategy || 'fib_618_fade'}|${sym}|${t}`) },
+    { text: '📈 TradingView', url: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol(sym))}` },
+  ]
+  return [row]
 }
