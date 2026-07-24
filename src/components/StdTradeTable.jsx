@@ -37,6 +37,7 @@ function sortVal(r, k) {
     case 'side': return r.side || null
     case 'qty': return r.qty ?? (r.qtyText ? parseFloat(String(r.qtyText).replace(/[^0-9.]/g, '')) : null)
     case 'tp': return r.tp ?? r.tps?.[0]?.price ?? null
+    case 'price': return r.current ?? r.exit ?? null
     case 'updatedAt': return toMs(r.updatedAt)
     default: return r[k] ?? null
   }
@@ -137,7 +138,10 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   // blank when NEITHER exists anywhere in the table (e.g. a pending-order
   // table with no fill history at all).
   const anyRef = rows.some(r => r.current != null || r.exit != null)
-  const colCount = (anyRef ? 15 : 12) + activeOpt.length + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)
+  // Owner audit (2026-07-24): "ensure there are entry price and current
+  // OHLC and current price columns" — Price rides beside Entry, same
+  // ref (live while open, exit once closed) the To-TP/SL trio already uses.
+  const colCount = (anyRef ? 16 : 12) + activeOpt.length + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)
   // Frozen columns need a SOLID background or scrolled cells show through.
   const stick1 = 'sticky left-0 z-10 bg-[var(--color-bg)]'
   const stick2 = `sticky z-10 bg-[var(--color-bg)]`
@@ -158,6 +162,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               <th aria-sort={ariaSort('side')} className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
               <th aria-sort={ariaSort('qty')} className="py-1.5 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
               <th aria-sort={ariaSort('entry')} className="py-1.5 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
+              {anyRef && <th aria-sort={ariaSort('price')} className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="live price while open, exit price once closed">{sortBtn('price', 'Price')}</th>}
               <th aria-sort={ariaSort('sl')} className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
               <th aria-sort={ariaSort('tp')} className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
               <th aria-sort={ariaSort('pnl')} className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
@@ -233,6 +238,11 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     </td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}{ccyTag(r.ccy)}</td>
+                    {anyRef && (
+                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                        {ref != null ? <>{num(ref)}{ccyTag(r.ccy)}</> : '—'}
+                      </td>
+                    )}
                     <td className="py-1.5 pr-3 text-right whitespace-nowrap">
                       {num(r.sl)}{ccyTag(r.ccy)}
                       {r.slAt && (() => {
@@ -333,7 +343,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10 + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
+                  <td colSpan={10 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
                   <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
