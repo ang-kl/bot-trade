@@ -225,6 +225,10 @@ int main(int argc, char** argv) {
     v.set("hasCredentials", engine.hasCredentials());
     long long at = engine.lastReconcileAtMs();
     v.set("lastReconcileAt", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));
+    // M2: the authorized-account roster (primary first).
+    jsn::Array ids;
+    for (long long id : engine.accountIds()) ids.push_back(jsn::Value(id));
+    v.set("accounts", jsn::Value(std::move(ids)));
     // Telemetry counters — null when TELEMETRY_PATH isn't configured, so the
     // Node keeper can tell "disabled" apart from "configured, zero events".
     if (Telemetry* t = engine.telemetry()) {
@@ -239,6 +243,24 @@ int main(int argc, char** argv) {
 
   server.route("GET", "/positions", [&engine](const HttpRequest&) -> HttpResponse {
     std::string last = engine.lastReconcileJson();
+    if (last.empty())
+      return {503, "{\"error\":\"no reconcile data yet\"}"};
+    return {200, last};
+  });
+
+  // M2 per-account variant: POST /positions {ctidTraderAccountId} returns
+  // that account's latest reconcile snapshot. GET /positions above stays the
+  // primary account's view (byte-identical to the single-account era).
+  server.route("POST", "/positions", [&engine](const HttpRequest& req) -> HttpResponse {
+    auto parsed = jsn::parse(req.body);
+    if (!parsed || !parsed->isObject())
+      return {400, "{\"error\":\"body must be a JSON object\"}"};
+    const jsn::Value& acct = parsed->get("ctidTraderAccountId");
+    long long id = acct.isNumber() ? (long long)acct.asNumber()
+                                   : std::strtoll(acct.asString().c_str(), nullptr, 10);
+    if (id <= 0)
+      return {400, "{\"error\":\"need ctidTraderAccountId\"}"};
+    std::string last = engine.lastReconcileJson(id);
     if (last.empty())
       return {503, "{\"error\":\"no reconcile data yet\"}"};
     return {200, last};
@@ -259,9 +281,21 @@ int main(int argc, char** argv) {
         : std::strtoll(acct.asString().c_str(), nullptr, 10);
     if (clientId.empty() || accessToken.empty() || accountId <= 0)
       return {400, "{\"error\":\"need clientId, accessToken, accountId (host/clientSecret optional)\"}"};
+    // M2: optional accountIds[] — additional ctidTraderAccountIds to
+    // authorize on the SAME session (plan C1: one trade connection, many
+    // AccountAuths). Numbers or numeric strings; the primary accountId is
+    // implicit and needn't be repeated.
+    std::vector<long long> extraIds;
+    for (const auto& e : v.get("accountIds").asArray()) {
+      long long id = e.isNumber() ? (long long)e.asNumber()
+                                  : std::strtoll(e.asString().c_str(), nullptr, 10);
+      if (id > 0 && id != accountId) extraIds.push_back(id);
+    }
     engine.setCredentials(host.empty() ? "live.ctraderapi.com" : host,
-                          clientId, clientSecret, accessToken, accountId);
-    logLine("credentials updated via /connect");
+                          clientId, clientSecret, accessToken, accountId,
+                          extraIds);
+    logLine("credentials updated via /connect (" +
+            std::to_string(1 + extraIds.size()) + " account(s) requested)");
 
     // (Re)start the VPO tick feed against the freshly pushed session — the
     // sidecar holds no credentials of its own until /connect delivers them,

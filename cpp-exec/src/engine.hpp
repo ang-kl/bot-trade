@@ -6,9 +6,11 @@
 #pragma once
 
 #include <chrono>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "json.hpp"
 #include "ws_client.hpp"
@@ -46,12 +48,23 @@ public:
   // Credentials arrive at runtime (POST /connect from the Node keeper —
   // access token + account id live in the keeper's DB, not env vars).
   ExecEngine() = default;
+  // M2 multi-account (plan C1): ONE trade connection can authorize several
+  // ctidTraderAccountIds under the same cTID access token. `accountId` is
+  // the primary (first) account; `extraAccountIds` join it on the same
+  // session. Pushing the SAME host+clientId+token with a new account id is
+  // an incremental ProtoOAAccountAuthReq on the live session — no reconnect,
+  // no disruption to the other accounts' orders.
   void setCredentials(std::string host, std::string clientId,
                       std::string clientSecret, std::string accessToken,
-                      long long accountId);
+                      long long accountId,
+                      std::vector<long long> extraAccountIds = {});
   bool hasCredentials();
 
-  // Connect + authApp + authAccount. Serialized with the request methods.
+  // The full authorized-account roster (primary first). For /health.
+  std::vector<long long> accountIds();
+
+  // Connect + authApp + authAccount for every account. Serialized with the
+  // request methods.
   bool connectAndAuth();
 
   EngineResult authApp();
@@ -63,8 +76,11 @@ public:
   EngineResult reconcile();
 
   bool isConnected();
-  std::string lastReconcileJson();   // "" until first successful reconcile
-  long long lastReconcileAtMs();     // 0 until first successful reconcile
+  std::string lastReconcileJson();   // primary account; "" until first success
+  long long lastReconcileAtMs();     // primary account; 0 until first success
+  // Per-account variants (M2): "" / 0 for an account never reconciled.
+  std::string lastReconcileJson(long long accountId);
+  long long lastReconcileAtMs(long long accountId);
 
   // Atomic hot-reconfig block (#3): the HTTP thread flips these WITHOUT
   // locking the execution thread; placeOrder reads a lock-free snapshot.
@@ -89,11 +105,18 @@ private:
   // (or an error frame) arrives. Caller must hold mtx_.
   EngineResult request(int reqType, const jsn::Value& payload, int expectType,
                        int timeoutMs = 20000);
+  // ACCOUNT_AUTH_REQ for one id. Caller must hold mtx_.
+  EngineResult authAccountLocked(long long accountId);
+  // Reconcile one id. Caller must hold mtx_.
+  EngineResult reconcileLocked(long long accountId);
   void handleUnsolicited(const jsn::Value& msg);
   void maybeHeartbeatLocked();
+  long long primaryAccountLocked() const {
+    return accountIds_.empty() ? 0 : accountIds_.front();
+  }
 
   std::string host_, clientId_, clientSecret_, accessToken_;
-  long long accountId_;
+  std::vector<long long> accountIds_; // primary first, then extras
 
   std::mutex mtx_; // serializes all WS access; protocol is strictly req/res here
   CtraderWs ws_;
@@ -101,8 +124,8 @@ private:
   std::chrono::steady_clock::time_point lastSend_{};
 
   std::mutex stateMtx_;
-  std::string lastReconcile_;
-  long long lastReconcileAtMs_ = 0;
+  struct ReconcileSnap { std::string json; long long atMs = 0; };
+  std::map<long long, ReconcileSnap> reconcileByAccount_;
 
   OrderGuard guard_; // atomic knobs read on the order hot path
   Telemetry* telemetry_ = nullptr; // non-owning; null = disabled

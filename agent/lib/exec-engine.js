@@ -42,7 +42,15 @@ async function sidecar(method, path, body) {
 // again whenever they change (token refresh, account switch).
 let lastPushedKey = ''
 async function ensureSidecarSession(creds) {
-  const key = `${creds.host}|${creds.accountId}|${creds.accessToken}`
+  // M2: the sidecar multiplexes many ctidTraderAccountIds on ONE session
+  // (same host+token). Re-pushing /connect for another account under the
+  // same token is an incremental AccountAuth server-side — no reconnect —
+  // so the memo key only needs to cover the (host, token, account) triple.
+  // creds.accountIds (optional) pre-authorizes a whole roster in one push.
+  const roster = Array.isArray(creds.accountIds) && creds.accountIds.length
+    ? [...creds.accountIds].sort().join(',')
+    : String(creds.accountId)
+  const key = `${creds.host}|${roster}|${creds.accessToken}`
   if (key === lastPushedKey) return
   await sidecar('POST', '/connect', {
     host: creds.host,
@@ -50,6 +58,9 @@ async function ensureSidecarSession(creds) {
     clientSecret: creds.clientSecret,
     accessToken: creds.accessToken,
     accountId: creds.accountId,
+    ...(Array.isArray(creds.accountIds) && creds.accountIds.length
+      ? { accountIds: creds.accountIds }
+      : {}),
   })
   lastPushedKey = key
 }
@@ -202,7 +213,16 @@ export async function reconcile(creds) {
     // again the moment it reports data.
     try {
       await ensureSidecarSession(creds)
-      return await sidecar('GET', '/positions')
+      // M2: ask for THIS account's snapshot (the sidecar reconciles every
+      // authorized account). An older sidecar binary without the POST route
+      // 404s — fall back to the legacy GET (primary-account view), which is
+      // identical in the single-account era.
+      try {
+        return await sidecar('POST', '/positions', { ctidTraderAccountId: parseInt(creds.accountId) })
+      } catch (err) {
+        if (!/404|not found/i.test(err.message)) throw err
+        return await sidecar('GET', '/positions')
+      }
     } catch (err) {
       if (!/no reconcile data yet/.test(err.message)) throw err
       const m = await ws()

@@ -58,17 +58,48 @@ ExecEngine::ExecEngine(std::string host, std::string clientId,
       clientId_(std::move(clientId)),
       clientSecret_(std::move(clientSecret)),
       accessToken_(std::move(accessToken)),
-      accountId_(accountId) {}
+      accountIds_{accountId} {}
 
 void ExecEngine::setCredentials(std::string host, std::string clientId,
                                 std::string clientSecret,
-                                std::string accessToken, long long accountId) {
+                                std::string accessToken, long long accountId,
+                                std::vector<long long> extraAccountIds) {
   std::lock_guard lk(mtx_);
+  const bool sameSession = host == host_ && clientId == clientId_ &&
+                           accessToken == accessToken_ && authed_;
+  if (sameSession) {
+    // M2: same host+app+token — the live session stays up. Auth any account
+    // ids we haven't authorized yet, incrementally, without disturbing the
+    // accounts already trading on this connection.
+    std::vector<long long> wanted{accountId};
+    for (long long id : extraAccountIds) wanted.push_back(id);
+    for (long long id : wanted) {
+      if (id <= 0) continue;
+      bool known = false;
+      for (long long have : accountIds_) if (have == id) { known = true; break; }
+      if (known) continue;
+      EngineResult r = authAccountLocked(id);
+      if (r.ok) {
+        accountIds_.push_back(id);
+        logLine("account " + std::to_string(id) + " authorized on existing session");
+      } else {
+        logLine("account " + std::to_string(id) + " auth FAILED on existing session: " + jsn::dump(r.body));
+      }
+    }
+    return;
+  }
   host_ = std::move(host);
   clientId_ = std::move(clientId);
   clientSecret_ = std::move(clientSecret);
   accessToken_ = std::move(accessToken);
-  accountId_ = accountId;
+  accountIds_.clear();
+  if (accountId > 0) accountIds_.push_back(accountId);
+  for (long long id : extraAccountIds) {
+    if (id <= 0) continue;
+    bool dup = false;
+    for (long long have : accountIds_) if (have == id) { dup = true; break; }
+    if (!dup) accountIds_.push_back(id);
+  }
   // Force a clean reconnect+reauth on the next runLoop pass — the old
   // session (if any) may be authed against a different account/token.
   ws_.close();
@@ -77,7 +108,12 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
 
 bool ExecEngine::hasCredentials() {
   std::lock_guard lk(mtx_);
-  return !clientId_.empty() && !accessToken_.empty() && accountId_ > 0;
+  return !clientId_.empty() && !accessToken_.empty() && primaryAccountLocked() > 0;
+}
+
+std::vector<long long> ExecEngine::accountIds() {
+  std::lock_guard lk(mtx_);
+  return accountIds_;
 }
 
 bool ExecEngine::isConnected() {
@@ -86,13 +122,27 @@ bool ExecEngine::isConnected() {
 }
 
 std::string ExecEngine::lastReconcileJson() {
-  std::lock_guard lk(stateMtx_);
-  return lastReconcile_;
+  long long primary;
+  { std::lock_guard lk(mtx_); primary = primaryAccountLocked(); }
+  return lastReconcileJson(primary);
 }
 
 long long ExecEngine::lastReconcileAtMs() {
+  long long primary;
+  { std::lock_guard lk(mtx_); primary = primaryAccountLocked(); }
+  return lastReconcileAtMs(primary);
+}
+
+std::string ExecEngine::lastReconcileJson(long long accountId) {
   std::lock_guard lk(stateMtx_);
-  return lastReconcileAtMs_;
+  auto it = reconcileByAccount_.find(accountId);
+  return it == reconcileByAccount_.end() ? "" : it->second.json;
+}
+
+long long ExecEngine::lastReconcileAtMs(long long accountId) {
+  std::lock_guard lk(stateMtx_);
+  auto it = reconcileByAccount_.find(accountId);
+  return it == reconcileByAccount_.end() ? 0 : it->second.atMs;
 }
 
 void ExecEngine::handleUnsolicited(const jsn::Value& msg) {
@@ -172,11 +222,15 @@ EngineResult ExecEngine::authApp() {
   return request(pt::APP_AUTH_REQ, p, pt::APP_AUTH_RES);
 }
 
-EngineResult ExecEngine::authAccount() {
+EngineResult ExecEngine::authAccountLocked(long long accountId) {
   jsn::Value p{jsn::Object{}};
-  p.set("ctidTraderAccountId", accountId_);
+  p.set("ctidTraderAccountId", accountId);
   p.set("accessToken", accessToken_);
   return request(pt::ACCOUNT_AUTH_REQ, p, pt::ACCOUNT_AUTH_RES);
+}
+
+EngineResult ExecEngine::authAccount() {
+  return authAccountLocked(primaryAccountLocked());
 }
 
 bool ExecEngine::connectAndAuth() {
@@ -193,14 +247,29 @@ bool ExecEngine::connectAndAuth() {
     ws_.close();
     return false;
   }
-  auto b = authAccount();
+  // M2: authorize EVERY account on the roster over this one connection
+  // (ProtoOAAccountAuthReq per id — plan C1). The primary must succeed or
+  // the session is useless; an extra that fails auth is dropped from the
+  // roster with a loud log rather than poisoning the whole session.
+  auto b = authAccountLocked(primaryAccountLocked());
   if (!b.ok) {
     logLine("account auth failed: " + jsn::dump(b.body));
     ws_.close();
     return false;
   }
+  for (size_t i = 1; i < accountIds_.size();) {
+    EngineResult r = authAccountLocked(accountIds_[i]);
+    if (r.ok) {
+      ++i;
+    } else {
+      logLine("extra account " + std::to_string(accountIds_[i]) +
+              " auth failed — dropped from roster: " + jsn::dump(r.body));
+      accountIds_.erase(accountIds_.begin() + static_cast<long>(i));
+    }
+  }
   authed_ = true;
-  logLine("connected and authenticated to " + host_);
+  logLine("connected and authenticated to " + host_ + " (" +
+          std::to_string(accountIds_.size()) + " account(s))");
   return true;
 }
 
@@ -244,7 +313,8 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
                      volume, price, 1, 0});
   }
   std::lock_guard lk(mtx_);
-  EngineResult r = request(pt::NEW_ORDER_REQ, withAccountId(payload, accountId_),
+  EngineResult r = request(pt::NEW_ORDER_REQ,
+                          withAccountId(payload, primaryAccountLocked()),
                           pt::EXECUTION_EVENT);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
@@ -256,33 +326,49 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
 
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   std::lock_guard lk(mtx_);
-  return request(pt::AMEND_POSITION_SLTP_REQ, withAccountId(payload, accountId_),
+  return request(pt::AMEND_POSITION_SLTP_REQ,
+                 withAccountId(payload, primaryAccountLocked()),
                  pt::EXECUTION_EVENT, 15000);
 }
 
 EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
   std::lock_guard lk(mtx_);
-  return request(pt::CLOSE_POSITION_REQ, withAccountId(payload, accountId_),
+  return request(pt::CLOSE_POSITION_REQ,
+                 withAccountId(payload, primaryAccountLocked()),
                  pt::EXECUTION_EVENT);
 }
 
 EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
   std::lock_guard lk(mtx_);
-  return request(pt::CANCEL_ORDER_REQ, withAccountId(payload, accountId_),
+  return request(pt::CANCEL_ORDER_REQ,
+                 withAccountId(payload, primaryAccountLocked()),
                  pt::EXECUTION_EVENT);
+}
+
+EngineResult ExecEngine::reconcileLocked(long long accountId) {
+  jsn::Value p{jsn::Object{}};
+  p.set("ctidTraderAccountId", accountId);
+  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 25000);
+  if (r.ok) {
+    std::lock_guard sk(stateMtx_);
+    reconcileByAccount_[accountId] = {jsn::dump(r.body), nowMs()};
+  }
+  return r;
 }
 
 EngineResult ExecEngine::reconcile() {
   std::lock_guard lk(mtx_);
-  jsn::Value p{jsn::Object{}};
-  p.set("ctidTraderAccountId", accountId_);
-  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 25000);
-  if (r.ok) {
-    std::lock_guard sk(stateMtx_);
-    lastReconcile_ = jsn::dump(r.body);
-    lastReconcileAtMs_ = nowMs();
+  // M2: every authorized account reconciles each pass. The PRIMARY result is
+  // returned (runLoop's transport-error handling keys off it), and a
+  // transport failure aborts the sweep — the connection is gone for all of
+  // them anyway.
+  EngineResult primary = reconcileLocked(primaryAccountLocked());
+  if (!primary.ok && !primary.brokerError) return primary;
+  for (size_t i = 1; i < accountIds_.size(); ++i) {
+    EngineResult r = reconcileLocked(accountIds_[i]);
+    if (!r.ok && !r.brokerError) return r;
   }
-  return r;
+  return primary;
 }
 
 void ExecEngine::runLoop() {

@@ -22,7 +22,11 @@ before(async () => {
       // /connect always succeeds — it just sets credentials, never depends on
       // reconcile state. Every test that wants a FAILING call is testing the
       // actual operation (order/positions/etc), never the credential push.
-      const resp = req.url === '/connect' ? { status: 200, body: '{}' } : nextResponse
+      // nextResponse may be an ARRAY to serve different replies in sequence
+      // (e.g. POST /positions 404 → GET /positions fallback).
+      const resp = req.url === '/connect'
+        ? { status: 200, body: '{}' }
+        : (Array.isArray(nextResponse) ? (nextResponse.length > 1 ? nextResponse.shift() : nextResponse[0]) : nextResponse)
       res.writeHead(resp.status, { 'content-type': 'application/json' })
       res.end(resp.body)
     })
@@ -99,13 +103,34 @@ test('cpp cancelOrder: POST /cancel with bearer auth, accountId + orderId body',
   assert.deepEqual(JSON.parse(req.body), { ctidTraderAccountId: 123, orderId: 555 })
 })
 
-test('cpp reconcile: GET /positions, returns parsed JSON', async () => {
+test('cpp reconcile: POST /positions with the account id, returns parsed JSON', async () => {
   nextResponse = { status: 200, body: JSON.stringify({ position: [{ positionId: 1 }] }) }
   const out = await reconcile(CREDS)
-  assert.equal(requests[0].method, 'GET')
-  assert.equal(requests[0].url, '/positions')
-  assert.equal(requests[0].body, '')
+  const req = requests[requests.length - 1]
+  assert.equal(req.method, 'POST')
+  assert.equal(req.url, '/positions')
+  assert.deepEqual(JSON.parse(req.body), { ctidTraderAccountId: 123 })
   assert.deepEqual(out, { position: [{ positionId: 1 }] })
+})
+
+test('cpp reconcile: 404 from an OLD sidecar binary falls back to legacy GET /positions', async () => {
+  nextResponse = [
+    { status: 404, body: '{"error":"not found"}' },
+    { status: 200, body: JSON.stringify({ position: [{ positionId: 7 }] }) },
+  ]
+  const out = await reconcile(CREDS)
+  assert.deepEqual(out, { position: [{ positionId: 7 }] })
+  const [post, get] = requests.filter(r => r.url === '/positions')
+  assert.equal(post.method, 'POST')
+  assert.equal(get.method, 'GET')
+})
+
+test('cpp multi-account connect: accountIds roster forwarded to the sidecar', async () => {
+  nextResponse = { status: 200, body: JSON.stringify({ position: [] }) }
+  await reconcile({ ...CREDS, accessToken: 'fresh-token', accountIds: ['123', '456'] })
+  const connect = requests.find(r => r.url === '/connect')
+  assert.ok(connect, 'roster change must re-push /connect')
+  assert.deepEqual(JSON.parse(connect.body).accountIds, ['123', '456'])
 })
 
 test('bracket guarantee: a naked MARKET order is refused before it reaches the broker', async () => {
