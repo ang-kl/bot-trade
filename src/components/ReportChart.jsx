@@ -120,8 +120,8 @@ export default function ReportChart({ allTrades, events }) {
       )}
 
       {hasData && (
-        <div className="relative">
-          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full select-none" role="img"
+        <div className="relative overflow-x-auto">
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[700px] select-none" role="img"
             aria-label="bot activity chart" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
             <defs>
               <linearGradient id="rcFill" x1="0" y1="0" x2="0" y2="1">
@@ -132,11 +132,11 @@ export default function ReportChart({ allTrades, events }) {
             {geom.ticksY.map(t => (
               <g key={t.y}>
                 <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="var(--color-border)" strokeWidth="0.6" />
-                <text x={PL - 6} y={t.y + 3} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">{t.label}</text>
+                <text x={PL - 6} y={t.y + 3} fontSize="12" textAnchor="end" fill="var(--color-text-sub)">{t.label}</text>
               </g>
             ))}
             {geom.ticksX.map(r => (
-              <text key={r.t} x={geom.X(r.t)} y={H - 8} fontSize="10" textAnchor="middle" fill="var(--color-text-sub)">{shortDate(r.t)}</text>
+              <text key={r.t} x={geom.X(r.t)} y={H - 8} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)">{shortDate(r.t)}</text>
             ))}
             {style === 'area' && <path d={geom.eqArea} fill="url(#rcFill)" />}
             <path d={geom.eqPath} fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinejoin="round" />
@@ -162,7 +162,7 @@ export default function ReportChart({ allTrades, events }) {
           )}
         </div>
       )}
-      <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">Left axis: decisions/day · violet equity uses its own scale · live-updates every 20s.</p>
+      <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">Left axis: decisions/day · violet equity uses its own scale · live-updates every 20s.</p>
     </Card>
   )
 }
