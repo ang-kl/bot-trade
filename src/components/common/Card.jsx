@@ -6,10 +6,20 @@
 // text (innerText — exactly what's on screen, nothing recomputed). Cards
 // whose sections provide their own structured tools (SectionTools) or that
 // are pure chrome can opt out with copyable={false}.
+//
+// Owner (2026-07-24 evening): "where is the JSON/TEXT copy standardised
+// across all the pages and components" — the popup itself (this component
+// + CopyPopup) is already the one shared implementation everywhere Card is
+// used; the gap is the JSON tab, which only appears when a caller hands
+// structured `data` through (today: Performance.jsx's SectionTools wrapper
+// does this for its 15 sections). `data`/`toText` are optional passthrough
+// props so any other page's Card can opt into the same JSON tab without a
+// second wrapper component — callers not yet updated keep the Text-only
+// behaviour they already had.
 import { useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 
-export default function Card({ children, className = '', copyable = true, copyTitle = null, ...rest }) {
+export default function Card({ children, className = '', copyable = true, copyTitle = null, data = null, toText = null, ...rest }) {
   const ref = useRef(null)
   const [popup, setPopup] = useState(null)
   const cls = [
@@ -22,11 +32,13 @@ export default function Card({ children, className = '', copyable = true, copyTi
   const openCopy = () => {
     const el = ref.current
     if (!el) return
-    const text = (el.innerText || '').replace(/\n{3,}/g, '\n\n').trim()
+    const domText = (el.innerText || '').replace(/\n{3,}/g, '\n\n').trim()
     const title = copyTitle
       || el.querySelector('h1,h2,h3,h4,[class*="t-h"]')?.innerText?.split('\n')[0]?.trim()
       || 'Section'
-    setPopup({ title, text })
+    const text = toText ? toText(data) : domText
+    const json = data != null ? JSON.stringify(data, null, 2) : null
+    setPopup({ title, text, json })
   }
   return (
     <div ref={ref} className={cls} {...rest}>
@@ -40,7 +52,7 @@ export default function Card({ children, className = '', copyable = true, copyTi
         </button>
       )}
       {children}
-      {popup && <CopyPopup title={popup.title} text={popup.text} onClose={() => setPopup(null)} />}
+      {popup && <CopyPopup title={popup.title} text={popup.text} json={popup.json} onClose={() => setPopup(null)} />}
     </div>
   )
 }

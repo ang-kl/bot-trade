@@ -189,6 +189,12 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
     }
   }
 
+  // Owner (2026-07-24): "1H ledger row should show last time it filled
+  // in" — an empty rolling window (honest, given trade frequency) still
+  // reads as a live number, so every window carries the scope's most
+  // recent close regardless of whether it landed inside that window.
+  const lastTradeMs = trades.length ? Math.max(...trades.map(tr => tr.t)) : null
+
   const windows = ledgerWindows(now).map(w => {
     const inWin = trades.filter(tr => tr.t >= w.from && tr.t < w.to)
     const netAfter = trades.filter(tr => tr.t >= w.to && tr.t < now + 1).reduce((n, tr) => n + tr.pnl, 0)
@@ -206,6 +212,7 @@ export function buildPerfLedger(db, { accountId = null, now = Date.now(), balanc
       from: new Date(w.from).toISOString(), to: new Date(w.to).toISOString(),
       carryIn, carryOut,
       ...stats,
+      lastTradeAt: lastTradeMs != null ? new Date(lastTradeMs).toISOString() : null,
       markets: Object.fromEntries(MARKETS.map(m => [m, finalizeStats(perMarket[m])])),
     }
   })

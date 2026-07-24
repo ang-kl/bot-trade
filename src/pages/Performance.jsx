@@ -216,6 +216,19 @@ const dRange = (fromIso, toIso) => {
   return `${one(f)} → ${one(t)}`
 }
 
+// Owner (2026-07-24): "1H ledger row should show last time it filled in" —
+// an empty rolling window still names the scope's most recent close instead
+// of reading as a stalled/broken table.
+function agoLabel(iso, nowMs) {
+  if (!iso) return null
+  const ms = new Date(iso).getTime()
+  if (!Number.isFinite(ms)) return null
+  const mins = Math.max(0, Math.round((nowMs - ms) / 60_000))
+  if (mins < 60) return `${mins}m ago`
+  if (mins < 24 * 60) return `${Math.round(mins / 60)}h ago`
+  return `${Math.round(mins / (24 * 60))}d ago`
+}
+
 // Shared expanded-window detail: TP/SL plan vs actual + per-market lines.
 function WindowDetail({ w }) {
   const note = insight(w)
@@ -421,22 +434,26 @@ function Weekend24Body({ rows }) {
   )
 }
 
-// Today mini-table (owner: same 4-row/pagination treatment as the Open
-// tables) — the individual closed trades behind the Today summary tile.
-const TODAY_COLS = '76px minmax(80px,1fr) 72px 1fr'
-function TodayTableBody({ rows }) {
+// Today's hourly breakdown (owner: "the today card cannot be empty... show
+// across a 24 hours (1hr timeframe) the Open balance, P/L, Close balance,
+// trades, close trades") — one row per elapsed hour since FX day open, so
+// the card always has structure even before the first close of the day.
+const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
+function TodayHourlyBody({ rows }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: 320 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: TODAY_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
-          <span>Time</span><span>Symbol</span><span>P&amp;L</span><span>Reason</span>
+      <div style={{ minWidth: 420 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+          <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
         {rows.map(r => (
-          <div key={r.id} style={{ display: 'grid', gridTemplateColumns: TODAY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
-            <span style={{ fontSize: 12, color: P_MU }}>{r.ms ? new Date(r.ms).toISOString().slice(11, 16) : '—'}</span>
-            <span style={{ fontSize: 12, fontWeight: 800 }}>{r.sym}</span>
-            <span style={{ fontSize: 12, fontWeight: 800, color: r.pnl >= 0 ? P_UP : P_DN }}>{signed(r.pnl)}</span>
-            <span style={{ fontSize: 12, color: P_MU }}>{r.reason || '—'}</span>
+          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 12, color: P_MU }}>{new Date(r.from).toISOString().slice(11, 16)}</span>
+            <span style={{ fontSize: 12, color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>{r.closedN ? signed(r.net) : '—'}</span>
+            <span style={{ fontSize: 12, color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{r.openedN || '—'}</span>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>{r.closedN || '—'}</span>
           </div>
         ))}
       </div>
@@ -536,14 +553,14 @@ function AcctCardsGrid({ acctCards }) {
 // Copy-as-text for the ledger (owner spec: paste-friendly aligned lines).
 function ledgerToText(windows) {
   const lines = (windows || []).map(w =>
-    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}`)
+    `${w.label} · carry ${money(w.carryIn)} → ${money(w.carryOut)} · net ${w.trades ? signed(w.net) : '—'} · ${w.trades} tr · ${w.winPct != null ? `${w.winPct}%` : '—'} · PF ${w.pf ?? '—'} · TP/SL ${(w.tp ?? 0) + (w.part ?? 0)}/${w.sl ?? 0} · edge ${w.edge != null ? `${w.edge >= 0 ? '+' : ''}${w.edge}%` : '—'}${!w.trades && w.lastTradeAt ? ` · last fill ${w.lastTradeAt}` : ''}`)
   return ['Timeframe ledger', ...lines].join('\n')
 }
 
 // The ledger table body — one component for both the card and the expanded
 // modal (variant prop, never forked markup). The modal adds the owner's
 // "expand all / collapse all" toggle driving every row's detail.
-function LedgerBody({ variant, windows, ledger, error }) {
+function LedgerBody({ variant, windows, ledger, error, nowMs }) {
   const [expandAll, setExpandAll] = useState(false)
   const modal = variant === 'modal'
   return (
@@ -570,7 +587,7 @@ function LedgerBody({ variant, windows, ledger, error }) {
               </tr>
             </thead>
             <tbody>
-              {windows.map(w => <LedgerRow key={w.key} w={w} forceOpen={modal ? (expandAll || null) : null} />)}
+              {windows.map(w => <LedgerRow key={w.key} w={w} nowMs={nowMs} forceOpen={modal ? (expandAll || null) : null} />)}
             </tbody>
           </table>
         </div>
@@ -585,10 +602,11 @@ function LedgerBody({ variant, windows, ledger, error }) {
 // One desktop ledger row, expandable into the market breakdown.
 // `forceOpen` (boolean) overrides the internal state — the expanded modal's
 // "expand all / collapse all" toggle drives it.
-function LedgerRow({ w, forceOpen = null }) {
+function LedgerRow({ w, forceOpen = null, nowMs }) {
   const [openState, setOpen] = useState(false)
   const open = forceOpen ?? openState
   const empty = !w.trades
+  const last = empty ? agoLabel(w.lastTradeAt, nowMs) : null
   return (
     <>
       <tr onClick={() => setOpen(o => !o)}
@@ -599,7 +617,9 @@ function LedgerRow({ w, forceOpen = null }) {
           <div className={`ml-3 text-[9px] ${SUB}`}>{dRange(w.from, w.to)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[11px] ${SUB}`}>{money(w.carryIn)}</td>
-        <td className={`py-1.5 px-2 text-right tabular-nums text-[12px] font-extrabold ${pnlTone(empty ? null : w.net)}`}>{empty ? '—' : signed(w.net)}</td>
+        <td className={`py-1.5 px-2 text-right tabular-nums text-[12px] font-extrabold ${pnlTone(empty ? null : w.net)}`}>
+          {empty ? <span title={w.lastTradeAt ? `last fill ${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC` : undefined}>{last ? `last ${last}` : '—'}</span> : signed(w.net)}
+        </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[11px] ${SUB}`}>{money(w.carryOut)}</td>
         <td className="py-1.5 px-2 text-right tabular-nums text-[11px]">
           {empty ? <span className={SUB}>—</span> : (
@@ -623,7 +643,7 @@ function LedgerRow({ w, forceOpen = null }) {
         <tr className="border-b border-[var(--color-border)] bg-[var(--color-accent-soft)]/40">
           <td colSpan={6 + MARKET_COLS.length} className="py-2 px-3">
             {empty
-              ? <p className={`text-[11px] ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — carry appears once a balance is stamped for this scope' : ''}.</p>
+              ? <p className={`text-[11px] ${SUB}`}>No closed trades in this window{w.carryIn == null ? ' — carry appears once a balance is stamped for this scope' : ''}{last ? ` · last fill ${last} (${new Date(w.lastTradeAt).toISOString().slice(0, 16).replace('T', ' ')} UTC)` : ''}.</p>
               : <WindowDetail w={w} />}
           </td>
         </tr>
@@ -816,15 +836,38 @@ export default function Performance() {
       wr: rows.length ? Math.round((wins.length / rows.length) * 100) : null,
       tp: rows.filter(t2 => isTp(t2.close_reason) && !isSl(t2.close_reason)).length,
       sl: rows.filter(t2 => isSl(t2.close_reason) && !isTp(t2.close_reason)).length,
-      // Owner (2026-07-24 evening): "TODAY... has uncontrolled length... 4
-      // rows... pagination and scroll bar" — expose the individual closed
-      // trades so the card can grow a mini table (paginated, same pattern
-      // as the Open-position tables below) instead of just the net/count
-      // summary line.
-      list: rows.map(t2 => ({ id: t2.id, ms: closedMs(t2), sym: t2.symbol, pnl: Number(t2.net_pnl), reason: t2.close_reason }))
-        .sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)),
     }
   }, [scopedClosed, loadedAt])
+
+  // Owner (2026-07-24 evening): "the today card cannot be empty... it
+  // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
+  // Close balance, trades, close trades" — a zero-trade day still has 24
+  // hourly slots since the FX day open; each carries the account's balance
+  // forward/backward from the current stamped balance the same way the
+  // Timeframe ledger's carry-in/carry-out does, so an hour with no closes
+  // still shows a real (flat) balance line instead of nothing at all.
+  const todayHourly = useMemo(() => {
+    const anchor = dayAnchorMs(loadedAt)
+    const curBal = ledger?.balance ?? null
+    const H = 60 * 60 * 1000
+    const slots = []
+    for (let from = anchor; from < loadedAt; from += H) slots.push({ from, to: Math.min(from + H, loadedAt) })
+    const withStats = slots.map(s => {
+      const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
+      const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
+      return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
+    })
+    let closeBal = curBal
+    const withBal = []
+    for (let i = withStats.length - 1; i >= 0; i--) {
+      const s = withStats[i]
+      const cb = closeBal
+      const ob = cb != null ? Number((cb - s.net).toFixed(2)) : null
+      withBal.unshift({ ...s, openBal: ob, closeBal: cb })
+      closeBal = ob
+    }
+    return withBal
+  }, [scopedClosed, loadedAt, ledger])
 
   // Today's closed-trade stats per market session (owner: "all the
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
@@ -1416,23 +1459,17 @@ export default function Performance() {
 
         {/* Today + Open now — exact prototype row. */}
         <div id="sec-today-open" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148 }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 148, flex: '1 1 420px' }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
-              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={[today]}
-                toText={() => `Today · since FX day open (5pm NY) · net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`}
-                render={() => (
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</div>
-                    <div style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</div>
-                  </div>
-                )} />
+              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={todayHourly}
+                toText={() => ['Today · since FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
+                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`)].join('\n')}
+                render={() => <TodayHourlyBody rows={todayHourly} />} />
             </span>
             <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
             <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
-            {today.list.length > 0 && (
-              <PagedRows rows={today.list}>{(pageRows) => <TodayTableBody rows={pageRows} />}</PagedRows>
-            )}
+            <PagedRows rows={todayHourly}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
           </div>
           {[{
             key: 'float', title: 'Open now — floating', rows: openSplit.floating, tot: openSplit.floatTot,
@@ -1532,9 +1569,9 @@ export default function Performance() {
               carry in → net → carry out · day rolls at FX open (5pm NY) here · server ledger windows still anchor 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
             </span>
             <SectionTools id="ledger" title="Timeframe ledger" data={windows} toText={ledgerToText}
-              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} />} />
+              render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
           </div>
-          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} />
+          <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />
         </Card>
 
         {/* Performance gradients — exact prototype panels (timeframe ×
