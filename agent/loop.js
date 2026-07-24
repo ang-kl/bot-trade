@@ -11,6 +11,7 @@ import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
 import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
+import { registryAutopilotAccounts } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
@@ -127,7 +128,23 @@ function recordAnthropicUsage(db, usage, purpose = 'monitor', model = null) {
 // ---------------------------------------------------------------------------
 
 function getAutopilotAccounts(db) {
+  // Multi-account roles pushed via /actions/ctrader-config keep their
+  // legacy precedence (that flow already trades several accounts and
+  // predates the registry) — the registry mirrors it on push, so both
+  // sources agree; ordering here is belt-and-braces for M0.
   const rolesJson = getState(db, 'ctrader_account_roles_json')
+  if (rolesJson) {
+    try {
+      const roles = JSON.parse(rolesJson).filter(a => a.autopilot)
+      if (roles.length > 1) return roles
+    } catch { /* fall through */ }
+  }
+  // Account Registry (M0 shim): the enabled/active rows. With exactly one
+  // enabled account this returns precisely what the legacy path returned.
+  try {
+    const regs = registryAutopilotAccounts(db)
+    if (regs.length > 0) return regs
+  } catch { /* registry not available — legacy below */ }
   if (rolesJson) {
     try {
       return JSON.parse(rolesJson).filter(a => a.autopilot)

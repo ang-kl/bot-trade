@@ -2757,6 +2757,14 @@ export default function actionsRouter(db) {
       }
       setState(db, 'ctrader_trader_login', traderLogin != null ? String(traderLogin) : null)
 
+      // Account Registry mirror (M0): the same sole-enabled swap the legacy
+      // state keys above just performed, kept in the registry so both
+      // sources always agree.
+      try {
+        const { syncSelectedAccount } = await import('../services/account-registry.js')
+        syncSelectedAccount(db, accountId, !!isLive, traderLogin)
+      } catch (e) { console.warn('[actions/ctrader-select-account] registry sync failed (non-fatal):', e.message) }
+
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const { wsGetSymbolsList, wsGetTrader, traderBalance } = await import('../lib/ctrader-ws.js')
       const data = await wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId)
@@ -2805,6 +2813,20 @@ export default function actionsRouter(db) {
         const ap = accounts.filter(a => a.autopilot)
         const cp = accounts.filter(a => a.copilot)
         console.log(`[actions] cTrader config updated — ${ap.length} autopilot, ${cp.length} copilot accounts`)
+
+        // Account Registry mirror (M0): keep the registry in step with the
+        // pushed roles so both sources agree (identity/metadata only here;
+        // the enabled flag follows each entry's autopilot role).
+        import('../services/account-registry.js').then(({ upsertAccount }) => {
+          try {
+            for (const a of accounts) {
+              if (a?.accountId == null) continue
+              upsertAccount(db, { accountId: a.accountId, traderLogin: a.traderLogin ?? null, isLive: !!a.isLive })
+              db.prepare(`UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?`)
+                .run(a.autopilot ? 1 : 0, a.autopilot ? 'active' : 'manage_only', new Date().toISOString(), String(a.accountId))
+            }
+          } catch (e) { console.warn('[actions/ctrader-config] registry mirror failed (non-fatal):', e.message) }
+        }).catch(() => {})
 
         // Stale-position sweep, multi-account aware: rows belonging to ANY
         // account still in the pushed config stay active (the loop trades
