@@ -99,9 +99,13 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
     const m = (v) => (v == null ? 0 : v / scale)
     const gross = m(cpd.grossProfit)
     const net = gross + m(cpd.swap) + m(cpd.commission)
-    const agg = byPosition.get(positionId) || { net: 0, gross: 0 }
+    const agg = byPosition.get(positionId) || { net: 0, gross: 0, swap: 0, commission: 0 }
     agg.net += net
     agg.gross += gross
+    // Forensics: keep the cost components separate too (Performance Ledger
+    // shows cost-per-strategy; folding them into net loses that).
+    agg.swap += m(cpd.swap)
+    agg.commission += m(cpd.commission)
     byPosition.set(positionId, agg)
   }
 
@@ -110,7 +114,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // and overwriting it with an aggregate could double-count partial closes.
   const upd = db.prepare(
     `UPDATE trades
-        SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?)
+        SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
+            swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
       WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL`
   )
   let backfilled = 0
@@ -119,6 +124,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
       const r = upd.run(
         Math.round(agg.net * 100) / 100,
         Math.round(agg.gross * 100) / 100,
+        Math.round((agg.swap || 0) * 100) / 100,
+        Math.round((agg.commission || 0) * 100) / 100,
         positionId,
       )
       backfilled += r.changes

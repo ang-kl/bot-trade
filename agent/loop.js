@@ -360,12 +360,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // the market order fills. If it eats more than maxSpreadFracOfSL of the SL
   // distance, the R:R this signal was approved on no longer exists (rollover /
   // off-hours spread blowouts). Best-effort — a failed quote fails OPEN.
+  let entrySpread = null // forensics: captured by the spread gate when it runs
   if (slDistance && riskCfg.maxSpreadFracOfSL > 0) {
     try {
       const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
       const q = await wsGetSpotOnce(host, clientId, clientSecret, accessToken, accountId, symbolId)
       if (q) {
         const spread = q.ask - q.bid
+        entrySpread = spread
         if (spread > riskCfg.maxSpreadFracOfSL * slDistance) {
           const reason = `spread_too_wide: ${spread.toFixed(5)} > ${(riskCfg.maxSpreadFracOfSL * 100).toFixed(0)}% of SL distance ${slDistance.toFixed(5)}`
           persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
@@ -408,12 +410,34 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // this hand-assembled creds path exactly like getCtraderCreds callers.
     let execGuard = null
     try { execGuard = JSON.parse(getState(db, 'exec_guard_json') || 'null') } catch { /* no guard */ }
+    const submitT0 = Date.now()
     const exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard }, orderPayload)
+    const entryLatencyMs = Date.now() - submitT0
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
     const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
 
     const entryP = executionPrice ?? synth.entry ?? null
+    // Forensics (Performance Ledger collect-forward): signed adverse-positive
+    // slippage vs the signal's intended entry, and market context at open —
+    // relative 1m volume and which side of session VWAP the fill landed.
+    // Best-effort: any failure leaves NULLs, never blocks the trade write.
+    const slippagePrice = (executionPrice != null && Number.isFinite(Number(synth.entry)))
+      ? (side === 'BUY' ? executionPrice - synth.entry : synth.entry - executionPrice)
+      : null
+    let rvolOpen = null, vwapSideOpen = null
+    try {
+      const [{ relVolFromBars }, ind] = await Promise.all([
+        import('./services/fast-monitor.js'), import('./lib/indicators.js'),
+      ])
+      const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1m'], 60, 10_000)
+      const bars1m = byTf['1m'] || []
+      const rv = relVolFromBars(bars1m.slice(-21))
+      if (Number.isFinite(rv)) rvolOpen = Math.round(rv * 100) / 100
+      const vw = ind.vwapAnchored(bars1m)
+      const lastVw = Array.isArray(vw) ? vw[vw.length - 1] : null
+      if (lastVw != null && entryP != null) vwapSideOpen = entryP >= lastVw ? 'above' : 'below'
+    } catch { /* context optional */ }
     const slP = synth.sl ?? null
     const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
@@ -432,12 +456,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           status, ctrader_position_id, analysis_id, strategy, conviction,
           label_raw, source, label_version, label_strategy, label_conviction,
           label_session, label_timeframe, label_regime, confluence_count,
-          account_id
+          account_id,
+          slippage_price, spread_at_entry, entry_latency_ms, rvol_open, vwap_side_open
         ) VALUES (
           ?, ?, ?, ?, ?, ?, datetime('now'),
           'open', ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?
+          ?,
+          ?, ?, ?, ?, ?
         )
       `).run(
         symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
@@ -447,6 +473,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         parsedLabel.timeframe, parsedLabel.regime,
         synth.confluenceCount ?? null,
         String(accountId),
+        slippagePrice, entrySpread, entryLatencyMs, rvolOpen, vwapSideOpen,
       )
       const tradeId = tradeInsert.lastInsertRowid
 
