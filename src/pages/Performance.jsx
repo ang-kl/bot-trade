@@ -66,6 +66,47 @@ const closedMs = (row) => {
   return Number.isFinite(t) ? t : null
 }
 
+// Symbol → market category, mirroring agent/services/perf-ledger.js so the
+// client-side lenses reconcile with the server ledger.
+const catOf = (symRaw) => {
+  const sym = String(symRaw || '').toUpperCase()
+  if (/^(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB|DOT|LINK|AVAX|TRX)[A-Z]{3,4}$/.test(sym)) return 'crypto'
+  if (/^X(AU|AG|PT|PD)[A-Z]{3}$|^COPPER/.test(sym)) return 'metal'
+  if (/^(NATGAS|SPOTCRUDE|BRENT|UKOIL|USOIL|OIL|WTI)/.test(sym)) return 'energy'
+  if (/^(WHEAT|CORN|SOYBEAN|SUGAR|COFFEE|COCOA|COTTON|OATS|RICE)/.test(sym)) return 'grain'
+  if (/^(US30|US500|NAS100|USTEC|US2000|GER40|UK100|FRA40|JPN225|AUS200|EUSTX|VIX|DOW|HK50|CHINA50|SPAIN35|ITALY40|SWISS20|NETH25)/.test(sym) || /\.(US|UK|DE|AU)$/.test(sym)) return 'index'
+  if (/^[A-Z]{6}$/.test(sym)) return 'fx'
+  return 'other'
+}
+
+// The FX banded panel's exact band lists (prototype BANDS).
+const FX_BANDS = [
+  ['Majors', ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCHF', 'USDCAD', 'NZDUSD']],
+  ['EUR crosses', ['EURJPY', 'EURGBP', 'EURCHF', 'EURAUD', 'EURNZD', 'EURCAD']],
+  ['GBP crosses', ['GBPJPY', 'GBPCHF', 'GBPAUD', 'GBPNZD', 'GBPCAD']],
+  ['JPY crosses', ['AUDJPY', 'NZDJPY', 'CADJPY', 'CHFJPY']],
+  ['Comdoll crosses', ['AUDNZD', 'AUDCAD', 'AUDCHF', 'NZDCHF', 'NZDCAD']],
+  ['Asia & exotics', ['USDSGD', 'USDHKD', 'USDCNH', 'USDZAR', 'USDTRY', 'USDMXN']],
+]
+
+// Prototype agg(): win%, PF, TP/part/SL counts, planned R:R → edge.
+function aggRows(list) {
+  const n = list.length
+  const wins = list.filter(t2 => t2.pnl > 0)
+  const gw = wins.reduce((s, t2) => s + t2.pnl, 0)
+  const gl = list.filter(t2 => t2.pnl <= 0).reduce((s, t2) => s + -t2.pnl, 0)
+  const rrs = list.filter(t2 => t2.rr != null)
+  const rr = rrs.length ? rrs.reduce((s, t2) => s + t2.rr, 0) / rrs.length : null
+  const wr = n ? Math.round((wins.length / n) * 100) : 0
+  const needs = rr != null ? Math.round(100 / (1 + rr)) : null
+  return {
+    n, wr, pnl: list.reduce((s, t2) => s + t2.pnl, 0),
+    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
+    tp: list.filter(t2 => t2.tpHit).length, part: list.filter(t2 => t2.part).length, sl: list.filter(t2 => t2.slHit).length,
+    edge: needs != null && n ? wr - needs : null,
+  }
+}
+
 // Prototype token → app CSS-var map (same convention as WorkflowAudit.jsx).
 const P_ACC = 'var(--color-accent)', P_UP = 'var(--color-up)', P_DN = 'var(--color-down)'
 const P_TX = 'var(--color-text)', P_SB = 'var(--color-text-sub)', P_MU = 'var(--color-muted)'
@@ -501,6 +542,68 @@ export default function Performance() {
   const windows = useMemo(() => ledger?.windows || [], [ledger])
   const byKey = useMemo(() => Object.fromEntries(windows.map(w => [w.key, w])), [windows])
 
+  // Shared client-side aggregation for the FX bands / strategy matrix —
+  // mirrors the server ledger's stats (win%, PF, planned R:R → required
+  // win% → edge) so every lens reconciles. Evidence-only classification.
+  const shapedTrades = useMemo(() => {
+    const isTp = (r) => /\btp\b|take.?profit|target|bank/.test(String(r || '').toLowerCase())
+    const isSl = (r) => /\bsl\b|stop.?loss|stopped|stop hit/.test(String(r || '').toLowerCase())
+    const num = (v) => (v == null ? NaN : Number(v))
+    return scopedClosed.map(t2 => {
+      const e = num(t2.entry_price), s = num(t2.sl_price), tp = num(t2.tp_price)
+      const rr = [e, s, tp].every(Number.isFinite) && Math.abs(e - s) !== 0 ? Math.abs(tp - e) / Math.abs(e - s) : null
+      const tpHit = isTp(t2.close_reason) && !isSl(t2.close_reason)
+      const slHit = isSl(t2.close_reason) && !isTp(t2.close_reason)
+      return {
+        t: closedMs(t2), pnl: Number(t2.net_pnl), sym: String(t2.symbol || '').toUpperCase(),
+        strat: t2.label_strategy || t2.strategy || null, rr, tpHit, slHit,
+        part: /partial|scale/.test(String(t2.close_reason || '').toLowerCase()),
+      }
+    }).filter(t2 => t2.t != null)
+  }, [scopedClosed])
+
+  const fxBands = useMemo(() => {
+    const wk = shapedTrades.filter(t2 => t2.t >= loadedAt - 7 * D)
+    return FX_BANDS.map(([band, syms]) => {
+      const l = wk.filter(t2 => syms.includes(t2.sym))
+      const a = aggRows(l)
+      return {
+        band,
+        net: l.length ? signed(a.pnl) : '—', col: l.length ? (a.pnl >= 0 ? P_UP : P_DN) : P_MU,
+        meta: `${a.n} tr · ${a.wr}% · PF ${Number.isFinite(a.pf) ? a.pf.toFixed(1) : '∞'} · edge ${a.edge != null ? `${a.edge >= 0 ? '+' : ''}${a.edge}%` : '—'}`,
+        pairs: syms.map(sym => {
+          const pl = l.filter(t2 => t2.sym === sym)
+          const pa = aggRows(pl)
+          return {
+            sym: sym.slice(0, 3) + '/' + sym.slice(3),
+            v: pa.n ? signed(pa.pnl) : '·', col: pa.n ? (pa.pnl >= 0 ? P_UP : P_DN) : P_MU,
+            tip: `${sym} · ${pa.n} trades · ${pa.wr}% win · ${pa.tp + pa.part} TP / ${pa.sl} SL`,
+          }
+        }),
+      }
+    })
+  }, [shapedTrades, loadedAt])
+
+  // Strategy × market matrix — the prototype's 30D re-slice, but over the
+  // strategies actually present in the data (never a hardcoded list).
+  const stratMx = useMemo(() => {
+    const m30 = shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D)
+    const names = [...new Set(m30.map(t2 => t2.strat).filter(Boolean))]
+    return names.map(name => {
+      const sl = m30.filter(t2 => t2.strat === name)
+      const a = aggRows(sl)
+      return {
+        name, net: signed(a.pnl), col: a.pnl >= 0 ? P_UP : P_DN,
+        edge: a.edge != null ? `${a.edge >= 0 ? '+' : ''}${a.edge}%` : '—', edgeCol: a.edge == null ? P_MU : a.edge >= 0 ? P_UP : P_DN,
+        cells: MARKET_COLS.map(m => {
+          const l = sl.filter(t2 => catOf(t2.sym) === m.key)
+          const p = l.reduce((s, t2) => s + t2.pnl, 0)
+          return { v: l.length ? signed(p) : '·', col: l.length ? (p >= 0 ? P_UP : P_DN) : P_MU, tip: `${l.length} trades` }
+        }),
+      }
+    })
+  }, [shapedTrades, loadedAt])
+
   // Performance gradients — exact prototype maths (cell alpha pow(|v|/max,.6),
   // rgba(79,140,255,…)/rgba(255,77,109,…) fills, per-column peak scaling,
   // k-notation values). Columns = registry accounts + Overall; rows use the
@@ -854,6 +957,55 @@ export default function Performance() {
               </div>
             ))}
             <span style={{ fontSize: 8.5, color: P_MU }}>same closed-trade ledger, account dimension — totals reconcile with the Overall column</span>
+          </div>
+        </div>
+
+        {/* FX banded panel + Strategy × market — exact prototype grid (the
+            right column also hosts the crypto panel in a later slice). */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 8, alignItems: 'start' }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 10, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · hover a pair for TP/SL detail</span>
+            </div>
+            {fxBands.map(b => (
+              <div key={b.band} style={{ display: 'grid', gridTemplateColumns: '118px 84px 1fr', gap: 8, alignItems: 'start', borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
+                <span style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 800 }}>{b.band}</span>
+                  <span style={{ fontSize: 8.5, color: P_MU }}>{b.meta}</span>
+                </span>
+                <span style={{ fontSize: 11.5, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
+                <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                  {b.pairs.map(p2 => (
+                    <span key={p2.sym} title={p2.tip} style={{ fontSize: 9.5, fontWeight: 600, padding: '1px 6px', borderRadius: 6, border: `1px solid ${P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+                      {p2.sym} <span style={{ fontWeight: 800, color: p2.col }}>{p2.v}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Strategy × market — 30D</span>
+                <span style={{ fontSize: 10, color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 3 }}>
+                <span>Strategy</span>
+                {MARKET_COLS.map(m => <span key={m.key}>{m.label}</span>)}
+                <span>Net</span><span>Edge</span>
+              </div>
+              {stratMx.length === 0 && <span style={{ fontSize: 9.5, color: P_MU, padding: '4px 0' }}>No closed trades with a strategy label in the last 30 days.</span>}
+              {stratMx.map(s => (
+                <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '3px 0', fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, textTransform: 'capitalize' }}>{s.name}</span>
+                  {s.cells.map((c, ci) => <span key={ci} title={c.tip} style={{ fontSize: 10, fontWeight: 700, color: c.col }}>{c.v}</span>)}
+                  <span style={{ fontSize: 10.5, fontWeight: 800, color: s.col }}>{s.net}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: s.edgeCol }}>{s.edge}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
