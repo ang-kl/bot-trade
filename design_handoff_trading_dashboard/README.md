@@ -8,6 +8,16 @@ Four screens for a cTrader-connected algorithmic trading bot (repo: `github.com/
 3. **Trade Workflow Audit** (desktop) — O-I-A pipeline compliance & early-stop audit
 4. **Trade Workflow Audit Mobile** — the audit as iPhone cards
 
+## Per-symbol cockpit (click a symbol / open-trade row)
+**Start here: `BUILD-ORDER.md`** — the prescriptive work order for Claude Code (build sequence, exact tokens/type/geometry, variant deltas, 20 acceptance checks, definition of done). It wins any conflict with the files below.
+
+Supporting detail:
+1. `symbol-click-spec.md` — what a click means: entry points, symbol→position resolution, multi-position selector, review mode for closed trades, loading/stale/error states, history behaviour.
+2. `trade-cockpit-spec.md` — the cockpit itself: shell, tokens, type scale, PFD, MFD, bottom strips, portrait variant, data contract.
+3. `canvas-variants-spec.md` — type system (families, two weights, per-device size factors) and measured geometry for all three references — `Canvas.dc.html` (desktop), `Canvas iPad Portrait.dc.html` (1024pt), `Canvas iPhone.dc.html` (390pt) — plus the table of permitted responsive differences.
+
+`COCKPIT.md` is superseded.
+
 ## About the Design Files
 The files in this bundle are **design references created in HTML** (`.dc.html` design-component prototypes). They show intended look, layout, data shapes, and behavior — they are **not production code to copy directly**. The task is to **recreate these designs in the bot-trade codebase's existing environment** (React + the repo's "Ultra Neo Glass" style system) using its established patterns, wired to the agent's real `/state` API instead of the mock data generators embedded in the prototypes.
 
