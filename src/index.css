@@ -515,20 +515,19 @@ button, a, [role="button"], summary {
   .perf-band-row { grid-template-columns: 1fr; gap: 2px; }
 }
 
-/* Owner (2026-07-25, IMG_1221): the FX-bands card was crushed to a ~140px
-   ribbon with a big empty region beside it. Cause: a plain `1.25fr 1fr` pair
-   resolves to minmax(auto,…), so the right column's widest table forced its
-   track past its share and took the space out of the left one. minmax(0,…)
-   caps that; below the desktop breakpoint the pair stacks instead of both
-   halves being too narrow to read. */
-.perf-2col {
+/* Even pair — the strategy matrix and crypto panels below the full-width FX
+   card (owner: "Forex-day card is so small, have a width wide").
+   minmax(0,…) rather than a bare 1fr, which is minmax(auto,…): that is what
+   let the widest table force its track past its share and crush the card
+   next to it (IMG_1221). Stacks on tablets so neither half is unreadable. */
+.perf-2col-even {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
   align-items: start;
 }
-@media (max-width: 1279px) {
-  .perf-2col { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1023px) {
+  .perf-2col-even { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Owner (2026-07-25, IMG_1222): "see the quadrant chart" — it rendered as a
