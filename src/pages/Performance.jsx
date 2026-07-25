@@ -1758,8 +1758,8 @@ export default function Performance() {
 
         {/* FX banded panel + Strategy × market — exact prototype grid (the
             right column also hosts the crypto panel in a later slice). */}
-        <div id="sec-fx-bands" style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 8, alignItems: 'start' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div id="sec-fx-bands" className="perf-2col">
+          <div style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               <span style={{ fontSize: 12, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
@@ -1769,8 +1769,8 @@ export default function Performance() {
             </div>
             <FxBandsBody fxBands={fxBands} />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div id="sec-strategy-matrix" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 12, color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>

@@ -25,24 +25,40 @@ const panel = {
 const nf1 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const signed = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : `${v > 0 ? '+' : ''}${nf1.format(Number(v))}`)
 
-// The prototype's regime coordinates + group symbol filters (design content).
+// The prototype's regime coordinates + group symbol lists (design content).
+// gx = growth axis, iy = inflation axis — the same numbers that place the dot.
 const RGM = [
-  ['Crypto BTC/ETH', (t) => ['BTCUSD', 'ETHUSD'].includes(t.sym), 0.72, 0.55],
-  ['Alt crypto SOL/XRP', (t) => ['SOLUSD', 'XRPUSD'].includes(t.sym), 0.88, 0.68],
-  ['Gold XAU', (t) => t.sym === 'XAUUSD', -0.45, 0.52],
-  ['Silver XAG', (t) => t.sym === 'XAGUSD', -0.6, 0.62],
-  ['Energy WTI/Gas', (t) => t.cat === 'energy', 0.3, 0.78],
-  ['Grains', (t) => t.cat === 'grain', -0.2, 0.68],
-  ['US indices', (t) => ['US500', 'US30', 'NAS100'].includes(t.sym), 0.55, -0.35],
-  ['EU indices GER40/UK100', (t) => ['GER40', 'UK100'].includes(t.sym), 0.35, -0.2],
-  ['Asia indices JPN/HK/AUS', (t) => ['JPN225', 'HK50', 'AUS200', 'CN50', 'SG30'].includes(t.sym), 0.5, 0.18],
-  ['USD majors', (t) => ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD'].includes(t.sym), -0.3, -0.25],
-  ['JPY crosses', (t) => ['EURJPY', 'GBPJPY', 'AUDJPY', 'NZDJPY', 'CADJPY', 'CHFJPY'].includes(t.sym), -0.55, -0.45],
-  ['Comdoll AUD/NZD', (t) => ['AUDUSD', 'NZDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'NZDCHF', 'NZDCAD'].includes(t.sym), 0.2, 0.4],
-  ['Exotics ZAR/TRY/MXN', (t) => ['USDZAR', 'USDTRY', 'USDMXN', 'USDSGD', 'USDHKD', 'USDCNH'].includes(t.sym), -0.75, 0.8],
+  { name: 'Crypto BTC/ETH', syms: ['BTCUSD', 'ETHUSD'], gx: 0.72, iy: 0.55 },
+  { name: 'Alt crypto SOL/XRP', syms: ['SOLUSD', 'XRPUSD'], gx: 0.88, iy: 0.68 },
+  { name: 'Gold XAU', syms: ['XAUUSD'], gx: -0.45, iy: 0.52 },
+  { name: 'Silver XAG', syms: ['XAGUSD'], gx: -0.6, iy: 0.62 },
+  { name: 'Energy WTI/Gas', syms: [], cat: 'energy', gx: 0.3, iy: 0.78 },
+  { name: 'Grains', syms: [], cat: 'grain', gx: -0.2, iy: 0.68 },
+  { name: 'US indices', syms: ['US500', 'US30', 'NAS100'], gx: 0.55, iy: -0.35 },
+  { name: 'EU indices GER40/UK100', syms: ['GER40', 'UK100'], gx: 0.35, iy: -0.2 },
+  { name: 'Asia indices JPN/HK/AUS', syms: ['JPN225', 'HK50', 'AUS200', 'CN50', 'SG30'], gx: 0.5, iy: 0.18 },
+  { name: 'USD majors', syms: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD'], gx: -0.3, iy: -0.25 },
+  { name: 'JPY crosses', syms: ['EURJPY', 'GBPJPY', 'AUDJPY', 'NZDJPY', 'CADJPY', 'CHFJPY'], gx: -0.55, iy: -0.45 },
+  { name: 'Comdoll AUD/NZD', syms: ['AUDUSD', 'NZDUSD', 'AUDNZD', 'AUDCAD', 'AUDCHF', 'NZDCHF', 'NZDCAD'], gx: 0.2, iy: 0.4 },
+  { name: 'Exotics ZAR/TRY/MXN', syms: ['USDZAR', 'USDTRY', 'USDMXN', 'USDSGD', 'USDHKD', 'USDCNH'], gx: -0.75, iy: 0.8 },
 ]
-// Prototype QMAP + quadrant copy (design playbook content, verbatim).
+// Prototype QMAP (design playbook content, verbatim) — 8 symbols only, which
+// is why 26 of 28 open positions used to fall outside the map (owner,
+// IMG_1222). It stays as the EXPLICIT assignment and still wins, but symbols
+// it doesn't name are now placed from their own group's growth/inflation
+// coordinates above: the quadrant is just the sign pair, so a dot in the
+// top-right of the plot lands in Q1 and the card agrees with the chart.
+// Nothing is invented — a symbol in no group list stays unclassified and is
+// listed as such rather than silently counted.
 const QMAP = { BTCUSD: 'q1', ETHUSD: 'q1', EURUSD: 'q3', USDJPY: 'q2', XAUUSD: 'q2', GER40: 'q4', US500: 'q4', AUS200: 'q1' }
+const quadOfSigns = (gx, iy) => (iy >= 0 ? (gx >= 0 ? 'q1' : 'q2') : (gx >= 0 ? 'q4' : 'q3'))
+const SYM_QUAD = Object.fromEntries(
+  RGM.flatMap(g => g.syms.map(s => [s, quadOfSigns(g.gx, g.iy)])),
+)
+const quadOf = (sym) => {
+  const s = String(sym || '').toUpperCase()
+  return QMAP[s] || SYM_QUAD[s] || null
+}
 const QTXT = {
   q1: ['Q1 · Overheating', 'high growth · high inflation — USD ↔/↓, gold ↑ hedge · long commodities, energy, value — short long-duration bonds'],
   q2: ['Q2 · Stagflation', 'low growth · high inflation — USD ↑ safe-haven, gold ↑/↔ · long commodities, TIPS, cash — short equities & growth'],
@@ -66,7 +82,7 @@ const OIA = [
 
 function QuadCard({ q }) {
   return (
-    <div style={{ flex: 1, border: `1px solid ${q.bd}`, background: q.bg, borderRadius: 14, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+    <div style={{ minWidth: 0, border: `1px solid ${q.bd}`, background: q.bg, borderRadius: 14, padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span style={{ fontSize: 12, fontWeight: 800 }}>{q.title}</span>
         <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>{q.tot}</span>
@@ -95,8 +111,8 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
   // Owner-assigned legend keys (spec A2). 'P Long commodities/TIPS' is
   // playbook copy with no plotted trade group — legend footnote, not a dot.
   const KEYS = { 'Energy WTI/Gas': 'A', 'Alt crypto SOL/XRP': 'B', 'Crypto BTC/ETH': 'C', 'Comdoll AUD/NZD': 'D', 'Asia indices JPN/HK/AUS': 'E', 'EU indices GER40/UK100': 'F', 'US indices': 'G', 'USD majors': 'H', 'JPY crosses': 'J', 'Gold XAU': 'K', 'Silver XAG': 'L', 'Grains': 'M', 'Exotics ZAR/TRY/MXN': 'N' }
-  const dots = RGM.map(([name, fn, gx, iy]) => {
-    const l = trades30.filter(fn)
+  const dots = RGM.map(({ name, syms, cat, gx, iy }) => {
+    const l = trades30.filter(t => syms.includes(t.sym) || (cat && t.cat === cat))
     const p = l.reduce((s, t) => s + t.pnl, 0)
     // Taller plot (spec A1): 720×620 viewBox, center (360, 310) — the
     // volatility rings become visibly concentric instead of squashed.
@@ -112,10 +128,10 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
   })
   const scoped = positions.filter(p => rAcct === 'all' || String(p.account_id ?? '') === rAcct)
   const qsum = { q1: [], q2: [], q3: [], q4: [] }
-  let unmapped = 0
+  const unclassified = []
   for (const p of scoped) {
-    const q = QMAP[String(p.symbol || '').toUpperCase()]
-    if (q) qsum[q].push(p); else unmapped++
+    const q = quadOf(p.symbol)
+    if (q) qsum[q].push(p); else unclassified.push(p)
   }
   const quadCards = ['q2', 'q1', 'q3', 'q4'].map(q => ({
     id: q, title: QTXT[q][0], txt: QTXT[q][1],
@@ -153,13 +169,13 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
             </button>
           )
         })}
-        <span style={{ fontSize: 12, color: MU }}>filters the four quadrant cards — where this account's open trades sit right now{unmapped ? ` · ${unmapped} open position${unmapped === 1 ? '' : 's'} outside the quadrant map` : ''}</span>
+        <span style={{ fontSize: 12, color: MU }}>filters the four quadrant cards — where this account&apos;s open trades sit right now{unclassified.length ? ` · ${unclassified.length} in no plotted group (listed below)` : ''}</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr 330px', gap: 10, alignItems: 'stretch' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="perf-regime">
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <QuadCard q={quadCards[0]} /><QuadCard q={quadCards[2]} />
         </div>
-        <svg viewBox="0 0 720 620" style={{ width: '92%', justifySelf: 'center', alignSelf: 'center', overflow: 'visible', aspectRatio: '3 / 2', minHeight: 520 }}>
+        <svg className="perf-regime-chart" viewBox="0 0 720 620" style={{ width: '100%', minWidth: 0, alignSelf: 'start', overflow: 'visible', aspectRatio: '720 / 620' }}>
           <g>
             <text x="30" y="52" fontSize="12" fontWeight="700" fill={SB}>Lo Vol</text>
             <rect x="62" y="44" width="16" height="10" rx="2" fill="rgba(79,140,255,.35)" />
@@ -200,10 +216,24 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
             )
           })}
         </svg>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <QuadCard q={quadCards[1]} /><QuadCard q={quadCards[3]} />
         </div>
       </div>
+      {/* Owner (IMG_1222): 26 of 28 positions were counted as "outside the
+          quadrant map" and then never shown. Anything still unplaced is
+          listed here by name, so the gap is inspectable instead of a number. */}
+      {unclassified.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '2px 8px', borderTop: `1px solid ${EDG}`, paddingTop: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 800 }}>No plotted group ({unclassified.length})</span>
+          {unclassified.map((p, pi) => (
+            <span key={`${p.symbol}-${pi}`} style={{ fontSize: 12, color: SB, fontVariantNumeric: 'tabular-nums' }}>
+              {p.symbol} {String(p.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT'} {p.volume ?? '—'}
+            </span>
+          ))}
+          <span style={{ fontSize: 12, color: MU }}>— these symbols aren&apos;t in any asset group plotted above, so no growth/inflation coordinate exists for them; they are never assigned a quadrant by guesswork</span>
+        </div>
+      )}
       {/* Legend table (spec A2): key · full group name · 30D net · vol band.
           Click a row ↔ its dot — one shared selectedKey state. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '2px 10px', borderTop: `1px solid ${EDG}`, paddingTop: 5 }}>

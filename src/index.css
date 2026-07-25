@@ -515,6 +515,41 @@ button, a, [role="button"], summary {
   .perf-band-row { grid-template-columns: 1fr; gap: 2px; }
 }
 
+/* Owner (2026-07-25, IMG_1221): the FX-bands card was crushed to a ~140px
+   ribbon with a big empty region beside it. Cause: a plain `1.25fr 1fr` pair
+   resolves to minmax(auto,…), so the right column's widest table forced its
+   track past its share and took the space out of the left one. minmax(0,…)
+   caps that; below the desktop breakpoint the pair stacks instead of both
+   halves being too narrow to read. */
+.perf-2col {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+@media (max-width: 1279px) {
+  .perf-2col { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Owner (2026-07-25, IMG_1222): "see the quadrant chart" — it rendered as a
+   sliver. Two fixed 330px card columns plus gaps ate 680px, so on a 744px
+   iPad portrait the chart's track was left ~50px. Wide screens keep the
+   cards-chart-cards arrangement; narrower ones give the chart the full width
+   above a 2-up card grid. */
+.perf-regime {
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) minmax(0, 1fr) minmax(260px, 330px);
+  gap: 10px;
+  align-items: start;
+}
+@media (max-width: 1279px) {
+  .perf-regime { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .perf-regime > .perf-regime-chart { grid-column: 1 / -1; order: -1; }
+}
+@media (max-width: 559px) {
+  .perf-regime { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* -- Liquid glass materials ---------------------------------------------- */
 
 /* Primary panel: translucent, blurred, specular top sheen, soft glow */
