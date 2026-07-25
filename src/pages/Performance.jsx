@@ -376,7 +376,12 @@ const fmtVol = (v) => {
 // and current OHLC and current price columns" — Entry was previously
 // tooltip-only here; it's now its own visible column alongside current
 // Price and OHLC (1d).
-const OPEN_COLS = '64px 76px 84px 64px 64px minmax(150px,1fr) 48px 16px 84px'
+// Owner (2026-07-25): "fill up the page. make it dense". The OHLC cell was
+// two stacked lines, so every row was double height and the card showed 4 of
+// 24 positions over 6 pages with a page of blank space beneath it. OHLC moves
+// into the row's expansion (same treatment as the weekend 24H table), rows go
+// single-line, and the freed track goes to SL/TP so its header stops wrapping.
+const OPEN_COLS = '78px 82px 84px 68px 68px 56px 16px minmax(96px,1fr)'
 function OpenTableBody({ rows }) {
   // AutoAnimate (owner polish audit) — page flips and row add/remove ease
   // instead of popping; the hook animates this div's direct children.
@@ -387,9 +392,9 @@ function OpenTableBody({ rows }) {
   const [openId, setOpenId] = useState(null)
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div ref={animRef} style={{ minWidth: 700 }}>
+      <div ref={animRef} style={{ minWidth: 560 }}>
       <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span></span><span>SL / TP away</span>
+        <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>Vol</span><span></span><span>SL / TP away</span>
       </div>
       {rows.map(p2 => (
         <div key={p2.id}>
@@ -404,10 +409,6 @@ function OpenTableBody({ rows }) {
           <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
           <span style={{ fontSize: 12, color: P_MU }}>{p2.entry}</span>
           <span style={{ fontSize: 12, fontWeight: W_CELL }}>{fmtPx(p2.price)}</span>
-          <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
-            <span style={{ fontSize: 12, color: P_SB }}>O {fmtPx(p2.day?.o)} · H {fmtPx(p2.day?.h)}</span>
-            <span style={{ fontSize: 12, color: P_SB }}>L {fmtPx(p2.day?.l)} · C {fmtPx(p2.day?.c)}</span>
-          </span>
           <span style={{ fontSize: 12, color: P_MU }}>{fmtVol(p2.day?.v)}</span>
           {/* Owner (2026-07-24 evening): "OPEN NOW — FLOATING to show
               current open trade but market is closed so show the locked
@@ -419,6 +420,7 @@ function OpenTableBody({ rows }) {
         {openId === p2.id && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '1px 0 2px 14px', borderBottom: `1px solid ${P_EDG}`, fontSize: 12, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
             <span>entry {p2.entry}</span>
+            <span>O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)}</span>
             <span>{p2.strat}</span>
             <span>SL {p2.sld} / TP {p2.tpd} from entry</span>
             <span>market {p2.marketOpen === false ? 'closed' : p2.marketOpen ? 'open' : 'unknown'} · {p2.marketSource || 'no source'}</span>
@@ -618,19 +620,18 @@ function WlBody({ rows }) {
   return (
     <>
       {rows.length === 0 && <span style={{ fontSize: 12, color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
+      {/* Owner (2026-07-25): "each symbol only two rows. dense the row" —
+          this was four lines per trade (identity, window, then one line per
+          anatomy point). Now exactly two: the identity line, and everything
+          else joined on one line beneath it. Same facts, half the height. */}
       {rows.map((t2, ti) => (
-        <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, paddingBottom: 2, fontVariantNumeric: 'tabular-nums' }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+        <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
             <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
             <span style={{ fontSize: 12, color: P_SB }}>{t2.sd}</span>
             <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: W_CELL, color: t2.col }}>{t2.pnl}</span>
           </div>
-          <div style={{ fontSize: 12, color: P_MU }}>{t2.when}</div>
-          {t2.points.map((pt, pi) => (
-            <div key={pi} style={{ display: 'flex', gap: 5, fontSize: 12, color: pi === 0 ? P_SB : P_MU }}>
-              <span aria-hidden="true" style={{ color: P_EDG }}>·</span><span>{pt}</span>
-            </div>
-          ))}
+          <div style={{ fontSize: 12, color: P_MU }}>{[t2.when, ...t2.points].join(' · ')}</div>
         </div>
       ))}
     </>
@@ -1692,7 +1693,7 @@ export default function Performance() {
                   toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
                   render={() => <OpenTableBody rows={t2.rows} />} />
                 {t2.rows.length > 0 && (
-                  <PagedRows rows={t2.rows}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
+                  <PagedRows rows={t2.rows} pageSize={14} maxHeight={332}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
                 )}
               </div>
             )
