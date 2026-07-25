@@ -312,98 +312,140 @@ function toTitle(label) {
   }).join(' ')
 }
 
+// Body type for these two cards is 9px (owner 2026-07-25): row labels AND
+// cell data. Only the two gradient cards use GradientBody, so this does not
+// leak into any other table.
+const GRAD_FONT = 9
+
 function GradientBody({
   grid, label, cols, rows, pad, foot, groups = null, colW = 'minmax(52px,84px)',
   subtotals = null, banded = false, smallHead = false,
 }) {
-  // Per-card, independent of any other card on the page.
+  // Two levels of hiding, per card and independent of the other card:
+  //  · the overall pills collapse ALL rows or ALL columns at once
+  //  · clicking a row label or a column head hides just that one, Excel-style,
+  //    and a restore bar lists what is hidden so nothing can vanish for good
   const [rowsOpen, setRowsOpen] = useState(true)
   const [colsOpen, setColsOpen] = useState(true)
+  const [hiddenRows, setHiddenRows] = useState(() => new Set())
+  const [hiddenCols, setHiddenCols] = useState(() => new Set())
 
-  const shownCols = colsOpen ? cols : []
-  const template = `${grid} repeat(${shownCols.length},${colW})`
-  const toggle = {
+  const toggleIn = (setter) => (key) => setter(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
+  const toggleRow = toggleIn(setHiddenRows)
+  const toggleCol = toggleIn(setHiddenCols)
+
+  // Keep the ORIGINAL column index alongside, so subtotals (indexed on the
+  // unfiltered set) stay attached to their own column after hiding.
+  const colIdx = cols.map((c, i) => ({ ...c, i }))
+  const visCols = colsOpen ? colIdx.filter(c => !hiddenCols.has(c.name)) : []
+  const visRows = rowsOpen ? rows.filter(r => !hiddenRows.has(r.label)) : []
+
+  const template = `${grid} repeat(${visCols.length},${colW})`
+  const pillS = {
     cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: W_CELL,
     color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`,
     borderRadius: 6, padding: '0 5px',
   }
-  // A column whose every body cell is zero carries no information; it becomes
-  // one merged vertical "No data" cell. Computed from the same flag the
-  // formatter sets, so it cannot disagree with the rendered value.
-  const emptyCol = shownCols.map((c, ci) => rows.length > 0 && rows.every(r => r.cells[ci]?.zero))
+  const chipS = { ...pillS, color: P_ACC, borderColor: P_ACC }
+  // Empty means empty across the rows you can SEE — hide the only row with a
+  // number in it and the column is honestly empty for what is displayed.
+  const emptyCol = visCols.map(c => visRows.length > 0 && visRows.every(r => r.cells[c.i]?.zero))
 
-  // EXPLICIT grid placement for every child.
-  //
-  // The first cut let the grid auto-place, with the row-spanning "No data" cell
-  // rendered on the first row only and `null` on the rest. Auto-placement then
-  // packed each following row's cells into whatever slots were free, so every
-  // row after the first spanning column shifted left — window labels landed in
-  // data columns and the whole table read wrong (owner: "the data are totally
-  // misplaced"). Auto-placement and row spans do not mix: once anything spans,
-  // every sibling needs its own coordinates.
-  const rowNo = []            // data row index -> grid row
-  const seps = []             // grid rows that carry a hollow band rule
-  let r = 1
-  if (groups && colsOpen) r++ // group band
-  const headRow = r++
-  const firstDataRow = r
-  rows.forEach((row, ri) => {
+  // Explicit placement for every child. Auto-placement cannot coexist with the
+  // row-spanning "No data" cell: it packs siblings into free slots and shifts
+  // whole rows sideways (owner: "the data are totally misplaced").
+  const rowNo = []
+  const seps = []
+  let gr = 1
+  if (groups && colsOpen) gr++
+  const headRow = gr++
+  const firstDataRow = gr
+  visRows.forEach((row, ri) => {
     const band = banded ? bandOf(row.label) : null
-    const prev = banded && ri > 0 ? bandOf(rows[ri - 1].label) : band
-    if (band !== prev) seps.push(r++)
-    rowNo[ri] = r++
+    const prev = banded && ri > 0 ? bandOf(visRows[ri - 1].label) : band
+    if (band !== prev) seps.push(gr++)
+    rowNo[ri] = gr++
   })
-  const lastDataRow = r - 1
-  const subSep = subtotals && colsOpen ? r++ : null
-  const subRow = subtotals && colsOpen ? r++ : null
+  const lastDataRow = gr - 1
+  const subSep = subtotals && colsOpen && visRows.length ? gr++ : null
+  const subRow = subtotals && colsOpen && visRows.length ? gr++ : null
 
   const headStyle = smallHead ? { fontSize: 8 } : undefined
+  const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 }}>
-      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        <button type="button" style={toggle} aria-expanded={rowsOpen}
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button type="button" style={pillS} aria-expanded={rowsOpen} title="Show or hide every row"
           onClick={() => setRowsOpen(v => !v)}>{rowsOpen ? '▾' : '▸'} Rows</button>
-        <button type="button" style={toggle} aria-expanded={colsOpen}
+        <button type="button" style={pillS} aria-expanded={colsOpen} title="Show or hide every column"
           onClick={() => setColsOpen(v => !v)}>{colsOpen ? '▾' : '▸'} Columns</button>
+        {/* Restore bar — the only way a hidden row/column comes back, so
+            hiding one can never lose it. */}
+        {[...hiddenRows].map(k => (
+          <button key={`hr-${k}`} type="button" style={chipS} title="Show this row again"
+            onClick={() => toggleRow(k)}>+ {k}</button>
+        ))}
+        {[...hiddenCols].map(k => (
+          <button key={`hc-${k}`} type="button" style={chipS} title="Show this column again"
+            onClick={() => toggleCol(k)}>+ {k}</button>
+        ))}
+        {(hiddenRows.size > 0 || hiddenCols.size > 0) && (
+          <button type="button" style={pillS} title="Show everything again"
+            onClick={() => { setHiddenRows(new Set()); setHiddenCols(new Set()) }}>Show all</button>
+        )}
       </div>
       <div style={{ overflowX: 'auto' }}>
         <div style={{ minWidth: groups && colsOpen ? 760 : undefined, display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
-          {groups && colsOpen && groups.reduce((acc, g) => {
-            const from = acc.at + 1
-            acc.at += g.span
-            acc.out.push(
-              <span key={`g-${g.name}`} className="t-gridhead"
-                style={{ gridRow: 1, gridColumn: `${from + 1} / span ${g.span}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, ...headStyle }}>{g.name}</span>,
-            )
-            return acc
-          }, { at: 0, out: [] }).out}
+          {groups && colsOpen && (() => {
+            // Group spans must count only the columns still visible, or the
+            // band drifts off its own columns.
+            let at = 0
+            return groups.map(g => {
+              const mine = colIdx.slice(at, at + g.span)
+              at += g.span
+              const shown = mine.filter(c => !hiddenCols.has(c.name)).length
+              if (!shown) return null
+              const from = visCols.findIndex(c => c.i === mine.find(m => !hiddenCols.has(m.name)).i)
+              return (
+                <span key={`g-${g.name}`} className="t-gridhead"
+                  style={{ gridRow: 1, gridColumn: `${from + 2} / span ${shown}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, ...headStyle }}>{g.name}</span>
+              )
+            })
+          })()}
 
           <span className="t-gridhead" style={{ gridRow: headRow, gridColumn: 1, ...headStyle }}>{toTitle(label)}</span>
-          {shownCols.map((c, ci) => (
-            <span key={`h-${c.name}`} className="t-gridhead" title={c.name}
-              style={{ gridRow: headRow, gridColumn: ci + 2, textAlign: 'center', ...headStyle }}>{toTitle(c.name)}</span>
+          {visCols.map((c, ci) => (
+            <button key={`h-${c.name}`} type="button" className="t-gridhead" title={`${c.name} — click to hide this column`}
+              onClick={() => toggleCol(c.name)}
+              style={{ gridRow: headRow, gridColumn: ci + 2, textAlign: 'center', cursor: 'pointer', fontFamily: 'inherit', border: 0, ...headStyle }}>{toTitle(c.name)}</button>
           ))}
 
-          {rowsOpen && seps.map(sr => (
+          {seps.map(sr => (
             <span key={`s-${sr}`} style={{ gridRow: sr, gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
           ))}
 
-          {rowsOpen && rows.map((row, ri) => (
-            <span key={`l-${row.label}`} style={{ gridRow: rowNo[ri], gridColumn: 1, fontSize: 12, fontWeight: W_ROWLABEL }}>{row.label}</span>
+          {visRows.map((row, ri) => (
+            <button key={`l-${row.label}`} type="button" title={`${row.label} — click to hide this row`}
+              onClick={() => toggleRow(row.label)}
+              style={{ gridRow: rowNo[ri], gridColumn: 1, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', border: 0, padding: 0, color: 'inherit', fontSize: GRAD_FONT, fontWeight: W_ROWLABEL }}>{row.label}</button>
           ))}
 
-          {rowsOpen && shownCols.map((c, ci) => (
+          {visCols.map((c, ci) => (
             emptyCol[ci]
               ? (
-                <span key={`nd-${ci}`} title={`${c.name} — no closed trades in any window`}
-                  style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: 10, color: P_MU, background: P_ACS, borderRadius: 4 }}>
+                <span key={`nd-${c.name}`} title={`${c.name} — no closed trades in any shown window`}
+                  style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: GRAD_FONT, color: P_MU, background: P_ACS, borderRadius: 4 }}>
                   No data
                 </span>
               )
-              : rows.map((row, ri) => (
-                <span key={`c-${ci}-${ri}`}
-                  style={{ gridRow: rowNo[ri], gridColumn: ci + 2, fontSize: 11, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: row.cells[ci].bg, color: row.cells[ci].col, fontVariantNumeric: 'tabular-nums' }}>{row.cells[ci].v}</span>
+              : visRows.map((row, ri) => (
+                <span key={`c-${c.name}-${ri}`}
+                  style={{ ...cellStyle, gridRow: rowNo[ri], gridColumn: ci + 2, padding: pad, borderRadius: 4, background: row.cells[c.i].bg, color: row.cells[c.i].col }}>{row.cells[c.i].v}</span>
               ))
           ))}
 
@@ -411,8 +453,8 @@ function GradientBody({
             <>
               <span style={{ gridRow: subSep, gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
               <span className="t-gridhead" style={{ gridRow: subRow, gridColumn: 1, ...headStyle }}>Subtotal</span>
-              {shownCols.map((c, ci) => (
-                <span key={`sub-${ci}`} style={{ gridRow: subRow, gridColumn: ci + 2, fontSize: 11, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: subtotals[ci]?.col }}>{subtotals[ci]?.v}</span>
+              {visCols.map((c, ci) => (
+                <span key={`sub-${c.name}`} style={{ ...cellStyle, gridRow: subRow, gridColumn: ci + 2, color: subtotals[c.i]?.col }}>{subtotals[c.i]?.v}</span>
               ))}
             </>
           )}
