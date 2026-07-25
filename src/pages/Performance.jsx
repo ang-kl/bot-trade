@@ -23,6 +23,7 @@ import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
+import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -572,6 +573,16 @@ const fmtVol = (v) => {
 // into the row's expansion (same treatment as the weekend 24H table), rows go
 // single-line, and the freed track goes to SL/TP so its header stops wrapping.
 const OPEN_COLS = '78px 82px 84px 68px 68px 56px 16px minmax(96px,1fr)'
+// symbol-click-spec §1 — an open-trade row hands the Trade Cockpit the broker
+// facts it already holds (live price, live P&L, entry/SL/TP, market state) so
+// the cockpit opens on the real instrument instead of the reference demo one.
+// Panels with no agent source yet stay demo and the cockpit says which.
+const cockpitPos = (p2) => ({
+  sym: p2.sym, side: p2.side, lots: p2.lots, strategy: p2.strat,
+  entry: p2.entryRaw, sl: p2.slRaw, tp: p2.tpRaw,
+  price: p2.price, pnl: p2.pnl, marketOpen: p2.marketOpen,
+})
+
 function OpenTableBody({ rows }) {
   // AutoAnimate (owner polish audit) — page flips and row add/remove ease
   // instead of popping; the hook animates this div's direct children.
@@ -593,7 +604,10 @@ function OpenTableBody({ rows }) {
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === p2.id ? null : p2.id)) } }}
           style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
           <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>
-            <span aria-hidden="true" style={{ color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span> {p2.sym}
+            <span aria-hidden="true" style={{ color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>{' '}
+            <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-open-floating">
+              {p2.sym}
+            </SymbolTarget>
           </span>
           <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
           <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
@@ -1260,6 +1274,11 @@ export default function Performance() {
         lots: p2.volume != null ? String(p2.volume) : '—',
         entry: Number.isFinite(e) ? String(e) : '—', strat: p2.strategy || '—',
         sld: pct(sl), tpd: pct(tp),
+        // Raw levels for the Trade Cockpit (symbol click) — it needs numbers,
+        // not the entry-relative percentages shown in the table.
+        entryRaw: Number.isFinite(e) ? e : null,
+        slRaw: Number.isFinite(sl) ? sl : null,
+        tpRaw: Number.isFinite(tp) ? tp : null,
         marketOpen: p2.market_open, marketSource: p2.market_source || null,
         pnl: p2.live_pnl != null ? Number(p2.live_pnl) : null,
         pnlAt: p2.live_pnl_at || null,
@@ -1788,7 +1807,12 @@ export default function Performance() {
                 {t2.key === 'closed' && <span style={{ fontSize: 9, color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
                 {t2.rows.map(p2 => (
                   <div key={p2.id} style={{ display: 'grid', gridTemplateColumns: '74px 66px 1fr 96px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 5, fontVariantNumeric: 'tabular-nums' }}>
-                    <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{p2.sym}</span><span style={{ fontSize: 9, color: P_MU }}>{p2.strat}</span></span>
+                    <span style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>
+                        <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-mobile-floating">{p2.sym}</SymbolTarget>
+                      </span>
+                      <span style={{ fontSize: 9, color: P_MU }}>{p2.strat}</span>
+                    </span>
                     <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
                     <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>

@@ -11,7 +11,11 @@
 // instance so histories/extrema survive re-renders but die with the cockpit.
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x))
-const f2 = n => n.toFixed(2)
+// The reference instrument is a 2-decimal HK equity, so it hard-coded 2dp.
+// A real position may be FX (1.24505) or an index, where 2dp would silently
+// round the price, the rails and the tape into nonsense. Same buckets as
+// lib/std-trade-rows.js priceDp so the cockpit agrees with the tables.
+const dpFor = v => { const a = Math.abs(Number(v)); return !Number.isFinite(a) ? 2 : a >= 10000 ? 0 : a >= 100 ? 2 : 4 }
 
 export function cockpitFrame(store, tick, opts = {}) {
   // session axis (task-prompt §8 — see PR open questions): 'open'|'pre'|'post'|'closed'|'halted'
@@ -20,24 +24,60 @@ export function cockpitFrame(store, tick, opts = {}) {
   // position axis (symbol-click-spec §5): 'open'|'closed' → review mode
   const review = (opts.positionState || 'open') === 'closed'
   const w = t => Math.sin(tick * .5 + t) * .5 + Math.sin(tick * .17 + t * 2) * .5
-  const entry = 76.85, tp = 79.4, sl = 75.2
+  // `real` carries broker facts from the clicked position (symbol, side, lots,
+  // entry/SL/TP, live price, live P&L, strategy). Everything derived from those
+  // — R scale, the TP/ENT/SL rails, the outcome strip, position economics — is
+  // then real too. Fields the agent does not serve yet (bar history, RVOL,
+  // spread, latency, correlated traffic, tweak journal, MFE/MAE) stay on the
+  // reference generator and are flagged `demoPanels` so the UI can say so.
+  const real = opts.real || null
+  const num = v => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
+  const rEntry = real ? num(real.entry) : null
+  const rSl = real ? num(real.sl) : null
+  const rTp = real ? num(real.tp) : null
+  const rPrice = real ? num(real.price) : null
+  const haveRails = rEntry != null && rSl != null && rTp != null && rEntry !== rSl
+  const entry = haveRails ? rEntry : 76.85
+  const tp = haveRails ? rTp : 79.4
+  const sl = haveRails ? rSl : 75.2
+  const dp = real ? dpFor(rPrice != null ? rPrice : entry) : 2
+  const f2 = n => Number(n).toFixed(dp)
+  const short = real ? String(real.side || '').toUpperCase() === 'SHORT' : false
+  // R is signed by direction: for a short, price falling below entry is profit.
+  const rUnit = haveRails ? Math.abs(entry - sl) : entry - sl
+  const dir = short ? -1 : 1
+  // Every absolute price offset below was authored against the reference
+  // instrument's 1.65 risk unit (76.85 entry / 75.20 stop). K restates those
+  // offsets in the bound instrument's own risk unit, so an FX pair with a
+  // 0.0100 stop distance gets the same LAYOUT rather than rails pushed
+  // hundreds of R off-canvas.
+  const K = haveRails ? rUnit / 1.65 : 1
   // closed market: every value is the last trade — freeze the wave at the last live tick
   const frozenTick = store.frozenTick ?? tick
   if (marketClosed && store.frozenTick == null) store.frozenTick = tick
   if (!marketClosed) store.frozenTick = null
   const wv = marketClosed ? (t => Math.sin(frozenTick * .5 + t) * .5 + Math.sin(frozenTick * .17 + t * 2) * .5) : w
-  const price = 77.29 + wv(0) * .12
-  const rUnit = entry - sl
-  const rNow = (price - entry) / rUnit
-  const pnlUsd = (price - entry) * 1092 * 10 / 7.8
+  // A real live price does not wobble on a mock wave — it is the broker's last
+  // computed value, so it stays put until the next fetch replaces it.
+  const price = rPrice != null ? rPrice : 77.29 + wv(0) * .12
+  const rNow = (price - entry) * dir / rUnit
+  const rPnl = real ? num(real.pnl) : null
+  const pnlUsd = rPnl != null ? rPnl : (price - entry) * 1092 * 10 / 7.8
   const spd = wv(1) * 1.6 + .5
   const vsi = rNow * .7 + wv(2) * .35
   const hdgV = clamp(wv(3) * 55 + 18, -100, 100)
   const spdTicks = [2, 1, 0, -1, -2].map((v, i) => ({ v: (v >= 0 ? '+' : '') + (v + Math.round(spd)), top: 24 + i * 16 }))
-  const altTicksAll = [0.3, 0.2, 0.1, 0, -0.1, -0.2, -0.3].map((d) => ({ v: f2(price + d), r: (((price + d - entry) / rUnit >= 0 ? '+' : '') + ((price + d - entry) / rUnit).toFixed(1)), top: 22 + [0.3, 0.2, 0.1, 0, -0.1, -0.2, -0.3].indexOf(d) * 11.5 }))
-  const span = .42
+  // Tick spacing follows the instrument's own risk unit, not a fixed 0.10 —
+  // on FX a 0.10 step would put every tick far outside the visible band.
+  const tickStep = rUnit / 3
+  const tickOffs = [3, 2, 1, 0, -1, -2, -3].map(k => k * tickStep)
+  const altTicksAll = tickOffs.map((d, i) => ({ v: f2(price + d), r: (((price + d - entry) * dir / rUnit >= 0 ? '+' : '') + ((price + d - entry) * dir / rUnit).toFixed(1)), top: 22 + i * 11.5 }))
+  const span = .42 * K
   const pos = p => 50 - (p - price) / span * 50
-  const rOf = p => ((p - entry) / rUnit >= 0 ? '+' : '') + ((p - entry) / rUnit).toFixed(2) + 'R'
+  // R is signed by trade direction, so on a SHORT the TP (below entry) reads
+  // +R and the SL (above entry) reads −R.
+  const rAt = p => (p - entry) * dir / rUnit
+  const rOf = p => (rAt(p) >= 0 ? '+' : '') + rAt(p).toFixed(2) + 'R'
   const mk = (p, name) => { const raw = pos(p); const tag = name + ' ' + rOf(p); if (raw < 22) return { t: 22, lb: tag + ' ▲', off: true }; if (raw > 82) return { t: name === 'SL' ? 95 : 84, lb: tag + ' ▼', off: true }; return { t: raw, lb: tag, off: false } }
   const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
   const bands = [mTP, mEN, mSL].map(m => m.t)
@@ -48,7 +88,7 @@ export function cockpitFrame(store, tick, opts = {}) {
     const rnd2 = () => { s2 = s2 + 0x6D2B79F5 | 0; let t = Math.imul(s2 ^ s2 >>> 15, 1 | s2); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
     const N = 44, pts = []
     let p = entry
-    for (let i = 0; i < N; i++) { p += (tp - entry) / N * .5 + (rnd2() - .5) * .13; pts.push(p) }
+    for (let i = 0; i < N; i++) { p += (tp - entry) / N * .5 + (rnd2() - .5) * .13 * K; pts.push(p) }
     store.hist2 = pts
     store.tweaks = [
       { i: 10, k: 'SL → breakeven', when: '23/07 14:20', d: 'trailing rule after +0.8R', col: 'var(--wrn)' },
@@ -63,7 +103,11 @@ export function cockpitFrame(store, tick, opts = {}) {
   if (!marketClosed && (store.hist.length === 0 || store.hist[store.hist.length - 1].tick !== tick)) {
     store.hist.push({ tick, p: price }); if (store.hist.length > 8) store.hist.shift()
   }
-  const mapY = p => 160 - (p - 76.1) / (79.6 - 76.1) * 128
+  // Reference band: entry−0.75 … entry+2.75 (i.e. −0.45R … +1.67R), oriented
+  // by trade direction so a SHORT's target sits in view.
+  const bLo = Math.min(entry - .75 * K * dir, entry + 2.75 * K * dir)
+  const bHi = Math.max(entry - .75 * K * dir, entry + 2.75 * K * dir)
+  const mapY = p => 160 - (p - bLo) / (bHi - bLo) * 128
   const combined = store.hist2.concat(store.hist.map(h => h.p))
   const SEG = [[-48, -24, 30, 74], [-24, -4, 74, 150], [-4, 0, 150, 190], [0, 4, 190, 330], [4, 8, 330, 448]]
   const xOf = t => {
@@ -106,9 +150,9 @@ export function cockpitFrame(store, tick, opts = {}) {
   })
   const acYm = mapY(price)
   const planPath = 'M190,' + acYm.toFixed(1) + ' C250,' + (acYm - 20).toFixed(1) + ' 330,' + (mapY(tp) + 16).toFixed(1) + ' 420,' + mapY(tp).toFixed(1)
-  const yAxis = [79.6, 78.73, 77.85, 76.98, 76.1].map(v => ({ v: v.toFixed(2), y: mapY(v).toFixed(1), pc: (mapY(v) / 208 * 100).toFixed(2) }))
+  const yAxis = [0, 1, 2, 3, 4].map(i => bHi - (bHi - bLo) * i / 4).map(v => ({ v: f2(v), y: mapY(v).toFixed(1), pc: (mapY(v) / 208 * 100).toFixed(2) }))
   const yMinor = []
-  for (let p2 = 76.1; p2 <= 79.6; p2 += .2185) yMinor.push({ y: mapY(p2).toFixed(1) })
+  for (let i = 0; i <= 16; i++) yMinor.push({ y: mapY(bLo + (bHi - bLo) * i / 16).toFixed(1) })
   const SCHED = [
     { from: -48, to: -24, step: 1, lb: '1h', c: 'var(--mu)' },
     { from: -24, to: 0, step: 1 / 6, lb: '10m · today', c: 'var(--sb)' },
@@ -134,8 +178,8 @@ export function cockpitFrame(store, tick, opts = {}) {
     vwapArr.push(...out) }
   const vwapPath = vwapArr.map((p, i) => (i ? 'L' : 'M') + xAt(i).toFixed(1) + ',' + mapY(p).toFixed(1)).join(' ')
   const vwapNow = vwapArr[vwapArr.length - 1]
-  const vpBuckets = Array.from({ length: 16 }, (_, i) => price + .38 - i * .05)
-  const vpVol = vpBuckets.map(pc => combined.filter(p => Math.abs(p - pc) < .035).length + .6 + Math.abs(Math.sin(pc * 37)) * 1.4)
+  const vpBuckets = Array.from({ length: 16 }, (_, i) => price + .38 * K - i * .05 * K)
+  const vpVol = vpBuckets.map(pc => combined.filter(p => Math.abs(p - pc) < .035 * K).length + .6 + Math.abs(Math.sin(pc * 37)) * 1.4)
   const vpMax = Math.max(...vpVol)
   const pocIdx = vpVol.indexOf(vpMax)
   const vaCut = vpMax * .45
@@ -210,8 +254,12 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mult = 10, shares = 1092 * mult, fx = 7.8, mgnRate = .2
   const notionalL = price * shares, notionalUsd = notionalL / fx
   const marginUsd = notionalUsd * mgnRate
-  const slUsdV = -(entry - sl) * shares / fx, tpUsdV = (tp - entry) * shares / fx
-  const rr = (tp - entry) / (entry - sl)
+  const rr = haveRails ? Math.abs(tp - entry) / Math.abs(entry - sl) : (tp - entry) / (entry - sl)
+  // Dollars-per-R from two broker facts (live P&L and the R it sits at) — no
+  // contract-size guess. Below 0.05R the division is not trustworthy.
+  const dollarPerR = rPnl != null && Math.abs(rNow) >= .05 ? Math.abs(rPnl / rNow) : null
+  const slUsdV = real ? (dollarPerR != null ? -dollarPerR : null) : -(entry - sl) * shares / fx
+  const tpUsdV = real ? (dollarPerR != null ? dollarPerR * rr : null) : (tp - entry) * shares / fx
   const hk = n => 'HK$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 })
   const pct = n => (n >= 0 ? '+' : '−') + Math.abs(n).toFixed(2) + '%'
   // Margin stays live on a closed market (broker fact); rates freeze with wv.
@@ -235,13 +283,16 @@ export function cockpitFrame(store, tick, opts = {}) {
   })
   const ft = m => { const d = new Date(Date.now() - m * 60000); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') }
   const eta = d => { const mins = spd > .05 ? Math.abs(d) / (spd * .01) : 0; return mins > 0 && mins < 900 ? '~' + (mins > 60 ? (mins / 60).toFixed(1) + 'h' : Math.round(mins) + 'm') : '—' }
+  // Reference waypoints 78.50 / 79.00 are +1R / +1.30R on the reference
+  // instrument — expressed in R so they land correctly on any instrument.
+  const wp1 = entry + rUnit * 1 * dir, wp2 = entry + rUnit * 1.3 * dir
   const prox = t2 => Math.round(clamp((price - entry) / (t2 - entry), 0, 1) * 100)
   const autopilot = marketClosed ? [
-    { k: 'SCALE-OUT 50%', v: '+1R waypoint', d: 'arms at next open', col: 'var(--mu)', prog: prox(78.5), progCol: 'var(--mu)' },
-    { k: 'TRAIL TIGHTEN', v: '0.5R gap at +1.2R', d: 'arms at next open', col: 'var(--mu)', prog: prox(79.0), progCol: 'var(--mu)' },
+    { k: 'SCALE-OUT 50%', v: '+1R waypoint', d: 'arms at next open', col: 'var(--mu)', prog: prox(wp1), progCol: 'var(--mu)' },
+    { k: 'TRAIL TIGHTEN', v: '0.5R gap at +1.2R', d: 'arms at next open', col: 'var(--mu)', prog: prox(wp2), progCol: 'var(--mu)' },
     { k: 'NEWS BLACKOUT', v: 'HK CPI 14:15–14:45', d: 'arms at next open', col: 'var(--mu)', prog: 62, progCol: 'var(--mu)' }] : [
-    { k: 'SCALE-OUT 50%', v: '+1R waypoint', d: (78.5 - price).toFixed(2) + ' · ETA ' + eta(78.5 - price), col: 'var(--acc)', prog: prox(78.5), progCol: 'var(--acc)' },
-    { k: 'TRAIL TIGHTEN', v: '0.5R gap at +1.2R', d: (79.0 - price).toFixed(2) + ' away', col: 'var(--acc)', prog: prox(79.0), progCol: 'var(--acc)' },
+    { k: 'SCALE-OUT 50%', v: '+1R waypoint', d: f2(Math.abs(wp1 - price)) + ' away · ETA ' + eta(wp1 - price), col: 'var(--acc)', prog: prox(wp1), progCol: 'var(--acc)' },
+    { k: 'TRAIL TIGHTEN', v: '0.5R gap at +1.2R', d: f2(Math.abs(wp2 - price)) + ' away', col: 'var(--acc)', prog: prox(wp2), progCol: 'var(--acc)' },
     { k: 'NEWS BLACKOUT', v: 'HK CPI 14:15–14:45', d: 'entries blocked', col: 'var(--wrn)', prog: 62, progCol: 'var(--wrn)' }]
   const vwapDev = wv(4) * .8 + .3
   const goaround = [
@@ -263,12 +314,15 @@ export function cockpitFrame(store, tick, opts = {}) {
   const altMfe = clamp(pos(entry + store.ex.mfe * rUnit), 6, 94).toFixed(1)
   const altMae = clamp(pos(entry + store.ex.mae * rUnit), 6, 94).toFixed(1)
   const mcSrc = combined.slice(-30)
-  const mcLo = Math.min(...mcSrc, sl) - .05, mcHi = Math.max(...mcSrc, tp) + .05
+  // Both rails go into both bounds: on a SHORT the stop is the HIGH and the
+  // target the LOW, so the reference's long-shaped min(sl)/max(tp) would push
+  // them off-canvas. Identical result on the reference instrument.
+  const mcLo = Math.min(...mcSrc, sl, tp) - .05 * K, mcHi = Math.max(...mcSrc, sl, tp) + .05 * K
   const mcY = p => (150 - (p - mcLo) / (mcHi - mcLo) * 150).toFixed(1)
   const candles = mcSrc.map((p, i) => {
-    const o = i ? mcSrc[i - 1] : p - .02, up = p >= o
-    const hi = Math.max(o, p) + .02 + Math.abs(Math.sin(i * 2.3)) * .03
-    const lo = Math.min(o, p) - .02 - Math.abs(Math.cos(i * 1.9)) * .03
+    const o = i ? mcSrc[i - 1] : p - .02 * K, up = p >= o
+    const hi = Math.max(o, p) + (.02 + Math.abs(Math.sin(i * 2.3)) * .03) * K
+    const lo = Math.min(o, p) - (.02 + Math.abs(Math.cos(i * 1.9)) * .03) * K
     const x = 5 + i * 6.4
     const by = +mcY(Math.max(o, p)), bh = Math.max(1.2, +mcY(Math.min(o, p)) - by)
     return { x: x.toFixed(1), bx: (x - 1.7).toFixed(1), hi: mcY(hi), lo: mcY(lo), by: by.toFixed(1), bh: bh.toFixed(1),
@@ -276,7 +330,8 @@ export function cockpitFrame(store, tick, opts = {}) {
   })
   const mcVwap = vwapArr.slice(-30).map((p, i) => (i ? 'L' : 'M') + (5 + i * 6.4).toFixed(1) + ',' + mcY(p)).join(' ')
   const alerts = []
-  if (sprX > 2) alerts.push({ t: ft(0), k: 'CAUTION', d: 'spread ' + sprX.toFixed(1) + '× backtest — pending entries suspended', col: 'var(--wrn)' })
+  if (real) alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'live: price, P&L, entry/SL/TP, R, market state · demo: ' + 'chart, volume profile, journal, traffic, engine rates, MFE/MAE', col: 'var(--wrn)' })
+  if (!real && sprX > 2) alerts.push({ t: ft(0), k: 'CAUTION', d: 'spread ' + sprX.toFixed(1) + '× backtest — pending entries suspended', col: 'var(--wrn)' })
   if (rvol > 1.8) alerts.push({ t: ft(2), k: 'CAUTION', d: 'RVOL ' + rvol.toFixed(1) + '× — volatility expansion, trail tightened', col: 'var(--wrn)' })
   if (rNow < -.4) alerts.push({ t: ft(1), k: 'WARNING', d: 'price within 0.6R of stop — no averaging down permitted', col: 'var(--dn)' })
   alerts.push({ t: ft(14), k: 'ADVISORY', d: 'WX cell ahead: HK CPI 14:30 UTC — TP orders persist, new entries blocked ±15m', col: 'var(--sb)' })
@@ -285,7 +340,13 @@ export function cockpitFrame(store, tick, opts = {}) {
   const sessOpensIn = session.opensInMins != null ? Math.floor(session.opensInMins / 60) + 'h ' + (session.opensInMins % 60) + 'm' : null
   const anim = { vsiA: clamp(-vsi / 2 * 80, -84, 84), hdgX: -hdgV / 10, fuelW,
     tpT: mTP.t, enT: mEN.t, slT: mSL.t, acX: 0, acY: acYm - 112, pnlNum: pnlUsd }
-  return { sym: '0002.HK', ccy: 'HKD', strategy: 'fib 61.8% fade v2.3', lots: '1092.00', timeIn: '2.3d',
+  return { sym: real?.sym || '0002.HK', ccy: real ? (real.ccy || '') : 'HKD',
+    strategy: real ? (real.strategy || '—') : 'fib 61.8% fade v2.3',
+    lots: real ? String(real.lots ?? '—') : '1092.00', timeIn: real ? (real.timeIn || '') : '2.3d',
+    side: short ? 'SHORT' : 'LONG', isReal: !!real,
+    // Panels with no agent source yet — the UI names them so nothing mock
+    // reads as broker truth (PR open question Q3).
+    demoPanels: real ? ['MFD chart & EMAs', 'volume profile', 'tweak journal', 'correlated traffic', 'RVOL / spread / latency', 'MFE / MAE', 'armed actions'] : null,
     review, session, sessOpensIn, marketClosed,
     pnl: (pnlUsd >= 0 ? '+' : '−') + '$' + Math.abs(pnlUsd).toFixed(0), pnlNum: pnlUsd, rNow: (rNow >= 0 ? '+' : '') + rNow.toFixed(2) + 'R', rCol: rNow >= 0 ? 'var(--up)' : 'var(--dn)',
     spd: marketClosed ? '—' : (spd >= 0 ? '+' : '') + spd.toFixed(2), spdCol: marketClosed ? 'var(--mu)' : spd >= 0 ? 'var(--up)' : 'var(--dn)', spdTicks,
@@ -296,13 +357,22 @@ export function cockpitFrame(store, tick, opts = {}) {
     mfeR: (store.ex.mfe >= 0 ? '+' : '') + store.ex.mfe.toFixed(2) + 'R', maeR: (store.ex.mae >= 0 ? '+' : '') + store.ex.mae.toFixed(2) + 'R',
     giveback: (store.ex.mfe - rNow).toFixed(2) + 'R',
     altMfe, altMae, candles, mcVwap, mcTp: mcY(tp), mcEn: mcY(entry), mcSl: mcY(sl), tpPx: f2(tp), enPx: f2(entry), slPx: f2(sl), vwapPrice: f2(vwapNow),
-    shares: shares.toLocaleString('en-US'), notionalL: hk(notionalL), notionalU: usd(notionalUsd),
-    marginU: usd(marginUsd), lev: (notionalUsd / marginUsd).toFixed(1) + '× lev',
-    margPct: (marginUsd / (balance + pnlUsd) * 100).toFixed(1) + '% of equity',
-    margCol: marginUsd / (balance + pnlUsd) > .35 ? 'var(--dn)' : 'var(--sb)',
-    slUsd: '−' + usd(Math.abs(slUsdV)), tpUsd: '+' + usd(tpUsdV), tpR: '+' + rr.toFixed(2) + 'R',
-    slPctBal: pct(slUsdV / balance * 100), tpPctBal: pct(tpUsdV / balance * 100),
-    rrNote: 'risk ' + usd(Math.abs(slUsdV)) + ' to make ' + usd(tpUsdV) + ' — ' + rr.toFixed(2) + ':1 · SL ' + f2(sl) + ' / TP ' + f2(tp),
+    // Notional / margin / leverage need the symbol's contract size, which no
+    // agent route serves per position — shown as unavailable rather than
+    // invented once a real position is bound.
+    shares: real ? '—' : shares.toLocaleString('en-US'),
+    notionalL: real ? '—' : hk(notionalL), notionalU: real ? '' : usd(notionalUsd),
+    marginU: real ? '—' : usd(marginUsd), lev: real ? 'contract size n/a' : (notionalUsd / marginUsd).toFixed(1) + '× lev',
+    margPct: real ? '—' : (marginUsd / (balance + pnlUsd) * 100).toFixed(1) + '% of equity',
+    margCol: !real && marginUsd / (balance + pnlUsd) > .35 ? 'var(--dn)' : 'var(--sb)',
+    slUsd: slUsdV == null ? '—' : '−' + usd(Math.abs(slUsdV)),
+    tpUsd: tpUsdV == null ? '—' : '+' + usd(tpUsdV), tpR: '+' + rr.toFixed(2) + 'R',
+    slPctBal: slUsdV == null ? '—' : pct(slUsdV / balance * 100),
+    tpPctBal: tpUsdV == null ? '—' : pct(tpUsdV / balance * 100),
+    rrNote: (slUsdV == null || tpUsdV == null
+      ? 'reward:risk ' + rr.toFixed(2) + ':1'
+      : 'risk ' + usd(Math.abs(slUsdV)) + ' to make ' + usd(tpUsdV) + ' — ' + rr.toFixed(2) + ':1')
+      + ' · SL ' + f2(sl) + ' / TP ' + f2(tp),
     legs, traffic, nSame: String(nSame), nDiv: String(nDiv), mktRead, flownPath, planPath, tweaks, journal,
     yAxis, xAxis, vwapPath, vpBars, vaTop, vaH, pocTop, yMinor, xMinor, resBands, xLabels, volBars, ema9Path, ema20Path, ema50Path,
     fuel: Math.round(fuelW) + '%',

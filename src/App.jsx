@@ -1,9 +1,11 @@
 /* global __APP_VERSION__, __GIT_COMMIT__ */
 import { lazy, Suspense, useEffect, useState } from 'react'
+import { boundPosition } from './cockpit/cockpit-nav.js'
 
 // Trade Cockpit (design_handoff_trading_dashboard) — lazy so the heavy modal
 // and GSAP never load until a ?trade=<positionId> deep link or symbol click.
 const TradeCockpit = lazy(() => import('./cockpit/TradeCockpit.jsx'))
+
 
 function CockpitHost() {
   const [params, setParams] = useState(() => new URLSearchParams(window.location.search))
@@ -14,6 +16,10 @@ function CockpitHost() {
   }, [])
   const trade = params.get('trade')
   if (!trade) return null
+  // Broker facts handed over by the surface that was clicked (see
+  // cockpit-nav.bindPosition). Absent on a cold deep link — the cockpit then
+  // states that its values are demo rather than implying they are live.
+  const bound = boundPosition(trade)
   const close = () => {
     const url = new URL(window.location.href)
     url.searchParams.delete('trade')
@@ -24,6 +30,8 @@ function CockpitHost() {
     <Suspense fallback={null}>
       <TradeCockpit
         onClose={close}
+        tradeId={trade}
+        position={bound}
         positionState={params.get('state') === 'closed' ? 'closed' : 'open'}
         sessionState={params.get('session') || 'open'}
         variant={params.get('variant') || undefined}

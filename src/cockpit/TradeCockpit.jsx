@@ -41,14 +41,17 @@ function Info({ fs, tip, big }) {
 const card = { background: 'var(--gls)', border: '1px solid var(--gbd)', boxShadow: 'var(--gsh)', backdropFilter: 'blur(22px)' }
 const pane = { position: 'relative', borderRadius: 10, border: '1px solid var(--edg)', background: 'var(--acs)', overflow: 'hidden' }
 
-export default function TradeCockpit({ variant: forced, positionState = 'open', sessionState = 'open', onClose, feedBlocked = false }) {
+export default function TradeCockpit({ variant: forced, positionState = 'open', sessionState = 'open', onClose, feedBlocked = false, position = null, tradeId = null }) {
   const [vw, setVw] = useState(() => window.innerWidth)
   useEffect(() => { const f = () => setVw(window.innerWidth); window.addEventListener('resize', f); return () => window.removeEventListener('resize', f) }, [])
   const variant = forced || (vw >= 1100 ? 'desktop' : vw >= 768 ? 'ipad' : 'iphone')
   const cfg = CFG[variant]
   const fs = useMemo(() => makeFs(variant), [variant])
   const review = positionState === 'closed'
-  const marketClosed = sessionState !== 'open' && !review
+  // A bound position carries the broker's own market state (market_open from
+  // the symbol_hours schedule), so it — not the URL — decides the session axis.
+  const sess = position && position.marketOpen === false ? 'closed' : sessionState
+  const marketClosed = sess !== 'open' && !review
 
   const [theme, setTheme] = useState('dark')
   const [tick, setTick] = useState(0)
@@ -85,16 +88,19 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   }, [marketClosed, feedBlocked])
   const stale = staleFor > 5
 
-  const opensInMins = marketClosed ? Math.max(1, 4 * 60 + 23 - minuteTick) : null
+  // The countdown is reference demo timing. A real position has no next-open
+  // source on this route, so it shows CLOSED with no invented time-to-open.
+  const opensInMins = marketClosed && !position ? Math.max(1, 4 * 60 + 23 - minuteTick) : null
   const [v, setV] = useState(null)
   useEffect(() => {
     // async apply (mirrors the reference's deferred animate() pass) — also
     // keeps this effect purely synchronising with the mock feed
     const id = setTimeout(() => setV(loaded ? cockpitFrame(storeRef.current, tick, {
-      positionState, session: { state: sessionState, exchange: 'HKEX', opensInMins },
+      positionState, session: { state: sess, exchange: position?.exchange || 'HKEX', opensInMins },
+      real: position,
     }) : null), 0)
     return () => clearTimeout(id)
-  }, [loaded, tick, positionState, sessionState, opensInMins])
+  }, [loaded, tick, positionState, sess, opensInMins, position])
 
   // GSAP wiring — port of the reference animate(); reduced-motion applies values instantly.
   const pnlObj = useRef(null)
@@ -174,7 +180,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
       <span style={{ fontSize: fs(19), fontWeight: 700, letterSpacing: '-.02em' }}>{v?.sym ?? '0002.HK'}</span>
-      <span style={{ fontSize: fs(11.5), fontWeight: 600, padding: '2px 9px', borderRadius: 999, color: 'var(--up)', background: 'var(--acs)', border: '1px solid var(--up)' }}>LONG · {v?.lots ?? '—'} lots</span>
+      <span style={{ fontSize: fs(11.5), fontWeight: 600, padding: '2px 9px', borderRadius: 999, color: v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)', background: v?.side === 'SHORT' ? 'var(--dns)' : 'var(--acs)', border: `1px solid ${v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)'}` }}>{v?.side ?? 'LONG'} · {v?.lots ?? '—'} lots</span>
       <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', padding: '2px 8px', borderRadius: 6, background: 'var(--acs)' }}>{v?.strategy ?? 'fib 61.8% fade v2.3'}</span>
       {review
         ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--mu)', borderRadius: 999, padding: '2px 8px' }}>CLOSED {v?.timeIn ?? ''}</span>
@@ -182,7 +188,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: stale ? 'var(--wrn)' : 'var(--acc)', animation: stale || marketClosed ? 'none' : 'tc-pulse 1.6s infinite' }} />OPEN {v?.timeIn ?? ''}{stale ? ` · STALE ${staleFor}s` : ''}</span>}
       {marketClosed && (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--mu)', borderRadius: 999, padding: '2px 8px', fontVariantNumeric: 'tabular-nums' }}>
-          HKEX {sessionState.toUpperCase()}{sessionState === 'closed' ? ` · opens in ${Math.floor(opensInMins / 60)}h ${opensInMins % 60}m` : ''}</span>)}
+          {position?.exchange || 'HKEX'} {sess.toUpperCase()}{sess === 'closed' && opensInMins != null ? ` · opens in ${Math.floor(opensInMins / 60)}h ${opensInMins % 60}m` : ''}</span>)}
       <span style={{ fontSize: fs(15), fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: dim || v?.rCol }}><span id="hdr-pnl">{v?.pnl ?? '—'}</span> · {v?.rNow ?? '—'}</span>
       <span style={{ marginLeft: 'auto', fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{v?.clock ?? ''}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 'none', whiteSpace: 'nowrap', ...(cfg.headerWraps ? { flexBasis: '100%' } : {}) }}>
@@ -447,6 +453,10 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Chip fs={fs} hue="wrn">ADVISORIES</Chip><Info fs={fs} tip="Live bot notices: cautions, warnings, and fills — newest first." /></div>
           <div style={{ maxHeight: variant === 'iphone' ? 150 : 64, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
+            {tradeId != null && !position && <div style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
+              <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
+              <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>DEMO DATA</span>
+              <span title={`no live position is bound to trade ${tradeId} in this tab — every number below is reference demo data. Open the cockpit from a trade row to see real values.`} style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'help' }}>no live position bound — all values are demo</span></div>}
             {feedBlocked && !loaded && <div style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>CAUTION</span>

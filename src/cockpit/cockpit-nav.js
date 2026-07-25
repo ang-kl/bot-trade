@@ -1,5 +1,22 @@
 // symbol-click-spec §2 — URL/history helpers + the §2.5 toast, shared by
 // SymbolTarget and the cockpit itself (separate file so fast-refresh works).
+
+// The URL stays the single source of truth for WHICH position is open (so deep
+// links and history work per §2). This side table carries the broker facts the
+// clicking surface already holds, so the cockpit can render the real
+// instrument instead of the reference mock. It is deliberately in-memory only:
+// a reload has no entry, and the cockpit then says so rather than dressing
+// mock numbers up as live ones. Retire this once the /api/positions/:id/cockpit
+// endpoint exists (PR open question Q3).
+const bound = new Map()
+
+export function bindPosition(positionId, position) {
+  if (positionId != null && position) bound.set(String(positionId), position)
+}
+export function boundPosition(positionId) {
+  return positionId == null ? null : bound.get(String(positionId)) || null
+}
+
 export function openCockpit(positionId, { replace = false } = {}) {
   const url = new URL(window.location.href)
   url.searchParams.set('trade', String(positionId))
