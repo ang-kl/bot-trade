@@ -1,5 +1,37 @@
 /* global __APP_VERSION__, __GIT_COMMIT__ */
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+
+// Trade Cockpit (design_handoff_trading_dashboard) — lazy so the heavy modal
+// and GSAP never load until a ?trade=<positionId> deep link or symbol click.
+const TradeCockpit = lazy(() => import('./cockpit/TradeCockpit.jsx'))
+
+function CockpitHost() {
+  const [params, setParams] = useState(() => new URLSearchParams(window.location.search))
+  useEffect(() => {
+    const f = () => setParams(new URLSearchParams(window.location.search))
+    window.addEventListener('popstate', f)
+    return () => window.removeEventListener('popstate', f)
+  }, [])
+  const trade = params.get('trade')
+  if (!trade) return null
+  const close = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('trade')
+    window.history.pushState({}, '', url)
+    setParams(new URLSearchParams(window.location.search))
+  }
+  return (
+    <Suspense fallback={null}>
+      <TradeCockpit
+        onClose={close}
+        positionState={params.get('state') === 'closed' ? 'closed' : 'open'}
+        sessionState={params.get('session') || 'open'}
+        variant={params.get('variant') || undefined}
+        feedBlocked={params.get('feed') === 'blocked'}
+      />
+    </Suspense>
+  )
+}
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import { getAgentConn, agentConfigured } from './lib/agent-api.js'
 import Performance from './pages/Performance.jsx'
@@ -165,6 +197,7 @@ export default function App() {
         </header>
 
         <AgentDownBanner />
+        <CockpitHost />
 
         <main className="px-4 py-4 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
           <Routes>
