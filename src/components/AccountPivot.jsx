@@ -60,7 +60,7 @@ export default function AccountPivot({ acct }) {
           </tbody>
         </table>
       </div>
-      <p className="text-[11px] text-[var(--color-text-sub)] mt-1">
+      <p className="text-[12px] text-[var(--color-text-sub)] mt-1">
         "Market closed" positions are still open trades whose symbol's market is shut right now (weekend/after-hours) — they carry gap risk until it reopens.
       </p>
     </Card>

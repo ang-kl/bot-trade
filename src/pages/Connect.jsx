@@ -282,7 +282,7 @@ export default function Connect() {
                         {a.balance != null ? `$${(Number(a.balance) + floating).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
                       </span>
                       {positions.length > 0 && (
-                        <span className="block text-[11px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
+                        <span className="block text-[12px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
                       )}
                     </span>
                     {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}

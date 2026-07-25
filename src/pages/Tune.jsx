@@ -89,7 +89,7 @@ function TimeframePerformance({ timeframes }) {
         type="button" onClick={toggleOpen} aria-expanded={open}
         className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
-        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="inline-block w-3 text-[12px]">{open ? '▾' : '▸'}</span>
         Timeframe performance
         <span className="font-normal">— trades CLOSED in the last 2h/4h/1d/5d/1w, grouped by TIMEFRAME. The stage-matrix counts are a different cut (per STRATEGY, 30-day usage incl. open trades) — the totals are not meant to match.</span>
       </button>
@@ -108,9 +108,9 @@ function TimeframePerformance({ timeframes }) {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.timeframe} className="border-t border-[var(--color-border)]">
-                    <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">
+                    <td className="py-1.5 pr-3 whitespace-nowrap">
                       {r.timeframe}
-                      {!r.armed && <span className="ml-1.5 font-normal text-[11px] text-[var(--color-text-sub)]">(removed)</span>}
+                      {!r.armed && <span className="ml-1.5 font-normal text-[12px] text-[var(--color-text-sub)]">(removed)</span>}
                     </td>
                     {windows.map(w => (
                       <td key={w} className="py-1.5 pr-3 whitespace-nowrap"><TfPerfCell cell={r.cells?.[w]} /></td>
@@ -164,7 +164,7 @@ function StrategyTfPerformance() {
         type="button" onClick={toggle} aria-expanded={open}
         className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
-        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="inline-block w-3 text-[12px]">{open ? '▾' : '▸'}</span>
         Strategy × timeframe performance
         <span className="font-normal">— closed trades, ONE 30-day window on both axes: the reconciled view</span>
       </button>
@@ -185,7 +185,7 @@ function StrategyTfPerformance() {
                 <tbody>
                   {grid.strategies.map(s => (
                     <tr key={s.strategy} className="border-t border-[var(--color-border)]">
-                      <td className="py-1 pr-3 font-semibold whitespace-nowrap">{s.strategy}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap">{s.strategy}</td>
                       {grid.timeframes.map(tf => {
                         const c = s.cells[tf]
                         return (
@@ -207,7 +207,7 @@ function StrategyTfPerformance() {
                   )}
                 </tbody>
               </table>
-              <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+              <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
                 Cell = trades · net P&L, {grid.days}d window, hover for win rate. Grid total {grid.total_closed} = every closed trade once — nothing double-counted or dropped.
               </p>
             </>
@@ -250,7 +250,7 @@ function MxCell({ on, counts, selected, na, onClick }) {
           {on ? '✓' : '✗'}
         </span>
         {counts && (
-          <span className="ml-1 text-[11px] font-semibold text-[var(--color-text)] tabular-nums">
+          <span className="ml-1 text-[12px] font-semibold text-[var(--color-text)] tabular-nums">
             {counts.ok}<span className="text-[var(--color-accent)]">✓</span>/{counts.fail}<span className="text-[var(--color-down)]">✗</span>
           </span>
         )}
@@ -320,7 +320,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
 
   const renderRow = (kind, row) => (
     <tr key={`${kind}|${row.key}`} className="border-t border-[var(--color-border)]">
-      <td className={`py-0.5 pr-3 whitespace-nowrap ${kind === 'strategy' ? 'font-semibold' : 'pl-4 text-[var(--color-text-sub)]'}`}>
+      <td className={`py-0.5 pr-3 whitespace-nowrap ${kind === 'strategy' ? '' : 'pl-4 text-[var(--color-text-sub)]'}`}>
         {row.name}
       </td>
       {columns.map(c => (
@@ -342,7 +342,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
         type="button" onClick={toggleOpen} aria-expanded={open}
         className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
-        <span aria-hidden="true" className="inline-block w-3 text-[10px]">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="inline-block w-3 text-[12px]">{open ? '▾' : '▸'}</span>
         Strategy × stage matrix
         <span className="font-normal">— what runs at each pipeline stage; counts are the last {mx.windowDays || 30} days</span>
       </button>
@@ -363,7 +363,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
               <tbody>
                 {(mx.strategies || []).map(row => renderRow('strategy', row))}
                 <tr className="border-t border-[var(--color-border)]">
-                  <td colSpan={columns.length + 1} className="py-0.5 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                  <td colSpan={columns.length + 1} className="py-0.5 text-[12px] text-[var(--color-text-sub)]">
                     Filters (fib confluence — annotate the scan, gate the trade)
                   </td>
                 </tr>
@@ -388,7 +388,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
               <Button size="sm" disabled={busy || selOn === true} onClick={() => apply(true)}>Turn ON</Button>
               <Button size="sm" variant="subtle" disabled={busy || selOn === false} onClick={() => apply(false)}>Turn OFF</Button>
               <Button size="sm" variant="subtle" onClick={() => setSel(null)}>Close</Button>
-              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+              <span className="w-full text-[12px] text-[var(--color-text-sub)]">
                 {sel.stage === 'scan' && 'Scan: whether the 5-minute scan computes this at all. Filters ON here gate the scan the old strict way; OFF means analyse everything and let Auto Trade & Open decide.'}
                 {sel.stage === 'backtest' && 'Back Test: whether the nightly autopilot sweep tests this strategy / the manual Backtest tab applies this filter.'}
                 {sel.stage === 'trade' && 'Auto Trade & Open: the live gate. Writes the same agent key the old toggles used — Telegram and autopilot stay in sync.'}
@@ -505,7 +505,7 @@ function DurationInput({ label, hint, value, onChange }) {
         placeholder="e.g. 5m, 30s, 2h, or off"
         className={invalid ? 'border-[var(--color-down)]' : ''}
       />
-      {invalid && <span className="text-[11px] text-[var(--color-down)]">Use a number, or number + s/m/h — e.g. 90s, 5m, 2h</span>}
+      {invalid && <span className="text-[12px] text-[var(--color-down)]">Use a number, or number + s/m/h — e.g. 90s, 5m, 2h</span>}
     </label>
   )
 }
@@ -627,7 +627,7 @@ function VerdictBadge({ r }) {
             </span>
           ))}
           {v.state === 'thin' && (
-            <span className="block text-[11px] text-[var(--color-text-sub)] mt-1">
+            <span className="block text-[12px] text-[var(--color-text-sub)] mt-1">
               The edge looks positive but the sample is too small to prove it. Not armed by Activate unless you tick "arm anyway" on the row.
             </span>
           )}
@@ -725,7 +725,7 @@ function Toggle({ on, onClick, label }) {
       title={`${label}: ${on ? 'ON' : 'OFF'}`}
       className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer transition-colors px-[3px] py-[1px] bg-[var(--color-bg)] ${
         on
-          ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+          ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[12px] font-normal capitalize'
           : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
       }`}
     >
@@ -1454,7 +1454,7 @@ export default function Tune() {
                   <tbody>
                     {(config?.asset_controllers || []).map(row => (
                       <tr key={row.class} className="border-b border-[var(--color-border)]/40">
-                        <td className="py-1 pr-3 font-semibold">{row.class}{row.overridden ? ' *' : ''}</td>
+                        <td className="py-1 pr-3">{row.class}{row.overridden ? ' *' : ''}</td>
                         {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR'].map(k => (
                           <td key={k} className="py-1 pr-3">
                             <input
@@ -1520,7 +1520,7 @@ export default function Tune() {
                   }, `Position monitor every ${m}m (volume-scaled)`)}
                   className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[4px] py-[3px] ${
                     (config?.monitor_interval_min ?? 1) === m
-                      ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+                      ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[12px] font-normal capitalize'
                       : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
                   }`}
                 >{m}m</button>
@@ -1549,7 +1549,7 @@ export default function Tune() {
               >
                 <Input value={monOvDraft.symbol} onChange={e => setMonOvDraft(d => ({ ...d, symbol: e.target.value }))} placeholder="SYMBOL" className="w-24 !py-0.5 !min-h-0 text-[12px]" aria-label="Override symbol" />
                 <Input type="number" step="0.25" min="0.25" max="30" value={monOvDraft.minutes} onChange={e => setMonOvDraft(d => ({ ...d, minutes: e.target.value }))} placeholder="min (empty=auto)" className="w-32 !py-0.5 !min-h-0 text-[12px]" aria-label="Override minutes" />
-                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[11px]">Set</Button>
+                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[12px]">Set</Button>
               </form>
               {Object.entries(config?.monitor_overrides || {}).map(([sym, m]) => (
                 <span key={sym} className="glass-inset rounded-full px-2 py-0.5 inline-flex items-center gap-1.5 font-semibold">
@@ -1599,7 +1599,7 @@ export default function Tune() {
                 }}
               >
                 <Input type="number" step="0.01" min="0.01" max="5" value={guardianPctDraft} onChange={e => setGuardianPctDraft(e.target.value)} className="w-20 !py-0.5 !min-h-0 text-[12px]" aria-label="Guardian move threshold percent" />
-                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[11px]">Set</Button>
+                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[12px]">Set</Button>
               </form>
               <span className="text-[12px] text-[var(--color-text-sub)]">
                 current: {config?.guardian_move_pct ?? 0.05}% — a live price tick moving this much between the 30s checks triggers an immediate sweep of open positions instead of waiting for the next tick
@@ -1660,7 +1660,7 @@ export default function Tune() {
                     }, 'Loss Guardian updated')} />
                 </label>
               )}
-              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+              <span className="w-full text-[12px] text-[var(--color-text-sub)]">
                 Safety net for LOSING positions the Profit Keeper won't touch. A position with NO stop gets a protective SL {lossGuard?.maxAtrMult ?? 3}×ATR from entry (or is closed if already past that); an optional time cap closes anything held too long. It never tightens a stop you already set — your mean-reversion trades keep their room to breathe.
               </span>
             </div>
@@ -1675,7 +1675,7 @@ export default function Tune() {
                   setClosedLimits(r.config)
                 }, `Closed-market limit orders ${next ? 'on' : 'off'}`)
               }} />
-              <span className="w-full text-[11px] text-[var(--color-text-sub)]">
+              <span className="w-full text-[12px] text-[var(--color-text-sub)]">
                 When a setup fires while its market is CLOSED (weekend FX/metals, off-hours stocks/indices), rest a real broker LIMIT order at the entry — visible on the desk, filling automatically at open with the setup's SL/TP — instead of the hidden re-fire queue. One order per symbol, clears the SAME risk gate, expires with the timeframe. Off → falls back to the internal queue (re-scan &amp; market order at open).
               </span>
             </div>
@@ -1797,7 +1797,7 @@ export default function Tune() {
                         />
                         <Button size="sm" onClick={addCustomTimeframe}>Add</Button>
                       </span>
-                      <span className="block px-2 pb-1 text-[11px] text-[var(--color-text-sub)]">
+                      <span className="block px-2 pb-1 text-[12px] text-[var(--color-text-sub)]">
                         min/h/d/w · M = month · decimals from hours up
                       </span>
                       {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
@@ -1839,7 +1839,7 @@ export default function Tune() {
                   : '—'],
               ].map(([label, value]) => (
                 <div key={label} className="glass-inset rounded-[10px] px-3 py-2">
-                  <div className="text-[11px] text-[var(--color-text-sub)]">{label}</div>
+                  <div className="text-[12px] text-[var(--color-text-sub)]">{label}</div>
                   <div className="text-[15px] font-bold tabular-nums">{value}</div>
                 </div>
               ))}
@@ -1851,7 +1851,7 @@ export default function Tune() {
                 <div key={g.title} className="glass-inset rounded-[12px] p-2.5">
                   <div className="flex items-baseline justify-between mb-1.5">
                     <h3 className="text-[13px] font-semibold">{g.title}</h3>
-                    <span className="text-[11px] text-[var(--color-text-sub)]">{g.blurb}</span>
+                    <span className="text-[12px] text-[var(--color-text-sub)]">{g.blurb}</span>
                   </div>
                   <div className="space-y-2">
                     {g.keys.map(k => (
@@ -1938,7 +1938,7 @@ export default function Tune() {
                           onClick={() => selected ? removeGroup(g.key) : addGroup(g.key, g.avail)}
                           className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[3px] py-[1px] disabled:opacity-40 disabled:cursor-default ${
                             selected
-                              ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] font-normal capitalize'
+                              ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[12px] font-normal capitalize'
                               : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
                           }`}
                         >
@@ -1947,7 +1947,7 @@ export default function Tune() {
                       )
                     })}
                   </div>
-                  <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                  <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
                     Per-country equity lists (top 10 per country, full FTSE/DAX membership) live under Browse below — that tree is the broker's own classification, always complete.
                   </p>
                 </div>
@@ -1965,7 +1965,7 @@ export default function Tune() {
                 whether or not it's already on the watchlist. */}
             <div className="mb-3">
               <div className="text-[12px] font-semibold mb-1">Screener</div>
-              <p className="text-[11px] text-[var(--color-text-sub)] mb-1.5">
+              <p className="text-[12px] text-[var(--color-text-sub)] mb-1.5">
                 Advice is a technical read only (bias + confidence from the last scan, ATR% from the regime detector) — not a fundamentals or sector call; it stays blank until a symbol has actually been scanned.
               </p>
               <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -1976,7 +1976,7 @@ export default function Tune() {
                 >
                   {PRESET_GROUPS.map(g => <option key={g.key} value={g.key}>{g.key}</option>)}
                 </select>
-                <span className="text-[11px] text-[var(--color-text-sub)]">or a custom list:</span>
+                <span className="text-[12px] text-[var(--color-text-sub)]">or a custom list:</span>
                 <input
                   type="text"
                   value={screenerCustom}
@@ -1989,7 +1989,7 @@ export default function Tune() {
                 </Button>
               </div>
               {screenerAiSymbols && (
-                <div className="mb-2 text-[11px] text-[var(--color-text-sub)] flex items-center gap-2">
+                <div className="mb-2 text-[12px] text-[var(--color-text-sub)] flex items-center gap-2">
                   <span>Showing {screenerAiSymbols.length} AI-matched symbol(s).</span>
                   <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline" onClick={() => setScreenerAiSymbols(null)}>clear</button>
                 </div>
@@ -2078,8 +2078,8 @@ export default function Tune() {
                 const on = s.enabled !== false
                 return (
                   <tr key={s.symbol} className="border-t border-[var(--color-border)]">
-                    <td className="pr-2 py-1 font-semibold whitespace-nowrap">{s.symbol}</td>
-                    <td className="pr-2 text-[11px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
+                    <td className="pr-2 py-1 whitespace-nowrap">{s.symbol}</td>
+                    <td className="pr-2 text-[12px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
                     <td className="pr-2"><Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge></td>
                     <td className="pr-2 text-[12px] tabular-nums whitespace-nowrap">
                       {scan
@@ -2104,7 +2104,7 @@ export default function Tune() {
                         return (
                           <span title={`${st.n} closed trades · net ${st.net >= 0 ? '+' : ''}${st.net} · ${st.winRate}% wins${st.loser ? ` — net negative after ${wlStats.min_n}+ trades` : ''}`}>
                             {st.n} · <span className={`font-semibold ${st.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{st.net >= 0 ? '+' : ''}{st.net}</span> · {st.winRate}%
-                            {st.loser && <span className="ml-1 text-[10px] font-bold text-[var(--color-down)]">LOSER</span>}
+                            {st.loser && <span className="ml-1 text-[12px] font-bold text-[var(--color-down)]">LOSER</span>}
                           </span>
                         )
                       })()}
@@ -2146,11 +2146,11 @@ export default function Tune() {
                       />
                     </td>
                     <td className="whitespace-nowrap">
-                      <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
+                      <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[12px]" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
                         {on ? 'Disable' : 'Enable'}
                       </Button>
                       {' '}
-                      <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[11px]" aria-label={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
+                      <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[12px]" aria-label={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
                     </td>
                   </tr>
                 )
@@ -2164,7 +2164,7 @@ export default function Tune() {
                 <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
                   <table className="std-cols min-w-full text-[13px]">
                     <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
-                      <tr className="text-left text-[11px] text-[var(--color-text-sub)]">
+                      <tr className="text-left text-[12px] text-[var(--color-text-sub)]">
                         <th className="pr-2 pb-1 font-semibold">Symbol</th>
                         <th className="pr-2 pb-1 font-semibold">Type</th>
                         <th className="pr-2 pb-1 font-semibold">Scanned</th>
@@ -2194,16 +2194,16 @@ export default function Tune() {
                                     type="button" onClick={() => toggleBand(key)} aria-expanded={bandOpen}
                                     className="flex items-center gap-1.5 font-bold cursor-pointer"
                                   >
-                                    <span aria-hidden="true" className="inline-block w-3 text-[10px]">{bandOpen ? '▾' : '▸'}</span>
+                                    <span aria-hidden="true" className="inline-block w-3 text-[12px]">{bandOpen ? '▾' : '▸'}</span>
                                     {key}
                                     <span className="font-normal text-[var(--color-text-sub)]">({members.length} symbols · {onCount} on)</span>
                                   </button>
                                   <Badge tone={onCount > 0 ? 'up' : 'neutral'}>{onCount > 0 ? 'ON' : 'OFF'}</Badge>
                                   <span className="ml-auto flex items-center gap-2">
-                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => toggleGroupEnabled(key, onCount === 0)}>
+                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[12px]" onClick={() => toggleGroupEnabled(key, onCount === 0)}>
                                       {onCount > 0 ? 'Disable group' : 'Enable group'}
                                     </Button>
-                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[11px]" onClick={() => removeGroup(key)} aria-label={`Remove ${key} group from watchlist`}>
+                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[12px]" onClick={() => removeGroup(key)} aria-label={`Remove ${key} group from watchlist`}>
                                       ✕ Remove
                                     </Button>
                                   </span>
@@ -2223,7 +2223,7 @@ export default function Tune() {
                                   type="button" onClick={() => toggleBand('__singles__')} aria-expanded={openBands.has('__singles__')}
                                   className="flex items-center gap-1.5 font-bold cursor-pointer"
                                 >
-                                  <span aria-hidden="true" className="inline-block w-3 text-[10px]">{openBands.has('__singles__') ? '▾' : '▸'}</span>
+                                  <span aria-hidden="true" className="inline-block w-3 text-[12px]">{openBands.has('__singles__') ? '▾' : '▸'}</span>
                                   Singles
                                   <span className="font-normal text-[var(--color-text-sub)]">({singles.length})</span>
                                 </button>
@@ -2272,7 +2272,7 @@ export default function Tune() {
                     <div className="glass-inset rounded-[12px] p-3 mt-2">
                       <div className="flex flex-wrap items-center gap-1.5 mb-2">
                         <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter symbols…" className="max-w-[180px] !py-1 !min-h-0" />
-                        <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
+                        <span className="ml-auto text-[12px] text-[var(--color-text-sub)]">
                           {tree.total.toLocaleString()} instruments · tick "whole class"/"whole group" to add hundreds at once as ONE watchlist band
                         </span>
                       </div>
@@ -2308,7 +2308,7 @@ export default function Tune() {
                                   {cls.name}
                                   <span className="text-[var(--color-text-sub)] font-normal shrink-0">({cls.count})</span>
                                 </button>
-                                <label className="ml-auto flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer shrink-0" title={`Add every instrument in ${cls.name} (${cls.count}) as one watchlist band`}>
+                                <label className="ml-auto flex items-center gap-1 text-[12px] text-[var(--color-text-sub)] cursor-pointer shrink-0" title={`Add every instrument in ${cls.name} (${cls.count}) as one watchlist band`}>
                                   <input
                                     type="checkbox" checked={classSelected}
                                     onChange={e => (e.target.checked ? addGroup(cls.name, classSymbols) : removeGroup(cls.name))}
@@ -2335,7 +2335,7 @@ export default function Tune() {
                                             {cat.name}
                                             <span className="text-[var(--color-text-sub)] font-normal shrink-0">({cat.count})</span>
                                           </button>
-                                          <label className="ml-auto flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer shrink-0 pr-1">
+                                          <label className="ml-auto flex items-center gap-1 text-[12px] text-[var(--color-text-sub)] cursor-pointer shrink-0 pr-1">
                                             <input
                                               type="checkbox" checked={selected}
                                               onChange={e => (e.target.checked ? addGroup(key, cat.symbols) : removeGroup(key))}
@@ -2418,7 +2418,7 @@ export default function Tune() {
                           if (next.has(sym)) next.delete(sym); else next.add(sym)
                           return next
                         })}
-                        className={`rounded-[20px] border px-2 py-0.5 text-[11px] font-semibold cursor-pointer min-h-[28px] ${
+                        className={`rounded-[20px] border px-2 py-0.5 text-[12px] font-semibold cursor-pointer min-h-[28px] ${
                           on
                             ? 'bg-[var(--color-accent)] text-white border-transparent'
                             : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)] line-through'
@@ -2446,7 +2446,7 @@ export default function Tune() {
                             className="flex items-center gap-1 font-semibold text-[12px] cursor-pointer min-w-0 min-h-[28px] text-left"
                             title="Expand to pick individual symbols"
                           >
-                            <span aria-hidden="true" className="inline-block w-2.5 shrink-0 text-[10px]">{open ? '▾' : '▸'}</span>
+                            <span aria-hidden="true" className="inline-block w-2.5 shrink-0 text-[12px]">{open ? '▾' : '▸'}</span>
                             <span className="truncate">{key}</span>
                           </button>
                           <button
@@ -2458,7 +2458,7 @@ export default function Tune() {
                             <span className={`inline-block h-[16px] w-[16px] rounded-full bg-white shadow transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
                           </button>
                         </div>
-                        <span className="text-[11px] text-[var(--color-text-sub)]">
+                        <span className="text-[12px] text-[var(--color-text-sub)]">
                           testing {testing} of {names.length}{partial ? ' (some skipped)' : ''}
                         </span>
                         {open && <div className="mt-1 flex flex-wrap gap-1">{names.map(chip)}</div>}
@@ -2488,7 +2488,7 @@ export default function Tune() {
                           // stale tick can't ride along with another strategy
                           if (val !== 'fib_618_fade') setBtTouchFill(false)
                         }}
-                        className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                        className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     ))}
                   </span>
@@ -2560,7 +2560,7 @@ export default function Tune() {
                                 const pfNum = r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? 999 : null)
                                 return (
                                   <tr key={tf} className="border-t border-[var(--color-border)]">
-                                    <td className="pr-3 py-1.5 font-semibold">{tf}</td>
+                                    <td className="pr-3 py-1.5">{tf}</td>
                                     {r.error
                                       ? <td colSpan={12} className="text-[var(--color-warning-text)]">{r.error}</td>
                                       : <>
@@ -2597,7 +2597,7 @@ export default function Tune() {
                                           <VerdictBadge r={r} />
                                           {verdictFor(r)?.state !== 'go' && (
                                             <label
-                                              className="flex items-center gap-1 text-[11px] text-[var(--color-text-sub)] cursor-pointer"
+                                              className="flex items-center gap-1 text-[12px] text-[var(--color-text-sub)] cursor-pointer"
                                               title="Include this timeframe in Activate even though it did not fully pass — you accept the unproven risk"
                                             >
                                               <input

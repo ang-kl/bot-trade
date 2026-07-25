@@ -132,7 +132,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
                   <td className="py-1.5 pr-2" onClick={e => e.stopPropagation()}>
                     <input type="checkbox" checked={selected.has(r.symbol)} onChange={() => toggle(r.symbol)} aria-label={`Select ${r.symbol}`} />
                   </td>
-                  <td className="py-1.5 pr-2 font-semibold whitespace-nowrap">{r.symbol}</td>
+                  <td className="py-1.5 pr-2 whitespace-nowrap">{r.symbol}</td>
                   <td className="py-1.5 pr-2 whitespace-nowrap">
                     {r.advice ? <Badge tone={r.advice.tone}>{r.advice.label}</Badge> : <span className="text-[var(--color-text-sub)]">not scanned yet</span>}
                   </td>
@@ -145,7 +145,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
                 </tr>
                 {expanded === r.symbol && (
                   <tr className="border-b border-[var(--color-border)]">
-                    <td colSpan={5} className="py-2 px-2 text-[11px] text-[var(--color-text-sub)] bg-[var(--color-surface-2,rgba(127,127,127,0.06))]">
+                    <td colSpan={5} className="py-2 px-2 text-[12px] text-[var(--color-text-sub)] bg-[var(--color-surface-2,rgba(127,127,127,0.06))]">
                       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:hidden mb-1">
                         <span>Volatility</span><span>{r.atrPct != null ? `${r.atrPct.toFixed(2)}% · ${r.regimeType ?? '—'}` : '—'}</span>
                         <span>Watchlist</span><span>{r.onList ? 'on list' : 'not added'}</span>

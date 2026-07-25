@@ -49,7 +49,7 @@ function AnimatedNumber({ value, decimals = 2, className = '' }) {
 function Pill({ on, label, onClick }) {
   return (
     <button type="button" onClick={onClick}
-      className={`rounded-[2px] border px-[4px] py-[3px] text-[10px] cursor-pointer ${on
+      className={`rounded-[2px] border px-[4px] py-[3px] text-[12px] cursor-pointer ${on
         ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
         : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'}`}>
       {on ? label : label.toUpperCase()}
@@ -89,10 +89,10 @@ function Field({ label, value, onChange, pct = false, hint, placeholder = 'not s
               if (!Number.isFinite(n)) return
               onChange(pct ? n / 100 : n)
             }} />
-          {pct && <span className="text-[11px] text-[var(--color-text-sub)]">%</span>}
+          {pct && <span className="text-[12px] text-[var(--color-text-sub)]">%</span>}
         </span>
       </label>
-      {showHint && <p className="text-[10px] text-[var(--color-text-sub)] mt-0.5 leading-snug">{hint}</p>}
+      {showHint && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5 leading-snug">{hint}</p>}
     </div>
   )
 }
@@ -259,7 +259,7 @@ export default function Risk() {
           <div>
             <Field label="Account balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
               hint="The balance every % figure below is computed from." />
-            <div className="text-[10px] text-[var(--color-text-sub)] mt-0.5">
+            <div className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
               {data?.account?.balanceSource === 'broker'
                 ? `live from the broker (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}) — edits here override until the next sync`
                 : 'stored value — connect/refresh the broker for live truth'}
@@ -270,7 +270,7 @@ export default function Risk() {
           <div className="text-[12px]">
             <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
             <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
-            <span className="text-[11px] text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
+            <span className="text-[12px] text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
           </div>
           <div className="text-[12px]">
             <span className="text-[var(--color-text-sub)]">Account </span>
@@ -454,7 +454,7 @@ export default function Risk() {
                   save('vpo', () => agentPost('/actions/vpo-settings', { enabled: next }))
                 }} />
               </div>
-              <div className="text-[11px] text-[var(--color-text-sub)]">
+              <div className="text-[12px] text-[var(--color-text-sub)]">
                 VPO pairs: {data?.vpo?.config?.length ? data.vpo.config.map(c => `${c.symbol}·${c.key}`).join(', ') : 'none configured'} — set via /actions/vpo-settings; the sidecar's VPO_SYMBOLS env must match.
               </div>
             </div>
@@ -485,7 +485,7 @@ export default function Risk() {
           <Card data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example trade — bot-trade live</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
-            <div className="text-[11px] space-y-1 mt-2">
+            <div className="text-[12px] space-y-1 mt-2">
               <div>Sample: EURUSD long at {entry.toFixed(4)}, balance {fmt$(bal, 0)} USD.</div>
               <div>SL {sl.toFixed(4)} (min distance {Number(risk.minSLDistancePct) || 0.15}%) · TP {tp.toFixed(4)} ({Number(risk.minRR) || 1.5}R).</div>
               <div>Risk budget: <AnimatedNumber value={budget} className="font-semibold" />{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <AnimatedNumber value={lots} className="font-semibold" /> lots at ~<AnimatedNumber value={usdPerLot} />/lot.</div>
@@ -497,7 +497,7 @@ export default function Risk() {
           <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle>Example trade — cpp configuration</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} trigger={entry - slDist * 0.4} />
-            <div className="text-[11px] space-y-1 mt-2">
+            <div className="text-[12px] space-y-1 mt-2">
               <div>Same order arrives at the C++ engine as volume {cppVolumeUnits.toLocaleString()}:</div>
               <div>{guard.halt ? '✗ REJECTED — engine halted (kill switch on)' : '✓ not halted'}</div>
               <div>{guard.requireBracket !== false ? '✓ stop loss attached — passes bracket guard' : '⚠ bracket guard OFF — naked orders allowed'}</div>

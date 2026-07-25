@@ -86,7 +86,7 @@ export default function ScreenerChat({ open, onClose, onApply }) {
           ))}
           {busy && <div className="text-[var(--color-text-sub)]">Searching…</div>}
         </div>
-        {err && <div className="px-3 py-1 text-[11px] text-[var(--color-warning-text)]">{err}</div>}
+        {err && <div className="px-3 py-1 text-[12px] text-[var(--color-warning-text)]">{err}</div>}
         <div className="flex items-center gap-2 px-3 py-2 border-t border-[var(--color-border)]">
           <input
             type="text"
