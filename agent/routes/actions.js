@@ -247,6 +247,48 @@ export default function actionsRouter(db) {
   //     the row stops posing as a trade)
   // Deal windows are paged in 1-week chunks (cTrader API cap).
   // -----------------------------------------------------------------------
+  // POST /actions/import-broker-history — import cTrader's own deal history
+  // into broker_deals (owner 2026-07-25: "read historical trades"). Body:
+  // { days? } default 30, max 190. Idempotent on the broker's deal_id, so
+  // running it twice over the same window refreshes rather than duplicates.
+  // Deliberately does NOT write to `trades` — see the table comment in db.js:
+  // the performance stats count every closed trades row and filter on
+  // nothing, so importing manual/pre-bot fills there would silently move
+  // them.
+  router.post('/import-broker-history', async (req, res) => {
+    try {
+      const creds = getCtraderCreds(db)
+      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
+      const { host, clientId, clientSecret, accessToken, accountId } = creds
+      const [{ importBrokerHistory }, ws] = await Promise.all([
+        import('../services/broker-history-import.js'),
+        import('../lib/ctrader-ws.js'),
+      ])
+      const out = await importBrokerHistory(db, {
+        days: Number(req.body?.days) || 30,
+        deps: {
+          accountId,
+          getDeals: (t0, t1) => ws.wsGetDeals(host, clientId, clientSecret, accessToken, accountId, t0, t1),
+          getSymbolMeta: async (ids) => {
+            const meta = {}
+            const [byId, light] = await Promise.all([
+              ws.wsSymbolsByIds(host, clientId, clientSecret, accessToken, accountId, ids).catch(() => ({})),
+              ws.wsGetSymbolsList(host, clientId, clientSecret, accessToken, accountId).catch(() => ({})),
+            ])
+            for (const sm of (byId.symbol || [])) meta[sm.symbolId] = { ...sm }
+            for (const sm of (light.symbol || [])) {
+              if (sm.symbolName && ids.includes(sm.symbolId)) meta[sm.symbolId] = { ...(meta[sm.symbolId] || {}), symbolName: sm.symbolName }
+            }
+            return meta
+          },
+        },
+      })
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
   router.post('/reconcile-trades', async (req, res) => {
     try {
       const creds = getCtraderCreds(db)

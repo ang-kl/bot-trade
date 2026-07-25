@@ -447,6 +447,27 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/broker-deals — imported broker deal history (broker_deals),
+  // newest close first. ?limit= (default 200, max 1000) &unmatchedOnly=1 to
+  // show only fills the bot has no local trade row for.
+  router.get('/broker-deals', (req, res) => {
+    try {
+      const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200))
+      const only = String(req.query.unmatchedOnly || '') === '1'
+      const rows = db.prepare(`
+        SELECT * FROM broker_deals
+        ${only ? 'WHERE matched_trade_id IS NULL' : ''}
+        ORDER BY closed_at DESC LIMIT ?
+      `).all(limit)
+      const tot = db.prepare(
+        'SELECT COUNT(*) AS all_rows, SUM(matched_trade_id IS NULL) AS unmatched FROM broker_deals',
+      ).get()
+      res.json({ rows, total: tot.all_rows || 0, unmatched: tot.unmatched || 0 })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
