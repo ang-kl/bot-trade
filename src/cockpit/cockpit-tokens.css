@@ -1,0 +1,18 @@
+/* Trade Cockpit — tokens copied EXACTLY from BUILD-ORDER.md §2.
+   DEVIATION (reported, not silent): the spec writes these on :root; inside the
+   bot-trade app that would clobber the host page's own custom properties, so
+   the identical declarations are scoped to the cockpit root element (.tc-root)
+   and its theme attribute. Every value is verbatim. */
+.tc-root{--bg:#060913;--gl:rgba(18,24,46,.62);--gls:rgba(10,14,28,.9);--gbd:rgba(140,165,255,.22);--edg:rgba(90,110,200,.24);--acc:#4f8cff;--acs:rgba(79,140,255,.14);--up:#4f8cff;--dn:#ff4d6d;--dns:rgba(255,77,109,.12);--tx:#e8edfb;--sb:#9aa8cc;--mu:#6b7899;--vio:#a855f7;--wrn:#ffc466;--gsh:0 8px 40px rgba(0,0,0,.5)}
+.tc-root[data-theme="light"]{--bg:#eef1fb;--gl:rgba(255,255,255,.66);--gls:rgba(248,250,255,.92);--gbd:rgba(120,140,200,.35);--edg:rgba(100,120,190,.26);--acc:#2b5cff;--acs:rgba(59,108,255,.12);--up:#2b5cff;--dn:#e11d48;--dns:rgba(225,29,72,.1);--tx:#131a2e;--sb:#47536f;--mu:#5a6785;--vio:#7c3aed;--wrn:#a3510a;--gsh:0 8px 32px rgba(60,80,180,.16)}
+
+/* BUILD-ORDER §3 — families + automatic mono binding (scoped to the cockpit) */
+.tc-root{font-family:'IBM Plex Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;color:var(--tx)}
+.tc-root [style*='tabular-nums']{font-family:'IBM Plex Mono','IBM Plex Sans',monospace;letter-spacing:-.01em}
+
+/* Reference (Canvas.dc.html) shared chrome */
+@keyframes tc-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.tc-root a{color:var(--acc)}.tc-root a:hover{color:var(--vio)}
+
+/* Backdrop — BUILD-ORDER §4 */
+.tc-backdrop{position:fixed;inset:0;z-index:60;background:rgba(4,7,16,.62);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center}

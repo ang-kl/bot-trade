@@ -24,6 +24,7 @@ import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
 import { dateTimeParts, nextOpenLabel, priceDp, toMs } from '../lib/std-trade-rows.js'
 import { stratShort } from '../lib/strategy-labels.js'
+import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 
 // Sort accessors per column key. null/undefined always sorts LAST in either
 // direction so empty cells never float above real data.
@@ -217,7 +218,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       )}
                       {onSymbolClick
                         ? <button type="button" className="font-bold cursor-pointer underline-offset-2 hover:underline" onClick={() => onSymbolClick(r.symbol)}>{r.symbol}</button>
-                        : r.symbol}
+                        : (
+                          // symbol-click-spec §1: every symbol is a cockpit
+                          // target by default; explicit onSymbolClick callers
+                          // (Desk) keep their existing behaviour.
+                          <SymbolTarget symbol={r.symbol} positionId={r.id} source="std-trade-table">
+                            <span className="font-bold">{r.symbol}</span>
+                          </SymbolTarget>
+                        )}
                       {mh && mh.open === false && mh.next_open_at && (
                         <span className="block text-[9px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
                           {nextOpenLabel(mh.next_open_at)}
