@@ -403,3 +403,56 @@ Staging gets: its own `AGENT_SECRET`/`EXEC_SECRET`, its own Telegram bot token (
 ---
 
 *End of plan. No application code was modified. Awaiting `!!`.*
+
+---
+
+## Staging soak runbook — DB persistence (added 2026-07-25)
+
+The M4 soak needs staging's SQLite to survive deploys, or nothing that depends
+on accumulated state (trade attribution, veto patterns, stop-trigger behaviour,
+per-account P&L) can be demonstrated.
+
+**Read the state, don't infer it.** `GET /health` reports:
+
+| Field | Meaning |
+|---|---|
+| `dbPath` | the path the process actually resolved |
+| `dbPersistent` | `true` only when `DB_PATH` is set — `false` means the DB is in the container filesystem |
+| `dbSize` | bytes, or **`null`** when the size could not be read. `null` is "unknown", NOT "empty" |
+
+`dbSize` previously defaulted to `0` on a failed `statSync`, which reads
+identically to an empty database. That is how a soak digest came to report the
+DB was being wiped on every redeploy when it was not — the account rows created
+2026-07-24T06:34Z were still present after roughly a dozen deploys the next day.
+Check `dbPersistent` and `dbPath`, not a zero.
+
+**If `dbPersistent` is `false`, attach a volume** (Railway dashboard — no API
+token is available to the agent sandbox, so this is an operator action):
+
+1. Railway → the `bot-trade-staging` service → **Variables** → add
+   `DB_PATH=/data/agent.db`
+2. Same service → **Settings → Volumes** → **New Volume**, mount path `/data`
+3. Redeploy. The agent already logs a loud boot warning when `DB_PATH` is
+   unset (`agent/index.js`), so the log line disappearing is the confirmation.
+4. Verify: `GET /health` → `dbPersistent: true`, `dbPath: /data/agent.db`,
+   `dbSize` a real number.
+
+**One-time cost:** the volume starts empty, so the first deploy after attaching
+it loses whatever is currently in the container DB (the account registry and
+the arming state below). Re-seed the registry before counting soak days.
+
+### Arming state the soak depends on
+
+Verified live on staging 2026-07-25: `armed: true`, `autotrade_enabled: true`,
+`autotrade_scope: all`, 7 symbols enabled (BTCUSD, EURUSD, GBPUSD, USDJPY,
+XAUUSD, NAS100, US30), and 2 of 10 strategies trade-armed in the stage matrix —
+`fib_618_fade` and `rsi2_reversion`. Everything else is `trade: false`.
+
+So the trio IS armed; zero trades on 25 Jul is the weekend, not a gate. This
+state lives in the DB, which is why it must survive deploys — and why it must
+be re-checked after a volume is attached.
+
+Note the `rsi` filter is `trade: true` but `scan: false`. It is inert rather
+than harmful: `tradeStageGate` only blocks on a filter that FAILED at scan
+time, and a filter that never runs at scan can never appear in
+`filters_failed`. Worth tidying, not urgent.

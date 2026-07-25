@@ -269,12 +269,18 @@ app.get('/icon.png', (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get('/health', (_req, res) => {
-  let dbSize = 0;
+  // dbSize used to default to 0 when statSync threw — which is how a soak
+  // digest came to report "dbSize 0" and conclude the database was being wiped
+  // on every redeploy, when in fact the file simply was not at the path this
+  // handler resolved (relative './agent.db' against the process cwd). An
+  // unknown size now reports null, and the resolved path plus whether it is on
+  // a configured volume are reported alongside, so persistence is a fact you
+  // can read rather than something to infer from a zero.
+  const resolvedPath = DB_PATH || './agent.db';
+  let dbSize = null;
   try {
-    const resolvedPath = DB_PATH || './agent.db';
-    const stat = fs.statSync(resolvedPath);
-    dbSize = stat.size;
-  } catch { /* non-fatal */ }
+    dbSize = fs.statSync(resolvedPath).size;
+  } catch { /* leave null — unknown, not empty */ }
 
   const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
   const lastError = getState(db, 'last_error')
@@ -311,7 +317,10 @@ app.get('/health', (_req, res) => {
     lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
     lastScanMs: Number(getState(db, 'last_scan_ms') || 0),
     dbSize,
-    dbSizeMB: Number((dbSize / 1048576).toFixed(2)),
+    dbSizeMB: dbSize == null ? null : Math.round((dbSize / 1048576) * 100) / 100,
+    dbPath: resolvedPath,
+    // false = the DB lives in the container filesystem; a rebuild loses it.
+    dbPersistent: Boolean(DB_PATH),
     errorsToday,
     lastError: lastError || null,
     circuitBreaker: circuitBreaker || null,
