@@ -517,7 +517,7 @@ export default function Trade() {
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
             <table className="std-cols w-full text-[13px]">
-              <thead className="text-left text-[var(--color-text-sub)]">
+              <thead>
                 <tr>
                   <th aria-sort={sigSort.ariaSort('symbol')} className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
                   <th aria-sort={sigSort.ariaSort('strategy')} className="pr-3">{sigSort.sortBtn('strategy', 'Strategy')}</th>

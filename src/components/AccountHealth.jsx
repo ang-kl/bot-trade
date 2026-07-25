@@ -65,9 +65,9 @@ export default function AccountHealth({ acct }) {
         <table className="w-full text-[12px]">
           <thead>
             <tr className="text-left text-[var(--color-text-sub)]">
-              <th className="font-medium pb-1 pr-3">Metric</th>
-              <th className="font-medium pb-1 pr-3">Amount</th>
-              <th className="font-medium pb-1">% of balance</th>
+              <th className="pb-1 pr-3">Metric</th>
+              <th className="pb-1 pr-3">Amount</th>
+              <th className="pb-1">% of balance</th>
             </tr>
           </thead>
           <tbody>

@@ -280,7 +280,7 @@ export function BalanceInOut({ inModal = false }) {
             render={() => <BalanceInOut inModal />} />
         )}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
+      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '120px 150px 110px 130px 1fr 110px 70px', gap: 8, borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
         <span>Date</span><span>Time (UTC · AEST)</span><span>Type</span><span>Account</span><span>Counterparty / note</span><span style={{ textAlign: 'right' }}>Amount · ccy</span><span style={{ textAlign: 'right' }}>Status</span>
       </div>
       <span style={{ fontSize: 12, color: MU, padding: '4px 0' }}>

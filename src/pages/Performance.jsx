@@ -284,7 +284,7 @@ function GradientBody({ grid, label, cols, rows, pad, foot, groups = null, colW 
             ))}
           </div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: template, gap: 2, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
+        <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: template, gap: 2, paddingBottom: 2 }}>
           <span>{label}</span>
           {cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
         </div>
@@ -337,7 +337,7 @@ function FxBandsBody({ fxBands }) {
 function StratMxBody({ stratMx }) {
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 3 }}>
+      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 3 }}>
         <span>Strategy</span>
         {MARKET_COLS.map(m => <span key={m.key}>{m.label}</span>)}
         <span>Net</span><span>Edge</span>
@@ -358,7 +358,7 @@ function StratMxBody({ stratMx }) {
 function CryptoBody({ crypto }) {
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
+      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Live price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
       </div>
       {crypto.rows.map(c2 => (
@@ -407,7 +407,7 @@ function OpenTableBody({ rows }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <div ref={animRef} style={{ minWidth: 560 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
+      <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>Vol</span><span></span><span>SL / TP away</span>
       </div>
       {rows.map(p2 => (
@@ -530,7 +530,7 @@ function TodayHourlyBody({ rows }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <div ref={animRef} style={{ minWidth: 420 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
+        <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
         {rows.map(r => (
@@ -601,7 +601,7 @@ function SessionStatsBody({ stats }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <div style={{ minWidth: 700 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
+        <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>+$</span><span style={{ textAlign: 'right' }}>−$</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>
         </div>
         {rows.map(s => (
@@ -706,14 +706,14 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
         <div className="overflow-x-auto mt-1.5">
           <table className="t-sticky-col w-full text-left tabular-nums min-w-[820px]">
             <thead>
-              <tr className={`border-b border-[var(--color-border)] text-[12px] uppercase tracking-wide ${SUB}`}>
-                <th className="py-1 pr-2 font-bold">Window</th>
-                <th className="py-1 px-2 font-bold text-right">Carry in</th>
-                <th className="py-1 px-2 font-bold text-right">Net</th>
-                <th className="py-1 px-2 font-bold text-right">Carry out</th>
-                <th className="py-1 px-2 font-bold text-right">Trades · win</th>
-                <th className="py-1 px-2 font-bold text-right">TP/SL · edge</th>
-                {MARKET_COLS.map(m => <th key={m.key} className="py-1 px-2 font-bold text-right">{m.label}</th>)}
+              <tr className="border-b border-[var(--color-border)]">
+                <th className="py-1 pr-2">Window</th>
+                <th className="py-1 px-2 text-right">Carry in</th>
+                <th className="py-1 px-2 text-right">Net</th>
+                <th className="py-1 px-2 text-right">Carry out</th>
+                <th className="py-1 px-2 text-right">Trades · win</th>
+                <th className="py-1 px-2 text-right">TP/SL · edge</th>
+                {MARKET_COLS.map(m => <th key={m.key} className="py-1 px-2 text-right">{m.label}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -1642,7 +1642,7 @@ export default function Performance() {
                   ))}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
+              <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
                 <span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
               </div>
               {crypto.rows.map(c2 => (
@@ -1707,7 +1707,7 @@ export default function Performance() {
             {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
-              <div style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.03em', color: P_MU }}>
+              <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Window</span>
                 {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
               </div>

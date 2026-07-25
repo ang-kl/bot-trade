@@ -150,32 +150,32 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     <div>
       <div className="overflow-x-auto">
         <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
-          <thead className="text-center text-[var(--color-text-sub)]">
+          <thead>
             <tr className="border-b border-[var(--color-border)]">
-              <th aria-sort={ariaSort('time')} className={`py-1 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
-              <th aria-sort={ariaSort('symbol')} className={`py-1 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
-              {anyUpdated && <th aria-sort={ariaSort('updatedAt')} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn('updatedAt', 'Updated')}</th>}
-              {anyDuration && <th aria-sort={ariaSort('durationMs')} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn('durationMs', 'Duration')}</th>}
-              <th aria-sort={ariaSort('result')} className="py-1 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
-              <th aria-sort={ariaSort('reason')} className="py-1 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
-              <th aria-sort={ariaSort('source')} className="py-1 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
-              <th aria-sort={ariaSort('side')} className="py-1 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
-              <th aria-sort={ariaSort('qty')} className="py-1 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
-              <th aria-sort={ariaSort('entry')} className="py-1 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
-              {anyRef && <th aria-sort={ariaSort('price')} className="py-1 pr-3 font-semibold whitespace-nowrap" title="live price while open, exit price once closed">{sortBtn('price', 'Price')}</th>}
-              <th aria-sort={ariaSort('sl')} className="py-1 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
-              <th aria-sort={ariaSort('tp')} className="py-1 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
-              <th aria-sort={ariaSort('pnl')} className="py-1 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
-              {anyRef && <th className="py-1 pr-3 font-semibold">To TP/SL</th>}
+              <th aria-sort={ariaSort('time')} className={`py-1 pr-2 ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
+              <th aria-sort={ariaSort('symbol')} className={`py-1 pr-3 ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
+              {anyUpdated && <th aria-sort={ariaSort('updatedAt')} className="py-1 pr-3 whitespace-nowrap">{sortBtn('updatedAt', 'Updated')}</th>}
+              {anyDuration && <th aria-sort={ariaSort('durationMs')} className="py-1 pr-3 whitespace-nowrap">{sortBtn('durationMs', 'Duration')}</th>}
+              <th aria-sort={ariaSort('result')} className="py-1 pr-3">{sortBtn('result', 'Result')}</th>
+              <th aria-sort={ariaSort('reason')} className="py-1 pr-3">{sortBtn('reason', 'Reason')}</th>
+              <th aria-sort={ariaSort('source')} className="py-1 pr-3">{sortBtn('source', 'Source')}</th>
+              <th aria-sort={ariaSort('side')} className="py-1 pr-3">{sortBtn('side', 'Side')}</th>
+              <th aria-sort={ariaSort('qty')} className="py-1 pr-3">{sortBtn('qty', 'Qty')}</th>
+              <th aria-sort={ariaSort('entry')} className="py-1 pr-3">{sortBtn('entry', 'Entry')}</th>
+              {anyRef && <th aria-sort={ariaSort('price')} className="py-1 pr-3 whitespace-nowrap" title="live price while open, exit price once closed">{sortBtn('price', 'Price')}</th>}
+              <th aria-sort={ariaSort('sl')} className="py-1 pr-3">{sortBtn('sl', 'Stop Loss')}</th>
+              <th aria-sort={ariaSort('tp')} className="py-1 pr-3">{sortBtn('tp', 'Take Profit')}</th>
+              <th aria-sort={ariaSort('pnl')} className="py-1 pr-3">{sortBtn('pnl', 'P&L')}</th>
+              {anyRef && <th className="py-1 pr-3">To TP/SL</th>}
               {/* Absolute price distances (owner: entry $1, now $1.20, TP $2,
                   SL $0.80 → "to TP" 0.80 and "to SL" (0.40)) — shown whenever
                   a reference price + level exist: the LIVE price while open,
                   or the recorded EXIT price once closed (owner: "you can
                   recompute when the live ends"). */}
-              {anyRef && <th className="py-1 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the take profit">📈 to TP</th>}
-              {anyRef && <th className="py-1 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
-              {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
-              <th className="py-1 font-semibold" aria-label="Actions" />
+              {anyRef && <th className="py-1 pr-3 whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the take profit">📈 to TP</th>}
+              {anyRef && <th className="py-1 pr-3 whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
+              {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1 pr-3 whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
+              <th className="py-1" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>

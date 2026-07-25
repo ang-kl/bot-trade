@@ -237,24 +237,56 @@ Rules:
   outer box per row.
 - Row padding `1px 0`. Column gap `6`.
 
-### Column heads
+### Column heads — one rule, no exceptions
 
-Styled globally by an unlayered element selector (which beats Tailwind's
-layered utilities):
+Every header in the app resolves to the SAME five properties. There are two
+implementations because the app has two kinds of table, and they are kept
+identical on purpose.
+
+**Real `<table>`** — the unlayered element selector, which beats Tailwind's
+layered utilities, so a stray `font-bold` on a `<th>` cannot change anything:
 
 ```css
 thead th {
+  font-family: inherit;                            /* Inter */
   background: var(--table-head-bg);
   color: var(--table-head-fg);
-  border-right: 1px solid var(--table-head-rule);
+  border-right: 1px solid var(--table-head-rule);  /* none on last cell */
   padding: 0 8px;          /* → 0 3px at ≤1279px */
   font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
   text-align: center;
 }
 ```
 
-Head text is **uppercase, `12px`, weight `600`, letter-spacing `.04em`**,
-centred in the cell. Never a coloured/branded head fill — system grey only.
+**CSS-grid tables** (most of the Performance page) get `.t-gridhead` on the
+header row, which declares the same font, size, weight, case, colour and
+background, with `border-right` on each child except the last. No horizontal
+padding there: the grid templates are tuned to the pixel and the existing
+`gap` already separates the cells the rule divides.
+
+**A header row must not declare font, size, weight, case or colour itself.**
+Inline styles beat the class and per-`th` utilities confuse the reader about
+where the value comes from — an audit found three different header weights in
+use (700 in the ledger, 600 in most tables, 500 in a few) purely from local
+overrides. If a header needs to look different, change the rule, not one table.
+
+Resolved values, all three themes:
+
+| | Light | Dark | Sepia |
+|---|---|---|---|
+| Font | Inter → `system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif` | same | same |
+| Size / weight | 12px / 600, uppercase, `.04em` | same | same |
+| Text colour | `#3c3c43` | `#ebebf5` | `#4a3d26` |
+| Background | `#f2f2f7` | `#1c1c1e` | `#efe7d8` |
+| Cell border | `rgba(60,60,67,.29)` | `rgba(235,235,245,.30)` | `rgba(74,61,38,.28)` |
+
+Never a coloured or branded head fill — Apple system grey only. The declared
+12px renders at 13.2px wherever the viewport is ≥1153px, because of
+`html { zoom: 1.1 }`; iPad mini never crosses that line in either
+orientation, a full-size iPad does in landscape.
 
 At `≤1279px` the padding drops to `3px` per side. On the 12-column ledger that
 8 px→3 px change recovers ~120 px of pure padding, which is what let the table

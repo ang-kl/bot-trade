@@ -52,15 +52,15 @@ export default function StrategyInsights() {
           <table className="w-full text-[12px]">
             <thead>
               <tr className="text-left text-[var(--color-text-sub)]">
-                <th className="font-medium pb-1 pr-3">Strategy</th>
-                <th className="font-medium pb-1 pr-3">Trades</th>
-                <th className="font-medium pb-1 pr-3">W / L</th>
-                <th className="font-medium pb-1 pr-3">Win rate</th>
-                <th className="font-medium pb-1 pr-3">Planned R:R</th>
-                <th className="font-medium pb-1 pr-3">Needs</th>
-                <th className="font-medium pb-1 pr-3">Edge</th>
-                <th className="font-medium pb-1 pr-3">Avg win / loss</th>
-                <th className="font-medium pb-1">Net P&amp;L</th>
+                <th className="pb-1 pr-3">Strategy</th>
+                <th className="pb-1 pr-3">Trades</th>
+                <th className="pb-1 pr-3">W / L</th>
+                <th className="pb-1 pr-3">Win rate</th>
+                <th className="pb-1 pr-3">Planned R:R</th>
+                <th className="pb-1 pr-3">Needs</th>
+                <th className="pb-1 pr-3">Edge</th>
+                <th className="pb-1 pr-3">Avg win / loss</th>
+                <th className="pb-1">Net P&amp;L</th>
               </tr>
             </thead>
             <tbody>

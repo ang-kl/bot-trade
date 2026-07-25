@@ -23,7 +23,7 @@ import { screenerAdvice } from '../lib/screener-advice.js'
 function SortHeader({ label, col, sort, onSort, className = '' }) {
   const active = sort.col === col
   return (
-    <th className={`py-1.5 pr-2 font-semibold text-left ${className}`}>
+    <th className={`py-1.5 pr-2 text-left ${className}`}>
       <button type="button" className="cursor-pointer hover:underline whitespace-nowrap" onClick={() => onSort(col)}>
         {label}{active ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
       </button>
@@ -114,7 +114,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[12px] tabular-nums">
-          <thead className="text-[var(--color-text-sub)]">
+          <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th className="py-1.5 pr-2 w-6">
                 <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />

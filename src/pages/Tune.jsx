@@ -101,8 +101,8 @@ function TimeframePerformance({ timeframes }) {
             <table className="std-cols min-w-full text-[12px]">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
-                  <th className="py-1 pr-3 font-semibold">Timeframe</th>
-                  {windows.map(w => <th key={w} className="py-1 pr-3 font-semibold">{w}</th>)}
+                  <th className="py-1 pr-3">Timeframe</th>
+                  {windows.map(w => <th key={w} className="py-1 pr-3">{w}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -177,9 +177,9 @@ function StrategyTfPerformance() {
               <table className="std-cols w-auto text-[12px] tabular-nums">
                 <thead>
                   <tr className="text-left text-[var(--color-text-sub)]">
-                    <th className="py-0.5 pr-3 font-semibold">Strategy</th>
-                    {grid.timeframes.map(tf => <th key={tf} className="py-0.5 px-2 font-semibold text-right whitespace-nowrap">{tf}</th>)}
-                    <th className="py-0.5 pl-3 font-semibold text-right">Total</th>
+                    <th className="py-0.5 pr-3">Strategy</th>
+                    {grid.timeframes.map(tf => <th key={tf} className="py-0.5 px-2 text-right whitespace-nowrap">{tf}</th>)}
+                    <th className="py-0.5 pl-3 text-right">Total</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -354,9 +354,9 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
             <table className="std-cols w-auto text-[12px]">
               <thead>
                 <tr className="text-left text-[var(--color-text-sub)]">
-                  <th className="py-0.5 pr-3 font-semibold">Strategy</th>
+                  <th className="py-0.5 pr-3">Strategy</th>
                   {columns.map(c => (
-                    <th key={c.key} className="py-0.5 px-2 font-semibold text-center whitespace-nowrap">{c.label}</th>
+                    <th key={c.key} className="py-0.5 px-2 text-center whitespace-nowrap">{c.label}</th>
                   ))}
                 </tr>
               </thead>
@@ -1441,14 +1441,14 @@ export default function Tune() {
               </span>
               <div className="overflow-x-auto mt-1">
                 <table className="std-cols text-[12px] tabular-nums">
-                  <thead className="text-left text-[var(--color-text-sub)]">
+                  <thead>
                     <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3 font-semibold">Class</th>
-                      <th className="py-1 pr-3 font-semibold" title="Move stop to breakeven at this R">BE @R</th>
-                      <th className="py-1 pr-3 font-semibold" title="Take half off at this R">Partial @R</th>
-                      <th className="py-1 pr-3 font-semibold" title="Start trailing the runner at this R">Runner @R</th>
-                      <th className="py-1 pr-3 font-semibold" title="Trail this many R behind price">Trail R</th>
-                      <th className="py-1 font-semibold" title="Close the WHOLE position at this R — recycles margin out of big winners into new setups">Bank @R</th>
+                      <th className="py-1 pr-3">Class</th>
+                      <th className="py-1 pr-3" title="Move stop to breakeven at this R">BE @R</th>
+                      <th className="py-1 pr-3" title="Take half off at this R">Partial @R</th>
+                      <th className="py-1 pr-3" title="Start trailing the runner at this R">Runner @R</th>
+                      <th className="py-1 pr-3" title="Trail this many R behind price">Trail R</th>
+                      <th className="py-1" title="Close the WHOLE position at this R — recycles margin out of big winners into new setups">Bank @R</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2165,15 +2165,15 @@ export default function Tune() {
                   <table className="std-cols min-w-full text-[13px]">
                     <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
                       <tr className="text-left text-[12px] text-[var(--color-text-sub)]">
-                        <th className="pr-2 pb-1 font-semibold">Symbol</th>
-                        <th className="pr-2 pb-1 font-semibold">Type</th>
-                        <th className="pr-2 pb-1 font-semibold">Scanned</th>
-                        <th className="pr-2 pb-1 font-semibold">Live signal</th>
-                        <th className="pr-2 pb-1 font-semibold text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
-                        <th className="pr-2 pb-1 font-semibold" title="LIVE closed trades on this account: count · net P&L · win rate. LOSER = net negative after enough sample — consider disabling">Live results</th>
-                        <th className="pr-2 pb-1 font-semibold" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
-                        <th className="pr-2 pb-1 font-semibold" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
-                        <th className="pb-1 font-semibold">Actions</th>
+                        <th className="pr-2 pb-1">Symbol</th>
+                        <th className="pr-2 pb-1">Type</th>
+                        <th className="pr-2 pb-1">Scanned</th>
+                        <th className="pr-2 pb-1">Live signal</th>
+                        <th className="pr-2 pb-1 text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
+                        <th className="pr-2 pb-1" title="LIVE closed trades on this account: count · net P&L · win rate. LOSER = net negative after enough sample — consider disabling">Live results</th>
+                        <th className="pr-2 pb-1" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
+                        <th className="pr-2 pb-1" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
+                        <th className="pb-1">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2538,7 +2538,7 @@ export default function Tune() {
                       : (
                         <div className="overflow-x-auto">
                           <table className="std-cols w-full text-[13px]">
-                            <thead className="text-left text-[var(--color-text-sub)]">
+                            <thead>
                               <tr>
                                 {BT_COLS.map(c => (
                                   <th

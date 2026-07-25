@@ -916,14 +916,14 @@ export default function Desk() {
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
                 <table className="std-cols w-full text-[12px] tabular-nums">
-                  <thead className="text-left text-[var(--color-text-sub)]">
+                  <thead>
                     <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3 font-semibold">Purpose</th>
-                      <th className="py-1 pr-3 font-semibold">Model</th>
-                      <th className="py-1 pr-3 font-semibold text-right">Calls</th>
-                      <th className="py-1 pr-3 font-semibold text-right">In</th>
-                      <th className="py-1 pr-3 font-semibold text-right">Out</th>
-                      <th className="py-1 font-semibold text-right">Est. cost (30d)</th>
+                      <th className="py-1 pr-3">Purpose</th>
+                      <th className="py-1 pr-3">Model</th>
+                      <th className="py-1 pr-3 text-right">Calls</th>
+                      <th className="py-1 pr-3 text-right">In</th>
+                      <th className="py-1 pr-3 text-right">Out</th>
+                      <th className="py-1 text-right">Est. cost (30d)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1011,17 +1011,17 @@ export default function Desk() {
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
                 <table className="std-cols w-full text-[12px] tabular-nums">
-                  <thead className="text-left text-[var(--color-text-sub)]">
+                  <thead>
                     <tr className="border-b border-[var(--color-border)]">
-                      <th aria-sort={edgeSort.ariaSort('strategy')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
-                      <th className="py-1 pr-3 font-semibold">Status</th>
-                      <th aria-sort={edgeSort.ariaSort('net')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('net', 'Net P&L')}</th>
-                      <th aria-sort={edgeSort.ariaSort('win')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('win', 'Win %')}</th>
-                      <th aria-sort={edgeSort.ariaSort('trades')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
-                      <th aria-sort={edgeSort.ariaSort('streak')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('streak', 'Streak')}</th>
-                      <th aria-sort={edgeSort.ariaSort('trend')} className="py-1 pr-3 font-semibold">{edgeSort.sortBtn('trend', 'Trend')}</th>
-                      <th aria-sort={edgeSort.ariaSort('recent')} className="py-1 pr-3 font-semibold text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
-                      <th aria-sort={edgeSort.ariaSort('delta')} className="py-1 font-semibold text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
+                      <th aria-sort={edgeSort.ariaSort('strategy')} className="py-1 pr-3">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
+                      <th className="py-1 pr-3">Status</th>
+                      <th aria-sort={edgeSort.ariaSort('net')} className="py-1 pr-3 text-right">{edgeSort.sortBtn('net', 'Net P&L')}</th>
+                      <th aria-sort={edgeSort.ariaSort('win')} className="py-1 pr-3 text-right">{edgeSort.sortBtn('win', 'Win %')}</th>
+                      <th aria-sort={edgeSort.ariaSort('trades')} className="py-1 pr-3 text-right">{edgeSort.sortBtn('trades', 'Trades')}</th>
+                      <th aria-sort={edgeSort.ariaSort('streak')} className="py-1 pr-3">{edgeSort.sortBtn('streak', 'Streak')}</th>
+                      <th aria-sort={edgeSort.ariaSort('trend')} className="py-1 pr-3">{edgeSort.sortBtn('trend', 'Trend')}</th>
+                      <th aria-sort={edgeSort.ariaSort('recent')} className="py-1 pr-3 text-right">{edgeSort.sortBtn('recent', 'Recent exp.')}</th>
+                      <th aria-sort={edgeSort.ariaSort('delta')} className="py-1 text-right">{edgeSort.sortBtn('delta', 'Δ')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1105,13 +1105,13 @@ export default function Desk() {
                   )}
                   <div className="overflow-x-auto">
                     <table className="std-cols w-full text-[12px] tabular-nums">
-                      <thead className="text-left text-[var(--color-text-sub)]">
+                      <thead>
                         <tr className="border-b border-[var(--color-border)]">
-                          <th aria-sort={baseSort.ariaSort('combo')} className="py-1 pr-3 font-semibold">{baseSort.sortBtn('combo', 'Combo')}</th>
-                          <th aria-sort={baseSort.ariaSort('trades')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('trades', 'Trades')}</th>
-                          <th aria-sort={baseSort.ariaSort('pf')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('pf', 'PF')}</th>
-                          <th aria-sort={baseSort.ariaSort('win')} className="py-1 pr-3 font-semibold text-right">{baseSort.sortBtn('win', 'Win %')}</th>
-                          <th aria-sort={baseSort.ariaSort('total')} className="py-1 font-semibold text-right">{baseSort.sortBtn('total', 'Total %')}</th>
+                          <th aria-sort={baseSort.ariaSort('combo')} className="py-1 pr-3">{baseSort.sortBtn('combo', 'Combo')}</th>
+                          <th aria-sort={baseSort.ariaSort('trades')} className="py-1 pr-3 text-right">{baseSort.sortBtn('trades', 'Trades')}</th>
+                          <th aria-sort={baseSort.ariaSort('pf')} className="py-1 pr-3 text-right">{baseSort.sortBtn('pf', 'PF')}</th>
+                          <th aria-sort={baseSort.ariaSort('win')} className="py-1 pr-3 text-right">{baseSort.sortBtn('win', 'Win %')}</th>
+                          <th aria-sort={baseSort.ariaSort('total')} className="py-1 text-right">{baseSort.sortBtn('total', 'Total %')}</th>
                         </tr>
                       </thead>
                       <tbody>

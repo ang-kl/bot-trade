@@ -335,7 +335,7 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
 
       {/* Audit table — exact grid + cell styles. */}
       <div style={{ ...glass, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 1, overflowX: 'auto' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 3 }}>
+        <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, borderBottom: `1px solid ${EDG}`, paddingBottom: 3 }}>
           <span>Date · in→out</span><span>Symbol · side</span><span>Strategy</span><span>Lab</span><span>Brdg</span><span>Market path</span><span>Close</span><span>Early-stop reasoning / audit note</span><span style={{ textAlign: 'right' }}>P&amp;L</span>
         </div>
         {rows.length === 0 && <span style={{ fontSize: 12, color: SB, padding: '6px 0' }}>No closed trades in this bucket yet — rows appear from the first completed round-trip.</span>}

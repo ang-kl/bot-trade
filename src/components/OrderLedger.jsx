@@ -174,7 +174,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
     <thead>
       <tr className="text-left text-[var(--color-text-sub)]">
         {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
-          <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
+          <th key={`${h}-${i}`} className="py-1.5 pr-3 whitespace-nowrap">{h}</th>
         ))}
       </tr>
     </thead>
@@ -184,9 +184,9 @@ export default function OrderLedger({ orders, onChanged = null }) {
   const queuedHead = (
     <thead>
       <tr className="text-left text-[var(--color-text-sub)]">
-        <th className="py-1.5 pr-2 font-semibold whitespace-nowrap"></th>
+        <th className="py-1.5 pr-2 whitespace-nowrap"></th>
         {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
-          <th key={`${h}-${i}`} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{h}</th>
+          <th key={`${h}-${i}`} className="py-1.5 pr-3 whitespace-nowrap">{h}</th>
         ))}
       </tr>
     </thead>
