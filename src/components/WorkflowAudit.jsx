@@ -66,10 +66,19 @@ function shape(trades, pmByTrade) {
       const close = closeOf(t.close_reason)
       let kind = close === 'TP hit' ? 'tp' : close === 'Trail stop' ? 'trail' : close === 'SL hit' ? 'sl'
         : (JUSTIFIED_RE.test(String(t.close_reason || '').toLowerCase()) || pm?.classification === 'time_cap') ? 'early-ok' : 'early-bad'
+      // Owner (2026-07-25, PDF review): "so many with same reason" — the
+      // reconciler stamps the SAME broker-close sentence on every trade the
+      // bot didn't close, and printing it 30 times taught nothing and tripled
+      // the page count. The boilerplate is stripped here and stated ONCE in
+      // the footnote; the row keeps only what distinguishes this trade (the
+      // postmortem verdict + any non-boilerplate reasoning).
+      const reason = String(t.close_reason || '')
+        .replace(/closed at the broker \(manual close or broker-?side SL\/TP fill\)\s*(—|-)?\s*not closed by the bot\.?/i, '')
+        .replace(/^\s*[·—-]\s*|\s*[·—-]\s*$/g, '').trim()
       const note = [
-        t.close_reason || 'PREMATURE: manual close with no logged event or reasoning — violates Phase-3 "circuit breaker only"',
+        reason || (t.close_reason ? null : 'PREMATURE: manual close with no logged event or reasoning — violates Phase-3 "circuit breaker only"'),
         pm?.classification ? `postmortem: ${pm.classification}` : null,
-      ].filter(Boolean).join(' · ')
+      ].filter(Boolean).join(' · ') || 'broker-closed — no further detail recorded'
       const ft = (ms) => { const x = new Date(ms); return String(x.getUTCHours()).padStart(2, '0') + ':' + String(x.getUTCMinutes()).padStart(2, '0') }
       const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
       const d = closedMs != null ? new Date(closedMs) : null
@@ -108,8 +117,17 @@ function node(k, i, state, segT, segTCol) {
   }
 }
 
+// Owner (2026-07-25, PDF review): "long list with plentiful blank spaces and
+// 10 pages long — reduce to 3 using tabs or pagination or multiple columns."
+// Pagination: the filter pills already act as tabs, so the rows paginate
+// under them at a size that keeps card + table + verdicts around three
+// printed pages.
+const PAGE_SIZE = 12
+
 export default function WorkflowAudit({ allTrades, postmortems }) {
-  const [flt, setFlt] = useState('all')
+  const [flt, setFltRaw] = useState('all')
+  const [page, setPage] = useState(0)
+  const setFlt = (id) => { setFltRaw(id); setPage(0) }
   const wrapRef = useRef(null)
 
   const pmByTrade = useMemo(() => {
@@ -225,7 +243,7 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
           <span>Date · in→out</span><span>Symbol · side</span><span>Strategy</span><span>Lab</span><span>Brdg</span><span>Market path</span><span>Close</span><span>Early-stop reasoning / audit note</span><span style={{ textAlign: 'right' }}>P&amp;L</span>
         </div>
         {rows.length === 0 && <span style={{ fontSize: 9, color: SB, padding: '6px 0' }}>No closed trades in this bucket yet — rows appear from the first completed round-trip.</span>}
-        {rows.map(t => (
+        {rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map(t => (
           <div key={t.id} style={{ display: 'grid', gridTemplateColumns: GRID_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '4px 0', fontVariantNumeric: 'tabular-nums', background: t.rowBg }}>
             <span style={{ fontSize: 9, lineHeight: 1.35, color: SB }}>{t.when}</span>
             <span style={{ display: 'flex', flexDirection: 'column' }}>
@@ -235,7 +253,10 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
             <span style={{ fontSize: 9, color: SB, textTransform: 'capitalize' }}>{t.strat}</span>
             <span style={{ fontSize: 11, fontWeight: 800, color: t.labCol }}>{t.lab}</span>
             <span style={{ fontSize: 11, fontWeight: 800, color: t.brCol }}>{t.br}</span>
-            <span className="wf" style={{ display: 'flex', alignItems: 'center', padding: '12px 2px 10px', position: 'relative' }}>
+            {/* Stepper padding tightened 12/10 → 9/9 (PDF review: "plentiful
+                blank spaces") — the time labels above and stage labels below
+                still clear their rows at 9px type. */}
+            <span className="wf" style={{ display: 'flex', alignItems: 'center', padding: '9px 2px 9px', position: 'relative' }}>
               {t.path.map(s => (
                 <span key={s.k} style={{ display: 'flex', alignItems: 'center', flex: s.grow, minWidth: 0, position: 'relative' }}>
                   <span style={{ display: s.segShow, position: 'absolute', left: 0, right: 11, top: -9, textAlign: 'center', fontSize: 9, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: s.tCol }}>{s.t}</span>
@@ -252,6 +273,17 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
             <span style={{ fontSize: 11, fontWeight: 800, textAlign: 'right', color: t.col }}>{t.pnl}</span>
           </div>
         ))}
+        {rows.length > PAGE_SIZE && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 4 }}>
+            <button type="button" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}
+              style={{ cursor: page === 0 ? 'default' : 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: 700, color: page === 0 ? MU : TX, background: 'transparent', border: `1px solid ${EDG}`, borderRadius: 999, padding: '2px 10px' }}>‹ Prev</button>
+            <span style={{ fontSize: 9, color: MU, fontVariantNumeric: 'tabular-nums' }}>
+              {page * PAGE_SIZE + 1}–{Math.min(rows.length, (page + 1) * PAGE_SIZE)} of {rows.length}
+            </span>
+            <button type="button" disabled={(page + 1) * PAGE_SIZE >= rows.length} onClick={() => setPage(p => p + 1)}
+              style={{ cursor: (page + 1) * PAGE_SIZE >= rows.length ? 'default' : 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: 700, color: (page + 1) * PAGE_SIZE >= rows.length ? MU : TX, background: 'transparent', border: `1px solid ${EDG}`, borderRadius: 999, padding: '2px 10px' }}>Next ›</button>
+          </div>
+        )}
       </div>
 
       {/* Verdict cards — exact styles + copy. */}
@@ -269,7 +301,7 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
       </div>
 
       <span style={{ fontSize: 9, color: MU }}>
-        Lab ✓ = an analysis/strategy is attached · Bridge ✓ = placed through the bot's risk-gated pipeline · segment times: submit→fill latency (collected from the forensics build forward), managed span (not yet recorded — shows —), total hold · premature strictly means a manual close with no recorded rationale.
+        Lab ✓ = an analysis/strategy is attached · Bridge ✓ = placed through the bot's risk-gated pipeline · segment times: submit→fill latency (collected from the forensics build forward), managed span (not yet recorded — shows —), total hold · premature strictly means a manual close with no recorded rationale · <b style={{ color: SB }}>Close = Manual means the trade was closed at the broker (manual close or broker-side SL/TP fill), not by the bot — that shared fact is stated here once; each row's note shows only what distinguishes that trade.</b>
       </span>
     </div>
   )
