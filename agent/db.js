@@ -378,9 +378,44 @@ const TABLES = `
     loop_id      INTEGER,
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Broker deal history, imported from cTrader's own record (owner
+  -- 2026-07-25: read historical trades). DELIBERATELY NOT the 'trades'
+  -- table: perf-ledger, edge-health, the metrics snapshot and the lessons
+  -- tuner all count every closed 'trades' row with a net_pnl and none of
+  -- them filter on source, so importing pre-bot and manual fills there
+  -- would silently move the win rate, PF, strategy attribution and lesson
+  -- decay keys. This table is broker truth kept alongside, joined to a
+  -- local row by position id when one exists, and read only by callers that
+  -- ask for it. deal_id is the broker's own primary key, so re-importing an
+  -- overlapping window is a no-op.
+  CREATE TABLE IF NOT EXISTS broker_deals (
+    deal_id          TEXT PRIMARY KEY,
+    position_id      TEXT,
+    account_id       TEXT,
+    symbol           TEXT,
+    side             TEXT,             -- the POSITION's side, not the closing deal's
+    lots             REAL,
+    entry_price      REAL,
+    close_price      REAL,
+    opened_at        TEXT,             -- from the position's opening deal, NULL if outside the window
+    closed_at        TEXT,
+    gross_pnl        REAL,
+    swap             REAL,
+    commission       REAL,
+    net_pnl          REAL,
+    -- trades.id when this broker deal matches a row we placed. NULL means
+    -- the bot has no record of it: pre-bot history, a manual fill, or a
+    -- trade lost to a restart.
+    matched_trade_id INTEGER,
+    imported_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 const INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_broker_deals_closed    ON broker_deals(closed_at);
+  CREATE INDEX IF NOT EXISTS idx_broker_deals_sym_open   ON broker_deals(symbol, opened_at);
+  CREATE INDEX IF NOT EXISTS idx_broker_deals_position   ON broker_deals(position_id);
   CREATE INDEX IF NOT EXISTS idx_decision_log_at        ON decision_log (created_at);
   CREATE INDEX IF NOT EXISTS idx_decision_log_sym_stage ON decision_log (symbol, stage, created_at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);

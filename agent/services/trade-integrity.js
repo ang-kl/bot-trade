@@ -134,6 +134,7 @@ function pathOf(r) {
   if (/^vpo:/i.test(raw) || /^vpo:/i.test(String(r.strategy || ''))) return 'vpo-sidecar'
   if (/pending-fib/i.test(raw)) return 'pending-fib'
   const src = String(r.source || '').toLowerCase()
+  if (src === 'broker-import') return 'broker-import'
   if (src === 'manual') return 'manual'
   if (src) return src
   return 'unknown'
@@ -147,7 +148,7 @@ function pathOf(r) {
  * @param {object} db
  * @param {{days?: number, windowMinutes?: number, minCluster?: number}} opts
  */
-export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minCluster = 2 } = {}) {
+export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minCluster = 2, includeImported = true } = {}) {
   let rows = []
   try {
     rows = db.prepare(`
@@ -160,6 +161,26 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
       ORDER BY symbol, opened_at
     `).all(`-${days} days`)
   } catch { return { clusters: [], byPath: {}, worst: null } }
+
+  // Broker fills the bot never recorded (imported by
+  // services/broker-history-import.js) join the same analysis, or a cluster
+  // that mixes a bot entry with an untracked one would look like a single
+  // clean trade. matched_trade_id IS NULL only — a matched deal is already
+  // represented by its trades row above. Marked source 'broker-import' so
+  // pathOf files it under its own bucket and it can never be mistaken for
+  // one of our code paths.
+  if (includeImported) {
+    try {
+      rows = rows.concat(db.prepare(`
+        SELECT NULL AS id, account_id, symbol, side, lots AS volume, entry_price, net_pnl,
+               'closed' AS status, opened_at, closed_at, position_id AS ctrader_position_id,
+               NULL AS label_raw, 'broker-import' AS source, NULL AS strategy, NULL AS label_session
+        FROM broker_deals
+        WHERE matched_trade_id IS NULL AND opened_at IS NOT NULL
+          AND opened_at >= datetime('now', ?)
+      `).all(`-${days} days`))
+    } catch { /* table absent on an older DB — bot rows still cluster */ }
+  }
 
   const windowMs = windowMinutes * 60_000
   const keyed = new Map()
@@ -201,7 +222,11 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
           totalVolume: run.reduce((s, r) => s + (Number(r.volume) || 0), 0),
           netPnl: Math.round(run.reduce((s, r) => s + (Number(r.net_pnl) || 0), 0) * 100) / 100,
           openLegs: run.filter(r => r.status === 'open').length,
-          tradeIds: run.map(r => r.id),
+          tradeIds: run.map(r => r.id).filter(v => v != null),
+          // Imported legs have no trades row, so the broker's position id is
+          // the only handle on them.
+          positionIds: run.map(r => r.ctrader_position_id).filter(v => v != null).map(String),
+          importedLegs: run.filter(r => r.source === 'broker-import').length,
         })
       }
       run = []
