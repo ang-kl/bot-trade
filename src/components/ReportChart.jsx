@@ -6,7 +6,10 @@
 import { useMemo, useRef, useState } from 'react'
 import Card from './common/Card.jsx'
 
-const W = 860, H = 300, PL = 46, PR = 16, PT = 14, PB = 30
+// Padding: PL leaves room for the decisions axis + its rotated label, PR for
+// the equity axis on the right (owner: "missing gridline, axes, axis label"),
+// PB for the date ticks + the axis title under them.
+const W = 860, H = 320, PL = 60, PR = 74, PT = 16, PB = 46
 const DAY = 86_400_000
 
 // Owner (2026-07-24): "set one filter for 2 days, therefore is
@@ -18,6 +21,24 @@ function fmtN(v, d = 2) {
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: d })
 }
 function dayKey(iso) { return String(iso || '').slice(0, 10) }
+
+// Owner (2026-07-25): "logarithmic chart way". Equity here is cumulative P&L,
+// so it goes negative and a plain log10 is undefined for half its domain.
+// This is a SIGNED (symmetric) log — sign(v) * log10(1 + |v|) — which is
+// defined everywhere including 0, keeps losses below the axis where they
+// belong, and still compresses a big range. The footnote says so, because a
+// symlog axis is not the same thing as a log axis and shouldn't be labelled
+// as one.
+const symlog = (v) => Math.sign(v) * Math.log10(1 + Math.abs(v))
+const NICE = [1, 2, 5]
+/** Round axis maximum up to a 1/2/5 × 10^n step, so tick labels stay readable. */
+function niceCeil(v) {
+  if (!(v > 0)) return 1
+  const exp = Math.floor(Math.log10(v))
+  const base = Math.pow(10, exp)
+  for (const n of NICE) if (v <= n * base) return n * base
+  return 10 * base
+}
 function shortDate(ms) {
   return new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
 }
@@ -25,6 +46,7 @@ function shortDate(ms) {
 export default function ReportChart({ allTrades, events }) {
   const [range, setRange] = useState('30D')
   const [style, setStyle] = useState('area')
+  const [logScale, setLogScale] = useState(false)
   const [hover, setHover] = useState(null) // {i, px}
   const svgRef = useRef(null)
 
@@ -64,20 +86,42 @@ export default function ReportChart({ allTrades, events }) {
   let geom = null
   if (hasData) {
     const x0 = model[0].t, x1 = model[model.length - 1].t
-    const dMax = Math.max(1, ...model.map(r => Math.max(r.approved, r.vetoed)))
+    const dMax = niceCeil(Math.max(1, ...model.map(r => Math.max(r.approved, r.vetoed))))
     const eLo = Math.min(0, ...model.map(r => r.equity))
     const eHi = Math.max(1e-9, ...model.map(r => r.equity))
+    const tr = logScale ? symlog : (v => v)
+    const plotH = H - PT - PB
     const X = t => PL + ((t - x0) / (x1 - x0 || 1)) * (W - PL - PR)
-    const Yd = v => PT + (1 - v / dMax) * (H - PT - PB)          // decisions scale
-    const Ye = v => PT + (1 - (v - eLo) / (eHi - eLo || 1)) * (H - PT - PB) // equity scale
+    // Decisions (left axis) and equity (right axis) keep independent scales —
+    // counts and money share no units. Both honour the log toggle.
+    const dSpan = tr(dMax) || 1
+    const Yd = v => PT + (1 - tr(v) / dSpan) * plotH
+    const eSpanLo = tr(eLo), eSpanHi = tr(eHi)
+    const Ye = v => PT + (1 - (tr(v) - eSpanLo) / ((eSpanHi - eSpanLo) || 1)) * plotH
     const line = (get, Y) => model.map((r, i) => `${i ? 'L' : 'M'}${X(r.t).toFixed(1)},${Y(get(r)).toFixed(1)}`).join(' ')
+    // 5 gridlines rather than 3, and each carries a value on BOTH axes:
+    // decisions on the left, equity on the right, read at the same height.
+    const FRACS = [0, 0.25, 0.5, 0.75, 1]
+    const invD = (f) => {
+      const t = dSpan * (1 - f)
+      return logScale ? Math.pow(10, t) - 1 : t
+    }
+    const invE = (f) => {
+      const t = eSpanLo + (eSpanHi - eSpanLo) * (1 - f)
+      return logScale ? Math.sign(t) * (Math.pow(10, Math.abs(t)) - 1) : t
+    }
     geom = {
-      X, Yd, Ye, dMax,
+      X, Yd, Ye, dMax, x0, x1,
+      zeroEquityY: eLo < 0 && eHi > 0 ? Ye(0) : null,
       eqPath: line(r => r.equity, Ye),
-      eqArea: `${line(r => r.equity, Ye)} L${X(x1).toFixed(1)},${H - PB} L${X(x0).toFixed(1)},${H - PB} Z`,
+      eqArea: `${line(r => r.equity, Ye)} L${X(x1).toFixed(1)},${Ye(Math.max(eLo, 0)).toFixed(1)} L${X(x0).toFixed(1)},${Ye(Math.max(eLo, 0)).toFixed(1)} Z`,
       apPath: line(r => r.approved, Yd),
       vePath: line(r => r.vetoed, Yd),
-      ticksY: [0, 0.5, 1].map(f => ({ y: PT + f * (H - PT - PB), label: fmtN(dMax * (1 - f), 0) })),
+      ticksY: FRACS.map(f => ({
+        y: PT + f * plotH,
+        label: fmtN(invD(f), 0),
+        labelR: fmtN(invE(f), 0),
+      })),
       ticksX: model.filter((_, i) => i % Math.max(1, Math.ceil(model.length / 8)) === 0),
     }
   }
@@ -114,6 +158,13 @@ export default function ReportChart({ allTrades, events }) {
               className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold cursor-pointer ${style === k ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{label}</button>
           ))}
         </div>
+        <div className="flex gap-1">
+          {[[false, 'Lin'], [true, 'Log']].map(([k, label]) => (
+            <button key={label} type="button" onClick={() => setLogScale(k)}
+              title={k ? 'Signed log scale — sign(v)·log10(1+|v|), so a negative equity curve still plots' : 'Linear scale'}
+              className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold cursor-pointer ${logScale === k ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{label}</button>
+          ))}
+        </div>
         <div className="ml-auto flex items-center gap-3 text-[12px] text-[var(--color-text-sub)]">
           <span><span className="inline-block w-2.5 h-2.5 rounded-full align-middle mr-1" style={{ background: '#a855f7' }} />equity</span>
           <span><span className="inline-block w-2.5 h-2.5 rounded-full align-middle mr-1" style={{ background: 'var(--color-up)' }} />approved/day</span>
@@ -137,15 +188,44 @@ export default function ReportChart({ allTrades, events }) {
                 <stop offset="100%" stopColor="#a855f7" stopOpacity="0.02" />
               </linearGradient>
             </defs>
+            {/* Horizontal gridlines, with a value on BOTH axes at the same
+                height: decisions/day on the left, equity on the right. */}
             {geom.ticksY.map(t => (
               <g key={t.y}>
                 <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="var(--color-border)" strokeWidth="0.6" />
-                <text x={PL - 6} y={t.y + 3} fontSize="12" textAnchor="end" fill="var(--color-text-sub)">{t.label}</text>
+                <text x={PL - 7} y={t.y + 4} fontSize="12" textAnchor="end" fill="var(--color-text-sub)">{t.label}</text>
+                <text x={W - PR + 7} y={t.y + 4} fontSize="12" textAnchor="start" fill="#a855f7">{t.labelR}</text>
               </g>
             ))}
+            {/* Vertical gridlines on the date ticks — they were missing, so a
+                point could not be read back to its day without hovering. */}
             {geom.ticksX.map(r => (
-              <text key={r.t} x={geom.X(r.t)} y={H - 8} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)">{shortDate(r.t)}</text>
+              <line key={`v${r.t}`} x1={geom.X(r.t)} x2={geom.X(r.t)} y1={PT} y2={H - PB}
+                stroke="var(--color-border)" strokeWidth="0.5" strokeDasharray="2 4" />
             ))}
+            {/* Equity zero line — where cumulative P&L crosses break-even. */}
+            {geom.zeroEquityY != null && (
+              <line x1={PL} x2={W - PR} y1={geom.zeroEquityY} y2={geom.zeroEquityY}
+                stroke="#a855f7" strokeWidth="0.9" strokeDasharray="5 4" opacity="0.55" />
+            )}
+            {/* The three axis lines themselves. */}
+            <line x1={PL} x2={PL} y1={PT} y2={H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
+            <line x1={W - PR} x2={W - PR} y1={PT} y2={H - PB} stroke="#a855f7" strokeWidth="1" opacity="0.7" />
+            <line x1={PL} x2={W - PR} y1={H - PB} y2={H - PB} stroke="var(--color-text-sub)" strokeWidth="1" />
+            {geom.ticksX.map(r => (
+              <g key={r.t}>
+                <line x1={geom.X(r.t)} x2={geom.X(r.t)} y1={H - PB} y2={H - PB + 4} stroke="var(--color-text-sub)" strokeWidth="1" />
+                <text x={geom.X(r.t)} y={H - PB + 16} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)">{shortDate(r.t)}</text>
+              </g>
+            ))}
+            {/* Axis titles — every axis now says what it measures. */}
+            <text x={PL - 46} y={PT + (H - PT - PB) / 2} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)"
+              transform={`rotate(-90 ${PL - 46} ${PT + (H - PT - PB) / 2})`}>decisions / day</text>
+            <text x={W - PR + 58} y={PT + (H - PT - PB) / 2} fontSize="12" textAnchor="middle" fill="#a855f7"
+              transform={`rotate(90 ${W - PR + 58} ${PT + (H - PT - PB) / 2})`}>equity ({logScale ? 'signed log' : 'linear'})</text>
+            <text x={PL + (W - PL - PR) / 2} y={H - 6} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)">
+              day (UTC){logScale ? ' · both axes signed-log' : ''}
+            </text>
             {!sparse && style === 'area' && <path d={geom.eqArea} fill="url(#rcFill)" />}
             {!sparse && <path d={geom.eqPath} fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinejoin="round" />}
             {!sparse && <path d={geom.apPath} fill="none" stroke="var(--color-up)" strokeWidth="2" strokeLinejoin="round" />}
@@ -178,7 +258,8 @@ export default function ReportChart({ allTrades, events }) {
         </div>
       )}
       <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
-        Left axis: decisions/day · violet equity uses its own scale · live-updates every 20s.
+        Left axis decisions/day · right axis violet equity, its own scale · dashed violet line is equity break-even · live-updates every 20s.
+        {logScale && ' Log here is a SIGNED log — sign(v)·log10(1+|v|) — because cumulative equity goes negative and a plain log10 is undefined there.'}
         {sparse && hasData && ' Only 1–2 active days in this range, so points are shown as dots — a connecting line would imply a trend that is not there.'}
       </p>
     </Card>
