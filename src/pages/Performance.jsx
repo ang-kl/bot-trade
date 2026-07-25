@@ -271,14 +271,14 @@ function WindowDetail({ w }) {
 function GradientBody({ grid, label, cols, rows, pad, foot }) {
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},1fr)`, gap: 3, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},minmax(52px,84px))`, gap: 2, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
         <span>{label}</span>
         {cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
       </div>
       {rows.map(r => (
-        <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
+        <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},minmax(52px,84px))`, gap: 2, alignItems: 'center' }}>
           <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
-          {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 6, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
+          {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
         </div>
       ))}
       <span style={{ fontSize: 12, color: P_MU }}>{foot}</span>
@@ -287,6 +287,11 @@ function GradientBody({ grid, label, cols, rows, pad, foot }) {
 }
 
 function FxBandsBody({ fxBands }) {
+  // Owner (2026-07-25): "all rows capable of expand for details". The per-pair
+  // TP/SL detail was hover-only via a title attribute, which I flagged last
+  // round as genuinely unreachable on an iPad — a tap never fires it. Tapping
+  // a pair chip now shows the same detail inline, so it works on both.
+  const [openPair, setOpenPair] = useState(null)
   return (
     <>
       {fxBands.map(b => (
@@ -298,11 +303,17 @@ function FxBandsBody({ fxBands }) {
           <span style={{ fontSize: 12, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {b.pairs.map(p2 => (
-              <span key={p2.sym} title={p2.tip} style={{ fontSize: 12, fontWeight: 600, padding: '1px 6px', borderRadius: 6, border: `1px solid ${P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+              <button key={p2.sym} type="button" title={p2.tip}
+                aria-expanded={openPair === `${b.band}|${p2.sym}`}
+                onClick={() => setOpenPair(o => (o === `${b.band}|${p2.sym}` ? null : `${b.band}|${p2.sym}`))}
+                style={{ cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', fontSize: 12, fontWeight: 600, padding: '0 5px', borderRadius: 5, border: `1px solid ${openPair === `${b.band}|${p2.sym}` ? P_ACC : P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
                 {p2.sym} <span style={{ fontWeight: W_CELL, color: p2.col }}>{p2.v}</span>
-              </span>
+              </button>
             ))}
           </div>
+          {b.pairs.filter(p2 => openPair === `${b.band}|${p2.sym}`).map(p2 => (
+            <span key={p2.sym} style={{ gridColumn: '1 / -1', fontSize: 12, color: P_MU, paddingLeft: 4 }}>{p2.tip || 'no TP/SL detail recorded for this pair'}</span>
+          ))}
         </div>
       ))}
     </>
@@ -333,11 +344,11 @@ function StratMxBody({ stratMx }) {
 function CryptoBody({ crypto }) {
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Live price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
       </div>
       {crypto.rows.map(c2 => (
-        <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+        <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
           <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{c2.sym}</span>
           <span style={{ fontSize: 12, fontWeight: W_CELL, color: P_MU }}>—</span>
           <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>—</span>
@@ -370,16 +381,25 @@ function OpenTableBody({ rows }) {
   // AutoAnimate (owner polish audit) — page flips and row add/remove ease
   // instead of popping; the hook animates this div's direct children.
   const [animRef] = useAutoAnimate({ duration: 160 })
+  // Owner (2026-07-25): "all rows capable of expand for details". The detail
+  // shown here was previously ONLY in a title tooltip — which never fires on
+  // a tap, so on the iPad it was unreachable. Tapping a row now reveals it.
+  const [openId, setOpenId] = useState(null)
   return (
     <div style={{ overflowX: 'auto' }}>
       <div ref={animRef} style={{ minWidth: 700 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span></span><span>SL / TP away</span>
       </div>
       {rows.map(p2 => (
-        <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry · market state: ${p2.marketSource || 'unknown'}${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
-          style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{p2.sym}</span>
+        <div key={p2.id}>
+        <div role="button" tabIndex={0} aria-expanded={openId === p2.id}
+          onClick={() => setOpenId(o => (o === p2.id ? null : p2.id))}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === p2.id ? null : p2.id)) } }}
+          style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
+          <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>
+            <span aria-hidden="true" style={{ color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span> {p2.sym}
+          </span>
           <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
           <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
           <span style={{ fontSize: 12, color: P_MU }}>{p2.entry}</span>
@@ -395,6 +415,17 @@ function OpenTableBody({ rows }) {
               the old OPEN/CLOSED/? text label. */}
           <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
           <span style={{ fontSize: 12, color: P_MU }}>{p2.sld} / {p2.tpd}</span>
+        </div>
+        {openId === p2.id && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '1px 0 2px 14px', borderBottom: `1px solid ${P_EDG}`, fontSize: 12, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+            <span>entry {p2.entry}</span>
+            <span>{p2.strat}</span>
+            <span>SL {p2.sld} / TP {p2.tpd} from entry</span>
+            <span>market {p2.marketOpen === false ? 'closed' : p2.marketOpen ? 'open' : 'unknown'} · {p2.marketSource || 'no source'}</span>
+            {p2.day?.t && <span>daily bar {new Date(p2.day.t).toISOString().slice(0, 10)}</span>}
+            {p2.pnlAt && <span>P&L at {String(p2.pnlAt).slice(11, 19)} UTC</span>}
+          </div>
+        )}
         </div>
       ))}
       </div>
@@ -444,7 +475,7 @@ function Weekend24Body({ rows }) {
       <div ref={animRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))', gap: '2px 16px', minWidth: 560 }}>
         {rows.map(p2 => (
           <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
-            style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+            style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
             <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{p2.sym}</span>
             <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
             <span style={{ fontSize: 12, color: P_MU }}>{fmtPx(p2.price)} · O{fmtPx(p2.day?.o)} H{fmtPx(p2.day?.h)} L{fmtPx(p2.day?.l)} C{fmtPx(p2.day?.c)} · v{fmtVol(p2.day?.v)} · SL {p2.sld}/TP {p2.tpd}</span>
@@ -467,11 +498,11 @@ function TodayHourlyBody({ rows }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <div ref={animRef} style={{ minWidth: 420 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
         {rows.map(r => (
-          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
             <span style={{ fontSize: 12, color: P_MU }}>{new Date(r.from).toISOString().slice(11, 16)}</span>
             <span style={{ fontSize: 12, color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
             <span style={{ fontSize: 12, fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>{r.closedN ? signed(r.net) : '—'}</span>
@@ -501,11 +532,11 @@ function SessionStatsBody({ stats }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <div style={{ minWidth: 700 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>+$</span><span style={{ textAlign: 'right' }}>−$</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>
         </div>
         {rows.map(s => (
-          <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
+          <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
             <span>
               <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
@@ -1391,11 +1422,11 @@ export default function Performance() {
                   ))}
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
                 <span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&amp;L</span><span style={{ textAlign: 'right' }}>Tr · Win · PF</span>
               </div>
               {crypto.rows.map(c2 => (
-                <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
+                <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
                   <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{c2.sym}</span>
                   <span style={{ fontSize: 12, fontWeight: W_CELL, color: P_MU }}>—</span>
                   <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>—</span>
@@ -1693,9 +1724,9 @@ export default function Performance() {
               <span style={{ fontSize: 12, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
                 data={gradients.t.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="3px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />} />
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="1px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="3px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />
+            <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="1px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -1703,9 +1734,9 @@ export default function Performance() {
               <span style={{ fontSize: 12, color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="5px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />} />
+                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />} />
             </div>
-            <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="5px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />
+            <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />
           </div>
         </div>
 
@@ -1715,7 +1746,7 @@ export default function Performance() {
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
-              <span style={{ fontSize: 12, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · hover a pair for TP/SL detail (desktop only)</span>
+              <span style={{ fontSize: 12, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
               <SectionTools id="fx-bands" title="Forex — banded, all pairs" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
                 render={() => <FxBandsBody fxBands={fxBands} />} />
