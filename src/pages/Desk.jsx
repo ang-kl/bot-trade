@@ -14,6 +14,7 @@ import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import Card from '../components/common/Card.jsx'
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
@@ -61,6 +62,22 @@ function clockSecs(iso) {
 
 // Collapsible desk section — triangle + title + right-aligned summary that
 // stays informative while collapsed. Open/closed persists per section.
+
+const DESK_SECTIONS = [
+  { id: 'sec-openpnl', label: 'Open trades' },
+  { id: 'sec-chartwall', label: 'Chart wall' },
+  { id: 'sec-broker', label: 'At the broker' },
+  { id: 'sec-loss-review', label: 'Trade lessons' },
+  { id: 'sec-correlation', label: 'Correlation clusters' },
+  { id: 'sec-order-ledger', label: 'Set-order ledger' },
+  { id: 'sec-closed7d', label: 'Closed at the broker' },
+  { id: 'sec-risk', label: 'Risk decisions' },
+  { id: 'sec-controllers', label: 'Controllers' },
+  { id: 'sec-llmspend', label: 'LLM spend' },
+  { id: 'sec-alphadecay', label: 'Edge health' },
+  { id: 'sec-whynotrades', label: 'Why no trades?' },
+]
+
 function Section({ id, title, summary, defaultOpen = true, children }) {
   const KEY = `desk_open_${id}`
   const [open, setOpen] = useState(() => {
@@ -72,7 +89,7 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
     return n
   })
   return (
-    <Card>
+    <Card id={`sec-${id}`}>
       <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
         <span aria-hidden="true" className="w-3 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
         <h2 className="t-h3">{title}</h2>
@@ -391,6 +408,7 @@ export default function Desk() {
 
   return (
     <div className="space-y-2">
+      <SectionNavFab sections={DESK_SECTIONS} />
       {error && <Card className="text-[9px]">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.

@@ -49,18 +49,20 @@ reason written next to it in a comment.
 
 ## 2 · Type scale
 
-**There is one body size: `12px`.** Column heads, data cells, prose captions,
-detail lines, pill labels, buttons, empty states — all `12px`. This is the size
-of the tweak-journal body row, which the owner set as the reference.
+**The scale is 12 / 11 / 10 / 9** (owner, 2026-07-25): major headings 12,
+headings 11, table heads 10, and everything that displays data or data
+information 9 — the Timeframe ledger's cells are the one 9.5 exception.
+Font is self-hosted **Inter** only (`public/fonts/`), never a stack fallback.
 
 | Role | Size | Weight |
 |---|---|---|
-| Section title (card heading) | `12px` | `800` |
-| One headline figure per card | `14px` | `800` |
-| Column header cell | **`10px`**, proper case, one line | `600` (`W_HEAD`) |
-| Row identifier cell (symbol, session, window) | `12px` | `500` (`W_ROWLABEL`) |
-| Every other data cell | `12px` | `400` (`W_CELL`) |
-| Prose caption / detail line | `12px` | `400` |
+| Major heading (page title, modal/print title, `.t-h1`/`.t-heading`) | `12px` | `800` |
+| Section title (card heading, `.t-h3`) | `11px` | `700–800`, accent |
+| Column header cell (`thead th` / `.t-gridhead`) | **`10px`**, proper case, one line | `600` (`W_HEAD`) |
+| Row identifier / first-column head | `10px` | `500` (`W_ROWLABEL`) |
+| Every data cell (`tbody td`, app-wide) | `9px` (`9.5px` Timeframe ledger via `.t-ledger`) | `400` (`W_CELL`) |
+| All other data / info text (captions, meta, pills, footnotes) | `9px` | `400` |
+| Headline figure per card | `9px` | `800` — emphasis by weight + colour, not size |
 
 ### The bold rule
 
@@ -74,9 +76,10 @@ never from weight.
 
 ### Headings
 
-Heading text is the **same size as body text**. A heading is distinguished by
-weight, colour (`P_ACC` for section titles) and position — not by scale.
-`.t-h3` is `12px / 700` with no responsive bumps.
+A heading is distinguished by weight, colour (`P_ACC`/accent for section
+titles) and position — scale moves only one step (11px heading, 12px major).
+`.t-h3` is `11px / 700` with no responsive bumps; the old escalating
+responsive heading scale is gone on purpose.
 
 ### Numbers
 
@@ -127,7 +130,7 @@ All three themes (light / dark / sepia) must be legible. Check before shipping.
 | Width | Meaning |
 |---|---|
 | `≤ 559px` | phone — everything single column |
-| `≥ 700px` | Performance switches from pill screens to full sections; **the FAB appears here** |
+| `≥ 700px` | Performance switches from pill screens to full sections; **the section-nav FAB appears here — on every page** (`SectionNavFab`; Tune's FAB switches tabs instead of scrolling) |
 | `≤ 1023px` | even panel pairs stack |
 | `≤ 1279px` | tablet: table head padding drops to `3px`, sticky first column engages, uneven pairs stack |
 | `≥ 1024px` | desktop sidebar appears (`lg`) |

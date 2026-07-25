@@ -1,12 +1,18 @@
 // Connect — wire the UI to the agent backend and link a cTrader account.
 // The cTrader flow is two taps: paste token → pick an account. The agent
 // discovers the accounts from the token and auto-builds the symbol map.
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { useEffect, useState } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
+
+const CONNECT_SECTIONS = [
+  { id: 'sec-agent', label: 'Agent backend' },
+  { id: 'sec-ctrader', label: 'cTrader account' },
+]
 
 export default function Connect() {
   const conn = getAgentConn()
@@ -143,12 +149,13 @@ export default function Connect() {
 
   return (
     <div className="space-y-8">
+      <SectionNavFab sections={CONNECT_SECTIONS} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
       {status && <div className="text-[9px] text-[var(--color-info-text)]">{status}</div>}
 
       {/* Agent connection */}
       <Card>
-        <h2 className="text-[11px] font-semibold mb-2">1 · Agent backend</h2>
+        <h2 className="t-h3 mb-2" id="sec-agent">1 · Agent backend</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-[9px]">
             <span className="text-[var(--color-text-sub)]">Agent URL</span>
@@ -217,7 +224,7 @@ export default function Connect() {
       {/* cTrader */}
       <Card>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-[11px] font-semibold">2 · cTrader account</h2>
+          <h2 className="t-h3" id="sec-ctrader">2 · cTrader account</h2>
           {symbolCount != null && symbolCount > 0 && <Badge tone="up">LINKED — {symbolCount} symbols mapped</Badge>}
         </div>
 

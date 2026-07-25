@@ -129,7 +129,7 @@ export default function TradeChronograph({ pos, onClose }) {
             id="chrono-indicator"
             value={indicator}
             onChange={e => setIndicator(e.target.value)}
-            className="glass-inset rounded-[6px] px-1.5 py-0.5 text-[11px]"
+            className="glass-inset rounded-[6px] px-1.5 py-0.5 text-[9px]"
           >
             {INDICATOR_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
           </select>
@@ -160,7 +160,7 @@ export default function TradeChronograph({ pos, onClose }) {
           </p>
         )}
         {/* Legend — what the instrument means, in words (never colour-only). */}
-        <p className="text-[11px] leading-snug text-[var(--color-text-sub)] mt-1.5">
+        <p className="text-[9px] leading-snug text-[var(--color-text-sub)] mt-1.5">
           Horizon level = your ENTRY price · nose up into sky = in profit, below into ground = in loss (±2R full scale) ·
           banked RIGHT = price converging on your TP, banked LEFT = diverging, wings level = holding ·
           left tape = P/L in R · right tape = live price with TP / entry / SL bugs · bottom strip = distance still to travel to the TP.

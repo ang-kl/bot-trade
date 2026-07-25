@@ -112,7 +112,7 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
       onKeyDown={onOpen ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }) : undefined}
       title={onOpen ? 'Open the full chronograph for this trade' : undefined}
     >
-      <div className="flex items-center justify-between text-[11px] mb-0.5">
+      <div className="flex items-center justify-between text-[9px] mb-0.5">
         <span className="flex items-center gap-1 min-w-0">
           {marketClosed && (
             <span aria-hidden="true" title="market closed — dial reads off the last known price, not a live tick">🔒</span>
@@ -225,7 +225,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
         ))}
       </div>
       {withR.length > gridN && (
-        <p className="text-[11px] text-[var(--color-text-sub)] mt-1">{withR.length} open — scroll for the rest, or pick a bigger grid size to see more per screen.</p>
+        <p className="text-[9px] text-[var(--color-text-sub)] mt-1">{withR.length} open — scroll for the rest, or pick a bigger grid size to see more per screen.</p>
       )}
       {selected && <TradeChronograph pos={selected} onClose={() => setSelected(null)} />}
     </div>

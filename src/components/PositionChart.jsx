@@ -341,8 +341,8 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       {grid ? (
         // Grid mode: 16 mini charts — just name the current TF, no 20-button ladder.
         <div className="flex items-center gap-1.5 mb-1.5">
-          <span className="text-[11px] font-semibold text-[var(--color-text-sub)]">{timeframe}</span>
-          <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
+          <span className="text-[9px] font-semibold text-[var(--color-text-sub)]">{timeframe}</span>
+          <span className="ml-auto text-[9px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
         </div>
       ) : (
         // ONE control row (owner: "so many choices of UI controls"): a TF
@@ -380,11 +380,11 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
               onChange={(e) => { setTfCustom(e.target.value); if (tfCustomErr) setTfCustomErr('') }}
               placeholder="custom · 1.5h"
               aria-label="Custom timeframe"
-              className="w-24 glass-inset rounded-[8px] px-2 min-h-[28px] text-[11px] text-[var(--color-text)] placeholder:text-[var(--color-text-sub)] outline-none"
+              className="w-24 glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] text-[var(--color-text)] placeholder:text-[var(--color-text-sub)] outline-none"
             />
-            {tfCustomErr && <span className="text-[10px] text-[var(--color-warning-text)]">{tfCustomErr}</span>}
+            {tfCustomErr && <span className="text-[9px] text-[var(--color-warning-text)]">{tfCustomErr}</span>}
           </form>
-          <span className="ml-auto text-[11px] text-[var(--color-text-sub)]">
+          <span className="ml-auto text-[9px] text-[var(--color-text-sub)]">
             {at
               ? <>historical — window around {new Date(at).toLocaleString()}</>
               : live && tick
@@ -396,7 +396,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       {showPanel && (
         // Indicator toggles fold away — open on demand, zero rows when shut.
         <details className="mb-1.5">
-          <summary className="cursor-pointer select-none text-[11px] font-semibold text-[var(--color-text-sub)]">
+          <summary className="cursor-pointer select-none text-[9px] font-semibold text-[var(--color-text-sub)]">
             Indicators{indPrefs.indicators.length ? ` · ${indPrefs.indicators.length} on` : ''}
           </summary>
           <IndicatorPanel
@@ -433,14 +433,14 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         )}
       </div>
       {showPanel && avwapAnchorT != null && indPrefs.indicators.includes('avwap') && (
-        <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
+        <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
           AVWAP anchored at {new Date(avwapAnchorT).toLocaleString()}
           {' · '}
           <button type="button" className="underline cursor-pointer" onClick={() => setAvwapAnchorT(null)}>clear</button>
         </div>
       )}
       {fib && (
-        <div className="text-[11px] text-[var(--color-text-sub)] mt-1">
+        <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
           Fib read ({timeframe}): {String(fib.bias || '').toUpperCase()} fade at 61.8% {niceFmt(fib.level618, lastClose)} — entry {niceFmt(fib.entry, lastClose)}, SL {niceFmt(fib.sl, lastClose)}, TP1 {niceFmt(fib.tp1, lastClose)}, TP2 {niceFmt(fib.tp2, lastClose)}
         </div>
       )}

@@ -14,6 +14,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
 import SessionReview from '../components/SessionReview.jsx'
@@ -1037,35 +1038,6 @@ const PERF_SECTIONS = [
   { id: 'sec-tiles', label: 'Tiles & equity' },
 ]
 
-function PerfSideNav() {
-  const [open, setOpen] = useState(false)
-  const jump = (id) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    setOpen(false)
-  }
-  return (
-    <div className="hidden min-[700px]:block" style={{ position: 'fixed', right: 18, bottom: 74, zIndex: 40 }}>
-      {open && (
-        <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
-          {PERF_SECTIONS.map(s => (
-            <button key={s.id} type="button" onClick={() => jump(s.id)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: P_TX, background: 'transparent', border: 'none', borderRadius: 8, padding: '5px 10px' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = P_GL }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
-              {s.label}
-            </button>
-          ))}
-        </div>
-      )}
-      <button type="button" onClick={() => setOpen(v => !v)} aria-label="Jump to section" title="Jump to section"
-        className="glass-fixed"
-        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: `1px solid ${P_GBD}`, color: P_ACC, fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {open ? '×' : '☰'}
-      </button>
-    </div>
-  )
-}
-
 export default function Performance() {
   const [ledger, setLedger] = useState(null)
   const [accounts, setAccounts] = useState([])
@@ -1739,7 +1711,7 @@ export default function Performance() {
 
   return (
     <div className="space-y-2">
-      <PerfSideNav />
+      <SectionNavFab sections={PERF_SECTIONS} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>

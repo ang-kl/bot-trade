@@ -10,6 +10,7 @@
 // the same history.
 import { useCallback, useEffect, useState } from 'react'
 import Card from '../components/common/Card.jsx'
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import WorkflowAudit from '../components/WorkflowAudit.jsx'
 import SymbolClusters from '../components/SymbolClusters.jsx'
@@ -70,6 +71,7 @@ export default function AccountsAudit() {
 
   return (
     <div className="space-y-2">
+      <SectionNavFab sections={[{ id: 'sec-clusters', label: 'Same-symbol clusters' }, { id: 'sec-workflow', label: 'Workflow audit' }]} />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts · Workflow audit</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -78,14 +80,14 @@ export default function AccountsAudit() {
       </div>
       <AccountsSubNav />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
-      <Card>
+      <Card id="sec-clusters">
         <SymbolClusters
           data={clusters} loading={clusterLoading} error={clusterErr}
           days={days} windowMinutes={windowMinutes}
           onDays={setDays} onWindow={setWindowMinutes}
         />
       </Card>
-      <Card>
+      <Card id="sec-workflow">
         <WorkflowAudit allTrades={allTrades} postmortems={postmortems} />
       </Card>
     </div>
