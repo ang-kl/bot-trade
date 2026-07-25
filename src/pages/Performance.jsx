@@ -286,7 +286,9 @@ function GradientBody({ grid, label, cols, rows, pad, foot, groups = null, colW 
         )}
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: template, gap: 2, paddingBottom: 2 }}>
           <span>{label}</span>
-          {cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
+          {/* title carries the full label for the ellipsis case — a strategy
+              name can be longer than its 72px track. */}
+          {cols.map(c => <span key={c.name} title={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
         </div>
         {rows.map(r => (
           <div key={r.label} style={{ display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>

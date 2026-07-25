@@ -51,7 +51,7 @@ export default function StrategyInsights() {
         <div className="overflow-x-auto">
           <table className="w-full text-[12px]">
             <thead>
-              <tr className="text-left text-[var(--color-text-sub)]">
+              <tr>
                 <th className="pb-1 pr-3">Strategy</th>
                 <th className="pb-1 pr-3">Trades</th>
                 <th className="pb-1 pr-3">W / L</th>

@@ -172,7 +172,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
   }
   const head = (
     <thead>
-      <tr className="text-left text-[var(--color-text-sub)]">
+      <tr>
         {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
           <th key={`${h}-${i}`} className="py-1.5 pr-3 whitespace-nowrap">{h}</th>
         ))}
@@ -183,7 +183,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
   // switch itself; Working/Recently-gone rows have no equivalent action).
   const queuedHead = (
     <thead>
-      <tr className="text-left text-[var(--color-text-sub)]">
+      <tr>
         <th className="py-1.5 pr-2 whitespace-nowrap"></th>
         {['Entered', 'Duration', 'Symbol', 'Side', 'Type', 'Vol', 'Trigger', 'SL', 'TP', 'To TP/SL', '📈 to TP', '📉 to SL', 'TF', 'Strategy', 'Source', 'Status', ''].map((h, i) => (
           <th key={`${h}-${i}`} className="py-1.5 pr-3 whitespace-nowrap">{h}</th>

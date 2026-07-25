@@ -57,7 +57,7 @@ of the tweak-journal body row, which the owner set as the reference.
 |---|---|---|
 | Section title (card heading) | `12px` | `800` |
 | One headline figure per card | `14px` | `800` |
-| Column header cell | `12px` | `600` (`W_HEAD`) |
+| Column header cell | **`10px`**, proper case, one line | `600` (`W_HEAD`) |
 | Row identifier cell (symbol, session, window) | `12px` | `500` (`W_ROWLABEL`) |
 | Every other data cell | `12px` | `400` (`W_CELL`) |
 | Prose caption / detail line | `12px` | `400` |
@@ -253,21 +253,34 @@ thead th {
   color: var(--table-head-fg);
   border-right: 1px solid var(--table-head-rule);  /* none on last cell */
   padding: 0 8px;          /* → 0 3px at ≤1279px */
-  font-size: 12px;
+  font-size: 10px;          /* the ONE exception to the 12px body size */
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  text-transform: none;     /* proper case — UPPERCASE widens ~10% */
+  letter-spacing: normal;
+  white-space: nowrap;      /* one line, never two, never three */
   text-align: center;
 }
 ```
 
+**Column heads are the single exception to the 12px rule, and they are 10px in
+proper case on one line.** All three parts exist for the same reason: with many
+columns, an uppercase 12px wrapping label cramps the table and `SL / TP AWAY`
+was heading for a three-line cell. A head that is wider than its track
+ellipsises and carries the full text in a `title`; the table scrolls
+horizontally rather than squeezing, because a wide table you can reach beats a
+narrow one you can't read. Header cells are the only place where 10px is
+allowed — data cells, captions and detail lines all stay at 12px.
+
 **CSS-grid tables** (most of the Performance page) get `.t-gridhead` on the
 header row, which declares the same font, size, weight, case, colour and
-background, with `border-right` on each child except the last. No horizontal
-padding there: the grid templates are tuned to the pixel and the existing
-`gap` already separates the cells the rule divides.
+background, with `border-right` on each child except the last, plus
+`white-space: nowrap; overflow: hidden; text-overflow: ellipsis` so a long
+label truncates instead of wrapping or colliding. No horizontal padding there:
+the grid templates are tuned to the pixel and the existing `gap` already
+separates the cells the rule divides.
 
-**A header row must not declare font, size, weight, case or colour itself.**
+**A header row must not declare font, size, weight, case, colour or wrapping
+itself.**
 Inline styles beat the class and per-`th` utilities confuse the reader about
 where the value comes from — an audit found three different header weights in
 use (700 in the ledger, 600 in most tables, 500 in a few) purely from local
@@ -278,7 +291,7 @@ Resolved values, all three themes:
 | | Light | Dark | Sepia |
 |---|---|---|---|
 | Font | Inter → `system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif` | same | same |
-| Size / weight | 12px / 600, uppercase, `.04em` | same | same |
+| Size / weight | 10px / 600, proper case, one line | same | same |
 | Text colour | `#3c3c43` | `#ebebf5` | `#4a3d26` |
 | Background | `#f2f2f7` | `#1c1c1e` | `#efe7d8` |
 | Cell border | `rgba(60,60,67,.29)` | `rgba(235,235,245,.30)` | `rgba(74,61,38,.28)` |
