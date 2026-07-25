@@ -16,6 +16,7 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
+import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
@@ -1017,6 +1018,10 @@ export default function Performance() {
   const [acct, setAcct] = useState('all') // filter: 'all' | account_id
   const [allTrades, setAllTrades] = useState([])
   const [events, setEvents] = useState([])
+  // Written post-mortems, for the debrief card. Best-effort: an agent without
+  // the route, or a DB with none written, leaves this empty and the card says
+  // "no post-mortem written" per trade rather than implying one exists.
+  const [postmortems, setPostmortems] = useState([])
   const [positions, setPositions] = useState([])
   const [ledgers, setLedgers] = useState({}) // per-account ledgers (balance + windows)
   const [riskFull, setRiskFull] = useState(null)
@@ -1030,12 +1035,13 @@ export default function Performance() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
     try {
-      const [led, ac, t, r, p] = await Promise.all([
+      const [led, ac, t, r, p, pm] = await Promise.all([
         agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
         agentGet('/state/accounts').catch(() => null),
         agentGet('/state/trades').catch(() => null),
         agentGet('/state/risk-events?limit=200').catch(() => null),
         agentGet('/state/positions').catch(() => null),
+        agentGet('/state/postmortems?limit=200').catch(() => null),
       ])
       setLedger(led)
       setAccounts(ac?.accounts || [])
@@ -1043,6 +1049,7 @@ export default function Performance() {
       setAllTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
       setPositions(p?.rows || p?.positions || [])
+      setPostmortems(pm?.rows || pm?.postmortems || [])
       // Per-account ledgers feed the accounts detail row (balance, day P&L
       // scope, 30D forecast pace) — small server-side aggregations, one per
       // registry row. risk-full supplies the real daily-loss config + the
@@ -2258,6 +2265,11 @@ export default function Performance() {
           </div>
           {!tiles && <p className={`text-[12px] mb-2 ${SUB}`}>No closed trades yet — tiles and chart fill from the first completed round-trip.</p>}
           {tilesRow}
+          {/* Owner (2026-07-25): end-of-day / end-of-week debrief — who opened
+              it, why it won or lost, what was written down. */}
+          <div className="mb-2">
+            <SessionReview allTrades={allTrades} postmortems={postmortems} nowMs={loadedAt} />
+          </div>
           <ReportChart allTrades={allTrades} events={events} />
         </Card>
       </div>
