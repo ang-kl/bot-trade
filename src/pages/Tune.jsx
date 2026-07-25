@@ -1271,7 +1271,7 @@ export default function Tune() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
       {status && <div className="text-[13px] text-[var(--color-info-text)]" role="status">{status}</div>}
       {/* Persistent save proof — most controls here auto-save the instant you

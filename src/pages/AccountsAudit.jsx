@@ -36,7 +36,7 @@ export default function AccountsAudit() {
   }, [load])
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-[14px] font-bold t-heading">Accounts · Workflow audit</h1>
         <span className="text-[12px] text-[var(--color-text-sub)]">

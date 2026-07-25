@@ -1222,7 +1222,7 @@ export default function Performance() {
   )
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <PerfSideNav />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
@@ -1240,7 +1240,7 @@ export default function Performance() {
       {/* ================= MOBILE (below lg): the design's phone screens ====
           Exact ports of Performance Mobile.dc.html. Pill nav uses the
           prototype's chip styles with the README's ≥44px tap minimum. */}
-      <div className="lg:hidden space-y-3">
+      <div className="lg:hidden space-y-2">
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {MOBILE_SCREENS.map(s => (
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
@@ -1479,7 +1479,7 @@ export default function Performance() {
       </div>
 
       {/* ================= DESKTOP (lg+): the dense ledger ================== */}
-      <div className="hidden lg:block space-y-3">
+      <div className="hidden lg:block space-y-2">
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
             the loss-cap line (real dailyLossPct config × stamped balance). */}
@@ -1516,36 +1516,62 @@ export default function Performance() {
             </span>
             <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
             {todayWin.label && <span style={{ fontSize: 12, color: P_WRN }}>{todayWin.label}</span>}
-            <PagedRows rows={todayHourly}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
+            {/* Owner (2026-07-25): "Today table must be longer in length" —
+                8 rows per page (3 pages over a full day) instead of 4. */}
+            <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
           </div>
-          {[{
-            key: 'float', title: 'Open now — floating', rows: openSplit.floating, tot: openSplit.floatTot,
-            border: P_GBD, titleCol: P_MU,
-            note: null,
-          }, {
-            key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot,
-            border: 'var(--color-warning-border)', titleCol: P_WRN,
-            note: 'market closed — the bot cannot exit these until their market reopens; P&L is the latest computed value before/at close',
-          }].filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => (
-            <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
-                <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
-                  {t2.rows.length
-                    ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
-                    : 'none'}
-                </span>
-                {positions[0]?.live_pnl_at && <span style={{ fontSize: 12, color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
+          {(() => {
+            const defs = [{
+              key: 'float', title: 'Open now — floating', rows: openSplit.floating, tot: openSplit.floatTot,
+              border: P_GBD, titleCol: P_MU,
+              note: null,
+            }, {
+              key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot,
+              border: 'var(--color-warning-border)', titleCol: P_WRN,
+              note: 'market closed — the bot cannot exit these until their market reopens; P&L is the latest computed value before/at close',
+            }]
+            const card = (t2, extraStyle = {}) => (
+              <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320, ...extraStyle }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
+                    {t2.rows.length
+                      ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
+                      : 'none'}
+                  </span>
+                  {positions[0]?.live_pnl_at && <span style={{ fontSize: 12, color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
+                </div>
+                {t2.note && <span style={{ fontSize: 12, color: P_WRN }}>{t2.note}</span>}
+                <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
+                  toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
+                  render={() => <OpenTableBody rows={t2.rows} />} />
+                {t2.rows.length > 0 && (
+                  <PagedRows rows={t2.rows}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
+                )}
               </div>
-              {t2.note && <span style={{ fontSize: 12, color: P_WRN }}>{t2.note}</span>}
-              <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
-                toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
-                render={() => <OpenTableBody rows={t2.rows} />} />
-              {t2.rows.length > 0 && (
-                <PagedRows rows={t2.rows}>{(pageRows) => <OpenTableBody rows={pageRows} />}</PagedRows>
-              )}
-            </div>
-          ))}
+            )
+            // Owner (2026-07-25): "If Open now has nothing, collapse and
+            // tuck away above the open-but-market-closed like a filing
+            // cabinet card effect" — an empty floating card no longer
+            // claims a full panel; it shrinks to a slim tab peeking above
+            // the closed-market card (expandable via native <details>).
+            if (openSplit.floating.length === 0) {
+              return (
+                <div style={{ flex: '2 1 320px', minWidth: 320, display: 'flex', flexDirection: 'column' }}>
+                  <details style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderBottom: 'none', borderRadius: '12px 12px 0 0', padding: '4px 11px 6px', margin: '0 10px', opacity: .85 }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, listStyle: 'revert' }}>
+                      Open now — floating · none
+                    </summary>
+                    <span style={{ fontSize: 12, color: P_MU }}>no floating positions in an open market right now — this card expands automatically when one opens</span>
+                  </details>
+                  {openSplit.closed.length > 0
+                    ? card(defs[1], { flex: '1 1 auto' })
+                    : <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px', fontSize: 12, color: P_MU }}>no open positions at all</div>}
+                </div>
+              )
+            }
+            return defs.filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => card(t2))
+          })()}
         </div>
 
         {/* Weekend-only: 24h-trading symbols in their own collapsible table

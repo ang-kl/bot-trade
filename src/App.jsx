@@ -166,7 +166,7 @@ export default function App() {
 
         <AgentDownBanner />
 
-        <main className="px-4 py-5 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
+        <main className="px-4 py-4 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
           <Routes>
             <Route path="/" element={<Navigate to="/performance" replace />} />
             <Route path="/performance" element={<Performance />} />

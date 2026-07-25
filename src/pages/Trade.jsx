@@ -441,7 +441,7 @@ export default function Trade() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
 
       {/* ONE card, ACCOUNT line first (owner spec): row 1 = who/where the
@@ -688,7 +688,7 @@ export default function Trade() {
 
       {/* Recent trades and Order log STACKED full-width (owner: both carry
           too many columns to share a row) with matching row counts. */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {/* Recent trades */}
         <Card>
           <div className="flex items-center gap-2 mb-2">
