@@ -98,3 +98,130 @@ export function findDuplicateTrades(db, { windowDays = 90 } = {}) {
     totalExtraPnl: Math.round(groups.reduce((s, g) => s + (g.count - 1) * (Number(g.net_pnl) || 0), 0) * 100) / 100,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Owner (2026-07-25): "investigate double or triple trading symbols for past
+// EU and NY market sessions. I suspect it is our coding/algo."
+//
+// findDuplicateTrades above cannot see that class. It keys on IDENTICAL
+// values (same entry/exit/net_pnl, or one broker position id recorded twice)
+// — bookkeeping duplicates. What the owner is describing is the opposite:
+// several GENUINELY DISTINCT fills, different prices and different broker
+// position ids, stacked on one symbol inside one session. Each row is a real
+// separate trade; the defect is that they were ever opened.
+//
+// This groups by account + symbol inside a rolling window and reports the
+// cluster with the LABEL/STRATEGY of every leg, because the label is what
+// identifies the responsible code path:
+//   'vpo:<key>'   → the C++ sidecar's VpoDispatcher fired (per-strategy arm,
+//                    no per-symbol cap — N armed strategies on one symbol can
+//                    each fire on the same tick)
+//   'pending-fib' → a resting fib LIMIT filled
+//   autopilot     → the Node loop's market-order path (risk gate + 3-minute
+//                    ledger idempotency)
+//   manual        → a human action route
+// A cluster mixing paths is a cross-path hole; a cluster of one path repeated
+// is that path's own dedupe failing.
+//
+// Read-only and deliberately non-judgemental: legitimate hedges and scale-ins
+// look the same from the outside, so this REPORTS clusters with the evidence
+// a human needs, and never deletes or closes anything.
+// ---------------------------------------------------------------------------
+
+/** Which code path opened this row, from its label/source/strategy columns. */
+function pathOf(r) {
+  const raw = String(r.label_raw || '')
+  if (/^vpo:/i.test(raw) || /^vpo:/i.test(String(r.strategy || ''))) return 'vpo-sidecar'
+  if (/pending-fib/i.test(raw)) return 'pending-fib'
+  const src = String(r.source || '').toLowerCase()
+  if (src === 'manual') return 'manual'
+  if (src) return src
+  return 'unknown'
+}
+
+/**
+ * Clusters of 2+ trades on the SAME account+symbol whose opens fall within
+ * `windowMinutes` of each other. Covers open AND closed rows — an open
+ * cluster is the live version of the same defect.
+ *
+ * @param {object} db
+ * @param {{days?: number, windowMinutes?: number, minCluster?: number}} opts
+ */
+export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minCluster = 2 } = {}) {
+  let rows = []
+  try {
+    rows = db.prepare(`
+      SELECT id, account_id, symbol, side, volume, entry_price, net_pnl, status,
+             opened_at, closed_at, ctrader_position_id,
+             label_raw, source, COALESCE(label_strategy, strategy) AS strategy,
+             label_session
+      FROM trades
+      WHERE opened_at IS NOT NULL AND opened_at >= datetime('now', ?)
+      ORDER BY symbol, opened_at
+    `).all(`-${days} days`)
+  } catch { return { clusters: [], byPath: {}, worst: null } }
+
+  const windowMs = windowMinutes * 60_000
+  const keyed = new Map()
+  for (const r of rows) {
+    const k = `${r.account_id ?? 'unscoped'}|${String(r.symbol || '').toUpperCase()}`
+    if (!keyed.has(k)) keyed.set(k, [])
+    keyed.get(k).push(r)
+  }
+
+  const clusters = []
+  for (const [k, list] of keyed) {
+    const [accountId, symbol] = k.split('|')
+    // Walk opens in time order, breaking a cluster whenever the next open is
+    // further than the window from the PREVIOUS one (a chain of scale-ins
+    // 20 minutes apart is one cluster, which is what we want to see).
+    const sorted = list
+      .map(r => ({ ...r, ms: Date.parse(String(r.opened_at).replace(' ', 'T') + 'Z') }))
+      .filter(r => Number.isFinite(r.ms))
+      .sort((a, b) => a.ms - b.ms)
+    let run = []
+    const flush = () => {
+      if (run.length >= minCluster) {
+        const paths = run.map(pathOf)
+        clusters.push({
+          accountId, symbol,
+          count: run.length,
+          firstOpenedAt: run[0].opened_at,
+          lastOpenedAt: run[run.length - 1].opened_at,
+          spanMinutes: Math.round((run[run.length - 1].ms - run[0].ms) / 60_000),
+          sides: [...new Set(run.map(r => r.side))],
+          hedged: new Set(run.map(r => r.side)).size > 1,
+          // Distinct broker position ids prove these are separate real fills
+          // and not one fill recorded N times (which findDuplicateTrades owns).
+          distinctPositionIds: new Set(run.map(r => r.ctrader_position_id).filter(v => v != null)).size,
+          paths: [...new Set(paths)],
+          crossPath: new Set(paths).size > 1,
+          sessions: [...new Set(run.map(r => r.label_session).filter(Boolean))],
+          strategies: [...new Set(run.map(r => r.strategy).filter(Boolean))],
+          totalVolume: run.reduce((s, r) => s + (Number(r.volume) || 0), 0),
+          netPnl: Math.round(run.reduce((s, r) => s + (Number(r.net_pnl) || 0), 0) * 100) / 100,
+          openLegs: run.filter(r => r.status === 'open').length,
+          tradeIds: run.map(r => r.id),
+        })
+      }
+      run = []
+    }
+    for (const r of sorted) {
+      if (run.length && r.ms - run[run.length - 1].ms > windowMs) flush()
+      run.push(r)
+    }
+    flush()
+  }
+
+  clusters.sort((a, b) => b.count - a.count || Math.abs(b.netPnl) - Math.abs(a.netPnl))
+
+  // Per-path tally of the EXTRA legs (count - 1 per cluster) — the answer to
+  // "which part of our code is doing this", ranked.
+  const byPath = {}
+  for (const c of clusters) {
+    for (const p of c.paths) byPath[p] = (byPath[p] || 0) + (c.count - 1) / c.paths.length
+  }
+  for (const p of Object.keys(byPath)) byPath[p] = Math.round(byPath[p] * 100) / 100
+
+  return { clusters, byPath, worst: clusters[0] || null }
+}

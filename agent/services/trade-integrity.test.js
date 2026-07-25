@@ -78,3 +78,75 @@ test('flags multiple closed trades sharing one broker position id even when net_
   assert.equal(groups[0].count, 2)
   assert.equal(groups[0].samePositionId, true)
 })
+
+// --- findSameSymbolClusters (owner: double/triple symbols in EU & NY) -------
+
+function insertOpen(db, { symbol, side, volume = 0.1, entry = 1, posId, minutesAgo = 0, label = null, source = null, strategy = null, session = null, account = '47790949', status = 'open', pnl = null }) {
+  db.prepare(`
+    INSERT INTO trades (symbol, side, volume, entry_price, net_pnl, status, opened_at,
+                        ctrader_position_id, label_raw, source, label_strategy, label_session, account_id)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?)
+  `).run(symbol, side, volume, entry, pnl, status, `-${minutesAgo} minutes`, posId ?? null, label, source, strategy, session, account)
+}
+
+test('clusters distinct fills on one symbol and names the responsible path', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  // Three separate VPO sidecar fills on EURUSD minutes apart — different
+  // prices and position ids, so findDuplicateTrades is blind to them.
+  insertOpen(db, { symbol: 'EURUSD', side: 'BUY', entry: 1.1701, posId: '1', minutesAgo: 30, label: 'vpo:ema_pullback', session: 'EU' })
+  insertOpen(db, { symbol: 'EURUSD', side: 'BUY', entry: 1.1698, posId: '2', minutesAgo: 29, label: 'vpo:donchian', session: 'EU' })
+  insertOpen(db, { symbol: 'EURUSD', side: 'BUY', entry: 1.1695, posId: '3', minutesAgo: 28, label: 'vpo:rsi2', session: 'EU' })
+  const { clusters, worst, byPath } = findSameSymbolClusters(db)
+  assert.equal(clusters.length, 1)
+  assert.equal(worst.count, 3)
+  assert.equal(worst.symbol, 'EURUSD')
+  assert.equal(worst.distinctPositionIds, 3)
+  assert.deepEqual(worst.paths, ['vpo-sidecar'])
+  assert.equal(worst.crossPath, false)
+  assert.equal(worst.openLegs, 3)
+  assert.equal(byPath['vpo-sidecar'], 2) // two EXTRA legs beyond the first
+})
+
+test('flags a cross-path cluster (market entry racing a resting fib limit)', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  insertOpen(db, { symbol: 'XAUUSD', side: 'BUY', posId: '10', minutesAgo: 20, source: 'autopilot', strategy: 'fib_618_fade' })
+  insertOpen(db, { symbol: 'XAUUSD', side: 'BUY', posId: '11', minutesAgo: 5, label: 'a|1|fib_618_fade|hi|NY|4h||pending-fib' })
+  const { worst } = findSameSymbolClusters(db)
+  assert.equal(worst.count, 2)
+  assert.equal(worst.crossPath, true)
+  assert.deepEqual(worst.paths.sort(), ['autopilot', 'pending-fib'])
+})
+
+test('a hedge on one symbol is reported and marked hedged, not hidden', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  insertOpen(db, { symbol: 'USDJPY', side: 'BUY', posId: '20', minutesAgo: 10, source: 'autopilot' })
+  insertOpen(db, { symbol: 'USDJPY', side: 'SELL', posId: '21', minutesAgo: 9, source: 'autopilot' })
+  const { worst } = findSameSymbolClusters(db)
+  assert.equal(worst.hedged, true)
+  assert.deepEqual(worst.sides.sort(), ['BUY', 'SELL'])
+})
+
+test('the same symbol on DIFFERENT accounts is not a cluster (multi-account fan-out is by design)', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  insertOpen(db, { symbol: 'GBPUSD', side: 'BUY', posId: '30', minutesAgo: 5, account: '43097342' })
+  insertOpen(db, { symbol: 'GBPUSD', side: 'BUY', posId: '31', minutesAgo: 5, account: '46979908' })
+  insertOpen(db, { symbol: 'GBPUSD', side: 'BUY', posId: '32', minutesAgo: 5, account: '46130058' })
+  const { clusters } = findSameSymbolClusters(db)
+  assert.equal(clusters.length, 0)
+})
+
+test('opens further apart than the window are separate clusters, not one', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  insertOpen(db, { symbol: 'US500', side: 'BUY', posId: '40', minutesAgo: 600 })
+  insertOpen(db, { symbol: 'US500', side: 'BUY', posId: '41', minutesAgo: 599 })
+  insertOpen(db, { symbol: 'US500', side: 'BUY', posId: '42', minutesAgo: 10 })
+  insertOpen(db, { symbol: 'US500', side: 'BUY', posId: '43', minutesAgo: 9 })
+  const { clusters } = findSameSymbolClusters(db)
+  assert.equal(clusters.length, 2)
+  assert.deepEqual(clusters.map(c => c.count), [2, 2])
+})
