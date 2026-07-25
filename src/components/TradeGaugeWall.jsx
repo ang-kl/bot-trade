@@ -133,7 +133,7 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
         <CockpitPFD entry={entry} sl={sl} tp={tp} side={side} price={price}
           pnl={pnlOk ? pnl : null} lots={volume} noReason={noReason} width={SIZE * 2 + 16} />
       </div>
-      <div className="text-center text-[13px] font-bold mt-1">
+      <div className="text-center text-[9px] font-bold mt-1">
         {pnlOk ? money(pnl) : '—'}
         <span className="text-[9px] font-normal text-[var(--color-text-sub)] ml-1">{ratePerMin == null ? '' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}</span>
       </div>
@@ -156,7 +156,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
   const [selected, setSelected] = useState(null)
 
   if (positions.length === 0) {
-    return <p className="text-[13px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
+    return <p className="text-[9px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
   }
 
   // Group the same symbol's trades together (owner: "group the same trades

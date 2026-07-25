@@ -270,19 +270,26 @@
    for the page titles that already use it. Change body sizes and every
    level below must move with them (values are 1.6/1.4/1.2 × .t-body,
    rounded to whole px, at each breakpoint). */
-.t-h1, .t-heading { font-size: 24px; font-weight: 800; line-height: 1.15; letter-spacing: -0.02em; color: var(--color-accent); }
-.t-h2  { font-size: 21px; font-weight: 700; line-height: 1.2;  letter-spacing: -0.01em; color: var(--color-accent); }
-.t-h3  { font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
-.t-body    { font-size: 15px; font-weight: 500; line-height: 1.5; }
-.t-label   { font-size: 14px; font-weight: 600; line-height: 1.5; }
-.t-sub     { font-size: 13px; font-weight: 400; line-height: 1.6; }
-.t-meta    { font-size: 12px; font-weight: 400; line-height: 1.65; }
+/* Owner (2026-07-25): the whole app moves to the dense scale the tables
+   already use — "other than the tables, the rest that display data and data
+   information be 9px. heading font size keep to 11px, use 12px if major
+   heading." So: MAJOR headings (page titles, .t-h1/.t-heading) 12px, every
+   other heading 11px, and ALL data/information text 9px. Flat at every
+   breakpoint — the old escalating scale is gone on purpose; weight and the
+   accent colour carry the hierarchy now, not size. */
+.t-h1, .t-heading { font-size: 12px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
+.t-h2  { font-size: 11px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+.t-h3  { font-size: 11px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+.t-body    { font-size: 9px; font-weight: 500; line-height: 1.5; }
+.t-label   { font-size: 9px; font-weight: 600; line-height: 1.5; }
+.t-sub     { font-size: 9px; font-weight: 400; line-height: 1.6; }
+.t-meta    { font-size: 9px; font-weight: 400; line-height: 1.65; }
 
-@media (min-width: 768px)  { html { font-size: 15px; } .t-h1, .t-heading { font-size: 27px; } .t-h2 { font-size: 24px; } .t-body { font-size: 17px; } .t-sub { font-size: 14px; } }
-@media (min-width: 1024px) { html { font-size: 16px; } .t-label { font-size: 15px; } .t-sub { font-size: 15px; } .t-meta { font-size: 14px; } }
+@media (min-width: 768px)  { html { font-size: 15px; } }
+@media (min-width: 1024px) { html { font-size: 16px; } }
 @media (min-width: 1153px) { html { zoom: 1.1; } }
-@media (min-width: 2000px) { html { font-size: 18px; } .t-h1, .t-heading { font-size: 32px; } .t-h2 { font-size: 28px; } .t-body { font-size: 20px; } .t-label { font-size: 16px; } .t-sub { font-size: 18px; } .t-meta { font-size: 15px; } }
-@media (min-width: 2560px) { html { font-size: 20px; } .t-h1, .t-heading { font-size: 35px; } .t-h2 { font-size: 31px; } .t-body { font-size: 22px; } .t-label { font-size: 19px; } .t-sub { font-size: 19px; } .t-meta { font-size: 17px; } }
+@media (min-width: 2000px) { html { font-size: 18px; } }
+@media (min-width: 2560px) { html { font-size: 20px; } }
 
 /* Table head rows (owner 2026-07-24): a contrasting solid background so
    the header row can never be mistaken for a data row, header text in the

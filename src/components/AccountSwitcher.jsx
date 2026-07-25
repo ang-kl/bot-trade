@@ -47,7 +47,7 @@ export default function AccountSwitcher() {
 
   return (
     <div>
-      <div className="px-3 pb-1 text-[12px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">Account</div>
+      <div className="px-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">Account</div>
       <div className="flex flex-col gap-0.5">
         {data.accounts.map(a => {
           const active = a.accountId === data.selectedAccountId
@@ -59,19 +59,19 @@ export default function AccountSwitcher() {
                 active ? 'glass-inset shadow-[var(--glow-accent)]' : 'hover:bg-[var(--color-accent-soft)]'
               } ${busy ? 'opacity-60' : ''}`}
             >
-              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--color-text)]">
-                <span className={`text-[12px] font-bold ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'}`}>{a.isLive ? 'LIVE' : 'DEMO'}</span>
+              <span className="flex items-center gap-1.5 text-[9px] font-semibold text-[var(--color-text)]">
+                <span className={`text-[9px] font-bold ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-up)]'}`}>{a.isLive ? 'LIVE' : 'DEMO'}</span>
                 <span>{a.traderLogin ?? a.accountId}</span>
                 {active && <span aria-hidden="true" className="ml-auto text-[var(--color-accent)]">●</span>}
               </span>
-              <span className="block text-[12px] text-[var(--color-text-sub)] tabular-nums">
+              <span className="block text-[9px] text-[var(--color-text-sub)] tabular-nums">
                 {busy ? 'switching…' : a.balance != null ? `$${Number(a.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
               </span>
             </button>
           )
         })}
       </div>
-      {err && <p className="px-3 pt-1 text-[12px] text-[var(--color-warning-text)]">{err}</p>}
+      {err && <p className="px-3 pt-1 text-[9px] text-[var(--color-warning-text)]">{err}</p>}
     </div>
   )
 }

@@ -16,7 +16,6 @@
 // Built to docs/ui-spec.md: 12px throughout, W_* weights, one-line rows that
 // expand to one line of detail, right-aligned money, no bold body text.
 import { useMemo, useState } from 'react'
-import { useAutoAnimate } from '@formkit/auto-animate/react'
 import Skeleton from './common/Skeleton.jsx'
 import SectionTools from './common/SectionTools.jsx'
 
@@ -57,21 +56,21 @@ function ClusterRow({ c, open, onToggle }) {
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
         style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
-        <span aria-hidden="true" style={{ fontSize: 12, color: MU }}>{open ? '▾' : '▸'}</span>
-        <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{c.symbol}</span>
-        <span style={{ fontSize: 12, fontWeight: W_CELL, color: SB }}>
+        <span aria-hidden="true" style={{ fontSize: 9, color: MU }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{c.symbol}</span>
+        <span style={{ fontSize: 9, fontWeight: W_CELL, color: SB }}>
           {String(c.firstOpenedAt || '').slice(5, 16)}
         </span>
-        <span style={{ fontSize: 12, fontWeight: W_CELL, color: c.count > 2 ? WRN : SB }}>×{c.count}</span>
-        <span style={{ fontSize: 12, fontWeight: W_CELL, color: c.crossPath ? WRN : SB }}>
+        <span style={{ fontSize: 9, fontWeight: W_CELL, color: c.count > 2 ? WRN : SB }}>×{c.count}</span>
+        <span style={{ fontSize: 9, fontWeight: W_CELL, color: c.crossPath ? WRN : SB }}>
           {c.paths.join(' + ')}{c.crossPath ? ' · cross-path' : ''}{c.hedged ? ' · hedged' : ''}
         </span>
-        <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'right', color: c.netPnl == null ? MU : c.netPnl >= 0 ? UP : DN }}>
+        <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: c.netPnl == null ? MU : c.netPnl >= 0 ? UP : DN }}>
           {signed(c.netPnl)}
         </span>
       </div>
       {open && (
-        <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 12, color: MU, fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 9, color: MU, fontVariantNumeric: 'tabular-nums' }}>
           {[
             `acct ${c.accountId}`,
             `${c.sides.join('/')} · ${c.count} legs over ${c.spanMinutes}m`,
@@ -98,7 +97,6 @@ export default function SymbolClusters({
   data, loading, error, days, windowMinutes, onDays, onWindow, inModal = false,
 }) {
   const [openId, setOpenId] = useState(null)
-  const [animRef] = useAutoAnimate({ duration: 160 })
 
   const clusters = data?.clusters || []
   // Ranked "which code path is doing this" — the whole point of the report.
@@ -109,7 +107,7 @@ export default function SymbolClusters({
   const worstCount = clusters[0]?.count ?? 0
 
   const pill = (on) => ({
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL,
     color: on ? '#fff' : SB, background: on ? ACC : 'transparent',
     border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '1px 8px',
   })
@@ -117,8 +115,8 @@ export default function SymbolClusters({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
-        <span style={{ fontSize: 12, color: SB }}>
+        <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: ACC }}>Same-symbol clusters</span>
+        <span style={{ fontSize: 9, color: SB }}>
           2+ separate fills on one account &amp; symbol inside the window · distinct broker position ids, so these are real
           separate trades, not one fill recorded twice · tap a row for the legs
         </span>
@@ -137,21 +135,21 @@ export default function SymbolClusters({
       </div>
 
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Range</span>
+        <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Range</span>
         {CLUSTER_RANGES.map(d => (
           <button key={d} type="button" style={pill(d === days)} onClick={() => onDays(d)}>{d}D</button>
         ))}
-        <span style={{ marginLeft: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Window</span>
+        <span style={{ marginLeft: 6, fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Window</span>
         {CLUSTER_WINDOWS.map(w => (
           <button key={w.label} type="button" style={pill(w.windowMinutes === windowMinutes)} onClick={() => onWindow(w.windowMinutes)}>{w.label}</button>
         ))}
       </div>
 
-      {error && <span style={{ fontSize: 12, color: DN }}>{error}</span>}
+      {error && <span style={{ fontSize: 9, color: DN }}>{error}</span>}
       {loading && !data && <Skeleton lines={4} />}
 
       {!loading && !error && data && clusters.length === 0 && (
-        <span style={{ fontSize: 12, color: MU }}>
+        <span style={{ fontSize: 9, color: MU }}>
           No clusters in the last {days} days at a {windowMinutes}-minute window — no account opened the same symbol twice
           that close together. If the tables still look doubled, check whether the account filter is on All: one signal
           opens the same symbol once per enabled account, which is by design and is not counted here.
@@ -161,17 +159,20 @@ export default function SymbolClusters({
       {clusters.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', borderBottom: `1px solid ${EDG}`, paddingBottom: 2 }}>
-            <span style={{ fontSize: 14, fontWeight: 800, color: worstCount > 2 ? WRN : SB, fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 9, fontWeight: 800, color: worstCount > 2 ? WRN : SB, fontVariantNumeric: 'tabular-nums' }}>
               {clusters.length} cluster{clusters.length === 1 ? '' : 's'} · worst ×{worstCount}
             </span>
-            <span style={{ fontSize: 12, color: MU }}>
+            <span style={{ fontSize: 9, color: MU }}>
               extra legs by path — {ranked.length ? ranked.map(([p, n]) => `${p} ${n}`).join(' · ') : '—'}
             </span>
           </div>
           <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, borderBottom: `1px solid ${EDG}`, paddingBottom: 1 }}>
             <span /><span>Symbol</span><span>First open</span><span>Legs</span><span>Path</span><span style={{ textAlign: 'right' }}>Net</span>
           </div>
-          <div ref={animRef}>
+          {/* Owner (2026-07-25): "Halt the animation for the Trade-Audit
+              page" — the AutoAnimate list reflow re-fired on every 60s data
+              refresh; the list is static now. */}
+          <div>
             {clusters.map(c => {
               const id = `${c.accountId}|${c.symbol}|${c.firstOpenedAt}`
               return <ClusterRow key={id} c={c} open={openId === id} onToggle={setOpenId} />

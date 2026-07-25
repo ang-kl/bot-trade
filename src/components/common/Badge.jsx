@@ -20,7 +20,7 @@ export default function Badge({ children, tone = 'neutral', pill = false, classN
     // positions on reflow (the pill was seen painted OVER neighbouring
     // text in a wrapped flex row) — an own layer pins it in place.
     'backdrop-blur-sm transform-gpu isolate',
-    'text-[12px] leading-none whitespace-nowrap shrink-0',
+    'text-[9px] leading-none whitespace-nowrap shrink-0',
     radius, pad,
     TONES[tone] || TONES.neutral,
     className,

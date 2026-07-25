@@ -71,13 +71,13 @@ export default function AccountsAudit() {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-[14px] font-bold t-heading">Accounts · Workflow audit</h1>
-        <span className="text-[12px] text-[var(--color-text-sub)]">
+        <h1 className="font-bold t-heading">Accounts · Workflow audit</h1>
+        <span className="text-[9px] text-[var(--color-text-sub)]">
           Lab → Bridge → Market · did each trade run the full pipeline, and were early stops justified?
         </span>
       </div>
       <AccountsSubNav />
-      {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
+      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
       <Card>
         <SymbolClusters
           data={clusters} loading={clusterLoading} error={clusterErr}

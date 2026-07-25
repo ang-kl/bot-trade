@@ -74,9 +74,9 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
   return (
     <Card>
       <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
-        <span aria-hidden="true" className="w-3 text-[12px] shrink-0">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="w-3 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
         <h2 className="t-h3">{title}</h2>
-        {summary && <span className="ml-auto text-[12px] text-[var(--color-text-sub)] truncate">{summary}</span>}
+        {summary && <span className="ml-auto text-[9px] text-[var(--color-text-sub)] truncate">{summary}</span>}
       </button>
       {open && <div className="mt-1.5">{children}</div>}
     </Card>
@@ -98,7 +98,7 @@ function RiskDecisionRow({ ev }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="w-full flex items-baseline gap-1.5 min-w-0 text-left cursor-pointer" title={ev.veto_reason || 'approved'}>
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{criteria.length ? (open ? '▾' : '▸') : ''}</span>
-        <span className={`w-9 shrink-0 text-[12px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+        <span className={`w-9 shrink-0 text-[9px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
           {ev.approved ? 'OK' : 'VETO'}
         </span>
         <span className="font-semibold shrink-0">{ev.symbol}</span>
@@ -113,7 +113,7 @@ function RiskDecisionRow({ ev }) {
         </span>
       </button>
       {open && criteria.length > 0 && (
-        <div className="ml-[52px] mt-0.5 mb-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
+        <div className="ml-[52px] mt-0.5 mb-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[9px]">
           {criteria.map(row => (
             <div key={row.key} className="contents">
               <span className={`${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : 'text-[var(--color-text-sub)]'}`}>
@@ -122,7 +122,7 @@ function RiskDecisionRow({ ev }) {
               <span className={`tabular-nums ${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : ''}`}>{row.value}</span>
             </div>
           ))}
-          <span className="col-span-2 mt-0.5 text-[12px] text-[var(--color-text-sub)] opacity-70">
+          <span className="col-span-2 mt-0.5 text-[9px] text-[var(--color-text-sub)] opacity-70">
             All criteria evaluated for this signal{ev.approved ? ' — approved' : ' — ✗ marks the one that vetoed'}.
           </span>
         </div>
@@ -391,12 +391,12 @@ export default function Desk() {
 
   return (
     <div className="space-y-2">
-      {error && <Card className="text-[13px]">{error}</Card>}
+      {error && <Card className="text-[9px]">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.
            Pills are for controls; status is DATA, so it reads as a line. ---- */}
       <Card>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px]">
           {/* Tri-state, honestly: "no data yet" must never read as OFF — a
               loading page and a disarmed bot are different facts. */}
           <span className="font-semibold whitespace-nowrap">
@@ -425,7 +425,7 @@ export default function Desk() {
         {/* The bot's GOAL, one line, derived live from config. The armed
             combo list lives behind a disclosure — useful on demand, not as
             a 17-chip wall. */}
-        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
           <span className="font-semibold text-[var(--color-text)]">Goal:</span>{' '}
           {(config?.autotrade_scope ?? 'all') === 'all'
             ? <>full watchlist — {watch.length || '…'} symbols × armed strategies × any scanned TF</>
@@ -435,7 +435,7 @@ export default function Desk() {
           {' '}· guardrails: risk gate · stage matrix · market hours · equity stop
         </p>
         {armedChips.length > 0 && (
-          <details className="mt-0.5 text-[12px]">
+          <details className="mt-0.5 text-[9px]">
             <summary className="cursor-pointer text-[var(--color-text-sub)] select-none">armed combos ({armedChips.length})</summary>
             <p className="mt-0.5 text-[var(--color-text-sub)] leading-relaxed">{armedChips.join(' · ')}</p>
           </details>
@@ -462,7 +462,7 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
-        <details className="mb-1.5 text-[12px] text-[var(--color-text-sub)]">
+        <details className="mb-1.5 text-[9px] text-[var(--color-text-sub)]">
           <summary className="cursor-pointer select-none font-semibold">what do these gauges mean?</summary>
           <p className="mt-1 leading-relaxed">
             <strong>Attitude</strong> — the horizon tilts with this trade's P&amp;L (blue rises on profit, orange on loss); the fixed wings across the middle don't tilt — their length is the position's size (lots), and the tip shows an arrow when P&amp;L has moved consistently one way for the last minute or so, or a dot when it's choppy/flat.<br />
@@ -474,7 +474,7 @@ export default function Desk() {
             <button
               key={n} type="button" role="radio" aria-checked={pnlGridN === n}
               onClick={() => pickPnlGrid(n)}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n}</button>
           ))}
         </div>
@@ -497,7 +497,7 @@ export default function Desk() {
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
               title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
@@ -507,12 +507,12 @@ export default function Desk() {
               aria-label="Chart symbol"
               value={symbol || ''}
               onChange={e => pickSymbol(e.target.value)}
-              className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[12px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
+              className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
             >
               {chartSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
             </select>
           )}
-          <span className="text-[12px] text-[var(--color-text-sub)]">
+          <span className="text-[9px] text-[var(--color-text-sub)]">
             positions first{gridN > 1 ? ' · 60s refresh — tap a symbol to focus' : ''}
           </span>
         </div>
@@ -533,7 +533,7 @@ export default function Desk() {
               const held = (broker?.positions || []).some(px => px.symbol === sym) || positions.some(px => px.symbol === sym)
               return (
                 <div key={sym} className="min-w-0">
-                  <button type="button" className="text-[12px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
+                  <button type="button" className="text-[9px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
                     {sym}{held ? ' ●' : ''}
                   </button>
                   <PositionChart
@@ -548,7 +548,7 @@ export default function Desk() {
           </div>
         )}
         {/* Scan strip — one line per symbol, words not colours */}
-        <div className="mt-2 border-t border-[var(--color-border)] pt-1.5 grid gap-x-6 sm:grid-cols-2 lg:grid-cols-3 text-[12px]">
+        <div className="mt-2 border-t border-[var(--color-border)] pt-1.5 grid gap-x-6 sm:grid-cols-2 lg:grid-cols-3 text-[9px]">
           {scans.map(sc => (
             <button
               key={sc.symbol} type="button" onClick={() => { pickSymbol(sc.symbol); if (gridN !== 1) pickGrid(1) }}
@@ -573,13 +573,13 @@ export default function Desk() {
         title={`At the broker — positions (${broker?.positions?.length ?? '…'}) & set orders (${broker?.orders?.length ?? '…'})`}
         summary={broker?.positions?.length ? `floating ${floating >= 0 ? '+' : ''}${fmt(floating, 2)}` : null}
       >
-        {!broker && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
+        {!broker && <p className="text-[9px] text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
         {broker?._cachedAt && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
+          <p className="text-[9px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
-        {brokerErr && <p className="text-[12px] text-[var(--color-warning-text)]">{brokerErr}</p>}
+        {brokerErr && <p className="text-[9px] text-[var(--color-warning-text)]">{brokerErr}</p>}
         {dbOnlyPositions.length > 0 && (
-          <p className="text-[12px] text-[var(--color-warning-text)] mb-1">
+          <p className="text-[9px] text-[var(--color-warning-text)] mb-1">
             ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
             {dbOnlyPositions.map(r => r.symbol).join(', ')} — the reconciler closes these automatically on its next pass.
           </p>
@@ -595,7 +595,7 @@ export default function Desk() {
         )}
         {(broker?.orders?.length ?? 0) > 0 && (
           <div className="mt-2">
-            <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
+            <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Pending (set) orders</div>
             <StdTradeTable
               rows={brokerOrderRowsM}
               countLabel="pending orders"
@@ -606,7 +606,7 @@ export default function Desk() {
           </div>
         )}
         {broker && brokerFlat && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
+          <p className="text-[9px] text-[var(--color-text-sub)]">Flat at the broker — no live positions or pending orders.</p>
         )}
       </Section>
 
@@ -619,7 +619,7 @@ export default function Desk() {
         const naked = brokerPosRows.filter(r => r.tp == null && !(r.tps?.length))
         if (naked.length === 0) return null
         return (
-          <Card className="text-[12px] border-[var(--color-warning-text)]">
+          <Card className="text-[9px] border-[var(--color-warning-text)]">
             <p className="font-semibold text-[var(--color-warning-text)]">
               ⚠ {naked.length} open position(s) have no Take Profit set — risk is capped by the stop, but nothing is locking in a target
             </p>
@@ -630,7 +630,7 @@ export default function Desk() {
                 </li>
               ))}
             </ul>
-            {naked.length > 8 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
+            {naked.length > 8 && <p className="text-[9px] text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
           </Card>
         )
       })()}
@@ -641,7 +641,7 @@ export default function Desk() {
           from the sweep's own self-expiring markers, so this banner clears
           itself once the closure passes — read-only, nothing auto-closes. */}
       {weekendFlags.length > 0 && (
-        <Card className="text-[12px] border-[var(--color-warning-text)]">
+        <Card className="text-[9px] border-[var(--color-warning-text)]">
           <p className="font-semibold text-[var(--color-warning-text)]">
             ⚠ {weekendFlags.length} losing position(s) flagged ahead of a long market closure — left open per policy, review before the close
           </p>
@@ -655,7 +655,7 @@ export default function Desk() {
               )
             })}
           </ul>
-          {weekendFlags.length > 8 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
+          {weekendFlags.length > 8 && <p className="text-[9px] text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
         </Card>
       )}
 
@@ -667,7 +667,7 @@ export default function Desk() {
           exit/net_pnl to the cent, essentially impossible for independent
           real fills). Read-only warning; nothing is deleted automatically. */}
       {(dupeTrades?.groups?.length ?? 0) > 0 && (
-        <Card className="text-[12px] border-[var(--color-warning-text)]">
+        <Card className="text-[9px] border-[var(--color-warning-text)]">
           <p className="font-semibold text-[var(--color-warning-text)]">
             ⚠ {dupeTrades.totalExtraRows} likely-duplicate closed trade record(s) found — inflating P&amp;L/win-rate stats by ~{dupeTrades.totalExtraPnl >= 0 ? '+' : '−'}${Math.abs(dupeTrades.totalExtraPnl).toFixed(2)}
           </p>
@@ -678,7 +678,7 @@ export default function Desk() {
               </li>
             ))}
           </ul>
-          {dupeTrades.groups.length > 5 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
+          {dupeTrades.groups.length > 5 && <p className="text-[9px] text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
         </Card>
       )}
 
@@ -708,7 +708,7 @@ export default function Desk() {
             } catch (e) { setSweepNote(`sweep failed: ${e.message}`) }
             setSweepBusy(false)
           }}>{sweepBusy ? 'Sweeping…' : 'Sweep lessons now'}</Button>
-          {sweepNote && <span className="ml-2 text-[12px] text-[var(--color-text-sub)]">{sweepNote}</span>}
+          {sweepNote && <span className="ml-2 text-[9px] text-[var(--color-text-sub)]">{sweepNote}</span>}
         </div>
         <LossReview postmortems={postmortems} />
       </Section>
@@ -725,27 +725,27 @@ export default function Desk() {
         {!correlation && <Skeleton lines={3} />}
         {correlation && (
           <div className="space-y-1.5">
-            <p className="text-[12px] text-[var(--color-text-sub)]">
+            <p className="text-[9px] text-[var(--color-text-sub)]">
               Positions in the same cluster are the SAME macro bet. The risk gate vetoes any entry pushing a cluster's net beyond ±{correlation.maxClusterExposure}. Net is signed: +2 long-USD means two full USD-strength bets stacked.
             </p>
             {correlation.clusters.map(c => (
-              <div key={c.key} className="glass-inset rounded-lg p-2 text-[12px]">
+              <div key={c.key} className="glass-inset rounded-lg p-2 text-[9px]">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">{c.label}</span>
                   <span className={`font-bold ${Math.abs(c.net) >= correlation.maxClusterExposure ? 'text-[var(--color-down)]' : ''}`}>
                     net {c.net > 0 ? '+' : ''}{c.net}
                   </span>
-                  {Math.abs(c.net) >= correlation.maxClusterExposure && <span className="text-[12px] font-semibold text-[var(--color-down)]">AT CAP — new entries in this cluster veto</span>}
+                  {Math.abs(c.net) >= correlation.maxClusterExposure && <span className="text-[9px] font-semibold text-[var(--color-down)]">AT CAP — new entries in this cluster veto</span>}
                 </div>
-                <div className="text-[12px] text-[var(--color-text-sub)]">
+                <div className="text-[9px] text-[var(--color-text-sub)]">
                   {c.held.length ? `holding: ${c.held.join(' · ')}` : 'no open positions in this cluster'}
                 </div>
-                <div className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
+                <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">
                   members: {Object.entries(c.members).map(([s2, b]) => `${s2}${b > 0 ? '+' : '−'}`).join(' ')}
                 </div>
               </div>
             ))}
-            <p className="text-[12px] text-[var(--color-text-sub)]">
+            <p className="text-[9px] text-[var(--color-text-sub)]">
               Rolling live matrix: {correlation.liveMatrix?.computedAt ? `computed ${ago(correlation.liveMatrix.computedAt)} ago over ${correlation.liveMatrix.symbols} symbols` : 'not computed yet'} · caps tunable in Tune → Risk (cluster / currency exposure).
             </p>
           </div>
@@ -785,21 +785,21 @@ export default function Desk() {
             <button
               key={d} type="button" role="radio" aria-checked={historyDays === d}
               onClick={() => setHistoryDays(d)}
-              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[12px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{label}</button>
           ))}
         </div>
-        {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
+        {!brokerHistory && <p className="text-[9px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
         {brokerHistory?._cachedAt && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
+          <p className="text-[9px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
           <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
-          <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
+          <p className="text-[9px] text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
         )}
-        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
+        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
       </Section>
 
       <Section
@@ -808,13 +808,13 @@ export default function Desk() {
         summary={events.length ? `${events.filter(e => !e.approved).length} vetoes in last ${events.length}` : null}
         defaultOpen={false}
       >
-        <p className="text-[12px] text-[var(--color-text-sub)] mb-1">
+        <p className="text-[9px] text-[var(--color-text-sub)] mb-1">
           Every signal the scanner considers trading passes through here.{' '}
           <span className="font-semibold text-[var(--color-accent)]">OK</span> = the risk gate approved it (it still
           has to clear broker sizing/spread checks after — OK is not the same as placed);{' '}
           <span className="font-semibold text-[var(--color-warning-text)]">VETO</span> = risk math said no, with why.
         </p>
-        {events.length === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">None yet.</p>}
+        {events.length === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">None yet.</p>}
         {/* Plain rows, trader words — status is text with colour, not a pill;
             the raw machine code stays in the tooltip. Side/strategy/entry
             from proposal_json so a row reads as a decision, not just a
@@ -823,12 +823,12 @@ export default function Desk() {
             side/strategy/entry from proposal_json (owner: "meaningless to me"),
             and the complete multi-criteria evaluation on click (owner: "Risk
             Decision is so superficial ... more than one criteria"). */}
-        <ul className="text-[12px]">
+        <ul className="text-[9px]">
           {events.slice(0, 10).map(ev => (
             <RiskDecisionRow key={ev.id} ev={ev} />
           ))}
         </ul>
-        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
         </p>
       </Section>
@@ -851,14 +851,14 @@ export default function Desk() {
         {/* Live wall clock — ticks every second so the panel itself proves the
             page is live, independent of any controller's own beat. */}
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[12px] text-[var(--color-text-sub)]">Now</span>
-          <SplitFlapClock tickLive className="text-[13px]" />
+          <span className="text-[9px] text-[var(--color-text-sub)]">Now</span>
+          <SplitFlapClock tickLive className="text-[9px]" />
         </div>
-        {!heartbeats && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {!heartbeats && <p className="text-[9px] text-[var(--color-text-sub)]">No data yet.</p>}
         {heartbeats && (
           // Two-column dot grid — half the height of the old pill list; a
           // healthy controller earns a dot, only trouble earns words.
-          <ul className="text-[12px] grid gap-x-6 sm:grid-cols-2">
+          <ul className="text-[9px] grid gap-x-6 sm:grid-cols-2">
             {heartbeats.map(c => {
               const dot = c.status === 'ok' ? 'var(--color-accent)' : c.status === 'warn' ? '#c2410c' : c.status === 'idle' ? '#94a3b8' : 'var(--color-down)'
               return (
@@ -890,7 +890,7 @@ export default function Desk() {
             })}
           </ul>
         )}
-        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
           A beat means the controller's code ran (even if it chose to do nothing). Stalls alert on Telegram once, and once again on recovery.
         </p>
       </Section>
@@ -904,10 +904,10 @@ export default function Desk() {
         summary={llmSpend ? `today $${(llmSpend.today?.cost_usd ?? 0).toFixed(2)} · ~$${(llmSpend.projected_month_usd ?? 0).toFixed(2)}/mo` : null}
         defaultOpen={false}
       >
-        {!llmSpend && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {!llmSpend && <p className="text-[9px] text-[var(--color-text-sub)]">No data yet.</p>}
         {llmSpend && (
           <>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] tabular-nums mb-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[9px] tabular-nums mb-2">
               <span>Today <span className="font-semibold">${(llmSpend.today?.cost_usd ?? 0).toFixed(2)}</span> · {llmSpend.today?.calls ?? 0} calls</span>
               <span>7 days <span className="font-semibold">${(llmSpend.last7d?.cost_usd ?? 0).toFixed(2)}</span></span>
               <span>30 days <span className="font-semibold">${(llmSpend.last30d?.cost_usd ?? 0).toFixed(2)}</span></span>
@@ -915,7 +915,7 @@ export default function Desk() {
             </div>
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <table className="std-cols w-full text-[12px] tabular-nums">
+                <table className="std-cols w-full text-[9px] tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
                       <th className="py-1 pr-3">Purpose</th>
@@ -942,7 +942,7 @@ export default function Desk() {
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-end gap-2">
-              <label className="block text-[12px]">
+              <label className="block text-[9px]">
                 <span className="text-[var(--color-text-sub)]">Daily cost alert (USD, 0 = off) — currently {llmSpend.daily_cap_usd ? `$${llmSpend.daily_cap_usd}` : 'off'}</span>
                 <Input type="number" step="0.1" min="0" value={capDraft} onChange={e => setCapDraft(e.target.value)} placeholder={llmSpend.daily_cap_usd ? String(llmSpend.daily_cap_usd) : 'e.g. 1.00'} className="w-28" />
               </label>
@@ -956,9 +956,9 @@ export default function Desk() {
                   } catch (e) { setCapNote(e.message) }
                 }}
               >Save cap</Button>
-              {capNote && <span className="text-[12px] text-[var(--color-text-sub)]">{capNote}</span>}
+              {capNote && <span className="text-[9px] text-[var(--color-text-sub)]">{capNote}</span>}
             </div>
-            <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+            <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
               Scanning, backtests, and all trading decisions are deterministic — zero tokens. The only LLM consumers are the position monitor and the weekend watch, priced at published per-model rates (estimates, not the invoice).
             </p>
           </>
@@ -981,12 +981,12 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
-        {!alphaDecay && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
+        {!alphaDecay && <p className="text-[9px] text-[var(--color-text-sub)]">No data yet.</p>}
         {alphaDecay && (
           <>
             {/* Band 1 — the auto-bot's LIVE edge */}
             <div className="flex items-center gap-2 mb-1">
-              <div className="text-[12px] font-semibold">Live edge — auto-bot</div>
+              <div className="text-[9px] font-semibold">Live edge — auto-bot</div>
               {/* Owner: "every trade must have a purpose for the edge" — the
                   unlabelled/autopilot bucket is mostly trades whose broker
                   label lost attribution before a strategy's key existed
@@ -1003,14 +1003,14 @@ export default function Desk() {
                 } catch (e) { setLabelBackfillNote(`failed: ${e.message}`) }
                 setLabelBackfillBusy(false)
               }}>{labelBackfillBusy ? 'Recovering…' : 'Recover strategy labels'}</Button>
-              {labelBackfillNote && <span className="text-[12px] text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
+              {labelBackfillNote && <span className="text-[9px] text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
             </div>
             {(alphaDecay.strategies?.length ?? 0) === 0 && (
-              <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
+              <p className="text-[9px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
             )}
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
-                <table className="std-cols w-full text-[12px] tabular-nums">
+                <table className="std-cols w-full text-[9px] tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
                       <th aria-sort={edgeSort.ariaSort('strategy')} className="py-1 pr-3">{edgeSort.sortBtn('strategy', 'Strategy')}</th>
@@ -1075,20 +1075,20 @@ export default function Desk() {
             )}
 
             {/* Band 2 — signal decay */}
-            <div className="text-[12px] font-semibold mt-3 mb-1">Signal decay — fills vs their signals</div>
+            <div className="text-[9px] font-semibold mt-3 mb-1">Signal decay — fills vs their signals</div>
             {(alphaDecay.lag_sampled ?? 0) > 0
               ? (
-                <p className="text-[12px] tabular-nums">
+                <p className="text-[9px] tabular-nums">
                   {alphaDecay.entry_lag.map(b2 => (
                     <span key={b2.key} className="mr-3">{b2.label}: <span className="font-semibold">{b2.expectancy != null ? `$${b2.expectancy.toFixed(2)}` : '—'}</span> ({b2.n})</span>
                   ))}
                   <span className="text-[var(--color-text-sub)]"> — if slow fills earn less, tighten the <Link to="/tune" className="text-[var(--color-accent)] underline">monitor cadence in Tune</Link>.</span>
                 </p>
               )
-              : <p className="text-[12px] text-[var(--color-text-sub)]">Needs trades that carry their signal timestamp — fills from scanned signals populate this automatically.</p>}
+              : <p className="text-[9px] text-[var(--color-text-sub)]">Needs trades that carry their signal timestamp — fills from scanned signals populate this automatically.</p>}
 
             {/* Band 3 — the OWNER's edge as backtested (per strategy) */}
-            <div className="text-[12px] font-semibold mt-3 mb-1">Your edge — backtest baseline</div>
+            <div className="text-[9px] font-semibold mt-3 mb-1">Your edge — backtest baseline</div>
             {curBaseline
               ? (
                 <>
@@ -1097,14 +1097,14 @@ export default function Desk() {
                       {backtestsList.map(b => (
                         <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
                           onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[12px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
                           {STRAT_SHORT[b.strategy] || b.strategy}
                         </button>
                       ))}
                     </div>
                   )}
                   <div className="overflow-x-auto">
-                    <table className="std-cols w-full text-[12px] tabular-nums">
+                    <table className="std-cols w-full text-[9px] tabular-nums">
                       <thead>
                         <tr className="border-b border-[var(--color-border)]">
                           <th aria-sort={baseSort.ariaSort('combo')} className="py-1 pr-3">{baseSort.sortBtn('combo', 'Combo')}</th>
@@ -1127,22 +1127,22 @@ export default function Desk() {
                       </tbody>
                     </table>
                   </div>
-                  <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+                  <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
                     {curBaseline.strategy} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
                   </p>
                 </>
               )
-              : <p className="text-[12px] text-[var(--color-text-sub)]">No baseline stored yet — <Link to="/tune" className="text-[var(--color-accent)] underline">run a backtest in Tune</Link> and your tested edge will appear here for live-vs-tested comparison.</p>}
+              : <p className="text-[9px] text-[var(--color-text-sub)]">No baseline stored yet — <Link to="/tune" className="text-[var(--color-accent)] underline">run a backtest in Tune</Link> and your tested edge will appear here for live-vs-tested comparison.</p>}
 
             {/* Band 4 — advisory vs committed: what YOU should look at, and
                 what the machine will do on its own. AI trading = evidential
                 response to streaks, not hope. */}
-            <div className="text-[12px] font-semibold mt-3 mb-1">
+            <div className="text-[9px] font-semibold mt-3 mb-1">
               Advisories &amp; committed automation
               <span className="ml-2 font-normal text-[var(--color-text-sub)]">breaker {alphaDecay.breaker?.on ? `ARMED at ${alphaDecay.breaker.streak} straight losses` : 'OFF'} · <Link to="/tune" className="text-[var(--color-accent)] underline">change</Link></span>
             </div>
-            {(alphaDecay.advisories?.length ?? 0) === 0 && <p className="text-[12px] text-[var(--color-text-sub)]">Nothing needs attention — edges holding, automation armed.</p>}
-            <ul className="text-[12px] space-y-1">
+            {(alphaDecay.advisories?.length ?? 0) === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">Nothing needs attention — edges holding, automation armed.</p>}
+            <ul className="text-[9px] space-y-1">
               {(alphaDecay.advisories || []).map((a, i) => (
                 <li key={i} className="flex items-start gap-1.5">
                   <Badge tone={a.level === 'committed' ? 'info' : 'warning'}>{a.level === 'committed' ? 'COMMITTED' : 'ADVISORY'}</Badge>
@@ -1150,7 +1150,7 @@ export default function Desk() {
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
+            <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
               Expectancy = average net PnL per trade; "recent vs prior" compares the last {alphaDecay.window} trades against the {alphaDecay.window} before them, per strategy. ADVISORY = your call, with the evidence. COMMITTED = the adaptive breaker acts on its own at the stated threshold.
             </p>
           </>
@@ -1161,7 +1161,7 @@ export default function Desk() {
           itself instead of looking dead. */}
       {health && brokerFlat && positions.length === 0 && (
         <Section id="whynotrades" title="Why no trades right now?">
-          <ul className="text-[13px] space-y-1 list-disc pl-5">
+          <ul className="text-[9px] space-y-1 list-disc pl-5">
             {equityStopToday && <li className="font-semibold text-[var(--color-down)]">The daily equity stop tripped today — autotrade disarmed itself after the daily loss cap was hit. It stays off until you re-arm it on <Link to="/tune" className="underline">Tune</Link>.</li>}
             {!health.autotradeEnabled && !equityStopToday && <li className="font-semibold text-[var(--color-down)]">Autotrade is OFF — the bot never places orders. <Link to="/tune" className="underline">Activate on Tune</Link>.</li>}
             {health.autotradeEnabled && health.scanEnabled === false && <li className="font-semibold text-[var(--color-down)]">Scan is OFF — the bot cannot see the market. <Link to="/tune" className="underline">Turn it on in Tune</Link>.</li>}

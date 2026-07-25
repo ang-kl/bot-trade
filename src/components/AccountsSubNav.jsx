@@ -13,7 +13,7 @@ export default function AccountsSubNav() {
       {LINKS.map(l => (
         <NavLink key={l.to} to={l.to} end={l.end}
           className={({ isActive }) =>
-            `rounded-full px-3 py-1 min-h-[32px] inline-flex items-center text-[12px] font-semibold ${isActive
+            `rounded-full px-3 py-1 min-h-[32px] inline-flex items-center text-[9px] font-semibold ${isActive
               ? 'bg-[var(--color-accent)] text-white shadow-[var(--glow-accent)]'
               : 'glass-inset text-[var(--color-text-sub)]'}`}>
           {l.label}

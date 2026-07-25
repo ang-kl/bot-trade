@@ -165,7 +165,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
   const queued = orders?.queued || []
   if (working.length === 0 && recentlyGone.length === 0 && queued.length === 0) {
     return (
-      <p className="text-[12px] text-[var(--color-text-sub)]">
+      <p className="text-[9px] text-[var(--color-text-sub)]">
         No set-orders on record — nothing resting on the book, nothing queued by the bot, and nothing filled or cancelled in the last 24h.
       </p>
     )
@@ -195,9 +195,9 @@ export default function OrderLedger({ orders, onChanged = null }) {
     <div className="space-y-3">
       {queued.length > 0 && (
         <div>
-          <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Queued by the bot — not yet at the broker ({queued.length})</div>
+          <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Queued by the bot — not yet at the broker ({queued.length})</div>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-[9px]">
               {queuedHead}
               <tbody>{queued.map((q, i) => <QueuedRow key={`q-${i}`} q={q} onDone={onChanged} />)}</tbody>
             </table>
@@ -206,9 +206,9 @@ export default function OrderLedger({ orders, onChanged = null }) {
       )}
       {working.length > 0 && (
         <div>
-          <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Working now ({working.length})</div>
+          <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Working now ({working.length})</div>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-[9px]">
               {head}
               <tbody>
                 {working.map((o) => (
@@ -221,9 +221,9 @@ export default function OrderLedger({ orders, onChanged = null }) {
       )}
       {recentlyGone.length > 0 && (
         <div>
-          <div className="text-[12px] text-[var(--color-text-sub)] mb-1">Recently gone — filled or cancelled (24h · {recentlyGone.length})</div>
+          <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Recently gone — filled or cancelled (24h · {recentlyGone.length})</div>
           <div className="overflow-x-auto">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-[9px]">
               {head}
               <tbody>
                 {/* Pivot-style grouping: a tiny subheader per DAY, carrying the
@@ -244,7 +244,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                       }).length
                       out.push(
                         <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
-                          <td colSpan={COLS} className="py-1 text-[12px] text-[var(--color-text-sub)]">
+                          <td colSpan={COLS} className="py-1 text-[9px] text-[var(--color-text-sub)]">
                             {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
                           </td>
                         </tr>

@@ -34,9 +34,9 @@ export default function AccountPivot({ acct }) {
 
   return (
     <Card>
-      <div className="text-[12px] font-semibold mb-2">By trading type — market open vs. closed</div>
+      <div className="text-[9px] font-semibold mb-2">By trading type — market open vs. closed</div>
       <div className="overflow-x-auto">
-        <table className="w-full text-[12px]">
+        <table className="w-full text-[9px]">
           <thead>
             <tr>
               <th className="pb-1 pr-3">Type of trading</th>
@@ -60,7 +60,7 @@ export default function AccountPivot({ acct }) {
           </tbody>
         </table>
       </div>
-      <p className="text-[12px] text-[var(--color-text-sub)] mt-1">
+      <p className="text-[9px] text-[var(--color-text-sub)] mt-1">
         "Market closed" positions are still open trades whose symbol's market is shut right now (weekend/after-hours) — they carry gap risk until it reopens.
       </p>
     </Card>

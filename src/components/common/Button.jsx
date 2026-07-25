@@ -24,8 +24,8 @@ const VARIANTS = {
 }
 
 const SIZES = {
-  sm: 'px-2.5 py-1 text-[12px] min-h-[36px]',
-  md: 'px-3.5 py-1.5 text-[13px] min-h-[36px]',
+  sm: 'px-2.5 py-1 text-[9px] min-h-[36px]',
+  md: 'px-3.5 py-1.5 text-[9px] min-h-[36px]',
   lg: 'px-5 py-2 text-[14px] min-h-[40px]',
 }
 
