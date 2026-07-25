@@ -24,7 +24,7 @@ export default function Card({ children, className = '', copyable = true, copyTi
   const [popup, setPopup] = useState(null)
   const cls = [
     'glass-panel',
-    'px-4 py-3.5',
+    'px-3.5 py-2.5',
     'text-[var(--color-text)]',
     'relative',
     className,

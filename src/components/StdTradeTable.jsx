@@ -152,30 +152,30 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
           <thead className="text-center text-[var(--color-text-sub)]">
             <tr className="border-b border-[var(--color-border)]">
-              <th aria-sort={ariaSort('time')} className={`py-1.5 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
-              <th aria-sort={ariaSort('symbol')} className={`py-1.5 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
-              {anyUpdated && <th aria-sort={ariaSort('updatedAt')} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn('updatedAt', 'Updated')}</th>}
-              {anyDuration && <th aria-sort={ariaSort('durationMs')} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn('durationMs', 'Duration')}</th>}
-              <th aria-sort={ariaSort('result')} className="py-1.5 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
-              <th aria-sort={ariaSort('reason')} className="py-1.5 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
-              <th aria-sort={ariaSort('source')} className="py-1.5 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
-              <th aria-sort={ariaSort('side')} className="py-1.5 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
-              <th aria-sort={ariaSort('qty')} className="py-1.5 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
-              <th aria-sort={ariaSort('entry')} className="py-1.5 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
-              {anyRef && <th aria-sort={ariaSort('price')} className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="live price while open, exit price once closed">{sortBtn('price', 'Price')}</th>}
-              <th aria-sort={ariaSort('sl')} className="py-1.5 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
-              <th aria-sort={ariaSort('tp')} className="py-1.5 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
-              <th aria-sort={ariaSort('pnl')} className="py-1.5 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
-              {anyRef && <th className="py-1.5 pr-3 font-semibold">To TP/SL</th>}
+              <th aria-sort={ariaSort('time')} className={`py-1 pr-2 font-semibold ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
+              <th aria-sort={ariaSort('symbol')} className={`py-1 pr-3 font-semibold ${stick2}`} style={{ left: COL1_W }}>{sortBtn('symbol', 'Symbol')}</th>
+              {anyUpdated && <th aria-sort={ariaSort('updatedAt')} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn('updatedAt', 'Updated')}</th>}
+              {anyDuration && <th aria-sort={ariaSort('durationMs')} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn('durationMs', 'Duration')}</th>}
+              <th aria-sort={ariaSort('result')} className="py-1 pr-3 font-semibold">{sortBtn('result', 'Result')}</th>
+              <th aria-sort={ariaSort('reason')} className="py-1 pr-3 font-semibold">{sortBtn('reason', 'Reason')}</th>
+              <th aria-sort={ariaSort('source')} className="py-1 pr-3 font-semibold">{sortBtn('source', 'Source')}</th>
+              <th aria-sort={ariaSort('side')} className="py-1 pr-3 font-semibold">{sortBtn('side', 'Side')}</th>
+              <th aria-sort={ariaSort('qty')} className="py-1 pr-3 font-semibold">{sortBtn('qty', 'Qty')}</th>
+              <th aria-sort={ariaSort('entry')} className="py-1 pr-3 font-semibold">{sortBtn('entry', 'Entry')}</th>
+              {anyRef && <th aria-sort={ariaSort('price')} className="py-1 pr-3 font-semibold whitespace-nowrap" title="live price while open, exit price once closed">{sortBtn('price', 'Price')}</th>}
+              <th aria-sort={ariaSort('sl')} className="py-1 pr-3 font-semibold">{sortBtn('sl', 'Stop Loss')}</th>
+              <th aria-sort={ariaSort('tp')} className="py-1 pr-3 font-semibold">{sortBtn('tp', 'Take Profit')}</th>
+              <th aria-sort={ariaSort('pnl')} className="py-1 pr-3 font-semibold">{sortBtn('pnl', 'P&L')}</th>
+              {anyRef && <th className="py-1 pr-3 font-semibold">To TP/SL</th>}
               {/* Absolute price distances (owner: entry $1, now $1.20, TP $2,
                   SL $0.80 → "to TP" 0.80 and "to SL" (0.40)) — shown whenever
                   a reference price + level exist: the LIVE price while open,
                   or the recorded EXIT price once closed (owner: "you can
                   recompute when the live ends"). */}
-              {anyRef && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the take profit">📈 to TP</th>}
-              {anyRef && <th className="py-1.5 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
-              {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1.5 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
-              <th className="py-1.5 font-semibold" aria-label="Actions" />
+              {anyRef && <th className="py-1 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the take profit">📈 to TP</th>}
+              {anyRef && <th className="py-1 pr-3 font-semibold whitespace-nowrap" title="price distance from the current price (or exit price, once closed) to the stop loss (in parentheses — the amount at risk)">📉 to SL</th>}
+              {activeOpt.map(c => <th key={c.key} aria-sort={ariaSort(c.key)} className="py-1 pr-3 font-semibold whitespace-nowrap">{sortBtn(c.key, c.label)}</th>)}
+              <th className="py-1 font-semibold" aria-label="Actions" />
             </tr>
           </thead>
           <tbody>
@@ -203,7 +203,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               return (
                 <Fragment key={r.id}>
                   <tr className="border-b border-[var(--color-border)] align-middle">
-                    <td className={`py-1.5 pr-2 whitespace-nowrap ${stick1}`} style={{ minWidth: COL1_W }}>
+                    <td className={`py-1 pr-2 whitespace-nowrap ${stick1}`} style={{ minWidth: COL1_W }}>
                       {w
                         ? <>
                             <span className="block leading-tight">{w.day}</span>
@@ -211,7 +211,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           </>
                         : '—'}
                     </td>
-                    <td className={`py-1.5 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
+                    <td className={`py-1 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
                       {mh && mh.open === false && (
                         <span className="block text-[9px] leading-none" title="market closed" aria-label="market closed">🔒</span>
                       )}
@@ -224,26 +224,26 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         </span>
                       )}
                     </td>
-                    {anyUpdated && <td className="py-1.5 pr-3 whitespace-nowrap">{r.updatedAt != null ? timeCell(r.updatedAt) : '—'}</td>}
-                    {anyDuration && <td className="py-1.5 pr-3 whitespace-nowrap">{r.durationMs != null ? fmtDuration(r.durationMs) : '—'}</td>}
-                    <td className="py-1.5 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
+                    {anyUpdated && <td className="py-1 pr-3 whitespace-nowrap">{r.updatedAt != null ? timeCell(r.updatedAt) : '—'}</td>}
+                    {anyDuration && <td className="py-1 pr-3 whitespace-nowrap">{r.durationMs != null ? fmtDuration(r.durationMs) : '—'}</td>}
+                    <td className="py-1 pr-3"><Badge tone={r.result.tone}>{r.result.text}</Badge></td>
                     {/* Reason rides right after the result (owner: the WHY
                         belongs beside the verdict, not at the far end). */}
-                    <td className="py-1.5 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
+                    <td className="py-1 pr-3 max-w-[280px] truncate text-[var(--color-text-sub)]" title={r.reasonTitle ?? r.reason ?? ''}>
                       {r.reason || '—'}
                     </td>
-                    <td className="py-1.5 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
-                    <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    <td className="py-1 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
+                    <td className={`py-1 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.side ? (long ? 'Long' : 'Short') : '—'}
                     </td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">{num(r.entry)}{ccyTag(r.ccy)}</td>
+                    <td className="py-1 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
+                    <td className="py-1 pr-3 text-right whitespace-nowrap">{num(r.entry)}{ccyTag(r.ccy)}</td>
                     {anyRef && (
-                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      <td className="py-1 pr-3 text-right whitespace-nowrap">
                         {ref != null ? <>{num(ref)}{ccyTag(r.ccy)}</> : '—'}
                       </td>
                     )}
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                    <td className="py-1 pr-3 text-right whitespace-nowrap">
                       {num(r.sl)}{ccyTag(r.ccy)}
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
@@ -252,7 +252,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     </td>
                     {/* Take Profit — cTrader supports laddered TPs, so the
                         cell holds the whole ladder: numero · price · lot. */}
-                    <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                    <td className="py-1 pr-3 text-right whitespace-nowrap">
                       {r.tps?.length
                         ? r.tps.map(t => (
                             <span key={t.n} className="block leading-tight">
@@ -268,11 +268,11 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
-                    <td className={`py-1.5 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    <td className={`py-1 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.pnl != null ? <>{`${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{ccyTag(r.moneyCcy)}</> : '—'}
                     </td>
                     {anyRef && (
-                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      <td className="py-1 pr-3 text-right whitespace-nowrap">
                         {tpDists.length > 0
                           ? tpDists.map(x => (
                               <span key={x.n} className="block leading-tight">
@@ -287,21 +287,21 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     {/* 📈 to TP / 📉 to SL — absolute distances from the
                         reference price (current while open, exit once closed) */}
                     {anyRef && (
-                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      <td className="py-1 pr-3 text-right whitespace-nowrap">
                         {hasRef && r.tp != null ? num(Math.abs(Number(r.tp) - ref)) : '—'}
                       </td>
                     )}
                     {anyRef && (
-                      <td className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      <td className="py-1 pr-3 text-right whitespace-nowrap">
                         {hasRef && r.sl != null ? `(${num(Math.abs(ref - Number(r.sl)))})` : '—'}
                       </td>
                     )}
                     {activeOpt.map(c => (
-                      <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
+                      <td key={c.key} className="py-1 pr-3 text-right whitespace-nowrap">
                         {r[c.key] != null ? <>{c.fmt(r[c.key])}{c.money ? ccyTag(r.moneyCcy) : null}</> : '—'}
                       </td>
                     ))}
-                    <td className="py-1.5 whitespace-nowrap">
+                    <td className="py-1 whitespace-nowrap">
                       {r.chart && (
                         <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
                           {chartFor === r.id ? 'Hide' : 'Chart'}
@@ -343,17 +343,17 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1.5 pr-3 text-right text-[var(--color-text-sub)]">
+                  <td colSpan={10 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
-                  <td className={`py-1.5 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                  <td className={`py-1 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>
-                  {anyRef && <td className="py-1.5 pr-3" />}
-                  {anyRef && <td className="py-1.5 pr-3" />}
-                  {anyRef && <td className="py-1.5 pr-3" />}
+                  {anyRef && <td className="py-1 pr-3" />}
+                  {anyRef && <td className="py-1 pr-3" />}
+                  {anyRef && <td className="py-1 pr-3" />}
                   {activeOpt.map(c => (
-                    <td key={c.key} className="py-1.5 pr-3 text-right whitespace-nowrap">
+                    <td key={c.key} className="py-1 pr-3 text-right whitespace-nowrap">
                       {c.key === 'margin' && hasMargin
                         ? marginSum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                         : ''}

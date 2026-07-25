@@ -390,7 +390,7 @@ export default function Desk() {
   }), [posSig, monitorByPid])
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {error && <Card className="text-[13px]">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.
