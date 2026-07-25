@@ -3,10 +3,16 @@
 // in accounts"). All the audit logic lives in components/WorkflowAudit.jsx;
 // this page just fetches the real closed-trade + postmortem data and hosts
 // the sub-nav shared with the Accounts overview.
+//
+// Owner (2026-07-25): "run a PR to read historical trades" — the same-symbol
+// cluster report lives here too, because "did the algo open this symbol twice"
+// is the same question as "did each trade run the full pipeline", read from
+// the same history.
 import { useCallback, useEffect, useState } from 'react'
 import Card from '../components/common/Card.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import WorkflowAudit from '../components/WorkflowAudit.jsx'
+import SymbolClusters from '../components/SymbolClusters.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
 
 const REFRESH_MS = 60_000
@@ -15,6 +21,13 @@ export default function AccountsAudit() {
   const [allTrades, setAllTrades] = useState([])
   const [postmortems, setPostmortems] = useState([])
   const [error, setError] = useState('')
+  // Cluster report — its own range/window state, its own request and its own
+  // error, so a failure on that route never blanks the workflow audit below.
+  const [days, setDays] = useState(14)
+  const [windowMinutes, setWindowMinutes] = useState(60)
+  const [clusters, setClusters] = useState(null)
+  const [clusterErr, setClusterErr] = useState('')
+  const [clusterLoading, setClusterLoading] = useState(true)
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -29,11 +42,31 @@ export default function AccountsAudit() {
     } catch (e) { setError(e.message) }
   }, [])
 
+  const loadClusters = useCallback(async () => {
+    if (!agentConfigured()) { setClusterLoading(false); return }
+    setClusterLoading(true)
+    try {
+      const r = await agentGet(`/state/symbol-clusters?days=${days}&windowMinutes=${windowMinutes}`)
+      setClusters(r || { clusters: [], byPath: {} })
+      setClusterErr('')
+    } catch (e) {
+      // An agent build predating the route 404s. Say that plainly — an empty
+      // report would read as "no duplicates found", which is not the same.
+      setClusterErr(/404|not found/i.test(e.message)
+        ? 'This agent build does not have /state/symbol-clusters yet — redeploy the agent to read the cluster report.'
+        : e.message)
+    } finally {
+      setClusterLoading(false)
+    }
+  }, [days, windowMinutes])
+
   useEffect(() => {
     const kick = setTimeout(load, 0)
     const t = setInterval(load, REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
+
+  useEffect(() => { loadClusters() }, [loadClusters])
 
   return (
     <div className="space-y-2">
@@ -45,6 +78,13 @@ export default function AccountsAudit() {
       </div>
       <AccountsSubNav />
       {error && <Card className="border-[var(--color-down)] text-[13px]">{error}</Card>}
+      <Card>
+        <SymbolClusters
+          data={clusters} loading={clusterLoading} error={clusterErr}
+          days={days} windowMinutes={windowMinutes}
+          onDays={setDays} onWindow={setWindowMinutes}
+        />
+      </Card>
       <Card>
         <WorkflowAudit allTrades={allTrades} postmortems={postmortems} />
       </Card>
