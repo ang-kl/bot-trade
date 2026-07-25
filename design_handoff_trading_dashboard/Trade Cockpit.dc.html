@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060913;--gl:rgba(18,24,46,.62);--gls:rgba(10,14,28,.9);--gbd:rgba(140,165,255,.22);--edg:rgba(90,110,200,.24);--acc:#4f8cff;--acs:rgba(79,140,255,.14);--up:#4f8cff;--dn:#ff4d6d;--dns:rgba(255,77,109,.12);--tx:#e8edfb;--sb:#9aa8cc;--mu:#6b7899;--vio:#a855f7;--wrn:#ffc466;--gsh:0 8px 40px rgba(0,0,0,.5)}
+[data-theme="light"]{--bg:#eef1fb;--gl:rgba(255,255,255,.66);--gls:rgba(248,250,255,.92);--gbd:rgba(120,140,200,.35);--edg:rgba(100,120,190,.26);--acc:#2b5cff;--acs:rgba(59,108,255,.12);--up:#2b5cff;--dn:#e11d48;--dns:rgba(225,29,72,.1);--tx:#131a2e;--sb:#47536f;--mu:#5a6785;--vio:#7c3aed;--wrn:#a3510a;--gsh:0 8px 32px rgba(60,80,180,.16)}
+body{margin:0;background:var(--bg);font-family:'Inter',system-ui,sans-serif;color:var(--tx)}
+body::before{content:'';position:fixed;inset:-20%;z-index:0;background:radial-gradient(40% 40% at 20% 15%,rgba(56,99,255,.26),transparent 70%),radial-gradient(38% 40% at 82% 88%,rgba(147,51,234,.2),transparent 72%);pointer-events:none}
+a{color:var(--acc)}a:hover{color:var(--vio)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</helmet>
+<div style="position:relative;z-index:1;max-width:1280px;margin:0 auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <span style="font-size:20px;font-weight:900;letter-spacing:-.02em">{{ sym }}</span>
+  <span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:999px;color:var(--up);background:var(--acs);border:1px solid var(--up)">LONG · {{ lots }} lots</span>
+  <span style="display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:2px 8px"><span style="width:6px;height:6px;border-radius:50%;background:var(--acc);animation:pulse 1.6s infinite"></span>OPEN {{ timeIn }}</span>
+  <span style="font-size:16px;font-weight:900;font-variant-numeric:tabular-nums;color:{{ rCol }}">{{ pnl }} · {{ rNow }}</span>
+  <span style="margin-left:auto;font-size:11px;font-weight:600;color:var(--sb);font-variant-numeric:tabular-nums">{{ clock }}</span>
+  <button onClick="{{ toggleTheme }}" style="cursor:pointer;font-family:inherit;font-size:11px;font-weight:600;color:var(--tx);background:var(--acs);border:1px solid var(--gbd);border-radius:10px;padding:5px 11px">{{ themeLabel }}</button>
+</div>
+
+<div style="display:grid;grid-template-columns:1.25fr 1fr;gap:12px;align-items:stretch">
+
+  <div style="background:var(--gls);border:1px solid var(--gbd);border-radius:18px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+    <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:11px;font-weight:800;color:var(--acc)">PFD — primary flight display</span><span style="font-size:9px;color:var(--sb)">speed = momentum · attitude = P&L · altitude = price · VSI = R/hour · heading = trend</span></div>
+    <div style="display:grid;grid-template-columns:64px 1fr 74px 34px;gap:6px;align-items:stretch;height:272px">
+
+      <div style="position:relative;border-radius:10px;border:1px solid var(--edg);background:var(--acs);overflow:hidden">
+        <div style="position:absolute;top:4px;left:0;right:0;text-align:center;font-size:7.5px;font-weight:800;color:var(--mu)">SPD<br>pips/min</div>
+        <sc-for list="{{ spdTicks }}" as="s" hint-placeholder-count="5">
+          <div style="position:absolute;left:0;right:0;top:{{ s.top }}%;display:flex;align-items:center;gap:4px;padding:0 5px;transform:translateY(-50%)"><span style="width:8px;height:1px;background:var(--mu)"></span><span style="font-size:9px;font-weight:700;color:var(--sb);font-variant-numeric:tabular-nums">{{ s.v }}</span></div>
+        </sc-for>
+        <div style="position:absolute;left:2px;right:2px;top:50%;transform:translateY(-50%);background:var(--gls);border:1.5px solid {{ spdCol }};border-radius:6px;text-align:center;font-size:12px;font-weight:900;font-variant-numeric:tabular-nums;color:{{ spdCol }};padding:3px 0" id="pfd-spd">{{ spd }}</div>
+      </div>
+
+      <div id="pfd-adi" style="position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--edg)">
+        <div id="adi-ball" style="position:absolute;left:-40%;right:-40%;top:-40%;bottom:-40%;transform-origin:center">
+          <div style="position:absolute;left:0;right:0;top:0;height:50%;background:linear-gradient(180deg,rgba(79,140,255,.5),rgba(79,140,255,.16))"></div>
+          <div style="position:absolute;left:0;right:0;bottom:0;height:50%;background:linear-gradient(0deg,rgba(255,77,109,.42),rgba(255,77,109,.14))"></div>
+          <div style="position:absolute;left:0;right:0;top:50%;height:2px;background:var(--tx);opacity:.85"></div>
+          <div style="position:absolute;left:50%;top:calc(50% - 58px);width:110px;height:1px;background:rgba(255,255,255,.35);transform:translateX(-50%)"></div>
+          <div style="position:absolute;left:50%;top:calc(50% - 29px);width:66px;height:1px;background:rgba(255,255,255,.3);transform:translateX(-50%)"></div>
+          <div style="position:absolute;left:50%;top:calc(50% + 29px);width:66px;height:1px;background:rgba(255,255,255,.28);transform:translateX(-50%)"></div>
+          <div style="position:absolute;left:50%;top:calc(50% + 58px);width:110px;height:1px;background:rgba(255,255,255,.3);transform:translateX(-50%)"></div>
+        </div>
+        <div style="position:absolute;left:0;right:0;top:6px;text-align:center;font-size:8.5px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6)">+1R = one risk unit up</div>
+        <div style="position:absolute;left:0;right:0;bottom:6px;text-align:center;font-size:8.5px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6)">−1R = stop distance</div>
+        <svg viewBox="0 0 200 120" preserveAspectRatio="none" style="position:absolute;left:50%;top:50%;width:140px;height:40px;transform:translate(-50%,-50%);overflow:visible">
+          <path d="M20,60 L76,60 L100,71 L124,60 L180,60" fill="none" stroke="var(--wrn)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+          <circle cx="100" cy="65" r="4" fill="var(--wrn)"></circle>
+        </svg>
+        <div style="position:absolute;left:8px;bottom:22px;font-size:9px;font-weight:800;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6)" id="adi-roll">{{ rollNote }}</div>
+      </div>
+
+      <div style="position:relative;border-radius:10px;border:1px solid var(--edg);background:var(--acs);overflow:hidden">
+        <div style="position:absolute;top:4px;left:0;right:0;text-align:center;font-size:7.5px;font-weight:800;color:var(--mu)">ALT<br>price</div>
+        <sc-for list="{{ altTicks }}" as="s" hint-placeholder-count="7">
+          <div style="position:absolute;left:0;right:0;top:{{ s.top }}%;display:flex;align-items:center;gap:4px;padding:0 5px;transform:translateY(-50%)"><span style="width:8px;height:1px;background:var(--mu)"></span><span style="font-size:9px;font-weight:700;color:var(--sb);font-variant-numeric:tabular-nums">{{ s.v }}</span></div>
+        </sc-for>
+        <div id="alt-tp" style="position:absolute;right:0;left:4px;top:0%;transform:translateY(-50%);font-size:8px;font-weight:900;color:var(--up);border-top:{{ tpBrd }};text-align:right;white-space:nowrap"><span style="background:var(--gls);border-radius:4px;padding:1px 4px">{{ tpLb }}</span></div>
+        <div id="alt-en" style="position:absolute;right:0;left:4px;top:0%;transform:translateY(-50%);font-size:8px;font-weight:900;color:var(--wrn);border-top:{{ enBrd }};text-align:right;white-space:nowrap"><span style="background:var(--gls);border-radius:4px;padding:1px 4px">{{ enLb }}</span></div>
+        <div id="alt-sl" style="position:absolute;right:0;left:4px;top:0%;transform:translateY(-50%);font-size:8px;font-weight:900;color:var(--dn);border-top:{{ slBrd }};text-align:right;white-space:nowrap"><span style="background:var(--gls);border-radius:4px;padding:1px 4px">{{ slLb }}</span></div>
+        <div style="position:absolute;left:2px;right:2px;top:50%;transform:translateY(-50%);background:var(--gls);border:1.5px solid var(--tx);border-radius:6px;text-align:center;font-size:12px;font-weight:900;font-variant-numeric:tabular-nums;padding:3px 0">{{ price }}</div>
+      </div>
+
+      <div style="position:relative;border-radius:10px;border:1px solid var(--edg);overflow:hidden;display:flex;flex-direction:column;align-items:center">
+        <span style="font-size:7.5px;font-weight:800;color:var(--mu);padding-top:4px">VSI</span>
+        <div style="flex:1;position:relative;width:100%">
+          <div style="position:absolute;left:0;right:0;top:50%;height:1px;background:var(--edg)"></div>
+          <span style="position:absolute;top:6%;left:0;right:0;text-align:center;font-size:7.5px;color:var(--sb)">+2</span>
+          <span style="position:absolute;bottom:6%;left:0;right:0;text-align:center;font-size:7.5px;color:var(--sb)">−2</span>
+          <div id="pfd-vsi" style="position:absolute;left:4px;right:4px;top:50%;height:3px;border-radius:2px;background:{{ vsiCol }};transform-origin:left center"></div>
+        </div>
+        <span style="font-size:8.5px;font-weight:900;font-variant-numeric:tabular-nums;color:{{ vsiCol }};padding-bottom:3px">{{ vsi }}</span>
+        <span style="font-size:6.5px;color:var(--mu);padding-bottom:4px">R/hr</span>
+      </div>
+    </div>
+
+    <div style="position:relative;height:44px;border-radius:10px;border:1px solid var(--edg);background:var(--acs);overflow:hidden">
+      <div style="position:absolute;left:6px;top:3px;font-size:7.5px;font-weight:800;color:var(--mu)">HDG · trend bearing (multi-TF consensus)</div>
+      <div id="pfd-hdg" style="position:absolute;left:0;right:0;top:16px;height:26px">
+        <sc-for list="{{ hdgTicks }}" as="h" hint-placeholder-count="9">
+          <div style="position:absolute;top:0;left:{{ h.left }}%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:1px"><span style="width:1px;height:7px;background:var(--mu)"></span><span style="font-size:8px;font-weight:800;color:{{ h.col }}">{{ h.v }}</span></div>
+        </sc-for>
+      </div>
+      <div style="position:absolute;left:50%;top:12px;transform:translateX(-50%);width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid var(--tx)"></div>
+      <div style="position:absolute;right:6px;top:3px;font-size:9px;font-weight:900;color:{{ hdgCol }}" id="pfd-hdg-ro">{{ hdg }}</div>
+    </div>
+  </div>
+
+  <div style="background:var(--gls);border:1px solid var(--gbd);border-radius:18px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:12px 14px;display:flex;flex-direction:column;gap:6px">
+    <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:11px;font-weight:800;color:var(--vio)">MFD — nav display + TCAS traffic</span><span style="font-size:9px;color:var(--sb)">route = trade plan · terrain = S/R · weather = news · traffic = correlated symbols</span></div>
+    <svg viewBox="0 0 460 210" style="width:100%;overflow:visible">
+      <rect x="0" y="168" width="460" height="18" rx="4" fill="rgba(255,77,109,.22)"></rect>
+      <text x="6" y="180" font-size="8" font-weight="700" fill="var(--dn)">SUPPORT 76.10 — terrain</text>
+      <rect x="0" y="24" width="460" height="14" rx="4" fill="rgba(79,140,255,.18)"></rect>
+      <text x="6" y="34" font-size="8" font-weight="700" fill="var(--acc)">RESISTANCE 79.60</text>
+      <ellipse id="wx1" cx="330" cy="96" rx="34" ry="22" fill="rgba(255,196,102,.3)"></ellipse>
+      <ellipse id="wx2" cx="342" cy="96" rx="16" ry="11" fill="rgba(255,77,109,.4)"></ellipse>
+      <text x="330" y="66" text-anchor="middle" font-size="8" font-weight="800" fill="var(--wrn)">WX: HK CPI 14:30</text>
+      <path id="mfd-flown" d="{{ flownPath }}" fill="none" stroke="var(--acc)" stroke-width="2.5" stroke-linejoin="round"></path>
+      <path id="mfd-plan" d="{{ planPath }}" fill="none" stroke="var(--sb)" stroke-width="2" stroke-dasharray="6 5"></path>
+      <circle cx="30" cy="150" r="5" fill="var(--wrn)"></circle>
+      <text x="30" y="166" text-anchor="middle" font-size="8" font-weight="800" fill="var(--wrn)">ENTRY 76.85</text>
+      <circle cx="290" cy="88" r="4" fill="none" stroke="var(--sb)" stroke-width="1.5"></circle>
+      <text x="290" y="104" text-anchor="middle" font-size="7.5" font-weight="700" fill="var(--sb)">WPT scale-out +1R</text>
+      <circle cx="420" cy="52" r="6" fill="var(--up)"></circle>
+      <text x="420" y="40" text-anchor="middle" font-size="8.5" font-weight="900" fill="var(--up)">TP 79.40</text>
+      <sc-for list="{{ traffic }}" as="tr" hint-placeholder-count="6">
+        <g class="mfd-tfc" style="transform-box:fill-box;transform-origin:center">
+          <g transform="translate({{ tr.x }},{{ tr.y }})">
+            <path d="M0,-5 L4,4 L0,1.8 L-4,4 Z" fill="{{ tr.col }}" transform="rotate({{ tr.rot }})" opacity=".9"></path>
+            <line x1="0" y1="0" x2="{{ tr.vx }}" y2="{{ tr.vy }}" stroke="{{ tr.col }}" stroke-width="1" stroke-dasharray="2 2" opacity=".7"></line>
+            <text x="7" y="-3" font-size="7" font-weight="800" fill="{{ tr.col }}">{{ tr.sym }}</text>
+            <text x="7" y="5" font-size="6" font-weight="700" fill="var(--mu)">{{ tr.meta }}</text>
+          </g>
+        </g>
+      </sc-for>
+      <g id="mfd-ac" style="transform-box:fill-box;transform-origin:center">
+        <path d="M190,104 L196,116 L190,112.5 L184,116 Z" fill="var(--tx)"></path>
+      </g>
+      <text x="190" y="130" text-anchor="middle" font-size="8" font-weight="800" fill="var(--tx)" id="mfd-pos">{{ price }}</text>
+    </svg>
+    <div style="display:flex;align-items:center;gap:8px;border:1px solid var(--edg);border-radius:8px;padding:4px 8px;background:var(--acs)">
+      <span style="font-size:8px;font-weight:800;text-transform:uppercase;color:var(--vio)">Market says</span>
+      <span style="font-size:8.5px;line-height:1.4;color:var(--sb)">{{ mktRead }}</span>
+      <span style="margin-left:auto;font-size:8px;white-space:nowrap"><span style="color:var(--up)">▲ same heading {{ nSame }}</span> · <span style="color:var(--dn)">▼ diverging {{ nDiv }}</span></span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px">
+      <sc-for list="{{ legs }}" as="l" hint-placeholder-count="3">
+        <div style="border:1px solid {{ l.bd }};border-radius:8px;padding:4px 7px;display:flex;flex-direction:column"><span style="font-size:7.5px;font-weight:800;color:{{ l.col }}">{{ l.k }}</span><span style="font-size:9px;font-weight:800;font-variant-numeric:tabular-nums">{{ l.v }}</span><span style="font-size:7px;color:var(--mu)">{{ l.s }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1.1fr 1fr;gap:12px;align-items:stretch">
+  <div style="background:var(--gls);border:1px solid var(--gbd);border-radius:16px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:10px 14px;display:flex;flex-direction:column;gap:4px">
+    <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:11px;font-weight:800;color:var(--acc)">AUTOPILOT — armed actions</span><span style="font-size:9px;color:var(--sb)">what the bot does next, hands off</span></div>
+    <sc-for list="{{ autopilot }}" as="a" hint-placeholder-count="5">
+      <div style="display:grid;grid-template-columns:110px 150px 1fr 52px;gap:8px;align-items:center;border-top:1px solid var(--edg);padding-top:4px;font-variant-numeric:tabular-nums">
+        <span style="font-size:9px;font-weight:900;color:{{ a.col }}">{{ a.k }}</span>
+        <span style="font-size:9px;font-weight:700">{{ a.v }}</span>
+        <span style="font-size:8.5px;color:var(--sb)">{{ a.d }}</span>
+        <span style="font-size:8px;font-weight:800;text-align:center;padding:2px 0;border-radius:6px;border:1px solid {{ a.col }};color:{{ a.col }}">{{ a.st }}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="background:var(--gls);border:1px solid var(--gbd);border-radius:16px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:10px 14px;display:flex;flex-direction:column;gap:4px">
+    <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:11px;font-weight:800;color:var(--vio)">GO-AROUND — thesis invalidation watch</span><span style="margin-left:auto;font-size:9px;font-weight:800;color:{{ gaCol }}">{{ gaNote }}</span></div>
+    <sc-for list="{{ goaround }}" as="g" hint-placeholder-count="5">
+      <div style="display:grid;grid-template-columns:16px 1fr 92px;gap:8px;align-items:center;border-top:1px solid var(--edg);padding-top:4px;font-variant-numeric:tabular-nums">
+        <span style="font-size:10px;font-weight:900;color:{{ g.okCol }}">{{ g.mark }}</span>
+        <span style="font-size:9px;color:var(--sb)">{{ g.k }}</span>
+        <span style="font-size:9px;font-weight:800;text-align:right;color:{{ g.okCol }}">{{ g.now }}</span>
+      </div>
+    </sc-for>
+  </div>
+</div>
+
+<div style="background:var(--gls);border:1px solid var(--gbd);border-radius:16px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:8px 14px;display:flex;gap:6px;align-items:center;overflow-x:auto">
+  <span style="font-size:9px;font-weight:800;text-transform:uppercase;color:var(--mu);white-space:nowrap">Fleet · 8 open</span>
+  <sc-for list="{{ fleet }}" as="f" hint-placeholder-count="8">
+    <div title="click to switch cockpit (mock)" style="cursor:pointer;flex:none;display:flex;flex-direction:column;align-items:center;gap:2px;border:1.5px solid {{ f.bd }};background:{{ f.bg }};border-radius:10px;padding:5px 8px">
+      <div style="position:relative;width:34px;height:24px;border-radius:6px;overflow:hidden;background:rgba(255,77,109,.35)">
+        <div style="position:absolute;left:0;right:0;top:0;height:{{ f.skyH }};background:rgba(79,140,255,.55)"></div>
+        <div style="position:absolute;left:6px;right:6px;top:50%;height:1.5px;background:var(--wrn)"></div>
+      </div>
+      <span style="font-size:8px;font-weight:800">{{ f.sym }}</span>
+      <span style="font-size:8px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ f.col }}">{{ f.r }}R</span>
+    </div>
+  </sc-for>
+</div>
+
+<div style="background:var(--gls);border:1px solid var(--gbd);border-radius:16px;box-shadow:var(--gsh);backdrop-filter:blur(22px);padding:10px 14px;display:grid;grid-template-columns:170px 1fr 1.15fr;gap:14px;align-items:start">
+  <div style="display:flex;flex-direction:column;gap:4px">
+    <span style="font-size:10px;font-weight:800;color:var(--wrn)">EICAS · FUEL — risk budget</span>
+    <div style="height:14px;border-radius:7px;background:var(--edg);overflow:hidden"><div id="ei-fuel" style="height:14px;width:100%;background:linear-gradient(90deg,var(--dn),var(--wrn),var(--acc));border-radius:7px"></div></div>
+    <span style="font-size:9px;font-variant-numeric:tabular-nums;color:var(--sb)">{{ fuel }} of daily loss-cap remaining</span>
+    <span style="font-size:7.5px;color:var(--mu)">empty = bot closes all &amp; disarms</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+    <sc-for list="{{ engines }}" as="e" hint-placeholder-count="4">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
+        <svg viewBox="0 0 100 60" style="width:100%;overflow:visible">
+          <path d="M14,54 A38,38 0 0,1 86,54" fill="none" stroke="var(--edg)" stroke-width="6" stroke-linecap="round"></path>
+          <path d="{{ e.zone }}" fill="none" stroke="{{ e.zc }}" stroke-width="6" stroke-linecap="round" opacity=".55"></path>
+          <g class="ei-needle" style="transform-box:fill-box;transform-origin:50% 100%"><line x1="50" y1="54" x2="50" y2="24" stroke="{{ e.col }}" stroke-width="2.5" stroke-linecap="round"></line></g>
+          <circle cx="50" cy="54" r="3.5" fill="{{ e.col }}"></circle>
+        </svg>
+        <span style="font-size:10px;font-weight:900;font-variant-numeric:tabular-nums;color:{{ e.col }}">{{ e.v }}</span>
+        <span style="font-size:7px;font-weight:700;text-transform:uppercase;color:var(--mu)">{{ e.k }}</span>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:2px">
+    <span style="font-size:10px;font-weight:800;color:var(--wrn)">CREW ALERTS</span>
+    <sc-for list="{{ alerts }}" as="a" hint-placeholder-count="5">
+      <div style="display:flex;gap:6px;align-items:baseline;font-variant-numeric:tabular-nums"><span style="font-size:8px;color:var(--mu)">{{ a.t }}</span><span style="font-size:9px;font-weight:800;color:{{ a.col }}">{{ a.k }}</span><span style="font-size:8.5px;color:var(--sb)">{{ a.d }}</span></div>
+    </sc-for>
+  </div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark'|'light'&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;tickMs&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:2200,&quot;min&quot;:800,&quot;max&quot;:6000,&quot;step&quot;:200,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, tick: 0 }
+  componentDidMount() {
+    document.documentElement.setAttribute('data-theme', this.curTheme())
+    this.t = setInterval(() => this.setState(s => ({ tick: s.tick + 1 })), this.props.tickMs ?? 2200)
+    this.animate()
+  }
+  componentDidUpdate() { this.animate() }
+  componentWillUnmount() { clearInterval(this.t); if (window.gsap) gsap.killTweensOf('#adi-ball,#pfd-vsi,#pfd-hdg,#ei-fuel,#alt-tp,#alt-sl,#alt-en,.ei-needle,#mfd-ac,#wx1,#wx2') }
+  curTheme() { return this.state.theme || (this.props.theme ?? 'dark') }
+  animate() {
+    if (!window.gsap) { setTimeout(() => this.animate(), 250); return }
+    const v = this._v; if (!v) return
+    gsap.to('#adi-ball', { yPercent: v.pitchY, rotation: v.roll, duration: 1.1, ease: 'power2.out' })
+    gsap.to('#pfd-vsi', { rotation: v.vsiA, duration: 1, ease: 'back.out(1.5)' })
+    gsap.to('#pfd-hdg', { xPercent: v.hdgX, duration: 1.1, ease: 'power2.out' })
+    gsap.to('#ei-fuel', { width: v.fuelW + '%', duration: 1, ease: 'power2.out' })
+    gsap.set('#alt-tp', { top: v.tpT + '%' })
+    gsap.set('#alt-en', { top: v.enT + '%' })
+    gsap.set('#alt-sl', { top: v.slT + '%' })
+    gsap.to('#mfd-ac', { x: v.acX, y: v.acY, duration: 1.1, ease: 'power2.out' })
+    if (!this._wx) { this._wx = 1; gsap.to('#wx1', { scale: 1.12, transformOrigin: 'center', duration: 2.2, repeat: -1, yoyo: true, ease: 'sine.inOut' }); gsap.to('#wx2', { scale: 1.25, transformOrigin: 'center', duration: 1.6, repeat: -1, yoyo: true, ease: 'sine.inOut' }) }
+    const nd = document.querySelectorAll('.ei-needle')
+    v.engA.forEach((a, i) => { if (nd[i]) gsap.to(nd[i], { rotation: a, duration: 1, ease: 'back.out(1.4)' }) })
+  }
+  renderVals() {
+    const tick = this.state.tick
+    const w = t => Math.sin(tick * .5 + t) * .5 + Math.sin(tick * .17 + t * 2) * .5
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x))
+    const entry = 76.85, tp = 79.4, sl = 75.2
+    const price = 77.29 + w(0) * .12
+    const rUnit = entry - sl
+    const rNow = (price - entry) / rUnit
+    const pnlUsd = (price - entry) * 1092 * 10
+    const f2 = n => n.toFixed(2)
+    // SPEED = momentum (pips/min); VSI = P&L rate (R/hr); HDG = multi-TF trend consensus −100 bear … +100 bull
+    const spd = w(1) * 1.6 + .5
+    const vsi = rNow * .7 + w(2) * .35
+    const hdgV = clamp(w(3) * 55 + 18, -100, 100)
+    const spdTicks = [2, 1, 0, -1, -2].map((v, i) => ({ v: (v >= 0 ? '+' : '') + (v + Math.round(spd)) , top: 14 + i * 18 }))
+    const altTicks = [0.3, 0.2, 0.1, 0, -0.1, -0.2, -0.3].map((d, i) => ({ v: f2(price + d), top: 11 + i * 13 }))
+    // tape positions: % from top, price span shown ±0.42
+    const span = .42
+    const pos = p => 50 - (p - price) / span * 50
+    // off-scale markers pin to staggered edge slots with ▲/▼ arrows
+    const mk = (p, name) => { const raw = pos(p); if (raw < 12) return { t: 13, lb: name + ' ' + f2(p) + ' ▲', off: true }; if (raw > 90) return { t: name === 'SL' ? 96 : 88, lb: name + ' ' + f2(p) + ' ▼', off: true }; return { t: raw, lb: name, off: false } }
+    const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
+    const hdgTicks = [[-100, 'BEAR'], [-75, ''], [-50, 'weak'], [-25, ''], [0, 'CHOP'], [25, ''], [50, 'weak'], [75, ''], [100, 'BULL']].map(([v, lb], i) => ({ v: lb || '·', left: 10 + i * 10, col: v < 0 ? 'var(--dn)' : v > 0 ? 'var(--up)' : 'var(--sb)' }))
+    // flown path = real price history buffer (time → x, price → y on the map's S/R frame)
+    if (!this._hist) this._hist = []
+    if (this._hist.length === 0 || this._hist[this._hist.length - 1].tick !== tick) {
+      this._hist.push({ tick, p: price }); if (this._hist.length > 40) this._hist.shift()
+    }
+    // map frame: y 168 = support 76.10, y 38 = resistance 79.60
+    const mapY = p => 168 - (p - 76.1) / (79.6 - 76.1) * 130
+    const H = this._hist
+    const x0 = 30, x1 = 190 // history occupies left leg, newest at aircraft
+    const flownPath = H.length > 1
+      ? H.map((h, i) => (i ? 'L' : 'M') + (x0 + (x1 - x0) * i / (H.length - 1)).toFixed(1) + ',' + mapY(h.p).toFixed(1)).join(' ')
+      : 'M' + x0 + ',' + mapY(entry).toFixed(1)
+    const acYm = mapY(price)
+    const planPath = 'M190,' + acYm.toFixed(1) + ' C260,' + (acYm - 20).toFixed(1) + ' 330,' + (mapY(tp) + 16).toFixed(1) + ' 420,' + mapY(tp).toFixed(1)
+    // TCAS traffic: correlated symbols as nearby flights. y ≈ own-path altitude ± relative performance, rot = their heading (up = climbing/bullish)
+    const TFC = [
+      ['HSI', .82, 40, -22, 'idx corr .82'],      // Hang Seng index — high positive corr
+      ['0003.HK', .74, 66, -30, 'peer corr .74'], // HK utility peer
+      ['0006.HK', .68, 26, -18, 'peer corr .68'],
+      ['HKD 1M', -.31, -34, 156, 'rates corr −.31'], // rates — inverse
+      ['CN50', .44, -52, -40, 'idx corr .44'],
+      ['XAU', .12, -80, 96, 'hedge corr .12']]
+    const traffic = TFC.map(([s, corr, dx, rotBase, meta], i) => {
+      const climbing = rotBase > -90 && rotBase < 90 ? (Math.abs(rotBase) < 60) : false
+      const same = corr >= .4 && Math.abs(rotBase) < 60
+      const rot = rotBase + w(8 + i) * 10
+      const vlen = 10 + Math.abs(corr) * 8
+      const rad = (rot - 90) * Math.PI / 180
+      return { sym: s, meta, x: 190 + dx, y: 112 - corr * 46 + w(10 + i) * 5, rot: rot.toFixed(0),
+        vx: (Math.cos(rad) * vlen).toFixed(1), vy: (Math.sin(rad) * vlen).toFixed(1),
+        col: same ? 'var(--up)' : corr < 0 ? 'var(--dn)' : 'var(--wrn)' }
+    })
+    const nSame = TFC.filter(([, c, , r]) => c >= .4 && Math.abs(r) < 60).length
+    const nDiv = TFC.length - nSame
+    const mktRead = nSame >= 3
+      ? 'HK utilities & index flying the same heading as you — sector-wide climb, tailwind confirmed. Rates ticking inverse (normal). Path to TP is with the traffic flow.'
+      : 'Correlated traffic scattering — sector consensus weakening; treat the climb as single-engine, tighten the trail.'
+    const legs = [
+      { k: 'LEG 1 — flown', v: 'ENTRY 76.85 ✓', s: '24/07 10:07 · filled 0.4bp slip', col: 'var(--wrn)', bd: 'var(--edg)' },
+      { k: 'LEG 2 — active', v: 'WPT +1R · scale-out 50%', s: 'arms at 78.50 · coded rule §2.4', col: 'var(--acc)', bd: 'var(--acc)' },
+      { k: 'LEG 3 — planned', v: 'TP 79.40', s: 'ETA ~4h at current velocity', col: 'var(--up)', bd: 'var(--edg)' }]
+    // EICAS
+    const riskUsed = clamp(rNow < 0 ? -rNow * 100 : 8, 0, 100)
+    const fuelW = 100 - riskUsed
+    const rvol = 1.4 + w(4) * .6, sprX = 1.1 + Math.abs(w(5)) * 1.4, marg = 18 + Math.abs(w(6)) * 6, lat = 42 + Math.abs(w(7)) * 16
+    const arc = f => { const a = Math.PI - f * Math.PI; return [50 + 38 * Math.cos(a), 54 - 38 * Math.sin(a)] }
+    const zone = f => { const [x1, y1] = arc(f), [x2, y2] = arc(1); return 'M' + x1.toFixed(1) + ',' + y1.toFixed(1) + ' A38,38 0 0,1 ' + x2.toFixed(1) + ',' + y2.toFixed(1) }
+    const E = [
+      ['RVOL ×', rvol, 0, 3, .73, v => v.toFixed(1)],
+      ['spread ×', sprX, 0, 3, .66, v => v.toFixed(1)],
+      ['margin %', marg, 0, 60, .75, v => Math.round(v) + ''],
+      ['latency ms', lat, 0, 120, .7, v => Math.round(v) + '']]
+    const engines = E.map(([k, val, lo, hi, red, fmt]) => {
+      const f = clamp((val - lo) / (hi - lo), 0, 1)
+      const hot = f >= red
+      return { k, v: fmt(val), col: hot ? 'var(--dn)' : 'var(--acc)', zone: zone(red), zc: 'var(--dn)' }
+    })
+    const engA = E.map(([, val, lo, hi]) => -90 + clamp((val - lo) / (hi - lo), 0, 1) * 180)
+    const ft = m => { const d = new Date(Date.now() - m * 60000); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') }
+    // Autopilot: armed actions with live distance-to-trigger
+    const eta = d => { const mins = spd > .05 ? Math.abs(d) / (spd * .01) : 0; return mins > 0 && mins < 900 ? '~' + (mins > 60 ? (mins / 60).toFixed(1) + 'h' : Math.round(mins) + 'm') : '—' }
+    const autopilot = [
+      { k: 'SCALE-OUT 50%', v: 'at 78.50 (+1R)', d: (78.5 - price).toFixed(2) + ' away · ETA ' + eta(78.5 - price), st: 'ARMED', col: 'var(--acc)' },
+      { k: 'TRAIL TIGHTEN', v: 'to 0.5R gap at +1.2R', d: (79.0 - price).toFixed(2) + ' away', st: 'ARMED', col: 'var(--acc)' },
+      { k: 'NEWS BLACKOUT', v: 'HK CPI 14:15–14:45', d: 'entries blocked · TP persists', st: 'SCHED', col: 'var(--wrn)' },
+      { k: 'TP CLOSE', v: 'at 79.40 (+1.55R)', d: (tp - price).toFixed(2) + ' away · ETA ' + eta(tp - price), st: 'ARMED', col: 'var(--up)' },
+      { k: 'SL CLOSE', v: 'at 76.85 (breakeven)', d: (price - entry).toFixed(2) + ' buffer', st: 'ARMED', col: 'var(--dn)' }]
+    // Go-around: live invalidation conditions
+    const vwapDev = w(4) * .8 + .3
+    const goaround = [
+      { k: 'Quadrant flips Q1 → Q2/Q3', now: 'Q1 holding', ok: true },
+      { k: 'RVOL dies below 0.6×', now: rvol.toFixed(1) + '×', ok: rvol >= .6 },
+      { k: '15m close below VWAP', now: (vwapDev >= 0 ? '+' : '') + vwapDev.toFixed(2) + 'σ', ok: vwapDev >= 0 },
+      { k: 'Sector traffic diverges (<2 same-heading)', now: nSame + ' same', ok: nSame >= 2 },
+      { k: 'Spread guard > 2.5×', now: sprX.toFixed(1) + '×', ok: sprX <= 2.5 }]
+    const gaBreach = goaround.filter(g => !g.ok).length
+    goaround.forEach(g => { g.mark = g.ok ? '✓' : '✕'; g.okCol = g.ok ? 'var(--acc)' : 'var(--dn)' })
+    // Fleet: other open trades as mini attitude balls
+    const FLEET = [['0002.HK', .23, true], ['BTCUSD', .61, false], ['XAUUSD', .42, false], ['EURUSD', -.18, false], ['GER40', .12, false], ['US500', .35, false], ['USDJPY', -.44, false], ['AUS200', .08, false]]
+    const fleet = FLEET.map(([s, r0, active], i) => {
+      const r = r0 + w(12 + i) * .08
+      return { sym: s, r: (r >= 0 ? '+' : '') + r.toFixed(2), col: r >= 0 ? 'var(--up)' : 'var(--dn)', skyH: clamp(50 + r / 2 * 42, 8, 92) + '%', bd: active ? 'var(--acc)' : 'var(--edg)', bg: active ? 'var(--acs)' : 'transparent' }
+    })
+    const alerts = []
+    if (sprX > 2) alerts.push({ t: ft(0), k: 'CAUTION', d: 'spread ' + sprX.toFixed(1) + '× backtest — pending entries suspended', col: 'var(--wrn)' })
+    if (rvol > 1.8) alerts.push({ t: ft(2), k: 'CAUTION', d: 'RVOL ' + rvol.toFixed(1) + '× — volatility expansion, trail tightened', col: 'var(--wrn)' })
+    if (rNow < -.4) alerts.push({ t: ft(1), k: 'WARNING', d: 'price within 0.6R of stop — no averaging down permitted', col: 'var(--dn)' })
+    alerts.push({ t: ft(14), k: 'ADVISORY', d: 'WX cell ahead: HK CPI 14:30 UTC — TP orders persist, new entries blocked ±15m', col: 'var(--sb)' })
+    alerts.push({ t: ft(48), k: 'ADVISORY', d: 'SL moved to breakeven per trailing rule after +0.8R', col: 'var(--sb)' })
+    alerts.push({ t: ft(192), k: 'ADVISORY', d: 'entry filled 76.85 · slippage 0.4bp · quadrant Q1 agrees with LONG', col: 'var(--sb)' })
+    this._v = { pitchY: clamp(-rNow / 2 * 42, -46, 46), roll: clamp(-hdgV / 100 * 12, -14, 14), vsiA: clamp(-vsi / 2 * 80, -84, 84), hdgX: -hdgV / 10, fuelW,
+      tpT: mTP.t, enT: mEN.t, slT: mSL.t, acX: 0, acY: acYm - 112, engA }
+    return { sym: '0002.HK', lots: '1092.00', timeIn: '3.2h',
+      pnl: (pnlUsd >= 0 ? '+' : '−') + '$' + Math.abs(pnlUsd).toFixed(0), rNow: (rNow >= 0 ? '+' : '') + rNow.toFixed(2) + 'R', rCol: rNow >= 0 ? 'var(--up)' : 'var(--dn)',
+      spd: (spd >= 0 ? '+' : '') + spd.toFixed(2), spdCol: spd >= 0 ? 'var(--up)' : 'var(--dn)', spdTicks,
+      price: f2(price), altTicks, tpLb: mTP.lb, enLb: mEN.lb, slLb: mSL.lb,
+      tpBrd: mTP.off ? 'none' : '2px solid var(--up)', enBrd: mEN.off ? 'none' : '2px dashed var(--wrn)', slBrd: mSL.off ? 'none' : '2px solid var(--dn)',
+      vsi: (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: vsi >= 0 ? 'var(--up)' : 'var(--dn)',
+      hdg: hdgV >= 25 ? 'BULL ' + Math.round(hdgV) : hdgV <= -25 ? 'BEAR ' + Math.round(-hdgV) : 'CHOP', hdgCol: hdgV >= 25 ? 'var(--up)' : hdgV <= -25 ? 'var(--dn)' : 'var(--sb)', hdgTicks,
+      rollNote: hdgV >= 0 ? 'banking toward TP' : 'banking away — diverging',
+      legs, traffic, nSame: String(nSame), nDiv: String(nDiv), mktRead, flownPath, planPath, fuel: Math.round(fuelW) + '%', engines, alerts,
+      autopilot, goaround, gaNote: gaBreach === 0 ? 'thesis intact — all go-around conditions clear' : gaBreach + ' condition(s) breached — bot exits on ' + (gaBreach >= 2 ? 'NEXT BAR' : 'confirmation'), gaCol: gaBreach === 0 ? 'var(--acc)' : gaBreach >= 2 ? 'var(--dn)' : 'var(--wrn)', fleet,
+      clock: new Date().toUTCString().slice(17, 25) + ' UTC',
+      themeLabel: this.curTheme() === 'dark' ? '☾ Dark' : '☀ Light',
+      toggleTheme: () => { const nt = this.curTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', nt); this.setState({ theme: nt }) } }
+  }
+}
+</script>
+</body>
+</html>

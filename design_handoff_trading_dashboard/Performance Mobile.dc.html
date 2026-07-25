@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060913;--gl:rgba(18,24,46,.72);--gbd:rgba(140,165,255,.22);--edg:rgba(90,110,200,.24);--acc:#4f8cff;--acs:rgba(79,140,255,.14);--up:#4f8cff;--dn:#ff4d6d;--dns:rgba(255,77,109,.12);--tx:#e8edfb;--sb:#9aa8cc;--mu:#6b7899;--vio:#a855f7;--wrn:#ffc466;--scr:linear-gradient(160deg,#0a1022 0%,#060913 55%,#0d0a1e 100%);--nav:rgba(18,24,46,.9);--b1:rgba(56,99,255,.32);--b2:rgba(147,51,234,.26);--b3:rgba(219,39,119,.16)}
+[data-theme="light"]{--bg:#eef1fb;--gl:rgba(255,255,255,.72);--gbd:rgba(120,140,200,.35);--edg:rgba(100,120,190,.26);--acc:#2b5cff;--acs:rgba(59,108,255,.12);--up:#2b5cff;--dn:#e11d48;--dns:rgba(225,29,72,.1);--tx:#131a2e;--sb:#47536f;--mu:#5a6785;--vio:#7c3aed;--wrn:#a3510a;--scr:linear-gradient(160deg,#f4f6ff 0%,#eef1fb 55%,#f4efff 100%);--nav:rgba(255,255,255,.92);--b1:rgba(80,120,255,.35);--b2:rgba(168,85,247,.28);--b3:rgba(236,72,153,.2)}
+body{margin:0;background:var(--bg);font-family:'Inter',system-ui,sans-serif;color:var(--tx)}
+body::before{content:'';position:fixed;inset:-20%;z-index:0;background:radial-gradient(42% 38% at 18% 18%,var(--b1),transparent 70%),radial-gradient(36% 42% at 82% 12%,var(--b2),transparent 70%),radial-gradient(46% 40% at 55% 92%,var(--b3),transparent 72%);pointer-events:none}
+a{color:var(--acc)}a:hover{color:var(--vio)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</helmet>
+<section style="position:relative;z-index:1;padding:26px 28px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;align-items:baseline;gap:10px"><span style="font:600 13px Inter,system-ui,sans-serif">bot-trade · Performance — iPhone &amp; iPhone Max</span><span style="font:400 11.5px Inter,system-ui,sans-serif;color:var(--sb)">same ledger &amp; data model as the desktop page · four tabs shown across the two sizes · live ticking</span></div>
+<div style="display:flex;gap:34px;align-items:flex-start;flex-wrap:wrap">
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n430 }}" height="{{ n932 }}" hint-size="430px,932px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 14px 96px;display:flex;flex-direction:column;gap:10px">
+    <div id="m-now" style="display:flex;align-items:center;gap:8px;scroll-margin:40px">
+      <div style="display:flex;flex-direction:column"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Now</span><span style="font-size:10px;color:var(--sb)">iPhone Max · 430pt</span></div>
+      <span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:2px 7px"><span style="width:5px;height:5px;border-radius:50%;background:var(--acc);animation:pulse 1.6s infinite"></span>LIVE</span>
+      <span style="margin-left:auto;font-size:11px;font-weight:600;color:var(--sb);font-variant-numeric:tabular-nums">{{ clock }}</span>
+      <button onClick="{{ toggleTheme }}" style="cursor:pointer;font-family:inherit;font-size:10px;font-weight:700;color:var(--tx);background:var(--acs);border:1px solid var(--gbd);border-radius:999px;padding:4px 10px">{{ themeLabel }}</button>
+    </div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">
+      <span style="font-size:9.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:3px 10px">Now</span>
+      <a href="#m-ledger" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Ledger</a>
+      <a href="#m-markets" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Markets</a>
+      <a href="#m-trades" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Trades</a>
+      <a href="#m-accounts" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Accounts</a>
+    </div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap">
+      <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="5">
+        <span style="font-size:10px;font-weight:600;padding:3px 9px;border-radius:999px;border:1px solid {{ s.bd }};color:{{ s.col }};background:{{ s.bg }}">{{ s.label }}</span>
+      </sc-for>
+    </div>
+    <sc-for list="{{ accounts }}" as="a" hint-placeholder-count="3">
+      <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu)">{{ a.name }} {{ a.id }} · {{ a.ccy }}</span><span style="margin-left:auto;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ a.dayCol }}">day {{ a.day }}</span></div>
+        <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:17px;font-weight:800;font-variant-numeric:tabular-nums">{{ a.bal }}</span><span style="font-size:10px;color:var(--sb)">eq {{ a.eq }}</span><span style="margin-left:auto;font-size:10px;color:var(--sb)">live <span style="font-weight:800;color:{{ a.liveCol }}">{{ a.live }}</span> · {{ a.livePct }}</span></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;border-top:1px solid var(--edg);padding-top:4px">
+          <span style="display:flex;flex-direction:column"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">TP nett</span><span style="font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--up)">{{ a.tpNet }}</span></span>
+          <span style="display:flex;flex-direction:column"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">SL nett</span><span style="font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--dn)">{{ a.slNet }}</span></span>
+          <span style="display:flex;flex-direction:column"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">30D pace</span><span style="font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ a.fcCol }}">{{ a.fc }}</span></span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <div style="height:4px;border-radius:999px;background:var(--edg)"><div style="height:4px;border-radius:999px;width:{{ a.usedW }};background:{{ a.usedCol }}"></div></div>
+          <span style="font-size:8.5px;color:var(--mu)">loss-cap used <span style="font-weight:800;color:{{ a.usedCol }}">{{ a.used }}</span> of −{{ a.cap }} · at 100% bot closes all &amp; disarms</span>
+        </div>
+      </div>
+    </sc-for>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:4px">
+      <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu)">Today · since 22:00 UTC</span><span style="margin-left:auto;font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ today.col }}">{{ today.pnl }}</span></div>
+      <span style="font-size:9.5px;color:var(--mu)">{{ today.meta }} · PF {{ today.pf }}</span>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <div style="display:flex;align-items:baseline;gap:8px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu)">Open positions — floating</span><span style="margin-left:auto;font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ openTotCol }}">{{ openTot }}</span></div>
+      <sc-for list="{{ openPos }}" as="p" hint-placeholder-count="8">
+        <div style="display:grid;grid-template-columns:74px 66px 1fr 96px;gap:8px;align-items:center;border-top:1px solid var(--edg);padding-top:5px;font-variant-numeric:tabular-nums">
+          <span style="display:flex;flex-direction:column"><span style="font-size:11px;font-weight:800">{{ p.sym }}</span><span style="font-size:8.5px;color:var(--mu)">{{ p.strat }}</span></span>
+          <span style="font-size:9px;font-weight:700;color:{{ p.sideCol }}">{{ p.side }} {{ p.lots }}</span>
+          <span style="display:flex;flex-direction:column;gap:2px"><span style="font-size:11px;font-weight:800;color:{{ p.pnlCol }}">{{ p.pnl }}</span><span style="position:relative;height:4px;border-radius:999px;background:var(--edg);display:block"><span style="position:absolute;left:0;top:0;bottom:0;width:{{ p.prog }}%;border-radius:999px;background:linear-gradient(90deg,var(--dn),var(--acc))"></span></span></span>
+          <span style="font-size:8.5px;color:var(--mu);text-align:right">SL {{ p.sld }} · TP {{ p.tpd }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="position:absolute;left:14px;right:14px;bottom:40px;background:var(--nav);backdrop-filter:blur(20px);border:1px solid var(--gbd);border-radius:999px;padding:7px 8px;display:grid;grid-template-columns:repeat(4,1fr)">
+      <span style="text-align:center;font-size:10.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:6px 0">Now</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Ledger</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Markets</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Trades</span>
+    </div>
+  </div>
+</x-import>
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n393 }}" height="{{ n852 }}" hint-size="393px,852px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 12px 96px;display:flex;flex-direction:column;gap:8px">
+    <div id="m-ledger" style="display:flex;align-items:baseline;gap:8px;scroll-margin:40px"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Ledger</span><span style="font-size:10px;color:var(--sb)">carry in → net → carry out · tap a row for markets</span></div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">
+      <a href="#m-now" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Now</a>
+      <span style="font-size:9.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:3px 10px">Ledger</span>
+      <a href="#m-markets" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Markets</a>
+      <a href="#m-trades" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Trades</a>
+      <a href="#m-accounts" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Accounts</a>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">Acct</span>
+      <sc-for list="{{ acctFilters }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.sel }}" title="{{ f.sub }}" style="cursor:pointer;font-family:inherit;font-size:8.5px;font-weight:700;color:{{ f.col }};background:{{ f.bg }};border:1px solid {{ f.bd }};border-radius:999px;padding:3px 9px">{{ f.label }}</button></sc-for>
+    </div>
+    <sc-for list="{{ ledgerM }}" as="r" hint-placeholder-count="14">
+      <div style="background:var(--gl);border:1px solid {{ r.bd }};border-radius:12px;overflow:hidden">
+        <button onClick="{{ r.tgl }}" style="cursor:pointer;font-family:inherit;width:100%;text-align:left;background:transparent;border:none;color:var(--tx);display:grid;grid-template-columns:76px 1fr 82px;gap:6px;align-items:center;padding:7px 11px;font-variant-numeric:tabular-nums">
+          <span style="display:flex;flex-direction:column"><span style="font-size:11.5px;font-weight:800">{{ r.label }}</span><span style="font-size:8px;color:var(--acc)">{{ r.range }}</span></span>
+          <span style="display:flex;flex-direction:column"><span style="font-size:9px;color:var(--sb)">{{ r.cin }} → <span style="font-weight:800;color:var(--tx)">{{ r.cout }}</span></span><span style="font-size:8.5px;color:var(--mu)">{{ r.meta }} · TP/SL {{ r.tpsl }} · edge <span style="font-weight:800;color:{{ r.edgeCol }}">{{ r.edge }}</span></span></span>
+          <span style="font-size:13px;font-weight:800;text-align:right;color:{{ r.col }}">{{ r.net }}</span>
+        </button>
+        <sc-if value="{{ r.open }}" hint-placeholder-val="{{ false }}">
+          <div style="border-top:1px solid var(--edg);background:var(--acs);padding:6px 11px;display:flex;flex-direction:column;gap:4px">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">
+              <sc-for list="{{ r.mk }}" as="m" hint-placeholder-count="6">
+                <span style="display:flex;flex-direction:column;border:1px solid var(--edg);border-radius:8px;padding:4px 7px"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">{{ m.name }}</span><span style="font-size:10.5px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ m.col }}">{{ m.v }}</span><span style="font-size:7.5px;color:var(--mu)">{{ m.pf }}</span></span>
+              </sc-for>
+            </div>
+            <span style="font-size:9px;line-height:1.4;color:var(--sb)">{{ r.ins }}</span>
+          </div>
+        </sc-if>
+      </div>
+    </sc-for>
+    <div style="position:absolute;left:12px;right:12px;bottom:40px;background:var(--nav);backdrop-filter:blur(20px);border:1px solid var(--gbd);border-radius:999px;padding:7px 8px;display:grid;grid-template-columns:repeat(4,1fr)">
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Now</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:6px 0">Ledger</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Markets</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Trades</span>
+    </div>
+  </div>
+</x-import>
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n393 }}" height="{{ n852 }}" hint-size="393px,852px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 12px 96px;display:flex;flex-direction:column;gap:8px">
+    <div id="m-markets" style="display:flex;align-items:baseline;gap:8px;scroll-margin:40px"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Markets</span><span style="font-size:10px;color:var(--sb)">FX banded · crypto 24/7 · regime matrix on Accounts tab</span></div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">
+      <a href="#m-now" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Now</a>
+      <a href="#m-ledger" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Ledger</a>
+      <span style="font-size:9.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:3px 10px">Markets</span>
+      <a href="#m-trades" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Trades</a>
+      <a href="#m-accounts" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Accounts</a>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">Acct</span>
+      <sc-for list="{{ acctFilters }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.sel }}" title="{{ f.sub }}" style="cursor:pointer;font-family:inherit;font-size:8.5px;font-weight:700;color:{{ f.col }};background:{{ f.bg }};border:1px solid {{ f.bd }};border-radius:999px;padding:3px 9px">{{ f.label }}</button></sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--acc)">Crypto — runs 24/7</span>
+        <div style="margin-left:auto;display:flex;gap:4px">
+          <sc-for list="{{ cryptoK }}" as="k" hint-placeholder-count="3"><span style="font-size:8.5px;font-weight:700;padding:2px 7px;border-radius:999px;border:1px solid var(--gbd);background:var(--acs)"><span style="color:var(--mu)">{{ k.k }} </span><span style="font-variant-numeric:tabular-nums;color:{{ k.col }}">{{ k.v }}</span></span></sc-for>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:64px 78px 56px 66px 1fr;gap:6px;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);border-bottom:1px solid var(--edg);padding-bottom:2px"><span>Symbol</span><span>Price</span><span>Δ now</span><span>7D P&L</span><span style="text-align:right">Tr · Win · PF</span></div>
+      <sc-for list="{{ cryptoRows }}" as="c" hint-placeholder-count="4">
+        <div style="display:grid;grid-template-columns:64px 78px 56px 66px 1fr;gap:6px;align-items:center;border-bottom:1px solid var(--edg);padding:2px 0;font-variant-numeric:tabular-nums">
+          <span style="font-size:10px;font-weight:800">{{ c.sym }}</span>
+          <span style="font-size:10px;font-weight:800">{{ c.price }}</span>
+          <span style="font-size:8.5px;font-weight:700;text-align:center;padding:1px 0;border-radius:5px;color:{{ c.chgCol }};background:{{ c.chgBg }}">{{ c.chg }}</span>
+          <span style="font-size:10px;font-weight:800;color:{{ c.col }}">{{ c.pnl }}</span>
+          <span style="font-size:8px;color:var(--mu);text-align:right">{{ c.meta }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <span style="font-size:11px;font-weight:800;color:var(--acc)">Forex — banded, all pairs</span>
+      <sc-for list="{{ fxBands }}" as="b" hint-placeholder-count="6">
+        <div style="border-top:1px solid var(--edg);padding-top:4px;display:flex;flex-direction:column;gap:3px">
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:10px;font-weight:800">{{ b.band }}</span><span style="font-size:8px;color:var(--mu)">{{ b.meta }}</span><span style="margin-left:auto;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ b.col }}">{{ b.net }}</span></div>
+          <div style="display:flex;gap:3px;flex-wrap:wrap">
+            <sc-for list="{{ b.pairs }}" as="p" hint-placeholder-count="6"><span style="font-size:8.5px;font-weight:600;padding:1px 5px;border-radius:5px;border:1px solid var(--edg);font-variant-numeric:tabular-nums">{{ p.sym }} <span style="font-weight:800;color:{{ p.col }}">{{ p.v }}</span></span></sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="position:absolute;left:12px;right:12px;bottom:40px;background:var(--nav);backdrop-filter:blur(20px);border:1px solid var(--gbd);border-radius:999px;padding:7px 8px;display:grid;grid-template-columns:repeat(4,1fr)">
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Now</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Ledger</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:6px 0">Markets</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Trades</span>
+    </div>
+  </div>
+</x-import>
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n393 }}" height="{{ n852 }}" hint-size="393px,852px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 12px 96px;display:flex;flex-direction:column;gap:8px">
+    <div id="m-trades" style="display:flex;align-items:baseline;gap:8px;scroll-margin:40px"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Trades</span><span style="font-size:10px;color:var(--sb)">winners &amp; laggards explained · 30D</span></div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">
+      <a href="#m-now" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Now</a>
+      <a href="#m-ledger" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Ledger</a>
+      <a href="#m-markets" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Markets</a>
+      <span style="font-size:9.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:3px 10px">Trades</span>
+      <a href="#m-accounts" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Accounts</a>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap;align-items:center"><span style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--mu)">Acct</span>
+      <sc-for list="{{ acctFilters }}" as="f" hint-placeholder-count="4"><button onClick="{{ f.sel }}" title="{{ f.sub }}" style="cursor:pointer;font-family:inherit;font-size:8.5px;font-weight:700;color:{{ f.col }};background:{{ f.bg }};border:1px solid {{ f.bd }};border-radius:999px;padding:3px 9px">{{ f.label }}</button></sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <span style="font-size:11px;font-weight:800;color:var(--up)">Winners — best closed</span>
+      <sc-for list="{{ winTrades }}" as="t" hint-placeholder-count="4">
+        <div style="border-top:1px solid var(--edg);padding-top:4px;display:flex;flex-direction:column;gap:2px">
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:10.5px;font-weight:800">{{ t.sym }}</span><span style="font-size:8.5px;color:var(--sb)">{{ t.sd }}</span><span style="margin-left:auto;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ t.col }}">{{ t.pnl }}</span></div>
+          <span style="font-size:8.5px;color:var(--sb);font-variant-numeric:tabular-nums">{{ t.when }}</span>
+          <span style="font-size:8.5px;color:var(--mu)">{{ t.why }} · {{ t.strat }}</span>
+          <span style="font-size:8px;color:var(--acc);font-variant-numeric:tabular-nums">{{ t.ind }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <span style="font-size:11px;font-weight:800;color:var(--dn)">Laggards — worst closed</span>
+      <sc-for list="{{ lagTrades }}" as="t" hint-placeholder-count="4">
+        <div style="border-top:1px solid var(--edg);padding-top:4px;display:flex;flex-direction:column;gap:2px">
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:10.5px;font-weight:800">{{ t.sym }}</span><span style="font-size:8.5px;color:var(--sb)">{{ t.sd }}</span><span style="margin-left:auto;font-size:11px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ t.col }}">{{ t.pnl }}</span></div>
+          <span style="font-size:8.5px;color:var(--sb);font-variant-numeric:tabular-nums">{{ t.when }}</span>
+          <span style="font-size:8.5px;color:var(--mu)">{{ t.why }} · {{ t.strat }}</span>
+          <span style="font-size:8px;color:var(--acc);font-variant-numeric:tabular-nums">{{ t.ind }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="position:absolute;left:12px;right:12px;bottom:40px;background:var(--nav);backdrop-filter:blur(20px);border:1px solid var(--gbd);border-radius:999px;padding:7px 8px;display:grid;grid-template-columns:repeat(4,1fr)">
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Now</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Ledger</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:600;color:var(--sb);padding:6px 0">Markets</span>
+      <span style="text-align:center;font-size:10.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:6px 0">Trades</span>
+    </div>
+  </div>
+</x-import>
+
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ isDark }}" width="{{ n393 }}" height="{{ n852 }}" hint-size="393px,852px">
+  <div style="min-height:100%;background:var(--scr);box-sizing:border-box;padding:64px 12px 40px;display:flex;flex-direction:column;gap:8px">
+    <div id="m-accounts" style="display:flex;align-items:center;gap:8px;scroll-margin:40px"><span style="font-size:17px;font-weight:800;letter-spacing:-.02em">Accounts</span><span style="font-size:10px;color:var(--sb)">performance gradient &amp; data feed</span><button onClick="{{ toggleTheme }}" style="cursor:pointer;font-family:inherit;margin-left:auto;font-size:10px;font-weight:700;color:var(--tx);background:var(--acs);border:1px solid var(--gbd);border-radius:999px;padding:4px 10px">{{ themeLabel }}</button></div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap">
+      <a href="#m-now" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Now</a>
+      <a href="#m-ledger" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Ledger</a>
+      <a href="#m-markets" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Markets</a>
+      <a href="#m-trades" style="font-size:9.5px;font-weight:600;color:var(--sb);border:1px solid var(--edg);border-radius:999px;padding:3px 10px;text-decoration:none">Trades</a>
+      <span style="font-size:9.5px;font-weight:800;color:#fff;background:var(--acc);border-radius:999px;padding:3px 10px">Accounts</span>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
+      <span style="font-size:11px;font-weight:800;color:var(--acc)">Gradient — timeframe × account</span>
+      <div style="display:grid;grid-template-columns:52px repeat(4,1fr);gap:3px;font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--mu)">
+        <span>Window</span>
+        <sc-for list="{{ gradCols }}" as="c" hint-placeholder-count="4"><span style="text-align:center">{{ c.name }}</span></sc-for>
+      </div>
+      <sc-for list="{{ gradT }}" as="r" hint-placeholder-count="14">
+        <div style="display:grid;grid-template-columns:52px repeat(4,1fr);gap:3px;align-items:center">
+          <span style="font-size:9px;font-weight:700">{{ r.label }}</span>
+          <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="4"><span style="font-size:8px;font-weight:700;text-align:center;padding:2px 0;border-radius:4px;background:{{ c.bg }};color:{{ c.col }};font-variant-numeric:tabular-nums">{{ c.v }}</span></sc-for>
+        </div>
+      </sc-for>
+      <span style="font-size:7.5px;color:var(--mu)">blue = net gain · red = net loss · shaded per column</span>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
+      <span style="font-size:11px;font-weight:800;color:var(--acc)">Gradient — asset × account · 30D</span>
+      <sc-for list="{{ gradA }}" as="r" hint-placeholder-count="6">
+        <div style="display:grid;grid-template-columns:52px repeat(4,1fr);gap:3px;align-items:center">
+          <span style="font-size:9px;font-weight:700">{{ r.label }}</span>
+          <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="4"><span style="font-size:8px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;background:{{ c.bg }};color:{{ c.col }};font-variant-numeric:tabular-nums">{{ c.v }}</span></sc-for>
+        </div>
+      </sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:4px">
+      <span style="font-size:11px;font-weight:800;color:var(--acc)">Macro regime matrix</span>
+      <span style="font-size:8px;color:var(--sb)">growth × inflation · ring = volatility · account filter above applies to the quadrant cards</span>
+      <svg viewBox="0 0 360 256" style="width:100%;overflow:visible">
+        <g>
+          <text x="6" y="30" font-size="6.5" font-weight="700" fill="var(--sb)">Lo Vol</text>
+          <rect x="28" y="24" width="10" height="7" rx="1.5" fill="rgba(79,140,255,.35)"></rect>
+          <rect x="38" y="24" width="10" height="7" rx="1.5" fill="rgba(255,196,102,.4)"></rect>
+          <rect x="48" y="24" width="10" height="7" rx="1.5" fill="rgba(255,140,90,.4)"></rect>
+          <rect x="58" y="24" width="10" height="7" rx="1.5" fill="rgba(255,77,109,.45)"></rect>
+          <text x="72" y="30" font-size="6.5" font-weight="700" fill="var(--dn)">Hi Vol</text>
+        </g>
+        <ellipse cx="180" cy="128" rx="165" ry="118" fill="rgba(255,77,109,.16)"></ellipse>
+        <ellipse cx="180" cy="128" rx="132" ry="94" fill="rgba(255,77,109,.14)"></ellipse>
+        <ellipse cx="180" cy="128" rx="99" ry="70" fill="rgba(255,196,102,.16)"></ellipse>
+        <ellipse cx="180" cy="128" rx="66" ry="47" fill="rgba(255,196,102,.2)"></ellipse>
+        <ellipse cx="180" cy="128" rx="33" ry="24" fill="rgba(79,140,255,.22)"></ellipse>
+        <line x1="180" y1="6" x2="180" y2="250" stroke="var(--edg)" stroke-width="1"></line>
+        <line x1="8" y1="128" x2="352" y2="128" stroke="var(--edg)" stroke-width="1"></line>
+        <text x="180" y="1" text-anchor="middle" font-size="7.5" font-weight="800" font-style="italic" fill="var(--tx)">Rising inflation</text>
+        <text x="180" y="256" text-anchor="middle" font-size="7.5" font-weight="800" font-style="italic" fill="var(--tx)">Slowing inflation</text>
+        <text x="4" y="122" font-size="7.5" font-weight="800" font-style="italic" fill="var(--tx)">Slowing growth</text>
+        <text x="356" y="122" text-anchor="end" font-size="7.5" font-weight="800" font-style="italic" fill="var(--tx)">Accelerating growth</text>
+        <sc-for list="{{ regime }}" as="p" hint-placeholder-count="13">
+          <g>
+            <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="3" fill="var(--acc)" stroke="var(--bg)" stroke-width="1"></circle>
+            <text x="{{ p.tx }}" y="{{ p.cy }}" text-anchor="{{ p.anc }}" dominant-baseline="middle" font-size="7" font-weight="700" fill="var(--tx)">{{ p.name }}</text>
+          </g>
+        </sc-for>
+      </svg>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
+        <sc-for list="{{ quadCards }}" as="q" hint-placeholder-count="4">
+          <div style="border:1px solid {{ q.bd }};background:{{ q.bg }};border-radius:10px;padding:6px 8px;display:flex;flex-direction:column;gap:2px">
+            <div style="display:flex;align-items:baseline;gap:4px"><span style="font-size:8.5px;font-weight:800">{{ q.title }}</span><span style="margin-left:auto;font-size:8.5px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ q.totCol }}">{{ q.tot }}</span></div>
+            <span style="font-size:7px;line-height:1.35;color:var(--sb)">{{ q.txt }}</span>
+            <sc-for list="{{ q.rows }}" as="r" hint-placeholder-count="2">
+              <div style="display:flex;align-items:baseline;gap:4px;border-top:1px solid var(--edg);padding-top:2px;font-variant-numeric:tabular-nums"><span style="font-size:8px;font-weight:800">{{ r.sym }}</span><span style="font-size:7px;color:var(--sb)">{{ r.sd }}</span><span style="margin-left:auto;font-size:8px;font-weight:800;color:{{ r.col }}">{{ r.pnl }}</span></div>
+            </sc-for>
+            <sc-if value="{{ q.none }}" hint-placeholder-val="{{ false }}"><span style="font-size:7px;color:var(--mu);border-top:1px solid var(--edg);padding-top:2px">no open trades here</span></sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:4px">
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--acc)">Balance in / out</span><span style="font-size:8px;color:var(--sb)">non-trading cash flows</span><span style="margin-left:auto;font-size:10px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ xferNet.col }}">net {{ xferNet.v }}</span></div>
+      <sc-for list="{{ xfers }}" as="x" hint-placeholder-count="7">
+        <div style="border-top:1px solid var(--edg);padding-top:3px;display:flex;flex-direction:column;gap:1px">
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:9.5px;font-weight:800">{{ x.kind }}</span><span style="font-size:8px;color:var(--sb)">{{ x.acctN }}</span><span style="margin-left:auto;font-size:10px;font-weight:800;font-variant-numeric:tabular-nums;color:{{ x.col }}">{{ x.amt }}</span></div>
+          <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:8px;color:var(--sb);font-variant-numeric:tabular-nums">{{ x.when }}</span><span style="font-size:8px;color:var(--mu)">{{ x.note }}</span><span style="margin-left:auto;font-size:7.5px;font-weight:700;text-transform:uppercase;color:{{ x.stCol }}">{{ x.st }}</span></div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="background:var(--gl);border:1px solid var(--gbd);border-radius:14px;padding:9px 12px;display:flex;flex-direction:column;gap:5px">
+      <div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:11px;font-weight:800;color:var(--vio)">Data feed — core universal essentials</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:9px;font-weight:800">OHLCV data</span><span style="font-size:8.5px;color:var(--sb)">open · high · low · close · volume — 53 symbols streaming on 1m · 15m · 1h · 4h · 1D</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--edg);padding-top:3px"><span style="font-size:9px;font-weight:800">Account &amp; portfolio state</span><span style="font-size:8.5px;color:var(--sb);font-variant-numeric:tabular-nums">cash $138,180 · margin avail $96,720 · unrealized <span style="font-weight:800;color:{{ openTotCol }}">{{ openTot }}</span></span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--edg);padding-top:3px"><span style="font-size:9px;font-weight:800">Execution parameters</span><span style="font-size:8.5px;color:var(--sb);font-variant-numeric:tabular-nums">EUR/USD spread 0.6p · BTC $12.4 · fee $3.50/lot RT · latency {{ lat }} · slippage cap 0.8p</span></div>
+      <div style="display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--edg);padding-top:3px"><span style="font-size:9px;font-weight:800">Risk controls</span><span style="font-size:8.5px;color:var(--sb);font-variant-numeric:tabular-nums">SL set 8/8 open · TP set 8/8 · max drawdown cap 3%/day · equity stop armed</span></div>
+    </div>
+  </div>
+</x-import>
+
+</div>
+<p style="margin:0;font:12px/1.5 Inter,system-ui,sans-serif;color:var(--sb)">Desktop version: <a href="Performance Dashboard.dc.html">Performance Dashboard</a> · tabs are a static mock across four frames — say the word to make one frame fully tappable</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;live&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;tickMs&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:2400,&quot;min&quot;:800,&quot;max&quot;:8000,&quot;step&quot;:200,&quot;unit&quot;:&quot;ms&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
+class Component extends DCLogic {
+  state = { open: { '1W': true }, tick: 0, theme: null, acct: 'all' }
+  componentDidMount() {
+    document.documentElement.setAttribute('data-theme', this.curTheme())
+    if (this.props.live ?? true) this.t = setInterval(() => this.setState(s => ({ tick: s.tick + 1 })), this.props.tickMs ?? 2400)
+  }
+  curTheme() { return this.state.theme || this.props.theme || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') }
+  componentWillUnmount() { clearInterval(this.t) }
+  m(n, d) { const dd = d ?? 0; return (n < 0 ? '−' : '+') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: dd, minimumFractionDigits: dd }) }
+  c(n) { return n >= 0 ? 'var(--up)' : 'var(--dn)' }
+  agg(list) {
+    const o = { n: list.length, pnl: 0, wins: 0, gw: 0, gl: 0, tp: 0, part: 0, sl: 0, rrSum: 0 }
+    for (const t of list) { o.pnl += t.pnl; o.rrSum += t.rr; if (t.pnl >= 0) { o.wins++; o.gw += t.pnl } else o.gl -= t.pnl; if (t.out === 'tp') o.tp++; else if (t.out === 'part') o.part++; else if (t.out === 'sl') o.sl++ }
+    o.wr = o.n ? Math.round(100 * o.wins / o.n) : 0
+    o.pf = o.gl > 0 ? o.gw / o.gl : (o.gw > 0 ? 9.9 : 0)
+    o.rr = o.n ? o.rrSum / o.n : 0
+    o.needs = o.rr > 0 ? Math.round(100 / (1 + o.rr)) : 0
+    o.edge = o.wr - o.needs
+    return o
+  }
+  D() {
+    if (this._d) return this._d
+    let seed = 20260724
+    const rnd = () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+    const SYMS = [['BTCUSD', 'crypto', 3], ['ETHUSD', 'crypto', 2.4], ['SOLUSD', 'crypto', 1.4], ['XRPUSD', 'crypto', 1],
+      ['EURUSD', 'fx', 3], ['GBPUSD', 'fx', 2.2], ['USDJPY', 'fx', 2.4], ['AUDUSD', 'fx', 1.8], ['USDCHF', 'fx', 1], ['USDCAD', 'fx', 1], ['NZDUSD', 'fx', .8], ['EURJPY', 'fx', 1.2], ['GBPJPY', 'fx', 1],
+      ['EURGBP', 'fx', .7], ['EURCHF', 'fx', .5], ['EURAUD', 'fx', .6], ['EURNZD', 'fx', .4], ['EURCAD', 'fx', .5], ['GBPCHF', 'fx', .4], ['GBPAUD', 'fx', .5], ['GBPNZD', 'fx', .35], ['GBPCAD', 'fx', .4],
+      ['AUDJPY', 'fx', .8], ['NZDJPY', 'fx', .5], ['CADJPY', 'fx', .5], ['CHFJPY', 'fx', .4], ['AUDNZD', 'fx', .5], ['AUDCAD', 'fx', .45], ['AUDCHF', 'fx', .35], ['NZDCHF', 'fx', .3], ['NZDCAD', 'fx', .3],
+      ['USDSGD', 'fx', .5], ['USDHKD', 'fx', .35], ['USDCNH', 'fx', .5], ['USDZAR', 'fx', .35], ['USDTRY', 'fx', .3], ['USDMXN', 'fx', .35],
+      ['US500', 'index', 2.4], ['US30', 'index', 1.6], ['NAS100', 'index', 2.2], ['GER40', 'index', 1.8], ['UK100', 'index', 1.4], ['JPN225', 'index', 1.6], ['HK50', 'index', 1.2], ['AUS200', 'index', 1.2], ['CN50', 'index', .8], ['SG30', 'index', .6],
+      ['XAUUSD', 'metal', 2.4], ['XAGUSD', 'metal', 1.2], ['WTI', 'energy', 1.4], ['NATGAS', 'energy', 1], ['CORN', 'grain', .8], ['COFFEE', 'grain', .8]]
+    const wsum = SYMS.reduce((a, s) => a + s[2], 0)
+    const pick = () => { let x = rnd() * wsum; for (const s of SYMS) { x -= s[2]; if (x <= 0) return s } return SYMS[0] }
+    const STR = [['fib 61.8% fade', .54, 1.8], ['cup & handle', .46, 2.2], ['ema pullback', .50, 1.6], ['donchian breakout', .43, 2.4], ['rsi mean-rev', .57, 1.3]]
+    const now = Date.now(), DAY = 86400000
+    const d0 = new Date(now)
+    const dayStart = Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate())
+    const trades = []
+    for (let d = 370; d >= 0; d--) {
+      const base = dayStart - d * DAY
+      const dow = new Date(base).getUTCDay()
+      const n = 4 + Math.floor(rnd() * 8)
+      for (let i = 0; i < n; i++) {
+        const s = pick()
+        if ((dow === 0 || dow === 6) && s[1] !== 'crypto') continue
+        const h = s[1] === 'crypto' ? rnd() * 24 : 1 + rnd() * 21
+        const t = base + h * 3600000
+        if (t > now) continue
+        const st = STR[Math.floor(rnd() * STR.length)]
+        const risk = 40 + rnd() * 90
+        const rr = st[2] * (0.8 + rnd() * .4)
+        const win = rnd() < st[1] + (rnd() - .5) * .06
+        let out, pnl
+        if (rnd() < .06) { out = 'manual'; pnl = (rnd() - .45) * risk * .8 }
+        else if (win) { const full = rnd() < .68; out = full ? 'tp' : 'part'; pnl = risk * rr * (full ? 1 : .5 + rnd() * .2) }
+        else { out = 'sl'; pnl = -risk * (.92 + rnd() * .12) }
+        const lots = s[1] === 'fx' ? (.5 + rnd() * 1.5).toFixed(1) : s[1] === 'crypto' ? (.05 + rnd() * .45).toFixed(2) : (.2 + rnd() * .8).toFixed(1)
+        const rvO = (.4 + rnd() * 2.6).toFixed(1), rvC = (.4 + rnd() * 2.6).toFixed(1)
+        const ar = rnd()
+        trades.push({ t, sym: s[0], cat: s[1], strat: st[0], rr, out, pnl, h: Math.floor(h), acc: ar < .58 ? 0 : ar < .82 ? 1 : 2, side: rnd() < .5 ? 'LONG' : 'SHORT', lots, dur: 15 + Math.floor(rnd() * 480),
+          vwO: rnd() < .55 ? 'above VWAP' : 'below VWAP', vwC: rnd() < .5 ? 'above VWAP' : 'below VWAP', obv: rnd() < .45 ? 'OBV rising' : rnd() < .5 ? 'OBV falling' : 'OBV flat', rvO, rvC })
+      }
+    }
+    trades.sort((a, b) => a.t - b.t)
+    this._d = { trades, now, dayStart, DAY }
+    return this._d
+  }
+  renderVals() {
+    const D0 = this.D(), { now, dayStart, DAY } = D0
+    const acct = this.state.acct ?? 'all'
+    const trades = acct === 'all' ? D0.trades : D0.trades.filter(t => t.acc === acct)
+    if (!this._C) this._C = {}
+    const C = this._C[acct] || (this._C[acct] = {})
+    const tick = this.state.tick
+    const nd = new Date(now), dow = nd.getUTCDay()
+    let weekA = dayStart - dow * DAY + 22 * 3600000
+    if (weekA > now) weekA -= 7 * DAY
+    const mS = Date.UTC(nd.getUTCFullYear(), nd.getUTCMonth(), 1)
+    const lmS = Date.UTC(nd.getUTCFullYear(), nd.getUTCMonth() - 1, 1)
+    const defs = [['1H', now - 36e5, now], ['4H', now - 4 * 36e5, now], ['12H', now - 12 * 36e5, now], ['YD', dayStart - DAY, dayStart], ['3D', dayStart - 3 * DAY, dayStart], ['WTD', weekA, now], ['1W', now - 7 * DAY, now], ['2W', now - 14 * DAY, now], ['30D', now - 30 * DAY, now], ['MTD', mS, now], ['LM', lmS, mS], ['3M', now - 90 * DAY, now], ['6M', now - 180 * DAY, now], ['12M', now - 365 * DAY, now]]
+    const LBL = { YD: 'Yesterday', WTD: 'Week', LM: 'Last mo' }
+    if (!C.w) { C.w = {}; for (const [id, a, b] of defs) C.w[id] = { a, b, list: trades.filter(t => t.t >= a && t.t < b) } }
+    const W = C.w
+    const CLS = [['crypto', 'Crypto'], ['fx', 'Forex'], ['index', 'Indices'], ['metal', 'Metals'], ['energy', 'Energy'], ['grain', 'Grains']]
+    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const fd = t => { const d = new Date(t); return d.getUTCDate() + ' ' + MO[d.getUTCMonth()] }
+    if (!C.led) {
+      const balNow = acct === 'all' ? 138180 : [24618, 15102, 98460][acct]
+      const balAt = T => { let s = balNow; for (const t of trades) if (t.t >= T) s -= t.pnl; return s }
+      const bal$ = v => '$' + Math.round(v / 1000) + 'k'
+      C.led = defs.map(([id, a, b]) => {
+        const l = W[id].list, ag = this.agg(l)
+        const mk = CLS.map(([cat, name]) => { const cl = l.filter(t => t.cat === cat); const a2 = this.agg(cl); return { name, v: cl.length ? this.m(a2.pnl) : '—', col: cl.length ? this.c(a2.pnl) : 'var(--mu)', p: a2.pnl, n: cl.length, pf: cl.length ? 'PF ' + a2.pf.toFixed(1) + ' · ' + a2.wr + '%' : '' } })
+        const act = mk.filter(x => x.n)
+        let ins = 'no closed trades in this window'
+        if (act.length) { const best = act.reduce((x, y) => y.p > x.p ? y : x), worst = act.reduce((x, y) => y.p < x.p ? y : x); ins = best.name + ' led ' + this.m(best.p) + (worst !== best ? ' · ' + worst.name + ' dragged ' + this.m(worst.p) : '') }
+        return { id, label: LBL[id] || id, range: b - a > 129600000 ? fd(a) + ' → ' + fd(Math.min(b, now)) : '', cin: bal$(balAt(a)), cout: bal$(balAt(b)), net: this.m(ag.pnl), col: this.c(ag.pnl), meta: ag.n + ' tr · ' + ag.wr + '% · PF ' + ag.pf.toFixed(1), tpsl: (ag.tp + ag.part) + '/' + ag.sl, edge: (ag.edge >= 0 ? '+' : '') + ag.edge + '%', edgeCol: this.c(ag.edge), mk, ins }
+      })
+    }
+    const open = this.state.open
+    const ledgerM = C.led.map(r => ({ ...r, open: !!open[r.id], bd: open[r.id] ? 'var(--acc)' : 'var(--gbd)', tgl: () => this.setState(s => ({ open: { ...s.open, [r.id]: !s.open[r.id] } })) }))
+    const cryptoK = [[24, '24H'], [168, '7D'], [720, '30D']].map(([h, k]) => { const p = trades.filter(t => t.cat === 'crypto' && t.t >= now - h * 36e5).reduce((s, t) => s + t.pnl, 0); return { k, v: this.m(p), col: this.c(p) } })
+    const CPX = { BTCUSD: [63418, 0], ETHUSD: [3126, 2], SOLUSD: [148.2, 2], XRPUSD: [.5241, 4] }
+    const cryptoRows = Object.keys(CPX).map((sym, i) => {
+      const a = this.agg(trades.filter(t => t.sym === sym && t.t >= now - 7 * DAY))
+      const f = Math.sin(tick * .55 + i * 1.9) * .004 + Math.sin(tick * .13 + i) * .002
+      const [bp, dp] = CPX[sym]
+      return { sym, price: (bp * (1 + f)).toLocaleString('en-US', { maximumFractionDigits: dp, minimumFractionDigits: dp }), chg: (f >= 0 ? '+' : '') + (f * 100).toFixed(2) + '%', chgCol: this.c(f), chgBg: f >= 0 ? 'var(--acs)' : 'var(--dns)', pnl: this.m(a.pnl), col: this.c(a.pnl), meta: a.n + ' · ' + a.wr + '% · ' + a.pf.toFixed(1) }
+    })
+    if (!C.fx) {
+      const wk = W['1W'].list
+      const BANDS = [['Majors', ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCHF', 'USDCAD', 'NZDUSD']],
+        ['EUR crosses', ['EURJPY', 'EURGBP', 'EURCHF', 'EURAUD', 'EURNZD', 'EURCAD']],
+        ['GBP crosses', ['GBPJPY', 'GBPCHF', 'GBPAUD', 'GBPNZD', 'GBPCAD']],
+        ['JPY crosses', ['AUDJPY', 'NZDJPY', 'CADJPY', 'CHFJPY']],
+        ['Comdoll crosses', ['AUDNZD', 'AUDCAD', 'AUDCHF', 'NZDCHF', 'NZDCAD']],
+        ['Asia & exotics', ['USDSGD', 'USDHKD', 'USDCNH', 'USDZAR', 'USDTRY', 'USDMXN']]]
+      C.fx = BANDS.map(([band, syms]) => {
+        const l = wk.filter(t => syms.includes(t.sym)); const a = this.agg(l)
+        return { band, net: this.m(a.pnl), col: this.c(a.pnl), meta: a.n + ' tr · ' + a.wr + '% · PF ' + a.pf.toFixed(1),
+          pairs: syms.map(sym => { const pa = this.agg(l.filter(t => t.sym === sym)); return { sym: sym.slice(0, 3) + '/' + sym.slice(3), v: pa.n ? this.m(pa.pnl) : '·', col: pa.n ? this.c(pa.pnl) : 'var(--mu)' } }) }
+      })
+    }
+    if (!C.lag) {
+      const OUTL = { sl: 'SL hit', tp: 'TP full', part: 'TP partial', manual: 'manual close' }
+      const ft = ms => { const d = new Date(ms); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') }
+      const anat = t => ({ when: fd(t.t) + ' · ' + ft(t.t - t.dur * 60000) + ' → ' + ft(t.t) + ' UTC · held ' + (t.dur >= 60 ? Math.floor(t.dur / 60) + 'h ' : '') + (t.dur % 60) + 'm', sym: t.sym, sd: t.side + ' ' + t.lots + ' lots', strat: t.strat,
+        why: OUTL[t.out] + ' · planned ' + t.rr.toFixed(1) + ':1 · risked ' + this.m(Math.abs(t.out === 'sl' ? t.pnl : t.pnl / t.rr)).slice(1),
+        ind: 'in: RVOL ' + t.rvO + '× · ' + t.vwO + ' · ' + t.obv + ' → out: RVOL ' + t.rvC + '× · ' + t.vwC,
+        pnl: this.m(t.pnl), col: this.c(t.pnl) })
+      const sorted30 = [...W['30D'].list].sort((a, b) => a.pnl - b.pnl)
+      C.lag = sorted30.slice(0, 4).map(anat)
+      C.winT = sorted30.slice(-4).reverse().map(anat)
+    }
+    const POS = [['BTCUSD', 'LONG', 62840, 61900, 64950, '0.40', 52000, 'fib 61.8% fade', .0021, 0],
+      ['ETHUSD', 'SHORT', 3168, 3242, 3021, '2.0', 38000, 'donchian breakout', -.0009, 2],
+      ['EURUSD', 'LONG', 1.0744, 1.0712, 1.0809, '1.5', 42000, 'ema pullback', .0013, 4],
+      ['USDJPY', 'SHORT', 158.42, 159.10, 157.05, '1.0', 36000, 'rsi mean-rev', .0008, 2],
+      ['XAUUSD', 'LONG', 2408.5, 2391, 2444, '0.8', 48000, 'fib 61.8% fade', .0026, 1],
+      ['GER40', 'SHORT', 18490, 18590, 18290, '0.6', 33000, 'cup & handle', .0011, 0],
+      ['US500', 'LONG', 5568, 5541, 5622, '0.9', 40000, 'fib 61.8% fade', .0017, 0],
+      ['AUS200', 'LONG', 7981, 7942, 8060, '0.7', 30000, 'ema pullback', -.0004, 0]]
+    let openTotN = 0
+    const openPos = POS.map(([sym, side, entry, slp, tpp, lots, notion, strat, bias, dp], i) => {
+      const dir = side === 'LONG' ? 1 : -1
+      const f = (Math.sin(tick * .5 + i * 1.7) + Math.sin(tick * .21 + i * .8)) * .0011 + bias
+      const price = entry * (1 + f), pnl = f * dir * notion
+      openTotN += pnl
+      const prog = Math.max(2, Math.min(98, 100 * (price - slp) / (tpp - slp)))
+      return { sym, side, sideCol: dir > 0 ? 'var(--up)' : 'var(--dn)', lots, pnl: this.m(pnl, 2), pnlCol: this.c(pnl), prog: Math.round(prog), sld: Math.abs((price - slp) / price * 100).toFixed(1) + '%', tpd: Math.abs((tpp - price) / price * 100).toFixed(1) + '%', strat }
+    })
+    const tdList = trades.filter(t => t.t >= dayStart - 2 * 3600000)
+    const ta = this.agg(tdList)
+    const today = { pnl: this.m(ta.pnl), col: this.c(ta.pnl), meta: ta.n + ' closed · ' + ta.wr + '% win · ' + (ta.tp + ta.part) + ' TP / ' + ta.sl + ' SL', pf: ta.pf.toFixed(2) }
+    const a30 = this.agg(W['30D'].list)
+    const ACC = [['Live · Main', '#7114-902', 'USD', 24618, .58], ['Live · AUD', '#7114-907', 'AUD', 15102, .24], ['Demo · burn-in', '#5003-118', 'USD', 98460, .18]]
+    const accounts = ACC.map(([name, id, ccy, bal, share]) => {
+      const day = ta.pnl * share, eq = bal + day + openTotN * share, cap = bal * .03, live = openTotN * share
+      const used = Math.min(100, Math.round(Math.max(0, -day) / cap * 100))
+      return { name, id, ccy, bal: '$' + bal.toLocaleString(), eq: '$' + Math.round(eq).toLocaleString(), day: this.m(day), dayCol: this.c(day), used: used + '%', usedW: Math.max(used, 1) + '%', usedCol: used > 66 ? 'var(--dn)' : used > 33 ? 'var(--wrn)' : 'var(--acc)', cap: '$' + Math.round(cap).toLocaleString(),
+        tpNet: this.m(ta.gw * share), slNet: this.m(-ta.gl * share), fc: this.m(a30.pnl / 30 * share) + '/d', fcCol: this.c(a30.pnl), live: this.m(live), liveCol: this.c(live), livePct: (live >= 0 ? '+' : '') + (live / bal * 100).toFixed(2) + '%' }
+    })
+    const uh = new Date().getUTCHours()
+    const SES = [['Sydney', 22, 5], ['Tokyo', 0, 6], ['Singapore', 1, 9], ['London', 8, 16], ['New York', 14, 21]]
+    const inS = (h, o, c) => o < c ? h >= o && h < c : h >= o || h < c
+    const sessions = SES.map(([label, o, c]) => { const on = inS(uh, o, c); return { label, col: on ? 'var(--acc)' : 'var(--mu)', bg: on ? 'var(--acs)' : 'transparent', bd: on ? 'var(--acc)' : 'var(--edg)' } })
+    if (!this._rgm) {
+      const RGM = [
+        ['Crypto', .72, .55], ['Alt crypto', .88, .68], ['Gold', -.45, .52], ['Silver', -.6, .62],
+        ['Energy', .3, .78], ['Grains', -.2, .68], ['US indices', .55, -.35], ['EU indices', .35, -.2], ['Asia indices', .5, .18],
+        ['USD majors', -.3, -.25], ['JPY crosses', -.55, -.45], ['Comdolls', .2, .4], ['Exotics', -.75, .8]]
+      this._rgm = RGM.map(([name, gx, iy]) => ({ name, cx: 180 + gx * 150, cy: 128 - iy * 105, tx: 180 + gx * 150 + (gx > .6 ? -7 : 7), anc: gx > .6 ? 'end' : 'start' }))
+    }
+    const regime = this._rgm
+    const QMAP = { BTCUSD: 'q1', ETHUSD: 'q1', EURUSD: 'q3', USDJPY: 'q2', XAUUSD: 'q2', GER40: 'q4', US500: 'q4', AUS200: 'q1' }
+    const PACC = [0, 1, 0, 1, 2, 0, 2, 1]
+    const QTXT = {
+      q1: ['Q1 · Overheating', 'USD ↔/↓ · gold ↑ · long commodities, energy, value'],
+      q2: ['Q2 · Stagflation', 'USD ↑ · gold ↑/↔ · long commodities, TIPS, cash'],
+      q3: ['Q3 · Deflation', 'USD ↑↑ · gold ↓/↔ · long Treasuries, defensives'],
+      q4: ['Q4 · Goldilocks', 'USD ↓ · gold ↓ · long tech, crypto, high-yield']
+    }
+    const qsum = { q1: [], q2: [], q3: [], q4: [] }
+    openPos.forEach((p, i) => { if (acct === 'all' || PACC[i] === acct) qsum[QMAP[p.sym]].push(p) })
+    const quadCards = ['q2', 'q1', 'q3', 'q4'].map(q => {
+      const rows = qsum[q].map(p => ({ sym: p.sym, sd: p.side + ' ' + p.lots, pnl: p.pnl, col: p.pnlCol }))
+      const tot = qsum[q].reduce((s2, p) => s2 + parseFloat(p.pnl.replace(/[−+$,]/g, '')) * (p.pnl[0] === '−' ? -1 : 1), 0)
+      const a2 = Math.min(1, Math.abs(tot) / 120)
+      const Q = { q1: ['rgba(255,196,102,', 'rgba(255,196,102,.55)'], q2: ['rgba(255,77,109,', 'rgba(255,77,109,.5)'], q3: ['rgba(199,92,60,', 'rgba(199,92,60,.55)'], q4: ['rgba(255,140,90,', 'rgba(255,140,90,.5)'] }[q]
+      return { title: QTXT[q][0], txt: QTXT[q][1], rows, tot: this.m(tot, 2), totCol: this.c(tot), bg: Q[0] + (.1 + .28 * a2).toFixed(2) + ')', bd: Q[1], none: rows.length === 0 }
+    })
+    if (!this._grad) {
+      const AC3 = [['USD ·902', 0], ['AUD ·907', 1], ['Demo ·118', 2], ['Overall', -1]]
+      const kf = v => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
+      const cell = (v, max) => { const a2 = Math.pow(Math.abs(v) / (max || 1), .6); return { v: kf(v), bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (.07 + .78 * a2).toFixed(2) + ')', col: a2 > .45 ? '#fff' : 'var(--tx)' } }
+      const build = rows => {
+        const raw = rows.map(r => AC3.map(([, ai]) => r.list.reduce((s2, t) => s2 + (ai < 0 || t.acc === ai ? t.pnl : 0), 0)))
+        const colMax = AC3.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
+        return rows.map((r, ri) => ({ label: r.label, cells: raw[ri].map((v, ci) => cell(v, colMax[ci])) }))
+      }
+      this._grad = {
+        cols: AC3.map(x => ({ name: x[0] })),
+        t: build(defs.map(([id, a, b]) => ({ label: LBL[id] || id, list: D0.trades.filter(t => t.t >= a && t.t < b) }))),
+        a: build(CLS.map(([cat, name]) => ({ label: name, list: D0.trades.filter(t => t.cat === cat && t.t >= now - 30 * DAY) })))
+      }
+    }
+    if (!this._xfer) {
+      const XF = [
+        [2, 'Withdrawal', -3000, 'USD', 'to ANZ ****4471', 'cleared'],
+        [5, 'Transfer out', -1200, 'AUD', 'AUD ·907 → USD ·902', 'cleared'],
+        [5, 'Transfer in', 780, 'USD', 'AUD ·907 → USD ·902 (fx 0.6512)', 'cleared'],
+        [11, 'Deposit', 5000, 'USD', 'from ANZ ****4471', 'cleared'],
+        [19, 'Withdrawal', -2500, 'USD', 'to Wise ****8802', 'cleared'],
+        [26, 'Withdrawal', -1800, 'AUD', 'to ANZ ****4471', 'cleared'],
+        [0, 'Withdrawal', -1500, 'USD', 'to ANZ ****4471', 'pending']]
+      const MO3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+      this._xfer = XF.map(([dAgo, kind, amt, ccy, note, st]) => {
+        const d = new Date(now - dAgo * DAY - (7 * dAgo % 11) * 3600000)
+        const utc = String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0')
+        const syd = new Date(d.getTime() + 10 * 3600000)
+        return { when: d.getUTCDate() + ' ' + MO3[d.getUTCMonth()] + ' · ' + utc + ' UTC · ' + String(syd.getUTCHours()).padStart(2, '0') + ':' + String(syd.getUTCMinutes()).padStart(2, '0') + ' AEST', kind, acctN: ccy === 'AUD' ? 'AUD #7114-907' : 'USD #7114-902', note,
+          amt: (amt < 0 ? '−' : '+') + Math.abs(amt).toLocaleString() + ' ' + ccy, col: this.c(amt), st, stCol: st === 'pending' ? 'var(--wrn)' : 'var(--mu)' }
+      })
+      const net = XF.filter(x => x[5] === 'cleared').reduce((s2, x) => s2 + x[2], 0)
+      this._xferNet = { v: this.m(net), col: this.c(net) }
+    }
+    if (!this._fcA) this._fcA = [0, 1, 2].map(i => { const p = D0.trades.filter(t => t.acc === i && t.t >= now - 30 * DAY).reduce((s2, t) => s2 + t.pnl, 0); return this.m(p / 30) + '/d' })
+    const AF = [['all', 'All', 'combined ledger'], [0, 'USD 902', '$24,618 · fc ' + this._fcA[0]], [1, 'AUD 907', '$15,102 · fc ' + this._fcA[1]], [2, 'Demo 118', '$98,460 · fc ' + this._fcA[2]]]
+    const acctFilters = AF.map(([id, label, sub]) => { const on = acct === id; return { label, sub, col: on ? '#fff' : 'var(--tx)', bg: on ? 'var(--acc)' : 'transparent', bd: on ? 'var(--acc)' : 'var(--edg)', sel: () => this.setState({ acct: id }) } })
+    const isDark = this.curTheme() === 'dark'
+    return { ledgerM, cryptoK, cryptoRows, fxBands: C.fx, winTrades: C.winT, lagTrades: C.lag, openPos, openTot: this.m(openTotN, 2), openTotCol: this.c(openTotN), today, accounts, sessions,
+      acctFilters, gradCols: this._grad.cols, gradT: this._grad.t, gradA: this._grad.a, xfers: this._xfer, xferNet: this._xferNet, regime, quadCards,
+      isDark, themeLabel: isDark ? '☾' : '☀', lat: (42 + Math.round(Math.abs(Math.sin(tick * .7)) * 16)) + ' ms',
+      toggleTheme: () => { const nt = this.curTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', nt); this.setState({ theme: nt }) },
+      clock: new Date().toUTCString().slice(17, 22) + ' UTC', n430: 430, n932: 932, n393: 393, n852: 852 }
+  }
+}
+</script>
+</body>
+</html>
