@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { fxDayStartSql } from './risk.js'
 
 export const DEFAULT_GLOBAL_GUARDS = {
   halt: false,                    // portfolio-wide no-new-entries switch
@@ -61,7 +62,12 @@ export function evaluateGlobalGuards(db, guards = null) {
   if (lossCap > 0) {
     // Format-proof timestamp comparison — same REPLACE normalization as the
     // per-account daily-loss gate (closed_at may be space- or T-separated).
-    const dayStartSql = `${new Date().toISOString().slice(0, 10)} 00:00:00`
+    // Day anchor = FX day open, 17:00 NY — the SAME anchor the per-account
+    // daily-loss cap moved to (owner sign-off 2026-07-24). This guard was
+    // missed in that migration and still rolled at UTC midnight, so right
+    // after 00:00 UTC the portfolio sum forgot the evening's losses while
+    // the per-account caps still counted them.
+    const dayStartSql = fxDayStartSql()
     const row = db.prepare(
       `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
        WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?`

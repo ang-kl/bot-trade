@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import Skeleton from './common/Skeleton.jsx'
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -86,7 +87,7 @@ export default function StrategyInsights() {
           </table>
         </div>
       )}
-      {!rows && !error && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
+      {!rows && !error && <Skeleton lines={3} />}
     </Card>
   )
 }
