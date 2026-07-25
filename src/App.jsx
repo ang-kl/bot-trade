@@ -12,6 +12,7 @@ import Risk from './pages/Risk.jsx'
 import Connect from './pages/Connect.jsx'
 import AccountSwitcher from './components/AccountSwitcher.jsx'
 import { useTheme } from './lib/theme.js'
+import { Toaster } from 'sonner'
 
 const THEME_CYCLE = { system: 'light', light: 'dark', dark: 'system' }
 const THEME_ICON = { system: '◐', light: '☀', dark: '☾' }
@@ -93,6 +94,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-[var(--color-text)] lg:flex">
+      {/* Global toasts (owner polish audit) — action failures surface here
+          via agent-api's agentPost hook; richColors matches the app's
+          up/down semantics, position clears the fixed glass footer. */}
+      <Toaster richColors closeButton position="top-right"
+        theme={theme === 'system' ? undefined : theme}
+        toastOptions={{ style: { fontSize: 13 } }} />
       {/* Left sidebar — desktop */}
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-screen lg:sticky lg:top-0 p-4">
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full">
@@ -106,7 +113,7 @@ export default function App() {
                 <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
                 <div className="flex flex-col gap-0.5">
                   {g.items.map(t => (
-                    <NavLink key={t.to} to={t.to} className={({ isActive }) => navLinkClasses(isActive)}>
+                    <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>
                       <span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}
                     </NavLink>
                   ))}
@@ -137,6 +144,7 @@ export default function App() {
                 <NavLink
                   key={t.to}
                   to={t.to}
+                  viewTransition
                   className={({ isActive }) =>
                     `rounded-[12px] px-3 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
                       isActive

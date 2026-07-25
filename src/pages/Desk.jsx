@@ -27,6 +27,7 @@ import { describeRiskCriteria } from '../lib/risk-criteria.js'
 import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
+import Skeleton from '../components/common/Skeleton.jsx'
 
 const REFRESH_MS = 20_000
 const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
@@ -721,7 +722,7 @@ export default function Desk() {
         summary={correlation ? `cap ±${correlation.maxClusterExposure} per cluster · ccy cap ±${correlation.maxCurrencyExposure}` : null}
         defaultOpen={false}
       >
-        {!correlation && <p className="text-[12px] text-[var(--color-text-sub)]">Loading cluster exposure…</p>}
+        {!correlation && <Skeleton lines={3} />}
         {correlation && (
           <div className="space-y-1.5">
             <p className="text-[12px] text-[var(--color-text-sub)]">

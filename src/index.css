@@ -391,7 +391,48 @@ body::after {
   to   { transform: translate3d(2%, 2%, 0) scale(1.06); }
 }
 
+/* -- Motion discipline (owner polish audit, 2026-07-25) ------------------ */
+
+/* Interactive elements ease instead of snapping. Kept to cheap paint-only
+   properties — no width/height/layout transitions. */
+button, a, [role="button"], summary {
+  transition:
+    background-color .15s ease, border-color .15s ease, color .15s ease,
+    opacity .15s ease, box-shadow .2s ease, transform .15s ease;
+}
+.glass-panel { transition: box-shadow .2s ease, border-color .2s ease; }
+
+/* Skeleton loading placeholder — replaces bare "Loading…" text. The sweep
+   is the standard shimmer; container queries not needed, width is set by
+   the Skeleton component per line. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text-sub) 12%, transparent);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-text) 9%, transparent), transparent);
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* One global kill-switch: EVERY animation and transition collapses to
+   instant when the user asks for reduced motion — not just the ambient
+   blobs. Skeletons degrade to a static tint block. */
 @media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
   body::before { animation: none; }
 }
 

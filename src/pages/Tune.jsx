@@ -3,6 +3,7 @@
 // backtest, presets. Folio tabs (one panel at a time) — no long scroll.
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
+import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
@@ -95,7 +96,7 @@ function TimeframePerformance({ timeframes }) {
       {open && (
         <div className="mt-1.5 overflow-x-auto">
           {perfError && <div className="text-[12px] text-[var(--color-down)]">Could not load: {perfError}</div>}
-          {!perfError && !perf && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
+          {!perfError && !perf && <Skeleton lines={3} />}
           {!perfError && perf && (
             <table className="std-cols min-w-full text-[12px]">
               <thead>
@@ -170,7 +171,7 @@ function StrategyTfPerformance() {
       {open && (
         <div className="mt-1.5 overflow-x-auto">
           {err && <div className="text-[12px] text-[var(--color-down)]">Could not load: {err}</div>}
-          {!err && !grid && <div className="text-[12px] text-[var(--color-text-sub)]">Loading…</div>}
+          {!err && !grid && <Skeleton lines={3} />}
           {!err && grid && (
             <>
               <table className="std-cols w-auto text-[12px] tabular-nums">
@@ -288,7 +289,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
   })
 
   if (!mx) {
-    return <div className="mt-3 text-[12px] text-[var(--color-text-sub)]">Loading strategy × stage matrix…</div>
+    return <Skeleton lines={4} className="mt-3" />
   }
 
   const columns = mx.columns || []
@@ -748,7 +749,7 @@ function SavedReports() {
     } catch (e) { setErr(e.message) }
   }
   if (err) return <p className="text-[var(--color-warning-text)] mt-1">{err}</p>
-  if (!names) return <p className="text-[var(--color-text-sub)] mt-1">Loading…</p>
+  if (!names) return <Skeleton lines={2} className="mt-1" />
   if (names.length === 0) return <p className="text-[var(--color-text-sub)] mt-1">None on the agent right now — reports live on temporary disk and are wiped by each redeploy. The Download button after a run is the durable copy.</p>
   return (
     <ul className="mt-1 space-y-0.5">
@@ -2264,7 +2265,7 @@ export default function Tune() {
                 </button>
                 {browse && (() => {
                   if (treeErr) return <p className="text-[12px] text-[var(--color-warning-text)] mt-2">Could not load the classification tree: {treeErr}</p>
-                  if (!tree) return <p className="text-[12px] text-[var(--color-text-sub)] mt-2">Loading classifications…</p>
+                  if (!tree) return <Skeleton lines={4} className="mt-2" />
                   const bq = browseQ.trim().toUpperCase()
                   const inList = new Set(symbols.map(s => s.symbol))
                   return (

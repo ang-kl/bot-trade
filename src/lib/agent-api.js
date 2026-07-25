@@ -114,7 +114,20 @@ async function request(method, path, body) {
 }
 
 export const agentGet = (path) => request('GET', path)
-export const agentPost = (path, body) => request('POST', path, body)
+// POSTs are user-initiated actions (close, arm, save config…) — failures
+// surface as a global toast (sonner) so the click never fails silently,
+// in ADDITION to the caller's own error handling, not instead of it.
+// GETs stay quiet: pages poll on timers and already render their own
+// error states; toasting those would spam a red stack every poll cycle.
+export const agentPost = async (path, body) => {
+  try {
+    return await request('POST', path, body)
+  } catch (e) {
+    const { toast } = await import('sonner')
+    toast.error(e.message)
+    throw e
+  }
+}
 
 /**
  * Live tick stream over server-sent events. EventSource can't set an

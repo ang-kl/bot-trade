@@ -17,6 +17,7 @@ import StrategyInsights from '../components/StrategyInsights.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import Skeleton from '../components/common/Skeleton.jsx'
 
 const REFRESH_MS = 30_000
 
@@ -161,7 +162,7 @@ export default function Accounts() {
 
       <MarketClock />
 
-      {!bot && !error && <Card className="text-[13px] text-[var(--color-text-sub)]">Loading the bot's account from the broker…</Card>}
+      {!bot && !error && <Card><Skeleton lines={4} /></Card>}
       {bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}
 
       {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}

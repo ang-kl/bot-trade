@@ -18,6 +18,9 @@ import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
+import Skeleton from '../components/common/Skeleton.jsx'
+import NumberFlow from '@number-flow/react'
+import { useAutoAnimate } from '@formkit/auto-animate/react'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -357,9 +360,12 @@ const fmtVol = (v) => {
 // Price and OHLC (1d).
 const OPEN_COLS = '64px 76px 84px 64px 64px minmax(150px,1fr) 48px 16px 84px'
 function OpenTableBody({ rows }) {
+  // AutoAnimate (owner polish audit) — page flips and row add/remove ease
+  // instead of popping; the hook animates this div's direct children.
+  const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: 700 }}>
+      <div ref={animRef} style={{ minWidth: 700 }}>
       <div style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
         <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>OHLC (1d)</span><span>Vol</span><span></span><span>SL / TP away</span>
       </div>
@@ -425,9 +431,10 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, children }) {
 // "OPEN" label).
 const WEEKEND_ROW_COLS = '58px 68px 1fr 58px 16px'
 function Weekend24Body({ rows }) {
+  const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))', gap: '2px 16px', minWidth: 560 }}>
+      <div ref={animRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))', gap: '2px 16px', minWidth: 560 }}>
         {rows.map(p2 => (
           <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
             style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '2px 0', fontVariantNumeric: 'tabular-nums' }}>
@@ -449,9 +456,10 @@ function Weekend24Body({ rows }) {
 // the card always has structure even before the first close of the day.
 const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
 function TodayHourlyBody({ rows }) {
+  const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: 420 }}>
+      <div ref={animRef} style={{ minWidth: 420 }}>
         <div style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
           <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
@@ -580,7 +588,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
           {expandAll ? 'Collapse all' : 'Expand all'}
         </button>
       )}
-      {!ledger && !error && <p className={`text-[12px] mt-2 ${SUB}`}>Loading ledger…</p>}
+      {!ledger && !error && <Skeleton lines={6} className="mt-2" />}
       {ledger && (
         <div className="overflow-x-auto mt-1.5">
           <table className="w-full text-left tabular-nums min-w-[980px]">
@@ -1487,7 +1495,9 @@ export default function Performance() {
                   ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`)].join('\n')}
                 render={() => <TodayHourlyBody rows={todayHourly} />} />
             </span>
-            <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
+            <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
+              {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
+            </span>
             <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
             <PagedRows rows={todayHourly}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
           </div>
@@ -1504,7 +1514,9 @@ export default function Performance() {
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                 <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
-                  {t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : 'P&L —'}` : 'none'}
+                  {t2.rows.length
+                    ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
+                    : 'none'}
                 </span>
                 {positions[0]?.live_pnl_at && <span style={{ fontSize: 12, color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
               </div>
