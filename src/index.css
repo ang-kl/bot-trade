@@ -436,6 +436,23 @@ button, a, [role="button"], summary {
   body::before { animation: none; }
 }
 
+/* -- Performance page: tablet/phone row layout --------------------------- */
+/* Owner iPad-mini audit (2026-07-25): the FX-band row's two fixed left
+   columns (118px + 84px) squeezed its pair column to ~105px on a tablet, so
+   every pair chip landed on its own line — seven majors became seven rows of
+   dead space. Below the desktop breakpoint the row stacks, giving the chips
+   the full card width to wrap across. Inline styles can't carry a media
+   query, hence the class. */
+.perf-band-row {
+  display: grid;
+  grid-template-columns: 118px 84px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+@media (max-width: 1279px) {
+  .perf-band-row { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* -- Liquid glass materials ---------------------------------------------- */
 
 /* Primary panel: translucent, blurred, specular top sheen, soft glow */
