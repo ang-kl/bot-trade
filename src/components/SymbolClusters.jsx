@@ -168,7 +168,7 @@ export default function SymbolClusters({
               extra legs by path — {ranked.length ? ranked.map(([p, n]) => `${p} ${n}`).join(' · ') : '—'}
             </span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU, borderBottom: `1px solid ${EDG}`, paddingBottom: 1 }}>
+          <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, borderBottom: `1px solid ${EDG}`, paddingBottom: 1 }}>
             <span /><span>Symbol</span><span>First open</span><span>Legs</span><span>Path</span><span style={{ textAlign: 'right' }}>Net</span>
           </div>
           <div ref={animRef}>

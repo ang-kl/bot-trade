@@ -285,15 +285,46 @@
    table head in the app is identical regardless of per-table classes —
    text-align/font-size are declared unlayered on purpose so they beat the
    Tailwind utilities individual tables set on their own header cells. */
+/* Owner (2026-07-25): "apply to all tables in this webapp ... ensure all
+   tables follow the font, font size, font colour, background colour of the
+   cell, border in between." This rule is the SINGLE source of truth for every
+   real <table> header in the app. It is unlayered, so it beats Tailwind's
+   layered utilities — a stray font-bold/font-semibold/font-medium on a <th>
+   can no longer change the weight, and the audit that prompted this found all
+   three in use (700 in the ledger, 600 in most tables, 500 in a few). Weight
+   is 600, matching W_HEAD and docs/ui-spec.md. */
 thead th {
+  font-family: inherit;
   background: var(--table-head-bg);
   color: var(--table-head-fg);
   border-right: 1px solid var(--table-head-rule);
   padding-left: 8px;
   padding-right: 8px;
   font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
   text-align: center;
 }
+
+/* The same header treatment for the CSS-grid "tables" — the Performance page
+   builds most of its tables as grids rather than <table>, so `thead th` never
+   reached them and they carried a different colour (muted, not head-fg) and
+   no background or cell rule at all. Apply .t-gridhead to a grid's header row
+   and remove that row's inline font/colour so this governs. No horizontal
+   padding: the grid column templates are tuned to the pixel and the existing
+   `gap` already separates the cells that the border rule now divides. */
+.t-gridhead {
+  font-family: inherit;
+  background: var(--table-head-bg);
+  color: var(--table-head-fg);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.t-gridhead > * { border-right: 1px solid var(--table-head-rule); }
+.t-gridhead > *:last-child { border-right: 0; }
 thead th:first-child { border-top-left-radius: 8px; }
 thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }
 /* Sort-button labels inside header cells inherit the opposite colour too. */

@@ -252,10 +252,10 @@ function SymbolTable({ symbol, rows }) {
       {open && (
         <div className="overflow-x-auto">
           <table className="w-full text-[12px] tabular-nums">
-            <thead className="text-[var(--color-text-sub)]">
+            <thead>
               <tr className="border-b border-[var(--color-border)]">
                 {['Date', 'Side', 'TF', 'Strategy', 'Verdict', 'Lesson', 'P&L', 'R'].map(h => (
-                  <th key={h} className="py-1 pr-2 text-left font-semibold whitespace-nowrap">{h}</th>
+                  <th key={h} className="py-1 pr-2 text-left whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
