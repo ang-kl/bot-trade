@@ -445,6 +445,48 @@ button, a, [role="button"], summary {
   body::before { animation: none; }
 }
 
+/* -- iOS Safari: fixed/sticky elements must NOT carry backdrop-filter ----- */
+/* Owner (2026-07-25, iPad mini Safari): the footer, the sidebar and the FAB
+   all drifted into the middle of the viewport, at different offsets in
+   different screenshots. Common factor: all three use a glass class, and
+   WebKit paints a position:fixed/sticky element at a STALE scroll offset
+   when that element itself applies backdrop-filter. It is not a layout bug
+   — the CSS is correct — it is a compositing bug, so the fix is to stop
+   asking for a backdrop blur on the pinned elements specifically. This
+   class keeps the glass LOOK with a near-opaque tinted fill instead, and
+   promotes the element to its own layer so it tracks the scroll properly. */
+.glass-fixed {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+  /* No backdrop-filter here, on purpose — see the note above. */
+  transform: translateZ(0);
+  will-change: transform;
+}
+/* Same reasoning for the sticky sidebar panel: drop its blur and let it
+   scroll internally, so a long account roster can never push its own
+   navigation off the top of a short (744px) tablet viewport. */
+@supports (-webkit-touch-callout: none) {
+  .glass-panel { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--glass-bg-strong); }
+}
+
+/* -- Wide tables on tablets: fit more before scrolling ------------------- */
+/* The Timeframe ledger is 12 columns; at iPad width the header padding alone
+   (8px each side × 12) cost ~190px, which is why the last two market columns
+   fell off the right edge. Tighten it below the desktop breakpoint, and pin
+   the first column so a horizontal scroll never loses the row label. */
+@media (max-width: 1279px) {
+  thead th { padding-left: 3px; padding-right: 3px; }
+  .t-sticky-col tbody td:first-child,
+  .t-sticky-col thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background: var(--color-bg);
+  }
+  .t-sticky-col thead th:first-child { background: #3f4552; }
+}
+
 /* -- Performance page: tablet/phone row layout --------------------------- */
 /* Owner iPad-mini audit (2026-07-25): the FX-band row's two fixed left
    columns (118px + 84px) squeezed its pair column to ~105px on a tablet, so
