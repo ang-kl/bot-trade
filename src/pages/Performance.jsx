@@ -268,36 +268,133 @@ function WindowDetail({ w }) {
 
 // --- shared section bodies (card + expanded modal render the SAME
 // component — the owner's no-fork rule for the ⤢ expand feature) ----------
-// `groups` (optional) draws a band above the column heads — Account /
-// Strategy / Asset class — so a wide table says which dimension a column
-// belongs to instead of leaving the reader to guess from the label.
-function GradientBody({ grid, label, cols, rows, pad, foot, groups = null, colW = 'minmax(52px,84px)' }) {
-  const template = `${grid} repeat(${cols.length},${colW})`
+// Gradient table. ONE css grid for the whole thing — group band, column
+// heads, banded body rows, subtotal row — because two of the owner's asks
+// (2026-07-25) need cells that span rows, which per-row grids cannot do:
+// a vertical merged "No data" cell down an empty column, and hollow band
+// separators that run the full width.
+//
+// Owner's asks, in order:
+//  · header font 2px smaller than the app default (10px → 8px), Title Case
+//  · a subtotal on every column
+//  · timeframe rows banded, hollow rule between, ≤2px of space around it
+//  · a column with no data at all shows one merged vertical "No data" cell
+//  · money cells 1px smaller and never bold
+//  · rows and columns collapsible, per card, independently of the other card
+
+// Bands are matched by LABEL against the server's real window list
+// (perf-ledger.js). The owner's sketch named 5D, 3W and 9M, which the server
+// does not produce, and omitted WTD and 30D, which it does — so this maps what
+// exists and drops what doesn't rather than inventing windows. Anything the
+// server adds later falls into 'other' and still renders, unbanded.
+const TF_BANDS = [
+  ['intraday', ['1H', '4H', '12H']],
+  ['days', ['Yesterday', '3D', 'WTD', '1W', '2W', '30D']],
+  ['months', ['MTD', 'Last month']],
+  ['long', ['3M', '6M', '12M']],
+]
+const bandOf = (label) => {
+  const base = String(label).split(' · ')[0]
+  for (const [name, labels] of TF_BANDS) if (labels.includes(base)) return name
+  return 'other'
+}
+
+// "fib 618 fade" → "Fib 618 Fade". Acronym-ish tokens (2-4 chars, no vowel
+// outside y) stay upper — WTD, MTD, 3D, TP — because title-casing those makes
+// them harder to read, not easier.
+function toTitle(label) {
+  return String(label).split(' ').map(w => {
+    if (!w) return w
+    if (w.length <= 4 && !/[aeiou]/i.test(w.replace(/[^a-z]/gi, ''))) return w.toUpperCase()
+    return w[0].toUpperCase() + w.slice(1)
+  }).join(' ')
+}
+
+function GradientBody({
+  grid, label, cols, rows, pad, foot, groups = null, colW = 'minmax(52px,84px)',
+  subtotals = null, banded = false, smallHead = false,
+}) {
+  // Per-card, independent of any other card on the page.
+  const [rowsOpen, setRowsOpen] = useState(true)
+  const [colsOpen, setColsOpen] = useState(true)
+
+  const shownCols = colsOpen ? cols : []
+  const template = `${grid} repeat(${shownCols.length},${colW})`
+  const toggle = {
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: W_CELL,
+    color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`,
+    borderRadius: 6, padding: '0 5px',
+  }
+  // A column whose every body cell is the zero string carries no information;
+  // it collapses to one merged vertical "No data" cell instead of a stack of
+  // identical +$0s. Computed from the rendered strings, so it can never
+  // disagree with what is on screen.
+  const emptyCol = shownCols.map((c, ci) => rows.length > 0 && rows.every(r => r.cells[ci]?.zero))
+
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <div style={{ minWidth: groups ? 760 : undefined }}>
-        {groups && (
-          <div style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},${colW})`, gap: 2, paddingBottom: 1 }}>
-            <span />
-            {groups.map(g => (
-              <span key={g.name} style={{ gridColumn: `span ${g.span}`, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, textAlign: 'center', borderBottom: `1px solid ${P_EDG}` }}>{g.name}</span>
-            ))}
-          </div>
-        )}
-        <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: template, gap: 2, paddingBottom: 2 }}>
-          <span>{label}</span>
-          {/* title carries the full label for the ellipsis case — a strategy
-              name can be longer than its 72px track. */}
-          {cols.map(c => <span key={c.name} title={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
-        </div>
-        {rows.map(r => (
-          <div key={r.label} style={{ display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
-            {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
-          </div>
-        ))}
-        <span style={{ fontSize: 12, color: P_MU }}>{foot}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 }}>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <button type="button" style={toggle} aria-expanded={rowsOpen}
+          onClick={() => setRowsOpen(v => !v)}>{rowsOpen ? '▾' : '▸'} Rows</button>
+        <button type="button" style={toggle} aria-expanded={colsOpen}
+          onClick={() => setColsOpen(v => !v)}>{colsOpen ? '▾' : '▸'} Columns</button>
       </div>
+      <div style={{ overflowX: 'auto' }}>
+        <div style={{ minWidth: groups && colsOpen ? 760 : undefined, display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
+          {groups && colsOpen && (
+            <>
+              <span />
+              {groups.map(g => (
+                <span key={g.name} className="t-gridhead" style={{ gridColumn: `span ${g.span}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, fontSize: smallHead ? 8 : undefined }}>{g.name}</span>
+              ))}
+            </>
+          )}
+          <span className="t-gridhead" style={{ fontSize: smallHead ? 8 : undefined }}>{toTitle(label)}</span>
+          {/* title carries the full label for the ellipsis case. */}
+          {shownCols.map(c => (
+            <span key={c.name} className="t-gridhead" title={c.name}
+              style={{ textAlign: 'center', fontSize: smallHead ? 8 : undefined }}>{toTitle(c.name)}</span>
+          ))}
+
+          {rowsOpen && rows.map((r, ri) => {
+            const band = banded ? bandOf(r.label) : null
+            const prevBand = banded && ri > 0 ? bandOf(rows[ri - 1].label) : band
+            return (
+              <Fragment key={r.label}>
+                {/* Hollow rule between bands: a 1px outline, 2px of space
+                    total, spanning every column. */}
+                {band !== prevBand && (
+                  <span style={{ gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
+                )}
+                <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
+                {shownCols.map((c, ci) => (
+                  emptyCol[ci]
+                    ? (ri === 0 ? (
+                      <span key={ci} title={`${c.name} — no closed trades in any window`}
+                        style={{ gridRow: `span ${rows.length}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: 10, color: P_MU, background: P_ACS, borderRadius: 4 }}>
+                        No data
+                      </span>
+                    ) : null)
+                    : (
+                      <span key={ci} style={{ fontSize: 11, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: r.cells[ci].bg, color: r.cells[ci].col, fontVariantNumeric: 'tabular-nums' }}>{r.cells[ci].v}</span>
+                    )
+                ))}
+              </Fragment>
+            )
+          })}
+
+          {subtotals && colsOpen && (
+            <>
+              <span style={{ gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
+              <span className="t-gridhead" style={{ fontSize: smallHead ? 8 : undefined }}>Subtotal</span>
+              {shownCols.map((c, ci) => (
+                <span key={ci} style={{ fontSize: 11, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: subtotals[ci]?.col }}>{subtotals[ci]?.v}</span>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+      <span style={{ fontSize: 12, color: P_MU }}>{foot}</span>
     </div>
   )
 }
@@ -1396,7 +1493,14 @@ export default function Performance() {
     const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
     const cell = (v, max) => {
       const a2 = Math.pow(Math.abs(v) / (max || 1), 0.6)
-      return { v: kf(v), bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.07 + 0.78 * a2).toFixed(2) + ')', col: a2 > 0.45 ? '#fff' : P_TX }
+      return {
+        v: kf(v),
+        bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.07 + 0.78 * a2).toFixed(2) + ')',
+        col: a2 > 0.45 ? '#fff' : P_TX,
+        // Owner: "if a column like Metals and Demo 549 has no data ... place a
+        // 'No data' vertical" — this flag is what identifies such a column.
+        zero: Math.round(v * 100) === 0,
+      }
     }
     // colDefs: [{ name, pick(trade) }] — one shaded column each, scaled
     // against its OWN peak window so a quiet account/strategy still shows
@@ -1405,6 +1509,23 @@ export default function Performance() {
       const raw = rowDefs.map(r => colDefs.map(c => r.list.reduce((s2, t2) => s2 + (c.pick(t2) ? t2.pnl : 0), 0)))
       const colMax = colDefs.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
       return rowDefs.map((r, ri) => ({ label: r.label, cells: raw[ri].map((v, ci) => cell(v, colMax[ci])) }))
+    }
+    // Owner: "sub-total on each column". Summed from the DISPLAYED rows, and
+    // labelled a subtotal rather than a total because the windows overlap —
+    // 1W is inside 2W is inside 30D, so this column sum deliberately
+    // double-counts the same trade and is a column footing, not a P&L figure.
+    const subtotal = (built) => {
+      if (!built.length) return null
+      const n = built[0].cells.length
+      return Array.from({ length: n }, (_, ci) => {
+        const v = built.reduce((s2, r) => {
+          const raw = String(r.cells[ci].v).replace(/[+$,]/g, '').replace('−', '-')
+          const mult = raw.endsWith('k') ? 1000 : 1
+          const num = parseFloat(raw.replace('k', ''))
+          return s2 + (Number.isFinite(num) ? num * mult : 0)
+        }, 0)
+        return { v: kf(v), col: v > 0 ? P_UP : v < 0 ? P_DN : P_MU }
+      })
     }
     const acctCols = AC3.map(c => ({ name: c.name, pick: (t2) => c.id == null || t2.acc === c.id }))
     // Owner (2026-07-25): "why last month is zero". Because no trade CLOSED
@@ -1440,6 +1561,8 @@ export default function Performance() {
       t: build(wDefs, acctCols),
       tWide: build(wDefs, wideCols),
       a: build(aDefs, acctCols),
+      tWideSub: subtotal(build(wDefs, wideCols)),
+      aSub: subtotal(build(aDefs, acctCols)),
     }
   }, [allTrades, accounts, windows, loadedAt])
 
@@ -1947,31 +2070,32 @@ export default function Performance() {
         {/* Performance gradients — exact prototype panels (timeframe ×
             account, asset class × account heat tables; column count follows
             the real registry). */}
-        {/* Owner (2026-07-25): timeframe table gains strategy + asset columns,
-            so it needs the width; "asset class × account — make it small in
-            width by half" — 1.2fr/1fr becomes roughly 3.4fr/1fr, and
-            minmax(0,…) keeps the wide left table from stealing the right
-            card's track (the IMG_1221 failure mode). */}
-        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 3.4fr) minmax(0, 1fr)', gap: 8, alignItems: 'start' }}>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {/* Owner (2026-07-25, latest): "two cards 50% each side" and "both
+            Performance gradient cards must be symmetric in height" — an even
+            split with stretch alignment, so the shorter card matches the
+            taller one instead of leaving a ragged bottom edge. The wide left
+            table scrolls inside its own panel (minmax(0,…) + overflowX), which
+            is what keeps it from stealing the right card's track. */}
+        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
                 data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window" />} />
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window" />
+            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />
           </div>
-          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />} />
+                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />} />
             </div>
-            <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />
+            <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />
           </div>
         </div>
 
