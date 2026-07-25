@@ -532,6 +532,43 @@ function TodayHourlyBody({ rows }) {
   )
 }
 
+// Owner (2026-07-25): "itemised today's closed trades list back". The hourly
+// aggregate answers "how did the balance move"; it can't answer "which trade
+// lost that". One dense line per trade — time · symbol · side/lots · P&L —
+// and tapping it prints the rest (outcome, prices, hold, plan) on one line.
+const TODAY_TRADE_COLS = '14px 42px 66px 74px 1fr'
+function TodayTradesBody({ rows }) {
+  const [animRef] = useAutoAnimate({ duration: 160 })
+  const [openId, setOpenId] = useState(null)
+  if (!rows.length) return <span style={{ fontSize: 12, color: P_MU }}>no closed trades in this window</span>
+  return (
+    <div ref={animRef}>
+      {rows.map(t2 => {
+        const on = openId === t2.id
+        return (
+          <div key={t2.id}>
+            <div role="button" tabIndex={0} aria-expanded={on}
+              onClick={() => setOpenId(o => (o === t2.id ? null : t2.id))}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === t2.id ? null : t2.id)) } }}
+              style={{ display: 'grid', gridTemplateColumns: TODAY_TRADE_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
+              <span aria-hidden="true" style={{ fontSize: 12, color: P_MU }}>{on ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 12, color: P_MU }}>{t2.hm}</span>
+              <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
+              <span style={{ fontSize: 12, fontWeight: W_CELL, color: P_SB }}>{t2.side} {t2.lots}</span>
+              <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'right', color: t2.pnl >= 0 ? P_UP : P_DN }}>{signed(t2.pnl)}</span>
+            </div>
+            {on && (
+              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 12, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+                {t2.detail}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // Today-by-market-session stats table (owner's column list: Trades #, +$,
 // −$, highest, lowest, average, sum — plus median for the second central
 // figure, since "average" and "mean" name the same number).
@@ -1128,6 +1165,30 @@ export default function Performance() {
     }).filter(t2 => t2.t != null)
   }, [scopedClosed])
 
+  // The itemised list behind the Today card's hourly aggregate — same window
+  // and same trade scope, so the count here always equals `today.n` and the
+  // sum of the P&L column always equals `today.net`. Newest close first,
+  // because the thing you just felt is the thing you look for.
+  const todayTrades = useMemo(() => shapedTrades
+    .filter(t2 => t2.t >= todayWin.from && t2.t < todayWin.to)
+    .sort((a, b) => b.t - a.t)
+    .map(t2 => {
+      const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
+      const held = t2.durMin == null ? null : (t2.durMin >= 60 ? `${Math.floor(t2.durMin / 60)}h ` : '') + `${t2.durMin % 60}m`
+      return {
+        id: `${t2.sym}-${t2.t}-${t2.lots}`,
+        hm: new Date(t2.t).toISOString().slice(11, 16),
+        sym: t2.sym, side: t2.side, lots: t2.lots, pnl: t2.pnl,
+        detail: [
+          out,
+          t2.strat || 'no strategy label',
+          t2.openedAt != null ? `opened ${new Date(t2.openedAt).toISOString().slice(11, 16)} UTC` : null,
+          held ? `held ${held}` : null,
+          t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
+        ].filter(Boolean).join(' · '),
+      }
+    }), [shapedTrades, todayWin])
+
   const fxBands = useMemo(() => {
     const wk = shapedTrades.filter(t2 => t2.t >= loadedAt - 7 * D)
     return FX_BANDS.map(([band, syms]) => {
@@ -1583,10 +1644,12 @@ export default function Performance() {
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
-              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={todayHourly}
+              <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={{ hourly: todayHourly, closedTrades: todayTrades }}
                 toText={() => ['Today · since FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
-                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`)].join('\n')}
-                render={() => <TodayHourlyBody rows={todayHourly} />} />
+                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
+                  '', `Closed trades (${todayTrades.length})`,
+                  ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
+                render={() => <><TodayHourlyBody rows={todayHourly} /><TodayTradesBody rows={todayTrades} /></>} />
             </span>
             <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
               {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
@@ -1596,6 +1659,12 @@ export default function Performance() {
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
+            {/* Owner (2026-07-25): "itemised today's closed trades list back"
+                — alongside the hourly aggregate, not replacing it. */}
+            <span style={{ fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
+              Closed trades ({todayTrades.length}) · tap a row
+            </span>
+            <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} />}</PagedRows>
           </div>
           {(() => {
             const defs = [{
@@ -1758,7 +1827,11 @@ export default function Performance() {
 
         {/* FX banded panel + Strategy × market — exact prototype grid (the
             right column also hosts the crypto panel in a later slice). */}
-        <div id="sec-fx-bands" className="perf-2col">
+        {/* Owner (2026-07-25): "Forex-day card is so small, have a width
+            wide" — the FX card now takes the WHOLE row (its band rows carry
+            every pair, so width is what makes it readable) and the strategy
+            matrix + crypto panels sit side by side beneath it. */}
+        <div id="sec-fx-bands" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
@@ -1769,7 +1842,7 @@ export default function Performance() {
             </div>
             <FxBandsBody fxBands={fxBands} />
           </div>
-          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="perf-2col-even">
             <div id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
