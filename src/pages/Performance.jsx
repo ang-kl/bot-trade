@@ -318,17 +318,15 @@ function toTitle(label) {
 const GRAD_FONT = 9
 
 function GradientBody({
-  grid, label, cols, rows, pad, foot, groups = null, colW = 'minmax(52px,84px)',
+  grid, label, cols, rows, foot, groups = null, colW = 'minmax(52px,84px)',
   subtotals = null, banded = false, smallHead = false,
 }) {
-  // Two levels of hiding, per card and independent of the other card:
-  //  · the overall pills collapse ALL rows or ALL columns at once
-  //  · clicking a row label or a column head hides just that one, Excel-style,
-  //    and a restore bar lists what is hidden so nothing can vanish for good
-  const [rowsOpen, setRowsOpen] = useState(true)
-  const [colsOpen, setColsOpen] = useState(true)
+  // Hiding is per row / per column only (owner 2026-07-25: "remove the rows
+  // and columns pills ... since I can hide and unhide rows and columns"):
+  // click a row label or a column head to hide it, restore from the chip bar.
   const [hiddenRows, setHiddenRows] = useState(() => new Set())
   const [hiddenCols, setHiddenCols] = useState(() => new Set())
+  const rowsOpen = true, colsOpen = true
 
   const toggleIn = (setter) => (key) => setter(prev => {
     const next = new Set(prev)
@@ -375,17 +373,17 @@ function GradientBody({
   const subRow = subtotals && colsOpen && visRows.length ? gr++ : null
 
   const headStyle = smallHead ? { fontSize: 8 } : undefined
-  const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }
+  // Right-aligned, square-cornered, ledger-style — the number is the signal,
+  // not the shape around it.
+  const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'right', paddingRight: 6, fontVariantNumeric: 'tabular-nums' }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 }}>
+      {(hiddenRows.size > 0 || hiddenCols.size > 0) && (
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button type="button" style={pillS} aria-expanded={rowsOpen} title="Show or hide every row"
-          onClick={() => setRowsOpen(v => !v)}>{rowsOpen ? '▾' : '▸'} Rows</button>
-        <button type="button" style={pillS} aria-expanded={colsOpen} title="Show or hide every column"
-          onClick={() => setColsOpen(v => !v)}>{colsOpen ? '▾' : '▸'} Columns</button>
         {/* Restore bar — the only way a hidden row/column comes back, so
-            hiding one can never lose it. */}
+            hiding one can never lose it. Rendered only when something is
+            hidden; no standing chrome above the table otherwise. */}
         {[...hiddenRows].map(k => (
           <button key={`hr-${k}`} type="button" style={chipS} title="Show this row again"
             onClick={() => toggleRow(k)}>+ {k}</button>
@@ -394,11 +392,10 @@ function GradientBody({
           <button key={`hc-${k}`} type="button" style={chipS} title="Show this column again"
             onClick={() => toggleCol(k)}>+ {k}</button>
         ))}
-        {(hiddenRows.size > 0 || hiddenCols.size > 0) && (
-          <button type="button" style={pillS} title="Show everything again"
-            onClick={() => { setHiddenRows(new Set()); setHiddenCols(new Set()) }}>Show all</button>
-        )}
+        <button type="button" style={pillS} title="Show everything again"
+          onClick={() => { setHiddenRows(new Set()); setHiddenCols(new Set()) }}>Show all</button>
       </div>
+      )}
       <div style={{ overflowX: 'auto' }}>
         <div style={{ minWidth: groups && colsOpen ? 760 : undefined, display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
           {groups && colsOpen && (() => {
@@ -432,20 +429,20 @@ function GradientBody({
           {visRows.map((row, ri) => (
             <button key={`l-${row.label}`} type="button" title={`${row.label} — click to hide this row`}
               onClick={() => toggleRow(row.label)}
-              style={{ gridRow: rowNo[ri], gridColumn: 1, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', border: 0, padding: 0, color: 'inherit', fontSize: GRAD_FONT, fontWeight: W_ROWLABEL }}>{row.label}</button>
+              style={{ gridRow: rowNo[ri], gridColumn: 1, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', border: 0, padding: 0, color: 'inherit', fontSize: GRAD_FONT, fontWeight: W_ROWLABEL, borderBottom: `1px solid ${P_EDG}`, alignSelf: 'stretch' }}>{row.label}</button>
           ))}
 
           {visCols.map((c, ci) => (
             emptyCol[ci]
               ? (
                 <span key={`nd-${c.name}`} title={`${c.name} — no closed trades in any shown window`}
-                  style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: GRAD_FONT, color: P_MU, background: P_ACS, borderRadius: 4 }}>
+                  style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: GRAD_FONT, color: P_MU, background: 'var(--table-head-bg)', borderRadius: 0 }}>
                   No data
                 </span>
               )
               : visRows.map((row, ri) => (
                 <span key={`c-${c.name}-${ri}`}
-                  style={{ ...cellStyle, gridRow: rowNo[ri], gridColumn: ci + 2, padding: pad, borderRadius: 4, background: row.cells[c.i].bg, color: row.cells[c.i].col }}>{row.cells[c.i].v}</span>
+                  style={{ ...cellStyle, gridRow: rowNo[ri], gridColumn: ci + 2, background: row.cells[c.i].bg, color: row.cells[c.i].col, borderBottom: `1px solid ${P_EDG}` }}>{row.cells[c.i].v}</span>
               ))
           ))}
 
@@ -1570,15 +1567,22 @@ export default function Performance() {
     ]
     const KC = MARKET_COLS.map(m => ({ name: m.label, pick: (t2) => t2.cat === m.key }))
     const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
+    // Owner (2026-07-25): "the red or blue pill like data and the gradient
+    // colours look unprofessional for presentation". The old cell was a
+    // saturated filled pill, up to 0.85 alpha with white-on-colour text —
+    // dashboard-toy styling. Professional heat tables (terminals, annual
+    // reports) do the opposite: the NUMBER carries the signal in the
+    // semantic colour, the fill is a whisper capped low enough that text
+    // contrast never changes, and zeros recede to a dot instead of shouting
+    // "+$0" in a coloured chip.
     const cell = (v, max) => {
+      const zero = Math.round(v * 100) === 0
       const a2 = Math.pow(Math.abs(v) / (max || 1), 0.6)
       return {
-        v: kf(v),
-        bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.07 + 0.78 * a2).toFixed(2) + ')',
-        col: a2 > 0.45 ? '#fff' : P_TX,
-        // Owner: "if a column like Metals and Demo 549 has no data ... place a
-        // 'No data' vertical" — this flag is what identifies such a column.
-        zero: Math.round(v * 100) === 0,
+        v: zero ? '·' : kf(v),
+        bg: zero ? 'transparent' : (v > 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.04 + 0.14 * a2).toFixed(2) + ')',
+        col: zero ? P_MU : v > 0 ? P_UP : P_DN,
+        zero,
       }
     }
     // colDefs: [{ name, pick(trade) }] — one shaded column each, scaled
@@ -1603,7 +1607,7 @@ export default function Performance() {
           const num = parseFloat(raw.replace('k', ''))
           return s2 + (Number.isFinite(num) ? num * mult : 0)
         }, 0)
-        return { v: kf(v), col: v > 0 ? P_UP : v < 0 ? P_DN : P_MU }
+        return { v: Math.round(v * 100) === 0 ? '·' : kf(v), col: v > 0 ? P_UP : v < 0 ? P_DN : P_MU }
       })
     }
     const acctCols = AC3.map(c => ({ name: c.name, pick: (t2) => c.id == null || t2.acc === c.id }))
@@ -2173,9 +2177,9 @@ export default function Performance() {
               <span style={{ fontSize: 12, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
                 data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />
+            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -2183,11 +2187,11 @@ export default function Performance() {
               <span style={{ fontSize: 12, color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot={gradients.overallDropped
+                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
                   ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
                   : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />} />
             </div>
-            <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot={gradients.overallDropped
+            <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
                   ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
                   : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />
           </div>
