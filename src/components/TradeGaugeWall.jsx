@@ -21,7 +21,7 @@ import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import { STRAT_SHORT } from '../lib/strategy-labels.js'
 import TradeChronograph from './TradeChronograph.jsx'
 import CockpitPFD from './CockpitPFD.jsx'
-import SymbolTarget from '../cockpit/SymbolTarget.jsx'
+import { bindPosition, openCockpit } from '../cockpit/cockpit-nav.js'
 
 const MAX_SAMPLES = 40 // ~2 min of tick-driven samples — enough for a rate-of-change
 const SIZE = 116 // owner: "make it bigger for me to understand"
@@ -85,7 +85,7 @@ function minsSince(iso) {
   return Math.max(0, Math.round((Date.now() - t) / 60000))
 }
 
-function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen, positionId = null }) {
+function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClosed, volume, pnl, strategy, source, lastCheckAt, lastCheckAction, thesisStatus, monitorSl, onOpen, onDetail = null }) {
   const { ratePerMin } = useTileSeries(r)
   const pnlOk = Number.isFinite(pnl)
   // Proof the monitor is actually reviewing THIS position (owner: "how do I know
@@ -111,25 +111,16 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
       role={onOpen ? 'button' : undefined}
       tabIndex={onOpen ? 0 : undefined}
       onKeyDown={onOpen ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }) : undefined}
-      title={onOpen ? 'Open the full chronograph for this trade' : undefined}
+      title={onOpen ? 'Open the Trade Cockpit for this trade' : undefined}
     >
       <div className="flex items-center justify-between text-[9px] mb-0.5">
         <span className="flex items-center gap-1 min-w-0">
           {marketClosed && (
             <span aria-hidden="true" title="market closed — dial reads off the last known price, not a live tick">🔒</span>
           )}
-          {/* Owner (2026-07-25): clicking the SYMBOL on the floating-P&L wall
-              opens the Trade Cockpit for that instrument. The tile itself keeps
-              opening the chronograph — SymbolTarget stops propagation. */}
-          {positionId != null
-            ? (
-              <SymbolTarget symbol={label} positionId={positionId} source="desk-gauge-wall"
-                position={{ sym: label, side: isLong(side) ? 'LONG' : 'SHORT', lots: volume, strategy,
-                  entry, sl: monitorSl ?? sl, tp, price, pnl, marketOpen: !marketClosed }}>
-                <span className="font-semibold text-[var(--color-text)]">{label}</span>
-              </SymbolTarget>
-            )
-            : <span className="font-semibold text-[var(--color-text)]">{label}</span>}
+          {/* The WHOLE tile opens the Trade Cockpit (see onOpen) — the symbol
+              is not a separate, smaller target. */}
+          <span className="font-semibold text-[var(--color-text)]">{label}</span>
           {stratTag && (
             <span
               className="text-[9px] uppercase tracking-wide px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)] truncate"
@@ -139,7 +130,15 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
             </span>
           )}
         </span>
-        {side != null && <span className={isLong(side) ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{isLong(side) ? 'Long' : 'Short'}</span>}
+        <span className="flex items-center gap-1 shrink-0">
+          {side != null && <span className={isLong(side) ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{isLong(side) ? 'Long' : 'Short'}</span>}
+          {onDetail && (
+            <button type="button" aria-label="Open the gauge chronograph"
+              title="Open the detailed gauge chronograph (the cockpit opens on tile click)"
+              onClick={e => { e.stopPropagation(); onDetail() }}
+              className="cursor-pointer rounded px-1 leading-none text-[var(--color-text-sub)] hover:text-[var(--color-text)]">⤢</button>
+          )}
+        </span>
       </div>
       <div className="flex items-center justify-center">
         <CockpitPFD entry={entry} sl={sl} tp={tp} side={side} price={price}
@@ -233,8 +232,28 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
           <GaugeTile key={p.positionId} label={p.symbol} side={p.side} r={r}
             entry={p.entry ?? null} sl={p.monitorSl ?? p.sl ?? null} tp={p.tp1 ?? p.tp ?? null}
             price={liveMid(ticks, p.symbol) ?? p.currentPrice ?? null}
-            positionId={p.positionId}
-            noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl} onOpen={() => setSelected(p)} />
+            noReason={noReason} marketClosed={marketClosed} volume={p.lots ?? p.volume ?? 0} pnl={pnl} strategy={p.strategy} source={p.source} lastCheckAt={p.lastCheckAt} lastCheckAction={p.lastCheckAction} thesisStatus={p.thesisStatus} monitorSl={p.monitorSl ?? p.sl}
+            // Owner (2026-07-25): tapping an open-trade tile must show the
+            // Trade Cockpit. The WHOLE tile is the target — making only the
+            // ~55px symbol label open it left every other pixel opening the
+            // old chronograph, which is what the tap actually hit.
+            onOpen={() => {
+              if (p.positionId == null) return
+              bindPosition(p.positionId, {
+                sym: p.symbol,
+                side: isLong(p.side) ? 'LONG' : 'SHORT',
+                lots: p.lots ?? p.volume ?? 0,
+                strategy: p.strategy,
+                entry: p.entry ?? null,
+                sl: p.monitorSl ?? p.sl ?? null,
+                tp: p.tp1 ?? p.tp ?? null,
+                price: liveMid(ticks, p.symbol) ?? p.currentPrice ?? null,
+                pnl,
+                marketOpen: !marketClosed,
+              })
+              openCockpit(p.positionId)
+            }}
+            onDetail={() => setSelected(p)} />
         ))}
       </div>
       {withR.length > gridN && (
