@@ -467,20 +467,36 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, children }) {
 // 🔒 that only appears in the rare case the broker reports this "24h" symbol
 // as currently untradable (otherwise the slot is blank, not a redundant
 // "OPEN" label).
-const WEEKEND_ROW_COLS = '58px 68px 1fr 58px 16px'
+// Owner (2026-07-25): "OHLC and other details make these rows look weird —
+// have a small collapse for this row and expand to see the trade information
+// in a single one." The OHLC/vol/SL/TP blob was inline in a ~1fr cell inside a
+// two-column grid, so it wrapped to six lines per row. The row is now ONE
+// line (symbol · side/lots · P&L · lock) and everything else lives in the
+// expansion, printed as one line of trade information.
+const WEEKEND_ROW_COLS = '14px 62px 74px 1fr 16px'
 function Weekend24Body({ rows }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
+  const [openId, setOpenId] = useState(null)
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div ref={animRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(260px, 1fr))', gap: '2px 16px', minWidth: 560 }}>
+      <div ref={animRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(240px, 1fr))', gap: '0 16px', minWidth: 520 }}>
         {rows.map(p2 => (
-          <div key={p2.id} title={`entry ${p2.entry} · ${p2.strat} · SL/TP distances from entry${p2.day?.t ? ` · daily bar ${new Date(p2.day.t).toISOString().slice(0, 10)}` : ''}`}
-            style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
-            <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{p2.sym}</span>
-            <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
-            <span style={{ fontSize: 12, color: P_MU }}>{fmtPx(p2.price)} · O{fmtPx(p2.day?.o)} H{fmtPx(p2.day?.h)} L{fmtPx(p2.day?.l)} C{fmtPx(p2.day?.c)} · v{fmtVol(p2.day?.v)} · SL {p2.sld}/TP {p2.tpd}</span>
-            <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
-            <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
+          <div key={p2.id}>
+            <div role="button" tabIndex={0} aria-expanded={openId === p2.id}
+              onClick={() => setOpenId(o => (o === p2.id ? null : p2.id))}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === p2.id ? null : p2.id)) } }}
+              style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
+              <span aria-hidden="true" style={{ fontSize: 12, color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{p2.sym}</span>
+              <span style={{ fontSize: 12, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+              <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+              <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '\u{1F512}' : ''}</span>
+            </div>
+            {openId === p2.id && (
+              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 12, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+                entry {p2.entry} · now {fmtPx(p2.price)} · O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)} · vol {fmtVol(p2.day?.v)} · SL {p2.sld} / TP {p2.tpd} · {p2.strat}
+              </div>
+            )}
           </div>
         ))}
       </div>
