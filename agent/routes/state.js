@@ -431,6 +431,22 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
+  // inside a window (owner: "double or triple trading symbols for past EU and
+  // NY sessions"). /state/duplicate-trades only sees identical-value records;
+  // this sees real separate fills stacked on one symbol, attributed to the
+  // code path that opened each leg. Query: ?days=14&windowMinutes=60
+  router.get('/symbol-clusters', async (req, res) => {
+    try {
+      const { findSameSymbolClusters } = await import('../services/trade-integrity.js')
+      const days = Math.min(365, Math.max(1, Number(req.query.days) || 14))
+      const windowMinutes = Math.min(1440, Math.max(1, Number(req.query.windowMinutes) || 60))
+      res.json(findSameSymbolClusters(db, { days, windowMinutes }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
