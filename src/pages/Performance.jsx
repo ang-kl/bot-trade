@@ -290,7 +290,7 @@ function FxBandsBody({ fxBands }) {
   return (
     <>
       {fxBands.map(b => (
-        <div key={b.band} style={{ display: 'grid', gridTemplateColumns: '118px 84px 1fr', gap: 8, alignItems: 'start', borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
+        <div key={b.band} className="perf-band-row" style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
           <span style={{ display: 'flex', flexDirection: 'column' }}>
             <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{b.band}</span>
             <span style={{ fontSize: 12, color: P_MU }}>{b.meta}</span>
@@ -523,23 +523,30 @@ function SessionStatsBody({ stats }) {
   )
 }
 
+// Owner (2026-07-25, iPad mini audit): this was a 5-column grid whose last
+// column held a prose paragraph — at tablet width the header alone wrapped to
+// four lines ("OUTCOME · PLAN · RVOL / VWAP / OBV") and every row ran ~150px
+// tall, so five trades filled the screen. It is now one block per trade:
+// an identity line that always fits (symbol · side · P&L), the window, then
+// the anatomy as short POINTS, one per line. Same markup at every width, so
+// there is no narrow-viewport variant to keep in sync.
 function WlBody({ rows }) {
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: '170px 74px 96px 1fr 76px', gap: 8, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 2 }}>
-        <span>Date · in → out (UTC)</span><span>Symbol</span><span>Side · lots</span><span>Outcome · plan · RVOL / VWAP / OBV</span><span style={{ textAlign: 'right' }}>P&amp;L</span>
-      </div>
       {rows.length === 0 && <span style={{ fontSize: 12, color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
       {rows.map((t2, ti) => (
-        <div key={ti} style={{ display: 'grid', gridTemplateColumns: '170px 74px 96px 1fr 76px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 4, fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 12, color: P_SB }}>{t2.when}</span>
-          <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
-          <span style={{ fontSize: 12, color: P_SB }}>{t2.sd}</span>
-          <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <span style={{ fontSize: 12, color: P_MU }}>{t2.why} · {t2.strat}</span>
-            <span style={{ fontSize: 12, color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
-          </span>
-          <span style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'right', color: t2.col }}>{t2.pnl}</span>
+        <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, paddingBottom: 2, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
+            <span style={{ fontSize: 12, color: P_SB }}>{t2.sd}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: W_CELL, color: t2.col }}>{t2.pnl}</span>
+          </div>
+          <div style={{ fontSize: 12, color: P_MU }}>{t2.when}</div>
+          {t2.points.map((pt, pi) => (
+            <div key={pi} style={{ display: 'flex', gap: 5, fontSize: 12, color: pi === 0 ? P_SB : P_MU }}>
+              <span aria-hidden="true" style={{ color: P_EDG }}>·</span><span>{pt}</span>
+            </div>
+          ))}
         </div>
       ))}
     </>
@@ -554,10 +561,10 @@ function AcctCardsGrid({ acctCards }) {
             {acctCards.map(a => (
               <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
                   <span style={{ fontSize: 12, color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> = <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span> of balance</span>
@@ -1147,12 +1154,28 @@ export default function Performance() {
       const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
       const risked = t2.slHit ? Math.abs(t2.pnl) : (t2.rr ? Math.abs(t2.pnl / t2.rr) : null)
       const held = t2.durMin == null ? '—' : (t2.durMin >= 60 ? `${Math.floor(t2.durMin / 60)}h ` : '') + `${t2.durMin % 60}m`
-      const inSide = t2.rvO != null || t2.vwO ? `RVOL ${t2.rvO != null ? `${nf(1).format(t2.rvO)}×` : '—'} · ${t2.vwO ? `${t2.vwO} VWAP` : '—'} · OBV ${t2.obv || '—'}` : '—'
+      const inSide = t2.rvO != null || t2.vwO ? `RVOL ${t2.rvO != null ? `${nf(1).format(t2.rvO)}×` : '—'} · ${t2.vwO ? `${t2.vwO} VWAP` : '—'} · OBV ${t2.obv || '—'}` : null
+      // Owner (2026-07-25, iPad mini): "cell data with so many wording must
+      // be considered to user, can you use point texting" — the anatomy used
+      // to be ONE '·'-joined sentence that wrapped to six lines inside a
+      // ~130px cell. It is now a list of SHORT points, rendered one per line.
+      // A point with no data is omitted entirely rather than printing "—":
+      // the out-side volume context is never recorded yet, so the old
+      // "in: … → out: —" tail was pure noise on every single row.
+      const points = [
+        `${out} · ${t2.strat || 'no strategy label'}`,
+        [t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
+         risked != null ? `risked ${money(risked, 0)}` : null,
+         t2.durMin != null ? `held ${held}` : null].filter(Boolean).join(' · '),
+        inSide ? `in ${inSide}` : null,
+      ].filter(Boolean)
       return {
         when: `${d2.getUTCDate()} ${MO2[d2.getUTCMonth()]} · ${t2.openedAt != null ? ft(t2.openedAt) : '—'} → ${ft(t2.t)} UTC`,
         sym: t2.sym, sd: `${t2.side} ${t2.lots} lots`, strat: t2.strat || '—',
+        points,
+        // Kept for the ⧉/⤢ copy payloads, which are plain-text by contract.
         why: `${out} · planned ${t2.rr != null ? `${nf(1).format(t2.rr)}:1` : '—'} · risked ${risked != null ? money(risked, 0) : '—'} · held ${held}`,
-        ind: `in: ${inSide}  →  out: —`,
+        ind: inSide ? `in: ${inSide}` : 'no volume context recorded',
         pnl: signed(t2.pnl), col: t2.pnl >= 0 ? P_UP : P_DN,
       }
     }
@@ -1268,10 +1291,10 @@ export default function Performance() {
             {acctCards.map(a => (
               <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 17, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
                   <span style={{ fontSize: 12, color: P_SB }}>eq {a.equity != null ? money(a.equity) : '—'}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 12, color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> · {a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span>
@@ -1290,8 +1313,8 @@ export default function Performance() {
               </div>
             ))}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
                 <span style={{ marginLeft: 'auto', fontSize: 15, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
               </div>
               <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
@@ -1300,8 +1323,8 @@ export default function Performance() {
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
               .filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => (
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                   <span style={{ marginLeft: 'auto', fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
                 </div>
                 {t2.key === 'closed' && <span style={{ fontSize: 12, color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
@@ -1359,7 +1382,7 @@ export default function Performance() {
             {/* Crypto — exact mobile panel (price/Δ not streamed → —). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                   {crypto.k.map(k2 => (
                     <span key={k2.k} style={{ fontSize: 12, fontWeight: W_CELL, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
@@ -1383,7 +1406,7 @@ export default function Performance() {
             </div>
             {/* Forex bands — exact mobile panel. */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               {fxBands.map(b => (
                 <div key={b.band} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -1432,7 +1455,7 @@ export default function Performance() {
           <>
             {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Gradient — timeframe × account</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
               <div style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.03em', color: P_MU }}>
                 <span>Window</span>
                 {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
@@ -1446,7 +1469,7 @@ export default function Performance() {
               <span style={{ fontSize: 12, color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
             </div>
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Gradient — asset × account · 30D</span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
               {gradients.a.map(r => (
                 <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
                   <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
@@ -1492,8 +1515,8 @@ export default function Performance() {
             the loss-cap line (real dailyLossPct config × stamped balance). */}
         {acctCards.length > 0 && (
           <div id="sec-accounts">
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Accounts — capital safety</span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — capital safety"
               data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
@@ -1512,7 +1535,7 @@ export default function Performance() {
               the table's 420px min-width, so nothing is ever cut off. */}
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
+              <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Today · since FX day open (5pm NY)</span>
               <SectionTools id="today" title="Today · since FX day open (5pm NY)" data={todayHourly}
                 toText={() => ['Today · since FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
                   ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`)].join('\n')}
@@ -1539,8 +1562,8 @@ export default function Performance() {
             }]
             const card = (t2, extraStyle = {}) => (
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320, ...extraStyle }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                   <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
                     {t2.rows.length
                       ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
@@ -1592,7 +1615,7 @@ export default function Performance() {
         {openSplit.weekend24.length > 0 && (
           <details id="sec-weekend24" open style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px' }}>
             <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8, listStyle: 'revert' }}>
-              <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
+              <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
               <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: openSplit.weekendTot == null ? P_MU : openSplit.weekendTot >= 0 ? P_UP : P_DN }}>
                 {openSplit.weekend24.length} open · {openSplit.weekendTot != null ? signed(openSplit.weekendTot) : 'P&L —'}
               </span>
@@ -1665,8 +1688,8 @@ export default function Performance() {
             the real registry). */}
         <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, alignItems: 'start' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Performance gradient — timeframe × account</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
                 data={gradients.t.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
@@ -1675,8 +1698,8 @@ export default function Performance() {
             <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="3px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Performance gradient — asset class × account</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
@@ -1690,9 +1713,9 @@ export default function Performance() {
             right column also hosts the crypto panel in a later slice). */}
         <div id="sec-fx-bands" style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 8, alignItems: 'start' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Forex — banded, all pairs</span>
-              <span style={{ fontSize: 12, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · hover a pair for TP/SL detail</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 12, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · hover a pair for TP/SL detail (desktop only)</span>
               <SectionTools id="fx-bands" title="Forex — banded, all pairs" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
                 render={() => <FxBandsBody fxBands={fxBands} />} />
@@ -1701,8 +1724,8 @@ export default function Performance() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div id="sec-strategy-matrix" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Strategy × market — 30D</span>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 12, color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
                 <SectionTools id="strategy-matrix" title="Strategy × market — 30D" window="30D" data={stratMx}
                   toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
@@ -1714,7 +1737,7 @@ export default function Performance() {
                 streamed to this page → honest —. */}
             <div id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
                 <span style={{ fontSize: 12, color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
                   {crypto.k.map(k2 => (
@@ -1739,7 +1762,7 @@ export default function Performance() {
           {[{ title: 'Winners explained — best closed trades, 30D', tcol: P_UP, sub: 'full anatomy: time in → out, side, lots, plan, volume context at open/close', rows: winLag.win },
             { title: 'Laggards explained — worst closed trades, 30D', tcol: P_DN, sub: 'same anatomy — what went wrong and under what volume conditions', rows: winLag.lag }].map(panel => (
             <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
                 <span style={{ fontSize: 12, color: P_MU }}>{panel.sub}</span>
                 <SectionTools id={panel.title.startsWith('Winners') ? 'winners' : 'laggards'} title={panel.title} window="30D" data={panel.rows}
