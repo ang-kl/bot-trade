@@ -57,7 +57,10 @@ export default function ReportChart({ allTrades, events }) {
 
   // Two points interpolate into meaningless straight lines that read as a
   // real trend (owner flagged exactly that) — draw only from 3 active days.
-  const hasData = model.length >= 3
+  const hasData = model.length >= 1
+  // 1-2 active days: plot DOTS ONLY. No path is drawn, so nothing can
+  // pretend to be a trend, but the range stops looking broken.
+  const sparse = model.length < 3
   let geom = null
   if (hasData) {
     const x0 = model[0].t, x1 = model[model.length - 1].t
@@ -75,7 +78,7 @@ export default function ReportChart({ allTrades, events }) {
       apPath: line(r => r.approved, Yd),
       vePath: line(r => r.vetoed, Yd),
       ticksY: [0, 0.5, 1].map(f => ({ y: PT + f * (H - PT - PB), label: fmtN(dMax * (1 - f), 0) })),
-      ticksX: model.filter((_, i) => i % Math.ceil(model.length / 8) === 0),
+      ticksX: model.filter((_, i) => i % Math.max(1, Math.ceil(model.length / 8)) === 0),
     }
   }
 
@@ -120,7 +123,7 @@ export default function ReportChart({ allTrades, events }) {
 
       {!hasData && (
         <div className="text-[13px] text-[var(--color-text-sub)] py-6">
-          Not enough history yet — this chart draws from the bot's decisions and closed trades and appears after 3 active days in this range. Two points would just be a straight line pretending to be a trend.
+          No activity in this range — this chart draws from the bot's decisions and closed trades. Widen the range to see more.
         </div>
       )}
 
@@ -143,10 +146,17 @@ export default function ReportChart({ allTrades, events }) {
             {geom.ticksX.map(r => (
               <text key={r.t} x={geom.X(r.t)} y={H - 8} fontSize="12" textAnchor="middle" fill="var(--color-text-sub)">{shortDate(r.t)}</text>
             ))}
-            {style === 'area' && <path d={geom.eqArea} fill="url(#rcFill)" />}
-            <path d={geom.eqPath} fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinejoin="round" />
-            <path d={geom.apPath} fill="none" stroke="var(--color-up)" strokeWidth="2" strokeLinejoin="round" />
-            <path d={geom.vePath} fill="none" stroke="var(--color-down)" strokeWidth="2" strokeLinejoin="round" />
+            {!sparse && style === 'area' && <path d={geom.eqArea} fill="url(#rcFill)" />}
+            {!sparse && <path d={geom.eqPath} fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinejoin="round" />}
+            {!sparse && <path d={geom.apPath} fill="none" stroke="var(--color-up)" strokeWidth="2" strokeLinejoin="round" />}
+            {!sparse && <path d={geom.vePath} fill="none" stroke="var(--color-down)" strokeWidth="2" strokeLinejoin="round" />}
+            {sparse && model.map(r => (
+              <g key={r.t}>
+                <circle cx={geom.X(r.t)} cy={geom.Ye(r.equity)} r="4.5" fill="#a855f7" />
+                <circle cx={geom.X(r.t)} cy={geom.Yd(r.approved)} r="4" fill="var(--color-up)" />
+                <circle cx={geom.X(r.t)} cy={geom.Yd(r.vetoed)} r="4" fill="var(--color-down)" />
+              </g>
+            ))}
             {hv && (
               <g>
                 <line x1={geom.X(hv.t)} x2={geom.X(hv.t)} y1={PT} y2={H - PB} stroke="var(--color-text-sub)" strokeWidth="0.8" strokeDasharray="3 3" />
@@ -167,7 +177,10 @@ export default function ReportChart({ allTrades, events }) {
           )}
         </div>
       )}
-      <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">Left axis: decisions/day · violet equity uses its own scale · live-updates every 20s.</p>
+      <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
+        Left axis: decisions/day · violet equity uses its own scale · live-updates every 20s.
+        {sparse && hasData && ' Only 1–2 active days in this range, so points are shown as dots — a connecting line would imply a trend that is not there.'}
+      </p>
     </Card>
   )
 }
