@@ -1,6 +1,7 @@
 // Tune — every knob a trader can turn, in one place:
 // pipeline toggles, autotrade timeframes, risk limits + account, watchlist,
 // backtest, presets. Folio tabs (one panel at a time) — no long scroll.
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
@@ -1272,6 +1273,8 @@ export default function Tune() {
 
   return (
     <div className="space-y-3">
+      {/* FAB delegates to pickTab — Tune navigates by tab state, not scroll. */}
+      <SectionNavFab sections={TABS} onSelect={pickTab} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
       {status && <div className="text-[9px] text-[var(--color-info-text)]" role="status">{status}</div>}
       {/* Persistent save proof — most controls here auto-save the instant you
@@ -1850,7 +1853,7 @@ export default function Tune() {
               {RISK_GROUPS.map(g => (
                 <div key={g.title} className="glass-inset rounded-[12px] p-2.5">
                   <div className="flex items-baseline justify-between mb-1.5">
-                    <h3 className="text-[11px] font-semibold">{g.title}</h3>
+                    <h3 className="t-h3">{g.title}</h3>
                     <span className="text-[9px] text-[var(--color-text-sub)]">{g.blurb}</span>
                   </div>
                   <div className="space-y-2">
@@ -1874,7 +1877,7 @@ export default function Tune() {
               </span>
             </div>
 
-            <h2 className="text-[11px] font-semibold mt-3 mb-1 pt-2.5 border-t border-[var(--color-border)]">Account</h2>
+            <h2 className="t-h3 mt-3 mb-1 pt-2.5 border-t border-[var(--color-border)]">Account</h2>
             <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">These feed every $ figure above. Balance auto-syncs from the broker when linked.</p>
             <div className="flex flex-wrap items-end gap-3">
               <label className="block text-[9px]">
@@ -1893,7 +1896,7 @@ export default function Tune() {
 
         {tab === 'watchlist' && (
           <div>
-            <h2 className="text-[11px] font-semibold mb-2">Watchlist ({symbols.length})</h2>
+            <h2 className="t-h3 mb-2">Watchlist ({symbols.length})</h2>
             <div className="flex gap-2 mb-3">
               <Input
                 value={newSymbol} onChange={e => setNewSymbol(e.target.value)}
@@ -2379,7 +2382,7 @@ export default function Tune() {
 
         {tab === 'backtest' && (
           <div>
-            <h2 className="text-[11px] font-semibold mb-2">Backtest (go/no-go before autotrade)</h2>
+            <h2 className="t-h3 mb-2">Backtest (go/no-go before autotrade)</h2>
             {enabledSymbols.length === 0 ? (
               <p className="text-[9px] text-[var(--color-text-sub)]">No enabled symbols — add instruments on the Watchlist tab first.</p>
             ) : (
@@ -2759,7 +2762,7 @@ export default function Tune() {
 
         {tab === 'presets' && (
           <div>
-            <h2 className="text-[11px] font-semibold mb-2">Presets</h2>
+            <h2 className="t-h3 mb-2">Presets</h2>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="subtle" onClick={() => {
                 const preset = {

@@ -3,6 +3,7 @@
 // load on demand. Positions and pending orders render through the STANDARD
 // order-log table (owner: same columns everywhere — Time | Symbol | Result |
 // Source | Side | Qty | Entry | Stop Loss | Take Profit | Reason | Chart).
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -93,6 +94,13 @@ function AccountCard({ acct, marketHours, onChanged }) {
   )
 }
 
+const ACCOUNTS_SECTIONS = [
+  { id: 'sec-clock', label: 'Market clock' },
+  { id: 'sec-primary', label: 'Bot account' },
+  { id: 'sec-others', label: 'Other accounts' },
+  { id: 'sec-insights', label: 'Strategy insights' },
+]
+
 export default function Accounts() {
   const [bot, setBot] = useState(null)         // the selected account (fast path)
   const [others, setOthers] = useState(null)   // remaining accounts (on demand)
@@ -145,6 +153,7 @@ export default function Accounts() {
 
   return (
     <div className="space-y-8">
+      <SectionNavFab sections={ACCOUNTS_SECTIONS} />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -160,15 +169,15 @@ export default function Accounts() {
 
       <AccountsSubNav />
 
-      <MarketClock />
+      <div id="sec-clock"><MarketClock /></div>
 
       {!bot && !error && <Card><Skeleton lines={4} /></Card>}
-      {bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}
+      <div id="sec-primary">{bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}</div>
 
-      {others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}
+      <div id="sec-others" className="space-y-8">{others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>
       {others && others.length === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
 
-      <StrategyInsights />
+      <div id="sec-insights"><StrategyInsights /></div>
 
       <p className="text-[9px] text-[var(--color-text-sub)]">
         *Est. P&L is the price move in the symbol's quote currency (lots × contract size × Δprice), excluding swap and commission — cTrader's own app shows the exact figure.

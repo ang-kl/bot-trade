@@ -1,5 +1,6 @@
 // Trade — the single live view: agent health, current fib signals, open
 // positions, recent trades, and the risk manager's latest decisions.
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { Fragment, useEffect, useState, useCallback } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -256,6 +257,15 @@ function OrderLogTable({ rows, marketHours = null, prices = {} }) {
   return <StdTradeTable rows={mapped} countLabel="attempts" marketHours={marketHours} />
 }
 
+const TRADE_SECTIONS = [
+  { id: 'sec-status', label: 'Status' },
+  { id: 'sec-signals', label: 'Signals' },
+  { id: 'sec-positions', label: 'Open positions' },
+  { id: 'sec-broker', label: 'At the broker' },
+  { id: 'sec-recent', label: 'Recent trades' },
+  { id: 'sec-orderlog', label: 'Order log' },
+]
+
 export default function Trade() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
@@ -442,12 +452,13 @@ export default function Trade() {
 
   return (
     <div className="space-y-3">
+      <SectionNavFab sections={TRADE_SECTIONS} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 
       {/* ONE card, ACCOUNT line first (owner spec): row 1 = who/where the
           money is + agent vitals + the page's actions; row 2 = trading
           status/scope. Guidance appears only when NOT ready. */}
-      <Card>
+      <Card id="sec-status">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px]">
           {health?.broker?.accountId
             ? <span className="font-semibold whitespace-nowrap">
@@ -508,7 +519,7 @@ export default function Trade() {
       {/* Signals — folded by default (owner: "still needed?"). The Desk scan
           strip carries the live read; this stays as the detail table for the
           full thesis text, one tap away instead of a page of rows. */}
-      <Card>
+      <Card id="sec-signals">
         <details open={signalScans.length > 0 && signalScans.length <= 4}>
           <summary className="cursor-pointer select-none text-[9px] font-semibold">
             Signals — {signalScans.length} active{skipScans.length > 0 ? ` · ${skipScans.length} scanned flat` : ''}
@@ -548,8 +559,8 @@ export default function Trade() {
       </Card>
 
       {/* Open positions */}
-      <Card>
-        <h2 className="text-[11px] font-semibold mb-2">Open positions ({positions.length})</h2>
+      <Card id="sec-positions">
+        <h2 className="t-h3 mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">Flat.</div>}
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
@@ -560,7 +571,7 @@ export default function Trade() {
         {orderOpen && (
           <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] shadow-xl">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="text-[11px] font-semibold">Manual order</h2>
+              <h2 className="t-h3">Manual order</h2>
               <Button size="sm" variant="ghost" onClick={() => setOrderOpen(false)}>✕</Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -617,9 +628,9 @@ export default function Trade() {
           bid/ask/commission/swap) as Desk's "At the broker" table (owner:
           "why you didn't include"). */}
       {broker && ((liveOrders.length || 0) > 0 || (broker.externalPositions?.length || 0) > 0) && (
-        <Card>
+        <Card id="sec-broker">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-[11px] font-semibold">
+            <h2 className="t-h3">
               At the broker
               {broker.lastReconcileAt && <span className="ml-2 font-normal text-[var(--color-text-sub)]">synced {ago(broker.lastReconcileAt)}</span>}
             </h2>
@@ -690,9 +701,9 @@ export default function Trade() {
           too many columns to share a row) with matching row counts. */}
       <div className="space-y-3">
         {/* Recent trades */}
-        <Card>
+        <Card id="sec-recent">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-[11px] font-semibold">Recent trades <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
+            <h2 className="t-h3">Recent trades <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
             <Button
               size="sm" variant="subtle" className="ml-auto" disabled={busy === 'reconcile'}
               onClick={async () => {
@@ -716,9 +727,9 @@ export default function Trade() {
             attempt (auto signal, test fill, manual, pending), fill or veto,
             with source and reason. Backed by risk_events; pre-gate refusals
             (no quote, market closed, no creds) are persisted there too. */}
-        <Card>
+        <Card id="sec-orderlog">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="text-[11px] font-semibold">Order log — every attempt, fill or veto</h2>
+            <h2 className="t-h3">Order log — every attempt, fill or veto</h2>
             <Button
               size="sm" variant="subtle" className="ml-auto"
               title="Prove the C++ execution engine matches the JS path: credentials push, broker login, open-position diff. Read-only."

@@ -7,6 +7,7 @@
 // /actions/risk-config, /actions/balance, /actions/guardian-move-pct,
 // /actions/weekend-bank, /actions/weekend-loss-flag, /actions/exec-guard,
 // /actions/vpo-settings, /actions/close-all.
+import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -139,6 +140,17 @@ function SectionTitle({ children, badge }) {
   )
 }
 
+const RISK_SECTIONS = [
+  { id: 'sec-account', label: 'Account snapshot' },
+  { id: 'sec-acct-risk', label: 'Account risk config' },
+  { id: 'sec-bot-risk', label: 'Bot Trade risk config' },
+  { id: 'sec-sizing', label: 'Sizing' },
+  { id: 'sec-cpp', label: 'C++ sidecar' },
+  { id: 'sec-emergency', label: 'Emergency' },
+  { id: 'sec-example-live', label: 'Example — live' },
+  { id: 'sec-example-cpp', label: 'Example — cpp' },
+]
+
 export default function Risk() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -243,6 +255,7 @@ export default function Risk() {
 
   return (
     <div className="space-y-2" data-risk-dense>
+      <SectionNavFab sections={RISK_SECTIONS} />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Risk</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
@@ -251,7 +264,7 @@ export default function Risk() {
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
-      <Card data-risk-card className="w3-hover-shadow">
+      <Card id="sec-account" data-risk-card className="w3-hover-shadow">
         <SectionTitle badge={data?.account?.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}>
           Global Account — cTrader risk configuration
         </SectionTitle>
@@ -284,7 +297,7 @@ export default function Risk() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[270px_1fr_270px] gap-3 items-start">
         {/* ---- Account Risk Configuration (left) ---- */}
-        <Card data-risk-card className="w3-hover-shadow">
+        <Card id="sec-acct-risk" data-risk-card className="w3-hover-shadow">
           <SectionTitle>Account risk configuration</SectionTitle>
           <div className="space-y-2">
             <Field label={`Daily loss cap${mark('dailyLossPct')}`} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
@@ -318,7 +331,7 @@ export default function Risk() {
 
         {/* ---- Middle column: Bot Trade + Cpp ---- */}
         <div className="space-y-2">
-          <Card data-risk-card className="w3-hover-shadow">
+          <Card id="sec-bot-risk" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Bot Trade risk configuration</SectionTitle>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-1">
               <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
@@ -378,7 +391,7 @@ export default function Risk() {
             </div>
           </Card>
 
-          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+          <Card id="sec-sizing" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="info">Sizing</Badge>}>Lot calculation</SectionTitle>
             {(() => {
               const mode = Number(risk.perTradeRiskUsd) > 0 ? 'absolute' : 'percent'
@@ -429,7 +442,7 @@ export default function Risk() {
             })()}
           </Card>
 
-          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+          <Card id="sec-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>Cpp risk configuration</SectionTitle>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-1">
               <div className="flex items-center justify-between text-[9px]">
@@ -463,7 +476,7 @@ export default function Risk() {
             </div>
           </Card>
 
-          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+          <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="down">Emergency</Badge>}>Close all positions</SectionTitle>
             <p className="text-[9px] text-[var(--color-text-sub)] mb-2">
               Closes every open position at the broker right now — bot-placed and manual alike. Halt (above) only blocks NEW orders; this ends existing ones. Irreversible.
@@ -482,7 +495,7 @@ export default function Risk() {
 
         {/* ---- Right column: worked examples ---- */}
         <div className="space-y-2">
-          <Card data-risk-card className="w3-hover-shadow">
+          <Card id="sec-example-live" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example trade — bot-trade live</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
             <div className="text-[9px] space-y-1 mt-2">
@@ -494,7 +507,7 @@ export default function Risk() {
               </div>
             </div>
           </Card>
-          <Card data-risk-card data-risk-reveal className="w3-hover-shadow">
+          <Card id="sec-example-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle>Example trade — cpp configuration</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} trigger={entry - slDist * 0.4} />
             <div className="text-[9px] space-y-1 mt-2">
