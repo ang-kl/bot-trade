@@ -345,7 +345,9 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           {v?.xLabels.map((x, i) => <span key={i} style={{ position: 'absolute', left: x.pc + '%', top: -12, transform: 'translateX(-50%)', fontSize: fs(8), color: 'var(--sb)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{x.v}</span>)}
           <div style={{ position: 'absolute', left: 0, right: 0, top: -16, height: 4 }}>
             {v?.resBands.map((b, i) => <span key={i} title="chart resolution in this span" style={{ position: 'absolute', left: b.lpc + '%', width: b.wpc + '%', height: 3, borderLeft: `1px solid ${b.c}`, borderTop: `1px solid ${b.c}`, borderRight: `1px solid ${b.c}`, display: 'block' }} />)}
-            {v?.resBands.map((b, i) => <span key={'l' + i} style={{ position: 'absolute', left: b.lpc + '%', width: b.wpc + '%', top: -13, textAlign: 'center', fontSize: fs(8), color: b.c, whiteSpace: 'nowrap', overflow: 'hidden' }}>{b.lb}</span>)}
+            {/* bands are contiguous — inset each label box 1px per side so adjacent
+                boxes can never touch (the §8 zero-overlap check measures boxes) */}
+            {v?.resBands.map((b, i) => <span key={'l' + i} style={{ position: 'absolute', left: `calc(${b.lpc}% + 1px)`, width: `calc(${b.wpc}% - 2px)`, top: -13, textAlign: 'center', fontSize: fs(8), color: b.c, whiteSpace: 'nowrap', overflow: 'hidden' }}>{b.lb}</span>)}
           </div>
           {/* Chart captions — BUILD-ORDER §3 pins these at 7.5px on every device.
               (Conflict, reported: the reference draws them at 8.5px; §3 wins.) */}
