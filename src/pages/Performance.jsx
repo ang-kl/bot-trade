@@ -49,6 +49,7 @@ const MARKET_COLS = [
   { key: 'crypto', label: 'Crypto' },
   { key: 'fx', label: 'Forex' },
   { key: 'index', label: 'Indices' },
+  { key: 'stock', label: 'Stocks' },
   { key: 'metal', label: 'Metals' },
   { key: 'energy', label: 'Energy' },
   { key: 'grain', label: 'Grains' },
@@ -325,11 +326,37 @@ function GradientBody({
     color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`,
     borderRadius: 6, padding: '0 5px',
   }
-  // A column whose every body cell is the zero string carries no information;
-  // it collapses to one merged vertical "No data" cell instead of a stack of
-  // identical +$0s. Computed from the rendered strings, so it can never
-  // disagree with what is on screen.
+  // A column whose every body cell is zero carries no information; it becomes
+  // one merged vertical "No data" cell. Computed from the same flag the
+  // formatter sets, so it cannot disagree with the rendered value.
   const emptyCol = shownCols.map((c, ci) => rows.length > 0 && rows.every(r => r.cells[ci]?.zero))
+
+  // EXPLICIT grid placement for every child.
+  //
+  // The first cut let the grid auto-place, with the row-spanning "No data" cell
+  // rendered on the first row only and `null` on the rest. Auto-placement then
+  // packed each following row's cells into whatever slots were free, so every
+  // row after the first spanning column shifted left — window labels landed in
+  // data columns and the whole table read wrong (owner: "the data are totally
+  // misplaced"). Auto-placement and row spans do not mix: once anything spans,
+  // every sibling needs its own coordinates.
+  const rowNo = []            // data row index -> grid row
+  const seps = []             // grid rows that carry a hollow band rule
+  let r = 1
+  if (groups && colsOpen) r++ // group band
+  const headRow = r++
+  const firstDataRow = r
+  rows.forEach((row, ri) => {
+    const band = banded ? bandOf(row.label) : null
+    const prev = banded && ri > 0 ? bandOf(rows[ri - 1].label) : band
+    if (band !== prev) seps.push(r++)
+    rowNo[ri] = r++
+  })
+  const lastDataRow = r - 1
+  const subSep = subtotals && colsOpen ? r++ : null
+  const subRow = subtotals && colsOpen ? r++ : null
+
+  const headStyle = smallHead ? { fontSize: 8 } : undefined
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 }}>
@@ -341,54 +368,50 @@ function GradientBody({
       </div>
       <div style={{ overflowX: 'auto' }}>
         <div style={{ minWidth: groups && colsOpen ? 760 : undefined, display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
-          {groups && colsOpen && (
-            <>
-              <span />
-              {groups.map(g => (
-                <span key={g.name} className="t-gridhead" style={{ gridColumn: `span ${g.span}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, fontSize: smallHead ? 8 : undefined }}>{g.name}</span>
-              ))}
-            </>
-          )}
-          <span className="t-gridhead" style={{ fontSize: smallHead ? 8 : undefined }}>{toTitle(label)}</span>
-          {/* title carries the full label for the ellipsis case. */}
-          {shownCols.map(c => (
-            <span key={c.name} className="t-gridhead" title={c.name}
-              style={{ textAlign: 'center', fontSize: smallHead ? 8 : undefined }}>{toTitle(c.name)}</span>
+          {groups && colsOpen && groups.reduce((acc, g) => {
+            const from = acc.at + 1
+            acc.at += g.span
+            acc.out.push(
+              <span key={`g-${g.name}`} className="t-gridhead"
+                style={{ gridRow: 1, gridColumn: `${from + 1} / span ${g.span}`, textAlign: 'center', borderBottom: `1px solid ${P_EDG}`, ...headStyle }}>{g.name}</span>,
+            )
+            return acc
+          }, { at: 0, out: [] }).out}
+
+          <span className="t-gridhead" style={{ gridRow: headRow, gridColumn: 1, ...headStyle }}>{toTitle(label)}</span>
+          {shownCols.map((c, ci) => (
+            <span key={`h-${c.name}`} className="t-gridhead" title={c.name}
+              style={{ gridRow: headRow, gridColumn: ci + 2, textAlign: 'center', ...headStyle }}>{toTitle(c.name)}</span>
           ))}
 
-          {rowsOpen && rows.map((r, ri) => {
-            const band = banded ? bandOf(r.label) : null
-            const prevBand = banded && ri > 0 ? bandOf(rows[ri - 1].label) : band
-            return (
-              <Fragment key={r.label}>
-                {/* Hollow rule between bands: a 1px outline, 2px of space
-                    total, spanning every column. */}
-                {band !== prevBand && (
-                  <span style={{ gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
-                )}
-                <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
-                {shownCols.map((c, ci) => (
-                  emptyCol[ci]
-                    ? (ri === 0 ? (
-                      <span key={ci} title={`${c.name} — no closed trades in any window`}
-                        style={{ gridRow: `span ${rows.length}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: 10, color: P_MU, background: P_ACS, borderRadius: 4 }}>
-                        No data
-                      </span>
-                    ) : null)
-                    : (
-                      <span key={ci} style={{ fontSize: 11, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: r.cells[ci].bg, color: r.cells[ci].col, fontVariantNumeric: 'tabular-nums' }}>{r.cells[ci].v}</span>
-                    )
-                ))}
-              </Fragment>
-            )
-          })}
+          {rowsOpen && seps.map(sr => (
+            <span key={`s-${sr}`} style={{ gridRow: sr, gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
+          ))}
 
-          {subtotals && colsOpen && (
+          {rowsOpen && rows.map((row, ri) => (
+            <span key={`l-${row.label}`} style={{ gridRow: rowNo[ri], gridColumn: 1, fontSize: 12, fontWeight: W_ROWLABEL }}>{row.label}</span>
+          ))}
+
+          {rowsOpen && shownCols.map((c, ci) => (
+            emptyCol[ci]
+              ? (
+                <span key={`nd-${ci}`} title={`${c.name} — no closed trades in any window`}
+                  style={{ gridColumn: ci + 2, gridRow: `${firstDataRow} / ${lastDataRow + 1}`, display: 'flex', alignItems: 'center', justifyContent: 'center', writingMode: 'vertical-rl', fontSize: 10, color: P_MU, background: P_ACS, borderRadius: 4 }}>
+                  No data
+                </span>
+              )
+              : rows.map((row, ri) => (
+                <span key={`c-${ci}-${ri}`}
+                  style={{ gridRow: rowNo[ri], gridColumn: ci + 2, fontSize: 11, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: row.cells[ci].bg, color: row.cells[ci].col, fontVariantNumeric: 'tabular-nums' }}>{row.cells[ci].v}</span>
+              ))
+          ))}
+
+          {subRow != null && (
             <>
-              <span style={{ gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
-              <span className="t-gridhead" style={{ fontSize: smallHead ? 8 : undefined }}>Subtotal</span>
+              <span style={{ gridRow: subSep, gridColumn: '1 / -1', height: 0, margin: '1px 0', borderTop: `1px solid ${P_GBD}` }} />
+              <span className="t-gridhead" style={{ gridRow: subRow, gridColumn: 1, ...headStyle }}>Subtotal</span>
               {shownCols.map((c, ci) => (
-                <span key={ci} style={{ fontSize: 11, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: subtotals[ci]?.col }}>{subtotals[ci]?.v}</span>
+                <span key={`sub-${ci}`} style={{ gridRow: subRow, gridColumn: ci + 2, fontSize: 11, fontWeight: W_CELL, textAlign: 'center', fontVariantNumeric: 'tabular-nums', color: subtotals[ci]?.col }}>{subtotals[ci]?.v}</span>
               ))}
             </>
           )}
@@ -1458,7 +1481,14 @@ export default function Performance() {
       if (CATP.metal.test(s)) return 'metal'
       if (CATP.energy.test(s)) return 'energy'
       if (CATP.grain.test(s)) return 'grain'
-      if (CATP.index.test(s) || /\.(US|UK|DE|AU)$/.test(s)) return 'index'
+      if (CATP.index.test(s)) return 'index'
+      // Owner (2026-07-25): "missing asset class like stock". They were not
+      // missing, they were MISFILED: a suffixed ticker (AVGO.US, JPM.US,
+      // ASML.US, BA.US) matched the same branch as an index and was counted
+      // under Indices. A single equity is not an index — same direction risk,
+      // completely different dispersion — so it gets its own class, and the
+      // Indices column stops carrying other people's P&L.
+      if (/\.(US|UK|DE|AU|CA|JP|HK|SG)$/.test(s)) return 'stock'
       if (/^[A-Z]{6}$/.test(s)) return 'fx'
       return 'other'
     }
@@ -1547,6 +1577,15 @@ export default function Performance() {
     const cut30 = loadedAt - 30 * D
     const aDefs = MARKET_COLS.map(m => ({ label: m.label, list: rows.filter(t2 => t2.cat === m.key && t2.t >= cut30) }))
     const wideCols = [...acctCols, ...SC, ...KC]
+    // Owner (2026-07-25): "remove the overall if there isn't two active
+    // account trading" — with one account carrying every trade, Overall is a
+    // verbatim copy of that account's column and the table asserts a
+    // portfolio view it does not have. Counted on accounts that actually have
+    // a closed trade, not on how many are enabled.
+    const tradingAccts = new Set(rows.map(t2 => t2.acc).filter(Boolean))
+    const assetCols = tradingAccts.size >= 2
+      ? acctCols
+      : acctCols.filter(c => c.name !== 'Overall')
     return {
       cols: AC3.map(x => ({ name: x.name })),
       // Column groups for the wide timeframe table's header band.
@@ -1560,9 +1599,11 @@ export default function Performance() {
       // tWide = the grouped account + strategy + asset table for the section.
       t: build(wDefs, acctCols),
       tWide: build(wDefs, wideCols),
-      a: build(aDefs, acctCols),
+      a: build(aDefs, assetCols),
+      assetCols: assetCols.map(c => ({ name: c.name })),
+      overallDropped: assetCols.length !== acctCols.length,
       tWideSub: subtotal(build(wDefs, wideCols)),
-      aSub: subtotal(build(aDefs, acctCols)),
+      aSub: subtotal(build(aDefs, assetCols)),
     }
   }, [allTrades, accounts, windows, loadedAt])
 
@@ -2092,10 +2133,14 @@ export default function Performance() {
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
-                data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />} />
+                data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
+                render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot={gradients.overallDropped
+                  ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
+                  : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />} />
             </div>
-            <GradientBody grid="74px" label="Asset" cols={gradients.cols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot="same closed-trade ledger, account dimension — totals reconcile with the Overall column" />
+            <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} pad="1px 0" foot={gradients.overallDropped
+                  ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
+                  : 'same closed-trade ledger, account dimension — totals reconcile with the Overall column'} />
           </div>
         </div>
 
