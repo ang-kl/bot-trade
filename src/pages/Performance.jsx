@@ -201,7 +201,10 @@ function MarketCell({ st }) {
   if (!st || !st.trades) return <td className={`py-1 px-2 text-right text-[12px] ${SUB}`}>—</td>
   return (
     <td className="py-1 px-2 text-right tabular-nums">
-      <div className={`text-[12px] font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>
+      {/* No explicit size on the net line: it inherits the ledger's 9.5px cell
+          size; the subline below keeps its own tiny 9px (owner: "except those
+          tiny information like '5t · 40% · PF 0.76'"). */}
+      <div className={`font-bold ${pnlTone(st.net)}`}>{signed(st.net)}</div>
       <div className={`text-[9px] ${SUB}`}>{st.trades}t · {st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'} · PF {st.pf != null ? nf(2).format(st.pf) : '—'}</div>
     </td>
   )
@@ -468,27 +471,37 @@ function FxBandsBody({ fxBands }) {
   // round as genuinely unreachable on an iPad — a tap never fires it. Tapping
   // a pair chip now shows the same detail inline, so it works on both.
   const [openPair, setOpenPair] = useState(null)
+  // Owner (2026-07-25): "missing column-head (follow standards in this css)" —
+  // this card was the one grid-table without a head row. Same .t-gridhead
+  // treatment as every other grid table; hidden when the row stacks on
+  // tablets (perf-band-head, index.css). "row font size 9px": data text is
+  // 9px, the band label keeps the app-wide 10px first-column-head size.
   return (
     <>
+      <div className="t-gridhead perf-band-row perf-band-head" style={{ padding: '2px 0 2px 4px' }}>
+        <span>Band</span>
+        <span>Net</span>
+        <span>Pairs</span>
+      </div>
       {fxBands.map(b => (
         <div key={b.band} className="perf-band-row" style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
           <span style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{b.band}</span>
-            <span style={{ fontSize: 12, color: P_MU }}>{b.meta}</span>
+            <span style={{ fontSize: 10, fontWeight: W_ROWLABEL }}>{b.band}</span>
+            <span style={{ fontSize: 9, color: P_MU }}>{b.meta}</span>
           </span>
-          <span style={{ fontSize: 12, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
+          <span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {b.pairs.map(p2 => (
               <button key={p2.sym} type="button" title={p2.tip}
                 aria-expanded={openPair === `${b.band}|${p2.sym}`}
                 onClick={() => setOpenPair(o => (o === `${b.band}|${p2.sym}` ? null : `${b.band}|${p2.sym}`))}
-                style={{ cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', fontSize: 12, fontWeight: 600, padding: '0 5px', borderRadius: 5, border: `1px solid ${openPair === `${b.band}|${p2.sym}` ? P_ACC : P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+                style={{ cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', fontSize: 9, fontWeight: 600, padding: '0 5px', borderRadius: 5, border: `1px solid ${openPair === `${b.band}|${p2.sym}` ? P_ACC : P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
                 {p2.sym} <span style={{ fontWeight: W_CELL, color: p2.col }}>{p2.v}</span>
               </button>
             ))}
           </div>
           {b.pairs.filter(p2 => openPair === `${b.band}|${p2.sym}`).map(p2 => (
-            <span key={p2.sym} style={{ gridColumn: '1 / -1', fontSize: 12, color: P_MU, paddingLeft: 4 }}>{p2.tip || 'no TP/SL detail recorded for this pair'}</span>
+            <span key={p2.sym} style={{ gridColumn: '1 / -1', fontSize: 9, color: P_MU, paddingLeft: 4 }}>{p2.tip || 'no TP/SL detail recorded for this pair'}</span>
           ))}
         </div>
       ))}
@@ -866,7 +879,8 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
       {!ledger && !error && <Skeleton lines={6} className="mt-2" />}
       {ledger && (
         <div className="overflow-x-auto mt-1.5">
-          <table className="t-sticky-col w-full text-left tabular-nums min-w-[820px]">
+          {/* t-ledger: owner's 9.5px cell size for this table (index.css). */}
+          <table className="t-ledger t-sticky-col w-full text-left tabular-nums min-w-[820px]">
             <thead>
               <tr className="border-b border-[var(--color-border)]">
                 <th className="py-1 pr-2">Window</th>
@@ -905,7 +919,9 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
         className={`border-b border-[var(--color-border)] cursor-pointer hover:bg-[var(--color-accent-soft)] ${empty ? 'opacity-60' : ''}`}>
         <td className="py-1.5 pr-2 whitespace-nowrap">
           <span aria-hidden="true" className={`inline-block w-3 text-[9px] ${SUB}`}>{open ? '▾' : '▸'}</span>
-          <span className="text-[12px] font-extrabold">{w.label}</span>
+          {/* 10px: the app-wide first-column-head size, not the 9.5px cell size —
+              the window label is the row's head. */}
+          <span className="text-[10px] font-extrabold">{w.label}</span>
           <div className={`ml-3 text-[9px] ${SUB}`}>{dRange(w.from, w.to)}</div>
         </td>
         <td className={`py-1.5 px-2 text-right tabular-nums text-[12px] ${SUB}`}>{money(w.carryIn)}</td>

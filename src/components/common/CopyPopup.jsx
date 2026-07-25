@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-export default function CopyPopup({ title, text, json = null, onClose }) {
+export default function CopyPopup({ title, text, json = null, html = null, onClose }) {
   const [tab, setTab] = useState('text')
   const [copied, setCopied] = useState(false)
   const panelRef = useRef(null)
@@ -20,10 +20,19 @@ export default function CopyPopup({ title, text, json = null, onClose }) {
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const content = tab === 'json' && json != null ? json : text
+  const content = tab === 'json' && json != null ? json : tab === 'html' && html != null ? html : text
   const doCopy = async () => {
     try {
-      await navigator.clipboard.writeText(content)
+      // The HTML tab writes BOTH flavours, so pasting into Excel/Word/Docs
+      // lands a real table while a plain-text target still gets the markup.
+      if (tab === 'html' && html != null && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([html], { type: 'text/plain' }),
+        })])
+      } else {
+        await navigator.clipboard.writeText(content)
+      }
       setCopied(true)
       setTimeout(() => setCopied(false), 1200)
     } catch { /* clipboard denied — the text stays selectable by hand */ }
@@ -50,6 +59,7 @@ export default function CopyPopup({ title, text, json = null, onClose }) {
           <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
             {tabBtn('text', 'Text')}
             {json != null && tabBtn('json', 'JSON')}
+            {html != null && tabBtn('html', 'HTML')}
             <button type="button" style={{ ...btn, fontWeight: 700 }} onClick={doCopy}>{copied ? '✓ Copied' : 'Copy'}</button>
             <button type="button" title="Close (Esc)" aria-label="Close" style={btn} onClick={onClose}>✕</button>
           </span>
