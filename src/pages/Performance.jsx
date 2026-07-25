@@ -605,7 +605,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
       {!ledger && !error && <Skeleton lines={6} className="mt-2" />}
       {ledger && (
         <div className="overflow-x-auto mt-1.5">
-          <table className="w-full text-left tabular-nums min-w-[980px]">
+          <table className="t-sticky-col w-full text-left tabular-nums min-w-[820px]">
             <thead>
               <tr className={`border-b border-[var(--color-border)] text-[12px] uppercase tracking-wide ${SUB}`}>
                 <th className="py-1 pr-2 font-bold">Window</th>
@@ -767,7 +767,7 @@ function PerfSideNav() {
     setOpen(false)
   }
   return (
-    <div className="hidden lg:block" style={{ position: 'fixed', right: 18, bottom: 74, zIndex: 40 }}>
+    <div className="hidden min-[700px]:block" style={{ position: 'fixed', right: 18, bottom: 74, zIndex: 40 }}>
       {open && (
         <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
           {PERF_SECTIONS.map(s => (
@@ -781,7 +781,7 @@ function PerfSideNav() {
         </div>
       )}
       <button type="button" onClick={() => setOpen(v => !v)} aria-label="Jump to section" title="Jump to section"
-        className="glass-panel"
+        className="glass-fixed"
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: `1px solid ${P_GBD}`, color: P_ACC, fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {open ? '×' : '☰'}
       </button>

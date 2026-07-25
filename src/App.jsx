@@ -102,7 +102,7 @@ export default function App() {
         toastOptions={{ style: { fontSize: 13 } }} />
       {/* Left sidebar — desktop */}
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-screen lg:sticky lg:top-0 p-4">
-        <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full">
+        <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-y-auto">
           <div className="flex items-baseline gap-2 mb-4">
             <span className="text-[15px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent">bot-trade</span>
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
@@ -194,7 +194,7 @@ export default function App() {
             sticky sidebar; page content scrolls underneath the translucent
             glass-bar material. main's bottom padding above keeps real
             content from ending up permanently hidden under it. */}
-        <footer className="glass-bar fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
+        <footer className="glass-fixed fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
           <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
           {/* Keep this line TRUE: 5 registry strategies armed per-stage in
               Tune; entries/risk gate are deterministic, but the position
