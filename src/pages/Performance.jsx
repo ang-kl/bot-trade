@@ -11,7 +11,7 @@
 // design's phone screens (Now / Ledger / Markets / Trades / Accounts pill
 // nav, hit targets ≥44px) below lg. Theme is the app-wide system-default
 // toggle — mobile follows the system exactly as the design asks.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -268,21 +268,35 @@ function WindowDetail({ w }) {
 
 // --- shared section bodies (card + expanded modal render the SAME
 // component — the owner's no-fork rule for the ⤢ expand feature) ----------
-function GradientBody({ grid, label, cols, rows, pad, foot }) {
+// `groups` (optional) draws a band above the column heads — Account /
+// Strategy / Asset class — so a wide table says which dimension a column
+// belongs to instead of leaving the reader to guess from the label.
+function GradientBody({ grid, label, cols, rows, pad, foot, groups = null, colW = 'minmax(52px,84px)' }) {
+  const template = `${grid} repeat(${cols.length},${colW})`
   return (
-    <>
-      <div style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},minmax(52px,84px))`, gap: 2, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
-        <span>{label}</span>
-        {cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
-      </div>
-      {rows.map(r => (
-        <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},minmax(52px,84px))`, gap: 2, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
-          {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ minWidth: groups ? 760 : undefined }}>
+        {groups && (
+          <div style={{ display: 'grid', gridTemplateColumns: `${grid} repeat(${cols.length},${colW})`, gap: 2, paddingBottom: 1 }}>
+            <span />
+            {groups.map(g => (
+              <span key={g.name} style={{ gridColumn: `span ${g.span}`, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, textAlign: 'center', borderBottom: `1px solid ${P_EDG}` }}>{g.name}</span>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: template, gap: 2, fontSize: 12, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, paddingBottom: 2 }}>
+          <span>{label}</span>
+          {cols.map(c => <span key={c.name} style={{ textAlign: 'center' }}>{c.name}</span>)}
         </div>
-      ))}
-      <span style={{ fontSize: 12, color: P_MU }}>{foot}</span>
-    </>
+        {rows.map(r => (
+          <div key={r.label} style={{ display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.label}</span>
+            {r.cells.map((c, ci) => <span key={ci} style={{ fontSize: 12, fontWeight: W_CELL, textAlign: 'center', padding: pad, borderRadius: 4, background: c.bg, color: c.col, fontVariantNumeric: 'tabular-nums' }}>{c.v}</span>)}
+          </div>
+        ))}
+        <span style={{ fontSize: 12, color: P_MU }}>{foot}</span>
+      </div>
+    </div>
   )
 }
 
@@ -1135,7 +1149,41 @@ export default function Performance() {
     const pf = grossLoss > 0 ? grossWin / grossLoss : null
     let peak = 0; let equity = 0; let mdd = 0
     for (const v of pnls) { equity += v; peak = Math.max(peak, equity); mdd = Math.max(mdd, peak - equity) }
-    return { closed, pnls, wins, losses, total, grossWin, grossLoss, pf, mdd }
+    // Owner (2026-07-25): "redo the All-time tiles & equity table from the
+    // ground up." Streaks, payoff, hold time and the per-day split all come
+    // from this same closed set, so every figure in the table reconciles with
+    // every other one and with the ledger.
+    const chron = [...closed]
+      .map(t2 => ({ ms: closedMs(t2), pnl: Number(t2.net_pnl), hold: t2.hold_duration_ms != null ? Number(t2.hold_duration_ms) : null }))
+      .filter(t2 => t2.ms != null)
+      .sort((a, b) => a.ms - b.ms)
+    let winStreak = 0, lossStreak = 0, curW = 0, curL = 0
+    for (const t2 of chron) {
+      if (t2.pnl > 0) { curW++; curL = 0 } else { curL++; curW = 0 }
+      winStreak = Math.max(winStreak, curW); lossStreak = Math.max(lossStreak, curL)
+    }
+    const byDay = new Map()
+    for (const t2 of chron) {
+      const k = new Date(t2.ms).toISOString().slice(0, 10)
+      byDay.set(k, (byDay.get(k) || 0) + t2.pnl)
+    }
+    const dayNets = [...byDay.values()]
+    const holds = chron.map(t2 => t2.hold).filter(v => Number.isFinite(v) && v > 0)
+    const avgWin = wins.length ? grossWin / wins.length : null
+    const avgLoss = losses.length ? grossLoss / losses.length : null
+    return {
+      closed, pnls, wins, losses, total, grossWin, grossLoss, pf, mdd,
+      avgWin, avgLoss,
+      payoff: avgWin != null && avgLoss ? avgWin / avgLoss : null,
+      winStreak, lossStreak,
+      firstMs: chron.length ? chron[0].ms : null,
+      lastMs: chron.length ? chron[chron.length - 1].ms : null,
+      tradingDays: byDay.size,
+      greenDays: dayNets.filter(v => v > 0).length,
+      bestDay: dayNets.length ? Math.max(...dayNets) : null,
+      worstDay: dayNets.length ? Math.min(...dayNets) : null,
+      medHoldMin: holds.length ? Math.round(holds.sort((a, b) => a - b)[Math.floor(holds.length / 2)] / 60_000) : null,
+    }
   }, [allTrades])
 
   const windows = useMemo(() => ledger?.windows || [], [ledger])
@@ -1317,47 +1365,141 @@ export default function Performance() {
     }
     const rows = allTrades
       .filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-      .map(t2 => ({ t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol), acc: t2.account_id != null ? String(t2.account_id) : null }))
+      .map(t2 => ({
+        t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol),
+        acc: t2.account_id != null ? String(t2.account_id) : null,
+        strat: t2.label_strategy || t2.strategy || null,
+      }))
       .filter(t2 => t2.t != null)
     const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
+    // Owner (2026-07-25): "add strategy column, asset columns" to the
+    // timeframe gradient. Column axis becomes three GROUPS sharing the window
+    // rows: account, strategy, asset class. Strategies come from the data
+    // rather than a hardcoded list — whatever actually traded, ranked by
+    // absolute contribution, capped at 6 so the table stays readable, with
+    // anything past that folded into "other" instead of vanishing.
+    const stratTotals = new Map()
+    for (const r of rows) {
+      const k = r.strat || 'unlabelled'
+      stratTotals.set(k, (stratTotals.get(k) || 0) + Math.abs(r.pnl))
+    }
+    const stratNames = [...stratTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+    const topStrats = stratNames.slice(0, 6)
+    const restStrats = new Set(stratNames.slice(6))
+    const SC = [
+      ...topStrats.map(n => ({ name: n.replace(/_/g, ' '), pick: (t2) => (t2.strat || 'unlabelled') === n })),
+      ...(restStrats.size ? [{ name: 'other', pick: (t2) => restStrats.has(t2.strat || 'unlabelled') }] : []),
+    ]
+    const KC = MARKET_COLS.map(m => ({ name: m.label, pick: (t2) => t2.cat === m.key }))
     const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
     const cell = (v, max) => {
       const a2 = Math.pow(Math.abs(v) / (max || 1), 0.6)
       return { v: kf(v), bg: (v >= 0 ? 'rgba(79,140,255,' : 'rgba(255,77,109,') + (0.07 + 0.78 * a2).toFixed(2) + ')', col: a2 > 0.45 ? '#fff' : P_TX }
     }
-    const build = (rowDefs) => {
-      const raw = rowDefs.map(r => AC3.map(c => r.list.reduce((s2, t2) => s2 + (c.id == null || t2.acc === c.id ? t2.pnl : 0), 0)))
-      const colMax = AC3.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
+    // colDefs: [{ name, pick(trade) }] — one shaded column each, scaled
+    // against its OWN peak window so a quiet account/strategy still shows
+    // structure instead of washing out next to a loud one.
+    const build = (rowDefs, colDefs) => {
+      const raw = rowDefs.map(r => colDefs.map(c => r.list.reduce((s2, t2) => s2 + (c.pick(t2) ? t2.pnl : 0), 0)))
+      const colMax = colDefs.map((x, ci) => Math.max(1, ...raw.map(rw => Math.abs(rw[ci]))))
       return rowDefs.map((r, ri) => ({ label: r.label, cells: raw[ri].map((v, ci) => cell(v, colMax[ci])) }))
     }
+    const acctCols = AC3.map(c => ({ name: c.name, pick: (t2) => c.id == null || t2.acc === c.id }))
+    // Owner (2026-07-25): "why last month is zero". Because no trade CLOSED
+    // inside that calendar month — the server's window is prevMonthStart →
+    // monthStart (perf-ledger.js), and the account's whole closed history
+    // starts later than that. A zero here is a true zero, not a gap: the row
+    // label now carries "no closes" so an empty window reads as answered
+    // rather than broken.
+    const firstClose = rows.length ? Math.min(...rows.map(t2 => t2.t)) : null
     const wDefs = windows.map(w => {
       const from = Date.parse(w.from), to = Date.parse(w.to)
-      return { label: w.label, list: rows.filter(t2 => t2.t >= from && t2.t < to) }
+      const list = rows.filter(t2 => t2.t >= from && t2.t < to)
+      const beforeHistory = firstClose != null && Number.isFinite(to) && to <= firstClose
+      return {
+        label: w.label + (list.length ? '' : beforeHistory ? ' · pre-history' : ' · no closes'),
+        list,
+      }
     })
     const cut30 = loadedAt - 30 * D
     const aDefs = MARKET_COLS.map(m => ({ label: m.label, list: rows.filter(t2 => t2.cat === m.key && t2.t >= cut30) }))
-    return { cols: AC3.map(x => ({ name: x.name })), t: build(wDefs), a: build(aDefs) }
+    const wideCols = [...acctCols, ...SC, ...KC]
+    return {
+      cols: AC3.map(x => ({ name: x.name })),
+      // Column groups for the wide timeframe table's header band.
+      groups: [
+        { name: 'Account', span: acctCols.length },
+        ...(SC.length ? [{ name: 'Strategy', span: SC.length }] : []),
+        { name: 'Asset class', span: KC.length },
+      ],
+      wideCols: wideCols.map(c => ({ name: c.name })),
+      // t = accounts only, for the phone screens where 15 columns cannot fit.
+      // tWide = the grouped account + strategy + asset table for the section.
+      t: build(wDefs, acctCols),
+      tWide: build(wDefs, wideCols),
+      a: build(aDefs, acctCols),
+    }
   }, [allTrades, accounts, windows, loadedAt])
 
+  // Owner (2026-07-25): "redo the All-time tiles & equity table from the
+  // ground up." It was nine loose boxes in a wrapping row — no grouping, no
+  // units, no way to tell which number answers which question, and a JSON
+  // copy that carried four of the nine. It is now a real <table> in three
+  // named groups (Outcome / Edge / Risk & shape), every row carrying the
+  // figure AND what it means, so the card explains itself and Card's
+  // tableToJson emits all of it automatically.
+  const tileGroups = tiles && (() => {
+    const n = tiles.closed.length
+    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—')
+    const m2 = (v) => (v == null ? '—' : nf(2).format(v))
+    const span = tiles.firstMs && tiles.lastMs
+      ? `${new Date(tiles.firstMs).toISOString().slice(0, 10)} → ${new Date(tiles.lastMs).toISOString().slice(0, 10)}`
+      : '—'
+    return [
+      ['Outcome', [
+        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'every closed trade, after swap and commission'],
+        ['Closed trades', String(n), '', `over ${tiles.tradingDays} day${tiles.tradingDays === 1 ? '' : 's'} with a close · ${span}`],
+        ['Win rate', pct(tiles.wins.length, n), '', `${tiles.wins.length} up · ${tiles.losses.length} down (a scratch counts as down)`],
+        ['Expectancy', `${m2(tiles.total / n)} / trade`, pnlTone(tiles.total), 'net divided by trade count — what one more trade is worth on this record'],
+      ]],
+      ['Edge', [
+        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.wins.length ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
+        ['Payoff ratio', tiles.payoff != null ? `${nf(2).format(tiles.payoff)} : 1` : '—', '', 'average win against average loss — the size edge, independent of win rate'],
+        ['Avg win', tiles.avgWin != null ? `+${m2(tiles.avgWin)}` : '—', UP, `across ${tiles.wins.length} winner${tiles.wins.length === 1 ? '' : 's'}`],
+        ['Avg loss', tiles.avgLoss != null ? `−${m2(tiles.avgLoss)}` : '—', DOWN, `across ${tiles.losses.length} loser${tiles.losses.length === 1 ? '' : 's'}`],
+      ]],
+      ['Risk & shape', [
+        ['Max drawdown', tiles.mdd > 0 ? `−${m2(tiles.mdd)}` : '—', DOWN, 'deepest fall from an equity peak, trade by trade in close order'],
+        ['Best / worst trade', `${m2(Math.max(...tiles.pnls))} / ${m2(Math.min(...tiles.pnls))}`, '', 'single largest gain and loss'],
+        ['Best / worst day', `${m2(tiles.bestDay)} / ${m2(tiles.worstDay)}`, '', `${tiles.greenDays} of ${tiles.tradingDays} days closed green`],
+        ['Longest streak', `${tiles.winStreak}W / ${tiles.lossStreak}L`, '', 'consecutive wins and losses in close order'],
+        ['Median hold', tiles.medHoldMin != null ? (tiles.medHoldMin >= 60 ? `${Math.floor(tiles.medHoldMin / 60)}h ${tiles.medHoldMin % 60}m` : `${tiles.medHoldMin}m`) : '—', '', tiles.medHoldMin != null ? 'half the trades were held less than this' : 'hold duration not recorded on these trades'],
+      ]],
+    ]
+  })()
+
   const tilesRow = tiles && (
-    <div className="flex flex-wrap gap-1.5 mb-2">
-      {[
-        ['Net P&L', signed(tiles.total), pnlTone(tiles.total)],
-        ['Trades', String(tiles.closed.length), ''],
-        ['Win rate', `${((tiles.wins.length / tiles.closed.length) * 100).toFixed(0)}%`, ''],
-        ['Profit factor', tiles.pf != null ? tiles.pf.toFixed(2) : tiles.wins.length ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN],
-        ['Expectancy', `${(tiles.total / tiles.closed.length).toFixed(2)}/trade`, pnlTone(tiles.total)],
-        ['Avg win', tiles.wins.length ? `+${(tiles.grossWin / tiles.wins.length).toFixed(2)}` : '—', UP],
-        ['Avg loss', tiles.losses.length ? `−${(tiles.grossLoss / tiles.losses.length).toFixed(2)}` : '—', DOWN],
-        ['Max drawdown', tiles.mdd > 0 ? `−${tiles.mdd.toFixed(2)}` : '—', DOWN],
-        ['Best / worst', `${Math.max(...tiles.pnls).toFixed(2)} / ${Math.min(...tiles.pnls).toFixed(2)}`, ''],
-      ].map(([label, value, tone]) => (
-        <div key={label} className="glass-inset rounded-[9px] px-2.5 py-1.5 min-w-[92px]">
-          <div className={`text-[12px] ${SUB}`}>{label}</div>
-          <div className={`text-[13px] font-bold tabular-nums ${tone}`}>{value}</div>
-        </div>
-      ))}
-    </div>
+    <table className="w-full text-left tabular-nums mb-2">
+      <thead>
+        <tr><th className="w-[150px]">Metric</th><th className="w-[128px]">All time</th><th>What it measures</th></tr>
+      </thead>
+      <tbody>
+        {tileGroups.map(([group, items]) => (
+          <Fragment key={group}>
+            <tr>
+              <td colSpan={3} className="py-0 text-[12px] font-semibold uppercase tracking-wide text-[var(--color-muted)] border-t border-[var(--glass-edge)]">{group}</td>
+            </tr>
+            {items.map(([label, value, tone, note]) => (
+              <tr key={label} className="border-t border-[var(--glass-edge)]">
+                <td className="py-0.5 px-2 text-[12px] font-medium">{label}</td>
+                <td className={`py-0.5 px-2 text-[12px] ${tone}`}>{value}</td>
+                <td className={`py-0.5 px-2 text-[12px] ${SUB}`}>{note}</td>
+              </tr>
+            ))}
+          </Fragment>
+        ))}
+      </tbody>
+    </table>
   )
 
   return (
@@ -1803,16 +1945,21 @@ export default function Performance() {
         {/* Performance gradients — exact prototype panels (timeframe ×
             account, asset class × account heat tables; column count follows
             the real registry). */}
-        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, alignItems: 'start' }}>
+        {/* Owner (2026-07-25): timeframe table gains strategy + asset columns,
+            so it needs the width; "asset class × account — make it small in
+            width by half" — 1.2fr/1fr becomes roughly 3.4fr/1fr, and
+            minmax(0,…) keeps the wide left table from stealing the right
+            card's track (the IMG_1221 failure mode). */}
+        <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 3.4fr) minmax(0, 1fr)', gap: 8, alignItems: 'start' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
               <span style={{ fontSize: 12, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
-                data={gradients.t.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.cols[ci]?.name || ci, c.v])) }))}
-                render={() => <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="1px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />} />
+                data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
+                render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window" />} />
             </div>
-            <GradientBody grid="86px" label="Window" cols={gradients.cols} rows={gradients.t} pad="1px 0" foot="blue = net gain · red = net loss · each account column shaded against its own peak window" />
+            <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} pad="1px 0" colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window" />
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -1927,8 +2074,10 @@ export default function Performance() {
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
             {tiles && <span className={`text-[12px] ${SUB}`}>{tiles.closed.length} closed · {signed(tiles.total)}</span>}
             <SectionTools id="tiles" title="All-time tiles &amp; equity"
-              data={tiles ? [{ net: tiles.total, trades: tiles.closed.length, winRatePct: Math.round((tiles.wins.length / tiles.closed.length) * 100), profitFactor: tiles.pf, maxDrawdown: tiles.mdd }] : []}
-              toText={() => (tiles ? `All-time · net ${signed(tiles.total)} · ${tiles.closed.length} trades · win ${Math.round((tiles.wins.length / tiles.closed.length) * 100)}% · PF ${tiles.pf != null ? tiles.pf.toFixed(2) : '—'} · maxDD −${tiles.mdd.toFixed(2)}` : 'All-time — no closed trades yet')}
+              data={tileGroups ? tileGroups.flatMap(([group, items]) => items.map(([metric, value, , note]) => ({ group, metric, value, measures: note }))) : []}
+              toText={() => (tileGroups
+                ? ['All-time', ...tileGroups.flatMap(([group, items]) => [group.toUpperCase(), ...items.map(([metric, value, , note]) => `  ${metric} ${value} — ${note}`)])].join('\n')
+                : 'All-time — no closed trades yet')}
               render={() => (
                 <div>
                   {tilesRow}
