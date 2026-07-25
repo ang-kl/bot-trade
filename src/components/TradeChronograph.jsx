@@ -114,8 +114,8 @@ export default function TradeChronograph({ pos, onClose }) {
       <div ref={panelRef} className="w3-animate-zoom bg-[var(--color-bg)] border border-[var(--color-border)] shadow-2xl rounded-2xl p-4 max-w-[420px] w-full" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-baseline gap-2">
-            <span className="text-[15px] font-bold">{pos.symbol}</span>
-            <span className={isLong(side) ? 'text-[var(--color-up)] text-[12px]' : 'text-[var(--color-down)] text-[12px]'}>{isLong(side) ? 'Long' : 'Short'}</span>
+            <span className="text-[11px] font-bold">{pos.symbol}</span>
+            <span className={isLong(side) ? 'text-[var(--color-up)] text-[9px]' : 'text-[var(--color-down)] text-[9px]'}>{isLong(side) ? 'Long' : 'Short'}</span>
             {strat && <span className="text-[10px] uppercase px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)]">{strat}</span>}
             {tf && <span className="text-[10px] text-[var(--color-text-sub)]">{tf}</span>}
             {trend && <span className="text-[10px]" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
@@ -147,7 +147,7 @@ export default function TradeChronograph({ pos, onClose }) {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[13px] mt-2">
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[9px] mt-2">
           <span className="text-[var(--color-text-sub)]">Current price</span><span className="tabular-nums text-right font-semibold">{price5(price)}</span>
           <span className="text-[var(--color-text-sub)]">Velocity</span><span className="tabular-nums text-right font-semibold">{vel == null ? '—' : `${vel.toFixed(2)} R/hr`}</span>
           <span className="text-[var(--color-text-sub)]">Risk used (to stop)</span><span className="tabular-nums text-right font-semibold">{slProx == null ? '—' : `${Math.round(slProx * 100)}%`}</span>
@@ -155,7 +155,7 @@ export default function TradeChronograph({ pos, onClose }) {
           <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right font-semibold">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
         </div>
         {indicator !== 'none' && (
-          <p className="tabular-nums text-[12px] font-semibold mt-1.5 pt-1.5 border-t border-[var(--color-border)]">
+          <p className="tabular-nums text-[9px] font-semibold mt-1.5 pt-1.5 border-t border-[var(--color-border)]">
             {indicatorLine ?? 'loading…'}
           </p>
         )}

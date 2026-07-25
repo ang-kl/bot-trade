@@ -67,7 +67,7 @@ export default function Card({
 
   const btn = {
     position: 'absolute', top: 6, zIndex: 5, cursor: 'pointer', fontFamily: 'inherit',
-    fontSize: 12, lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
+    fontSize: 9, lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid transparent', borderRadius: 8, padding: '3px 6px', opacity: .55,
   }
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }
@@ -99,7 +99,7 @@ export default function Card({
           identifiable, and hide (not unmount) the body so sort/page state
           survives and the card collapses to a single line. */}
       {collapsed && (
-        <span className="text-[12px] font-semibold text-[var(--color-text-sub)]">
+        <span className="text-[9px] font-semibold text-[var(--color-text-sub)]">
           {label || copyTitle || 'Section'}
         </span>
       )}

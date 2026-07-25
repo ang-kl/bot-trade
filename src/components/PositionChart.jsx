@@ -353,7 +353,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
             aria-label="Timeframe"
             value={CHART_TF_ROWS.some(r2 => r2.tfs.includes(timeframe)) ? timeframe : '__custom'}
             onChange={(e) => { if (e.target.value !== '__custom') setTimeframe(e.target.value) }}
-            className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[12px] font-semibold bg-transparent cursor-pointer"
+            className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] font-semibold bg-transparent cursor-pointer"
           >
             {CHART_TF_ROWS.map(row => (
               <optgroup key={row.label} label={row.label}>
@@ -407,9 +407,9 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           />
         </details>
       )}
-      {error && <div className="text-[12px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
+      {error && <div className="text-[9px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
       {!error && loadedKey !== chartKey && (
-        <div className="text-[12px] text-[var(--color-text-sub)] py-1" role="status">
+        <div className="text-[9px] text-[var(--color-text-sub)] py-1" role="status">
           Loading {symbol} {timeframe} — one moment, fetching bars from the broker…
         </div>
       )}

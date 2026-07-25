@@ -35,8 +35,8 @@ export default function MarketClock() {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[12px] font-semibold">Market sessions</div>
-        <span className="text-[12px] text-[var(--color-text-sub)]">
+        <div className="text-[9px] font-semibold">Market sessions</div>
+        <span className="text-[9px] text-[var(--color-text-sub)]">
           your time ({viewerTz}): <span className="font-semibold text-[var(--color-text)]">{fmtInTz(now, viewerTz)}</span>
         </span>
         {weekend && <Badge tone="warning">FX/CFD weekend — closed</Badge>}
@@ -47,8 +47,8 @@ export default function MarketClock() {
           return (
             <div key={s.id} className="flex items-center gap-1.5 rounded-[8px] glass-inset px-2 py-1">
               <Badge tone={open ? 'up' : 'neutral'}>{open ? 'OPEN' : 'CLOSED'}</Badge>
-              <span className="text-[12px] font-semibold">{s.label}</span>
-              <span className="text-[12px] text-[var(--color-text-sub)] tabular-nums">{fmtInTz(now, s.tz)}</span>
+              <span className="text-[9px] font-semibold">{s.label}</span>
+              <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums">{fmtInTz(now, s.tz)}</span>
             </div>
           )
         })}

@@ -32,12 +32,12 @@ export default function StrategyInsights() {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[12px] font-semibold">Strategy forecast vs. actual</div>
-        <span className="text-[12px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
+        <div className="text-[9px] font-semibold">Strategy forecast vs. actual</div>
+        <span className="text-[9px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
         <span className="ml-auto flex gap-1">
           {[7, 30, 0].map(d => (
             <button key={d} type="button" onClick={() => setDays(d)}
-              className={`rounded-[2px] border px-[4px] py-[3px] text-[12px] cursor-pointer ${days === d
+              className={`rounded-[2px] border px-[4px] py-[3px] text-[9px] cursor-pointer ${days === d
                 ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
                 : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'}`}>
               {d === 0 ? 'All' : `${d}D`}
@@ -45,11 +45,11 @@ export default function StrategyInsights() {
           ))}
         </span>
       </div>
-      {error && <div className="text-[12px] text-[var(--color-warning-text)]">{error}</div>}
-      {rows && rows.length === 0 && <div className="text-[12px] text-[var(--color-text-sub)]">No closed trades in this range.</div>}
+      {error && <div className="text-[9px] text-[var(--color-warning-text)]">{error}</div>}
+      {rows && rows.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">No closed trades in this range.</div>}
       {rows && rows.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full text-[12px]">
+          <table className="w-full text-[9px]">
             <thead>
               <tr>
                 <th className="pb-1 pr-3">Strategy</th>

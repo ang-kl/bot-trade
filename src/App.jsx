@@ -73,7 +73,7 @@ function AgentDownBanner() {
   if (!down || location.pathname === '/connect' || location.pathname === '/link-up') return null
   return (
     <div role="alert" className="px-4 pt-3">
-      <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-[13px] font-semibold">
+      <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-[9px] font-semibold">
         ⚠ Agent unreachable — the bot is NOT scanning, trading, or protecting positions right now.
         Check that the Railway service is up, then <NavLink to="/connect" className="underline">test the connection</NavLink>.
       </div>
@@ -82,7 +82,7 @@ function AgentDownBanner() {
 }
 
 function navLinkClasses(isActive) {
-  return `rounded-[10px] px-3 py-2 text-[13px] font-semibold inline-flex items-center gap-2 transition-all w-full ${
+  return `rounded-[10px] px-3 py-2 text-[9px] font-semibold inline-flex items-center gap-2 transition-all w-full ${
     isActive
       ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
       : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
@@ -99,7 +99,7 @@ export default function App() {
           up/down semantics, position clears the fixed glass footer. */}
       <Toaster richColors closeButton position="top-right"
         theme={theme === 'system' ? undefined : theme}
-        toastOptions={{ style: { fontSize: 13 } }} />
+        toastOptions={{ style: { fontSize: 9 } }} />
       {/* Left sidebar — desktop */}
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-screen lg:sticky lg:top-0 p-4">
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-y-auto">
@@ -126,7 +126,7 @@ export default function App() {
             type="button"
             onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
             title={`Theme: ${theme}`}
-            className="mt-auto glass-inset rounded-[10px] px-3 py-2 text-[13px] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
+            className="mt-auto glass-inset rounded-[10px] px-3 py-2 text-[9px] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
           >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
         </div>
       </aside>
@@ -146,7 +146,7 @@ export default function App() {
                   to={t.to}
                   viewTransition
                   className={({ isActive }) =>
-                    `rounded-[12px] px-3 py-1.5 text-[13px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
+                    `rounded-[12px] px-3 py-1.5 text-[9px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
                       isActive
                         ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
                         : 'glass-inset text-[var(--color-text-sub)]'
@@ -194,7 +194,7 @@ export default function App() {
             sticky sidebar; page content scrolls underneath the translucent
             glass-bar material. main's bottom padding above keeps real
             content from ending up permanently hidden under it. */}
-        <footer className="glass-fixed fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[12px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
+        <footer className="glass-fixed fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[9px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
           <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
           {/* Keep this line TRUE: 5 registry strategies armed per-stage in
               Tune; entries/risk gate are deterministic, but the position

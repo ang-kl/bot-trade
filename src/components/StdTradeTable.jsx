@@ -82,7 +82,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   const p = Math.min(page, pages - 1)
   const slice = sorted.slice(p * PAGE, p * PAGE + PAGE)
 
-  if (rows.length === 0) return <div className="text-[13px] text-[var(--color-text-sub)]">None yet.</div>
+  if (rows.length === 0) return <div className="text-[9px] text-[var(--color-text-sub)]">None yet.</div>
 
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
@@ -149,7 +149,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
   return (
     <div>
       <div className="overflow-x-auto">
-        <table className="std-cols min-w-[880px] w-full text-[12px] tabular-nums">
+        <table className="std-cols min-w-[880px] w-full text-[9px] tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th aria-sort={ariaSort('time')} className={`py-1 pr-2 ${stick1}`} style={{ minWidth: COL1_W }}>{sortBtn('time', 'Time')}</th>
@@ -219,7 +219,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         ? <button type="button" className="font-bold cursor-pointer underline-offset-2 hover:underline" onClick={() => onSymbolClick(r.symbol)}>{r.symbol}</button>
                         : r.symbol}
                       {mh && mh.open === false && mh.next_open_at && (
-                        <span className="block text-[12px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
+                        <span className="block text-[9px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
                           {nextOpenLabel(mh.next_open_at)}
                         </span>
                       )}
@@ -247,7 +247,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       {num(r.sl)}{ccyTag(r.ccy)}
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
-                        return s ? <span className="block text-[12px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     {/* Take Profit — cTrader supports laddered TPs, so the
@@ -265,7 +265,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         : <>{num(r.tp)}{ccyTag(r.ccy)}</>}
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
-                        return s ? <span className="block text-[12px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     <td className={`py-1 pr-3 text-right whitespace-nowrap ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
@@ -367,7 +367,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         </table>
       </div>
       {/* Pagination — keeps every panel the same height */}
-      <div className="mt-2 flex items-center gap-2 text-[12px] text-[var(--color-text-sub)]">
+      <div className="mt-2 flex items-center gap-2 text-[9px] text-[var(--color-text-sub)]">
         <Button size="sm" variant="subtle" disabled={p === 0} onClick={() => setPage(p - 1)}>‹ Newer</Button>
         <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
         <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>

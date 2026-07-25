@@ -66,10 +66,10 @@ export default function ScreenerChat({ open, onClose, onApply }) {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border)]">
-          <span className="text-[13px] font-semibold">Search stocks/FX by description</span>
+          <span className="text-[9px] font-semibold">Search stocks/FX by description</span>
           <button type="button" className="text-[var(--color-text-sub)] cursor-pointer" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-[12px]">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2 text-[9px]">
           {turns.length === 0 && (
             <p className="text-[var(--color-text-sub)]">
               Try "AI stocks", "network layer stocks", "P/E &gt; 30", or a company name. Only
@@ -86,7 +86,7 @@ export default function ScreenerChat({ open, onClose, onApply }) {
           ))}
           {busy && <div className="text-[var(--color-text-sub)]">Searching…</div>}
         </div>
-        {err && <div className="px-3 py-1 text-[12px] text-[var(--color-warning-text)]">{err}</div>}
+        {err && <div className="px-3 py-1 text-[9px] text-[var(--color-warning-text)]">{err}</div>}
         <div className="flex items-center gap-2 px-3 py-2 border-t border-[var(--color-border)]">
           <input
             type="text"
@@ -94,7 +94,7 @@ export default function ScreenerChat({ open, onClose, onApply }) {
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') send() }}
             placeholder="e.g. semiconductor stocks"
-            className="glass-inset rounded-[7px] px-2 py-1.5 text-[12px] min-h-[32px] flex-1"
+            className="glass-inset rounded-[7px] px-2 py-1.5 text-[9px] min-h-[32px] flex-1"
             disabled={busy}
           />
           <Button size="sm" onClick={send} disabled={busy || !draft.trim()}>Send</Button>

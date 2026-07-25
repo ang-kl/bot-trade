@@ -127,7 +127,7 @@ function Bar({ label, n, of, tone }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 34px', gap: 6, alignItems: 'center' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: W_CELL, color: SB, whiteSpace: 'nowrap' }}>{label}</span>
+        <span style={{ fontSize: 9, fontWeight: W_CELL, color: SB, whiteSpace: 'nowrap' }}>{label}</span>
         <span style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-accent-soft)' }}>
           <span style={{ display: 'block', width: `${pct}%`, height: 6, borderRadius: 3, background: tone }} />
         </span>
@@ -202,7 +202,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   }, [allTrades, postmortems, at, period])
 
   const pill = (on) => ({
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL,
     color: on ? '#fff' : SB, background: on ? ACC : 'transparent',
     border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '1px 9px',
   })
@@ -211,8 +211,8 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
-        <span style={{ fontSize: 12, color: SB }}>
+        <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: ACC }}>Debrief — why we won and lost</span>
+        <span style={{ fontSize: 9, color: SB }}>
           who opened it, what the evidence says about the exit, and what was written down · tap a row
         </span>
         {!inModal && (
@@ -230,11 +230,11 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <button type="button" style={pill(period === 'day')} onClick={() => setPeriod('day')}>Day</button>
         <button type="button" style={pill(period === 'week')} onClick={() => setPeriod('week')}>Week</button>
-        <span style={{ fontSize: 12, color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
+        <span style={{ fontSize: 9, color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
       </div>
 
       {model.rows.length === 0 && (
-        <span style={{ fontSize: 12, color: MU }}>
+        <span style={{ fontSize: 9, color: MU }}>
           Nothing closed in {label} — there is nothing to review. This is the honest state, not a loading failure.
         </span>
       )}
@@ -242,10 +242,10 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       {model.rows.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', borderTop: `1px solid ${EDG}`, paddingTop: 2 }}>
-            <span style={{ fontSize: 14, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: model.net >= 0 ? UP : DN }}>{signed(model.net)}</span>
-            <span style={{ fontSize: 12, color: SB }}>{model.wins.length} up · {model.losses.length} down</span>
+            <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: model.net >= 0 ? UP : DN }}>{signed(model.net)}</span>
+            <span style={{ fontSize: 9, color: SB }}>{model.wins.length} up · {model.losses.length} down</span>
             {model.byActor.map(a => (
-              <span key={a.who} style={{ fontSize: 12, color: a.who === 'human' ? WRN : SB }}>
+              <span key={a.who} style={{ fontSize: 9, color: a.who === 'human' ? WRN : SB }}>
                 {a.who} {a.n} ({a.wins} up) <span style={{ fontVariantNumeric: 'tabular-nums', color: a.net >= 0 ? UP : DN }}>{signed(a.net)}</span>
               </span>
             ))}
@@ -254,12 +254,12 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '2px 12px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span className="t-gridhead" style={{ background: 'transparent' }}>Why we lost ({model.losses.length})</span>
-              {model.lossBuckets.length === 0 && <span style={{ fontSize: 12, color: MU }}>no losses</span>}
+              {model.lossBuckets.length === 0 && <span style={{ fontSize: 9, color: MU }}>no losses</span>}
               {model.lossBuckets.map(([b, n]) => <Bar key={b} label={b} n={n} of={model.losses.length} tone={DN} />)}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span className="t-gridhead" style={{ background: 'transparent' }}>Why we won ({model.wins.length})</span>
-              {model.winBuckets.length === 0 && <span style={{ fontSize: 12, color: MU }}>no wins</span>}
+              {model.winBuckets.length === 0 && <span style={{ fontSize: 9, color: MU }}>no wins</span>}
               {model.winBuckets.map(([b, n]) => <Bar key={b} label={b} n={n} of={model.wins.length} tone={UP} />)}
             </div>
           </div>
@@ -273,15 +273,15 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
                     onClick={() => setOpenId(o => (o === r.id ? null : r.id))}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === r.id ? null : r.id)) } }}
                     style={{ display: 'grid', gridTemplateColumns: '14px 42px 66px 62px 1fr 84px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${EDG}`, padding: '1px 0', cursor: 'pointer', fontVariantNumeric: 'tabular-nums' }}>
-                    <span aria-hidden="true" style={{ fontSize: 12, color: MU }}>{on ? '▾' : '▸'}</span>
-                    <span style={{ fontSize: 12, color: MU }}>{r.hm}</span>
-                    <span style={{ fontSize: 12, fontWeight: W_ROWLABEL }}>{r.sym}</span>
-                    <span style={{ fontSize: 12, fontWeight: W_CELL, color: r.who === 'human' ? WRN : SB }}>{r.who}</span>
-                    <span style={{ fontSize: 12, fontWeight: W_CELL, color: r.onPlan === false ? WRN : SB }}>{r.bucket}</span>
+                    <span aria-hidden="true" style={{ fontSize: 9, color: MU }}>{on ? '▾' : '▸'}</span>
+                    <span style={{ fontSize: 9, color: MU }}>{r.hm}</span>
+                    <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{r.sym}</span>
+                    <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.who === 'human' ? WRN : SB }}>{r.who}</span>
+                    <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.onPlan === false ? WRN : SB }}>{r.bucket}</span>
                     <span style={{ fontSize: 11, fontWeight: W_CELL, textAlign: 'right', color: r.pnl >= 0 ? UP : DN }}>{signed(r.pnl)}</span>
                   </div>
                   {on && (
-                    <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 12, color: MU }}>
+                    <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${EDG}`, fontSize: 9, color: MU }}>
                       {[r.side, r.strat || 'no strategy label', `${r.who} · ${r.how}`, r.note, r.lesson ? `lesson: ${r.lesson}` : 'no post-mortem written for this trade'].join(' · ')}
                     </div>
                   )}
@@ -290,7 +290,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
             })}
           </div>
 
-          <span style={{ fontSize: 12, color: MU }}>
+          <span style={{ fontSize: 9, color: MU }}>
             Buckets come from the close reason and the realised loss against the loss the plan budgeted (|entry − SL|) — never from a guess;
             a trade whose evidence does not say lands in &quot;unclassified&quot; on purpose. Wins are split by whether the exit
             <strong style={{ fontWeight: W_CELL }}> followed the plan</strong>, not by skill versus luck: that is a statistical question and this

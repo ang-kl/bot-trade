@@ -21,7 +21,7 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
     setText(null)
   }
   return (
-    <label className="block text-[12px]">
+    <label className="block text-[9px]">
       <span className="flex items-baseline justify-between text-[var(--color-text-sub)]">
         {label}
         <span className="inline-flex items-center gap-1">
@@ -30,10 +30,10 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
             onChange={e => setText(e.target.value)}
             onBlur={commit}
             onKeyDown={e => e.key === 'Enter' && (commit(), e.target.blur())}
-            className="glass-inset w-20 rounded-[8px] px-2 py-1 text-right text-[13px] font-semibold text-[var(--color-text)] focus:outline-2 focus:outline-[var(--color-accent)] bg-transparent"
+            className="glass-inset w-20 rounded-[8px] px-2 py-1 text-right text-[9px] font-semibold text-[var(--color-text)] focus:outline-2 focus:outline-[var(--color-accent)] bg-transparent"
             aria-label={`${label} value`}
           />
-          {unit && <span className="text-[12px]">{unit}</span>}
+          {unit && <span className="text-[9px]">{unit}</span>}
         </span>
       </span>
       {/* transform-gpu: own compositing layer — iOS Safari ghost-paints the
@@ -45,7 +45,7 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
         onChange={e => { setText(null); onChange(Number(e.target.value)) }}
         className="w-full accent-[var(--color-accent)] cursor-pointer mt-2 transform-gpu"
       />
-      <span className="flex justify-between text-[12px] text-[var(--color-text-sub)]">
+      <span className="flex justify-between text-[9px] text-[var(--color-text-sub)]">
         <span>{display(min)}</span><span>{display(max)}</span>
       </span>
     </label>
@@ -74,15 +74,15 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
   }
 
   return (
-    <div className="block text-[12px] relative" ref={boxRef}>
+    <div className="block text-[9px] relative" ref={boxRef}>
       <span className="text-[var(--color-text-sub)]">{label}</span>
       <button
         type="button" aria-haspopup="listbox" aria-expanded={open}
         onClick={() => setOpen(o => !o)}
-        className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-left text-[13px] min-h-[40px] cursor-pointer flex items-center justify-between gap-2 focus:outline-2 focus:outline-[var(--color-accent)]"
+        className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-left text-[9px] min-h-[40px] cursor-pointer flex items-center justify-between gap-2 focus:outline-2 focus:outline-[var(--color-accent)]"
       >
         <span className="font-semibold text-[var(--color-text)]">{current ? current[1] : `${display(num)} (custom)`}</span>
-        <span aria-hidden="true" className={`text-[12px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
+        <span aria-hidden="true" className={`text-[9px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
       </button>
       {open && (
         <div role="listbox" className="glass-panel absolute z-30 mt-1 w-full rounded-[12px] p-1.5 shadow-xl">
@@ -92,7 +92,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
               <button
                 key={v} type="button" role="option" aria-selected={active}
                 onClick={() => { onChange(Number(v)); setOpen(false) }}
-                className={`w-full text-left rounded-[8px] px-3 py-2 text-[13px] cursor-pointer flex items-center justify-between ${
+                className={`w-full text-left rounded-[8px] px-3 py-2 text-[9px] cursor-pointer flex items-center justify-between ${
                   active ? 'bg-[var(--color-accent)] text-white font-semibold' : 'hover:bg-[var(--color-accent-soft)] text-[var(--color-text)]'
                 }`}
               >
@@ -105,11 +105,11 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
               type="number" step="any" value={custom} placeholder="Custom…"
               onChange={e => setCustom(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && commitCustom()}
-              className="glass-inset flex-1 min-w-0 rounded-[8px] px-2 py-1.5 text-[13px] bg-transparent focus:outline-2 focus:outline-[var(--color-accent)]"
+              className="glass-inset flex-1 min-w-0 rounded-[8px] px-2 py-1.5 text-[9px] bg-transparent focus:outline-2 focus:outline-[var(--color-accent)]"
               aria-label={`Custom ${label}`}
             />
-            {unit && <span className="text-[12px] text-[var(--color-text-sub)]">{unit}</span>}
-            <button type="button" onClick={commitCustom} className="rounded-[8px] bg-[var(--color-accent)] text-white text-[12px] font-semibold px-2.5 py-1.5 cursor-pointer">Set</button>
+            {unit && <span className="text-[9px] text-[var(--color-text-sub)]">{unit}</span>}
+            <button type="button" onClick={commitCustom} className="rounded-[8px] bg-[var(--color-accent)] text-white text-[9px] font-semibold px-2.5 py-1.5 cursor-pointer">Set</button>
           </div>
         </div>
       )}
