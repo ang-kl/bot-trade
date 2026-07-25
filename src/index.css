@@ -267,12 +267,21 @@
    separators also in the opposite colour so they cut against the fill.
    Element selectors here are unlayered, so they beat any per-table
    Tailwind classes — one rule styles every table in the app. */
+/* Owner (2026-07-25): the accent-blue fill read as a link/action bar rather
+   than a header, so it is now a neutral DARK GREY. Header text is CENTRED
+   (a header labels a whole column, it is not a value to line up with the
+   right-aligned digits below it), and the font size is pinned here so every
+   table head in the app is identical regardless of per-table classes —
+   text-align/font-size are declared unlayered on purpose so they beat the
+   Tailwind utilities individual tables set on their own header cells. */
 thead th {
-  background: var(--color-accent);
+  background: #3f4552;
   color: #fff;
   border-right: 1px solid rgba(255, 255, 255, 0.55);
   padding-left: 8px;
   padding-right: 8px;
+  font-size: 12px;
+  text-align: center;
 }
 thead th:first-child { border-top-left-radius: 8px; }
 thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }

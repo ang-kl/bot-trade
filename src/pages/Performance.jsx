@@ -1270,7 +1270,7 @@ export default function Performance() {
       {/* ================= MOBILE (below lg): the design's phone screens ====
           Exact ports of Performance Mobile.dc.html. Pill nav uses the
           prototype's chip styles with the README's ≥44px tap minimum. */}
-      <div className="lg:hidden space-y-2">
+      <div className="min-[700px]:hidden space-y-2">
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           {MOBILE_SCREENS.map(s => (
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
@@ -1509,7 +1509,7 @@ export default function Performance() {
       </div>
 
       {/* ================= DESKTOP (lg+): the dense ledger ================== */}
-      <div className="hidden lg:block space-y-2">
+      <div className="hidden min-[700px]:block space-y-2">
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
             the loss-cap line (real dailyLossPct config × stamped balance). */}
