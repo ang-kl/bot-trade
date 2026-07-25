@@ -840,11 +840,23 @@ export default function Performance() {
     return closed.filter(t2 => t2.account_id == null || String(t2.account_id) === acct)
   }, [allTrades, acct])
 
-  // Today since the 22:00-UTC roll — the design's "Today" number, plus the
+  // The "Today" window. Owner (2026-07-25, Saturday): "under today should
+  // show Friday past 24h closure trades — don't leave it blank as today is
+  // SAT" — during the FX weekend the current FX day is an empty gap (market
+  // closed since Fri 17:00 NY), so the card falls back to the last
+  // COMPLETED FX day: Thu 17:00 NY → Fri 17:00 NY, Friday's full 24 hours.
+  const todayWin = useMemo(() => {
+    const anchor = dayAnchorMs(loadedAt)
+    if (isFxWeekend(loadedAt)) {
+      return { from: anchor - 24 * 3600_000, to: anchor, weekend: true, label: "market closed — showing Friday's full FX day" }
+    }
+    return { from: anchor, to: loadedAt, weekend: false, label: null }
+  }, [loadedAt])
+
+  // Today since the FX day roll — the design's "Today" number, plus the
   // TP/SL split the prototype's meta line shows (evidence: close_reason).
   const today = useMemo(() => {
-    const anchor = dayAnchorMs(loadedAt)
-    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= anchor })
+    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= todayWin.from && ms < todayWin.to })
     const wins = rows.filter(t2 => Number(t2.net_pnl) > 0)
     const isTp = (r) => /\btp\b|take.?profit|target|bank|partial|scale/.test(String(r || '').toLowerCase())
     const isSl = (r) => /\bsl\b|stop.?loss|stopped|stop hit/.test(String(r || '').toLowerCase())
@@ -854,7 +866,7 @@ export default function Performance() {
       tp: rows.filter(t2 => isTp(t2.close_reason) && !isSl(t2.close_reason)).length,
       sl: rows.filter(t2 => isSl(t2.close_reason) && !isTp(t2.close_reason)).length,
     }
-  }, [scopedClosed, loadedAt])
+  }, [scopedClosed, todayWin])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
   // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
@@ -864,17 +876,20 @@ export default function Performance() {
   // Timeframe ledger's carry-in/carry-out does, so an hour with no closes
   // still shows a real (flat) balance line instead of nothing at all.
   const todayHourly = useMemo(() => {
-    const anchor = dayAnchorMs(loadedAt)
     const curBal = ledger?.balance ?? null
     const H = 60 * 60 * 1000
     const slots = []
-    for (let from = anchor; from < loadedAt; from += H) slots.push({ from, to: Math.min(from + H, loadedAt) })
+    for (let from = todayWin.from; from < todayWin.to; from += H) slots.push({ from, to: Math.min(from + H, todayWin.to) })
     const withStats = slots.map(s => {
       const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
       const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
       return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
     })
-    let closeBal = curBal
+    // Carry back from the CURRENT stamped balance — anything closed after
+    // the window's end (weekend crypto closes when the window is Friday)
+    // is subtracted first so Friday's close balance stays honest.
+    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= todayWin.to ? n + Number(t2.net_pnl) : n }, 0)
+    let closeBal = curBal != null ? Number((curBal - netAfter).toFixed(2)) : null
     const withBal = []
     for (let i = withStats.length - 1; i >= 0; i--) {
       const s = withStats[i]
@@ -884,7 +899,7 @@ export default function Performance() {
       closeBal = ob
     }
     return withBal
-  }, [scopedClosed, loadedAt, ledger])
+  }, [scopedClosed, todayWin, ledger])
 
   // Today's closed-trade stats per market session (owner: "all the
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
@@ -892,10 +907,11 @@ export default function Performance() {
   // numbers reconcile; each trade is bucketed by its CLOSE time (when the
   // P&L was realized).
   const sessionStats = useMemo(() => {
-    const anchor = dayAnchorMs(loadedAt)
+    // Same window as the Today card (weekend → Friday's completed FX day)
+    // so the two blocks always reconcile.
     const rows = scopedClosed
       .map(t2 => ({ ms: closedMs(t2), pnl: Number(t2.net_pnl) }))
-      .filter(r => r.ms != null && r.ms >= anchor && Number.isFinite(r.pnl))
+      .filter(r => r.ms != null && r.ms >= todayWin.from && r.ms < todayWin.to && Number.isFinite(r.pnl))
     const minOfDay = (ms) => { const d = new Date(ms); return d.getUTCHours() * 60 + d.getUTCMinutes() }
     const stat = (list) => {
       if (!list.length) return { n: 0 }
@@ -921,10 +937,10 @@ export default function Performance() {
     // was missing was a live open/closed flag per session, evaluated at the
     // current minute, so a closed market can be labeled instead of looking
     // like a stalled table.
-    const buckets = STAT_SESSIONS.map(s => ({ ...s, open: inWin(nowMin, s), ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
+    const buckets = STAT_SESSIONS.map(s => ({ ...s, open: !todayWin.weekend && inWin(nowMin, s), ...stat(rows.filter(r => inWin(minOfDay(r.ms), s))) }))
     const off = stat(rows.filter(r => !STAT_SESSIONS.some(s => inWin(minOfDay(r.ms), s))))
     return { buckets, off, total: stat(rows) }
-  }, [scopedClosed, loadedAt])
+  }, [scopedClosed, loadedAt, todayWin])
 
   // Per-account cards for the accounts detail row (prototype ACC block).
   // Real sources only: registry row + that account's ledger balance/30D +
@@ -1499,6 +1515,7 @@ export default function Performance() {
               {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
             <span style={{ fontSize: 12, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
+            {todayWin.label && <span style={{ fontSize: 12, color: P_WRN }}>{todayWin.label}</span>}
             <PagedRows rows={todayHourly}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
           </div>
           {[{
@@ -1561,7 +1578,7 @@ export default function Performance() {
         <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 12, color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap</span>
+            <span style={{ fontSize: 12, color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
             <SectionTools id="sessions" title="Today by market session" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
