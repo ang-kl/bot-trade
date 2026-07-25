@@ -31,8 +31,16 @@
 import { useMemo, useRef, useState } from 'react'
 import Card from './common/Card.jsx'
 
+// Owner (2026-07-25): "where are the axes, gridlines, markings and why so big
+// chart" — the axes existed but were drawn at 0.5px in the faint border
+// colour, invisible on the glass background; and the SVG scaled with the
+// container, so a wide screen blew it up. Now: gridlines at every nice-valued
+// tick in a colour that survives the glass, tick MARKS on both axes, and the
+// rendered width is capped (CHART_MAX_W) so the chart stays chart-sized.
 const W = 860
-const EQ_H = 210, DEC_H = 96, PL = 58, PR = 18, PT = 14, PB = 26
+const EQ_H = 150, DEC_H = 76, PL = 58, PR = 18, PT = 14, PB = 26
+const CHART_MAX_W = 900
+const GRID = 'var(--color-text-sub)' // gridlines: visible, but at low opacity
 const DAY = 86_400_000
 
 // Four ranges, not eight. Add more when there is history that distinguishes
@@ -52,6 +60,14 @@ function niceCeil(v) {
   const base = Math.pow(10, exp)
   for (const n of NICE) if (v <= n * base) return n * base
   return 10 * base
+}
+// Ticks at round values (…-500, 0, 500…), not at arbitrary fractions of the
+// data range — a gridline you can't name is a decoration, not a marking.
+function niceTicks(lo, hi, target = 4) {
+  const step = niceCeil(((hi - lo) || 1) / target)
+  const out = []
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) out.push(Math.abs(v) < step * 1e-6 ? 0 : v)
+  return out.length >= 2 ? out : [lo, hi]
 }
 
 export default function ReportChart({ allTrades, events }) {
@@ -117,8 +133,7 @@ export default function ReportChart({ allTrades, events }) {
       peakPath: line(r => r.peak),
       // Drawdown band: along the peak, back along equity.
       ddArea: `${line(r => r.peak)} ${[...model].reverse().map(r => `L${X(r.t).toFixed(1)},${Ye(r.equity).toFixed(1)}`).join(' ')} Z`,
-      zeroY: eLo < 0 && eHi > 0 ? Ye(0) : null,
-      ticksE: [0, 0.5, 1].map(f => ({ y: PT + f * (EQ_H - PT - PB), label: fmtN(eHi - (eHi - eLo) * f, 0) })),
+      ticksE: niceTicks(eLo, eHi).map(v => ({ y: Ye(v), label: fmtN(v, 0), zero: v === 0 })),
       ticksX: model.filter((_, i) => i % Math.max(1, Math.ceil(model.length / 8)) === 0),
     }
   }, [model, hasData])
@@ -172,7 +187,7 @@ export default function ReportChart({ allTrades, events }) {
       )}
 
       {hasData && (
-        <div className="relative overflow-x-auto">
+        <div className="relative overflow-x-auto" style={{ maxWidth: CHART_MAX_W }}>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${EQ_H + DEC_H + 6}`} className="w-full min-w-[680px] select-none" role="img"
             aria-label="equity, drawdown and daily decisions" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
             <defs>
@@ -185,17 +200,15 @@ export default function ReportChart({ allTrades, events }) {
             {/* ---- equity panel ---- */}
             {geom.ticksE.map(t => (
               <g key={t.y}>
-                <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke="var(--color-border)" strokeWidth="0.6" />
+                <line x1={PL} x2={W - PR} y1={t.y} y2={t.y} stroke={GRID} strokeWidth="1" opacity={t.zero ? 0.55 : 0.22} strokeDasharray={t.zero ? '5 4' : undefined} />
+                <line x1={PL - 4} x2={PL} y1={t.y} y2={t.y} stroke="var(--color-text-sub)" strokeWidth="1" />
                 <text x={PL - 7} y={t.y + 4} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">{t.label}</text>
               </g>
             ))}
             {geom.ticksX.map(r => (
               <line key={`v${r.t}`} x1={geom.X(r.t)} x2={geom.X(r.t)} y1={PT} y2={EQ_H - PB}
-                stroke="var(--color-border)" strokeWidth="0.5" strokeDasharray="2 4" />
+                stroke={GRID} strokeWidth="1" opacity="0.16" strokeDasharray="2 4" />
             ))}
-            {geom.zeroY != null && (
-              <line x1={PL} x2={W - PR} y1={geom.zeroY} y2={geom.zeroY} stroke="var(--color-text-sub)" strokeWidth="0.8" strokeDasharray="5 4" opacity="0.6" />
-            )}
             {!sparse && <path d={geom.ddArea} fill="url(#rcDd)" />}
             {!sparse && <path d={geom.peakPath} fill="none" stroke="var(--color-text-sub)" strokeWidth="1" strokeDasharray="4 3" opacity="0.8" />}
             {!sparse && <path d={geom.eqPath} fill="none" stroke="var(--color-accent)" strokeWidth="2.4" strokeLinejoin="round" />}
@@ -216,8 +229,11 @@ export default function ReportChart({ allTrades, events }) {
                 </g>
               )
             })}
+            <line x1={PL} x2={W - PR} y1={geom.decTop + 6} y2={geom.decTop + 6} stroke={GRID} strokeWidth="1" opacity="0.22" />
             <line x1={PL} x2={PL} y1={geom.decTop} y2={geom.decBase} stroke="var(--color-text-sub)" strokeWidth="1" />
             <line x1={PL} x2={W - PR} y1={geom.decBase} y2={geom.decBase} stroke="var(--color-text-sub)" strokeWidth="1" />
+            <line x1={PL - 4} x2={PL} y1={geom.decBase} y2={geom.decBase} stroke="var(--color-text-sub)" strokeWidth="1" />
+            <line x1={PL - 4} x2={PL} y1={geom.decTop + 6} y2={geom.decTop + 6} stroke="var(--color-text-sub)" strokeWidth="1" />
             <text x={PL - 7} y={geom.decBase + 4} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">0</text>
             <text x={PL - 7} y={geom.decTop + 10} fontSize="10" textAnchor="end" fill="var(--color-text-sub)">{fmtN(geom.dMax, 0)}</text>
             <text x={PL - 44} y={geom.decTop + (DEC_H - PB) / 2} fontSize="10" textAnchor="middle" fill="var(--color-text-sub)"

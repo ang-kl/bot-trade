@@ -16,9 +16,21 @@
    v4 default sans stack so every utility-classed element inherits Inter too;
    system-ui stays as the fallback until the webfont loads. */
 @theme {
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Owner (2026-07-25): "All use Google Inter font only". Self-hosted woff2
+     (public/fonts, Fontsource build of Google's Inter) so the face cannot be
+     lost to a blocked CDN — which is exactly how a Windows machine ended up
+     rendering Segoe UI. The stack is Inter + the generic family only: if
+     Inter somehow fails to load, the browser picks its default sans rather
+     than a named lookalike we then mistake for Inter. */
+  --font-sans: 'Inter', sans-serif;
   --default-font-family: var(--font-sans);
 }
+
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/inter-400.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/inter-500.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/inter-600.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/inter-700.woff2') format('woff2'); }
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 800; font-display: swap; src: url('/fonts/inter-800.woff2') format('woff2'); }
 
 /*
  * Design tokens — "Ultra Neo Glass" v2.0.
@@ -293,6 +305,22 @@
    can no longer change the weight, and the audit that prompted this found all
    three in use (700 in the ledger, 600 in most tables, 500 in a few). Weight
    is 600, matching W_HEAD and docs/ui-spec.md. */
+/* Owner (2026-07-25): "All table data cell be 9px. Table heads 10px" —
+   app-wide, both kinds of table. Unlayered, so per-cell text-[12px]/[13px]
+   utilities cannot override it, same mechanism as the head rule below. */
+tbody td {
+  font-size: 9px;
+}
+
+/* Owner (2026-07-25, later the same day): "Timeframe ledger — table cell font
+   size 9.5px, except those tiny information like '5t · 40% · PF 0.76'". The
+   ledger is the page's core table and gets the half-point back; its 9px
+   sublines (trade-count/win/PF, date ranges) keep their own explicit size.
+   Unlayered and AFTER the app-wide 9px rule, so it wins on order+specificity. */
+.t-ledger tbody td {
+  font-size: 9.5px;
+}
+
 thead th {
   font-family: inherit;
   background: var(--table-head-bg);
@@ -417,7 +445,7 @@ html, body, #root {
   min-height: 100svh;
   min-height: 100vh; /* fallback */
   color: var(--color-text);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Inter', sans-serif;
 }
 
 body {
@@ -559,13 +587,17 @@ button, a, [role="button"], summary {
   display: grid;
   /* Owner (2026-07-25): first column +30% (118px → 154px) so the band label
      and its meta line sit as two clean lines instead of the meta wrapping to
-     a third. */
-  grid-template-columns: 154px 84px 1fr;
+     a third. Then again (+30%, 154px → 200px) — with the row type now 9px the
+     wider track holds the label AND its full meta on two comfortable lines. */
+  grid-template-columns: 200px 84px 1fr;
   gap: 8px;
   align-items: start;
 }
 @media (max-width: 1279px) {
   .perf-band-row { grid-template-columns: 1fr; gap: 2px; }
+  /* Stacked rows have no columns, so a column-head row would be labelling
+     nothing — hide it rather than letting three heads pile vertically. */
+  .perf-band-head { display: none; }
 }
 
 /* Even pair — the strategy matrix and crypto panels below the full-width FX

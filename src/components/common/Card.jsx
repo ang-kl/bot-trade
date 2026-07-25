@@ -23,27 +23,7 @@
 // below genuinely moves UP (the panel shrinks to its header bar).
 import { useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
-
-// Serialize the first rendered <table> into row objects, using <thead> cells
-// as keys. Reads the DOM, so it captures exactly what the user sees —
-// including the current sort and page — and needs no cooperation from the
-// page. Returns null when there is no table (or no header) to describe.
-function tableToJson(root) {
-  const table = root?.querySelector('table')
-  if (!table) return null
-  const heads = [...table.querySelectorAll('thead th')].map((th, i) => {
-    const t = (th.innerText || '').trim().replace(/\s*[↓↑]\s*$/, '')
-    return t || `col${i + 1}`
-  })
-  if (!heads.length) return null
-  const rows = [...table.querySelectorAll('tbody tr')].map(tr => {
-    const cells = [...tr.children]
-    // Expanded detail rows (a single colSpan cell) aren't records — skip.
-    if (cells.length < 2) return null
-    return Object.fromEntries(cells.map((td, i) => [heads[i] || `col${i + 1}`, (td.innerText || '').trim()]))
-  }).filter(Boolean)
-  return rows.length ? rows : null
-}
+import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
@@ -73,9 +53,16 @@ export default function Card({
     const domText = (el.innerText || '').replace(/\n{3,}/g, '\n\n').trim()
     const title = copyTitle || headingOf(el) || 'Section'
     const text = toText ? toText(data) : domText
-    const scraped = data == null ? tableToJson(el) : null
+    // Owner (2026-07-25): every copy feature offers Text, JSON AND HTML, and
+    // table payloads carry the column heads + first-column head, not just
+    // data. Priority: explicit data prop, else the rendered table (whose
+    // scrape keys rows BY the heads), else an honest prose fallback — lines
+    // for JSON, escaped <pre> for HTML. Nothing is invented.
+    const scraped = data == null ? scrapeJson(el) : null
     const payload = data != null ? data : scraped
-    setPopup({ title, text, json: payload != null ? JSON.stringify(payload, null, 2) : null })
+    const json = JSON.stringify(payload != null ? payload : textToJson(title, text), null, 2)
+    const html = (data != null ? dataToHtml(data, title) : tableToHtml(el, title)) || textToHtml(title, text)
+    setPopup({ title, text, json, html })
   }
 
   const btn = {
@@ -117,7 +104,7 @@ export default function Card({
         </span>
       )}
       <div style={collapsed ? { display: 'none' } : undefined}>{children}</div>
-      {popup && <CopyPopup title={popup.title} text={popup.text} json={popup.json} onClose={() => setPopup(null)} />}
+      {popup && <CopyPopup title={popup.title} text={popup.text} json={popup.json} html={popup.html} onClose={() => setPopup(null)} />}
     </div>
   )
 }

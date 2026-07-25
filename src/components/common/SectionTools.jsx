@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CopyPopup from './CopyPopup.jsx'
+import { dataToHtml, textToHtml } from '../../lib/copy-serialize.js'
 
 function genericText(title, data) {
   const rows = Array.isArray(data) ? data : data != null ? [data] : []
@@ -79,6 +80,9 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
 
   const textPayload = () => (toText ? toText(data) : genericText(title, data))
   const jsonPayload = () => JSON.stringify({ section: id, generatedAt: new Date().toISOString(), window: windowLabel, rows: data }, null, 2)
+  // HTML payload: the data rows as a real table with heads (owner: all copy
+  // features carry Text / JSON / HTML); prose sections fall back to <pre>.
+  const htmlPayload = () => dataToHtml(data, title) || textToHtml(title, textPayload())
 
   const btn = {
     cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, lineHeight: 1,
@@ -88,12 +92,12 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
 
   return (
     <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
-      <button type="button" title="Copy — opens the copy pop-up (text / JSON)" aria-label={`Copy ${title}`} style={btn}
+      <button type="button" title="Copy — opens the copy pop-up (text / JSON / HTML)" aria-label={`Copy ${title}`} style={btn}
         onClick={() => setCopyOpen(true)}>⧉</button>
       <button type="button" title={`Open ${title} in a pop-up window`} aria-label={`Expand ${title}`} style={btn}
         onClick={openExpand}>⤢</button>
       {copyOpen && (
-        <CopyPopup title={title} text={textPayload()} json={jsonPayload()} onClose={() => setCopyOpen(false)} />
+        <CopyPopup title={title} text={textPayload()} json={jsonPayload()} html={htmlPayload()} onClose={() => setCopyOpen(false)} />
       )}
       {popupHost && createPortal(
         <div className="glass-panel" style={{ borderRadius: 16, padding: '14px 16px' }}>
