@@ -272,7 +272,7 @@ export default function PositionManager({ p, onDone }) {
             onClick={applyProtection}>
             Modify protection
           </button>
-          <p className="mt-1.5 text-[11px] text-[var(--color-text-sub)]">
+          <p className="mt-1.5 text-[12px] text-[var(--color-text-sub)]">
             SL and Take profit are held at the broker. Trailing, Break-even and Take profit 2–4 are enforced by the bot every scan cycle (they only ever tighten protection or take profit) — same as cTrader, where these run client-side.
           </p>
         </div>

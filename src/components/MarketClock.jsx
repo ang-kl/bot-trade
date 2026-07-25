@@ -36,7 +36,7 @@ export default function MarketClock() {
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-[12px] font-semibold">Market sessions</div>
-        <span className="text-[11px] text-[var(--color-text-sub)]">
+        <span className="text-[12px] text-[var(--color-text-sub)]">
           your time ({viewerTz}): <span className="font-semibold text-[var(--color-text)]">{fmtInTz(now, viewerTz)}</span>
         </span>
         {weekend && <Badge tone="warning">FX/CFD weekend — closed</Badge>}

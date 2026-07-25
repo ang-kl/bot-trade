@@ -33,11 +33,11 @@ export default function StrategyInsights() {
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-[12px] font-semibold">Strategy forecast vs. actual</div>
-        <span className="text-[11px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
+        <span className="text-[12px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
         <span className="ml-auto flex gap-1">
           {[7, 30, 0].map(d => (
             <button key={d} type="button" onClick={() => setDays(d)}
-              className={`rounded-[2px] border px-[4px] py-[3px] text-[10px] cursor-pointer ${days === d
+              className={`rounded-[2px] border px-[4px] py-[3px] text-[12px] cursor-pointer ${days === d
                 ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
                 : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'}`}>
               {d === 0 ? 'All' : `${d}D`}
@@ -78,7 +78,7 @@ export default function StrategyInsights() {
                     )}
                   </td>
                   <td className="py-1 pr-3 tabular-nums">{fmtMoney(r.avgWin)} / {fmtMoney(r.avgLoss)}</td>
-                  <td className={`py-1 tabular-nums font-semibold ${r.netPnl > 0 ? 'text-[var(--color-up)]' : r.netPnl < 0 ? 'text-[var(--color-down)]' : ''}`}>
+                  <td className={`py-1 tabular-nums ${r.netPnl > 0 ? 'text-[var(--color-up)]' : r.netPnl < 0 ? 'text-[var(--color-down)]' : ''}`}>
                     {fmtMoney(r.netPnl)}
                   </td>
                 </tr>

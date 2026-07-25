@@ -47,8 +47,8 @@ export default function AccountHealth({ acct }) {
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-[12px] font-semibold">Account health</div>
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-        {acct.traderLogin && <span className="text-[11px] text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
-        <span className="ml-auto flex items-center gap-2 text-[11px] text-[var(--color-text-sub)]">
+        {acct.traderLogin && <span className="text-[12px] text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
+        <span className="ml-auto flex items-center gap-2 text-[12px] text-[var(--color-text-sub)]">
           {(h.positionsInProfit != null || h.positionsInLoss != null) && (
             <span>
               Open book: <span className="font-semibold text-[var(--color-up)]">{h.positionsInProfit ?? 0} winning</span>
@@ -76,7 +76,7 @@ export default function AccountHealth({ acct }) {
               return (
                 <tr key={r.key} className="border-t border-[var(--glass-edge)]">
                   <td className="py-1 pr-3">{r.label}</td>
-                  <td className={`py-1 pr-3 font-semibold tabular-nums ${r.signed ? `text-[var(--color-${toneFor(v) === 'up' ? 'up' : toneFor(v) === 'down' ? 'down' : 'text'})]` : ''}`}>
+                  <td className={`py-1 pr-3 tabular-nums ${r.signed ? `text-[var(--color-${toneFor(v) === 'up' ? 'up' : toneFor(v) === 'down' ? 'down' : 'text'})]` : ''}`}>
                     {fmtMoney(v, ccy)}
                   </td>
                   <td className="py-1 tabular-nums text-[var(--color-text-sub)]">

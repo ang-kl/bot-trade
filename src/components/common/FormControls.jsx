@@ -45,7 +45,7 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
         onChange={e => { setText(null); onChange(Number(e.target.value)) }}
         className="w-full accent-[var(--color-accent)] cursor-pointer mt-2 transform-gpu"
       />
-      <span className="flex justify-between text-[10px] text-[var(--color-text-sub)]">
+      <span className="flex justify-between text-[12px] text-[var(--color-text-sub)]">
         <span>{display(min)}</span><span>{display(max)}</span>
       </span>
     </label>
@@ -82,7 +82,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
         className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-left text-[13px] min-h-[40px] cursor-pointer flex items-center justify-between gap-2 focus:outline-2 focus:outline-[var(--color-accent)]"
       >
         <span className="font-semibold text-[var(--color-text)]">{current ? current[1] : `${display(num)} (custom)`}</span>
-        <span aria-hidden="true" className={`text-[10px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
+        <span aria-hidden="true" className={`text-[12px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
       </button>
       {open && (
         <div role="listbox" className="glass-panel absolute z-30 mt-1 w-full rounded-[12px] p-1.5 shadow-xl">

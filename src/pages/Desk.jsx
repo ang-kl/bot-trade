@@ -74,7 +74,7 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
   return (
     <Card>
       <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
-        <span aria-hidden="true" className="w-3 text-[10px] shrink-0">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="w-3 text-[12px] shrink-0">{open ? '▾' : '▸'}</span>
         <h2 className="t-h3">{title}</h2>
         {summary && <span className="ml-auto text-[12px] text-[var(--color-text-sub)] truncate">{summary}</span>}
       </button>
@@ -98,7 +98,7 @@ function RiskDecisionRow({ ev }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="w-full flex items-baseline gap-1.5 min-w-0 text-left cursor-pointer" title={ev.veto_reason || 'approved'}>
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{criteria.length ? (open ? '▾' : '▸') : ''}</span>
-        <span className={`w-9 shrink-0 text-[10px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+        <span className={`w-9 shrink-0 text-[12px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
           {ev.approved ? 'OK' : 'VETO'}
         </span>
         <span className="font-semibold shrink-0">{ev.symbol}</span>
@@ -113,7 +113,7 @@ function RiskDecisionRow({ ev }) {
         </span>
       </button>
       {open && criteria.length > 0 && (
-        <div className="ml-[52px] mt-0.5 mb-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+        <div className="ml-[52px] mt-0.5 mb-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
           {criteria.map(row => (
             <div key={row.key} className="contents">
               <span className={`${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : 'text-[var(--color-text-sub)]'}`}>
@@ -122,7 +122,7 @@ function RiskDecisionRow({ ev }) {
               <span className={`tabular-nums ${row.failed ? 'text-[var(--color-warning-text)] font-semibold' : ''}`}>{row.value}</span>
             </div>
           ))}
-          <span className="col-span-2 mt-0.5 text-[10px] text-[var(--color-text-sub)] opacity-70">
+          <span className="col-span-2 mt-0.5 text-[12px] text-[var(--color-text-sub)] opacity-70">
             All criteria evaluated for this signal{ev.approved ? ' — approved' : ' — ✗ marks the one that vetoed'}.
           </span>
         </div>
@@ -462,7 +462,7 @@ export default function Desk() {
         })()}
         defaultOpen={false}
       >
-        <details className="mb-1.5 text-[11px] text-[var(--color-text-sub)]">
+        <details className="mb-1.5 text-[12px] text-[var(--color-text-sub)]">
           <summary className="cursor-pointer select-none font-semibold">what do these gauges mean?</summary>
           <p className="mt-1 leading-relaxed">
             <strong>Attitude</strong> — the horizon tilts with this trade's P&amp;L (blue rises on profit, orange on loss); the fixed wings across the middle don't tilt — their length is the position's size (lots), and the tip shows an arrow when P&amp;L has moved consistently one way for the last minute or so, or a dot when it's choppy/flat.<br />
@@ -474,7 +474,7 @@ export default function Desk() {
             <button
               key={n} type="button" role="radio" aria-checked={pnlGridN === n}
               onClick={() => pickPnlGrid(n)}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n}</button>
           ))}
         </div>
@@ -497,7 +497,7 @@ export default function Desk() {
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
               title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[11px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[12px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
@@ -512,7 +512,7 @@ export default function Desk() {
               {chartSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
             </select>
           )}
-          <span className="text-[11px] text-[var(--color-text-sub)]">
+          <span className="text-[12px] text-[var(--color-text-sub)]">
             positions first{gridN > 1 ? ' · 60s refresh — tap a symbol to focus' : ''}
           </span>
         </div>
@@ -533,7 +533,7 @@ export default function Desk() {
               const held = (broker?.positions || []).some(px => px.symbol === sym) || positions.some(px => px.symbol === sym)
               return (
                 <div key={sym} className="min-w-0">
-                  <button type="button" className="text-[11px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
+                  <button type="button" className="text-[12px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
                     {sym}{held ? ' ●' : ''}
                   </button>
                   <PositionChart
@@ -575,11 +575,11 @@ export default function Desk() {
       >
         {!broker && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching the account snapshot…</p>}
         {broker?._cachedAt && (
-          <p className="text-[11px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
+          <p className="text-[12px] text-[var(--color-text-sub)]">snapshot {ago(broker._cachedAt)} — refreshing live…</p>
         )}
-        {brokerErr && <p className="text-[11px] text-[var(--color-warning-text)]">{brokerErr}</p>}
+        {brokerErr && <p className="text-[12px] text-[var(--color-warning-text)]">{brokerErr}</p>}
         {dbOnlyPositions.length > 0 && (
-          <p className="text-[11px] text-[var(--color-warning-text)] mb-1">
+          <p className="text-[12px] text-[var(--color-warning-text)] mb-1">
             ⚠ {dbOnlyPositions.length} position(s) marked active in the DB but not found at the broker: {' '}
             {dbOnlyPositions.map(r => r.symbol).join(', ')} — the reconciler closes these automatically on its next pass.
           </p>
@@ -630,7 +630,7 @@ export default function Desk() {
                 </li>
               ))}
             </ul>
-            {naked.length > 8 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
+            {naked.length > 8 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{naked.length - 8} more.</p>}
           </Card>
         )
       })()}
@@ -655,7 +655,7 @@ export default function Desk() {
               )
             })}
           </ul>
-          {weekendFlags.length > 8 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
+          {weekendFlags.length > 8 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{weekendFlags.length - 8} more.</p>}
         </Card>
       )}
 
@@ -678,7 +678,7 @@ export default function Desk() {
               </li>
             ))}
           </ul>
-          {dupeTrades.groups.length > 5 && <p className="text-[11px] text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
+          {dupeTrades.groups.length > 5 && <p className="text-[12px] text-[var(--color-text-sub)] mt-0.5">+{dupeTrades.groups.length - 5} more group(s).</p>}
         </Card>
       )}
 
@@ -708,7 +708,7 @@ export default function Desk() {
             } catch (e) { setSweepNote(`sweep failed: ${e.message}`) }
             setSweepBusy(false)
           }}>{sweepBusy ? 'Sweeping…' : 'Sweep lessons now'}</Button>
-          {sweepNote && <span className="ml-2 text-[11px] text-[var(--color-text-sub)]">{sweepNote}</span>}
+          {sweepNote && <span className="ml-2 text-[12px] text-[var(--color-text-sub)]">{sweepNote}</span>}
         </div>
         <LossReview postmortems={postmortems} />
       </Section>
@@ -735,17 +735,17 @@ export default function Desk() {
                   <span className={`font-bold ${Math.abs(c.net) >= correlation.maxClusterExposure ? 'text-[var(--color-down)]' : ''}`}>
                     net {c.net > 0 ? '+' : ''}{c.net}
                   </span>
-                  {Math.abs(c.net) >= correlation.maxClusterExposure && <span className="text-[11px] font-semibold text-[var(--color-down)]">AT CAP — new entries in this cluster veto</span>}
+                  {Math.abs(c.net) >= correlation.maxClusterExposure && <span className="text-[12px] font-semibold text-[var(--color-down)]">AT CAP — new entries in this cluster veto</span>}
                 </div>
-                <div className="text-[11px] text-[var(--color-text-sub)]">
+                <div className="text-[12px] text-[var(--color-text-sub)]">
                   {c.held.length ? `holding: ${c.held.join(' · ')}` : 'no open positions in this cluster'}
                 </div>
-                <div className="text-[10px] text-[var(--color-text-sub)] mt-0.5">
+                <div className="text-[12px] text-[var(--color-text-sub)] mt-0.5">
                   members: {Object.entries(c.members).map(([s2, b]) => `${s2}${b > 0 ? '+' : '−'}`).join(' ')}
                 </div>
               </div>
             ))}
-            <p className="text-[11px] text-[var(--color-text-sub)]">
+            <p className="text-[12px] text-[var(--color-text-sub)]">
               Rolling live matrix: {correlation.liveMatrix?.computedAt ? `computed ${ago(correlation.liveMatrix.computedAt)} ago over ${correlation.liveMatrix.symbols} symbols` : 'not computed yet'} · caps tunable in Tune → Risk (cluster / currency exposure).
             </p>
           </div>
@@ -785,13 +785,13 @@ export default function Desk() {
             <button
               key={d} type="button" role="radio" aria-checked={historyDays === d}
               onClick={() => setHistoryDays(d)}
-              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[11px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[12px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{label}</button>
           ))}
         </div>
         {!brokerHistory && <p className="text-[12px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
         {brokerHistory?._cachedAt && (
-          <p className="text-[11px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
+          <p className="text-[12px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
           <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
@@ -799,7 +799,7 @@ export default function Desk() {
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-[12px] text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>
         )}
-        <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
+        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">Net includes swap + commission — same figures as cTrader's History tab, manual trades included.</p>
       </Section>
 
       <Section
@@ -808,7 +808,7 @@ export default function Desk() {
         summary={events.length ? `${events.filter(e => !e.approved).length} vetoes in last ${events.length}` : null}
         defaultOpen={false}
       >
-        <p className="text-[11px] text-[var(--color-text-sub)] mb-1">
+        <p className="text-[12px] text-[var(--color-text-sub)] mb-1">
           Every signal the scanner considers trading passes through here.{' '}
           <span className="font-semibold text-[var(--color-accent)]">OK</span> = the risk gate approved it (it still
           has to clear broker sizing/spread checks after — OK is not the same as placed);{' '}
@@ -828,7 +828,7 @@ export default function Desk() {
             <RiskDecisionRow key={ev.id} ev={ev} />
           ))}
         </ul>
-        <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
         </p>
       </Section>
@@ -851,7 +851,7 @@ export default function Desk() {
         {/* Live wall clock — ticks every second so the panel itself proves the
             page is live, independent of any controller's own beat. */}
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[11px] text-[var(--color-text-sub)]">Now</span>
+          <span className="text-[12px] text-[var(--color-text-sub)]">Now</span>
           <SplitFlapClock tickLive className="text-[13px]" />
         </div>
         {!heartbeats && <p className="text-[12px] text-[var(--color-text-sub)]">No data yet.</p>}
@@ -890,7 +890,7 @@ export default function Desk() {
             })}
           </ul>
         )}
-        <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
           A beat means the controller's code ran (even if it chose to do nothing). Stalls alert on Telegram once, and once again on recovery.
         </p>
       </Section>
@@ -958,7 +958,7 @@ export default function Desk() {
               >Save cap</Button>
               {capNote && <span className="text-[12px] text-[var(--color-text-sub)]">{capNote}</span>}
             </div>
-            <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+            <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
               Scanning, backtests, and all trading decisions are deterministic — zero tokens. The only LLM consumers are the position monitor and the weekend watch, priced at published per-model rates (estimates, not the invoice).
             </p>
           </>
@@ -1003,7 +1003,7 @@ export default function Desk() {
                 } catch (e) { setLabelBackfillNote(`failed: ${e.message}`) }
                 setLabelBackfillBusy(false)
               }}>{labelBackfillBusy ? 'Recovering…' : 'Recover strategy labels'}</Button>
-              {labelBackfillNote && <span className="text-[11px] text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
+              {labelBackfillNote && <span className="text-[12px] text-[var(--color-text-sub)]">{labelBackfillNote}</span>}
             </div>
             {(alphaDecay.strategies?.length ?? 0) === 0 && (
               <p className="text-[12px] text-[var(--color-text-sub)]">No closed trades yet — decay is measured from live results; <Link to="/tune" className="text-[var(--color-accent)] underline">arm burn-in in Tune</Link> to build the sample fastest.</p>
@@ -1033,7 +1033,7 @@ export default function Desk() {
                       const traded = (s2.total?.n ?? 0) > 0
                       return (
                         <tr key={s2.strategy} className="border-b border-[var(--color-border)]">
-                          <td className="py-1 pr-3 font-semibold">
+                          <td className="py-1 pr-3">
                             {un
                               ? <span title={`Trades without a strategy label — ${srcNote}. These are YOUR manual trades, test fills and adopted broker fills, scored separately so bot strategies stay clean.`}>{s2.name || 'unlabelled'} <span className="font-normal text-[var(--color-text-sub)]">({srcNote})</span></span>
                               : <Link to={`/tune?tab=pipeline&arm=${encodeURIComponent(s2.strategy)}`} className="underline underline-offset-2" title="Open the Pipeline matrix and jump straight to this strategy's Auto Trade cell — tap to arm/disarm">{STRAT_SHORT[s2.strategy] || s2.strategy}{!s2.armed && <span className="ml-1 text-[var(--color-accent)]">→ arm</span>}</Link>}
@@ -1047,12 +1047,12 @@ export default function Desk() {
                               ? <span className="text-[var(--color-text-sub)]">manual</span>
                               : <Badge tone={s2.armed ? 'up' : 'neutral'}>{s2.armed ? 'ARMED' : 'off'}</Badge>}
                           </td>
-                          <td className={`py-1 pr-3 text-right font-semibold ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                          <td className={`py-1 pr-3 text-right ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {traded ? `${s2.netPnl >= 0 ? '+' : '−'}$${Math.abs(s2.netPnl).toFixed(2)}` : '—'}
                           </td>
                           <td className="py-1 pr-3 text-right">{traded && s2.winRate != null ? `${Math.round(s2.winRate * 100)}%` : '—'}</td>
                           <td className="py-1 pr-3 text-right">{s2.total?.n ?? 0}</td>
-                          <td className={`py-1 pr-3 font-semibold ${s2.streak?.kind === 'win' ? 'text-[var(--color-up)]' : s2.streak?.kind === 'loss' ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+                          <td className={`py-1 pr-3 ${s2.streak?.kind === 'win' ? 'text-[var(--color-up)]' : s2.streak?.kind === 'loss' ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
                             {s2.streak?.n ? `${s2.streak.n} ${s2.streak.n > 1 ? (s2.streak.kind === 'loss' ? 'losses' : 'wins') : s2.streak.kind}` : '—'}
                           </td>
                           <td className="py-1 pr-3">
@@ -1063,7 +1063,7 @@ export default function Desk() {
                                 </Badge>}
                           </td>
                           <td className="py-1 pr-3 text-right">{s2.recent?.expectancy != null ? `$${s2.recent.expectancy.toFixed(2)}` : '—'}</td>
-                          <td className={`py-1 text-right font-semibold ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                          <td className={`py-1 text-right ${s2.delta == null ? '' : s2.delta >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {s2.delta != null ? `${s2.delta >= 0 ? '+' : ''}${s2.delta.toFixed(2)}` : '—'}
                           </td>
                         </tr>
@@ -1097,7 +1097,7 @@ export default function Desk() {
                       {backtestsList.map(b => (
                         <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
                           onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[11px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[12px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
                           {STRAT_SHORT[b.strategy] || b.strategy}
                         </button>
                       ))}
@@ -1117,9 +1117,9 @@ export default function Desk() {
                       <tbody>
                         {baseSort.sorted.slice(0, 10).map(c2 => (
                           <tr key={`${c2.symbol}|${c2.tf}`} className="border-b border-[var(--color-border)]">
-                            <td className="py-1 pr-3 font-semibold">{c2.symbol} · {c2.tf}</td>
+                            <td className="py-1 pr-3">{c2.symbol} · {c2.tf}</td>
                             <td className="py-1 pr-3 text-right">{c2.trades}</td>
-                            <td className={`py-1 pr-3 text-right font-semibold ${(c2.profitFactor ?? 0) > 1 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{c2.profitFactor != null ? c2.profitFactor.toFixed(2) : '∞'}</td>
+                            <td className={`py-1 pr-3 text-right ${(c2.profitFactor ?? 0) > 1 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{c2.profitFactor != null ? c2.profitFactor.toFixed(2) : '∞'}</td>
                             <td className="py-1 pr-3 text-right">{c2.winRatePct != null ? `${c2.winRatePct.toFixed(0)}%` : '—'}</td>
                             <td className={`py-1 text-right ${(c2.totalProfitPct ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{c2.totalProfitPct != null ? `${c2.totalProfitPct.toFixed(1)}%` : '—'}</td>
                           </tr>
@@ -1127,7 +1127,7 @@ export default function Desk() {
                       </tbody>
                     </table>
                   </div>
-                  <p className="mt-1 text-[11px] text-[var(--color-text-sub)]">
+                  <p className="mt-1 text-[12px] text-[var(--color-text-sub)]">
                     {curBaseline.strategy} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
                   </p>
                 </>
@@ -1150,7 +1150,7 @@ export default function Desk() {
                 </li>
               ))}
             </ul>
-            <p className="mt-2 text-[11px] text-[var(--color-text-sub)]">
+            <p className="mt-2 text-[12px] text-[var(--color-text-sub)]">
               Expectancy = average net PnL per trade; "recent vs prior" compares the last {alphaDecay.window} trades against the {alphaDecay.window} before them, per strategy. ADVISORY = your call, with the evidence. COMMITTED = the adaptive breaker acts on its own at the stated threshold.
             </p>
           </>

@@ -162,7 +162,7 @@ export default function LossReview({ postmortems }) {
   const bySymbol = {}
   for (const r of rows) (bySymbol[r.symbol] ||= []).push(r)
 
-  const selectCls = 'glass-inset rounded-[6px] px-1.5 py-1 text-[11px]'
+  const selectCls = 'glass-inset rounded-[6px] px-1.5 py-1 text-[12px]'
   return (
     <div className="space-y-3">
       {Object.keys(byStrat).length > 0 && (
@@ -173,7 +173,7 @@ export default function LossReview({ postmortems }) {
       )}
 
       {/* Sort/filter bar — applies to whichever view is selected below. */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
         <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]">
           {[['groups', 'Losses / Wins'], ['symbol', 'By symbol']].map(([k, label]) => (
             <button key={k} type="button" onClick={() => setView(k)}
@@ -251,7 +251,7 @@ function SymbolTable({ symbol, rows }) {
       </button>
       {open && (
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px] tabular-nums">
+          <table className="w-full text-[12px] tabular-nums">
             <thead className="text-[var(--color-text-sub)]">
               <tr className="border-b border-[var(--color-border)]">
                 {['Date', 'Side', 'TF', 'Strategy', 'Verdict', 'Lesson', 'P&L', 'R'].map(h => (
@@ -271,7 +271,7 @@ function SymbolTable({ symbol, rows }) {
                       <td className="py-1 pr-2">{r.side}</td>
                       <td className="py-1 pr-2">{r.timeframe || '—'}</td>
                       <td className="py-1 pr-2 whitespace-nowrap">{r.strategy || 'unlabelled'}</td>
-                      <td className="py-1 pr-2 font-semibold whitespace-nowrap">{v.label}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{v.label}</td>
                       <td className="py-1 pr-2 max-w-[260px] truncate text-[var(--color-text-sub)]" title={r.lesson || v.hint}>{r.lesson || v.hint}</td>
                       <td className={`py-1 pr-2 text-right whitespace-nowrap ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>{pnlText}</td>
                       <td className="py-1 pr-2 text-right whitespace-nowrap">{r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : '—'}</td>
@@ -321,16 +321,16 @@ function Verdict({ r }) {
             Codex review caught pm.created_at reading as "when classified",
             which can be identical across many rows from one backfill/sweep
             pass and defeats the point of showing a date at all. */}
-        <span className="text-[10px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
+        <span className="text-[12px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
           {dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}
         </span>
         <span className="font-semibold shrink-0">{r.symbol}</span>
         {/* Strategy is ALWAYS stated, never silently dropped (owner: "if you
             are using different strategy state it") — 'unlabelled' is an
             honest bucket (see the Pattern line above), not a blank. */}
-        <span className="text-[11px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {r.strategy || 'unlabelled'}</span>
-        <span className="text-[11px] font-bold tracking-wide shrink-0">{v.label}</span>
-        <span className="text-[11px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
+        <span className="text-[12px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {r.strategy || 'unlabelled'}</span>
+        <span className="text-[12px] font-bold tracking-wide shrink-0">{v.label}</span>
+        <span className="text-[12px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
         <span className={`ml-auto text-[12px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
           {pnlText}{r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
         </span>
@@ -386,7 +386,7 @@ function FieldGrid({ r }) {
     ['Entry-quality', dash(r.entry_quality)],
   ]
   return (
-    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px]">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <span className="text-[var(--color-text-sub)]">{label}</span>
@@ -394,7 +394,7 @@ function FieldGrid({ r }) {
         </div>
       ))}
       {r.setup_thesis && (
-        <span className="col-span-2 mt-0.5 text-[10px] text-[var(--color-text-sub)] opacity-80">
+        <span className="col-span-2 mt-0.5 text-[12px] text-[var(--color-text-sub)] opacity-80">
           Setup thesis (free text, not the structured Confluence breakdown above): {r.setup_thesis}
         </span>
       )}

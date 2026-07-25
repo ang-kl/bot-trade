@@ -211,7 +211,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           </>
                         : '—'}
                     </td>
-                    <td className={`py-1 pr-3 font-bold whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
+                    <td className={`py-1 pr-3 whitespace-nowrap ${stick2}`} style={{ left: COL1_W }}>
                       {mh && mh.open === false && (
                         <span className="block text-[9px] leading-none" title="market closed" aria-label="market closed">🔒</span>
                       )}
@@ -219,7 +219,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         ? <button type="button" className="font-bold cursor-pointer underline-offset-2 hover:underline" onClick={() => onSymbolClick(r.symbol)}>{r.symbol}</button>
                         : r.symbol}
                       {mh && mh.open === false && mh.next_open_at && (
-                        <span className="block text-[10px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
+                        <span className="block text-[12px] leading-tight font-normal text-[var(--color-text-sub)]" title="next market open (your timezone)">
                           {nextOpenLabel(mh.next_open_at)}
                         </span>
                       )}
@@ -233,7 +233,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       {r.reason || '—'}
                     </td>
                     <td className="py-1 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
-                    <td className={`py-1 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    <td className={`py-1 pr-3 ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.side ? (long ? 'Long' : 'Short') : '—'}
                     </td>
                     <td className="py-1 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
@@ -247,7 +247,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       {num(r.sl)}{ccyTag(r.ccy)}
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
-                        return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-[12px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
                     {/* Take Profit — cTrader supports laddered TPs, so the
@@ -265,10 +265,10 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                         : <>{num(r.tp)}{ccyTag(r.ccy)}</>}
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
-                        return s ? <span className="block text-[10px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
+                        return s ? <span className="block text-[12px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
                       })()}
                     </td>
-                    <td className={`py-1 pr-3 text-right whitespace-nowrap font-semibold ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                    <td className={`py-1 pr-3 text-right whitespace-nowrap ${r.pnl == null ? 'text-[var(--color-text-sub)]' : r.pnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                       {r.pnl != null ? <>{`${r.pnl >= 0 ? '+' : '−'}${Math.abs(Number(r.pnl)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{ccyTag(r.moneyCcy)}</> : '—'}
                     </td>
                     {anyRef && (

@@ -49,8 +49,8 @@ function Row({ o, gone, action = null }) {
     <tr className="border-t border-[var(--color-border)]">
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(o.first_seen)}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
-      <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">{o.symbol || '—'}</td>
-      <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{o.symbol || '—'}</td>
+      <td className={`py-1.5 pr-3 ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
         {o.side ? (long ? 'Long' : 'Short') : '—'}
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{o.order_type || '—'}</td>
@@ -127,8 +127,8 @@ function QueuedRow({ q, onDone }) {
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(q.queued_at)}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
-      <td className="py-1.5 pr-3 font-semibold whitespace-nowrap">{q.symbol || '—'}</td>
-      <td className={`py-1.5 pr-3 font-semibold ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{q.symbol || '—'}</td>
+      <td className={`py-1.5 pr-3 ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
         {q.side ? (long ? 'Long' : 'Short') : '—'}
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{q.kind === 'closed_market_limit' ? 'LIMIT (mkt closed)' : 'SIGNAL (queued)'}</td>
@@ -244,7 +244,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                       }).length
                       out.push(
                         <tr key={`day-${dayKey}`} className="border-t border-[var(--color-border)]">
-                          <td colSpan={COLS} className="py-1 text-[11px] font-semibold text-[var(--color-text-sub)]">
+                          <td colSpan={COLS} className="py-1 text-[12px] text-[var(--color-text-sub)]">
                             {d ? `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · Week ${isoWeek(d)}` : 'unknown date'} — {n} order(s)
                           </td>
                         </tr>

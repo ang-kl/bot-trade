@@ -531,7 +531,7 @@ export default function Trade() {
               <tbody>
                 {sigSort.sorted.map(sc => (
                   <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
-                    <td className="pr-3 py-1.5 font-semibold">{sc.symbol}</td>
+                    <td className="pr-3 py-1.5">{sc.symbol}</td>
                     <td className="pr-3 whitespace-nowrap">{STRATEGY_NAMES[sc.strategy] || sc.strategy || 'Fib 61.8% fade'}</td>
                     <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'up' : 'down'}>{sc.bias?.toUpperCase()}</Badge></td>
                     <td className="pr-3">{sc.timeframe || '—'}</td>
@@ -663,7 +663,7 @@ export default function Trade() {
                   const managed = !row.raw?.keeper_opt_out
                   return (
                     <label
-                      className="flex items-center gap-1 text-[11px] cursor-pointer whitespace-nowrap"
+                      className="flex items-center gap-1 text-[12px] cursor-pointer whitespace-nowrap"
                       title="Let the Profit Keeper manage this position (per the policy armed on Tune). Untick to leave this ONE position hands-off regardless of that policy."
                     >
                       <input
