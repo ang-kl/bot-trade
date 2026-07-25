@@ -300,10 +300,20 @@ thead th {
   border-right: 1px solid var(--table-head-rule);
   padding-left: 8px;
   padding-right: 8px;
-  font-size: 12px;
+  /* Owner (2026-07-25, IMG_1224/1226): "too many columns cramp ... adjust the
+     table column header font size by 2px, proper case ... make sure it isn't a
+     three row header cell". Three changes, all aimed at the same failure:
+     UPPERCASE widens every label by roughly 10%, 12px was too big for a narrow
+     track, and nothing stopped a head from wrapping — SL / TP AWAY was on its
+     way to three lines. 10px + proper case + nowrap means one line, always.
+     The table scrolls horizontally instead (owner: "we can scroll on the
+     right"), which is the honest trade: a wider table you can reach beats a
+     squeezed one you can't read. */
+  font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
   text-align: center;
 }
 
@@ -318,12 +328,21 @@ thead th {
   font-family: inherit;
   background: var(--table-head-bg);
   color: var(--table-head-fg);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  text-transform: none;
+  letter-spacing: normal;
 }
-.t-gridhead > * { border-right: 1px solid var(--table-head-rule); }
+.t-gridhead > * {
+  border-right: 1px solid var(--table-head-rule);
+  /* One line, never three. A label longer than its track ellipsises rather
+     than wrapping or colliding with its neighbour; GradientBody puts the full
+     name in a title attribute, and the copy payloads always carry it in full,
+     so nothing is actually lost. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .t-gridhead > *:last-child { border-right: 0; }
 thead th:first-child { border-top-left-radius: 8px; }
 thead th:last-child  { border-right: 0; border-top-right-radius: 8px; }

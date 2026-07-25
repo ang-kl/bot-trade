@@ -100,7 +100,7 @@ function TimeframePerformance({ timeframes }) {
           {!perfError && perf && (
             <table className="std-cols min-w-full text-[12px]">
               <thead>
-                <tr className="text-left text-[var(--color-text-sub)]">
+                <tr>
                   <th className="py-1 pr-3">Timeframe</th>
                   {windows.map(w => <th key={w} className="py-1 pr-3">{w}</th>)}
                 </tr>
@@ -176,7 +176,7 @@ function StrategyTfPerformance() {
             <>
               <table className="std-cols w-auto text-[12px] tabular-nums">
                 <thead>
-                  <tr className="text-left text-[var(--color-text-sub)]">
+                  <tr>
                     <th className="py-0.5 pr-3">Strategy</th>
                     {grid.timeframes.map(tf => <th key={tf} className="py-0.5 px-2 text-right whitespace-nowrap">{tf}</th>)}
                     <th className="py-0.5 pl-3 text-right">Total</th>
@@ -353,7 +353,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
                 the page (owner: "too much white space, squeeze rows/columns"). */}
             <table className="std-cols w-auto text-[12px]">
               <thead>
-                <tr className="text-left text-[var(--color-text-sub)]">
+                <tr>
                   <th className="py-0.5 pr-3">Strategy</th>
                   {columns.map(c => (
                     <th key={c.key} className="py-0.5 px-2 text-center whitespace-nowrap">{c.label}</th>
@@ -2164,7 +2164,7 @@ export default function Tune() {
                 <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
                   <table className="std-cols min-w-full text-[13px]">
                     <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
-                      <tr className="text-left text-[12px] text-[var(--color-text-sub)]">
+                      <tr>
                         <th className="pr-2 pb-1">Symbol</th>
                         <th className="pr-2 pb-1">Type</th>
                         <th className="pr-2 pb-1">Scanned</th>

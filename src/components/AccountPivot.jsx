@@ -38,7 +38,7 @@ export default function AccountPivot({ acct }) {
       <div className="overflow-x-auto">
         <table className="w-full text-[12px]">
           <thead>
-            <tr className="text-left text-[var(--color-text-sub)]">
+            <tr>
               <th className="pb-1 pr-3">Type of trading</th>
               <th className="pb-1 pr-3">Market open trading</th>
               <th className="pb-1">Market closed trading</th>
