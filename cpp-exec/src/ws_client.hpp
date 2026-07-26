@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -53,6 +54,18 @@ public:
   // close internally. nullopt = timeout, closed, or error (check isOpen()).
   std::optional<std::string> recvText(int timeoutMs);
   void close();
+
+  // THE ONLY method safe to call from a thread other than the one running
+  // connect/send/recv/close. `::shutdown(2)` on the kernel socket — it does
+  // not touch ssl_, ctx_ or fd_ ownership, so the owning thread's in-flight
+  // SSL_read simply returns 0 and recvText() reports the connection closed.
+  //
+  // The alternative — calling close() cross-thread — is what audit finding
+  // C1 describes: SSL_write racing SSL_read on one SSL*, then SSL_free and
+  // ::close(fd_) underneath a reader still inside SSL_read, then FD_SET(-1).
+  // That is undefined behaviour, not a tolerable race. Wake the reader here
+  // and let it tear its own connection down.
+  void wakeReader();
   bool isOpen() const { return open_; }
   const std::string& lastError() const { return lastError_; }
 
@@ -62,6 +75,11 @@ private:
   bool sendRaw(const uint8_t* data, size_t len);
   void teardown();
 
+  // fd_ is written only by the owning thread (connect/teardown) but READ by
+  // wakeReader() from another one, so every write and that read take fdMtx_.
+  // The owning thread's own reads (select/SSL_set_fd) need no lock — it is
+  // the only writer.
+  mutable std::mutex fdMtx_;
   int fd_ = -1;
   void* ssl_ = nullptr;   // SSL*      (void* keeps OpenSSL out of this header)
   void* ctx_ = nullptr;   // SSL_CTX*
