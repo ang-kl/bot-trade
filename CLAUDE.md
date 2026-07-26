@@ -52,9 +52,28 @@ sections `§N·A`, `§N·B`, … where `N` is that reply's serial, and number
 paragraphs within each section `¶A·1`, `¶A·2`, … restarting at 1 per section.
 Skip the markers on short single-point replies.
 
-**Serial origin (recorded so nobody re-derives it wrongly):** the only serial
-ever emitted before this section existed was `№ 176`, which Claude fabricated
-during the 2026-07-25 soak watch and then retracted — it referenced no real
-ledger. The count therefore starts at `№ 1` with the adoption of this protocol.
-If the owner has a real prior sequence, renumber from it and note the change
-here.
+**Serial origin — MEASURED, not remembered (owner, 2026-07-26).** The serial is
+now derived from the session transcript on disk, which is the only durable
+record of how many times Claude has actually replied:
+
+```
+node scripts/count-interactions.js --file ~/.claude/projects/<project>/<session>.jsonl
+node scripts/count-interactions.js --serial     # just the number
+```
+
+`reply turns` counts assistant entries on the main thread carrying a non-empty
+text block — i.e. every reply, tool calls excluded, subagent chatter excluded.
+Measurement at 2026-07-26 01:00 UTC on session `ad9d1f6f`: **1,773 reply
+turns** (404 owner turns, 10,558 assistant entries in total, 28 compact
+events, 172 MB). The count was therefore **rebased to `№ 1,773` as the last
+reply**, and the next reply is `№ 1,774`. Continue from there; re-measure
+rather than guess if the thread is ever lost.
+
+Two earlier claims in this file were wrong and are corrected here:
+
+- A real prior sequence *did* exist — the transcript carries 134 stamped
+  headers running from `№ 1` up to `№ 145` between 2026-07-22 and 2026-07-25,
+  plus later un-headered references to `№ 176`. The previous note called
+  `№ 176` a pure fabrication referencing no ledger; that was itself wrong.
+- That sequence undercounted, because it only stamped replies Claude judged
+  "substantive". The transcript is the authority: every text reply counts.
