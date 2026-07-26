@@ -51,11 +51,13 @@ export const STRATEGY_KIND = {
   rsi_meanrev: 'meanrev',
   rsi2_reversion: 'meanrev', // Connors RSI(2) washout fade — ranges & aligned dips
   vp_value: 'meanrev',      // value-area edge fade — wants rotation, dies in trends
+  fib_confluence: 'meanrev', // bounce/rejection off a confluence zone — same failure mode as vp_value
   ema_pullback: 'trend',
   donchian_breakout: 'trend',
   cup_handle: 'trend',
   inv_cup_handle: 'trend',
   vwap_trend: 'trend',      // VWAP pullback in a trend — dies in quiet chop
+  va_breakout: 'trend',     // value-area edge giving way — a whipsaw range kills the pullback hold
 }
 
 export function loadRegimeGateConfig(db) {
