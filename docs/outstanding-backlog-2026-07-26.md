@@ -5,25 +5,32 @@ review in reply `№ 1,776`. **Re-ordered 09:51 SGT at the owner's instruction
 ("re-order the phases by capital at risk")**, now folding in the L1–L7 audit
 (`audit/ROLLUP.md`, merged as `12d16bb`).
 
-Status as of **14:19 SGT**: **P1, P3, P4 and P8 are SHIPPED** (see the ledger
-below). Everything still open carries a decision gate and does not start
+Status as of **21:22 SGT**: **P1, P2, P3, P4, P6, P7 and P8 are SHIPPED** (see
+the ledger below) — every audit finding ranked ahead of a decision gate is now
+closed. Everything still open carries a decision gate and does not start
 without the owner's word.
 
-Baseline: `main` @ `a0500a5`.
+Baseline: `main` @ `09de8da`.
 
 ## Shipped
 
 | Phase | PR | Commit | What landed |
 |---|---|---|---|
 | **P1** | #397 | `7b2b8d4` | The daily-loss caps no longer read an unknown day as flat. `SUM` skips NULL `net_pnl`, so a day of broker-side stop-outs summed to zero and neither cap tripped. Unresolved closures older than a 15-minute grace now block, with `blockOnUnknownPnl` / `unknownPnlGraceMin` as the knobs. **Risk-limit change, owner-authorised.** |
+| **P2** | #401 | `d078067` | `position-double`/`position-reverse` hardened rather than removed (D11: "harden both"): dedupe → reconcile → cap/bracket checks → order with inherited/mirrored protection, no more `allowNaked: true`. A leg-two reverse failure now reports `accountFlat: true`, writes a `risk_event`, and alerts — instead of a 502 body as the only record. |
 | **P3(a)** | #396 | `e7730a3` | An ambiguous submission blocks a resubmit. The dedupe read `trades`, which the ambiguous path never writes, so the guard was blind to the one case that could double-fill. `order_failed` and `order_ambiguous` are now separated. |
 | **P3(b)** | #395 | `159726d` | A skipped executor no longer marks a live position closed. `skipped` also covers `no_ctrader_position_id` and `unknown_volume`; only `ctrader_not_configured` may close DB-only now. |
 | **P4** | #395 | `159726d` | Management actions route by the position's own account and host. An account absent from the registry is refused, never silently re-routed. |
+| **P6** | #405, #406 | `8e60068`, `96ac895` | The C++ VPO tier stops discarding its own order result (counted outcomes + `GET /vpo-status`), then its five predicate divergences from the fitted JS strategies are closed: Donchian's volume gate restored, VWAP/EMA stops made structural, the shared RR floor applied to the six ports that lacked it, RSI-2's 60-minute timeframe floor enforced, vp-value's POC-side condition and catch-radius restored. Staging-only impact today (no `VPO_SYMBOLS` in production) — required before that variable is ever set there. |
+| **P7** | #404 | `3c5cd50` | The three C++ sidecar thread-safety findings. C1: `SpotFeed::stop()` no longer tears the connection down from another thread (`wakeReader()` half-closes the socket instead of `SSL_free`+`close` under a live reader). C2: the reconnect backoff is interruptible and `/connect` no longer holds `vpoMtx` across `stop()`+`join()`, so `GET /health` can't block behind a thread join. C3: the spot feed is stopped and joined before `main` returns. Verified under ThreadSanitizer: the pre-fix `stop()` reported two data races; this code is clean. |
 | **P8** | #398 | `1fb6d5b` | Staleness bounds on the regime read (240 min, stale → unknown → fail open as before) and the news cache (7 days, checked before the memo). |
 | — | #399 | `a0500a5` | PRICE·R tape overlap: the de-overlap filter never fired (`filter` hands the callback the original array), and its thresholds sat below the label height. |
+| — | #407 | `946afae` | Volume structure (VPOC/LVN/value-area) analysis layer + the `va_breakout` strategy, per the owner's spec — not an audit finding, but the foundation the remaining VP/Order-Flow work in `docs/order-flow-plan.md` builds on. |
+| — | #408 | `09de8da` | `fib_confluence` and `va_breakout` were missing from `regime-gate.js`'s `STRATEGY_KIND` — both traded with zero regime gating since #407. Fixed, with a test that catches the next strategy that ships without an entry. |
 
-Four of the audit's top five are closed. **P2 is the one that remains**, and it
-is blocked on D11.
+Every audit finding ranked ahead of a decision gate is closed. **Everything
+that remains is gated on an owner decision** — see the table above this
+section, or §D below.
 
 ## What changed in the re-order, and why
 
@@ -69,12 +76,12 @@ D10–D14 are new and belong to the new phases.
 
 | # | Question | My recommendation | Blocks |
 |---|---|---|---|
-| D10 | Loss-cap repair: treat a NULL `net_pnl` closure as **unknown and blocking** (no new entries until it is resolved), or backfill-then-evaluate and accept a window where the cap under-counts? | Unknown-and-blocking. A cap that cannot see a loss is not a cap, and the fail-safe direction on a money ceiling is "stop trading", the same convention `global-guards.js` already uses for an unreadable config | P1 |
-| D11 | The manual `position-double` / `position-reverse` routes: harden them (weighted basis, re-derived stop, add cap, atomic reverse) or **remove** them? | Remove `position-double`; harden `position-reverse` into a single netted order if the venue supports it, otherwise remove it too. Neither is used by any automated path — this is a dashboard affordance whose failure modes cost real money | P2 |
+| ~~D10~~ | ~~Loss-cap repair: treat a NULL `net_pnl` closure as unknown-and-blocking, or backfill-then-evaluate?~~ | **ANSWERED, unknown-and-blocking — shipped #397.** | ~~P1~~ |
+| ~~D11~~ | ~~Harden the manual ADD/REVERSE routes, or remove them?~~ | **ANSWERED (owner): harden both, cTrader permits adding to and reversing an active trade — shipped #401.** | ~~P2~~ |
 | D12 | Credential surface: keep one bearer token for every route, or split read from money-moving and add a second factor on the latter? | Split, and stop shipping any secret in the browser bundle | P5 |
 | D13 | Should the LLM monitor be able to close a position without a deterministic second gate? | No — require a deterministic condition to agree before an LLM-initiated exit executes | P9 |
 | ~~D14~~ | ~~Is `VPO_ENABLED` / `TRAIL_TICK_ENABLED` set in production?~~ | **ANSWERED 2026-07-26: both true in both environments; `VPO_SYMBOLS` on staging only. See below — P7 is production-reachable and moves to the front; P6 is staging-only for now.** | ~~P6, P7~~ |
-| D1 | Fix the three C++ sidecar findings? | Yes — C1 is undefined behaviour | P7 |
+| ~~D1~~ | ~~Fix the three C++ sidecar findings?~~ | **ANSWERED, yes — shipped #404.** | ~~P7~~ |
 | D2 | Build `position_events`? | Yes, and first among the record work — it accumulates nothing until it exists | P10 |
 | D3 | Cockpit endpoint id space: broker position id or DB row id? | DB row id, with `?brokerId=` as an alternate lookup | P12 |
 | D4 | Rework the 127 s blocking loop pass? | Yes, with a written plan first | P14 |
@@ -148,7 +155,7 @@ write the money fields, **and** make the caps refuse to treat "unknown" as
 "zero". Fixing only the first leaves the brake blind to every row already in
 the table.
 
-## P2 — ADD and REVERSE can create unprotected, unrecorded exposure
+## P2 — SHIPPED (#401) — ADD and REVERSE can create unprotected, unrecorded exposure
 
 Capital at risk: **an unstopped position of arbitrary size, invisible to every
 risk computation.** Audit F-L5-02, F-L5-03, F-L5-01, F-L5-08, S13, S14.
@@ -230,7 +237,7 @@ route to the same authority. Audit OQ-16 asks whether it has been rotated since.
 Also here: `GET /health` is unauthenticated and returns `commit`, `errorsToday`,
 `lastError`, `openPositions`, the enable flags and `dbPath`.
 
-## P6 — The C++ strategy tier trades predicates that were never fitted
+## P6 — SHIPPED (#405, #406) — The C++ strategy tier trades predicates that were never fitted
 
 Capital at risk: **live orders from predicates no backtest covers, at stop
 distances that change position size.** Audit F-L1-01…05, F-L4-03, F-L4-04,
@@ -257,7 +264,7 @@ On top of that the tier **discards its own order result**
 error are one non-event, and Node learns of a fill only when a later reconcile
 adopts it.
 
-## P7 — C++ sidecar thread-safety — **NOW THE FIRST THING TO FIX** (was P1)
+## P7 — SHIPPED (#404) — C++ sidecar thread-safety (was P1)
 
 Capital at risk: **direct, and live in production as of the D14 answer.** A
 restart loop leaves positions unmanaged, and C1 is undefined behaviour in the
@@ -343,6 +350,34 @@ the cause.
 
 Effort: small each. Gates **D5–D9**. Includes the measured 2–3 px overlap
 between adjacent PRICE·R tape labels.
+
+## What's actually left (21:22 SGT)
+
+Every audit-ranked phase (P1–P9) is shipped or gated on the owner alone —
+none are blocked on more investigation. In gate order:
+
+| Gate | Phase | What it decides |
+|---|---|---|
+| **D12** | P5 | Split the one bearer token (read vs money-moving), stop shipping any secret in the browser bundle |
+| **D13** | P9 | Require a deterministic second gate before an LLM-initiated exit executes |
+| **D2** | P10 | Build `position_events` — the record layer for weighted-basis exposure after an add |
+| **D3** | P12 | Cockpit endpoint id space (DB row id vs broker position id) |
+| **D4** | P14 | Whether/how to unblock the 127 s loop pass — needs a written plan first, not just a decision |
+| **D5–D9** | P15 | Cockpit polish (FLEET ranking, session-state display, phone scaling, VA/HVN/LVN labels, tape pitch) |
+
+Alongside those, `docs/order-flow-plan.md` (2026-07-26) adds three ranked,
+**ungated** next steps — none touch risk limits, credentials, or live/demo,
+so they ship as ordinary default-off strategy PRs, flagged to the owner
+because they're new trading logic:
+
+1. `multipleNodeLevels()` — HVN-coincidence confluence function in
+   `agent/lib/volume-structure.js`, feeds conviction on strategies already
+   shipped.
+2. `vpoc_retest` — new default-off strategy: retest of a heavy-volume node,
+   trading the continuation (distinct from `vp_value`'s fade and
+   `va_breakout`'s edge-failure).
+3. Volume-based take-profit assist in the exit layer — bank/tighten before
+   the next LVN/HVN ahead of a winner.
 
 ## What the shipped work added to the soak watch
 
