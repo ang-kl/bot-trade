@@ -828,18 +828,72 @@ function portfolioMarginExhausted(db) {
 // pre-existing log-only behaviour so local/offline runs still function.
 // ---------------------------------------------------------------------------
 
+/**
+ * Which account (and therefore which host) a position must be managed on.
+ *
+ * AUDIT F-L4-02: this used to read `ctrader_account_id` and `ctrader_is_live`
+ * from global state, so with more than one account enabled a close or SL amend
+ * for account B was issued on account A's session — and because
+ * `ctrader_is_live` also picks the HOST, a demo position could be addressed
+ * against the live host. The failure surfaces as POSITION_NOT_FOUND, which the
+ * amend path treats as "already closed", so a live position could be recorded
+ * as gone.
+ *
+ * The position's own `account_id` now decides, with its live/demo side read
+ * from the accounts registry. Refusals are explicit, never a silent fallback
+ * to whichever account happens to be selected:
+ *   · rowAccountId null (legacy, pre-stamping rows) → the selected account,
+ *     which is what those rows were created under. Unchanged behaviour.
+ *   · rowAccountId present but absent from the registry → REFUSE. Guessing a
+ *     host for an unknown account is exactly the mis-route this prevents.
+ *
+ * Exported for tests.
+ */
+export function resolveActionAccount(db, rowAccountId) {
+  const selected = getState(db, 'ctrader_account_id')
+  if (rowAccountId == null || String(rowAccountId) === String(selected)) {
+    return { accountId: selected, isLive: getState(db, 'ctrader_is_live') === 'true', source: 'selected' }
+  }
+  let row = null
+  try {
+    row = db.prepare('SELECT account_id, is_live FROM accounts WHERE account_id = ?').get(String(rowAccountId)) || null
+  } catch { /* registry may predate this — fall through to the refusal */ }
+  if (!row) return { accountId: null, isLive: null, source: 'unknown_account' }
+  return { accountId: String(row.account_id), isLive: row.is_live === 1, source: 'registry' }
+}
+
+/**
+ * May a caller mark a position closed in the DB after the executor returned
+ * `skipped`? Only when there is provably no broker to close against.
+ *
+ * AUDIT F-L6-02: every other skip reason means a LIVE broker position may
+ * exist, and flipping the local row to 'closed' there hides it from every
+ * manager (they all read status='active'). Exported so the rule is under test
+ * rather than living as an inline string comparison.
+ */
+export function mayCloseDbOnlyAfterSkip(reason) {
+  return reason === 'ctrader_not_configured'
+}
+
 export async function executeBrokerAction(db, s, pos, eval_) {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
-  const accountId = getState(db, 'ctrader_account_id')
-  const isLive = getState(db, 'ctrader_is_live') === 'true'
+
+  const ctx = s.selectBrokerContext.get(pos.id) || {}
+  const acct = resolveActionAccount(db, ctx.accountId ?? null)
+  if (acct.source === 'unknown_account') {
+    // The row names an account the registry does not know. Managing it on the
+    // selected account's session is how a demo position reaches the live host.
+    return { skipped: true, reason: `account_not_in_registry:${ctx.accountId}` }
+  }
+  const accountId = acct.accountId
+  const isLive = acct.isLive
 
   if (!clientId || !clientSecret || !accessToken || !accountId) {
     return { skipped: true, reason: 'ctrader_not_configured' }
   }
 
-  const ctx = s.selectBrokerContext.get(pos.id) || {}
   if (!ctx.positionId) {
     return { skipped: true, reason: 'no_ctrader_position_id' }
   }
@@ -999,8 +1053,13 @@ export function prepareStatements(db) {
     // position id + current volume (lots) from the trades row linked via
     // trade_id. Legacy monitored_positions (pre trade_id migration) return
     // NULL fields and the executor skips the broker call.
+    // account_id rides along so executeBrokerAction manages each position on
+    // ITS OWN account and host, not on whichever account is selected globally
+    // (audit F-L4-02). The monitored row is the authority; the trade row is the
+    // fallback for rows stamped before monitored_positions carried the column.
     selectBrokerContext: db.prepare(`
-      SELECT t.ctrader_position_id AS positionId, t.volume AS volumeLots
+      SELECT t.ctrader_position_id AS positionId, t.volume AS volumeLots,
+             COALESCE(mp.account_id, t.account_id) AS accountId
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.id = ?
@@ -1984,8 +2043,33 @@ async function runLoop(db) {
             if (outcome.error) {
               log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
             } else if (outcome.skipped) {
-              log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
-              s.closePosition.run('closed', pos.id) // no broker to close against (e.g. not configured) — DB-only, as before
+              // AUDIT F-L6-02: this used to DB-close on ANY skip reason. The
+              // comment said "no broker to close against", but `skipped` also
+              // covers no_ctrader_position_id, unknown_volume and
+              // account_not_in_registry — cases where a LIVE broker position
+              // exists. Flipping the local row to 'closed' there re-created
+              // exactly the bug the block above says was fixed: the position
+              // survives at the broker with nothing watching it, because every
+              // manager reads status='active'.
+              //
+              // Only the genuinely-no-broker case may close DB-only. Every
+              // other skip leaves the row ACTIVE so the next tick retries, and
+              // says so loudly rather than quietly.
+              if (mayCloseDbOnlyAfterSkip(outcome.reason)) {
+                log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
+                s.closePosition.run('closed', pos.id) // no broker configured at all — DB-only, as before
+              } else {
+                log(`Position close (LLM) NOT EXECUTED for ${pos.symbol}: ${outcome.reason} — position left ACTIVE (a broker position may still be open) — ${check.reasoning}`)
+                try {
+                  db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+                    'CLOSE_NOT_EXECUTED', '/monitor',
+                    JSON.stringify({
+                      monitoredId: pos.id, symbol: pos.symbol, reason: outcome.reason,
+                      detail: 'LLM monitor asked for an exit; the executor could not reach the broker position. Row left active on purpose — do NOT read this as closed.',
+                    }).slice(0, 2000),
+                  )
+                } catch { /* audit best-effort */ }
+              }
             } else {
               log(`Position closed (LLM): ${pos.symbol} — ${outcome.summary} — ${check.reasoning}`)
             }
