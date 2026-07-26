@@ -11,6 +11,18 @@ const FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 const CACHE_KEY = 'news_calendar_json'
 const CACHE_AT = 'news_calendar_fetched_ms'
 const CACHE_MS = 6 * 3600_000
+// P8 / AUDIT F-L7-02. Both failure branches of loadFeed used to return the
+// previous cache with NO age check, and cachedEventsSync memoised on the fetch
+// timestamp alone — so it could not tell a 6-hour-old calendar from a 6-week-
+// old one. A mirror that goes away permanently left the entry gate operating
+// on a calendar that aged indefinitely: releases long past still inside their
+// window, and this week's releases entirely absent.
+//
+// Past this bound the cache is treated as NO DATA, which for the gate means NO
+// BLOCK — the module's own documented degrade path (see the file header), not
+// a new policy. The feed publishes one week at a time, so a cache older than
+// that describes a different week.
+const MAX_CACHE_AGE_MS = 7 * 24 * 3600_000
 
 // Which currencies move a symbol — deliberately simple and reviewable.
 export function symbolCurrencies(symbol) {
@@ -48,6 +60,16 @@ export function formatNewsLines(events, nowMs) {
   })
 }
 
+/** The cached events, or [] when the cache is missing, corrupt, or too old. */
+function cachedEventsWithinBound(db) {
+  const at = Number(getState(db, CACHE_AT)) || 0
+  if (!at || Date.now() - at > MAX_CACHE_AGE_MS) return []
+  try {
+    const parsed = JSON.parse(getState(db, CACHE_KEY) || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+}
+
 async function loadFeed(db) {
   const at = Number(getState(db, CACHE_AT)) || 0
   if (Date.now() - at < CACHE_MS) {
@@ -62,8 +84,10 @@ async function loadFeed(db) {
       setState(db, CACHE_AT, String(Date.now()))
       return events
     }
-  } catch { /* fall through to stale cache */ }
-  try { return JSON.parse(getState(db, CACHE_KEY) || '[]') } catch { return [] }
+  } catch { /* fall through to the cache, bounded */ }
+  // Bounded fallback: a recent-enough cache is better than nothing; an ancient
+  // one is worse than nothing, because the gate would read it as current.
+  return cachedEventsWithinBound(db)
 }
 
 /**
@@ -92,9 +116,15 @@ let gateParseMemo = { at: null, events: [] }
 export function cachedEventsSync(db) {
   try {
     const at = getState(db, CACHE_AT)
+    // P8: the bound is checked BEFORE the memo, not inside it. Memoising on
+    // the fetch timestamp alone means the key never changes as the cache ages,
+    // so a memo populated while the calendar was fresh would keep serving it
+    // forever — the same fossil-read this bound exists to stop.
+    const ts = Number(at) || 0
+    if (!ts || Date.now() - ts > MAX_CACHE_AGE_MS) return []
     if (gateParseMemo.at === at) return gateParseMemo.events
-    const events = JSON.parse(getState(db, CACHE_KEY) || '[]')
-    gateParseMemo = { at, events: Array.isArray(events) ? events : [] }
+    const events = cachedEventsWithinBound(db)
+    gateParseMemo = { at, events }
     return gateParseMemo.events
   } catch { return [] }
 }
