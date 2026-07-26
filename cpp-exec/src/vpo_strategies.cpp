@@ -4,11 +4,66 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <limits>
+#include <string>
 
 namespace vpo {
 
+// ---------------------------------------------------------------------------
+// P6 / audit F-L1-01…05. These ports had drifted from the JS strategies that
+// were actually fitted and walk-forward tested, and when VPO_SYMBOLS is set
+// they are ORIGINATING decisions — tryFire calls placeOrder directly, so the
+// risk gate, news gate, duplicate-symbol veto and correlation caps never see
+// them. A divergence here is not a cosmetic mismatch; it is an unfitted
+// predicate trading real money.
+//
+// Every gate below cites the JS line it mirrors. Where an exact mirror is
+// impossible — because this engine arms BEFORE the bar the JS reads exists —
+// the comment says so rather than implying equivalence.
+// ---------------------------------------------------------------------------
+double StrategyModule::timeframeMinutes(const std::string& tf) {
+  if (tf.empty()) return 0.0;
+  size_t i = 0;
+  while (i < tf.size() && (std::isdigit(static_cast<unsigned char>(tf[i])) || tf[i] == '.')) i++;
+  if (i == 0) return 0.0;
+  const std::string unit = tf.substr(i);
+  double n = 0.0;
+  try { n = std::stod(tf.substr(0, i)); } catch (...) { return 0.0; }
+  if (!(n > 0.0)) return 0.0;
+  if (unit == "m" || unit == "min" || unit == "mins") return n;
+  if (unit == "h" || unit == "hr" || unit == "hrs") return n * 60.0;
+  if (unit == "d" || unit == "day" || unit == "days") return n * 1440.0;
+  if (unit == "w" || unit == "wk" || unit == "week" || unit == "weeks") return n * 10080.0;
+  if (unit == "mo" || unit == "M" || unit == "month" || unit == "months") return n * 43200.0;
+  return 0.0; // unreadable — the caller decides open or closed
+}
+
 namespace {
+// The floor every JS strategy but rsi2 shares (MIN_RR = 1.5 in
+// vwap-trend.js:34, vp-value.js:21, ema-pullback.js:28, donchian-breakout.js:24,
+// fib-confluence.js:33, cup-handle.js:55). Six of the seven ports had no such
+// check at all: a setup whose measured-move target sat inside its own stop
+// distance armed and fired anyway.
+constexpr double kMinRR = 1.5;
+
+// Arms `o` only if the reward-to-risk of the proposed bracket clears `minRR`.
+// Returns false (leaving the caller to disarm) otherwise. Centralised so the
+// floor cannot be forgotten again by the next port.
+bool armIfRewardClearsFloor(VirtualPendingOrder& o, double trigger, Side side,
+                            double slDistance, double tpDistance, double minRR = kMinRR) {
+  if (!(slDistance > 0.0) || !(tpDistance > 0.0)) return false;
+  // The epsilon matters: rsi2 builds tp as exactly TP_RR × sl and passes
+  // TP_RR as its own floor, so a bare `<` would reject it on rounding alone.
+  if (tpDistance / slDistance < minRR - 1e-9) return false;
+  o.triggerPrice.store(trigger, std::memory_order_relaxed);
+  o.side.store(side, std::memory_order_relaxed);
+  o.relativeStopLoss.store(slDistance, std::memory_order_relaxed);
+  o.relativeTakeProfit.store(tpDistance, std::memory_order_relaxed);
+  o.state.store(VposState::ARMED, std::memory_order_relaxed);
+  return true;
+}
+
 constexpr double kDayMs = 86'400'000.0;
 constexpr int kAtrPeriod = 14;
 constexpr double kSlAtrBuffer = 0.5;     // vwap-trend.js SL_ATR_BUFFER
@@ -36,30 +91,32 @@ void VwapTrendStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const s
   const bool risingTrend = bar.c > v && v > vPrev;
   const bool fallingTrend = bar.c < v && v < vPrev;
 
+  // vwap-trend.js:69 puts the stop at the SIGNAL BAR'S OWN LOW minus the
+  // buffer — `sl = bar.l - SL_ATR_BUFFER * a` — not at a bare buffer below
+  // the entry. Risk is therefore (entry − bar.l) + 0.5·ATR, and since
+  // position size is risk-derived, a stop that omits the (entry − bar.l)
+  // term sizes every trade LARGER than the fitted strategy ever did.
+  //
+  // This engine arms before the touch bar exists, so its entry is the line
+  // rather than a close. The faithful mapping is the same formula with the
+  // trigger as the entry: any part of the most recent bar that has already
+  // wicked past the line is structure the stop must clear. When nothing has,
+  // this reduces to the old buffer — which is the correct answer in that
+  // case, not a coincidence.
   if (risingTrend) {
-    // Already pulled back through the line and holding above it — the JS
-    // signal fires HERE (close confirms the bounce). This engine instead
-    // arms BEFORE that: if price hasn't pulled back too far yet, wait for
-    // the touch by setting the trigger at the current VWAP level.
     const double distToLine = bar.c - v;
     if (distToLine > kMaxPullbackAtr * a) { disarm(); return; } // too far from the line to be a live setup
-    auto& o = order();
-    o.triggerPrice.store(v, std::memory_order_relaxed);
-    o.side.store(Side::Buy, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(2.0 * kSlAtrBuffer * a, std::memory_order_relaxed); // 2R, matching vwap-trend.js tp1
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    const double structure = std::min(bar.l, v);
+    const double sl = (v - structure) + kSlAtrBuffer * a;
+    if (!armIfRewardClearsFloor(order(), v, Side::Buy, sl, 2.0 * sl)) disarm();
     return;
   }
   if (fallingTrend) {
     const double distToLine = v - bar.c;
     if (distToLine > kMaxPullbackAtr * a) { disarm(); return; }
-    auto& o = order();
-    o.triggerPrice.store(v, std::memory_order_relaxed);
-    o.side.store(Side::Sell, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(2.0 * kSlAtrBuffer * a, std::memory_order_relaxed); // 2R, matching vwap-trend.js tp1
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    const double structure = std::max(bar.h, v);
+    const double sl = (structure - v) + kSlAtrBuffer * a;
+    if (!armIfRewardClearsFloor(order(), v, Side::Sell, sl, 2.0 * sl)) disarm();
     return;
   }
   disarm();
@@ -79,26 +136,30 @@ void VpValueStrategy::recompute(const std::vector<Bar>& macroBars, const std::ve
   const double distToVal = std::fabs(bar.c - vp.valPrice);
   const double distToVah = std::fabs(bar.c - vp.vahPrice);
 
-  // Arm at whichever edge price is currently closer to (within a wider
-  // catch radius than the JS's "already at the edge" check, since this
-  // engine arms BEFORE the touch and waits for it).
-  const double catchRadius = 3.0 * tol;
-  if (distToVal <= catchRadius && distToVal <= distToVah && bar.c > vp.valPrice) {
-    auto& o = order();
-    o.triggerPrice.store(vp.valPrice, std::memory_order_relaxed);
-    o.side.store(Side::Buy, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(std::fabs(vp.pocPrice - vp.valPrice), std::memory_order_relaxed);
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+  // Two corrections here, both from vp-value.js:42-45.
+  //
+  // 1. The catch radius was 3× the fitted EDGE_TOLERANCE_ATR. "At the edge"
+  //    means within 0.5·ATR in the JS; tripling it arms on price that is
+  //    nowhere near the edge yet, so the profile that justified the trade
+  //    can have moved by the time the touch happens. Back to 1×. This still
+  //    arms before the touch — that is what the trigger is for.
+  //
+  // 2. The POC-SIDE condition was missing entirely. The thesis is a rotation
+  //    from the edge back to the point of control, so a long requires price
+  //    BELOW the POC (`bar.c > valPrice && bar.c < pocPrice`) and a short
+  //    requires price ABOVE it. Without it the tier armed longs at the VAL
+  //    while price sat above the POC — a "rotation" whose target was behind
+  //    it, and whose take-profit distance was therefore measured backwards.
+  const double catchRadius = tol;
+  if (distToVal <= catchRadius && distToVal <= distToVah &&
+      bar.c > vp.valPrice && bar.c < vp.pocPrice) {
+    if (!armIfRewardClearsFloor(order(), vp.valPrice, Side::Buy, kSlAtrBuffer * a,
+                                std::fabs(vp.pocPrice - vp.valPrice))) disarm();
     return;
   }
-  if (distToVah <= catchRadius && bar.c < vp.vahPrice) {
-    auto& o = order();
-    o.triggerPrice.store(vp.vahPrice, std::memory_order_relaxed);
-    o.side.store(Side::Sell, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(std::fabs(vp.pocPrice - vp.vahPrice), std::memory_order_relaxed);
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+  if (distToVah <= catchRadius && bar.c < vp.vahPrice && bar.c > vp.pocPrice) {
+    if (!armIfRewardClearsFloor(order(), vp.vahPrice, Side::Sell, kSlAtrBuffer * a,
+                                std::fabs(vp.pocPrice - vp.vahPrice))) disarm();
     return;
   }
   disarm();
@@ -118,6 +179,7 @@ constexpr int kDonchianMinBars = 40;
 constexpr double kDonchianMinRangeAtr = 2.0; // donchian-breakout.js MIN_RANGE_ATR
 constexpr double kDonchianMaxOvershootAtr = 1.0; // donchian-breakout.js MAX_OVERSHOOT_ATR
 constexpr double kDonchianSlAtr = 1.5;       // donchian-breakout.js SL_ATR
+constexpr double kDonchianVolX = 1.2;        // donchian-breakout.js VOL_X
 
 // cup-handle.js constants (classic/bullish direction only — see
 // vpo_strategies.hpp's CupHandleStrategy comment)
@@ -192,6 +254,11 @@ constexpr int kRsiPeriod = 2;
 constexpr double kRsiOversold = 10.0;
 constexpr double kRsiSlAtr = 1.5;
 constexpr double kRsiTpRR = 1.2;
+// rsi2-reversion.js MIN_TF_MIN. Also its OWN reward floor: this strategy is
+// explicitly exempt from the shared 1.5 (rsi2-reversion.js:25 — a high-win-
+// rate mean-reverter keys its own lower STRATEGY_MIN_RR), so applying 1.5
+// here would silently switch it off rather than align it.
+constexpr double kRsiMinTfMinutes = 60.0;
 constexpr int kRsiMinBars = kRsiTrendPeriod + kRsiPeriod + 2;
 } // namespace
 
@@ -210,26 +277,23 @@ void EmaPullbackStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const
   // and closed back above — this engine arms BEFORE that instead (see
   // vpo_strategies.hpp file header, point 2's sibling case: this one still
   // waits for a touch, just of a line instead of a fixed level).
+  // ema-pullback.js:83-85 — `sl = min(bar.l, ema50) - SL_ATR_BUFFER * a`.
+  // Unlike vwap-trend, this stop's structure is a LINE (the slow EMA), which
+  // exists before the touch does, so this is an exact port rather than a
+  // mapping: the stop clears the slow EMA, and the previous 0.25·ATR-only
+  // version sized every trade as if the trend line weren't there at all.
   if (ema20 > ema50 && bar.c > ema20 && bar.c > ema50) {
     const double distToLine = bar.c - ema20;
     if (distToLine > kEmaMaxPullbackAtr * a) { disarm(); return; } // too far above the line to be a live setup
-    auto& o = order();
-    o.triggerPrice.store(ema20, std::memory_order_relaxed);
-    o.side.store(Side::Buy, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kEmaSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(2.0 * kEmaSlAtrBuffer * a, std::memory_order_relaxed); // 2R, matching ema-pullback.js's fixed rr=2
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    const double sl = (ema20 - std::min(bar.l, ema50)) + kEmaSlAtrBuffer * a;
+    if (!armIfRewardClearsFloor(order(), ema20, Side::Buy, sl, 2.0 * sl)) disarm();
     return;
   }
   if (ema20 < ema50 && bar.c < ema20 && bar.c < ema50) {
     const double distToLine = ema20 - bar.c;
     if (distToLine > kEmaMaxPullbackAtr * a) { disarm(); return; }
-    auto& o = order();
-    o.triggerPrice.store(ema20, std::memory_order_relaxed);
-    o.side.store(Side::Sell, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kEmaSlAtrBuffer * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(2.0 * kEmaSlAtrBuffer * a, std::memory_order_relaxed);
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    const double sl = (std::max(bar.h, ema50) - ema20) + kEmaSlAtrBuffer * a;
+    if (!armIfRewardClearsFloor(order(), ema20, Side::Sell, sl, 2.0 * sl)) disarm();
     return;
   }
   disarm();
@@ -243,40 +307,48 @@ void DonchianBreakoutStrategy::recompute(const std::vector<Bar>& /*macroBars*/, 
   // is excluded, same as donchian-breakout.js.
   double hi = -std::numeric_limits<double>::infinity();
   double lo = std::numeric_limits<double>::infinity();
+  double volSum = 0.0;
   for (int i = last - kDonchianChannel; i < last; i++) {
     if (microBars[i].h > hi) hi = microBars[i].h;
     if (microBars[i].l < lo) lo = microBars[i].l;
+    volSum += microBars[i].v;
   }
   const double range = hi - lo;
   const double a = atr(microBars, kAtrPeriod);
   if (!(a > 0.0) || range < kDonchianMinRangeAtr * a) { disarm(); return; } // micro-range noise
 
-  // Arm at whichever band edge price currently sits closest to, within a
-  // wider catch radius than the JS's "already overshot" check — this
-  // engine arms BEFORE the break and waits for the touch. The JS's
-  // breakout-volume filter can't be pre-verified (it reads the not-yet-
-  // existing breakout bar's own volume) so it's dropped here — see
-  // vpo_strategies.hpp file header, point 1.
+  // THE VOLUME GATE (donchian-breakout.js:57-60, `if (volX < VOL_X) return
+  // null`). It was deleted here on the argument that it reads the breakout
+  // bar's own volume, which does not exist before the touch. That argument
+  // justifies not being able to mirror it EXACTLY; it does not justify
+  // dropping a hard veto and trading the setup anyway. "Conviction needs
+  // participation" is the whole premise of the strategy, and without any
+  // volume condition this port fires breakouts on dead tape — precisely the
+  // trades the fitted version refuses.
+  //
+  // So it is enforced against the LAST CLOSED BAR instead of the future
+  // breakout bar: participation must already be building as price approaches
+  // the band. This is a PROXY, deliberately named as one. It is stricter
+  // than nothing and looser than the JS, and it can both miss a breakout
+  // that only gets its volume on the break itself and admit one whose volume
+  // fades before the touch. Making it exact needs the tick tape at fire
+  // time, which is a larger change than closing this gap.
+  const double avgVol = volSum / kDonchianChannel;
+  const double volX = avgVol > 0.0 ? microBars[last].v / avgVol : 0.0;
+  if (volX < kDonchianVolX) { disarm(); return; }
+
   const double close = microBars[last].c;
   const double catchRadius = 3.0 * kDonchianMaxOvershootAtr * a;
   const double distToHi = hi - close;
   const double distToLo = close - lo;
   if (close <= hi && distToHi <= catchRadius && distToHi <= distToLo) {
-    auto& o = order();
-    o.triggerPrice.store(hi, std::memory_order_relaxed);
-    o.side.store(Side::Buy, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kDonchianSlAtr * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(range, std::memory_order_relaxed); // measured move, matching donchian-breakout.js tp1
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    // tp = the measured move (donchian-breakout.js:65); the RR floor is what
+    // stops a 1.5·ATR stop being paired with a shallower range.
+    if (!armIfRewardClearsFloor(order(), hi, Side::Buy, kDonchianSlAtr * a, range)) disarm();
     return;
   }
   if (close >= lo && distToLo <= catchRadius) {
-    auto& o = order();
-    o.triggerPrice.store(lo, std::memory_order_relaxed);
-    o.side.store(Side::Sell, std::memory_order_relaxed);
-    o.relativeStopLoss.store(kDonchianSlAtr * a, std::memory_order_relaxed);
-    o.relativeTakeProfit.store(range, std::memory_order_relaxed);
-    o.state.store(VposState::ARMED, std::memory_order_relaxed);
+    if (!armIfRewardClearsFloor(order(), lo, Side::Sell, kDonchianSlAtr * a, range)) disarm();
     return;
   }
   disarm();
@@ -388,7 +460,7 @@ void recomputeCupHandle(StrategyModule& s, const std::vector<Bar>& macroBars, in
     const double sl = kChSlAtr * a;
     const double tp = depthAbs; // measured move, matching cup-handle.js tp1 - rim
     const double rrRatio = tp / sl;
-    if (rrRatio < kChMinRR) continue;
+    if (rrRatio < kChMinRR) continue; // cup-handle.js:55 — the one port that already had this
 
     // Breakout/breakdown level this engine arms at and waits for a touch,
     // rather than requiring (as cup-handle.js does) that the touch already
@@ -477,15 +549,27 @@ void FibConfluenceStrategy::recompute(const std::vector<Bar>& /*macroBars*/, con
   // This JS signal already means "price is inside the zone right now" —
   // there's no future touch to wait for, so arm at the current close
   // itself (vpo_strategies.hpp file header, point 2).
-  auto& o = order();
-  o.triggerPrice.store(price, std::memory_order_relaxed);
-  o.side.store(isLong ? Side::Buy : Side::Sell, std::memory_order_relaxed);
-  o.relativeStopLoss.store(risk, std::memory_order_relaxed);
-  o.relativeTakeProfit.store(2.0 * risk, std::memory_order_relaxed); // 2R, matching fib-confluence.js tp1
-  o.state.store(VposState::ARMED, std::memory_order_relaxed);
+  // tp is 2R by construction (fib-confluence.js:89) so the floor never binds
+  // here; it goes through the same helper so no future edit can silently
+  // change that without the floor noticing.
+  if (!armIfRewardClearsFloor(order(), price, isLong ? Side::Buy : Side::Sell, risk, 2.0 * risk))
+    disarm();
 }
 
 void Rsi2ReversionStrategy::recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& /*microBars*/) {
+  // THE TIMEFRAME FLOOR (rsi2-reversion.js:47,62 — MIN_TF_MIN = 60). This is
+  // the 2026-07-21 walk-forward result: the edge lives on 1h+ and this
+  // strategy structurally loses on 5m–30m. It used to be "enforced" by a
+  // comment in vpo_strategies.hpp asking whoever deploys the key not to set
+  // VPO_MACRO_TF below an hour — which is not enforcement, it is a note.
+  //
+  // Fails OPEN on an unreadable label, matching the JS: `if (tf && tf.ms <
+  // ...)` skips the check when parseTimeframe returns null. An empty macro
+  // timeframe (a caller that never called setMacroTimeframe) reads as
+  // unknown, so a unit test constructing a bare strategy behaves as before.
+  const double tfMin = StrategyModule::timeframeMinutes(macroTimeframe());
+  if (tfMin > 0.0 && tfMin < kRsiMinTfMinutes) { disarm(); return; }
+
   if (static_cast<int>(macroBars.size()) < kRsiMinBars) { disarm(); return; }
   const double r = rsi(macroBars, kRsiPeriod);
   const double trend = sma(macroBars, kRsiTrendPeriod);
@@ -498,14 +582,12 @@ void Rsi2ReversionStrategy::recompute(const std::vector<Bar>& macroBars, const s
   if (!longSetup && !shortSetup) { disarm(); return; }
 
   // Same "already true, trade it now" shape as FibConfluenceStrategy — arms
-  // at the current close immediately.
+  // at the current close immediately. Reward floor is TP_RR itself, not the
+  // shared 1.5 — see kRsiMinTfMinutes' comment.
   const double slDist = kRsiSlAtr * a;
-  auto& o = order();
-  o.triggerPrice.store(bar.c, std::memory_order_relaxed);
-  o.side.store(longSetup ? Side::Buy : Side::Sell, std::memory_order_relaxed);
-  o.relativeStopLoss.store(slDist, std::memory_order_relaxed);
-  o.relativeTakeProfit.store(kRsiTpRR * slDist, std::memory_order_relaxed); // ~1.2R, matching rsi2-reversion.js
-  o.state.store(VposState::ARMED, std::memory_order_relaxed);
+  if (!armIfRewardClearsFloor(order(), bar.c, longSetup ? Side::Buy : Side::Sell,
+                              slDist, kRsiTpRR * slDist, kRsiTpRR))
+    disarm();
 }
 
 } // namespace vpo

@@ -1,6 +1,7 @@
 // cpp-exec/src/tests/test_vpo_strategies.cpp — VwapTrendStrategy/VpValueStrategy
 // arm/disarm logic, and the honest stubs never arming.
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 
 #include "../vpo_strategies.hpp"
@@ -143,21 +144,45 @@ static void test_ema_pullback_disarms_when_flat() {
 // far enough before the ATR window (bars 25-39) to leave ATR ~= 1.0. Last
 // bar closes just under the channel high — a live "approaching resistance"
 // setup.
-static void test_donchian_breakout_arms_near_upper_band() {
+//
+// The last bar now carries 700 against a 500 channel average (1.4×, over
+// donchian-breakout.js's VOL_X = 1.2). Before P6 this port had NO volume
+// condition at all, so the fixture never needed one; see the test below for
+// what the same bars do on flat volume now.
+static std::vector<Bar> donchianApproachBars(double lastVolume) {
   std::vector<Bar> bars;
   for (int i = 0; i < 40; i++) bars.push_back({double(i), 100, 100.5, 99.5, 100, 500});
   bars[20].h = 103.0;
   bars[22].l = 97.0;
-  bars[39] = {39, 102.0, 103.0, 102.0, 102.5, 500};
+  bars[39] = {39, 102.0, 103.0, 102.0, 102.5, lastVolume};
+  return bars;
+}
 
+static void test_donchian_breakout_arms_near_upper_band() {
   vpo::DonchianBreakoutStrategy s("donchian_breakout", "EURUSD", "15m", 1);
   std::vector<Bar> macro;
-  s.recompute(macro, bars);
+  s.recompute(macro, donchianApproachBars(700));
   assert(s.order().state.load() == VposState::ARMED);
   assert(s.order().side.load() == Side::Buy);
   assert(s.order().triggerPrice.load() > 0.0);
   assert(s.order().relativeStopLoss.load() > 0.0);
   assert(s.order().relativeTakeProfit.load() > 0.0);
+}
+
+// P6: the deleted volume veto, restored. "Conviction needs participation" is
+// the premise of the strategy (donchian-breakout.js:9,57-60) — identical
+// price structure on flat tape must not arm.
+static void test_donchian_breakout_refuses_a_breakout_on_flat_volume() {
+  vpo::DonchianBreakoutStrategy s("donchian_breakout", "EURUSD", "15m", 1);
+  std::vector<Bar> macro;
+  s.recompute(macro, donchianApproachBars(500)); // volX = 1.0, under VOL_X
+  assert(s.order().state.load() == VposState::IDLE);
+
+  // And the boundary is the JS constant, not a rounder number nearby.
+  s.recompute(macro, donchianApproachBars(599)); // 1.198×
+  assert(s.order().state.load() == VposState::IDLE);
+  s.recompute(macro, donchianApproachBars(600)); // exactly 1.2×
+  assert(s.order().state.load() == VposState::ARMED);
 }
 
 static void test_donchian_breakout_disarms_on_micro_range() {
@@ -336,6 +361,131 @@ static void test_rsi2_reversion_disarms_on_too_few_bars() {
   assert(s.order().state.load() == VposState::IDLE);
 }
 
+// ---------------------------------------------------------------------------
+// P6 — the remaining four divergences from the fitted JS strategies.
+// ---------------------------------------------------------------------------
+
+// The shared MIN_RR = 1.5 floor (donchian-breakout.js:24,68), absent from six
+// of the seven ports. Donchian is where it bites: tp is the measured move and
+// the stop is a fixed 1.5·ATR, so any channel narrower than 2.25·ATR promises
+// less than 1.5R — while still clearing the strategy's own 2·ATR range gate.
+// That band, 2.0–2.25·ATR, is exactly what used to arm and now must not.
+static void test_donchian_breakout_refuses_a_range_that_cannot_clear_the_rr_floor() {
+  std::vector<Bar> bars;
+  for (int i = 0; i < 40; i++) bars.push_back({double(i), 100, 100.5, 99.5, 100, 500});
+  bars[20].h = 101.6;              // channel range 2.1 vs ATR 1.0 → clears 2·ATR…
+  bars[39].v = 700;                // …and clears the volume gate…
+  vpo::DonchianBreakoutStrategy s("donchian_breakout", "EURUSD", "15m", 1);
+  std::vector<Bar> macro;
+  s.recompute(macro, bars);
+  assert(s.order().state.load() == VposState::IDLE); // …but 2.1 / 1.5 = 1.4R.
+
+  // Widen the channel past 2.25·ATR and the same setup is allowed again, so
+  // the refusal above is the reward floor and not some other gate.
+  bars[20].h = 103.0;              // range 3.5 → 2.33R
+  s.recompute(macro, bars);
+  assert(s.order().state.load() == VposState::ARMED);
+}
+
+// rsi2-reversion.js:47,62 — MIN_TF_MIN = 60. This was previously enforced by
+// a comment in the header asking the deployer to keep VPO_MACRO_TF above an
+// hour. A comment is not a gate.
+static void test_rsi2_refuses_a_macro_timeframe_under_the_hour() {
+  // Bars that DO arm, so any disarm below is the timeframe and nothing else.
+  std::vector<Bar> macro = rsi2Bars();
+  std::vector<Bar> micro;
+
+  vpo::Rsi2ReversionStrategy armed("rsi2_reversion", "EURUSD", "15m", 1);
+  armed.setMacroTimeframe("4h");
+  armed.recompute(macro, micro);
+  assert(armed.order().state.load() == VposState::ARMED);
+
+  for (const char* tf : {"5m", "15m", "30m", "59m"}) {
+    vpo::Rsi2ReversionStrategy s("rsi2_reversion", "EURUSD", "15m", 1);
+    s.setMacroTimeframe(tf);
+    s.recompute(macro, micro);
+    assert(s.order().state.load() == VposState::IDLE);
+  }
+  // 1h is the floor itself, not below it.
+  vpo::Rsi2ReversionStrategy atFloor("rsi2_reversion", "EURUSD", "15m", 1);
+  atFloor.setMacroTimeframe("1h");
+  atFloor.recompute(macro, micro);
+  assert(atFloor.order().state.load() == VposState::ARMED);
+}
+
+// Fails OPEN on an unreadable label, matching `if (tf && tf.ms < ...)` in the
+// JS — an unparseable timeframe must not silently disable the strategy.
+static void test_rsi2_timeframe_floor_fails_open_on_an_unreadable_label() {
+  std::vector<Bar> macro = rsi2Bars();
+  std::vector<Bar> micro;
+  for (const char* tf : {"", "banana", "h"}) {
+    vpo::Rsi2ReversionStrategy s("rsi2_reversion", "EURUSD", "15m", 1);
+    s.setMacroTimeframe(tf);
+    s.recompute(macro, micro);
+    assert(s.order().state.load() == VposState::ARMED);
+  }
+}
+
+static void test_timeframe_minutes_parses_what_the_js_accepts() {
+  assert(vpo::StrategyModule::timeframeMinutes("15m") == 15.0);
+  assert(vpo::StrategyModule::timeframeMinutes("1h") == 60.0);
+  assert(vpo::StrategyModule::timeframeMinutes("1.5h") == 90.0);
+  assert(vpo::StrategyModule::timeframeMinutes("4h") == 240.0);
+  assert(vpo::StrategyModule::timeframeMinutes("1d") == 1440.0);
+  assert(vpo::StrategyModule::timeframeMinutes("1w") == 10080.0);
+  assert(vpo::StrategyModule::timeframeMinutes("1mo") == 43200.0);
+  // 0 means "unreadable", which every caller treats as fail-open.
+  assert(vpo::StrategyModule::timeframeMinutes("") == 0.0);
+  assert(vpo::StrategyModule::timeframeMinutes("h") == 0.0);
+  assert(vpo::StrategyModule::timeframeMinutes("15x") == 0.0);
+  assert(vpo::StrategyModule::timeframeMinutes("0h") == 0.0);
+}
+
+// vp-value.js:42-45 — two corrections, pinned here as INVARIANTS rather than
+// with a bespoke violating fixture. A long is a rotation UP to the POC, so
+// price must be below it (and the mirror for a short); and "at the edge"
+// means within EDGE_TOLERANCE_ATR, not three times it. Whatever this
+// profile fixture happens to produce, both must hold whenever it arms.
+static void test_vp_value_rotation_faces_the_poc_and_arms_only_at_the_edge() {
+  vpo::VpValueStrategy s("vp_value", "EURUSD", "15m", 1);
+  const std::vector<Bar> bars = macroBarsWithValueAreaEdge();
+  std::vector<Bar> micro;
+  s.recompute(bars, micro);
+  if (s.order().state.load() != VposState::ARMED) return; // fixture didn't arm; nothing to check
+
+  const vpo::VolumeProfileResult vp = vpo::volumeProfile(bars, 24);
+  const double close = bars.back().c;
+  const double tol = 0.5 * vpo::atr(bars, 14);
+  const double trigger = s.order().triggerPrice.load();
+
+  // The target is ahead of price, not behind it.
+  if (s.order().side.load() == Side::Buy) assert(close < vp.pocPrice);
+  else assert(close > vp.pocPrice);
+
+  // And price is actually AT the edge it armed against.
+  assert(std::fabs(close - trigger) <= tol);
+}
+
+// A stop that ignores the structure it is supposed to clear sizes the trade
+// bigger than the fitted strategy ever did (position size is risk-derived).
+// ema-pullback.js:83 puts it below the SLOW EMA; the port used a bare
+// 0.25·ATR from the entry.
+static void test_ema_stop_clears_the_slow_ema_not_just_the_buffer() {
+  vpo::EmaPullbackStrategy s("ema_pullback", "EURUSD", "15m", 1);
+  std::vector<Bar> macro;
+  const std::vector<Bar> bars = risingBars(70);
+  s.recompute(macro, bars);
+  assert(s.order().state.load() == VposState::ARMED);
+
+  // The stop must span at least the EMA20→EMA50 gap. On a rising series the
+  // slow EMA lags below the fast one, so a stop equal to the bare buffer
+  // would sit ABOVE the line it is meant to clear.
+  const double ema20 = vpo::ema(bars, 20);
+  const double ema50 = vpo::ema(bars, 50);
+  assert(ema20 > ema50);
+  assert(s.order().relativeStopLoss.load() > ema20 - ema50);
+}
+
 int main() {
   test_vwap_trend_arms_long_on_rising_trend();
   test_vwap_trend_disarms_on_too_few_bars();
@@ -355,6 +505,13 @@ int main() {
   test_fib_confluence_disarms_on_too_few_bars();
   test_rsi2_reversion_arms_at_current_price();
   test_rsi2_reversion_disarms_on_too_few_bars();
+  test_donchian_breakout_refuses_a_breakout_on_flat_volume();
+  test_donchian_breakout_refuses_a_range_that_cannot_clear_the_rr_floor();
+  test_rsi2_refuses_a_macro_timeframe_under_the_hour();
+  test_rsi2_timeframe_floor_fails_open_on_an_unreadable_label();
+  test_timeframe_minutes_parses_what_the_js_accepts();
+  test_vp_value_rotation_faces_the_poc_and_arms_only_at_the_edge();
+  test_ema_stop_clears_the_slow_ema_not_just_the_buffer();
   std::puts("test_vpo_strategies: all assertions passed");
   return 0;
 }

@@ -45,6 +45,10 @@ VpoDispatcher::VpoDispatcher(ExecEngine& engine, BarProvider barProvider, Volume
 VpoDispatcher::~VpoDispatcher() { stop(); }
 
 void VpoDispatcher::registerStrategy(std::unique_ptr<StrategyModule> strategy) {
+  // Tell the strategy which period its macro bars will cover. Only this
+  // class knows, and rsi2_reversion's timeframe floor is unenforceable
+  // without it.
+  strategy->setMacroTimeframe(macroTimeframe_);
   strategies_.push_back(std::move(strategy));
 }
 
