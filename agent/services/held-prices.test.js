@@ -66,3 +66,42 @@ test('all symbols held → empty heavy batch, no crash', () => {
   assert.equal(r.nextCursor, 0)
   assert.equal(r.restCount, 0)
 })
+
+// ---- spike-priority boost (owner: "when market volume spike, check
+// immediately") — a flagged symbol jumps the rotation queue -------------
+
+test('prioritySpikeSymbols: empty list is a pure no-op, identical to before', () => {
+  const s = syms(10)
+  const withEmpty = selectScanBatch(s, { batchSize: 4, cursor: 3, prioritySpikeSymbols: [] })
+  const without = selectScanBatch(s, { batchSize: 4, cursor: 3 })
+  assert.deepEqual(withEmpty, without)
+})
+
+test('prioritySpikeSymbols: a flagged symbol jumps to the front of the batch', () => {
+  const s = syms(10) // S0..S9, cursor 0 would normally start at S0
+  const r = selectScanBatch(s, { batchSize: 4, cursor: 0, prioritySpikeSymbols: ['S7'] })
+  assert.deepEqual(r.batch.map(b => b.symbol), ['S7', 'S0', 'S1', 'S2'], 'spiked symbol first, rotation fills the rest')
+})
+
+test('prioritySpikeSymbols: capped at batchSize — a spike burst cannot crowd out rotation entirely', () => {
+  const s = syms(10)
+  const r = selectScanBatch(s, { batchSize: 3, cursor: 0, prioritySpikeSymbols: ['S1', 'S2', 'S3', 'S4', 'S5'] })
+  assert.equal(r.batch.length, 3)
+  assert.deepEqual(r.batch.map(b => b.symbol), ['S1', 'S2', 'S3'], 'only the first batchSize spiked symbols ride this round')
+})
+
+test('prioritySpikeSymbols: held symbols are still excluded even if also flagged as spiking', () => {
+  const s = syms(5)
+  const r = selectScanBatch(s, { heldSymbols: ['S1'], batchSize: 4, cursor: 0, prioritySpikeSymbols: ['S1', 'S2'] })
+  assert.ok(!r.batch.some(b => b.symbol === 'S1'), 'held symbol never enters the heavy batch, spike flag or not')
+  assert.equal(r.batch[0].symbol, 'S2', 'the non-held spike flag still jumps the queue')
+})
+
+test('prioritySpikeSymbols: cursor still advances correctly through the rotation pool, excluding boosted symbols', () => {
+  const s = syms(10)
+  const r1 = selectScanBatch(s, { batchSize: 4, cursor: 0, prioritySpikeSymbols: ['S5'] })
+  assert.deepEqual(r1.batch.map(b => b.symbol), ['S5', 'S0', 'S1', 'S2'])
+  assert.equal(r1.nextCursor, 3, 'cursor advanced by the 3 rotation slots actually consumed, over the 9-symbol pool (S5 removed)')
+  const r2 = selectScanBatch(s, { batchSize: 4, cursor: r1.nextCursor })
+  assert.deepEqual(r2.batch.map(b => b.symbol), ['S3', 'S4', 'S5', 'S6'], 'next run resumes rotation over the FULL list once the flag is gone')
+})

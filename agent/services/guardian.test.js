@@ -5,7 +5,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { significantMove, watchedSymbolIds } from './guardian.js'
+import {
+  significantMove, watchedSymbolIds, watchlistSymbolIds,
+  flagScanPriority, takeScanPrioritySymbols,
+} from './guardian.js'
 
 test('significantMove: percentage threshold, bad inputs never wake', () => {
   assert.equal(significantMove(100, 100.06, 0.05), true)   // 0.06% ≥ 0.05%
@@ -30,4 +33,62 @@ test('watchedSymbolIds: active positions with a known id map, sorted, deduped', 
     { symbol: 'EURUSD', symbolId: 1 },
     { symbol: 'NATGAS', symbolId: 2280 },
   ])
+})
+
+// ---- watchlist-wide spike-priority (owner, 2026-07-26: "when market
+// volume spike, check immediately") --------------------------------------
+
+test('watchlistSymbolIds: enabled symbols with a known id, disabled/force_skip/string-shorthand handled', () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, GBPUSD: 2, XAUUSD: 3, NOMAP: undefined }))
+  setState(db, 'autopilot_symbols_json', JSON.stringify([
+    'EURUSD',                                   // string shorthand → enabled
+    { symbol: 'GBPUSD', enabled: true },
+    { symbol: 'XAUUSD', enabled: false },        // disabled → excluded
+    { symbol: 'NOMAP' },                         // no symbolId → excluded
+  ]))
+  assert.deepEqual(watchlistSymbolIds(db), [
+    { symbol: 'EURUSD', symbolId: 1 },
+    { symbol: 'GBPUSD', symbolId: 2 },
+  ])
+})
+
+test('watchlistSymbolIds: force_skip excluded, falls back to legacy watchlist_json when autopilot key is absent', () => {
+  const db = initDB(':memory:')
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, USDJPY: 2 }))
+  setState(db, 'watchlist_json', JSON.stringify([
+    { symbol: 'EURUSD' },
+    { symbol: 'USDJPY', force_skip: true },
+  ]))
+  assert.deepEqual(watchlistSymbolIds(db), [{ symbol: 'EURUSD', symbolId: 1 }])
+})
+
+test('watchlistSymbolIds: missing/malformed state never throws, returns empty', () => {
+  const db = initDB(':memory:')
+  assert.deepEqual(watchlistSymbolIds(db), [])
+  setState(db, 'autopilot_symbols_json', 'not json')
+  assert.deepEqual(watchlistSymbolIds(db), [])
+})
+
+test('flagScanPriority + takeScanPrioritySymbols: round-trips, and consumption clears the flag', () => {
+  const db = initDB(':memory:')
+  flagScanPriority(db, 'eurusd')
+  flagScanPriority(db, 'XAUUSD')
+  const first = takeScanPrioritySymbols(db).sort()
+  assert.deepEqual(first, ['EURUSD', 'XAUUSD'], 'case-normalized')
+  assert.deepEqual(takeScanPrioritySymbols(db), [], 'consumed once — cleared after the first read')
+})
+
+test('takeScanPrioritySymbols: expires stale flags past the ttl', () => {
+  const db = initDB(':memory:')
+  flagScanPriority(db, 'EURUSD')
+  // ttl=0 → the flag set "now" is already outside a zero-width window
+  assert.deepEqual(takeScanPrioritySymbols(db, 0), [])
+})
+
+test('takeScanPrioritySymbols: never throws on a closed db handle', () => {
+  const db = initDB(':memory:')
+  db.close()
+  assert.doesNotThrow(() => flagScanPriority(db, 'EURUSD'))
+  assert.deepEqual(takeScanPrioritySymbols(db), [])
 })

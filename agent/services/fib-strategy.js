@@ -546,15 +546,41 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
  * new-setup coverage. Pure and side-effect free for testing.
  * @returns {{ batch: Array, nextCursor: number }}
  */
-export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cursor = 0 } = {}) {
+export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cursor = 0, prioritySpikeSymbols = [] } = {}) {
   const size = Math.max(1, Math.floor(batchSize) || 15)
   const held = new Set(heldSymbols.map(s => String(s).toUpperCase()))
   const rest = (symbols || []).filter(w => !held.has(String(w.symbol).toUpperCase()))
   if (rest.length === 0) return { batch: [], nextCursor: 0, restCount: 0 }
-  const start = Math.max(0, Math.floor(cursor) || 0) % rest.length
-  const rotated = [...rest.slice(start), ...rest.slice(0, start)]
-  const batch = rotated.slice(0, size)
-  return { batch, nextCursor: (start + batch.length) % rest.length, restCount: rest.length }
+
+  // Spike-flagged symbols jump the rotation queue (owner, 2026-07-26: "when
+  // market volume spike, check immediately") — pulled from `rest` up front,
+  // capped at batchSize so a burst of spikes can't crowd out ordinary
+  // rotation coverage the way held positions used to. Empty by default, so
+  // this is a no-op unless the guardian's watchlist tap actually flags
+  // something — identical behaviour to before otherwise.
+  const spikeSet = new Set((prioritySpikeSymbols || []).map(s => String(s).toUpperCase()))
+  const spikeBoost = spikeSet.size ? rest.filter(w => spikeSet.has(String(w.symbol).toUpperCase())).slice(0, size) : []
+  if (spikeBoost.length === 0) {
+    const start = Math.max(0, Math.floor(cursor) || 0) % rest.length
+    const rotated = [...rest.slice(start), ...rest.slice(0, start)]
+    const batch = rotated.slice(0, size)
+    return { batch, nextCursor: (start + batch.length) % rest.length, restCount: rest.length }
+  }
+
+  const boostedSet = new Set(spikeBoost.map(w => String(w.symbol).toUpperCase()))
+  const rotationPool = rest.filter(w => !boostedSet.has(String(w.symbol).toUpperCase()))
+  const remainingSize = size - spikeBoost.length
+  if (rotationPool.length === 0 || remainingSize <= 0) {
+    return { batch: spikeBoost, nextCursor: 0, restCount: rotationPool.length }
+  }
+  const start = Math.max(0, Math.floor(cursor) || 0) % rotationPool.length
+  const rotated = [...rotationPool.slice(start), ...rotationPool.slice(0, start)]
+  const rotationBatch = rotated.slice(0, remainingSize)
+  return {
+    batch: [...spikeBoost, ...rotationBatch],
+    nextCursor: (start + rotationBatch.length) % rotationPool.length,
+    restCount: rotationPool.length,
+  }
 }
 
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
@@ -583,6 +609,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     heldSymbols: options.prioritySymbols || [],
     batchSize: Number(options.batchSize) || 15,
     cursor: Number(options.cursor) || 0,
+    prioritySpikeSymbols: options.prioritySpikeSymbols || [],
   })
 
   const results = []
