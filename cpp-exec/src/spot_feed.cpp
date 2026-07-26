@@ -98,8 +98,19 @@ std::string SpotFeed::depthSnapshotJson(long long symbolId, int maxLevels) {
 }
 
 void SpotFeed::stop() {
+  // Order matters. stopped_ first, so a feed thread that wakes for any other
+  // reason sees the flag and exits rather than reconnecting; then the socket
+  // half-close, which returns an in-flight recvText(); then the backoff CV,
+  // in case the thread is between connections.
+  //
+  // Nothing here touches ssl_/ctx_/fd_ ownership — that is the whole point.
+  // The feed thread performs its own ws_.close() when runLoop() unwinds.
   stopped_.store(true);
-  ws_.close();
+  ws_.wakeReader();
+  {
+    std::lock_guard<std::mutex> lk(stopMtx_);
+  }
+  stopCv_.notify_all();
 }
 
 void SpotFeed::ensureSymbols(const std::vector<long long>& ids) {
@@ -279,7 +290,14 @@ void SpotFeed::runLoop() {
     ws_.close();
     if (stopped_.load(std::memory_order_relaxed)) break;
     logLine("disconnected, reconnecting in " + std::to_string(backoffMs) + "ms");
-    std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+    {
+      // Interruptible: stop() must not have to wait out a 60s backoff while
+      // /connect's join() holds up every other request (audit C2).
+      std::unique_lock<std::mutex> lk(stopMtx_);
+      stopCv_.wait_for(lk, milliseconds(backoffMs),
+                       [this] { return stopped_.load(std::memory_order_relaxed); });
+    }
+    if (stopped_.load(std::memory_order_relaxed)) break;
     backoffMs = std::min(backoffMs * 2, kBackoffCapMs);
   }
 }

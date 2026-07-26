@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -45,6 +46,13 @@ public:
   // capped exponential backoff across drops. Runs until stop() is called.
   // Call from its own dedicated thread.
   void runLoop();
+
+  // Ask the feed thread to finish. Safe from any thread, and it does NOT
+  // touch the connection's OpenSSL state — it flags stopped_, half-closes the
+  // socket so an in-flight read returns, and wakes the reconnect backoff.
+  // The feed thread owns teardown; the caller must join() the thread to know
+  // the feed is gone. (Audit C1: stop() used to call ws_.close() from the
+  // HTTP thread, which is SSL_free + ::close under a live reader.)
   void stop();
 
   // True once the current connection's depth subscription was accepted.
@@ -80,6 +88,12 @@ private:
   SpotTickCallback onTick_;
   CtraderWs ws_;
   std::atomic<bool> stopped_{false};
+
+  // The reconnect backoff sleeps up to 60s. Sleeping on this instead of
+  // this_thread::sleep_for means stop() returns the thread promptly rather
+  // than leaving /connect's join() blocked for up to a minute (audit C2).
+  std::mutex stopMtx_;
+  std::condition_variable stopCv_;
 
   // L2 depth state. Quote ids are per-subscription, so books are cleared on
   // every (re)connect; depthMtx_ guards books_ between the feed thread

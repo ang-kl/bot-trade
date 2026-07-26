@@ -106,12 +106,25 @@ void CtraderWs::teardown() {
     SSL_CTX_free(static_cast<SSL_CTX*>(ctx_));
     ctx_ = nullptr;
   }
-  if (fd_ >= 0) {
-    ::close(fd_);
-    fd_ = -1;
+  {
+    std::lock_guard<std::mutex> lk(fdMtx_);
+    if (fd_ >= 0) {
+      ::close(fd_);
+      fd_ = -1;
+    }
   }
   open_ = false;
   buf_.clear();
+}
+
+void CtraderWs::wakeReader() {
+  std::lock_guard<std::mutex> lk(fdMtx_);
+  // Half-closing both directions makes the reader's select() return readable
+  // and its SSL_read() return 0. We deliberately do NOT ::close() here: the
+  // descriptor stays owned by the connecting thread, so there is no window in
+  // which this number could be handed to some unrelated open() and then
+  // written to by the reader.
+  if (fd_ >= 0) ::shutdown(fd_, SHUT_RDWR);
 }
 
 bool CtraderWs::connect(const std::string& host, int port) {
@@ -142,7 +155,10 @@ bool CtraderWs::connect(const std::string& host, int port) {
   }
   int one = 1;
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-  fd_ = fd;
+  {
+    std::lock_guard<std::mutex> lk(fdMtx_);
+    fd_ = fd;
+  }
 
   SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
   if (!ctx) { lastError_ = "SSL_CTX_new failed"; teardown(); return false; }

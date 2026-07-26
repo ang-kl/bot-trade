@@ -194,7 +194,14 @@ int main(int argc, char** argv) {
   std::vector<long long> vpoSymbolIds;
   std::unique_ptr<SpotFeed> spotFeed;
   std::thread spotFeedThread;
-  std::mutex vpoMtx; // guards spotFeed/spotFeedThread across concurrent /connect calls
+  // vpoMtx guards the spotFeed/spotFeedThread HANDLES only — every holder must
+  // release it in bounded time, because GET /health takes it too. It is NOT
+  // the thing that serialises /connect: HttpServer runs a detached thread per
+  // connection (http_server.cpp:45), so two /connects can race, and the
+  // stop-join-recreate sequence needs mutual exclusion for far longer than
+  // /health can be made to wait. connectMtx provides that; vpoMtx stays short.
+  std::mutex vpoMtx;
+  std::mutex connectMtx;
 
   if (vpoEnabled && !vpoSymbolsSpec.empty()) {
     vpo::BarProvider barProvider = [&vpoStore](const std::string& symbol, const std::string& timeframe) {
@@ -317,7 +324,7 @@ int main(int argc, char** argv) {
     return {200, last};
   });
 
-  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, depthFeedEnabled, &trailEngine, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
+  server.route("POST", "/connect", [&engine, &vpoDispatcher, &vpoSymbolIds, &spotFeed, &spotFeedThread, &vpoMtx, &connectMtx, depthFeedEnabled, &trailEngine, trailTickEnabled](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -355,11 +362,27 @@ int main(int argc, char** argv) {
     // thread against `*spotFeed`, so swapping the object out from under a
     // still-running thread would be a use-after-free.
     if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled) {
-      std::lock_guard<std::mutex> lk(vpoMtx);
-      if (spotFeed) {
-        spotFeed->stop();
-        if (spotFeedThread.joinable()) spotFeedThread.join();
+      // Audit C2: the old shape held vpoMtx across stop() + join(), so
+      // GET /health — which takes the same mutex for depthBookEntries — blocked
+      // behind a thread join that could take as long as the feed's reconnect
+      // backoff. Health timeouts read as a dead process and Railway restarts
+      // it, with no crash to explain why. So: take the old feed OUT under the
+      // lock, release, then stop and join it with nothing held.
+      std::lock_guard<std::mutex> restart(connectMtx);
+      std::unique_ptr<SpotFeed> retiring;
+      std::thread retiringThread;
+      {
+        std::lock_guard<std::mutex> lk(vpoMtx);
+        retiring = std::move(spotFeed);
+        retiringThread = std::move(spotFeedThread);
       }
+      if (retiring) {
+        retiring->stop();
+        if (retiringThread.joinable()) retiringThread.join();
+      }
+      retiring.reset(); // destroy only after its thread is provably gone
+
+      std::lock_guard<std::mutex> lk(vpoMtx);
       vpo::VpoDispatcher* dispatcherPtr = vpoDispatcher.get();
       TrailEngine* trailPtr = trailTickEnabled ? &trailEngine : nullptr;
       spotFeed = std::make_unique<SpotFeed>(
@@ -536,6 +559,31 @@ int main(int argc, char** argv) {
   });
 
   logLine("starting on port " + std::to_string(port));
-  if (!server.run()) return 1;
-  return 0;
+  const bool served = server.run();
+
+  // Audit C3. server.run() returning is not the only way out of this process,
+  // but it is the one we control, and on that path a joinable spotFeedThread
+  // reaching its destructor is a std::terminate — an abort with no
+  // explanation in the log, which is the worst kind of exit to debug.
+  //
+  // The engine thread stays detached deliberately: it captures `engine`, a
+  // local of main, so joining it is the only correct thing to do and it has
+  // no stop signal to join on. Leaving it detached while main returns is the
+  // pre-existing shape and changing it needs an ExecEngine shutdown path,
+  // which is not this fix. Recorded rather than silently half-done.
+  {
+    std::unique_ptr<SpotFeed> retiring;
+    std::thread retiringThread;
+    {
+      std::lock_guard<std::mutex> lk(vpoMtx);
+      retiring = std::move(spotFeed);
+      retiringThread = std::move(spotFeedThread);
+    }
+    if (retiring) {
+      retiring->stop();
+      if (retiringThread.joinable()) retiringThread.join();
+      logLine("spot feed stopped");
+    }
+  }
+  return served ? 0 : 1;
 }
