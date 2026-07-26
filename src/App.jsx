@@ -1,5 +1,5 @@
 /* global __APP_VERSION__, __GIT_COMMIT__ */
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { boundPosition } from './cockpit/cockpit-nav.js'
 
 // Trade Cockpit (design_handoff_trading_dashboard) — lazy so the heavy modal
@@ -92,8 +92,18 @@ const ALL_TABS = NAV_GROUPS.flatMap(g => g.items)
 // (localStorage); this banner is the loud signal when the agent stops
 // answering. Polls the public /health every 30s, shows on every page.
 function AgentDownBanner() {
-  const [down, setDown] = useState(false)
+  // Owner (2026-07-26): "Keep saying agent not reachable. Is something wrong?"
+  // It used to flip on ONE failed poll. On mobile data a single dropped request
+  // is routine, and the agent's own loop can be busy for a minute at a time, so
+  // one strike produced false alarms that claimed the bot had stopped trading.
+  // Now it takes three consecutive failures (~90s) before the banner shows, one
+  // success clears it, and the copy no longer asserts what the bot is doing —
+  // this browser cannot reach it, which is not the same thing.
+  const FAILS_BEFORE_ALARM = 3
+  const [fails, setFails] = useState(0)
+  const [staleMins, setStaleMins] = useState(null)
   const location = useLocation()
+  const okAt = useRef(null)
   useEffect(() => {
     if (!agentConfigured()) return undefined
     let dead = false
@@ -101,21 +111,29 @@ function AgentDownBanner() {
       try {
         const c = getAgentConn()
         const res = await fetch(`${c.base}/health`, { signal: AbortSignal.timeout(8000) })
-        if (!dead) setDown(!res.ok)
+        if (dead) return
+        if (res.ok) { setFails(0); okAt.current = Date.now(); setStaleMins(null) }
+        else setFails(n => n + 1)
       } catch {
-        if (!dead) setDown(true)
+        if (dead) return
+        setFails(n => n + 1)
+        setStaleMins(okAt.current ? Math.round((Date.now() - okAt.current) / 60000) : null)
       }
     }
     check()
     const t = setInterval(check, 30_000)
     return () => { dead = true; clearInterval(t) }
   }, [])
+  const down = fails >= FAILS_BEFORE_ALARM
   if (!down || location.pathname === '/connect' || location.pathname === '/link-up') return null
+
   return (
     <div role="alert" className="px-4 pt-3">
       <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-[9px] font-semibold">
-        ⚠ Agent unreachable — the bot is NOT scanning, trading, or protecting positions right now.
-        Check that the Railway service is up, then <NavLink to="/connect" className="underline">test the connection</NavLink>.
+        ⚠ Can&apos;t reach the agent from this device — {fails} checks in a row failed
+        {staleMins != null ? ` (last answered ~${staleMins}m ago)` : ''}. On a phone this is often the
+        connection, not the bot; if other devices can reach it, the bot is still running.
+        Otherwise check the Railway service, then <NavLink to="/connect" className="underline">test the connection</NavLink>.
       </div>
     </div>
   )
