@@ -81,7 +81,9 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mk = (p, name) => { const raw = pos(p); const tag = name + ' ' + rOf(p); if (raw < 22) return { t: 22, lb: tag + ' ▲', off: true }; if (raw > 82) return { t: name === 'SL' ? 95 : 84, lb: tag + ' ▼', off: true }; return { t: raw, lb: tag, off: false } }
   const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
   const bands = [mTP, mEN, mSL].map(m => m.t)
-  const altTicks = altTicksAll.filter(tk => bands.every(b => Math.abs(tk.top - b) > 7))
+  const altTicks = altTicksAll
+    .filter(tk => bands.every(b => Math.abs(tk.top - b) > 10))
+    .filter((tk, i, arr) => i === 0 || tk.top - arr[i - 1].top >= 11)
   const hdgTicks = [[-100, 'BEAR'], [-75, ''], [-50, 'weak'], [-25, ''], [0, 'CHOP'], [25, ''], [50, 'weak'], [75, ''], [100, 'BULL']].map(([v, lb], i) => ({ v: lb || '·', left: 10 + i * 10, col: v < 0 ? 'var(--dn)' : v > 0 ? 'var(--up)' : 'var(--sb)' }))
   if (!store.hist2) {
     let s2 = 991
@@ -303,16 +305,46 @@ export function cockpitFrame(store, tick, opts = {}) {
     { k: 'Spread > 2.5×', f: 'Spread guard exceeds 2.5× backtest', now: sprX.toFixed(1) + '×', ok: sprX <= 2.5 }]
   const gaBreach = goaround.filter(g => !g.ok).length
   goaround.forEach(g => { g.mark = g.ok ? '✓' : '✕'; g.okCol = g.ok ? 'var(--acc)' : 'var(--dn)' })
-  const FLEET = [['0002.HK', .23, true], ['BTCUSD', .61, false], ['XAUUSD', .42, false], ['EURUSD', -.18, false], ['GER40', .12, false], ['US500', .35, false], ['USDJPY', -.44, false], ['AUS200', .08, false]]
-  const fleet = FLEET.slice(0, 5).map(([s, r0, active], i) => {
-    const r = r0 + wv(12 + i) * .08
+  // FLEET (owner 2026-07-26: "not static/demo data"). When the clicking
+  // surface supplies the account's real open positions (see cockpit-fleet.js)
+  // this is computed from them: each row's own R, ordered by distance from
+  // entry, with a truthful "top N of M". The literal array below is the
+  // reference demo roster and is used ONLY when no real roster was handed in.
+  const DEMO_FLEET = [['0002.HK', .23, true], ['BTCUSD', .61, false], ['XAUUSD', .42, false], ['EURUSD', -.18, false], ['GER40', .12, false], ['US500', .35, false], ['USDJPY', -.44, false], ['AUS200', .08, false]]
+  const realFleet = Array.isArray(real?.fleet?.list) ? real.fleet : null
+  const fleetBar = (r) => {
     const halfW = clamp(Math.abs(r) / 2 * 50, 2, 50)
-    return { sym: s, r: (r >= 0 ? '+' : '') + r.toFixed(2), col: r >= 0 ? 'var(--up)' : 'var(--dn)', barL: r >= 0 ? 50 : 50 - halfW, barW: halfW, bd: active ? 'var(--acc)' : 'var(--edg)', bg: active ? 'var(--acs)' : 'transparent' }
-  })
+    return { barL: r >= 0 ? 50 : 50 - halfW, barW: halfW }
+  }
+  const fleet = realFleet
+    ? realFleet.list.map(f => ({
+        sym: f.sym,
+        r: f.r == null ? '—' : (f.r >= 0 ? '+' : '') + f.r.toFixed(2),
+        col: f.r == null ? 'var(--mu)' : f.r >= 0 ? 'var(--up)' : 'var(--dn)',
+        ...(f.r == null ? { barL: 50, barW: 0 } : fleetBar(f.r)),
+        bd: 'var(--edg)', bg: 'transparent',
+      }))
+    : DEMO_FLEET.slice(0, 5).map(([sym, r0, active], i) => {
+        const r = r0 + wv(12 + i) * .08
+        return { sym, r: (r >= 0 ? '+' : '') + r.toFixed(2), col: r >= 0 ? 'var(--up)' : 'var(--dn)',
+          ...fleetBar(r), bd: active ? 'var(--acc)' : 'var(--edg)', bg: active ? 'var(--acs)' : 'transparent' }
+      })
+  const fleetLabel = realFleet
+    ? (realFleet.total > fleet.length ? `top ${fleet.length} of ${realFleet.total}` : `${realFleet.total} other open`)
+    : 'top 5 of 8 · demo'
+  const fleetIsReal = !!realFleet
+  // MFE/MAE: monitored_positions records these per trade (mfe_r / mae_r), so
+  // when the surface hands them over they are real rather than "the extremes
+  // seen since this modal happened to open".
+  const realMfe = real ? num(real.mfeR) : null
+  const realMae = real ? num(real.maeR) : null
   if (!store.ex) store.ex = { mfe: rNow, mae: rNow }
   store.ex.mfe = Math.max(store.ex.mfe, rNow); store.ex.mae = Math.min(store.ex.mae, rNow)
-  const altMfe = clamp(pos(entry + store.ex.mfe * rUnit), 6, 94).toFixed(1)
-  const altMae = clamp(pos(entry + store.ex.mae * rUnit), 6, 94).toFixed(1)
+  const exMfe = realMfe != null ? Math.max(realMfe, rNow) : store.ex.mfe
+  const exMae = realMae != null ? Math.min(realMae, rNow) : store.ex.mae
+  const exIsReal = realMfe != null || realMae != null
+  const altMfe = clamp(pos(entry + exMfe * rUnit * dir), 6, 94).toFixed(1)
+  const altMae = clamp(pos(entry + exMae * rUnit * dir), 6, 94).toFixed(1)
   const mcSrc = combined.slice(-30)
   // Both rails go into both bounds: on a SHORT the stop is the HIGH and the
   // target the LOW, so the reference's long-shaped min(sl)/max(tp) would push
@@ -330,7 +362,13 @@ export function cockpitFrame(store, tick, opts = {}) {
   })
   const mcVwap = vwapArr.slice(-30).map((p, i) => (i ? 'L' : 'M') + (5 + i * 6.4).toFixed(1) + ',' + mcY(p)).join(' ')
   const alerts = []
-  if (real) alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'live: price, P&L, entry/SL/TP, R, market state · demo: ' + 'chart, volume profile, journal, traffic, engine rates, MFE/MAE', col: 'var(--wrn)' })
+  if (real) {
+    const live = ['price', 'P&L', 'entry/SL/TP', 'R', 'market state']
+    const demo = ['chart', 'volume profile', 'journal', 'traffic', 'engine rates']
+    if (fleetIsReal) live.push('fleet'); else demo.push('fleet')
+    if (exIsReal) live.push('MFE/MAE'); else demo.push('MFE/MAE')
+    alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'live: ' + live.join(', ') + ' · demo: ' + demo.join(', '), col: 'var(--wrn)' })
+  }
   if (!real && sprX > 2) alerts.push({ t: ft(0), k: 'CAUTION', d: 'spread ' + sprX.toFixed(1) + '× backtest — pending entries suspended', col: 'var(--wrn)' })
   if (rvol > 1.8) alerts.push({ t: ft(2), k: 'CAUTION', d: 'RVOL ' + rvol.toFixed(1) + '× — volatility expansion, trail tightened', col: 'var(--wrn)' })
   if (rNow < -.4) alerts.push({ t: ft(1), k: 'WARNING', d: 'price within 0.6R of stop — no averaging down permitted', col: 'var(--dn)' })
@@ -354,8 +392,8 @@ export function cockpitFrame(store, tick, opts = {}) {
     tpBrd: mTP.off ? 'none' : '2px solid var(--up)', enBrd: mEN.off ? 'none' : '2px dashed var(--wrn)', slBrd: mSL.off ? 'none' : '2px solid var(--dn)',
     vsi: marketClosed ? '—' : (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: marketClosed ? 'var(--mu)' : vsi >= 0 ? 'var(--up)' : 'var(--dn)',
     hdg: hdgV >= 25 ? 'BULL ' + Math.round(hdgV) : hdgV <= -25 ? 'BEAR ' + Math.round(-hdgV) : 'CHOP', hdgCol: hdgV >= 25 ? 'var(--up)' : hdgV <= -25 ? 'var(--dn)' : 'var(--sb)', hdgTicks,
-    mfeR: (store.ex.mfe >= 0 ? '+' : '') + store.ex.mfe.toFixed(2) + 'R', maeR: (store.ex.mae >= 0 ? '+' : '') + store.ex.mae.toFixed(2) + 'R',
-    giveback: (store.ex.mfe - rNow).toFixed(2) + 'R',
+    mfeR: (exMfe >= 0 ? '+' : '') + exMfe.toFixed(2) + 'R', maeR: (exMae >= 0 ? '+' : '') + exMae.toFixed(2) + 'R',
+    giveback: (exMfe - rNow).toFixed(2) + 'R', exIsReal,
     altMfe, altMae, candles, mcVwap, mcTp: mcY(tp), mcEn: mcY(entry), mcSl: mcY(sl), tpPx: f2(tp), enPx: f2(entry), slPx: f2(sl), vwapPrice: f2(vwapNow),
     // Notional / margin / leverage need the symbol's contract size, which no
     // agent route serves per position — shown as unavailable rather than
@@ -379,6 +417,6 @@ export function cockpitFrame(store, tick, opts = {}) {
     acctBal: usd(balance), acctEq: usd(balance + pnlUsd), capAbs: usd(dailyCap), capUsed: '−' + usd(usedAbs), capLeft: usd(dailyCap - usedAbs),
     engines, alerts, autopilot, goaround,
     gaNote: gaBreach === 0 ? 'thesis intact — all go-around conditions clear' : gaBreach + ' condition(s) breached — bot exits on ' + (gaBreach >= 2 ? 'NEXT BAR' : 'confirmation'),
-    gaCol: gaBreach === 0 ? 'var(--acc)' : gaBreach >= 2 ? 'var(--dn)' : 'var(--wrn)', fleet,
+    gaCol: gaBreach === 0 ? 'var(--acc)' : gaBreach >= 2 ? 'var(--dn)' : 'var(--wrn)', fleet, fleetLabel, fleetIsReal,
     clock: new Date().toUTCString().slice(17, 25) + ' UTC', anim }
 }

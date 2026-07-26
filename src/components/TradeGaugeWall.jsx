@@ -22,6 +22,7 @@ import { STRAT_SHORT } from '../lib/strategy-labels.js'
 import TradeChronograph from './TradeChronograph.jsx'
 import CockpitPFD from './CockpitPFD.jsx'
 import { bindPosition, openCockpit } from '../cockpit/cockpit-nav.js'
+import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 
 const MAX_SAMPLES = 40 // ~2 min of tick-driven samples — enough for a rate-of-change
 const SIZE = 116 // owner: "make it bigger for me to understand"
@@ -250,6 +251,14 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
                 price: liveMid(ticks, p.symbol) ?? p.currentPrice ?? null,
                 pnl,
                 marketOpen: !marketClosed,
+                mfeR: p.mfeR ?? null,
+                maeR: p.maeR ?? null,
+                // FLEET computed from the other real open positions on the wall.
+                fleet: fleetFrom(positions.map(o => ({
+                  id: o.positionId, sym: o.symbol, side: o.side,
+                  entry: o.entry, sl: o.monitorSl ?? o.sl,
+                  price: liveMid(ticks, o.symbol) ?? o.currentPrice ?? null,
+                })), p.positionId),
               })
               openCockpit(p.positionId)
             }}

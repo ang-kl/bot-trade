@@ -16,3 +16,11 @@
 
 /* Backdrop — BUILD-ORDER §4 */
 .tc-backdrop{position:fixed;inset:0;z-index:60;background:rgba(4,7,16,.62);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center}
+
+/* Bleed fix (owner 2026-07-26): the shell now hugs its content and caps at a
+   percentage of the backdrop. Its inner column is a flex column, so by default
+   every card was a shrinkable flex item — once the cap bit, they all compressed
+   below their content height and the text of the journal / advisories / risk
+   budget / fleet strips overlapped each other. Children keep their natural
+   height; the COLUMN scrolls instead. */
+.tc-root .tc-col > * { flex: 0 0 auto; }
