@@ -13,6 +13,7 @@
 
 import { atr } from './fib-strategy.js'
 import { volumeProfile } from '../lib/indicators.js'
+import { volumeStructure, inLowVolumeNode } from '../lib/volume-structure.js'
 
 const MIN_BARS = 40
 const ATR_PERIOD = 14
@@ -36,6 +37,23 @@ export function computeVpValue(bars, timeframe, opts = {}) {
   const bar = bars[bars.length - 1]
   const tol = EDGE_TOLERANCE_ATR * a
 
+  // Owner's structure checks (2026-07-26): a value-area fade is a RANGING-
+  // session trade. When the session opened outside yesterday's value area
+  // ("bullish" above the VAH, "bearish" below the VAL), the edges are
+  // continuation levels, not rotation fades — fading them is trading against
+  // the day's stated structure, the known failure mode of this strategy.
+  //
+  // Fails OPEN when the structure cannot be computed (too few sessions of
+  // bars, degenerate previous-day profile): the fade predicate is then
+  // exactly what it was before this gate existed. `opts.structure` lets
+  // tests inject one; `opts.structureGate === false` restores the old
+  // behaviour entirely.
+  let vs = null
+  if (opts.structureGate !== false) {
+    vs = opts.structure ?? volumeStructure(bars)
+    if (vs && vs.structure !== 'ranging') return null
+  }
+
   let bias = null
   let edge = null
   // At the value-area LOW and closed back UP into the area → long toward POC.
@@ -58,6 +76,12 @@ export function computeVpValue(bars, timeframe, opts = {}) {
   if (dir * (tp1 - entry) <= 0) return null
   const rr = round2(Math.abs(tp1 - entry) / risk)
   if (rr < MIN_RR) return null
+
+  // A rotation has to CROSS whatever sits between entry and the POC. If the
+  // entry itself is inside one of yesterday's low-volume nodes, price is at
+  // a level the market has already rejected — the "edge test" is more likely
+  // a traverse in progress than a fade (owner's LVN note, 2026-07-26).
+  if (vs && inLowVolumeNode(entry, vs.lvns)) return null
 
   // Conviction: 8 base, +1 when the reaction bar closed decisively inside
   // (>0.3 ATR past the edge), +1 when the POC is a meaty distance away

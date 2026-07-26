@@ -98,3 +98,50 @@ test('both strategies return null on too-few bars', () => {
   assert.equal(computeVwapTrend(few, '1h'), null)
   assert.equal(computeVpValue(few, '1h'), null)
 })
+
+// ---------------------------------------------------------------------------
+// Owner's structure checks (2026-07-26): the fade is a RANGING-session trade.
+//
+// This fixture PROVABLY fires (asserted below, not if-guarded like the older
+// test above): a heavy node at 100, a heavier one at 97 that drags the value
+// area down to VAL ~97.06, and a reaction bar tagging 97.1 and closing back
+// inside at 97.3 — a long fade toward the POC with rr ~9.7. `stepMs` compresses
+// the same bars into one FX day for the fail-open case.
+function vpValueFadeBars(stepMs = HOUR) {
+  const bars = []
+  const b2 = (i, o, h, l, c, v) => ({ t: Date.UTC(2026, 6, 20) + i * stepMs, o, h, l, c, v })
+  for (let i = 0; i < 30; i++) bars.push(b2(i, 100, 100.15, 99.85, 100, 2000))
+  for (let i = 30; i < 44; i++) bars.push(b2(i, 97, 97.15, 96.85, 97, 3500))
+  bars.push(b2(44, 97.2, 97.35, 97.1, 97.3, 900))
+  return bars
+}
+
+const RANGING = { structure: 'ranging', reference: null, role: null, prev: {}, lvns: [] }
+
+test('vp_value refuses the fade when the session opened OUTSIDE value (trending structure)', () => {
+  const bars = vpValueFadeBars()
+  // First prove the fade itself fires — the refusals below mean nothing otherwise.
+  const base = computeVpValue(bars, '1h', { structure: RANGING })
+  assert.ok(base)
+  assert.equal(base.bias, 'long')
+
+  const trending = { ...RANGING, structure: 'bearish', reference: 95, role: 'resistance' }
+  assert.equal(computeVpValue(bars, '1h', { structure: trending }), null)
+  // structureGate:false restores the old predicate entirely.
+  assert.ok(computeVpValue(bars, '1h', { structureGate: false }))
+})
+
+test('vp_value refuses an entry sitting inside one of yesterday\'s LVNs', () => {
+  const bars = vpValueFadeBars() // entry = the reaction close, 97.3
+  const withLvn = { ...RANGING, lvns: [{ lo: 97.2, hi: 99.7, mid: 98.45, volume: 10, pctOfPoc: 2 }] }
+  assert.equal(computeVpValue(bars, '1h', { structure: withLvn }), null)
+  // The same band shifted off the entry does not block.
+  const offLvn = { ...RANGING, lvns: [{ lo: 98.0, hi: 99.7, mid: 98.85, volume: 10, pctOfPoc: 2 }] }
+  assert.ok(computeVpValue(bars, '1h', { structure: offLvn }))
+})
+
+test('vp_value fails OPEN when the structure cannot be computed (single-session history)', () => {
+  // 10-minute bars: the whole series sits inside one FX day, volumeStructure
+  // returns null, and the strategy behaves exactly as before the gate.
+  assert.ok(computeVpValue(vpValueFadeBars(600_000), '1h'))
+})
