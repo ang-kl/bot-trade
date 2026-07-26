@@ -21,12 +21,18 @@
 
 import { getState } from '../db.js'
 import { fxDayStartSql } from './risk.js'
+import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 
 export const DEFAULT_GLOBAL_GUARDS = {
   halt: false,                    // portfolio-wide no-new-entries switch
   portfolioDailyLossUsd: null,    // veto new entries when today's realized
                                   // pnl across ALL accounts ≤ -this (USD)
   maxTotalOpenPositions: null,    // cap on open bot positions across ALL accounts
+  // P1 / audit F-L6-06: only meaningful alongside portfolioDailyLossUsd —
+  // a closed trade with NULL net_pnl is UNKNOWN, not zero, and past the grace
+  // window it blocks rather than letting the portfolio sum under-count it.
+  blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
+  unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
 }
 
 /**
@@ -74,6 +80,23 @@ export function evaluateGlobalGuards(db, guards = null) {
     ).get(dayStartSql)
     checks.portfolio_daily_pnl = row?.pnl || 0
     checks.portfolio_daily_cap_usd = lossCap
+
+    // P1 / AUDIT F-L6-06: SUM skips NULL net_pnl and COALESCE turns an
+    // all-NULL day into 0, so a day of broker-side stop-outs — which close
+    // with net_pnl left NULL — reads as flat and this cap never trips. Past
+    // the grace window an unknown P&L blocks instead of counting as zero.
+    const unresolved = unresolvedPnlSince(db, dayStartSql, {
+      accountId: null, // portfolio: every account, which is the point
+      graceMin: g.unknownPnlGraceMin,
+    })
+    checks.portfolio_unresolved_pnl_trades = unresolved.count
+    const unknown = unknownPnlBlocks(unresolved, {
+      enabled: g.blockOnUnknownPnl,
+      graceMin: g.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+      scope: 'portfolio',
+    })
+    if (unknown.block) return { ok: false, reason: unknown.reason, checks }
+
     if (checks.portfolio_daily_pnl <= -lossCap) {
       return {
         ok: false,
