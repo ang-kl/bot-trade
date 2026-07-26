@@ -2,7 +2,9 @@
 // agent/services/ema-pullback.js
 //
 // EMA trend-pullback strategy (two-sided). Trend is defined by EMA20 vs
-// EMA50 (20 above 50 = uptrend), optionally confirmed by a stacked EMA89.
+// EMA50 (20 above 50 = uptrend), optionally confirmed by a stacked EMA200
+// (owner, 2026-07-26: EMA89 replaced with EMA200 as the regime filter — a
+// slower, more conservative trend confirmation).
 // A signal fires when the LAST CLOSED bar dips back to touch or undercut
 // EMA20 (low <= ema20 for longs) but then closes back on the trend side of
 // EMA20 with the trend still intact (close above EMA50). Mirrored for shorts.
@@ -11,8 +13,14 @@
 // - need >= MIN_BARS so the EMA seed bias has decayed. An SMA-seeded EMA(n)
 //   still carries (1 - 2/(n+1))^m of its seed after m recursive updates; at
 //   the previous 60-bar minimum EMA50 was ~67% seed, i.e. the "trend" the
-//   gate keyed on was largely an artefact of the warm-up window. 200 bars
-//   puts EMA50 seed weight under 0.5% and lets EMA89 warm up as well.
+//   gate keyed on was largely an artefact of the warm-up window. EMA50 needs
+//   ~200 bars to bring its seed weight under 0.5% — but EMA200 needs far
+//   more: at 200 bars it STILL carries ~13.5% seed bias (0.99005^200), an
+//   order of magnitude worse than what this file already refused to accept
+//   for the old EMA89 filter (~1.1% at 200 bars). MIN_BARS is 450 so EMA200
+//   reaches that same ~1% standard (0.99005^450 ≈ 0.011) — bumping the
+//   period without bumping this would reopen the exact warm-up-bias problem
+//   MIN_BARS exists to close, just at a new period.
 // - ATR(14) must be available and the pullback depth must be <= 2*ATR:
 //   deeper pullbacks are usually trend breaks, not healthy retracements
 // - the ENTRY-TO-STOP distance must sit inside [MIN_SL_ATR, MAX_SL_ATR]*ATR.
@@ -41,14 +49,14 @@
 
 import { atr, rsi } from './fib-strategy.js'
 
-const MIN_BARS = 200
+const MIN_BARS = 450          // see the EMA200 seed-decay note above
 const ATR_PERIOD = 14
 const MAX_PULLBACK_ATR = 2    // pullback deeper than 2*ATR = broken leg
 const SL_ATR_BUFFER = 0.25    // stop sits a quarter-ATR beyond structure
 const MIN_SL_ATR = 0.8        // floor: a sub-noise stop is widened to here
 const MAX_SL_ATR = 3.0        // ceiling: wider than this -> no trade
 const MIN_RR = 1.5            // shared floor across all strategies
-const TREND_EMA_PERIOD = 89   // regime filter; EMA20 > EMA50 > EMA89 = stacked
+const TREND_EMA_PERIOD = 200  // regime filter; EMA20 > EMA50 > EMA200 = stacked
 const SLOPE_LOOKBACK = 5
 const SWING_LOOKBACK = 10     // bars of swing extreme used by pendingSetup
 
@@ -110,7 +118,7 @@ export function clampStop({ entry, rawSl, dir, atrValue, minSlAtr, maxSlAtr }) {
  * opts:
  *   pendingSetup   {boolean} park a resting order at EMA20 instead of taking
  *                  the close. Mirrors computeFibSignal's pendingSetup flag.
- *   requireStack   {boolean} require EMA20 > EMA50 > EMA89 (default true)
+ *   requireStack   {boolean} require EMA20 > EMA50 > EMA200 (default true)
  *   minSlAtr / maxSlAtr {number} override the stop band
  *   timeCapBars    {number|null} bars of patience -> time_cap_minutes
  *   timeframeMinutes {number|null} minutes per bar, for the time cap
@@ -129,20 +137,20 @@ export function computeEmaPullback(bars, timeframe, opts = {}) {
 
   const ema20s = emaSeries(bars, 20)
   const ema50s = emaSeries(bars, 50)
-  const ema89s = emaSeries(bars, TREND_EMA_PERIOD)
+  const trendEmaSeries = emaSeries(bars, TREND_EMA_PERIOD)
   const i = bars.length - 1
   const bar = bars[i]
   const ema20 = ema20s[i]
   const ema50 = ema50s[i]
-  const ema89 = ema89s[i]
+  const trendEma = trendEmaSeries[i]
   if (ema20 == null || ema50 == null) return null
-  if (requireStack && ema89 == null) return null
+  if (requireStack && trendEma == null) return null
 
   const a = atr(bars, ATR_PERIOD)
   if (!(a > 0)) return null // ATR must be available - flat data is untradeable
 
-  const upTrend = ema20 > ema50 && (!requireStack || ema50 > ema89)
-  const downTrend = ema20 < ema50 && (!requireStack || ema50 < ema89)
+  const upTrend = ema20 > ema50 && (!requireStack || ema50 > trendEma)
+  const downTrend = ema20 < ema50 && (!requireStack || ema50 < trendEma)
 
   let bias = null
   if (pendingSetup) {
@@ -201,7 +209,7 @@ export function computeEmaPullback(bars, timeframe, opts = {}) {
     conviction = Math.min(conviction, 10)
   }
 
-  const stackNote = requireStack ? ' with EMA89 stacked beyond' : ''
+  const stackNote = requireStack ? ` with EMA${TREND_EMA_PERIOD} stacked beyond` : ''
   const direction = bias === 'long' ? 'Uptrend' : 'Downtrend'
   const thesis = pendingSetup
     ? `${direction} on ${timeframe} (EMA20 ${bias === 'long' ? 'above' : 'below'} EMA50${stackNote}). Resting order parked at the EMA20 line, stop beyond the 10-bar swing, targets at 2R and 3R.`
