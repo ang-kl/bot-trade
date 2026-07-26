@@ -9,7 +9,17 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   regimeBlocks, checkRegimeGate, latestRegime, loadRegimeGateConfig, DEFAULT_REGIME_GATE,
+  STRATEGY_KIND,
 } from './regime-gate.js'
+import { STRATEGY_KEYS } from './strategies.js'
+
+test('every registered strategy has a regime kind — an unregistered one gates nothing', () => {
+  // fib_confluence and va_breakout shipped without an entry here, so both
+  // fired unblocked in every regime until this test caught it. Unknown
+  // strategy -> checkRegimeGate's fail-open branch, silently.
+  const missing = STRATEGY_KEYS.filter(k => !(k in STRATEGY_KIND))
+  assert.deepEqual(missing, [])
+})
 
 test('config default on; toggle off respected', () => {
   const db = initDB(':memory:')
