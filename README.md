@@ -60,7 +60,8 @@ node --test "agent/**/*.test.js"           # agent test suite
 
 | Var | Where | Purpose |
 |---|---|---|
-| `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) |
+| `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) — full tier: authorizes every route, including orders/closes/config writes |
+| `AGENT_SECRET_READ` | agent | Optional (D12, 2026-07-27): a second, lower-privilege bearer token that only authorizes `GET` (read-only/dashboard) routes — never an order, amend, close, or config write. Unset by default; every route behaves exactly as before until this is set. Safer to embed in a public build (`VITE_AGENT_SECRET_READ`) than the full secret, since a leak only exposes account data, not control. |
 | `CLAUDE_API_KEY` | agent + Vercel | Claude API — position monitor / weekend checks only |
 | `ANTHROPIC_MODEL` | agent | Optional model override for those checks |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
