@@ -136,6 +136,31 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
   }
 }
 
+// P10: read-back of the C++ tick-level ratchet (GET /trail-status) so Node
+// can journal each ratchet as a position_event — the sidecar itself must
+// never write the DB directly. js mode / a disabled trail engine both
+// return {enabled:false} rather than throwing; the caller (profit-keeper's
+// pass) treats that as "nothing to diff".
+export async function getTrailStatus(creds, { timeoutMs = 5_000 } = {}) {
+  if (execEngineMode() !== 'cpp') return { enabled: false }
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    await ensureSidecarSession(creds)
+    const res = await fetch(execBase() + '/trail-status', {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
+    })
+    const body = await res.json().catch(() => null)
+    if (!res.ok || !body) return { enabled: false }
+    return body
+  } catch {
+    return { enabled: false }
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 // Bracket guarantee, engine-agnostic (item #4). The C++ core enforces this
 // too, but the DEFAULT js path went straight to the broker — so this is the
 // parity guard: a MARKET order with no stop attached is a naked position and

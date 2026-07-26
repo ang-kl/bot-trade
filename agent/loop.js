@@ -26,6 +26,7 @@ import { managePendingOrders } from './services/pending-orders.js'
 import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
+import { recordPositionEvent } from './services/position-events.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
@@ -915,7 +916,7 @@ export function mayCloseDbOnlyAfterSkip(reason) {
   return reason === 'ctrader_not_configured'
 }
 
-export async function executeBrokerAction(db, s, pos, eval_) {
+export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
   const accessToken = getState(db, 'ctrader_access_token')
@@ -950,6 +951,11 @@ export async function executeBrokerAction(db, s, pos, eval_) {
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       if (res.alreadyClosed) return { closedRemotely: true, summary: 'already_closed' }
       s.updatePositionSl.run(eval_.newSL, pos.id)
+      recordPositionEvent(db, {
+        accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+        kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: eval_.newSL,
+        reason: eval_.reason, source,
+      })
       return { summary: `SL → ${Number(eval_.newSL).toFixed(5)}` }
     }
 
@@ -982,6 +988,10 @@ export async function executeBrokerAction(db, s, pos, eval_) {
         closeTradeRow(db, pos.trade_id, { exitPrice: closePrice, closeReason: eval_.reason || 'position_manager', grossPnl, netPnl })
       }
       s.closePosition.run('closed', pos.id)
+      recordPositionEvent(db, {
+        accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+        kind: 'close', priceAt: closePrice, reason: eval_.reason || 'position_manager', source,
+      })
       return { closedRemotely: true, summary: res.alreadyClosed ? 'already_closed' : `closed @ ${closePrice ?? '?'}` }
     }
 
@@ -1020,6 +1030,10 @@ export async function executeBrokerAction(db, s, pos, eval_) {
       try {
         db.prepare('UPDATE monitored_positions SET broker_volume_units = NULL WHERE id = ?').run(pos.id)
       } catch { /* watch column optional */ }
+      recordPositionEvent(db, {
+        accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+        kind: 'scale_out', toValue: closeUnits, reason: eval_.reason, source,
+      })
 
       // Move SL for the runner leg (skip if newSL is null / same as current).
       if (eval_.newSL != null && eval_.newSL !== pos.current_sl) {
@@ -1028,7 +1042,14 @@ export async function executeBrokerAction(db, s, pos, eval_) {
           stopLoss: eval_.newSL,
         })
         setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-        if (!amendRes.alreadyClosed) s.updatePositionSl.run(eval_.newSL, pos.id)
+        if (!amendRes.alreadyClosed) {
+          s.updatePositionSl.run(eval_.newSL, pos.id)
+          recordPositionEvent(db, {
+            accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+            kind: 'sl_moved', fromValue: pos.current_sl ?? null, toValue: eval_.newSL,
+            reason: `${eval_.reason} | runner leg`, source,
+          })
+        }
       }
       return { summary: `closed ${(fraction * 100).toFixed(0)}% · runner ${remainingLots.toFixed(2)}L` }
     }
@@ -2079,7 +2100,7 @@ async function runLoop(db) {
             // (profit-keeper, trade-guards, this very monitor) ever looked at
             // it again. Route through the same executeBrokerAction the
             // deterministic path uses so the broker position actually closes.
-            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning })
+            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'weekend_watch')
             if (outcome.error) {
               log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
             } else if (outcome.skipped) {
@@ -2186,7 +2207,7 @@ async function runLoop(db) {
           log(`EQUITY STOP: today's PnL ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} — closing ${botPositions.length} position(s), autotrade disarmed`)
           for (const pos of botPositions) {
             try {
-              const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: 'equity_stop_daily_drawdown' })
+              const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: 'equity_stop_daily_drawdown' }, 'equity_stop')
               s.updatePositionCheck.run(
                 'EQUITY_STOP',
                 `daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} | ${outcome.error || outcome.summary || outcome.reason || 'closed'}`,
@@ -2392,7 +2413,9 @@ async function runLoop(db) {
       const d4 = db.prepare('DELETE FROM risk_events WHERE created_at < ?').run(cutoff90d)
       const { pruneDecisionLog } = await import('./services/decision-log.js')
       const d5 = pruneDecisionLog(db)
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions`)
+      const { prunePositionEvents } = await import('./services/position-events.js')
+      const d6 = prunePositionEvents(db)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events`)
     } catch (err) {
       log('Housekeeping error:', err.message)
     }

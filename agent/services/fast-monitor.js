@@ -187,7 +187,7 @@ export async function runFastMonitor(db, creds, deps = {}) {
           s.updatePositionCheck.run('FAST:HOLD', eval_.reason, new Date().toISOString(), 'intact', pos.id)
           continue
         }
-        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_)
+        const outcome = await loopMod.executeBrokerAction(db, s, pos, eval_, 'fast_monitor')
         acted++
         const summary = outcome.error
           ? `${eval_.reason} | broker_error: ${outcome.error}`
