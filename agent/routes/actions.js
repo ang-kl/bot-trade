@@ -16,6 +16,7 @@ import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.j
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { setStage } from '../services/stage-matrix.js'
+import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
@@ -899,6 +900,30 @@ export default function actionsRouter(db) {
     return (rec.position || []).find(p => String(p.positionId) === String(positionId)) || null
   }
 
+  // P2 manual-route bookkeeping. These two routes wrote NOTHING before, so
+  // the ledger could not tell that an add or a reverse had ever happened —
+  // and the dedup window has nothing to read without a record. action_log is
+  // the existing generic sink; a purpose-built table is P10's job.
+  const MANUAL_ROUTE_PATH = '/manual-position'
+  function logManualCall(db_, route, positionId, detail) {
+    try {
+      db_.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+        'MANUAL', MANUAL_ROUTE_PATH,
+        JSON.stringify({ route, positionId: positionId != null ? String(positionId) : null, at: Date.now(), ...detail }).slice(0, 2000),
+      )
+    } catch { /* audit best-effort — never blocks the action */ }
+  }
+  /** The recent manual calls the dedup window reads, newest first. */
+  function recentManualCalls(db_, limit = 20) {
+    try {
+      return db_.prepare(
+        `SELECT body FROM action_log WHERE method = 'MANUAL' AND path = ? ORDER BY id DESC LIMIT ?`
+      ).all(MANUAL_ROUTE_PATH, limit).map(r => {
+        try { return JSON.parse(r.body) } catch { return null }
+      }).filter(Boolean).filter(r => r.sending || r.placed || r.reversed)
+    } catch { return [] }
+  }
+
   // POST /actions/position-protect — set/replace the broker-native SL and/or
   // TP on ONE position. Body: { positionId, sl?, tp? } (absolute prices).
   router.post('/position-protect', async (req, res) => {
@@ -1149,18 +1174,51 @@ export default function actionsRouter(db) {
     }
   })
 
-  // POST /actions/position-double — open a second market position, same
-  // symbol/side/size as the given one. Body: { positionId }
+  // POST /actions/position-double — ADD to an existing position: same
+  // symbol/side/size. Body: { positionId }
+  //
+  // P2 / audit F-L5-02, F-L5-03, F-L5-08. This route used to place a second
+  // market order with `allowNaked: true`, write NOTHING to the DB, and apply
+  // NO CAP — no counter, no check, before or after send. risk.js's
+  // duplicate_symbol veto does not cover it: that veto lives in the strategy
+  // gate, not here. Three guards now stand in front of the broker call, all
+  // decided in services/manual-position-guards.js so each is a test:
+  //   · the add cap, counted from BROKER TRUTH so a hand-placed add in the
+  //     cTrader app counts against it too;
+  //   · an inherited stop — the parent's stop PRICE, one level for the whole
+  //     exposure. A parent with no stop is refused rather than added to naked;
+  //   · a dedup window, because a client retry after a timeout was taking two.
+  // The action is recorded either way, so the ledger stops being blind to it.
   router.post('/position-double', async (req, res) => {
     try {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
-      const pos = await findLivePosition(creds, positionId)
+
+      const guards = loadManualGuards(db)
+      const dupe = isDuplicateCall(recentManualCalls(db), { route: 'position-double', positionId }, Date.now(), guards)
+      if (dupe.duplicate) return res.status(409).json({ error: dupe.reason })
+
+      const rec = await execReconcile(creds)
+      const positions = rec.position || []
+      const pos = positions.find(p => String(p.positionId) === String(positionId)) || null
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker` })
+
+      const cap = checkAddCap(positions, pos, guards)
+      if (!cap.ok) {
+        logManualCall(db, 'position-double', positionId, { refused: cap.reason, existing: cap.existing })
+        return res.status(409).json({ error: cap.reason })
+      }
+      const bracket = inheritedBracket(pos, guards)
+      if (!bracket.ok) {
+        logManualCall(db, 'position-double', positionId, { refused: bracket.reason })
+        return res.status(409).json({ error: bracket.reason })
+      }
+
       const td = pos.tradeData || {}
       const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
+      logManualCall(db, 'position-double', positionId, { sending: true, volume: td.volume, stopLoss: bracket.stopLoss })
       const exec = await execPlaceOrder(creds, {
         ctidTraderAccountId: parseInt(creds.accountId),
         symbolId: parseInt(td.symbolId),
@@ -1169,29 +1227,60 @@ export default function actionsRouter(db) {
         volume: td.volume,
         comment: 'abot-double',
         label,
-        // Intentionally replicates an existing manual position's size with no
-        // fresh stop — exempt from the naked-market bracket guard.
-        allowNaked: true,
+        // The add inherits the parent's protection instead of going out naked.
+        stopLoss: bracket.stopLoss,
+        ...(bracket.takeProfit != null ? { takeProfit: bracket.takeProfit } : {}),
       })
-      res.json({ ok: true, doubledFrom: positionId, newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
+      const newPositionId = exec?.position?.positionId ?? exec?.deal?.positionId ?? null
+      logManualCall(db, 'position-double', positionId, { placed: true, newPositionId, stopLoss: bracket.stopLoss })
+      res.json({ ok: true, doubledFrom: positionId, newPositionId, stopLoss: bracket.stopLoss, existingBefore: cap.existing })
     } catch (err) {
+      try { logManualCall(db, 'position-double', req.body?.positionId, { failed: err.message }) } catch { /* audit only */ }
       res.status(502).json({ error: err.message })
     }
   })
 
   // POST /actions/position-reverse — close the position and open the same
   // size in the OPPOSITE direction. Body: { positionId }
+  //
+  // P2 / audit F-L5-01, F-L5-08. Two legs, and the second one used to go out
+  // naked (`allowNaked: true`). Worse, a leg-two rejection left the account
+  // FLAT with the thesis abandoned and a 502 body as the only record anywhere.
+  // Now: a dedup window in front, a MIRRORED bracket on the new leg (the
+  // parent's own stop and target distances, flipped), and — the part that
+  // matters — an explicit, loud record when leg one succeeded and leg two did
+  // not, because that is the state a human must know about immediately.
+  //
+  // The flat window between the legs is inherent to close-then-open and is
+  // NOT closed here; shrinking it needs a venue-side single-order reverse,
+  // which is not verified from this repo.
   router.post('/position-reverse', async (req, res) => {
+    const { positionId } = req.body || {}
+    let closed = false
     try {
       const creds = getCtraderCreds(db)
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const { positionId } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
+
+      const guards = loadManualGuards(db)
+      const dupe = isDuplicateCall(recentManualCalls(db), { route: 'position-reverse', positionId }, Date.now(), guards)
+      if (dupe.duplicate) return res.status(409).json({ error: dupe.reason })
+
       const pos = await findLivePosition(creds, positionId)
       if (!pos) return res.status(404).json({ error: `position ${positionId} not found at the broker` })
       const td = pos.tradeData || {}
       const wasSell = td.tradeSide === 2 || td.tradeSide === 'SELL'
+
+      const mirror = mirroredBracket(pos, guards)
+      if (!mirror.ok) {
+        logManualCall(db, 'position-reverse', positionId, { refused: mirror.reason })
+        return res.status(409).json({ error: mirror.reason })
+      }
+
+      logManualCall(db, 'position-reverse', positionId, { sending: true, volume: td.volume, newSide: wasSell ? 'BUY' : 'SELL' })
       await execClosePosition(creds, { positionId: parseInt(positionId), volume: td.volume })
+      closed = true
+
       const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
       const exec = await execPlaceOrder(creds, {
         ctidTraderAccountId: parseInt(creds.accountId),
@@ -1201,12 +1290,43 @@ export default function actionsRouter(db) {
         volume: td.volume,
         comment: 'abot-reverse',
         label,
-        // Mirrors an existing manual position's size in the opposite direction
-        // with no fresh stop — exempt from the naked-market bracket guard.
-        allowNaked: true,
+        // Mirrored protection instead of a naked leg: the parent's own stop
+        // and target distances, applied to the opposite side.
+        ...(mirror.slDistance != null ? { relativeStopLoss: Math.round(mirror.slDistance * 100000) } : {}),
+        ...(mirror.tpDistance != null ? { relativeTakeProfit: Math.round(mirror.tpDistance * 100000) } : {}),
       })
-      res.json({ ok: true, reversedFrom: positionId, newSide: wasSell ? 'BUY' : 'SELL', newPositionId: exec?.position?.positionId ?? exec?.deal?.positionId ?? null })
+      const newPositionId = exec?.position?.positionId ?? exec?.deal?.positionId ?? null
+      logManualCall(db, 'position-reverse', positionId, { reversed: true, newPositionId })
+      res.json({ ok: true, reversedFrom: positionId, newSide: wasSell ? 'BUY' : 'SELL', newPositionId })
     } catch (err) {
+      // The half-done case is the one worth shouting about: the old position
+      // is gone and the new one never opened, so the account is FLAT and
+      // nothing else in the system knows the thesis was abandoned.
+      const halfDone = closed
+      try {
+        logManualCall(db, 'position-reverse', positionId, halfDone
+          ? { LEG_TWO_FAILED: err.message, accountFlat: true }
+          : { failed: err.message })
+      } catch { /* audit only */ }
+      if (halfDone) {
+        try {
+          persistRiskEvent(db, { symbol: null, side: null }, {
+            approved: false,
+            veto_reason: `reverse_leg_two_failed: position ${positionId} was CLOSED and the reversed leg did NOT open (${err.message}) — the account is flat on this symbol and the thesis is abandoned`,
+          })
+        } catch { /* audit only */ }
+        if (process.env.TELEGRAM_BOT_TOKEN) {
+          try {
+            const { sendMessage } = await import('../services/telegram.js')
+            await sendMessage(`🛑 REVERSE HALF-DONE: position ${positionId} was closed but the reversed leg did NOT open — ${err.message}. You are FLAT on this symbol. Re-enter by hand if the thesis still holds.`)
+          } catch { /* non-fatal */ }
+        }
+        return res.status(502).json({
+          error: `reverse_leg_two_failed: closed ${positionId}, reversed leg did NOT open — ${err.message}`,
+          accountFlat: true,
+          closed: true,
+        })
+      }
       res.status(502).json({ error: err.message })
     }
   })
