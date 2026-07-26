@@ -21,6 +21,7 @@ import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
+import { recordPositionEvent } from '../services/position-events.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -938,9 +939,26 @@ export default function actionsRouter(db) {
       if (args.stopLoss == null && args.takeProfit == null) {
         return res.status(400).json({ error: 'sl or tp (absolute price) is required' })
       }
+      const before = db.prepare(
+        `SELECT mp.id, mp.trade_id, mp.account_id, mp.symbol, mp.current_sl, mp.current_tp
+         FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId)) || null
       await execAmendPosition(creds, args)
       db.prepare("UPDATE monitored_positions SET current_sl = COALESCE(?, current_sl), current_tp = COALESCE(?, current_tp) WHERE trade_id IN (SELECT id FROM trades WHERE ctrader_position_id = ?) AND status = 'active'")
         .run(args.stopLoss ?? null, args.takeProfit ?? null, String(positionId))
+      if (before && args.stopLoss != null) {
+        recordPositionEvent(db, {
+          accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
+          kind: 'sl_moved', fromValue: before.current_sl, toValue: args.stopLoss, source: 'manual',
+        })
+      }
+      if (before && args.takeProfit != null) {
+        recordPositionEvent(db, {
+          accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
+          kind: 'tp_moved', fromValue: before.current_tp, toValue: args.takeProfit, source: 'manual',
+        })
+      }
       res.json({ ok: true, positionId, sl: args.stopLoss ?? null, tp: args.takeProfit ?? null })
     } catch (err) {
       res.status(502).json({ error: err.message })
@@ -1136,7 +1154,17 @@ export default function actionsRouter(db) {
         volume = Math.min(volume, Math.round(Number(lots) * meta.lotSize))
       }
       const exec = await execClosePosition(creds, { positionId: parseInt(positionId), volume })
-      res.json({ ok: true, positionId, closedVolume: volume, partial: volume < (pos.tradeData?.volume ?? volume), deal: exec.deal ?? null })
+      const partial = volume < (pos.tradeData?.volume ?? volume)
+      const local = db.prepare(
+        `SELECT mp.trade_id, mp.account_id FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId)) || null
+      recordPositionEvent(db, {
+        accountId: local?.account_id ?? creds.accountId, positionId, tradeId: local?.trade_id,
+        symbol: pos.symbolName || null, kind: partial ? 'scale_out' : 'close',
+        toValue: volume, source: 'manual',
+      })
+      res.json({ ok: true, positionId, closedVolume: volume, partial, deal: exec.deal ?? null })
     } catch (err) {
       res.status(502).json({ error: err.message })
     }
@@ -1163,6 +1191,15 @@ export default function actionsRouter(db) {
         try {
           const exec = await execClosePosition(creds, { positionId: parseInt(p.positionId), volume: td.volume })
           closed.push({ positionId: p.positionId, symbol: p.symbolName || null, volume: td.volume, deal: exec.deal ?? null })
+          const local = db.prepare(
+            `SELECT mp.trade_id, mp.account_id FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+             WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+          ).get(String(p.positionId)) || null
+          recordPositionEvent(db, {
+            accountId: local?.account_id ?? creds.accountId, positionId: p.positionId, tradeId: local?.trade_id,
+            symbol: p.symbolName || null, kind: 'close', toValue: td.volume,
+            reason: 'close_all', source: 'manual',
+          })
         } catch (err) {
           failures.push({ positionId: p.positionId, symbol: p.symbolName || null, error: err.message })
         }
@@ -1233,6 +1270,11 @@ export default function actionsRouter(db) {
       })
       const newPositionId = exec?.position?.positionId ?? exec?.deal?.positionId ?? null
       logManualCall(db, 'position-double', positionId, { placed: true, newPositionId, stopLoss: bracket.stopLoss })
+      recordPositionEvent(db, {
+        accountId: creds.accountId, positionId, symbol: pos.symbolName || null,
+        kind: 'position_added', toValue: td.volume, reason: `new leg ${newPositionId}`,
+        source: 'manual', detail: { newPositionId, stopLoss: bracket.stopLoss },
+      })
       res.json({ ok: true, doubledFrom: positionId, newPositionId, stopLoss: bracket.stopLoss, existingBefore: cap.existing })
     } catch (err) {
       try { logManualCall(db, 'position-double', req.body?.positionId, { failed: err.message }) } catch { /* audit only */ }
@@ -1277,9 +1319,19 @@ export default function actionsRouter(db) {
         return res.status(409).json({ error: mirror.reason })
       }
 
+      const local = db.prepare(
+        `SELECT mp.trade_id, mp.account_id FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
+      ).get(String(positionId)) || null
+
       logManualCall(db, 'position-reverse', positionId, { sending: true, volume: td.volume, newSide: wasSell ? 'BUY' : 'SELL' })
       await execClosePosition(creds, { positionId: parseInt(positionId), volume: td.volume })
       closed = true
+      recordPositionEvent(db, {
+        accountId: local?.account_id ?? creds.accountId, positionId, tradeId: local?.trade_id,
+        symbol: pos.symbolName || null, kind: 'close', toValue: td.volume,
+        reason: 'reverse_leg_one', source: 'manual',
+      })
 
       const label = encodeLabel({ source: 'manual', version: LABEL_VERSION, strategy: 'manual', session: getActiveSessions()[0]?.label || 'Off' })
       const exec = await execPlaceOrder(creds, {
@@ -1297,6 +1349,11 @@ export default function actionsRouter(db) {
       })
       const newPositionId = exec?.position?.positionId ?? exec?.deal?.positionId ?? null
       logManualCall(db, 'position-reverse', positionId, { reversed: true, newPositionId })
+      recordPositionEvent(db, {
+        accountId: local?.account_id ?? creds.accountId, positionId: newPositionId,
+        symbol: pos.symbolName || null, kind: 'position_reversed', toValue: td.volume,
+        reason: `reversed from ${positionId}`, source: 'manual', detail: { closedPositionId: positionId },
+      })
       res.json({ ok: true, reversedFrom: positionId, newSide: wasSell ? 'BUY' : 'SELL', newPositionId })
     } catch (err) {
       // The half-done case is the one worth shouting about: the old position

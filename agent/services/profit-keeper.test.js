@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper } from './profit-keeper.js'
+import { recentPositionEvents } from './position-events.js'
 
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
 
@@ -312,4 +313,42 @@ test('runProfitKeeper pushes an EMPTY set when nothing is armed (clears stale tr
   deps.exec.pushTrailConfig = async (_creds, specs) => { pushed = specs; return true }
   await runProfitKeeper(db, CREDS, deps)
   assert.ok(Array.isArray(pushed) && pushed.length === 0)
+})
+
+// ---- P10: journal what the C++ TrailEngine actually ratcheted -------------
+
+test('runProfitKeeper journals a NEW trail-status SL as a position_event, and only once', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async () => true
+  deps.exec.getTrailStatus = async () => ({
+    enabled: true,
+    positions: [{ positionId: 9001, symbolId: 1, lastSl: 2.7 }],
+  })
+  await runProfitKeeper(db, CREDS, deps)
+  const rows = recentPositionEvents(db, { positionId: '9001' })
+  const trailRows = rows.filter(r => r.kind === 'trail_tightened')
+  assert.equal(trailRows.length, 1)
+  assert.equal(trailRows[0].to_value, 2.7)
+  assert.equal(trailRows[0].source, 'cpp_trail_engine')
+
+  // Second pass with the SAME lastSl — no new event (the diff must be a no-op).
+  await runProfitKeeper(db, CREDS, deps)
+  const rows2 = recentPositionEvents(db, { positionId: '9001' })
+  assert.equal(rows2.filter(r => r.kind === 'trail_tightened').length, 1)
+})
+
+test('runProfitKeeper never throws when getTrailStatus is unavailable or disabled', async () => {
+  const db = mkKeeperDb()
+  const deps = keeperDeps()
+  deps.exec.amendPosition = async () => ({})
+  deps.exec.pushTrailConfig = async () => true
+  const out = await runProfitKeeper(db, CREDS, deps) // no getTrailStatus on deps.exec at all
+  assert.equal(out.errors.length, 0)
+
+  deps.exec.getTrailStatus = async () => ({ enabled: false })
+  const out2 = await runProfitKeeper(db, CREDS, deps)
+  assert.equal(out2.errors.length, 0)
+  assert.equal(recentPositionEvents(db, { positionId: '9001' }).filter(r => r.kind === 'trail_tightened').length, 0)
 })

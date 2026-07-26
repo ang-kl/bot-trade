@@ -40,6 +40,14 @@ import { getState } from '../db.js'
 import { instrumentType } from '../lib/contracts.js'
 import { getAccountBalance } from './risk.js'
 import { roundToDigits } from './trade-guard.js'
+import { recordPositionEvent } from './position-events.js'
+
+// P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
+// GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
+// so a NEW ratchet becomes exactly one position_event — in-memory only, so a
+// process restart can at worst re-log one ratchet as if it were new, never
+// lose one silently.
+const lastSeenTrailSl = new Map()
 
 export const DEFAULT_PROFIT_KEEPER = {
   on: true,               // manual positions are managed by default — disarm for hands-off
@@ -207,7 +215,7 @@ export async function runProfitKeeper(db, creds, deps = {}) {
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.peak_profit_usd,
-              mp.scaled_out, t.ctrader_position_id AS position_id
+              mp.scaled_out, mp.trade_id, mp.account_id, t.ctrader_position_id AS position_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
@@ -317,6 +325,11 @@ export async function runProfitKeeper(db, creds, deps = {}) {
           updAct.run(null, 'profit_keeper_close', r.id)
           summary.closes++
           notify(`💰 Profit Keeper closed ${r.symbol} (${r.side}) at ~${price}: ${decision.action.reason}`)
+          recordPositionEvent(db, {
+            accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
+            symbol: r.symbol, kind: 'close', priceAt: price,
+            reason: decision.action.reason, source: 'profit_keeper',
+          })
         } catch (err) { summary.errors.push(`${r.symbol} close: ${err.message}`) }
         continue
       }
@@ -329,6 +342,11 @@ export async function runProfitKeeper(db, creds, deps = {}) {
             updAct.run(null, 'profit_keeper_scaleout', r.id)
             summary.scaleOuts++
             notify(`💰 Profit Keeper banked ${Math.round(decision.action.scaleOutFrac * 100)}% of ${r.symbol} at ~${price} — the rest runs with the trail`)
+            recordPositionEvent(db, {
+              accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
+              symbol: r.symbol, kind: 'scale_out', toValue: vol, priceAt: price,
+              reason: `scaleOutFrac ${decision.action.scaleOutFrac}`, source: 'profit_keeper',
+            })
           } catch (err) { summary.errors.push(`${r.symbol} scale-out: ${err.message}`) }
         }
       }
@@ -338,6 +356,13 @@ export async function runProfitKeeper(db, creds, deps = {}) {
           updAct.run(decision.action.sl, 'profit_keeper_lock', r.id)
           summary.slMoves++
           notify(`🔒 Profit Keeper: ${r.symbol} SL ratcheted to ${decision.action.sl}${decision.action.lockUsd != null ? ` (locks ~$${decision.action.lockUsd})` : ''}${decision.action.spike ? ' — spike detected, trail tightened' : ''}`)
+          recordPositionEvent(db, {
+            accountId: r.account_id, positionId: r.position_id, tradeId: r.trade_id,
+            symbol: r.symbol, kind: 'sl_moved',
+            fromValue: bp.stopLoss ?? r.current_sl ?? null, toValue: decision.action.sl,
+            priceAt: price, reason: decision.action.spike ? 'spike_tighten' : 'chandelier_ratchet',
+            source: 'profit_keeper',
+          })
         } catch (err) {
           summary.errors.push(`${r.symbol} SL: ${err.message}`)
           // Broker refused the stop (too close to market?) — retried next
@@ -350,6 +375,33 @@ export async function runProfitKeeper(db, creds, deps = {}) {
     try {
       summary.trailPushed = exec.pushTrailConfig && await exec.pushTrailConfig(creds, trailSpecs) ? trailSpecs.length : null
     } catch { summary.trailPushed = null }
+
+    // P10: read back what the sidecar actually ratcheted to and journal any
+    // change since the last pass. Best-effort — getTrailStatus never throws
+    // (returns {enabled:false} on any failure) and a diff miss just means the
+    // next pass catches it.
+    try {
+      if (exec.getTrailStatus) {
+        const byPositionId = new Map(involved.map(x => [String(x.r.position_id), x.r]))
+        const status = await exec.getTrailStatus(creds)
+        if (status?.enabled && Array.isArray(status.positions)) {
+          for (const p of status.positions) {
+            if (p?.positionId == null || !(p.lastSl > 0)) continue
+            const key = String(p.positionId)
+            const prev = lastSeenTrailSl.get(key)
+            lastSeenTrailSl.set(key, p.lastSl)
+            if (prev === p.lastSl) continue // unchanged since the last pass — nothing to journal
+            const r = byPositionId.get(key)
+            if (!r) continue
+            recordPositionEvent(db, {
+              accountId: r.account_id, positionId: key, tradeId: r.trade_id, symbol: r.symbol,
+              kind: 'trail_tightened', fromValue: prev, toValue: p.lastSl,
+              source: 'cpp_trail_engine',
+            })
+          }
+        }
+      }
+    } catch { /* diagnostic only — never blocks the keeper */ }
 
     if (summary.slMoves || summary.closes || summary.scaleOuts) {
       try {

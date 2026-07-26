@@ -379,6 +379,34 @@ const TABLES = `
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- P10 (2026-07-26): the tweak journal's only recoverable source.
+  -- monitored_positions keeps current flags (be_moved, scaled_out) and the
+  -- LATEST review, not a timeline; action_log is a generic HTTP log;
+  -- decision_log covers decisions upstream of the risk gate, not amendments
+  -- to a live position. This table is that timeline. Written by
+  -- services/position-events.js; never blocks trading (see that module's
+  -- header for the non-throwing contract, mirroring decision_log).
+  CREATE TABLE IF NOT EXISTS position_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           TEXT NOT NULL DEFAULT (datetime('now')),
+    account_id   TEXT,
+    position_id  TEXT,               -- broker position id (ctrader_position_id)
+    trade_id     INTEGER REFERENCES trades(id),
+    symbol       TEXT NOT NULL,
+    kind         TEXT NOT NULL,      -- sl_moved | tp_moved | scale_out | close
+                                      -- | trail_armed | trail_tightened
+                                      -- | lot_trimmed | paused | resumed
+    from_value   REAL,
+    to_value     REAL,
+    r_at         REAL,               -- R at the moment of the event
+    price_at     REAL,
+    reason       TEXT,               -- human sentence, same discipline as decision_log
+    source       TEXT,               -- profit_keeper | position_manager | cpp_trail_engine
+                                      -- | manual | session_open_guard | weekend_watch
+                                      -- | equity_stop | fast_monitor
+    detail_json  TEXT
+  );
+
   -- Broker deal history, imported from cTrader's own record (owner
   -- 2026-07-25: read historical trades). DELIBERATELY NOT the 'trades'
   -- table: perf-ledger, edge-health, the metrics snapshot and the lessons
@@ -418,6 +446,8 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_broker_deals_position   ON broker_deals(position_id);
   CREATE INDEX IF NOT EXISTS idx_decision_log_at        ON decision_log (created_at);
   CREATE INDEX IF NOT EXISTS idx_decision_log_sym_stage ON decision_log (symbol, stage, created_at);
+  CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id, at);
+  CREATE INDEX IF NOT EXISTS idx_position_events_at     ON position_events(at);
   CREATE INDEX IF NOT EXISTS idx_scans_symbol_at        ON scans   (symbol, scanned_at);
   CREATE INDEX IF NOT EXISTS idx_analyses_symbol_at     ON analyses(symbol, analyzed_at);
   CREATE INDEX IF NOT EXISTS idx_signals_symbol_at      ON signals (symbol, recorded_at);

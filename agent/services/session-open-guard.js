@@ -114,7 +114,7 @@ export async function runSessionOpenGuard(db, creds, deps = {}) {
       if (!tightens) continue
 
       const reason = `session_open_guard: ${sess.label} opened ${sess.openedAgoMin}m ago at +${r.toFixed(2)}R — SL locked to breakeven`
-      const outcome = await loopMod.executeBrokerAction(db, s, pos, { action: 'MOVE_SL', newSL, reason })
+      const outcome = await loopMod.executeBrokerAction(db, s, pos, { action: 'MOVE_SL', newSL, reason }, 'session_open_guard')
       if (!outcome.error) {
         s.updatePositionCheck.run('GUARD:BE', reason, new Date(now()).toISOString(), 'intact', pos.id)
         locked++
