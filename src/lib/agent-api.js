@@ -79,11 +79,39 @@ export function agentConfigured() {
   return Boolean(c.base && c.secret)
 }
 
+// POSTs that only READ. They take no side effect on the account, so it is
+// safe to give up waiting on them (and safe for the caller to ask again).
+// Everything else — close, arm, amend, config writes — is deliberately NOT
+// here: abandoning an order action tells the UI "it failed" for a request the
+// agent may still be executing, and a retry could double-submit.
+const READ_ONLY_POSTS = new Set([
+  '/actions/broker-positions',
+  '/actions/broker-history',
+  '/actions/ctrader-accounts',
+  '/actions/balance',
+  '/actions/position-guard-get',
+  '/actions/chart',
+])
+
+// Generous on purpose: a cold /actions/broker-positions snapshot costs ~6 WS
+// handshakes (~20s), and the agent's own loop pass has been measured at 127s
+// of synchronous work, during which it answers nothing. This bounds the wait
+// so a phone doesn't sit on a dead socket — it is not a latency target.
+const READ_TIMEOUT_MS = 45_000
+
+function isIdempotent(method, path) {
+  if (method === 'GET') return true
+  return READ_ONLY_POSTS.has(String(path).split('?')[0])
+}
+
 async function request(method, path, body) {
   const c = getAgentConn()
   if (!c.base || !c.secret) {
     throw new Error('Agent not connected — set the URL and secret on the Connect tab')
   }
+  const safe = isIdempotent(method, path)
+  const ctrl = safe && typeof AbortController !== 'undefined' ? new AbortController() : null
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS) : null
   let res
   try {
     res = await fetch(`${c.base}${path}`, {
@@ -93,11 +121,24 @@ async function request(method, path, body) {
         authorization: `Bearer ${c.secret}`,
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl ? ctrl.signal : undefined,
     })
   } catch {
-    // fetch rejects with an opaque "Failed to fetch" — say WHERE it tried,
-    // so a stale VITE_AGENT_URL (or down agent) is diagnosable from the UI.
-    throw new Error(`Agent unreachable at ${c.base} — check the URL on the Connect tab and that the agent is running`)
+    // fetch rejects with an opaque "Failed to fetch" for every network-layer
+    // failure: agent down, DNS gone, TLS refused, phone off Wi-Fi mid-request,
+    // or a reply that never arrived because the agent was mid-loop. We cannot
+    // tell those apart from here, so don't claim to — say what we know (no
+    // reply from this address) and, for non-idempotent calls, say plainly that
+    // the outcome is unknown rather than implying nothing happened.
+    if (ctrl?.signal.aborted) {
+      throw new Error(`No reply from ${c.base} within ${Math.round(READ_TIMEOUT_MS / 1000)}s (${method} ${path}) — the agent is reachable but busy. Nothing was changed; try again in a moment.`)
+    }
+    if (safe) {
+      throw new Error(`No reply from the agent at ${c.base} (${method} ${path}) — this device couldn't complete the request. Nothing was changed. If it keeps failing, check the URL on the Connect tab and that the agent is running.`)
+    }
+    throw new Error(`No reply from the agent at ${c.base} — this request may or may not have been carried out. Check the position/ledger before retrying, then verify the URL on the Connect tab and that the agent is running.`)
+  } finally {
+    if (timer) clearTimeout(timer)
   }
   if (!res.ok) {
     let msg = `${method} ${path} ${res.status}`
@@ -119,12 +160,18 @@ export const agentGet = (path) => request('GET', path)
 // in ADDITION to the caller's own error handling, not instead of it.
 // GETs stay quiet: pages poll on timers and already render their own
 // error states; toasting those would spam a red stack every poll cycle.
+// The read-only POSTs above get the same treatment for the same reason —
+// several of them fire on page load and on a poll timer (broker-positions,
+// ctrader-accounts), so a flaky connection turned them into a recurring
+// "agent unreachable" toast for a request no one clicked.
 export const agentPost = async (path, body) => {
   try {
     return await request('POST', path, body)
   } catch (e) {
-    const { toast } = await import('sonner')
-    toast.error(e.message)
+    if (!isIdempotent('POST', path)) {
+      const { toast } = await import('sonner')
+      toast.error(e.message)
+    }
     throw e
   }
 }
