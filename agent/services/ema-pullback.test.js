@@ -35,7 +35,7 @@ function withPullbackBar(base, { dir = 1, depth = 0.3 } = {}) {
 }
 
 test('uptrend pullback to EMA20 → long signal with rr 2', () => {
-  const bars = withPullbackBar(trendBars(80, 100, 0.5), { dir: 1 })
+  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
   const sig = computeEmaPullback(bars, '1h')
   assert.ok(sig, 'expected a signal')
   assert.equal(sig.bias, 'long')
@@ -57,7 +57,7 @@ test('uptrend pullback to EMA20 → long signal with rr 2', () => {
 })
 
 test('downtrend bounce to EMA20 → short signal (mirror)', () => {
-  const bars = withPullbackBar(trendBars(80, 200, -0.5), { dir: -1 })
+  const bars = withPullbackBar(trendBars(240, 200, -0.15), { dir: -1 })
   const sig = computeEmaPullback(bars, '4h')
   assert.ok(sig, 'expected a signal')
   assert.equal(sig.bias, 'short')
@@ -78,7 +78,7 @@ test('no-trend chop → null (EMA20 not above/below EMA50)', () => {
 })
 
 test('too-deep pullback (> 2*ATR under EMA20) → null', () => {
-  const base = trendBars(80, 100, 0.5)
+  const base = trendBars(240, 100, 0.15)
   const deep = 3 * atr(base, 14) // well past the 2*ATR ceiling
   const bars = withPullbackBar(base, { dir: 1, depth: deep })
   assert.equal(computeEmaPullback(bars, '1h'), null)
@@ -87,4 +87,62 @@ test('too-deep pullback (> 2*ATR under EMA20) → null', () => {
 test('too few bars → null', () => {
   const bars = withPullbackBar(trendBars(55, 100, 0.5), { dir: 1 })
   assert.equal(computeEmaPullback(bars, '1h'), null)
+})
+
+// --- New guards (2026-07 stop-integrity revision) --------------------------
+
+test('stop wider than the ATR ceiling → veto, never tightened', () => {
+  // A trend steep enough that even the dip low sits > 3*ATR under the close.
+  const bars = withPullbackBar(trendBars(240, 100, 0.5), { dir: 1 })
+  assert.equal(computeEmaPullback(bars, '1h'), null)
+})
+
+test('sub-noise structural stop is widened to the ATR floor', () => {
+  const bars = withPullbackBar(trendBars(240, 100, 0.02), { dir: 1, depth: 0.01 })
+  const sig = computeEmaPullback(bars, '1h')
+  assert.ok(sig, 'expected a signal')
+  const a = atr(bars, 14)
+  assert.ok(Math.abs((sig.entry - sig.sl) / a - 0.8) < 1e-6, 'stop pinned to the 0.8*ATR floor')
+  assert.equal(sig.sl_widened_to_floor, true)
+})
+
+test('EMA89 stack filter blocks a 20/50 cross that 89 has not confirmed', () => {
+  // Long downtrend, then a sharp rally: EMA20 crosses above EMA50 while
+  // EMA89 is still overhead. requireStack must veto; requireStack:false must not.
+  const base = trendBars(240, 200, -0.15)
+  let bars = [...base]
+  for (let i = 0; i < 25; i++) {
+    const c = bars[bars.length - 1].c + 0.6
+    bars.push({ t: bars.length, o: c - 0.6, h: c + 0.5, l: c - 0.5, c, v: 1 })
+  }
+  bars = withPullbackBar(bars, { dir: 1 })
+  const e20 = emaSeries(bars, 20).at(-1)
+  const e50 = emaSeries(bars, 50).at(-1)
+  const e89 = emaSeries(bars, 89).at(-1)
+  assert.ok(e20 > e50 && e50 < e89, 'fixture: 20>50 but 50 still below 89')
+  assert.equal(computeEmaPullback(bars, '1h'), null, 'stack filter vetoes')
+})
+
+test('pendingSetup parks the entry at EMA20, above the market', () => {
+  const bars = trendBars(240, 100, 0.15)
+  const sig = computeEmaPullback(bars, '1h', { pendingSetup: true })
+  assert.ok(sig, 'expected a pending setup')
+  assert.equal(sig.bias, 'long')
+  const e20 = emaSeries(bars, 20).at(-1)
+  assert.ok(Math.abs(sig.entry - e20) < 1e-9, 'entry sits exactly on EMA20')
+  assert.ok(sig.entry < bars.at(-1).c, 'limit price is better than the close')
+  assert.equal(sig.conviction, 8, 'pending setups take the base score only')
+  assert.equal(sig.rr, 2)
+})
+
+test('time cap is opt-in and derived from bars x timeframe minutes', () => {
+  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
+  assert.equal(computeEmaPullback(bars, '1h').time_cap_minutes, null)
+  const capped = computeEmaPullback(bars, '1h', { timeCapBars: 24, timeframeMinutes: 60 })
+  assert.equal(capped.time_cap_minutes, 1440)
+})
+
+test('thesis still matches the label-backfill signature', () => {
+  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
+  assert.match(computeEmaPullback(bars, '1h').thesis, /EMA20 (above|below) EMA50/)
 })
