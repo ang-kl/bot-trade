@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 
 namespace vpo {
 
@@ -86,12 +87,26 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     return false; // another caller already won the race this tick
   }
 
+  {
+    std::lock_guard<std::mutex> lk(outcomesMtx_);
+    outcomes_.triggered++;
+  }
+
   const double volume = volumeResolver_ ? volumeResolver_(s) : -1.0;
   if (!(volume > 0.0) || std::isnan(volume)) {
     // Sizing unavailable — refuse to fire a fabricated order. Re-arm is
     // NOT automatic here: the strategy stays FIRED until the next
     // recompute cycle re-evaluates the setup from scratch, same as a
     // rejected order would.
+    //
+    // This is a REFUSAL, and it used to look identical to a fill from
+    // outside the process. Counting it separately is the point: a tier that
+    // arms all day and never sizes is broken in a way silence hides.
+    {
+      std::lock_guard<std::mutex> lk(outcomesMtx_);
+      outcomes_.noSizing++;
+    }
+    recordOutcome(s, "no_sizing", "volumeResolver returned nothing usable");
     s.resetAfterFire();
     return true;
   }
@@ -106,9 +121,58 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
   payload.set("label", std::string("vpo:") + s.key());
 
   const EngineResult result = engine_.placeOrder(payload);
-  (void)result; // caller-side logging/telemetry hook, not this engine's concern
+  if (result.ok) {
+    std::lock_guard<std::mutex> lk(outcomesMtx_);
+    outcomes_.placed++;
+  } else {
+    std::lock_guard<std::mutex> lk(outcomesMtx_);
+    (result.brokerError ? outcomes_.rejected : outcomes_.failed)++;
+  }
+  // A broker rejection and a transport failure are different facts and are
+  // recorded as such. The old code kept neither.
+  recordOutcome(s, result.ok ? "placed" : (result.brokerError ? "rejected" : "failed"),
+                result.ok
+                    ? std::string()
+                    : result.body.get("errorCode").asString() + " " +
+                          result.body.get("description").asString());
   s.resetAfterFire();
   return true;
+}
+
+void VpoDispatcher::recordOutcome(const StrategyModule& s, const char* verdict,
+                                  const std::string& detail) {
+  const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  std::string line = std::string(s.key()) + " " + verdict;
+  if (!detail.empty()) line += ": " + detail;
+  {
+    std::lock_guard<std::mutex> lk(outcomesMtx_);
+    outcomes_.lastFireAtMs = nowMs;
+    outcomes_.lastDetail = line;
+  }
+  // stderr too: the counters answer "what happened", the log answers "when,
+  // and in what order relative to everything else the sidecar was doing".
+  std::fprintf(stderr, "[vpo] %s\n", line.c_str());
+}
+
+VpoDispatcher::Outcomes VpoDispatcher::outcomes() const {
+  std::lock_guard<std::mutex> lk(outcomesMtx_);
+  return outcomes_;
+}
+
+std::string VpoDispatcher::statusJson() const {
+  const Outcomes o = outcomes();
+  jsn::Value v{jsn::Object{}};
+  v.set("strategies", static_cast<double>(strategies_.size()));
+  v.set("triggered", static_cast<double>(o.triggered));
+  v.set("placed", static_cast<double>(o.placed));
+  v.set("rejected", static_cast<double>(o.rejected));
+  v.set("failed", static_cast<double>(o.failed));
+  v.set("noSizing", static_cast<double>(o.noSizing));
+  v.set("lastFireAt", o.lastFireAtMs > 0 ? jsn::Value(static_cast<double>(o.lastFireAtMs))
+                                         : jsn::Value(nullptr));
+  v.set("lastDetail", o.lastDetail.empty() ? jsn::Value(nullptr) : jsn::Value(o.lastDetail));
+  return jsn::dump(v);
 }
 
 void VpoDispatcher::onTick(long long symbolId, double bid, double ask) {

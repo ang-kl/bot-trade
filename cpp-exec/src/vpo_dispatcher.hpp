@@ -12,8 +12,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -70,6 +72,27 @@ public:
 
   size_t strategyCount() const { return strategies_.size(); }
 
+  // What this tier actually did. Audit F-L4-04: tryFire used to discard the
+  // EngineResult entirely — `(void)result` — so a fill, a broker rejection
+  // and a transport error were one indistinguishable non-event, and the only
+  // way Node ever learned of a fill was a later reconcile adopting it.
+  //
+  // These are the counts behind GET /vpo-status. They are deliberately
+  // outcome counts rather than a log scrape: an operator asking "has the C++
+  // tier traded today, and did anything get rejected?" should not have to
+  // read stderr to find out.
+  struct Outcomes {
+    uint64_t triggered = 0;   // trigger crossed and this caller won the CAS
+    uint64_t placed = 0;      // broker accepted the order
+    uint64_t rejected = 0;    // broker answered with an error frame
+    uint64_t failed = 0;      // transport/guard failure, no broker verdict
+    uint64_t noSizing = 0;    // refused: volumeResolver gave nothing usable
+    long long lastFireAtMs = 0;
+    std::string lastDetail;   // key + verdict of the most recent attempt
+  };
+  Outcomes outcomes() const;
+  std::string statusJson() const;
+
 private:
   void recomputeLoop(int intervalMs);
   // Attempts to fire one ARMED strategy whose trigger the tick crossed.
@@ -85,6 +108,13 @@ private:
   std::vector<std::unique_ptr<StrategyModule>> strategies_;
   std::thread recomputeThread_;
   std::atomic<bool> running_{false};
+
+  // Written on the tick thread, read by the HTTP thread. A short mutex, not
+  // atomics: lastDetail is a string, and the whole block should be read as
+  // one consistent snapshot rather than a torn mix of two attempts.
+  mutable std::mutex outcomesMtx_;
+  Outcomes outcomes_;
+  void recordOutcome(const StrategyModule& s, const char* verdict, const std::string& detail);
 };
 
 } // namespace vpo
