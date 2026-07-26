@@ -589,12 +589,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   // wherever the thumb happens to be. They sit ON the border, above the
   // rulers, and are touch-sized on handhelds.
   const CLOSE_SPOTS = [
-    { k: 'tl', style: { top: 0, left: 0 }, label: 'top left' },
-    { k: 'tr', style: { top: 0, right: 0 }, label: 'top right' },
-    { k: 'bl', style: { bottom: 0, left: 0 }, label: 'bottom left' },
-    { k: 'br', style: { bottom: 0, right: 0 }, label: 'bottom right' },
-    { k: 'ml', style: { top: '50%', left: 0, transform: 'translateY(-50%)' }, label: 'left' },
-    { k: 'mr', style: { top: '50%', right: 0, transform: 'translateY(-50%)' }, label: 'right' },
+    { k: 'tl', style: { top: 3, left: 3 }, label: 'top left' },
+    { k: 'tr', style: { top: 3, right: 3 }, label: 'top right' },
+    { k: 'bl', style: { bottom: 3, left: 3 }, label: 'bottom left' },
+    { k: 'br', style: { bottom: 3, right: 3 }, label: 'bottom right' },
+    { k: 'ml', style: { top: '50%', left: 3, transform: 'translateY(-50%)' }, label: 'left' },
+    { k: 'mr', style: { top: '50%', right: 3, transform: 'translateY(-50%)' }, label: 'right' },
   ]
   const closeDot = cfg.touch ? 34 : 24
   const borderCloses = CLOSE_SPOTS.map(c => (
@@ -610,12 +610,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   return (
     <div className="tc-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose?.() }}>
       <div ref={rootRef} tabIndex={-1} className="tc-root" data-theme={theme} role="dialog" aria-modal="true"
-        style={{ ...shellStyle, ...card, borderRadius: 18, position: 'relative', overflow: 'visible', outline: 'none', background: 'var(--bg)',
+        style={{ ...shellStyle, ...card, borderRadius: 18, position: 'relative', overflow: 'hidden', outline: 'none', background: 'var(--bg)',
           display: 'flex', flexDirection: 'column',
           ...(phoneShrink ? { transform: 'scale(0.8)', transformOrigin: 'center center' } : {}) }}>
         {rulers}
         {borderCloses}
-        <div style={{ position: 'relative', zIndex: 1, boxSizing: 'border-box', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        <div className="tc-col" style={{ position: 'relative', zIndex: 1, boxSizing: 'border-box', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 5 }}>
           {header}
           {!cfg.tabs && (
             <div style={{ display: 'grid', gridTemplateColumns: cfg.grid, gap: 6, alignItems: 'stretch' }}>

@@ -81,7 +81,9 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mk = (p, name) => { const raw = pos(p); const tag = name + ' ' + rOf(p); if (raw < 22) return { t: 22, lb: tag + ' ▲', off: true }; if (raw > 82) return { t: name === 'SL' ? 95 : 84, lb: tag + ' ▼', off: true }; return { t: raw, lb: tag, off: false } }
   const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
   const bands = [mTP, mEN, mSL].map(m => m.t)
-  const altTicks = altTicksAll.filter(tk => bands.every(b => Math.abs(tk.top - b) > 7))
+  const altTicks = altTicksAll
+    .filter(tk => bands.every(b => Math.abs(tk.top - b) > 10))
+    .filter((tk, i, arr) => i === 0 || tk.top - arr[i - 1].top >= 11)
   const hdgTicks = [[-100, 'BEAR'], [-75, ''], [-50, 'weak'], [-25, ''], [0, 'CHOP'], [25, ''], [50, 'weak'], [75, ''], [100, 'BULL']].map(([v, lb], i) => ({ v: lb || '·', left: 10 + i * 10, col: v < 0 ? 'var(--dn)' : v > 0 ? 'var(--up)' : 'var(--sb)' }))
   if (!store.hist2) {
     let s2 = 991
