@@ -25,6 +25,22 @@ public:
   // nameable against each other, even though only some are ported here.
   const std::string& key() const { return key_; }
 
+  // The MACRO timeframe label the dispatcher will hand this strategy's
+  // recompute() (VPO_MACRO_TF). order().timeframe is the MICRO one, so a
+  // macro-reading strategy had no way to know what period its bars actually
+  // covered. Rsi2ReversionStrategy needs it: its 60-minute floor is a
+  // walk-forward result, not a preference, and it was previously "enforced"
+  // only by a comment asking the deployer not to misconfigure VPO_MACRO_TF.
+  // Set by VpoDispatcher::registerStrategy, before any recompute runs.
+  void setMacroTimeframe(std::string tf) { macroTimeframe_ = std::move(tf); }
+  const std::string& macroTimeframe() const { return macroTimeframe_; }
+
+  // Minutes in a timeframe label ("15m", "4h", "1.5h", "1d", "1w", "1mo"),
+  // or 0 when unparseable. Mirrors agent/lib/timeframes.js's parseTimeframe
+  // for the shapes this engine is ever configured with; anything it cannot
+  // read returns 0, and callers decide whether that fails open or closed.
+  static double timeframeMinutes(const std::string& tf);
+
   // Called ONLY from the background recompute thread (vpo_dispatcher.hpp),
   // never from the hot tick thread. Implementations read macro/micro bars,
   // decide ARM / hold / disarm, and — when arming — set triggerPrice, side,
@@ -53,6 +69,7 @@ protected:
 private:
   std::string key_;
   VirtualPendingOrder order_;
+  std::string macroTimeframe_;
 };
 
 } // namespace vpo
