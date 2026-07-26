@@ -18,6 +18,7 @@ import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
+import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
@@ -45,6 +46,11 @@ export function evaluateCarryCost(db, proposal, maxNegative) {
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
   dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
+  // P1 / audit F-L6-06: a closed trade with NULL net_pnl is UNKNOWN, not zero.
+  // Past the grace window it blocks new entries rather than letting the
+  // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
+  blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
+  unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
   // Per-trade risk (owner: "push default risk to 5% or absolute amount").
   // Size AGGRESSIVELY on the now-proven combos, with an ALGO HARD CAP as the
   // safety layer. The effective $ budget per trade is:
@@ -551,6 +557,23 @@ export function evaluateTrade(db, proposal, configOverride) {
       checks, proposal,
     )
   }
+
+  // P1 / AUDIT F-L6-06: the sum above SKIPS NULL net_pnl (SQLite SUM) and
+  // COALESCE turns an all-NULL day into 0 — so a day of broker-side stop-outs,
+  // which close with net_pnl left NULL, reads as flat and this cap never
+  // trips. An unknown P&L is not zero; past the grace window it blocks.
+  // See services/unresolved-pnl.js for the full reasoning and the knobs.
+  const unresolved = unresolvedPnlSince(db, dayStartSql, {
+    accountId: acct,
+    graceMin: config.unknownPnlGraceMin,
+  })
+  checks.unresolved_pnl_trades = unresolved.count
+  const unknownVerdict = unknownPnlBlocks(unresolved, {
+    enabled: config.blockOnUnknownPnl,
+    graceMin: config.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+    scope: 'account',
+  })
+  if (unknownVerdict.block) return veto(unknownVerdict.reason, checks, proposal)
 
   // ---- 2. Consecutive-loss cooldown --------------------------------------
   // maxConsecutiveLosses 0 = breaker OFF (owner 2026-07-17: "cooldown pause
