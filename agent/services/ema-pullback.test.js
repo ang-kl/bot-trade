@@ -10,7 +10,8 @@ import { atr } from './fib-strategy.js'
 const K20 = 2 / 21 // EMA20 smoothing factor, used to pre-compute the final EMA
 
 // Steady trend: closes step by `slope` per bar, highs/lows a half-range
-// either side. 80 bars clears the 60-bar minimum with margin.
+// either side. 460 bars clears the 450-bar minimum (EMA200 seed decay) with
+// margin.
 function trendBars(n, start, slope, range = 1) {
   const bars = []
   for (let i = 0; i < n; i++) {
@@ -35,7 +36,7 @@ function withPullbackBar(base, { dir = 1, depth = 0.3 } = {}) {
 }
 
 test('uptrend pullback to EMA20 → long signal with rr 2', () => {
-  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
+  const bars = withPullbackBar(trendBars(460, 100, 0.15), { dir: 1 })
   const sig = computeEmaPullback(bars, '1h')
   assert.ok(sig, 'expected a signal')
   assert.equal(sig.bias, 'long')
@@ -57,7 +58,7 @@ test('uptrend pullback to EMA20 → long signal with rr 2', () => {
 })
 
 test('downtrend bounce to EMA20 → short signal (mirror)', () => {
-  const bars = withPullbackBar(trendBars(240, 200, -0.15), { dir: -1 })
+  const bars = withPullbackBar(trendBars(460, 200, -0.15), { dir: -1 })
   const sig = computeEmaPullback(bars, '4h')
   assert.ok(sig, 'expected a signal')
   assert.equal(sig.bias, 'short')
@@ -78,7 +79,7 @@ test('no-trend chop → null (EMA20 not above/below EMA50)', () => {
 })
 
 test('too-deep pullback (> 2*ATR under EMA20) → null', () => {
-  const base = trendBars(240, 100, 0.15)
+  const base = trendBars(460, 100, 0.15)
   const deep = 3 * atr(base, 14) // well past the 2*ATR ceiling
   const bars = withPullbackBar(base, { dir: 1, depth: deep })
   assert.equal(computeEmaPullback(bars, '1h'), null)
@@ -89,16 +90,28 @@ test('too few bars → null', () => {
   assert.equal(computeEmaPullback(bars, '1h'), null)
 })
 
+test('MIN_BARS is 450, not the old 200 — a 200-bar EMA200 still carries ~13.5% seed bias', () => {
+  // withPullbackBar appends one bar, so base=448/449 -> 449/450 total.
+  // 449 clears the OLD 200-bar minimum with room to spare but must still
+  // refuse, now that the regime filter is the slower EMA200.
+  const short = withPullbackBar(trendBars(448, 100, 0.15), { dir: 1 })
+  assert.equal(short.length, 449)
+  assert.equal(computeEmaPullback(short, '1h'), null, '449 bars must still refuse')
+  const long = withPullbackBar(trendBars(449, 100, 0.15), { dir: 1 })
+  assert.equal(long.length, 450)
+  assert.ok(computeEmaPullback(long, '1h'), '450 bars must fire')
+})
+
 // --- New guards (2026-07 stop-integrity revision) --------------------------
 
 test('stop wider than the ATR ceiling → veto, never tightened', () => {
   // A trend steep enough that even the dip low sits > 3*ATR under the close.
-  const bars = withPullbackBar(trendBars(240, 100, 0.5), { dir: 1 })
+  const bars = withPullbackBar(trendBars(460, 100, 0.5), { dir: 1 })
   assert.equal(computeEmaPullback(bars, '1h'), null)
 })
 
 test('sub-noise structural stop is widened to the ATR floor', () => {
-  const bars = withPullbackBar(trendBars(240, 100, 0.02), { dir: 1, depth: 0.01 })
+  const bars = withPullbackBar(trendBars(460, 100, 0.02), { dir: 1, depth: 0.01 })
   const sig = computeEmaPullback(bars, '1h')
   assert.ok(sig, 'expected a signal')
   const a = atr(bars, 14)
@@ -106,10 +119,10 @@ test('sub-noise structural stop is widened to the ATR floor', () => {
   assert.equal(sig.sl_widened_to_floor, true)
 })
 
-test('EMA89 stack filter blocks a 20/50 cross that 89 has not confirmed', () => {
+test('EMA200 stack filter blocks a 20/50 cross that 200 has not confirmed', () => {
   // Long downtrend, then a sharp rally: EMA20 crosses above EMA50 while
-  // EMA89 is still overhead. requireStack must veto; requireStack:false must not.
-  const base = trendBars(240, 200, -0.15)
+  // EMA200 is still overhead. requireStack must veto; requireStack:false must not.
+  const base = trendBars(460, 200, -0.15)
   let bars = [...base]
   for (let i = 0; i < 25; i++) {
     const c = bars[bars.length - 1].c + 0.6
@@ -118,13 +131,13 @@ test('EMA89 stack filter blocks a 20/50 cross that 89 has not confirmed', () => 
   bars = withPullbackBar(bars, { dir: 1 })
   const e20 = emaSeries(bars, 20).at(-1)
   const e50 = emaSeries(bars, 50).at(-1)
-  const e89 = emaSeries(bars, 89).at(-1)
-  assert.ok(e20 > e50 && e50 < e89, 'fixture: 20>50 but 50 still below 89')
+  const e200 = emaSeries(bars, 200).at(-1)
+  assert.ok(e20 > e50 && e50 < e200, 'fixture: 20>50 but 50 still below 200')
   assert.equal(computeEmaPullback(bars, '1h'), null, 'stack filter vetoes')
 })
 
 test('pendingSetup parks the entry at EMA20, above the market', () => {
-  const bars = trendBars(240, 100, 0.15)
+  const bars = trendBars(460, 100, 0.15)
   const sig = computeEmaPullback(bars, '1h', { pendingSetup: true })
   assert.ok(sig, 'expected a pending setup')
   assert.equal(sig.bias, 'long')
@@ -136,13 +149,13 @@ test('pendingSetup parks the entry at EMA20, above the market', () => {
 })
 
 test('time cap is opt-in and derived from bars x timeframe minutes', () => {
-  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
+  const bars = withPullbackBar(trendBars(460, 100, 0.15), { dir: 1 })
   assert.equal(computeEmaPullback(bars, '1h').time_cap_minutes, null)
   const capped = computeEmaPullback(bars, '1h', { timeCapBars: 24, timeframeMinutes: 60 })
   assert.equal(capped.time_cap_minutes, 1440)
 })
 
 test('thesis still matches the label-backfill signature', () => {
-  const bars = withPullbackBar(trendBars(240, 100, 0.15), { dir: 1 })
+  const bars = withPullbackBar(trendBars(460, 100, 0.15), { dir: 1 })
   assert.match(computeEmaPullback(bars, '1h').thesis, /EMA20 (above|below) EMA50/)
 })
