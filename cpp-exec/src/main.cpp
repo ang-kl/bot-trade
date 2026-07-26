@@ -440,6 +440,16 @@ int main(int argc, char** argv) {
     return {200, jsn::dump(out)};
   });
 
+  // What the VPO tier has actually done since boot (audit F-L4-04). Before
+  // this, the only externally visible trace of a C++-originated order was a
+  // position appearing in a later reconcile — a rejection left none at all.
+  server.route("GET", "/vpo-status", [&vpoDispatcher](const HttpRequest&) -> HttpResponse {
+    if (!vpoDispatcher) return {200, "{\"enabled\":false}"};
+    std::string body = vpoDispatcher->statusJson();
+    body.insert(1, "\"enabled\":true,");
+    return {200, body};
+  });
+
   server.route("GET", "/trail-status", [&trailEngine, trailTickEnabled](const HttpRequest&) -> HttpResponse {
     if (!trailTickEnabled)
       return {200, "{\"enabled\":false}"};

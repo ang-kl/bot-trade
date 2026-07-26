@@ -115,12 +115,113 @@ static void test_sell_side_fires_on_bid_rising_to_trigger() {
   assert(raw->order().state.load() == VposState::IDLE);
 }
 
+// ---------------------------------------------------------------------------
+// Audit F-L4-04: the tier used to throw its own order result away —
+// `(void)result` — so a fill, a broker rejection and a transport error were
+// one indistinguishable non-event from outside the process. These tests pin
+// the counters that replaced it.
+// ---------------------------------------------------------------------------
+
+static void test_outcomes_start_empty_and_count_a_failed_submit() {
+  ExecEngine engine; // no credentials -> placeOrder fails NOT_CONNECTED
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+
+  auto before = dispatcher.outcomes();
+  assert(before.triggered == 0 && before.placed == 0 && before.failed == 0);
+  assert(before.lastFireAtMs == 0 && before.lastDetail.empty());
+
+  forceArm(*raw, 1.1000, Side::Buy);
+  dispatcher.onTick(42, 1.0999, 1.1000);
+
+  auto after = dispatcher.outcomes();
+  assert(after.triggered == 1);
+  assert(after.placed == 0);
+  // NOT_CONNECTED is a transport failure, not a broker verdict — the two are
+  // different facts and are counted apart.
+  assert(after.failed == 1);
+  assert(after.rejected == 0);
+  assert(after.noSizing == 0);
+  assert(after.lastFireAtMs > 0);
+  assert(after.lastDetail.find("vwap_trend") != std::string::npos);
+  assert(after.lastDetail.find("failed") != std::string::npos);
+}
+
+static void test_sizing_refusal_is_counted_apart_from_a_submit() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return -1.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+
+  forceArm(*raw, 1.1000, Side::Buy);
+  dispatcher.onTick(42, 1.0999, 1.1000);
+
+  auto o = dispatcher.outcomes();
+  // A tier that arms all day and never sizes is broken in a way that silence
+  // hides. It triggered; it did not submit anything.
+  assert(o.triggered == 1);
+  assert(o.noSizing == 1);
+  assert(o.placed == 0 && o.rejected == 0 && o.failed == 0);
+  assert(o.lastDetail.find("no_sizing") != std::string::npos);
+}
+
+static void test_a_tick_that_does_not_touch_counts_nothing() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+  forceArm(*raw, 1.1000, Side::Buy);
+
+  dispatcher.onTick(42, 1.0998, 1.1005); // no touch
+  dispatcher.onTick(99, 1.0000, 1.0000); // wrong symbol
+  assert(dispatcher.outcomes().triggered == 0);
+}
+
+static void test_status_json_reports_the_counters() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+
+  // Before any fire: lastFireAt is null, not 0 — "never" and "at epoch" are
+  // different claims and the wire should not conflate them.
+  const std::string idle = dispatcher.statusJson();
+  assert(idle.find("\"lastFireAt\":null") != std::string::npos);
+  assert(idle.find("\"strategies\":1") != std::string::npos);
+
+  forceArm(*raw, 1.1000, Side::Buy);
+  dispatcher.onTick(42, 1.0999, 1.1000);
+
+  const std::string fired = dispatcher.statusJson();
+  assert(fired.find("\"triggered\":1") != std::string::npos);
+  assert(fired.find("\"failed\":1") != std::string::npos);
+  assert(fired.find("\"lastFireAt\":null") == std::string::npos);
+  assert(fired.find("vwap_trend") != std::string::npos);
+}
+
 int main() {
   test_relative_points_scales_and_snaps_to_symbol_precision();
   test_onTick_fires_on_touch_and_rearms_to_idle();
   test_onTick_ignores_other_symbols();
   test_onTick_refuses_to_fire_without_resolvable_volume();
   test_sell_side_fires_on_bid_rising_to_trigger();
+  test_outcomes_start_empty_and_count_a_failed_submit();
+  test_sizing_refusal_is_counted_apart_from_a_submit();
+  test_a_tick_that_does_not_touch_counts_nothing();
+  test_status_json_reports_the_counters();
   std::puts("test_vpo_dispatcher: all assertions passed");
   return 0;
 }
