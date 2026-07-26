@@ -5,10 +5,25 @@ review in reply `№ 1,776`. **Re-ordered 09:51 SGT at the owner's instruction
 ("re-order the phases by capital at risk")**, now folding in the L1–L7 audit
 (`audit/ROLLUP.md`, merged as `12d16bb`).
 
-Status: **PROPOSAL. No code in this document has been written.** Nothing here
-starts without the owner's word.
+Status as of **14:19 SGT**: **P1, P3, P4 and P8 are SHIPPED** (see the ledger
+below). Everything still open carries a decision gate and does not start
+without the owner's word.
 
-Baseline: `main` @ `12d16bb`. No branch in flight beyond this document.
+Baseline: `main` @ `a0500a5`.
+
+## Shipped
+
+| Phase | PR | Commit | What landed |
+|---|---|---|---|
+| **P1** | #397 | `7b2b8d4` | The daily-loss caps no longer read an unknown day as flat. `SUM` skips NULL `net_pnl`, so a day of broker-side stop-outs summed to zero and neither cap tripped. Unresolved closures older than a 15-minute grace now block, with `blockOnUnknownPnl` / `unknownPnlGraceMin` as the knobs. **Risk-limit change, owner-authorised.** |
+| **P3(a)** | #396 | `e7730a3` | An ambiguous submission blocks a resubmit. The dedupe read `trades`, which the ambiguous path never writes, so the guard was blind to the one case that could double-fill. `order_failed` and `order_ambiguous` are now separated. |
+| **P3(b)** | #395 | `159726d` | A skipped executor no longer marks a live position closed. `skipped` also covers `no_ctrader_position_id` and `unknown_volume`; only `ctrader_not_configured` may close DB-only now. |
+| **P4** | #395 | `159726d` | Management actions route by the position's own account and host. An account absent from the registry is refused, never silently re-routed. |
+| **P8** | #398 | `1fb6d5b` | Staleness bounds on the regime read (240 min, stale → unknown → fail open as before) and the news cache (7 days, checked before the memo). |
+| — | #399 | `a0500a5` | PRICE·R tape overlap: the de-overlap filter never fired (`filter` hands the callback the original array), and its thresholds sat below the label height. |
+
+Four of the audit's top five are closed. **P2 is the one that remains**, and it
+is blocked on D11.
 
 ## What changed in the re-order, and why
 
@@ -78,7 +93,7 @@ live orders on predicates that were never fitted.
 
 ---
 
-## P1 — The daily-loss caps cannot see a loss
+## P1 — SHIPPED (#397) — The daily-loss caps cannot see a loss
 
 Capital at risk: **the ceiling on a losing day.** Audit F-L6-06, F-L6-01, S22.
 Effort: small in code, careful in review. Gate: **D10**. Risk-limit change →
@@ -124,7 +139,7 @@ record anywhere. The new leg carries no stop, by explicit exemption.
 Neither route has a dedup key, so a client retry after a timeout doubles the
 add or the reversal.
 
-## P3 — Two paths leave a position the ledger does not know about
+## P3 — SHIPPED (#395, #396) — Two paths leave a position the ledger does not know about
 
 Capital at risk: **unmanaged exposure, and a duplicate on top of it.** Audit
 F-L4-01, F-L6-02, S10, S23. Effort: small-medium.
@@ -144,7 +159,7 @@ that to "not configured", but `skipped` is also returned for
 `no_ctrader_position_id` and `unknown_volume` — cases where a live broker
 position exists and is now unmanaged with the local record saying it is gone.
 
-## P4 — Position management addresses the globally selected account and host
+## P4 — SHIPPED (#395) — Position management addresses the globally selected account and host
 
 Capital at risk: **closes and stop amends issued against the wrong account, and
 demo-versus-live one config key apart.** Audit F-L4-02, S20. Effort: small.
@@ -219,7 +234,7 @@ small, isolated. Gates: **D1**, **D14**.
 
 Regression baseline: the repo Makefile builds and all 15 test binaries pass.
 
-## P8 — Staleness ceilings that are not ceilings
+## P8 — SHIPPED (#398) — Staleness ceilings that are not ceilings
 
 Capital at risk: **entries gated, or not gated, on data of unbounded age.**
 Audit F-L1-09, F-L2-04, F-L2-05, F-L7-02, S2, S7, S26, S27. Effort: small each.
@@ -287,6 +302,12 @@ the cause.
 
 Effort: small each. Gates **D5–D9**. Includes the measured 2–3 px overlap
 between adjacent PRICE·R tape labels.
+
+## What the shipped work added to the soak watch
+
+Three markers that should never appear on the demo trio, and that break the
+watch's silence if they do: `order_ambiguous` and `unknown_daily_pnl` in
+`risk_events`, and `CLOSE_NOT_EXECUTED` in `action_log`.
 
 ## Ongoing — M4 soak watch (not a phase)
 
