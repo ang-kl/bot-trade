@@ -533,7 +533,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
       </div>
       <div style={{ ...card, borderRadius: 16, padding: '6px 12px', display: 'flex', gap: 5, alignItems: 'center', ...(variant === 'desktop' ? { overflowX: 'auto', scrollbarWidth: 'thin' } : { flexWrap: 'wrap' }) }}>
         <Chip fs={fs} hue="mu">FLEET</Chip>
-        <span style={{ fontSize: fs(9.5), color: 'var(--mu)', whiteSpace: 'nowrap' }}>top 5 of 8</span>
+        <span style={{ fontSize: fs(9.5), color: v?.fleetIsReal ? 'var(--sb)' : 'var(--mu)', whiteSpace: 'nowrap' }}>{v?.fleetLabel ?? ''}</span>
         <Info fs={fs} big tip="Your other open positions, each shown as R (profit/loss in risk units). Scale spans −2R…+2R with a tick every 0.5R; amber centre line = entry. Click to switch this cockpit to that symbol." />
         {(v?.fleet ?? []).map((f, i) => (
           <div key={i} className="tc-fleet-chip" role="button" tabIndex={0} title={`${f.sym} · ${f.r}R — scale −2R … +2R, tick every 0.5R, amber = entry (0R). Click to switch cockpit (mock)`}

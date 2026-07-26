@@ -24,6 +24,7 @@ import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
+import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -581,6 +582,10 @@ const cockpitPos = (p2) => ({
   sym: p2.sym, side: p2.side, lots: p2.lots, strategy: p2.strat,
   entry: p2.entryRaw, sl: p2.slRaw, tp: p2.tpRaw,
   price: p2.price, pnl: p2.pnl, marketOpen: p2.marketOpen,
+  mfeR: p2.mfeR, maeR: p2.maeR,
+  // FLEET is computed from the account's real other open positions, not a
+  // hardcoded list (owner 2026-07-26).
+  fleet: fleetFrom(p2.roster, p2.id),
 })
 
 function OpenTableBody({ rows }) {
@@ -1280,6 +1285,7 @@ export default function Performance() {
         slRaw: Number.isFinite(sl) ? sl : null,
         tpRaw: Number.isFinite(tp) ? tp : null,
         marketOpen: p2.market_open, marketSource: p2.market_source || null,
+        mfeR: p2.mfe_r ?? null, maeR: p2.mae_r ?? null,
         pnl: p2.live_pnl != null ? Number(p2.live_pnl) : null,
         pnlAt: p2.live_pnl_at || null,
         // Owner: current price + daily OHLCV per open trade. For a closed
@@ -1288,6 +1294,11 @@ export default function Performance() {
         day: p2.day || null,
       }
     })
+    // One roster shared by every row — the cockpit's FLEET strip is computed
+    // from the account's real other open positions (cockpit-fleet.js).
+    const roster = rows.map(r => ({ id: r.id, sym: r.sym, side: r.side, entry: r.entryRaw, sl: r.slRaw, price: r.price }))
+    rows.forEach(r => { r.roster = roster })
+
     let floating = rows.filter(r => r.marketOpen !== false)
     // Owner (2026-07-24): "give market open trades as priority in the
     // table" — confirmed-open-market rows first, unknown-market rows
