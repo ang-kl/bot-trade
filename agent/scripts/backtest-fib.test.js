@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveExit, resolvePending } from './backtest-fib.js'
+import { resolveExit, resolvePending, computeStats, runBacktest } from './backtest-fib.js'
 import { inPrimeSession } from '../lib/sessions.js'
 
 const longPos = { dir: 1, entry: 100, sl: 95, tp: 110, entryT: 0, capMs: 0 }
@@ -74,4 +74,75 @@ test('resolvePending: cancels on expiry, null while waiting', () => {
   const p = { dir: 1, level: 100, sl: 95, tp: 110, expireT: 5_000 }
   assert.equal(resolvePending(p, { t: 5_000, o: 102, h: 103, l: 101, c: 102 }), 'cancel')
   assert.equal(resolvePending(p, { t: 1, o: 102, h: 103, l: 101, c: 102 }), null)
+})
+
+// --- computeStats: the stop-clamp telemetry rollup ---------------------
+
+test('computeStats.slClamp is null when no trade carries the field (fib etc.)', () => {
+  const trades = [
+    { dir: 1, entry: 100, exit: 102, entryT: 0, exitT: 1000, pnlPct: 2, reason: 'tp' },
+    { dir: 1, entry: 100, exit: 95, entryT: 0, exitT: 1000, pnlPct: -5, reason: 'sl' },
+  ]
+  assert.equal(computeStats(trades).slClamp, null)
+})
+
+test('computeStats.slClamp aggregates min/max/avg and the widened-to-floor rate', () => {
+  const trades = [
+    { dir: 1, entry: 100, exit: 102, entryT: 0, exitT: 1000, pnlPct: 2, reason: 'tp', slAtrMult: 0.8, slWidenedToFloor: true },
+    { dir: 1, entry: 100, exit: 95, entryT: 0, exitT: 1000, pnlPct: -5, reason: 'sl', slAtrMult: 1.5, slWidenedToFloor: false },
+    { dir: -1, entry: 100, exit: 97, entryT: 0, exitT: 1000, pnlPct: 3, reason: 'tp', slAtrMult: 2.4, slWidenedToFloor: false },
+  ]
+  const { slClamp } = computeStats(trades)
+  assert.deepEqual(slClamp, {
+    reporting: 3,
+    widenedToFloor: 1,
+    widenedToFloorPct: 33.33,
+    minMult: 0.8,
+    maxMult: 2.4,
+    avgMult: 1.57,
+  })
+})
+
+test('computeStats.slClamp only counts trades that actually reported it — mixed strategies', () => {
+  const trades = [
+    { dir: 1, entry: 100, exit: 102, entryT: 0, exitT: 1000, pnlPct: 2, reason: 'tp', slAtrMult: 1.0, slWidenedToFloor: false },
+    { dir: 1, entry: 100, exit: 95, entryT: 0, exitT: 1000, pnlPct: -5, reason: 'sl' }, // no telemetry
+  ]
+  const { slClamp } = computeStats(trades)
+  assert.equal(slClamp.reporting, 1)
+  assert.equal(slClamp.minMult, 1.0)
+})
+
+// --- runBacktest: the telemetry actually reaches computeStats end to end ---
+
+// Reuses ema-pullback.test.js's exact fixture shape (trendBars + withPullbackBar)
+// so this is a real, currently-registered strategy firing through the real
+// dispatch path — not a mock.
+function trendBars(n, start, slope, range = 1) {
+  const bars = []
+  for (let i = 0; i < n; i++) {
+    const c = start + slope * i
+    bars.push({ t: i * 3_600_000, o: c - slope, h: c + range / 2, l: c - range / 2, c, v: 1 })
+  }
+  return bars
+}
+
+test('runBacktest: ema_pullback trades carry sl_atr_mult through to computeStats', async () => {
+  const { emaSeries } = await import('../services/ema-pullback.js')
+  const K20 = 2 / 21
+  const base = trendBars(240, 100, 0.15)
+  const prevEma20 = emaSeries(base, 20)[base.length - 1]
+  const c = base[base.length - 1].c + 0.1
+  const ema20 = c * K20 + prevEma20 * (1 - K20)
+  const pullback = { t: base.length * 3_600_000, o: c, h: c + 0.5, l: ema20 - 0.3, c, v: 1 }
+  // Bars AFTER the pullback so the loop has a "next" bar to fill the entry
+  // on, and enough runway to travel to TP (2R, a few tenths of a point here).
+  const runway = trendBars(30, c + 0.15, 0.15).map((b, i) => ({ ...b, t: pullback.t + (i + 1) * 3_600_000 }))
+  const bars = [...base, pullback, ...runway]
+
+  const { trades, stats } = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0 })
+  assert.ok(trades.length >= 1, 'expected at least one ema_pullback trade')
+  assert.equal(typeof trades[0].slAtrMult, 'number')
+  assert.ok(stats.slClamp, 'stats should report the clamp rollup for this strategy')
+  assert.equal(stats.slClamp.reporting, trades.length)
 })

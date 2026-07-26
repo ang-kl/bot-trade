@@ -103,6 +103,12 @@ export function runBacktest(bars, opts) {
       exitT,
       pnlPct: gross - costPct,
       reason,
+      // Carried from the signal that opened this trade, when the strategy
+      // provides it (undefined for strategies that don't) — lets
+      // computeStats report how often a stop-clamp band actually binds,
+      // instead of that being invisible outside the live position rows.
+      slAtrMult: pos.slAtrMult,
+      slWidenedToFloor: pos.slWidenedToFloor,
     })
     cooldownUntil = exitT + cooldownMs
     pos = null
@@ -121,7 +127,11 @@ export function runBacktest(bars, opts) {
       const r = resolvePending(pending, next)
       if (r === 'cancel') { pending = null }
       else if (r === 'fill') {
-        pos = { dir: pending.dir, entry: pending.level, sl: pending.sl, tp: pending.tp, entryT: next.t, capMs: pending.capMs }
+        pos = {
+          dir: pending.dir, entry: pending.level, sl: pending.sl, tp: pending.tp,
+          entryT: next.t, capMs: pending.capMs,
+          slAtrMult: pending.slAtrMult, slWidenedToFloor: pending.slWidenedToFloor,
+        }
         pending = null
         const sameBar = resolveExit(pos, next)
         if (sameBar) closeTrade(sameBar.price, next.t, sameBar.reason)
@@ -166,6 +176,8 @@ export function runBacktest(bars, opts) {
         tp: signal.tp1,
         capMs,
         expireT: next.t + capMs,
+        slAtrMult: signal.sl_atr_mult,
+        slWidenedToFloor: signal.sl_widened_to_floor,
       }
       continue
     }
@@ -176,6 +188,8 @@ export function runBacktest(bars, opts) {
       tp: signal.tp1,
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
+      slAtrMult: signal.sl_atr_mult,
+      slWidenedToFloor: signal.sl_widened_to_floor,
     }
     // The entry bar's own range can hit the SL/TP after the open fill —
     // skipping it understated losses (audit flaw #1).
@@ -187,7 +201,7 @@ export function runBacktest(bars, opts) {
   return { trades, stats: computeStats(trades) }
 }
 
-function computeStats(trades) {
+export function computeStats(trades) {
   const n = trades.length
   if (n === 0) return { trades: 0 }
   const wins = trades.filter(t => t.pnlPct > 0)
@@ -251,6 +265,31 @@ function computeStats(trades) {
       tp: trades.filter(t => t.reason === 'tp').length,
       time_cap: trades.filter(t => t.reason === 'time_cap').length,
     },
+    // Rollup of the per-signal stop-clamp telemetry (agent/services/
+    // ema-pullback.js's sl_atr_mult / sl_widened_to_floor, or any future
+    // strategy that reports the same two fields). null for strategies that
+    // don't report it, rather than a misleading zero — "no data" and "the
+    // clamp never bound" are different claims. This answers, with counts
+    // instead of a guess, whether a stop-distance band is actually shaping
+    // trades or sitting unused.
+    //
+    // What this CANNOT show: a signal vetoed by the ceiling never becomes a
+    // trade, so it never reaches this array — "how often did the ceiling
+    // refuse a setup" needs counting at the signal level, not here.
+    slClamp: (() => {
+      const withMult = trades.filter(t => typeof t.slAtrMult === 'number')
+      if (!withMult.length) return null
+      const widened = withMult.filter(t => t.slWidenedToFloor === true).length
+      const mults = withMult.map(t => t.slAtrMult)
+      return {
+        reporting: withMult.length,
+        widenedToFloor: widened,
+        widenedToFloorPct: round2((widened / withMult.length) * 100),
+        minMult: round2(Math.min(...mults)),
+        maxMult: round2(Math.max(...mults)),
+        avgMult: round2(mults.reduce((s, m) => s + m, 0) / mults.length),
+      }
+    })(),
   }
 }
 
