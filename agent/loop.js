@@ -17,7 +17,7 @@ import { detectFlip } from './quant/signals.js'
 import { persistScanContext } from './services/context.js'
 import { getActiveSessions, categoriseSymbol, isWeekend, isSymbolMarketOpen } from './lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from './lib/trade-labels.js'
-import { wsGetSymbolsList, wsGetTrendbarsBatch } from './lib/ctrader-ws.js'
+import { wsGetSymbolsList, wsGetTrendbarsBatch, isAmbiguousSubmitError } from './lib/ctrader-ws.js'
 // Broker execution goes through the delegator: EXEC_ENGINE=cpp routes to the
 // C++ sidecar, default 'js' is a byte-identical passthrough to ctrader-ws.
 import { placeOrder as execPlaceOrder, amendPosition as execAmendPosition, closePosition as execClosePosition, reconcile as execReconcile } from './lib/exec-engine.js'
@@ -392,8 +392,34 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       AND (account_id = ? OR account_id IS NULL)
     ORDER BY id DESC LIMIT 1
   `).get(symbol, side, String(accountId))
-  if (dupe) {
-    const reason = `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (3-minute idempotency window)`
+
+  // AUDIT F-L4-01: the dedupe above reads `trades`, which the AMBIGUOUS
+  // failure path never writes. wsPlaceOrder correctly refuses to retry after
+  // NEW_ORDER_REQ went out — the broker may have filled it and only the
+  // EXECUTION_EVENT was lost — so that submission leaves a risk_events row and
+  // NO trade row. On the next cycle the dedupe found nothing and the same
+  // signal could be submitted again against a position that may already be
+  // live. The guard protected against the retry it had disabled, and not
+  // against the one path that still doubled.
+  //
+  // An ambiguous submission is therefore treated as "a position may exist" for
+  // the same window. The direction of the error matters: suppressing a real
+  // entry costs an opportunity, resubmitting onto a live fill costs money. A
+  // plain `order_failed` (broker REJECTED it — provably no position) is NOT
+  // caught here, so ordinary rejections still retry next cycle as before.
+  const ambiguous = dupe ? null : db.prepare(`
+    SELECT id, created_at FROM risk_events
+    WHERE symbol = ? AND side = ? AND approved = 0
+      AND veto_reason LIKE 'order_ambiguous:%'
+      AND created_at >= datetime('now', '-3 minutes')
+      AND (account_id = ? OR account_id IS NULL)
+    ORDER BY id DESC LIMIT 1
+  `).get(symbol, side, String(accountId))
+
+  if (dupe || ambiguous) {
+    const reason = dupe
+      ? `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (3-minute idempotency window)`
+      : `duplicate_submission_ambiguous: a ${side} ${symbol} order was submitted at ${ambiguous.created_at} and its outcome is UNKNOWN (risk_event #${ambiguous.id}) — a position may already be open; not resubmitting inside the 3-minute window`
     persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
     try {
       const { recordDecision } = await import('./services/decision-log.js')
@@ -521,15 +547,29 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // silently logging it made "risk gate said OK but no trade appeared"
     // undiagnosable from the UI (real support case: two days of OKs with
     // zero positions and no explanation anywhere but Railway logs).
-    log(`Auto-trade FAILED for ${symbol}: ${err.message}`)
+    // AUDIT F-L4-01: separate the two failure shapes, because they mean
+    // opposite things for what may exist at the broker.
+    //   order_failed    — the broker refused it, or the socket died BEFORE the
+    //                     request went out. No position. Retrying is correct.
+    //   order_ambiguous — the request WAS sent and no execution event came
+    //                     back. A position may be open right now. The dedupe
+    //                     above reads these rows, so the next cycle will not
+    //                     resubmit inside the window.
+    const amb = isAmbiguousSubmitError(err)
+    log(`Auto-trade ${amb ? 'AMBIGUOUS' : 'FAILED'} for ${symbol}: ${err.message}`)
     try {
-      persistRiskEvent(db, proposal, { approved: false, veto_reason: `order_failed: ${err.message}` })
+      persistRiskEvent(db, proposal, {
+        approved: false,
+        veto_reason: `${amb ? 'order_ambiguous' : 'order_failed'}: ${err.message}`,
+      })
     } catch { /* audit only */ }
-    setState(db, 'last_order_error', JSON.stringify({ symbol, side, error: err.message, at: new Date().toISOString() }))
+    setState(db, 'last_order_error', JSON.stringify({ symbol, side, error: err.message, ambiguous: amb, at: new Date().toISOString() }))
     if (process.env.TELEGRAM_BOT_TOKEN) {
       try {
         const { sendMessage } = await import('./services/telegram.js')
-        await sendMessage(`⚠️ ORDER FAILED after risk approval: ${symbol} ${side} — ${err.message}. The broker rejected or the connection dropped; the signal may retry next loop.`)
+        await sendMessage(amb
+          ? `⚠️ ORDER OUTCOME UNKNOWN: ${symbol} ${side} — the order was SENT and no confirmation came back (${err.message}). A position may be open at the broker. Check cTrader before acting; the bot will not resubmit for 3 minutes.`
+          : `⚠️ ORDER FAILED after risk approval: ${symbol} ${side} — ${err.message}. The broker rejected it or the connection dropped before it was sent; the signal may retry next loop.`)
       } catch { /* non-fatal */ }
     }
     return null

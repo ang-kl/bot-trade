@@ -225,6 +225,23 @@ export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null
 }
 
 /**
+ * Did this failure happen AFTER the order request went out?
+ *
+ * The distinction is the whole of L3's idempotency story. A connect/auth
+ * failure provably happened BEFORE submission — nothing reached the broker,
+ * so a retry is safe and no position can exist. A failure carrying the
+ * "after sending <NEW_ORDER_REQ>" marker that wsRun stamps on is AMBIGUOUS:
+ * the broker may well have filled it and only the EXECUTION_EVENT was lost.
+ *
+ * Exported because the caller needs the same verdict the retry policy uses —
+ * an ambiguous submission must be recorded as "a position may exist", not as
+ * a plain failure (audit F-L4-01).
+ */
+export function isAmbiguousSubmitError(err) {
+  return (err?.message || '').includes(`after sending ${PT.NEW_ORDER_REQ}`)
+}
+
+/**
  * Place a new order. `orderPayload` must already contain the full NEW_ORDER_REQ
  * shape (ctidTraderAccountId, symbolId, tradeSide, volume, orderType, SL/TP,
  * label, …). Returns the EXECUTION_EVENT payload.
@@ -235,7 +252,7 @@ export function wsPlaceOrder(host, clientId, clientSecret, accessToken, accountI
   // the EXECUTION_EVENT was lost — and blindly resubmitting is exactly how
   // duplicate positions happen (the 4x USDIDR incident). Retry only failures
   // that provably occurred BEFORE the order request was sent (connect/auth).
-  const orderSent = (err) => (err?.message || '').includes(`after sending ${PT.NEW_ORDER_REQ}`)
+  const orderSent = isAmbiguousSubmitError
   return withRetry(() => wsRun(host, [
     ...authSteps(clientId, clientSecret, accessToken, accountId),
     { send: { payloadType: PT.NEW_ORDER_REQ, payload: orderPayload }, expect: PT.EXECUTION_EVENT },
