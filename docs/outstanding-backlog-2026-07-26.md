@@ -73,7 +73,7 @@ D10–D14 are new and belong to the new phases.
 | D11 | The manual `position-double` / `position-reverse` routes: harden them (weighted basis, re-derived stop, add cap, atomic reverse) or **remove** them? | Remove `position-double`; harden `position-reverse` into a single netted order if the venue supports it, otherwise remove it too. Neither is used by any automated path — this is a dashboard affordance whose failure modes cost real money | P2 |
 | D12 | Credential surface: keep one bearer token for every route, or split read from money-moving and add a second factor on the latter? | Split, and stop shipping any secret in the browser bundle | P5 |
 | D13 | Should the LLM monitor be able to close a position without a deterministic second gate? | No — require a deterministic condition to agree before an LLM-initiated exit executes | P9 |
-| D14 | Is `VPO_ENABLED` / `TRAIL_TICK_ENABLED` set in production? (audit OQ-2, OQ-5) | Answer decides whether P6 and P7 stay where they are or drop below P10 — see the conditional rule below | P6, P7 |
+| ~~D14~~ | ~~Is `VPO_ENABLED` / `TRAIL_TICK_ENABLED` set in production?~~ | **ANSWERED 2026-07-26: both true in both environments; `VPO_SYMBOLS` on staging only. See below — P7 is production-reachable and moves to the front; P6 is staging-only for now.** | ~~P6, P7~~ |
 | D1 | Fix the three C++ sidecar findings? | Yes — C1 is undefined behaviour | P7 |
 | D2 | Build `position_events`? | Yes, and first among the record work — it accumulates nothing until it exists | P10 |
 | D3 | Cockpit endpoint id space: broker position id or DB row id? | DB row id, with `?brokerId=` as an alternate lookup | P12 |
@@ -84,12 +84,44 @@ D10–D14 are new and belong to the new phases.
 | D8 | Add visible VA / HVN / LVN labels? | Yes, once the profile is real (P11) | P15 |
 | D9 | F3: journal pitch 26.39 against a spec of ≤ 26 | Accept or respace — either is one edit | P15 |
 
-**Conditional re-rank rule (D14).** If both `VPO_ENABLED` and
-`TRAIL_TICK_ENABLED` are **false** in production, P6 and P7 are not reachable
-today: move both below P10 and treat them as hardening before those flags are
-ever switched on. If either is **true**, they stay where they are — P6 becomes
-the single largest exposure on this list, because a strategy tier is placing
-live orders on predicates that were never fitted.
+### D14 — ANSWERED (owner, 2026-07-26, 14:50 SGT)
+
+    cpp-exec, BOTH environments:  VPO_ENABLED=true   TRAIL_TICK_ENABLED=true
+    staging only:                 VPO_SYMBOLS=EURUSD:1:vwap_trend:5
+
+This splits P6 and P7 apart, and it promotes P7 to the top of the list.
+
+**P7 is live in PRODUCTION.** `TRAIL_TICK_ENABLED=true` alone starts the spot
+feed (`cpp-exec/src/main.cpp:183-190`), and the `/connect` teardown branch is
+`if ((vpoDispatcher && !vpoSymbolIds.empty()) || trailTickEnabled)`
+(`main.cpp:357`) — so with the trail flag on, **every `/connect` call runs
+`spotFeed->stop()` from an HTTP thread**, which is exactly finding C1: a
+concurrent `SSL_write`/`SSL_read` on one `SSL*`, then `SSL_free` + `close(fd_)`
+under a live reader. `/connect` is memoised on `(host, roster, token)`, so a
+token refresh re-fires it. C2 rides the same branch: `vpoMtx` is held across
+`stop()` + `join()` while `/health` wants it. Both are undefined behaviour and
+a restart-loop risk in the process that holds the broker session, in
+production, today.
+
+**P6 is live in STAGING only.** `VPO_ENABLED=true` does nothing without a
+parseable `VPO_SYMBOLS` — the dispatcher is only constructed when
+`vpoEnabled && !vpoSymbolsSpec.empty()` (`main.cpp:199`), and production has no
+`VPO_SYMBOLS`. So the five predicate divergences and the discarded order result
+are **not** reachable in production right now. They ARE reachable on staging
+for `EURUSD` on `vwap_trend`, which is the M4 soak's own subject.
+
+**Revised order:** P7 first (production UB, small and isolated), then P6
+(before `VPO_SYMBOLS` is ever set in production — it is a loaded gun otherwise,
+because that tier is the only place in the system that can open a position
+without passing the risk gate).
+
+**A correction to the soak watch's own reasoning.** With a VPO strategy armed
+on staging, an empty `/state/risk-events` no longer implies "no trades opened":
+a sidecar-originated fill never reaches Node's risk gate at all. The detection
+path is `openPositions` / `openTrades` on `/health`, which populate one
+reconcile after the fill adopts it. Both have read 0 all day, and EURUSD is
+shut for the weekend — but the inference chain is now written down rather than
+assumed.
 
 ---
 
@@ -202,7 +234,10 @@ Also here: `GET /health` is unauthenticated and returns `commit`, `errorsToday`,
 
 Capital at risk: **live orders from predicates no backtest covers, at stop
 distances that change position size.** Audit F-L1-01…05, F-L4-03, F-L4-04,
-F-L5-09, S11, S12. Effort: medium. Gates: **D14**, plus audit OQ-2/OQ-3/OQ-4.
+F-L5-09, S11, S12. Effort: medium. Gate: D14 answered — **staging-only today**
+(`VPO_SYMBOLS=EURUSD:1:vwap_trend:5`), because production has no `VPO_SYMBOLS`
+and the dispatcher is never constructed without one. Fix it BEFORE that
+variable is ever set in production.
 
 When `VPO_ENABLED=true` and `VPO_SYMBOLS` parses, `vpo_strategies.cpp` stops
 being a mirror and becomes an **originating** decision-maker: `tryFire` calls
@@ -222,11 +257,17 @@ On top of that the tier **discards its own order result**
 error are one non-event, and Node learns of a fill only when a later reconcile
 adopts it.
 
-## P7 — C++ sidecar thread-safety (was P1)
+## P7 — C++ sidecar thread-safety — **NOW THE FIRST THING TO FIX** (was P1)
 
-Capital at risk: **indirect** — a restart loop that leaves positions unmanaged,
-and undefined behaviour in a process that holds a broker session. Effort:
-small, isolated. Gates: **D1**, **D14**.
+Capital at risk: **direct, and live in production as of the D14 answer.** A
+restart loop leaves positions unmanaged, and C1 is undefined behaviour in the
+process that holds the broker session. Effort: small, isolated. Gate: **D1**
+(D14 is answered).
+
+`TRAIL_TICK_ENABLED=true` in production means the `/connect` teardown branch
+runs on every call, so C1 and C2 are reachable now — not conditionally, not
+hypothetically. This was ranked seventh on the assumption the flags were off.
+They are not.
 
 - **C1, critical.** `SpotFeed::stop()` (`cpp-exec/src/spot_feed.cpp:100`) runs on an HTTP thread via `POST /connect` (`main.cpp:360`) and closes the socket while the feed thread is inside `recvText()`: concurrent `SSL_write`/`SSL_read` on one `SSL*`, then `SSL_free` + `::close(fd_)` under a live reader, then `FD_SET(-1, …)`. `ExecEngine` guards its socket with a mutex; `SpotFeed` has none. Reachable in normal operation — `/connect` is memoised on `(host, roster, token)`, so a token refresh re-fires it. Fix: `::shutdown(fd_, SHUT_RDWR)` from `stop()`, let the feed thread tear down.
 - **C2, high.** `/health` takes `vpoMtx`, which `/connect` holds across `stop()` + `join()`; the reconnect backoff sleeps up to 60 s uninterruptibly. Health timeouts → restart loop with no crash log.
