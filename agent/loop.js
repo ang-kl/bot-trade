@@ -1591,9 +1591,19 @@ async function runLoop(db) {
       prioritySymbols = db.prepare(`SELECT DISTINCT UPPER(symbol) AS s FROM monitored_positions WHERE status = 'active'`).all().map(r => r.s)
     } catch { /* none */ }
     const scanCursor = Number(getState(db, 'scan_cursor')) || 0
+    // Owner (2026-07-26): "when market volume spike, check immediately" — the
+    // guardian's tick stream flags a flat watchlist symbol that just spiked
+    // (services/guardian.js); consumed once here so it jumps the rotation
+    // queue instead of waiting its turn. Best-effort: a failure here just
+    // means ordinary rotation, never blocks the scan.
+    let prioritySpikeSymbols = []
+    try {
+      const { takeScanPrioritySymbols } = await import('./services/guardian.js')
+      prioritySpikeSymbols = takeScanPrioritySymbols(db)
+    } catch { /* rotation proceeds unboosted */ }
     const scanT0 = Date.now()
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
     const scanMs = Date.now() - scanT0
     setState(db, 'last_scan_ms', String(scanMs))
@@ -1632,7 +1642,8 @@ async function runLoop(db) {
     }
 
     log(
-      `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm (${scanMs}ms, concurrency ${process.env.SCAN_CONCURRENCY || 6})`
+      `Scan complete: ${scanResult.scans.length} symbols, ${scanResult.hot.length} hot, ${scanResult.warm.length} warm (${scanMs}ms, concurrency ${process.env.SCAN_CONCURRENCY || 6})` +
+      (prioritySpikeSymbols.length ? ` — spike-priority: ${prioritySpikeSymbols.join(', ')}` : '')
     )
 
     // Persist scans

@@ -19,9 +19,22 @@
 // A 30s maintenance tick keeps the subscription honest: re-reads the open
 // set, reconnects dropped sockets, beats the `guardian` heartbeat. Toggle:
 // agent_state `guardian` ('true' default; 'false' disables).
+//
+// Owner (2026-07-26): "when market volume spike, check immediately" — for a
+// FLAT watchlist symbol (no open position), the SCAN phase only reaches it
+// once every few 5-min loops (selectScanBatch rotates ~15 fresh symbols per
+// run). A spike on a symbol deep in that rotation just waits its turn. Since
+// this stream is already subscribed and push-based (no extra polling cost
+// per tick), it also covers the ENABLED watchlist, not just held positions:
+// a spike on a flat symbol doesn't run a guard sweep (nothing to guard) —
+// it flags the symbol via scan_priority_symbols_json so the next SCAN phase
+// bumps it to the front of the rotation instead of waiting. Toggle:
+// agent_state `spike_scan_priority` ('true' default; 'false' reverts to
+// held-only subscription, the pre-2026-07-26 behaviour).
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
+import { isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
 
 /** Pure: is this move big enough to wake the guards? */
 export function significantMove(prevPrice, price, minPct = 0.05) {
@@ -45,12 +58,66 @@ export function watchedSymbolIds(db) {
   return ids.sort((a, b) => a.symbolId - b.symbolId)
 }
 
+/** Enabled watchlist symbols (autopilot's universe, falling back to the legacy
+ * watchlist — same source loop.js's SCAN PHASE reads) with a known symbolId. */
+export function watchlistSymbolIds(db) {
+  let map = {}
+  try { map = JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { map = {} }
+  let list = []
+  try {
+    const raw = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
+    const parsed = JSON.parse(raw)
+    list = Array.isArray(parsed) ? parsed : []
+  } catch { list = [] }
+  const ids = []
+  for (const w of list) {
+    const entry = typeof w === 'string' ? { symbol: w, enabled: true } : w
+    if (!entry?.symbol || entry.enabled === false || entry.force_skip) continue
+    const sym = String(entry.symbol).toUpperCase()
+    const id = map[sym]
+    if (id) ids.push({ symbol: sym, symbolId: Number(id) })
+  }
+  return ids.sort((a, b) => a.symbolId - b.symbolId)
+}
+
+const SCAN_PRIORITY_STATE_KEY = 'scan_priority_symbols_json'
+const SCAN_PRIORITY_TTL_MS = 15 * 60_000 // stale if the loop never consumes it
+
+/** Flag one symbol for the next SCAN phase to bump ahead of its rotation turn. */
+export function flagScanPriority(db, symbol) {
+  try {
+    const raw = JSON.parse(getState(db, SCAN_PRIORITY_STATE_KEY) || '{}')
+    const map = raw && typeof raw === 'object' ? raw : {}
+    map[String(symbol).toUpperCase()] = Date.now()
+    setState(db, SCAN_PRIORITY_STATE_KEY, JSON.stringify(map))
+  } catch { /* a missed flag just waits for its ordinary rotation turn */ }
+}
+
+/**
+ * Read and CLEAR symbols flagged for priority scanning — consumed once by
+ * the SCAN phase each loop, so a symbol that spiked and got covered doesn't
+ * keep jumping the queue forever. Never throws.
+ */
+export function takeScanPrioritySymbols(db, ttlMs = SCAN_PRIORITY_TTL_MS) {
+  try {
+    const raw = JSON.parse(getState(db, SCAN_PRIORITY_STATE_KEY) || '{}')
+    const map = raw && typeof raw === 'object' ? raw : {}
+    const now = Date.now()
+    const symbols = Object.entries(map).filter(([, at]) => now - Number(at) < ttlMs).map(([sym]) => sym)
+    setState(db, SCAN_PRIORITY_STATE_KEY, '{}')
+    return symbols
+  } catch { return [] }
+}
+
 export function startGuardian(db, getCreds, deps = {}) {
   const maintMs = deps.maintMs ?? 30_000
   const cooldownMs = deps.cooldownMs ?? 2_500
   let stream = null
   let streamKey = ''          // which symbolId set the open stream covers
   let lastEval = new Map()    // symbolId → price at last guard evaluation
+  let lastEvalAt = new Map()  // symbolId → ms, watchlist-only spike timing
+  let heldIds = new Set()     // symbolIds with an open position — guard sweep vs spike-flag branch
+  let symbolById = new Map()  // symbolId → symbol string, for flagging
   let sweeping = false
   let lastSweepAt = 0
   let stopped = false
@@ -83,12 +150,28 @@ export function startGuardian(db, getCreds, deps = {}) {
   const onTick = (creds) => (tick) => {
     const price = tick.bid != null && tick.ask != null ? (tick.bid + tick.ask) / 2 : tick.bid ?? tick.ask
     if (!(price > 0)) return
-    const minPct = Number(getState(db, 'guardian_move_pct')) || 0.05
-    const prev = lastEval.get(tick.symbolId)
-    if (prev == null) { lastEval.set(tick.symbolId, price); return }
-    if (!significantMove(prev, price, minPct)) return
+    if (heldIds.has(tick.symbolId)) {
+      const minPct = Number(getState(db, 'guardian_move_pct')) || 0.05
+      const prev = lastEval.get(tick.symbolId)
+      if (prev == null) { lastEval.set(tick.symbolId, price); return }
+      if (!significantMove(prev, price, minPct)) return
+      lastEval.set(tick.symbolId, price)
+      sweep(creds, `move on symbol ${tick.symbolId}`)
+      return
+    }
+    // Flat watchlist symbol — nothing to guard, but a fast enough move is
+    // the same leading "this symbol just got busy" signal fast-monitor uses
+    // for open positions. Flag it so the SCAN phase bumps it ahead of its
+    // ordinary rotation turn instead of waiting.
+    const now = Date.now()
+    const prevPrice = lastEval.get(tick.symbolId)
+    const prevAt = lastEvalAt.get(tick.symbolId)
+    if (prevPrice != null && prevAt != null && isSpikeMove(prevPrice, prevAt, price, now, SPIKE_PCT_PER_MIN)) {
+      const sym = symbolById.get(tick.symbolId)
+      if (sym) flagScanPriority(db, sym)
+    }
     lastEval.set(tick.symbolId, price)
-    sweep(creds, `move on symbol ${tick.symbolId}`)
+    lastEvalAt.set(tick.symbolId, now)
   }
 
   const maintain = async () => {
@@ -97,8 +180,20 @@ export function startGuardian(db, getCreds, deps = {}) {
       const creds = getCreds(db)
       const enabled = (getState(db, 'guardian') || 'true') !== 'false'
       if (!creds?.ready || !enabled) { teardown(); return }
-      const watched = watchedSymbolIds(db)
+      const held = watchedSymbolIds(db)
+      const spikePriorityOn = (getState(db, 'spike_scan_priority') || 'true') !== 'false'
+      const watchlist = spikePriorityOn ? watchlistSymbolIds(db) : []
+      const combined = new Map()
+      for (const w of held) combined.set(w.symbolId, w)
+      for (const w of watchlist) if (!combined.has(w.symbolId)) combined.set(w.symbolId, w)
+      const watched = [...combined.values()].sort((a, b) => a.symbolId - b.symbolId)
       const key = watched.map(w => w.symbolId).join(',')
+      // Recomputed every pass regardless of whether the stream itself needs
+      // rebuilding: a symbol can move from watchlist-only to held (a new
+      // position opens on it) without the COMBINED id set changing at all,
+      // and that reclassification must still take effect on the next tick.
+      heldIds = new Set(held.map(w => w.symbolId))
+      symbolById = new Map(watched.map(w => [w.symbolId, w.symbol]))
       if (key !== streamKey || (!stream && key)) {
         teardown()
         if (key) {
@@ -111,7 +206,8 @@ export function startGuardian(db, getCreds, deps = {}) {
           )
           streamKey = key
           lastEval = new Map()
-          console.log(`[guardian] watching ticks on ${watched.map(w => w.symbol).join(', ')}`)
+          lastEvalAt = new Map()
+          console.log(`[guardian] watching ticks on ${watched.map(w => w.symbol).join(', ')} (${held.length} held, ${watched.length - held.length} watchlist-only)`)
         }
       }
     } catch (e) {
