@@ -53,7 +53,18 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   const sess = position && position.marketOpen === false ? 'closed' : sessionState
   const marketClosed = sess !== 'open' && !review
 
-  const [theme, setTheme] = useState('dark')
+  // Owner (2026-07-26): "The theme should follow the system." System is the
+  // default and tracks live changes; the header button is an explicit override
+  // for this cockpit only (null = follow system).
+  const [sysDark, setSysDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    const mq = matchMedia('(prefers-color-scheme: dark)')
+    const f = e => setSysDark(e.matches)
+    mq.addEventListener('change', f)
+    return () => mq.removeEventListener('change', f)
+  }, [])
+  const [themeOverride, setThemeOverride] = useState(null)
+  const theme = themeOverride ?? (sysDark ? 'dark' : 'light')
   const [tick, setTick] = useState(0)
   const [pane2, setPane] = useState('PFD')
   const [openKeys, setOpenKeys] = useState([])
@@ -64,6 +75,17 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   const storeRef = useRef({})
   const rootRef = useRef(null)
   const rm = useMemo(() => matchMedia('(prefers-reduced-motion: reduce)').matches, [])
+  // Owner (2026-07-26): "For phone, it should reduce the size by 20% for
+  // portrait mode." Uniform 0.8 scale on the shell — footprint AND contents,
+  // which is what "20% smaller" reads as on a handset.
+  const [portrait, setPortrait] = useState(() => matchMedia('(orientation: portrait)').matches)
+  useEffect(() => {
+    const mq = matchMedia('(orientation: portrait)')
+    const f = e => setPortrait(e.matches)
+    mq.addEventListener('change', f)
+    return () => mq.removeEventListener('change', f)
+  }, [])
+  const phoneShrink = variant === 'iphone' && portrait
 
   // Live tick ≥1Hz-equivalent cadence from the reference (2200ms mock tick).
   // Closed market (§8): no subscription — ONLY the countdown updates, once a minute.
@@ -133,6 +155,19 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   }, [v, rm, marketClosed])
   useEffect(() => () => { gsap.killTweensOf('#pfd-vsi,#pfd-hdg,#ei-fuel,#alt-tp,#alt-sl,#alt-en,#mfd-ac,#wx1,#wx2') }, [])
 
+  // Owner (2026-07-26): "Close after 8 minutes if i don't close it." The timer
+  // restarts on any interaction inside the cockpit, so it only fires when the
+  // window has genuinely been left open and untouched.
+  useEffect(() => {
+    const el = rootRef.current
+    let t
+    const arm = () => { clearTimeout(t); t = setTimeout(() => onClose?.(), 8 * 60 * 1000) }
+    arm()
+    const evts = ['pointerdown', 'keydown', 'wheel', 'touchstart']
+    evts.forEach(e => el?.addEventListener(e, arm, { passive: true }))
+    return () => { clearTimeout(t); evts.forEach(e => el?.removeEventListener(e, arm)) }
+  }, [onClose])
+
   // Esc closes; focus moves in on mount.
   useEffect(() => {
     const el = rootRef.current; if (el) el.focus()
@@ -196,8 +231,9 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           style={{ cursor: marketClosed ? 'not-allowed' : 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: marketClosed ? 'var(--mu)' : 'var(--tx)', background: 'var(--acs)', border: `1px solid ${marketClosed ? 'var(--mu)' : 'var(--acc)'}`, borderRadius: 10, padding: cfg.headerWraps ? '11px 14px' : '4px 12px', ...(cfg.headerWraps ? { flex: 1 } : {}) }}>Manage</button>
         <button title={marketClosed ? 'queues for next open' : undefined}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--dn)', background: 'var(--dns)', border: '1px solid var(--dn)', borderRadius: 10, padding: cfg.headerWraps ? '11px 14px' : '4px 12px', ...(cfg.headerWraps ? { flex: 1 } : {}) }}>Close</button>
-        <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--tx)', background: 'var(--acs)', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}</button>
+        <button title={themeOverride == null ? 'Following the system theme — tap to override' : 'Overriding the system theme — tap to cycle'}
+          onClick={() => setThemeOverride(o => (o == null ? (sysDark ? 'light' : 'dark') : null))}
+          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--tx)', background: 'var(--acs)', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}{themeOverride == null ? '' : ' ·'}</button>
         <button aria-label="Close cockpit" onClick={onClose}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--sb)', background: 'transparent', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>✕</button>
       </div>
@@ -535,17 +571,51 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
       </div>
     </>)
 
+  // Owner (2026-07-26): "It should only expand when needed." The shell hugs its
+  // content and grows to a cap instead of always claiming a fixed 80/92vh — on
+  // a phone showing only the PFD tab that left most of the window empty black.
+  // (This also dissolves finding F1: content can no longer overflow a fixed
+  // height; the cap scrolls instead.)
+  // The cap is a PERCENTAGE of the fixed-inset backdrop, not 92vh: this app
+  // sets zoom:1.1 on <html>, and vh units ignore zoom, so a 92vh cap actually
+  // rendered ~101% of the real viewport. Percentages resolve against the
+  // backdrop's definite height and stay correct at any zoom.
   const shellStyle = variant === 'desktop'
-    ? { width: '65vw', height: '80vh', minWidth: 1100, minHeight: 720, maxWidth: 1600, maxHeight: 980 }
-    : { width: cfg.shellW, maxWidth: '100vw', height: '92vh' }
+    ? { width: '65vw', height: 'auto', minWidth: 1100, maxWidth: 1600, maxHeight: '92%' }
+    : { width: cfg.shellW, maxWidth: '100vw', height: 'auto', maxHeight: '92%' }
+
+  // Owner (2026-07-26): close buttons at the four corners plus one at the
+  // centre of each side border, so the window can always be dismissed from
+  // wherever the thumb happens to be. They sit ON the border, above the
+  // rulers, and are touch-sized on handhelds.
+  const CLOSE_SPOTS = [
+    { k: 'tl', style: { top: 0, left: 0 }, label: 'top left' },
+    { k: 'tr', style: { top: 0, right: 0 }, label: 'top right' },
+    { k: 'bl', style: { bottom: 0, left: 0 }, label: 'bottom left' },
+    { k: 'br', style: { bottom: 0, right: 0 }, label: 'bottom right' },
+    { k: 'ml', style: { top: '50%', left: 0, transform: 'translateY(-50%)' }, label: 'left' },
+    { k: 'mr', style: { top: '50%', right: 0, transform: 'translateY(-50%)' }, label: 'right' },
+  ]
+  const closeDot = cfg.touch ? 34 : 24
+  const borderCloses = CLOSE_SPOTS.map(c => (
+    <button key={c.k} type="button" aria-label={`Close cockpit (${c.label})`} title="Close"
+      onClick={e => { e.stopPropagation(); onClose?.() }}
+      style={{ position: 'absolute', ...c.style, zIndex: 9, width: closeDot, height: closeDot,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+        fontFamily: 'inherit', fontSize: fs(11.5), lineHeight: 1, color: 'var(--sb)',
+        background: 'var(--gls)', border: '1px solid var(--gbd)', borderRadius: '50%', padding: 0 }}>✕</button>
+  ))
 
   const shared = <>{journalRisk}{strips}</>
   return (
     <div className="tc-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose?.() }}>
       <div ref={rootRef} tabIndex={-1} className="tc-root" data-theme={theme} role="dialog" aria-modal="true"
-        style={{ ...shellStyle, ...card, borderRadius: 18, position: 'relative', overflow: 'hidden', outline: 'none', background: 'var(--bg)' }}>
+        style={{ ...shellStyle, ...card, borderRadius: 18, position: 'relative', overflow: 'visible', outline: 'none', background: 'var(--bg)',
+          display: 'flex', flexDirection: 'column',
+          ...(phoneShrink ? { transform: 'scale(0.8)', transformOrigin: 'center center' } : {}) }}>
         {rulers}
-        <div style={{ position: 'relative', zIndex: 1, height: '100%', boxSizing: 'border-box', overflow: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {borderCloses}
+        <div style={{ position: 'relative', zIndex: 1, boxSizing: 'border-box', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 5 }}>
           {header}
           {!cfg.tabs && (
             <div style={{ display: 'grid', gridTemplateColumns: cfg.grid, gap: 6, alignItems: 'stretch' }}>
