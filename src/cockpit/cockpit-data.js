@@ -17,6 +17,46 @@ const clamp = (x, a, b) => Math.max(a, Math.min(b, x))
 // lib/std-trade-rows.js priceDp so the cockpit agrees with the tables.
 const dpFor = v => { const a = Math.abs(Number(v)); return !Number.isFinite(a) ? 2 : a >= 10000 ? 0 : a >= 100 ? 2 : 4 }
 
+// PRICE·R tape de-overlap.
+//
+// Two defects, one visible symptom (measured: 3-6 pairs of adjacent labels
+// overlapping by 2-3px).
+//
+//  1. The neighbour filter never fired. It was written as
+//       .filter((tk, i, arr) => i === 0 || tk.top - arr[i - 1].top >= 11)
+//     but Array.prototype.filter hands the callback the ORIGINAL array, not
+//     the accumulating result — so `arr[i - 1]` was always the pre-filter
+//     neighbour, which is 11.5 apart by construction and therefore always
+//     passed. Dropping a tick next to a rail could never make its neighbours
+//     re-check their spacing. A running last-KEPT value is the fix.
+//
+//  2. The thresholds were below the label's own height. `top` is a percentage
+//     of the tape, but overlap is a pixel fact: at the shortest tape the
+//     variants render, 11.5% is about 12px while a 10.5px numeric row occupies
+//     roughly 13px. Two labels 11.5% apart therefore touch. MIN_GAP is set
+//     above the label's share of the shortest tape, so the guarantee holds on
+//     the small variants too — at the cost of showing fewer ticks there, which
+//     is the right trade: an unreadable label is worse than an absent one.
+const TAPE_MIN_GAP = 13
+
+/**
+ * Keep ticks that clear both the rails and each other by TAPE_MIN_GAP.
+ * Pure and exported so the spacing guarantee is a test, not an eyeball.
+ *
+ * @param {Array<{top:number}>} ticks   candidate ticks, ascending by `top`
+ * @param {number[]} rails              rail label positions to clear
+ */
+export function thinTicks(ticks, rails = [], minGap = TAPE_MIN_GAP) {
+  const kept = []
+  for (const tk of ticks || []) {
+    if (rails.some(b => Math.abs(tk.top - b) < minGap)) continue
+    const prev = kept[kept.length - 1]
+    if (prev && tk.top - prev.top < minGap) continue
+    kept.push(tk)
+  }
+  return kept
+}
+
 export function cockpitFrame(store, tick, opts = {}) {
   // session axis (task-prompt §8 — see PR open questions): 'open'|'pre'|'post'|'closed'|'halted'
   const session = opts.session || { state: 'open', exchange: 'HKEX', opensInMins: null }
@@ -81,9 +121,7 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mk = (p, name) => { const raw = pos(p); const tag = name + ' ' + rOf(p); if (raw < 22) return { t: 22, lb: tag + ' ▲', off: true }; if (raw > 82) return { t: name === 'SL' ? 95 : 84, lb: tag + ' ▼', off: true }; return { t: raw, lb: tag, off: false } }
   const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
   const bands = [mTP, mEN, mSL].map(m => m.t)
-  const altTicks = altTicksAll
-    .filter(tk => bands.every(b => Math.abs(tk.top - b) > 10))
-    .filter((tk, i, arr) => i === 0 || tk.top - arr[i - 1].top >= 11)
+  const altTicks = thinTicks(altTicksAll, bands)
   const hdgTicks = [[-100, 'BEAR'], [-75, ''], [-50, 'weak'], [-25, ''], [0, 'CHOP'], [25, ''], [50, 'weak'], [75, ''], [100, 'BULL']].map(([v, lb], i) => ({ v: lb || '·', left: 10 + i * 10, col: v < 0 ? 'var(--dn)' : v > 0 ? 'var(--up)' : 'var(--sb)' }))
   if (!store.hist2) {
     let s2 = 991
