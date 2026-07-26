@@ -54,12 +54,21 @@ function normalizeBase(url) {
 // stable now, and localStorage still overrides for anyone self-hosting.
 const DEFAULT_AGENT_URL = 'https://sg-trade.up.railway.app'
 
+// D12 (2026-07-27): the build-time default used to fall back to
+// VITE_AGENT_SECRET_AUTOPILOT/VITE_AGENT_SECRET — full (money-moving)
+// credentials — which meant every fresh browser silently got FULL control
+// the moment the page loaded, and that same secret sat in plain view in
+// the public JS bundle. The default now only ever grants the READ tier;
+// actual control requires an explicit paste into Connect (saved to
+// localStorage from then on), same as it always has for a self-hosted
+// agent. VITE_AGENT_SECRET/VITE_AGENT_SECRET_AUTOPILOT are intentionally
+// NOT read anymore — see README's D12 note before reintroducing them here.
 export function getAgentConn() {
   const lsUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_URL) : ''
   const lsSecret = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_SECRET) : ''
   return {
     base: normalizeBase(lsUrl || DEFAULT_AGENT_URL),
-    secret: lsSecret || import.meta.env.VITE_AGENT_SECRET_AUTOPILOT || import.meta.env.VITE_AGENT_SECRET || '',
+    secret: lsSecret || import.meta.env.VITE_AGENT_SECRET_READ || '',
     fromLocalStorage: Boolean(lsUrl),
   }
 }

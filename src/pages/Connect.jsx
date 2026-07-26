@@ -162,7 +162,7 @@ export default function Connect() {
             <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://your-agent-host.example.com" />
           </label>
           <label className="block text-[9px]">
-            <span className="text-[var(--color-text-sub)]">Agent secret (AGENT_SECRET)</span>
+            <span className="text-[var(--color-text-sub)]">Agent secret (AGENT_SECRET) — paste the full secret for order/close/config control; the default here is read-only</span>
             <Input type="password" value={secret} onChange={e => setSecret(e.target.value)} placeholder="shared secret" />
           </label>
         </div>
