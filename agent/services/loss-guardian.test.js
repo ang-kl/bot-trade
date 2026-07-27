@@ -62,3 +62,17 @@ test('time cap off by default → a stopped position inside the cap holds', () =
   const d = decideLossGuardian(CFG, { side: 'BUY', entry: 100, price: 90, currentSl: 88, atr: 1, digits: 2, ageHours: 200 })
   assert.equal(d.action, null) // maxHoldHours null → never time-cap; has a stop → untouched
 })
+
+test('position with its OWN time_cap_at → guardian time cap defers (hardening 6d)', () => {
+  const cfg = { ...CFG, maxHoldHours: 10 }
+  // Same breach as the close case above, but the position-manager owns this
+  // position's clock — the guardian must not close it early.
+  const d = decideLossGuardian(cfg, { side: 'BUY', entry: 100, price: 99, currentSl: 95, atr: 1, digits: 2, ageHours: 12, hasOwnTimeCap: true })
+  assert.equal(d.action, null)
+})
+
+test('own time cap defers ONLY the time cap — naked-position protection still applies', () => {
+  const cfg = { ...CFG, maxHoldHours: 10 }
+  const d = decideLossGuardian(cfg, { side: 'BUY', entry: 100, price: 98.5, currentSl: null, atr: 1, digits: 2, ageHours: 12, hasOwnTimeCap: true })
+  assert.equal(d.action.sl, 97) // protective stop still placed
+})

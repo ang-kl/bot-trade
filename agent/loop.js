@@ -2581,7 +2581,11 @@ async function runLoop(db) {
       const d5 = pruneDecisionLog(db)
       const { prunePositionEvents } = await import('./services/position-events.js')
       const d6 = prunePositionEvents(db)
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events`)
+      // Long-horizon ledger retention (hardening 6c): closed trades +
+      // postmortems past ~2 years (retention_json overrides; null disables).
+      const { pruneTradeHistory } = await import('./services/retention.js')
+      const d7 = pruneTradeHistory(db)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems`)
     } catch (err) {
       log('Housekeeping error:', err.message)
     }

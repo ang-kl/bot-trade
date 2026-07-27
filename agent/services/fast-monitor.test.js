@@ -6,7 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cadenceMs, relVolFromBars, effectiveCadenceMs, isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
+import { cadenceMs, relVolFromBars, effectiveCadenceMs, isSpikeMove, SPIKE_PCT_PER_MIN, frozenQuoteUpdate, FROZEN_QUOTE_DEFAULT_MIN } from './fast-monitor.js'
 
 const MIN = 60_000
 
@@ -75,4 +75,46 @@ test('SPIKE_PCT_PER_MIN is exported and isSpikeMove uses it as the default thres
   const justOver = 100 * (1 + (SPIKE_PCT_PER_MIN + 0.01) / 100)
   assert.equal(isSpikeMove(100, t0, justUnder, t0 + MIN), false)
   assert.equal(isSpikeMove(100, t0, justOver, t0 + MIN), true)
+})
+
+// Frozen-quote detector (hardening batch 6a) ----------------------------
+
+test('frozenQuoteUpdate: first sighting and any price movement restart the episode', () => {
+  const t0 = 1_000_000
+  let r = frozenQuoteUpdate(undefined, 1.1, t0, 10 * MIN)
+  assert.deepEqual(r, { rec: { mid: 1.1, changedAt: t0, alerted: false }, alert: false, recovered: false })
+  r = frozenQuoteUpdate(r.rec, 1.1001, t0 + MIN, 10 * MIN)
+  assert.equal(r.rec.changedAt, t0 + MIN)
+  assert.equal(r.alert, false)
+})
+
+test('frozenQuoteUpdate: unchanged past the threshold alerts exactly once', () => {
+  const t0 = 1_000_000
+  let r = frozenQuoteUpdate(undefined, 1.1, t0, 10 * MIN)
+  r = frozenQuoteUpdate(r.rec, 1.1, t0 + 9 * MIN, 10 * MIN)
+  assert.equal(r.alert, false)                              // still inside the threshold
+  r = frozenQuoteUpdate(r.rec, 1.1, t0 + 11 * MIN, 10 * MIN)
+  assert.equal(r.alert, true)                               // breach → alert
+  r = frozenQuoteUpdate(r.rec, 1.1, t0 + 30 * MIN, 10 * MIN)
+  assert.equal(r.alert, false)                              // same episode → no re-alert
+})
+
+test('frozenQuoteUpdate: movement after an alert reports recovery and re-arms', () => {
+  const t0 = 1_000_000
+  let r = frozenQuoteUpdate(undefined, 1.1, t0, 10 * MIN)
+  r = frozenQuoteUpdate(r.rec, 1.1, t0 + 11 * MIN, 10 * MIN)
+  assert.equal(r.alert, true)
+  r = frozenQuoteUpdate(r.rec, 1.2, t0 + 12 * MIN, 10 * MIN)
+  assert.equal(r.recovered, true)
+  assert.equal(r.rec.alerted, false)                        // fresh episode — can alert again
+  r = frozenQuoteUpdate(r.rec, 1.2, t0 + 23 * MIN, 10 * MIN)
+  assert.equal(r.alert, true)
+})
+
+test('frozenQuoteUpdate: threshold 0 disables alerting entirely', () => {
+  const t0 = 1_000_000
+  let r = frozenQuoteUpdate(undefined, 1.1, t0, 0)
+  r = frozenQuoteUpdate(r.rec, 1.1, t0 + 100 * MIN, 0)
+  assert.equal(r.alert, false)
+  assert.equal(FROZEN_QUOTE_DEFAULT_MIN, 10)
 })
