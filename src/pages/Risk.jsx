@@ -66,7 +66,7 @@ function Pill({ on, label, onClick }) {
 // rendered full-width and "Guardian move %" wrapped onto two lines in the
 // owner's screenshot.
 const FIELD_W = '!w-[120px]'
-function Field({ label, value, onChange, pct = false, hint, placeholder = 'not set' }) {
+function Field({ label, value, onChange, pct = false, hint, recommend, placeholder = 'not set' }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
   return (
@@ -93,7 +93,12 @@ function Field({ label, value, onChange, pct = false, hint, placeholder = 'not s
           {pct && <span className="text-[9px] text-[var(--color-text-sub)]">%</span>}
         </span>
       </label>
-      {showHint && <p className="text-[9px] text-[var(--color-text-sub)] mt-0.5 leading-snug">{hint}</p>}
+      {showHint && (
+        <p className="text-[9px] text-[var(--color-text-sub)] mt-0.5 leading-snug">
+          {hint}
+          {recommend && <><br /><span className="text-[var(--color-accent)]">bot-trade recommends: {recommend}</span></>}
+        </p>
+      )}
     </div>
   )
 }
@@ -279,7 +284,7 @@ export default function Risk() {
             </div>
           </div>
           <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
-            hint="Used for margin-headroom checks before approving a position." />
+            hint="Used for margin-headroom checks before approving a position." recommend="1:100 — match whatever your broker account actually offers." />
           <div className="text-[9px]">
             <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
             <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
@@ -301,23 +306,24 @@ export default function Risk() {
           <SectionTitle>Account risk configuration</SectionTitle>
           <div className="space-y-2">
             <Field label={`Daily loss cap${mark('dailyLossPct')}`} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
-              hint="New entries stop for the day once closed P&L is down this % of balance." />
+              hint="New entries stop for the day once closed P&L is down this % of balance." recommend="3% of balance." />
             <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
-              hint="Absolute USD cap used only when balance is unknown." />
+              hint="Absolute USD cap used only when balance is unknown." recommend="$300." />
             <Field label={`Equity stop${mark('equityStopPct')}`} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
-              hint="Daily drawdown at which the loop CLOSES all bot positions and disarms (empty = same as daily loss cap)." />
+              hint="Daily drawdown at which the loop CLOSES all bot positions and disarms (empty = same as daily loss cap)." recommend="unset — falls back to the daily loss cap above." />
             <Field label={`Max margin usage${mark('maxMarginUsagePct')}`} pct value={risk.maxMarginUsagePct} onChange={v => setRisk(r => ({ ...r, maxMarginUsagePct: v }))}
-              hint="Bot's own cap on margin locked as a % of balance — separate from the broker's 50% stop-out." />
+              hint="Bot's own cap on margin locked as a % of balance — separate from the broker's 50% stop-out." recommend="50% of balance." />
             <div className="border-t border-[var(--glass-edge)] pt-2 space-y-2">
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="A losing run sizes DOWN automatically instead of compounding.">Drawdown de-risk{mark('deriskOnDrawdown')}</span>
                 <Pill on={!!risk.deriskOnDrawdown} label="On" onClick={() => setRisk(r => ({ ...r, deriskOnDrawdown: !r.deriskOnDrawdown }))} />
               </div>
-              <Field label={`window (hours)${mark('deriskWindowHours')}`} value={risk.deriskWindowHours} onChange={v => setRisk(r => ({ ...r, deriskWindowHours: v }))} />
+              <Field label={`window (hours)${mark('deriskWindowHours')}`} value={risk.deriskWindowHours} onChange={v => setRisk(r => ({ ...r, deriskWindowHours: v }))}
+                recommend="24 hours." />
               <Field label={`trigger${mark('deriskTriggerPct')}`} pct value={risk.deriskTriggerPct} onChange={v => setRisk(r => ({ ...r, deriskTriggerPct: v }))}
-                hint="Down more than this % of balance in the window → de-risk." />
+                hint="Down more than this % of balance in the window → de-risk." recommend="5% down in the window." />
               <Field label={`size multiplier${mark('deriskMult')}`} value={risk.deriskMult} onChange={v => setRisk(r => ({ ...r, deriskMult: v }))}
-                hint="Budget × this while de-risked (0.5 = half size)." />
+                hint="Budget × this while de-risked (0.5 = half size)." recommend="0.5 (half size)." />
             </div>
             <label className="block text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="Symbols vetoed outright, comma-separated.">Blocked symbols{mark('blockedSymbols')}</span>
@@ -330,42 +336,54 @@ export default function Risk() {
         </Card>
 
         {/* ---- Middle column: Bot Trade + Cpp ---- */}
-        <div className="space-y-2">
+        {/* @container: the two field grids below key their column count off
+            THIS column's own rendered width (md:/xl: would key off the whole
+            page's viewport instead, which is fixed 270px narrower on each
+            side here — at some zoom levels that mismatch made a "3-column"
+            viewport width map to a middle column too narrow to actually fit
+            3 fields, squeezing/wrapping them). @sm:/@xl: below track this
+            container, so the field grid degrades gracefully regardless of
+            browser zoom. */}
+        <div className="space-y-2 @container">
           <Card id="sec-bot-risk" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Bot Trade risk configuration</SectionTitle>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-1">
+            <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
               <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
-                hint="% of balance one trade may lose at its SL." />
+                hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
               <Field label={`Per-trade risk $ override${mark('perTradeRiskUsd')}`} value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
-                hint="Absolute $ risk per trade; when set, overrides the %." placeholder="empty = % applies" />
+                hint="Absolute $ risk per trade; when set, overrides the %." placeholder="empty = % applies" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
               <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
-                hint="Never risk more than this % of balance regardless of other settings." />
+                hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
               <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
-                hint="Optional absolute $ ceiling per trade." placeholder="empty = no $ ceiling" />
-              <Field label={`Min lot size${mark('minLotSize')}`} value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))} />
+                hint="Optional absolute $ ceiling per trade." placeholder="empty = no $ ceiling" recommend="unset — no $ ceiling by default." />
+              <Field label={`Min lot size${mark('minLotSize')}`} value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
+                recommend="0.01 — the broker's own minimum." />
               <Field label={`Min R:R${mark('minRR')}`} value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
-                hint="TP must be at least this multiple of the SL distance." />
+                hint="TP must be at least this multiple of the SL distance." recommend="1.5 — TP at least 1.5× the SL distance." />
               <Field label={`Min SL distance${mark('minSLDistancePct')}`} value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
-                hint="% of price — stops tighter than this get swept by noise." />
+                hint="% of price — stops tighter than this get swept by noise." recommend="0.15% of price." />
               <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
-                hint="Veto when the live spread exceeds this fraction of the SL distance." />
-              <Field label={`Max open positions${mark('maxOpenPositions')}`} value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))} />
+                hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
+              <Field label={`Max open positions${mark('maxOpenPositions')}`} value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
+                recommend="5 concurrent positions." />
               <Field label={`Symbol cooldown (min)${mark('symbolCooldownMinutes')}`} value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
-                hint="Lock a symbol after any closed trade on it." />
+                hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
               <Field label={`Loss streak breaker${mark('maxConsecutiveLosses')}`} value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
-                hint="After N losses in a row, pause. 0 = off." />
-              <Field label={`Streak cooldown (min)${mark('cooldownMinutes')}`} value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))} />
+                hint="After N losses in a row, pause. 0 = off." recommend="3 losses in a row." />
+              <Field label={`Streak cooldown (min)${mark('cooldownMinutes')}`} value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
+                recommend="60 minutes." />
               <Field label={`Cluster exposure${mark('maxClusterExposure')}`} value={risk.maxClusterExposure} onChange={v => setRisk(r => ({ ...r, maxClusterExposure: v }))}
-                hint="Net directional bets allowed per correlation cluster. 0 = off." />
-              <Field label={`Currency exposure${mark('maxCurrencyExposure')}`} value={risk.maxCurrencyExposure} onChange={v => setRisk(r => ({ ...r, maxCurrencyExposure: v }))} />
+                hint="Net directional bets allowed per correlation cluster. 0 = off." recommend="2 net directional bets per cluster." />
+              <Field label={`Currency exposure${mark('maxCurrencyExposure')}`} value={risk.maxCurrencyExposure} onChange={v => setRisk(r => ({ ...r, maxCurrencyExposure: v }))}
+                recommend="2 net bets per currency." />
               <Field label={`Min trades for Kelly${mark('minTradesForKelly')}`} value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
-                hint="Below this trade count, Kelly sizing is skipped." />
+                hint="Below this trade count, Kelly sizing is skipped." recommend="30 closed trades before Kelly sizing kicks in." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
                 <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
               </div>
               <Field label="Guardian move %" value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
-                hint="Tick move that wakes the guardian between sweeps." />
+                hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
                 <Pill on={weekendBank} label="On" onClick={() => {
@@ -444,7 +462,7 @@ export default function Risk() {
 
           <Card id="sec-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>Cpp risk configuration</SectionTitle>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-1">
+            <div className="grid grid-cols-1 @sm:grid-cols-2 gap-x-5 gap-y-1">
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Kill switch: the C++ engine refuses EVERY order while halted.">Halt (kill switch)</span>
                 <Pill on={!!guard.halt} label={guard.halt ? 'Halted — no orders' : 'Off'} onClick={() => setGuard(g => ({ ...g, halt: !g.halt }))} />
@@ -458,7 +476,7 @@ export default function Risk() {
                 <Pill on={guard.requireTarget !== false} label="On" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
               <Field label="Max order volume (units×100)" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
-                hint="Hard cap on a single order's cTrader volume. 0 = no cap." />
+                hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
                 <Pill on={vpoEnabled} label="On" onClick={() => {

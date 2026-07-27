@@ -730,11 +730,25 @@ export default function actionsRouter(db) {
   // positionId, so performance stats and the Tune timeframe table use
   // broker-true numbers.
   // -----------------------------------------------------------------------
+  // COALESCE + short TTL — same reason as /broker-positions above: this route
+  // opens several fresh WS connections per call (wsGetDeals per 7-day chunk,
+  // plus symbol/trader/asset lookups), and Desk polls it unconditionally on
+  // every tick (as often as every 5s with a position open). Uncoalesced, that
+  // adds broker-WS pressure on top of the scan/monitor loop's own connections
+  // — one in-flight fetch per `days` window is shared and reused briefly.
+  const bhShared = new Map()
+  const BH_TTL_MS = 12_000
   router.post('/broker-history', async (req, res) => {
-    try {
+    const days = Math.min(190, Math.max(1, Number(req.body?.days) || 7))
+    let slot = bhShared.get(days)
+    if (!slot) { slot = { at: 0, promise: null }; bhShared.set(days, slot) }
+    if (slot.promise && Date.now() - slot.at < BH_TTL_MS) {
+      try { return res.json(await slot.promise) } catch { /* stale failure — fall through to a fresh run */ }
+    }
+    slot.at = Date.now()
+    slot.promise = (async () => {
       const creds = getCtraderCreds(db)
-      if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
-      const days = Math.min(190, Math.max(1, Number(req.body?.days) || 7))
+      if (!creds.ready) throw Object.assign(new Error('cTrader not connected'), { httpStatus: 400 })
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       const { wsGetDeals, wsSymbolsByIds, wsGetSymbolsList, wsGetTrader, wsGetAssets } = await import('../lib/ctrader-ws.js')
 
@@ -880,10 +894,13 @@ export default function actionsRouter(db) {
       // Cache the latest history so the Desk can paint instantly next visit
       // (GET /state/broker-cache) while the live fetch refreshes behind.
       try { setState(db, 'broker_history_cache_json', JSON.stringify(payload)) } catch { /* cache is best-effort */ }
-      res.json(payload)
+      return payload
+    })()
+    try {
+      res.json(await slot.promise)
     } catch (err) {
       console.error('[actions/broker-history] error:', err.message)
-      res.status(502).json({ error: err.message })
+      res.status(err.httpStatus === 400 ? 400 : 502).json({ error: err.message })
     }
   })
 
