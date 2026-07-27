@@ -161,6 +161,14 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   const alreadyResting = working.find(r => r.level != null && Math.abs(r.level - synth.entry) <= tol)
   if (alreadyResting) return { skipped: 'already_working', orderId: alreadyResting.order_id }
 
+  // TOTAL resting-order cap, shared with the pending-fib path (owner-approved
+  // build 2, 2026-07-27): every resting order is exposure the moment it
+  // fills — 82 of them helped drive a margin call. Counted across BOTH bot
+  // placement paths; PENDING_MAX_TOTAL overrides the default 20.
+  const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))
+  const totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
+  if (totalWorking >= maxTotal) return { skipped: 'pending_cap', totalWorking, maxTotal }
+
   // SAME risk gate as a market order — a resting limit can't bypass risk.
   const proposal = {
     symbol, side,
