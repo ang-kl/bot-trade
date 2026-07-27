@@ -60,12 +60,14 @@ node --test "agent/**/*.test.js"           # agent test suite
 
 | Var | Where | Purpose |
 |---|---|---|
-| `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) |
+| `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) — full tier: authorizes every route, including orders/closes/config writes |
+| `AGENT_SECRET_READ` | agent | Optional (D12, 2026-07-27): a second, lower-privilege bearer token that only authorizes `GET` (read-only/dashboard) routes — never an order, amend, close, or config write. Unset by default; every route behaves exactly as before until this is set. Safer to embed in a public build (`VITE_AGENT_SECRET_READ`) than the full secret, since a leak only exposes account data, not control. |
 | `CLAUDE_API_KEY` | agent + Vercel | Claude API — position monitor / weekend checks only |
 | `ANTHROPIC_MODEL` | agent | Optional model override for those checks |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
 | `EXEC_ENGINE` / `EXEC_URL` / `EXEC_SECRET` | agent | `cpp` routes orders through the C++ sidecar at `EXEC_URL` |
-| `VITE_AGENT_URL` / `VITE_AGENT_SECRET` | Vercel (build) | Default agent connection (overridable per-browser on Connect) |
+| `VITE_AGENT_URL` | Vercel (build) | Default agent connection (overridable per-browser on Connect) |
+| `VITE_AGENT_SECRET_READ` | Vercel (build) | Default agent secret for a fresh browser — READ TIER ONLY (D12, 2026-07-27). Safe to embed in the public bundle: a leak exposes account/dashboard data, never control. Full (order/close/config) access always requires pasting the real `AGENT_SECRET` into Connect, saved to that browser's `localStorage`. `VITE_AGENT_SECRET` / `VITE_AGENT_SECRET_AUTOPILOT` are no longer read by the frontend — remove them from the Vercel build once this is set. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_OWNER_CHAT_ID` | agent | Alerts: fills, vetoes, stalls, tampering, spend caps |
 | `DB_PATH` / `PORT` / `FRONTEND_URL` | agent | SQLite path (**set to a mounted volume in production** — `/data/agent.db`), listen port, CORS origin |
 

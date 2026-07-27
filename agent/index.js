@@ -6,6 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
+import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -39,6 +40,11 @@ const {
   CLAUDE_API_KEY,
   TELEGRAM_BOT_TOKEN,
   AGENT_SECRET,
+  // D12 (2026-07-27, owner-approved): optional read-only credential. Unset
+  // by default — every route behaves exactly as before until this is set.
+  // Authorizes GET routes only; never a route that moves money or changes
+  // trading config. See lib/auth-tiers.js.
+  AGENT_SECRET_READ,
   FRONTEND_URL,
   PORT = '3001',
   DB_PATH,
@@ -192,8 +198,10 @@ function authMiddleware(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
 
-  if (!token || (token !== AGENT_SECRET && !isValidSession(token))) {
-    console.warn(`[auth] 401 ${req.method} ${req.path} — ${token ? `stale/unknown token ${token.slice(0, 10)}…` : 'no token'}`);
+  const tier = classifyToken(token, { agentSecret: AGENT_SECRET, agentSecretRead: AGENT_SECRET_READ, isValidSession });
+  if (!tierAuthorizes(tier, req.method)) {
+    const why = !token ? 'no token' : tier === 'read' ? `read-tier token on a write route ${token.slice(0, 10)}…` : `stale/unknown token ${token.slice(0, 10)}…`;
+    console.warn(`[auth] 401 ${req.method} ${req.path} — ${why}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
