@@ -28,6 +28,7 @@
 
 import { getState as dbGetState, setState as dbSetState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
+import { enabledStrategies } from './strategies.js'
 
 export const RSI2_SEED_FLAG = 'rsi2_go_seed_v1'
 export const RSI2_KEY = 'rsi2_reversion'
@@ -76,7 +77,16 @@ export function seedRsi2GoCombos(db, io = {}) {
   // 1) Trade-arm rsi2_reversion (append; preserve existing order/entries).
   let enabled
   try { enabled = JSON.parse(getState(db, 'enabled_strategies_json') || 'null') } catch { enabled = null }
-  if (!Array.isArray(enabled)) enabled = ['fib_618_fade'] // materialise the documented default
+  // Codex review (PR #422): this used to hardcode ['fib_618_fade'] here — on
+  // a genuinely fresh/reset agent_state this seed runs at boot BEFORE any
+  // explicit toggle exists, and whatever it writes here becomes the
+  // permanent explicit list (enabledStrategies always prefers an explicit
+  // list over the registry's own defaultOn set). Hardcoding fib meant every
+  // fresh install silently reverted to the old fib-only default regardless
+  // of STRATEGY_REGISTRY's defaultOn flags. Derive it from the registry
+  // instead, so this seed only ever ADDS rsi2_reversion on top of whatever
+  // the registry's own defaults actually are.
+  if (!Array.isArray(enabled)) enabled = enabledStrategies(db, getState).map(s => s.key)
   const addedStrategy = !enabled.includes(RSI2_KEY)
   if (addedStrategy) enabled = [...enabled, RSI2_KEY]
 

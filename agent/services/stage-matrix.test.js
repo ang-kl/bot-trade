@@ -28,8 +28,12 @@ test('defaults: scan analyses EVERYTHING, filters gate nothing at scan', () => {
     assert.equal(s.stages.backtest, true, `${s.key} backtest default`)
     assert.equal(s.stages.manage, true, `${s.key} manage default`)
   }
-  // trade column mirrors enabledStrategies default (fib only)
-  assert.deepEqual(m.strategies.filter(s => s.stages.trade).map(s => s.key), ['fib_618_fade'])
+  // trade column mirrors enabledStrategies default (everything except
+  // fib_618_fade — owner 2026-07-27)
+  assert.deepEqual(
+    m.strategies.filter(s => s.stages.trade).map(s => s.key),
+    ['cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+  )
   // filters: off at scan (analyse all convictions) and backtest; no manage cell.
   for (const f of m.filters) {
     assert.equal(f.stages.scan, false)
@@ -67,8 +71,13 @@ test('trade column derives LIVE from legacy keys — never from stored JSON', ()
 
 test('setStage trade writes THROUGH to the legacy keys', () => {
   const db = initDB(':memory:')
-  setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: true }, io)
-  assert.deepEqual(JSON.parse(getState(db, 'enabled_strategies_json')), ['fib_618_fade', 'ema_pullback'])
+  // fib_618_fade is off by default (2026-07-27) — arming it merges into the
+  // rest of the default-on set, in registry order.
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true }, io)
+  assert.deepEqual(
+    JSON.parse(getState(db, 'enabled_strategies_json')),
+    ['fib_618_fade', 'cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+  )
   setStage(db, { kind: 'strategy', key: 'cup_handle', stage: 'trade', on: true }, io)
   assert.equal(getState(db, 'cup_handle_enabled'), 'true')
   setStage(db, { kind: 'filter', key: 'vwap', stage: 'trade', on: true }, io)
@@ -125,18 +134,18 @@ test('scanFilterOptions: strict when scan-armed, annotate when only trade-armed,
 
 test('tradeStageGate: strategy trade cell and trade-armed filters both bite', () => {
   const db = initDB(':memory:')
-  // fib on by default
-  assert.equal(tradeStageGate(db, getState, { strategy: 'fib_618_fade', filtersFailed: [] }).ok, true)
-  // strategy off in trade column
-  assert.match(tradeStageGate(db, getState, { strategy: 'cup_handle', filtersFailed: [] }).reason, /OFF in Auto Trade/)
-  // trade-armed filter failed at scan → veto
+  // cup_handle on by default (2026-07-27 default set)
+  assert.equal(tradeStageGate(db, getState, { strategy: 'cup_handle', filtersFailed: [] }).ok, true)
+  // strategy off in trade column (fib_618_fade is off by default now)
+  assert.match(tradeStageGate(db, getState, { strategy: 'fib_618_fade', filtersFailed: [] }).reason, /OFF in Auto Trade/)
+  // trade-armed filter failed at scan → veto (filters gate any strategy, not just fib)
   setState(db, 'fib_rsi_filter', 'true')
-  const vetoed = tradeStageGate(db, getState, { strategy: 'fib_618_fade', filtersFailed: ['rsi'] })
+  const vetoed = tradeStageGate(db, getState, { strategy: 'cup_handle', filtersFailed: ['rsi'] })
   assert.equal(vetoed.ok, false)
   assert.match(vetoed.reason, /RSI filter failed/)
   // same failure with the filter NOT trade-armed → passes
   setState(db, 'fib_rsi_filter', 'false')
-  assert.equal(tradeStageGate(db, getState, { strategy: 'fib_618_fade', filtersFailed: ['rsi'] }).ok, true)
+  assert.equal(tradeStageGate(db, getState, { strategy: 'cup_handle', filtersFailed: ['rsi'] }).ok, true)
   // unknown strategy label never trades
   assert.equal(tradeStageGate(db, getState, { strategy: 'mystery', filtersFailed: [] }).ok, false)
 })

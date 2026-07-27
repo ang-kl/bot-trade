@@ -34,18 +34,24 @@ const computeRsi2 = await loadCompute('./rsi2-reversion.js', 'computeRsi2')
 const computeFibConfluence = await loadCompute('./fib-confluence.js', 'computeFibConfluence')
 const computeVaBreakout = await loadCompute('./va-breakout.js', 'computeVaBreakout')
 
+// Owner (2026-07-27): "turn all strategies on by default except fib_618 —
+// I'll choose it in Tune since I have fib_confluence." fib_618_fade is the
+// one EXPLICIT exception. ema_pullback was held back at first (disarmed the
+// same day, net -$2,675.84 over 12 trades) but the owner explicitly
+// confirmed re-arming it, citing their own additional entry-context
+// tooling for assessing its recent trades — so it's back in the default set.
 export const STRATEGY_REGISTRY = [
-  { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: true,  pendingCapable: true  },
-  { key: 'cup_handle',        name: 'Cup & Handle',       compute: computeCupHandleSignal,  defaultOn: false, pendingCapable: false },
-  { key: 'inv_cup_handle',    name: 'Inverted Cup & Handle', compute: computeInvCupHandleSignal, defaultOn: false, pendingCapable: false },
-  { key: 'ema_pullback',      name: 'EMA trend-pullback', compute: computeEmaPullback,      defaultOn: false, pendingCapable: false },
-  { key: 'donchian_breakout', name: 'Range breakout',     compute: computeDonchianBreakout, defaultOn: false, pendingCapable: false },
-  { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: false, pendingCapable: false },
-  { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: false, pendingCapable: false },
-  { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: false, pendingCapable: false },
-  { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: false, pendingCapable: false },
-  { key: 'fib_confluence',    name: 'Fib confluence zone', compute: computeFibConfluence,   defaultOn: false, pendingCapable: false },
-  { key: 'va_breakout',       name: 'Value-area breakout', compute: computeVaBreakout,      defaultOn: false, pendingCapable: false },
+  { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: false, pendingCapable: true  },
+  { key: 'cup_handle',        name: 'Cup & Handle',       compute: computeCupHandleSignal,  defaultOn: true,  pendingCapable: false },
+  { key: 'inv_cup_handle',    name: 'Inverted Cup & Handle', compute: computeInvCupHandleSignal, defaultOn: true, pendingCapable: false },
+  { key: 'ema_pullback',      name: 'EMA trend-pullback', compute: computeEmaPullback,      defaultOn: true,  pendingCapable: false },
+  { key: 'donchian_breakout', name: 'Range breakout',     compute: computeDonchianBreakout, defaultOn: true,  pendingCapable: false },
+  { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: true,  pendingCapable: false },
+  { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: true,  pendingCapable: false },
+  { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: true,  pendingCapable: false },
+  { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: true,  pendingCapable: false },
+  { key: 'fib_confluence',    name: 'Fib confluence zone', compute: computeFibConfluence,   defaultOn: true,  pendingCapable: false },
+  { key: 'va_breakout',       name: 'Value-area breakout', compute: computeVaBreakout,      defaultOn: true,  pendingCapable: false },
 ]
 
 export const STRATEGY_KEYS = STRATEGY_REGISTRY.map(s => s.key)
@@ -76,13 +82,15 @@ export function strategyByKey(key) {
  * Rules (deliberate, in priority order):
  * - 'enabled_strategies_json' holds an array of registry keys; unknown keys
  *   are dropped silently (a renamed strategy must not brick the loop).
- * - missing or corrupt state → the defaultOn set (fib only today).
+ * - missing or corrupt state → the defaultOn set (owner 2026-07-27: all
+ *   strategies except fib_618_fade — see the registry comment above).
  * - every strategy, INCLUDING fib, is a normal toggle (owner decision
  *   2026-07-10: forcing fib on made unwanted fib trades unavoidable when
- *   running other strategies alone). Default stays fib-on. An empty list is
- *   legal — the scan finds nothing and says so, it does not invent a base.
+ *   running other strategies alone). An empty list is legal — the scan
+ *   finds nothing and says so, it does not invent a base.
  *   Pending-order mode still requires fib to be armed for its combos, but
- *   that is enforced where pending setups are scanned, not here.
+ *   that is enforced where pending setups are scanned, not here — with fib
+ *   defaulted off, pending-order mode needs fib armed explicitly to use it.
  * - legacy back-compat: 'cup_handle_enabled' === 'true' adds cup_handle even
  *   when the JSON list doesn't mention it, so old toggles keep working.
  *

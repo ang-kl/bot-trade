@@ -49,7 +49,8 @@ test('streak on a strategy with OTHERS armed → that strategy is disarmed', () 
 })
 
 test('NEVER-ZERO invariant: streak on the LAST armed strategy → next filter armed, strategy stays live', () => {
-  const db = initDB(':memory:') // default: fib only
+  const db = initDB(':memory:')
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade'])) // fib as the sole armed strategy
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
   const out = runAdaptiveBreaker(db, {})
   assert.deepEqual(out.actions, [{ strategy: 'fib_618_fade', streak: 3, did: 'armed_filter', filter: 'vwap' }])
@@ -60,6 +61,7 @@ test('NEVER-ZERO invariant: streak on the LAST armed strategy → next filter ar
 
 test('LAST armed strategy with every filter already armed → HELD, never disarmed to zero', () => {
   const db = initDB(':memory:')
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade'])) // fib as the sole armed strategy
   // Arm all confluence filters up front so the ladder is exhausted.
   for (const f of FILTER_DEFS) setStage(db, { kind: 'filter', key: f.key, stage: 'trade', on: true }, { getState, setState })
   for (const m of [20, 10, 0]) closeTrade(db, 'fib_618_fade', -1, m)
@@ -71,6 +73,7 @@ test('LAST armed strategy with every filter already armed → HELD, never disarm
 
 test('acts ONCE per streak; a new loss re-triggers (filter ladder)', () => {
   const db = initDB(':memory:')
+  setState(db, 'enabled_strategies_json', JSON.stringify(['fib_618_fade'])) // fib as the sole armed strategy
   for (const m of [20, 10, 5]) closeTrade(db, 'fib_618_fade', -1, m)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 1) // arms vwap (rsi already on by default)
   assert.equal(runAdaptiveBreaker(db, {}).actions.length, 0) // same streak — no repeat
