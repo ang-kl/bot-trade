@@ -79,6 +79,7 @@ let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
+let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
 
 /**
  * Clear the in-process consecutive-error count. POST /actions/reset-breaker
@@ -2040,17 +2041,48 @@ async function runLoop(db) {
       // ---------------------------------------------------------------------
       try {
         setState(db, 'loop_phase', 'pending orders')
-        if (getState(db, 'pending_mode_enabled') === 'true') {
+        // TIME BUDGET + NO-OVERLAP (owner-approved 2026-07-27, root-cause fix
+        // for the day's hang→watchdog-restart cycle: /health's loopPhase
+        // forensics caught the loop stuck HERE on every observed hang). The
+        // phase gets a hard wall-clock budget; on breach the CYCLE moves on —
+        // the monitor phase for open positions must never wait behind a stuck
+        // pending await again. The abandoned run keeps executing detached
+        // until its own awaits settle, so the in-flight flag makes the next
+        // cycle SKIP its pending phase rather than run two concurrently
+        // (managePendingOrders cancels/places real broker orders — two
+        // interleaved runs could double-place).
+        if (pendingPhaseInFlight) {
+          log('Pending-order phase from a previous cycle still in flight — skipping this cycle (no overlap)')
+        } else if (getState(db, 'pending_mode_enabled') === 'true') {
           const pendingCreds = getCtraderCreds(db)
           if (pendingCreds.ready) {
-            const r = await managePendingOrders(db, pendingCreds, getSymbolMap(db), {
+            const budgetMs = Math.max(10_000, Number(process.env.PENDING_PHASE_BUDGET_MS || 90_000))
+            const startedAt = Date.now()
+            const work = managePendingOrders(db, pendingCreds, getSymbolMap(db), {
               notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
             })
-            if (r?.summary) log(`Pending orders: ${r.summary}`)
-            else if (r?.skipped) log(`Pending orders skipped: ${r.skipped}`)
+            pendingPhaseInFlight = true
+            // The detached run must clear the flag AND never surface an
+            // unhandled rejection once the cycle has moved on without it.
+            work.catch(() => {}).finally(() => { pendingPhaseInFlight = false })
+            let timer
+            const r = await Promise.race([
+              work,
+              new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), budgetMs); timer.unref?.() }),
+            ]).catch(err => ({ failed: err.message }))
+            clearTimeout(timer)
+            if (r?.timedOut) {
+              log(`Pending-order phase exceeded its ${Math.round(budgetMs / 1000)}s budget after ${Math.round((Date.now() - startedAt) / 1000)}s — abandoning the wait, cycle continues (run finishes detached)`)
+              await hbeat(db, 'pending_orders', false, `budget ${Math.round(budgetMs / 1000)}s exceeded`)
+            } else if (r?.failed) {
+              throw new Error(r.failed)
+            } else {
+              if (r?.summary) log(`Pending orders: ${r.summary}`)
+              else if (r?.skipped) log(`Pending orders skipped: ${r.skipped}`)
+            }
           }
         }
-        await hbeat(db, 'pending_orders')
+        if (!pendingPhaseInFlight) await hbeat(db, 'pending_orders')
       } catch (err) {
         log(`Pending-order phase failed (non-fatal): ${err.message}`)
         await hbeat(db, 'pending_orders', false, err.message)
