@@ -124,6 +124,16 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/llm-monitor-health — owner (2026-07-27): "I need to be
+  // alerted if any of the LLM failed and you still continue." Read-only
+  // status the frontend polls to show a small degraded-state icon.
+  // -----------------------------------------------------------------------
+  router.get('/llm-monitor-health', async (_req, res) => {
+    const { getLlmMonitorHealth } = await import('../services/llm-monitor-health.js')
+    res.json(getLlmMonitorHealth(db))
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/scans/:symbol — scan history for one symbol (last 50)
   // -----------------------------------------------------------------------
   router.get('/scans/:symbol', (req, res) => {
