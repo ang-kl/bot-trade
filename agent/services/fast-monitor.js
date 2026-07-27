@@ -26,6 +26,7 @@ import { getState } from '../db.js'
 import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { manageStageAllows } from './stage-matrix.js'
+import { isSymbolOpenCached } from './symbol-hours.js'
 
 /**
  * Pure cadence policy: milliseconds between checks for one position.
@@ -88,12 +89,36 @@ export function isSpikeMove(prevMid, prevAt, mid, now, pctPerMin = SPIKE_PCT_PER
   return (movePct / elapsedMin) >= pctPerMin
 }
 
+// Hardening batch (owner-approved build 6a): a quote that stops MOVING while
+// its market is open is a different failure from a quote that stops ARRIVING —
+// wsGetSpotOnce keeps succeeding, mid stays non-null, every layer looks
+// healthy, yet SL/TP decisions are being made on a fossil price (frozen feed,
+// stale symbol subscription, broker-side halt). Track the last DISTINCT mid
+// per held symbol; unchanged past the threshold while the market is open →
+// one owner alert per freeze episode, cleared the moment the price moves.
+export const FROZEN_QUOTE_DEFAULT_MIN = 10
+
+/**
+ * Pure episode tracker. rec = { mid, changedAt, alerted } | undefined.
+ * Returns { rec, alert, recovered } — alert fires at most once per episode.
+ */
+export function frozenQuoteUpdate(rec, mid, nowMs, thresholdMs) {
+  if (!rec || rec.mid !== mid) {
+    return { rec: { mid, changedAt: nowMs, alerted: false }, alert: false, recovered: !!rec?.alerted }
+  }
+  if (!rec.alerted && thresholdMs > 0 && nowMs - rec.changedAt >= thresholdMs) {
+    return { rec: { ...rec, alerted: true }, alert: true, recovered: false }
+  }
+  return { rec, alert: false, recovered: false }
+}
+
 // Per-position pacing + per-symbol volume cache. In-memory: a restart just
 // re-checks everything once, which is safe.
 const lastCheckAt = new Map()  // position id → ms
 const lastPriceAt = new Map()  // position id → { mid, at }
 const spikeUntil = new Map()   // symbol → ms timestamp; forces fastest cadence until then
 const volCache = new Map()     // symbol → { relVol, at }
+const quoteFreeze = new Map()  // symbol → { mid, changedAt, alerted }
 const VOL_TTL_MS = 5 * 60_000
 
 let running = false
@@ -162,6 +187,30 @@ export async function runFastMonitor(db, creds, deps = {}) {
         const q = await ws.wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId)
         const mid = q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null
         if (mid == null) continue // market closed / no feed — main loop's problem
+
+        // Frozen-quote watch (FROZEN_QUOTE_MIN, minutes; 0 disables). Only
+        // while the market is open — a flat weekend quote is normal, not a
+        // frozen feed. One alert per episode, self-clearing on movement.
+        const frozenMin = Number(process.env.FROZEN_QUOTE_MIN ?? FROZEN_QUOTE_DEFAULT_MIN)
+        if (frozenMin > 0) {
+          const fq = frozenQuoteUpdate(quoteFreeze.get(pos.symbol), mid, now(), frozenMin * 60_000)
+          quoteFreeze.set(pos.symbol, fq.rec)
+          if (fq.alert) {
+            let open = true
+            try { open = isSymbolOpenCached(db, pos.symbol).open !== false } catch { /* unknown → assume open, alert */ }
+            if (open) {
+              const mins = Math.round((now() - fq.rec.changedAt) / 60_000)
+              const msg = `🧊 Frozen quote: ${pos.symbol} has printed ${mid} unchanged for ${mins}m while its market is open — SL/TP decisions may be running on a stale feed. Held position ${pos.side} from ${pos.entry_price}.`
+              console.warn(`[fast-monitor] ${msg}`)
+              import('./telegram-control.js').then(m => m.notifyOwner(msg)).catch(() => {})
+            } else {
+              // Closed market → not a freeze; restart the episode quietly.
+              quoteFreeze.set(pos.symbol, { mid, changedAt: now(), alerted: false })
+            }
+          } else if (fq.recovered) {
+            console.log(`[fast-monitor] ${pos.symbol}: quote moving again after freeze`)
+          }
+        }
 
         const prevPrice = lastPriceAt.get(pos.id)
         if (isSpikeMove(prevPrice?.mid, prevPrice?.at, mid, now())) {

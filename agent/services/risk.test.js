@@ -17,6 +17,7 @@ import {
   requiredMargin,
   portfolioMarginStatus,
   evaluateCommissionCost,
+  evaluateSlippageDrift,
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -29,7 +30,7 @@ function freshDB() {
       symbol TEXT, side TEXT, entry_price REAL, exit_price REAL,
       sl_price REAL, tp_price REAL, volume REAL,
       opened_at TEXT, closed_at TEXT, hold_duration_ms INTEGER,
-      gross_pnl REAL, net_pnl REAL, commission REAL,
+      gross_pnl REAL, net_pnl REAL, commission REAL, slippage_price REAL,
       status TEXT DEFAULT 'open',
       close_reason TEXT, thesis TEXT, strategy TEXT, conviction REAL,
       ctrader_position_id TEXT, analysis_id INTEGER, label_strategy TEXT,
@@ -1073,4 +1074,78 @@ test('margin-level floor is disableable with null', () => {
 
 test('the default floor ships at 150%', () => {
   assert.equal(DEFAULT_RISK_CONFIG.marginLevelFloorPct, 150)
+})
+
+// Slippage-drift gate (hardening batch 6b) ------------------------------
+
+function insertTradeWithSlippage(db, symbol, entryPrice, slippagePrice, minsAgo = 1) {
+  const openedAt = new Date(Date.now() - minsAgo * 60_000).toISOString()
+  db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, slippage_price, status, opened_at)
+     VALUES (?, 'BUY', ?, ?, 'closed', ?)`
+  ).run(symbol, entryPrice, slippagePrice, openedAt)
+}
+
+test('evaluateSlippageDrift: too few measured fills → null, never blocks', () => {
+  const db = freshDB()
+  insertTradeWithSlippage(db, 'USDCZK', 22.0, 0.05)
+  assert.equal(evaluateSlippageDrift(db, { symbol: 'USDCZK' }, 0.1, 5), null)
+})
+
+test('evaluateSlippageDrift: heavy adverse slippage → vetoReason', () => {
+  const db = freshDB()
+  // 0.05 on a 22.0 entry = 0.227% adverse per fill, over a 0.1% limit.
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'USDCZK', 22.0, 0.05, i + 1)
+  const r = evaluateSlippageDrift(db, { symbol: 'USDCZK' }, 0.1, 5)
+  assert.ok(r)
+  assert.match(r.vetoReason, /slippage_drift/)
+  assert.match(r.detail, /avg adverse slippage/)
+})
+
+test('evaluateSlippageDrift: favourable fills count as zero, not as offsets', () => {
+  const db = freshDB()
+  // Alternating +0.05 adverse / −0.05 favourable would NET to zero if signed
+  // values were averaged raw; adverse-only clamping keeps the veto honest.
+  for (let i = 0; i < 6; i++) insertTradeWithSlippage(db, 'USDCZK', 22.0, i % 2 ? 0.05 : -0.05, i + 1)
+  const r = evaluateSlippageDrift(db, { symbol: 'USDCZK' }, 0.1, 5)
+  assert.ok(r)
+  assert.match(r.vetoReason, /slippage_drift/) // avg of (0.227%, 0, ...) ≈ 0.114% ≥ 0.1%
+})
+
+test('evaluateSlippageDrift: tight fills → detail only, no veto', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.0001, i + 1) // ~0.009%
+  const r = evaluateSlippageDrift(db, { symbol: 'EURUSD' }, 0.1, 5)
+  assert.ok(r)
+  assert.equal(r.vetoReason, undefined)
+})
+
+test('evaluateSlippageDrift: another symbol\'s history does not leak in', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'USDCZK', 22.0, 0.05, i + 1)
+  assert.equal(evaluateSlippageDrift(db, { symbol: 'EURUSD' }, 0.1, 5), null)
+})
+
+test('evaluateTrade — slippage gate default OFF does not veto even with bad history', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.01, i + 1) // ~0.9% adverse
+  const out = evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN)
+  assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
+})
+
+test('evaluateTrade — slippage gate enabled vetoes a drifting symbol', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.01, i + 1)
+  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGateEnabled: true, slippageMaxAdversePct: 0.1, slippageGateMinTrades: 5 }
+  const out = evaluateTrade(db, goodProposal(), cfg)
+  assert.equal(out.approved, false)
+  assert.match(out.veto_reason, /slippage_drift/)
+})
+
+test('evaluateTrade — slippage gate enabled but null threshold stays a no-op', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertTradeWithSlippage(db, 'EURUSD', 1.1, 0.01, i + 1)
+  const cfg = { ...NO_SYMBOL_COOLDOWN, slippageGateEnabled: true, slippageMaxAdversePct: null }
+  const out = evaluateTrade(db, goodProposal(), cfg)
+  assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })

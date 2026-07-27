@@ -75,6 +75,40 @@ export function evaluateCommissionCost(db, proposal, maxFracOfWin, minTrades = 5
   } catch { return null }
 }
 
+/**
+ * Slippage-drift check (hardening batch 6b): pure historical read over this
+ * symbol's own recorded fills. `slippage_price` is captured at open (signed,
+ * adverse-positive, price units — see db.js) whenever a signal carried an
+ * intended entry; a favourable fill counts as 0 so good luck can't average
+ * away bad execution. Returns null with fewer than `minTrades` measured
+ * fills (never a block on thin history), otherwise { detail, vetoReason? } —
+ * vetoReason set when the average adverse slippage is at least
+ * `maxAdversePct` percent of the entry price. A symbol whose fills have
+ * drifted that far from the quoted level is executing a different trade
+ * than the one the R:R was approved on.
+ */
+export function evaluateSlippageDrift(db, proposal, maxAdversePct, minTrades = 5, accountId = null) {
+  try {
+    const acct = accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
+    const rows = db.prepare(
+      `SELECT slippage_price, entry_price FROM trades
+       WHERE symbol = ? AND slippage_price IS NOT NULL
+         AND entry_price IS NOT NULL AND entry_price != 0
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+       ORDER BY opened_at DESC LIMIT 30`
+    ).all(proposal.symbol, acct, acct)
+    if (rows.length < (minTrades ?? 5)) return null
+    const avgPct = rows.reduce(
+      (s, r) => s + Math.max(0, Number(r.slippage_price) || 0) / Math.abs(r.entry_price) * 100, 0
+    ) / rows.length
+    const detail = `avg adverse slippage ${avgPct.toFixed(3)}% of entry over last ${rows.length} measured fills (limit ${maxAdversePct}%)`
+    if (avgPct >= maxAdversePct) {
+      return { detail, vetoReason: `slippage_drift: avg adverse slippage ${avgPct.toFixed(3)}% on ${proposal.symbol} ≥ limit ${maxAdversePct}% — fills are drifting from quoted levels` }
+    }
+    return { detail }
+  } catch { return null }
+}
+
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
   dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
@@ -174,6 +208,14 @@ export const DEFAULT_RISK_CONFIG = {
   // sits below this % — the broker's own stop-out is typically 50%, so 150%
   // leaves a real buffer. null disables. Fail-open on missing/stale snapshot.
   marginLevelFloorPct: 150,
+  // Slippage-drift gate (hardening batch 6b): veto NEW entries on a symbol
+  // whose recent fills have averaged too much ADVERSE slippage vs the
+  // intended entry — historical read over trades.slippage_price, same
+  // default-off shape as the carry/commission gates. Too few measured
+  // fills = no block, never a stuck veto. Default OFF.
+  slippageGateEnabled: false,
+  slippageMaxAdversePct: null, // e.g. 0.1 vetoes when avg adverse slippage ≥ 0.1% of entry; null = no-op even when enabled
+  slippageGateMinTrades: 5,    // measured fills required on the symbol before the gate can act
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -611,6 +653,19 @@ export function evaluateTrade(db, proposal, configOverride) {
         }
       }
     } catch { /* unreadable snapshot → fail open */ }
+  }
+
+  // Slippage-drift gate — historical-only, same shape as the two above:
+  // enabled + numeric threshold or it stays a no-op, and thin history never
+  // blocks. slippage_price is adverse-positive, so this reads execution
+  // quality directly rather than inferring it from spreads.
+  if (config.slippageGateEnabled && config.slippageMaxAdversePct != null
+    && Number.isFinite(Number(config.slippageMaxAdversePct))) {
+    const sd = evaluateSlippageDrift(db, proposal, Number(config.slippageMaxAdversePct), config.slippageGateMinTrades, proposal.accountId)
+    if (sd) {
+      checks.slippage_drift = sd.detail
+      if (sd.vetoReason) return veto(sd.vetoReason, checks, proposal)
+    }
   }
 
   // ---- 1. Daily loss limit ------------------------------------------------

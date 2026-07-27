@@ -47,18 +47,26 @@ export function loadLossGuardianConfig(db) {
 
 /**
  * decideLossGuardian(cfg, ctx) → { action, reason } | { action: null }
- * Pure. ctx: { side, entry, price, currentSl, atr, digits, ageHours }.
- *   · time cap breached          → close
+ * Pure. ctx: { side, entry, price, currentSl, atr, digits, ageHours,
+ *              hasOwnTimeCap }.
+ *   · time cap breached (and no own time_cap_at) → close
  *   · naked & price past the cap  → close (max loss already exceeded)
  *   · naked & still inside        → place protective stop
  *   · has a stop / inside cap      → HOLD (never touch a valid mean-rev stop)
  */
 export function decideLossGuardian(cfg, ctx) {
-  const { side, entry, price, currentSl, atr, digits, ageHours } = ctx
+  const { side, entry, price, currentSl, atr, digits, ageHours, hasOwnTimeCap } = ctx
   const long = String(side).toUpperCase() === 'BUY'
 
-  // 1) Hard time cap — applies whether or not a stop exists.
-  if (cfg.maxHoldHours != null && Number.isFinite(ageHours) && ageHours >= cfg.maxHoldHours) {
+  // 1) Hard time cap — but ONLY for positions carrying no time cap of their
+  // own (hardening 6d). The header always promised this; the code never
+  // checked it, so both mechanisms ran at once and the guardian's blunt
+  // maxHoldHours could close a position hours before the position-manager's
+  // per-setup time_cap_at (the authoritative cap, sized to the setup's own
+  // timeframe) would have. A position with time_cap_at set is the
+  // position-manager's to time out; the guardian defers.
+  if (!hasOwnTimeCap
+    && cfg.maxHoldHours != null && Number.isFinite(ageHours) && ageHours >= cfg.maxHoldHours) {
     return { action: { close: true }, reason: `time_cap ${ageHours.toFixed(1)}h ≥ ${cfg.maxHoldHours}h` }
   }
 
@@ -107,6 +115,7 @@ export async function runLossGuardian(db, creds, deps = {}) {
       : "mp.source IN ('external', 'manual')"
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl,
+              mp.time_cap_at,
               t.ctrader_position_id AS position_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
@@ -176,6 +185,7 @@ export async function runLossGuardian(db, creds, deps = {}) {
         atr: atrBySymbolId[td.symbolId] ?? null,
         digits: meta.digits,
         ageHours,
+        hasOwnTimeCap: r.time_cap_at != null,
       })
       if (!decision.action) continue
 
