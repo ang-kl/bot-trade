@@ -86,27 +86,32 @@ function openaiClient(apiKey, model, fetchImpl = fetch, timeoutMs = LLM_TIMEOUT_
     model,
     messages: {
       async create(params) {
+        // Codex review (PR #421): fetch() resolves once HEADERS arrive, not
+        // once the body is fully read — a response that stalls mid-body
+        // would previously hang on res.json()/res.text() with the timer
+        // already cleared. The controller/timer must stay armed across the
+        // body reads too, and an abort during those reads must surface as
+        // the same timeout error, not a raw AbortError.
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), timeoutMs)
-        let res
         try {
-          res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
+          const res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(toOpenAIBody(params, model)),
             signal: controller.signal,
           })
+          if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            throw new Error(`OpenAI ${res.status}: ${String(body).slice(0, 200)}`)
+          }
+          return fromOpenAIResponse(await res.json(), model)
         } catch (err) {
           if (err.name === 'AbortError') throw new Error(`OpenAI request timed out after ${timeoutMs}ms`)
           throw err
         } finally {
           clearTimeout(timer)
         }
-        if (!res.ok) {
-          const body = await res.text().catch(() => '')
-          throw new Error(`OpenAI ${res.status}: ${String(body).slice(0, 200)}`)
-        }
-        return fromOpenAIResponse(await res.json(), model)
       },
     },
   }

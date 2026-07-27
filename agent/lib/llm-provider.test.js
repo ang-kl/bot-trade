@@ -98,3 +98,24 @@ test('OpenAI client clears its timeout on a normal response (no dangling timer)'
   const resp = await client.messages.create({ max_tokens: 1, messages: [] })
   assert.equal(resp.content[0].text, 'ok')
 })
+
+// Codex review (PR #421): fetch() resolves once HEADERS arrive, not once the
+// body is fully read. Headers arriving fine but the body stalling is the
+// same hang, just one await later — the timeout must still cover it.
+test('OpenAI client times out on a response whose BODY stalls (headers arrived, body never does)', async () => {
+  const fakeFetch = async (url, opts) => ({
+    ok: true,
+    json: () => new Promise((resolve, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
+    }),
+  })
+  const client = createLLMClient({ OPENAI_API_KEY: 'sk-test' }, { fetch: fakeFetch, timeoutMs: 25 })
+  await assert.rejects(
+    () => client.messages.create({ max_tokens: 1, messages: [] }),
+    /OpenAI request timed out after 25ms/
+  )
+})
