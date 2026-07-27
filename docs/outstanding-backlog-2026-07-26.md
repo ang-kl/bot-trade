@@ -396,20 +396,31 @@ fundamental-or-technical reason rather than free text alone. Sizing checked:
 already-unbounded `trades`/`broker_deals`/`trade_postmortems` tables.
 
 Proposed shape (not yet built, no code written): a `telegram_log` table
-(message text, type tag, chat_id, sent_at) written alongside each existing
-`sendMessage`/`sendScanAlert` call, pruned at 400 days by the same housekeeping
-sweep that already prunes `scans`/`decision_log`/`risk_events`
-(`loop.js:2490-2503`). Mechanical, low-risk, no behavior change to alerting
-itself — but explicitly held for the owner's word before it starts, per
-2026-07-27's "do not complicate the bot trading" instruction: nothing here
-begins until asked for by name, and it ranks behind D12/D13 regardless.
+(message text, type tag, chat_id, sent_at) written alongside every existing
+outbound path, pruned at 400 days by the same housekeeping sweep that already
+prunes `scans`/`decision_log`/`risk_events` (`loop.js:2490-2503`). "Every
+outbound path" is wider than the two functions first named here — a Codex
+review of this doc (PR #419) correctly caught that `telegram.js`'s
+`sendMessage`/`sendScanAlert`/`sendTradeAlert`/`sendDocument` are not the only
+senders: `telegram-control.js` has its own separate `tg('sendMessage', …)`
+calls (`:275,294,404,416`, command replies and `notifyOwner`-style alerts) and
+its own `sendDocument`-equivalent upload (`:117-126`), neither of which goes
+through `telegram.js` at all. Any real implementation needs to inventory or
+centralize both modules' send paths, not just `telegram.js`'s. Mechanical,
+low-risk, no behavior change to alerting itself — but explicitly held for the
+owner's word before it starts, per 2026-07-27's "do not complicate the bot
+trading" instruction: nothing here begins until asked for by name, and it
+ranks behind D12/D13 regardless.
 
-A related, larger gap surfaced in the same conversation and intentionally
-**not** folded into this phase (different shape of work, would need its own
-gate): `trade_postmortems` only covers losses (`loss-postmortem.js` sweeps
-losses only) — a winning trade has no equivalent "why this worked" record,
-and nothing anywhere distinguishes a fundamental (news/macro) reason from a
-technical one. Noted here for later ranking, not scoped or estimated yet.
+A related gap raised in the same conversation, and corrected here after a
+second Codex review comment: `trade_postmortems` does **not** only cover
+losses, contrary to what was first written in this entry — despite the
+module's name, `loss-postmortem.js`'s sweep (`:293-314`) selects every closed
+trade with a nonzero (or price-inferable) outcome, win or loss, and routes
+wins through `classifyWin` (`:131,348-349`) into the same table. The only
+genuinely open gap is the fundamental-vs-technical one: nothing anywhere
+distinguishes a fundamental (news/macro) reason from a technical one — that
+part stands, unscoped and unestimated.
 
 ## What the shipped work added to the soak watch
 
