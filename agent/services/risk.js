@@ -169,6 +169,11 @@ export const DEFAULT_RISK_CONFIG = {
   commissionGateEnabled: false,
   commissionMaxFracOfWin: null, // e.g. 0.5 vetoes when avg commission ≥ 50% of the symbol's avg win; null = gate stays a no-op even when enabled
   commissionGateMinTrades: 5,   // closed trades required on the symbol before the gate can act
+  // Margin-level floor (owner-approved build 3, 2026-07-27, after a live
+  // margin call): no NEW entries while the broker-reported live margin level
+  // sits below this % — the broker's own stop-out is typically 50%, so 150%
+  // leaves a real buffer. null disables. Fail-open on missing/stale snapshot.
+  marginLevelFloorPct: 150,
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -581,6 +586,31 @@ export function evaluateTrade(db, proposal, configOverride) {
       checks.commission_cost = cm.detail
       if (cm.vetoReason) return veto(cm.vetoReason, checks, proposal)
     }
+  }
+
+  // ---- 0e. Margin-level floor (owner-approved build 3, 2026-07-27) --------
+  // The margin call happened with no software floor in front of it: the
+  // aggregate margin-usage gate below caps NEW margin, but nothing refused
+  // entries once the account's LIVE margin level had already sunk toward the
+  // broker's stop-out. Broker truth only (health.marginLevelPct from the
+  // ~30s snapshot); missing/stale/flat-account (null level = no positions)
+  // reads fail OPEN — this floor exists to stop digging when the account is
+  // measurably distressed, not to halt trading on a data hiccup.
+  if (config.marginLevelFloorPct != null && Number.isFinite(Number(config.marginLevelFloorPct))) {
+    try {
+      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+      const lvl = snap?.account?.health?.marginLevelPct
+      const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
+      if (Number.isFinite(lvl) && ageMs < BROKER_MARGIN_MAX_AGE_MS) {
+        checks.margin_level_pct = Number(lvl.toFixed(1))
+        if (lvl < Number(config.marginLevelFloorPct)) {
+          return veto(
+            `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(config.marginLevelFloorPct)}% — no new entries while the account is this close to stop-out`,
+            checks, proposal,
+          )
+        }
+      }
+    } catch { /* unreadable snapshot → fail open */ }
   }
 
   // ---- 1. Daily loss limit ------------------------------------------------

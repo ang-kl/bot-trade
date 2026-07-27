@@ -1018,3 +1018,59 @@ test('evaluateTrade — commission gate enabled but too few trades still approve
   const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), cfg)
   assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })
+
+// ---------------------------------------------------------------------------
+// 0e. Margin-level floor (owner-approved build 3, 2026-07-27)
+// ---------------------------------------------------------------------------
+
+test('margin-level floor vetoes new entries when the live level is below the floor', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { marginLevelPct: 120, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /margin_level_floor/)
+  assert.equal(res.checks.margin_level_pct, 120)
+})
+
+test('margin-level floor passes when the level is above the floor', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { marginLevelPct: 900, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `healthy margin level must pass: ${res.veto_reason}`)
+})
+
+test('margin-level floor fails OPEN on a stale snapshot and a flat account (null level)', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  // Stale snapshot with a terrible level — must NOT veto.
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { marginLevelPct: 60, usedMargin: 100 } }, fetchedAt: new Date(Date.now() - 10 * 60_000).toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, true, `stale snapshot must fail open: ${res.veto_reason}`)
+
+  // Flat account: marginLevelPct null (no positions) — must NOT veto.
+  const db2 = freshDB()
+  setBalance(db2, 10000)
+  db2.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { marginLevelPct: null, usedMargin: 0 } }, fetchedAt: new Date().toISOString() }))
+  const res2 = evaluateTrade(db2, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }), NO_SYMBOL_COOLDOWN)
+  assert.equal(res2.approved, true, `flat account must fail open: ${res2.veto_reason}`)
+})
+
+test('margin-level floor is disableable with null', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('broker_snapshot_cache_json', ?)`)
+    .run(JSON.stringify({ account: { health: { marginLevelPct: 60, usedMargin: 100 } }, fetchedAt: new Date().toISOString() }))
+  const res = evaluateTrade(db, goodProposal({ symbol: 'EURUSD', requestedVolume: 0.01 }),
+    { ...NO_SYMBOL_COOLDOWN, marginLevelFloorPct: null })
+  assert.equal(res.approved, true, `null floor must disable the gate: ${res.veto_reason}`)
+})
+
+test('the default floor ships at 150%', () => {
+  assert.equal(DEFAULT_RISK_CONFIG.marginLevelFloorPct, 150)
+})
