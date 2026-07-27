@@ -29,12 +29,12 @@ test('registry shape: every entry has key, name, compute fn and both flags', () 
   // keys are unique — duplicate keys would make state resolution ambiguous
   assert.equal(new Set(STRATEGY_KEYS).size, STRATEGY_REGISTRY.length)
   // Owner (2026-07-27): all strategies default on EXCEPT fib_618_fade
-  // (chosen manually in Tune) and ema_pullback (disarmed the same day for
-  // a real net loss — held back rather than silently re-armed).
+  // (chosen manually in Tune). ema_pullback was held back at first (same-day
+  // disarm for a real loss) but the owner explicitly confirmed re-arming it.
   assert.ok(STRATEGY_KEYS.includes('fib_618_fade'))
   assert.equal(strategyByKey('fib_618_fade').defaultOn, false)
   assert.equal(strategyByKey('fib_618_fade').pendingCapable, true)
-  assert.equal(strategyByKey('ema_pullback').defaultOn, false)
+  assert.equal(strategyByKey('ema_pullback').defaultOn, true)
   assert.equal(strategyByKey('cup_handle').defaultOn, true)
 })
 
@@ -45,8 +45,8 @@ test('registry contains the five contracted keys', () => {
 })
 
 // Registry order, defaultOn strategies only — everything except
-// fib_618_fade and ema_pullback (2026-07-27 owner decision).
-const DEFAULT_ON_KEYS = ['cup_handle', 'inv_cup_handle', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+// fib_618_fade (2026-07-27 owner decision).
+const DEFAULT_ON_KEYS = ['cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
 
 test('enabledStrategies: missing state falls back to the defaultOn set', () => {
   const { db, getState } = fakeState({})

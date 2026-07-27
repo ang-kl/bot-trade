@@ -29,10 +29,10 @@ test('defaults: scan analyses EVERYTHING, filters gate nothing at scan', () => {
     assert.equal(s.stages.manage, true, `${s.key} manage default`)
   }
   // trade column mirrors enabledStrategies default (everything except
-  // fib_618_fade and ema_pullback — owner 2026-07-27)
+  // fib_618_fade — owner 2026-07-27)
   assert.deepEqual(
     m.strategies.filter(s => s.stages.trade).map(s => s.key),
-    ['cup_handle', 'inv_cup_handle', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+    ['cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
   )
   // filters: off at scan (analyse all convictions) and backtest; no manage cell.
   for (const f of m.filters) {
@@ -71,12 +71,12 @@ test('trade column derives LIVE from legacy keys — never from stored JSON', ()
 
 test('setStage trade writes THROUGH to the legacy keys', () => {
   const db = initDB(':memory:')
-  // ema_pullback is off by default (2026-07-27) — arming it merges into the
+  // fib_618_fade is off by default (2026-07-27) — arming it merges into the
   // rest of the default-on set, in registry order.
-  setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: true }, io)
+  setStage(db, { kind: 'strategy', key: 'fib_618_fade', stage: 'trade', on: true }, io)
   assert.deepEqual(
     JSON.parse(getState(db, 'enabled_strategies_json')),
-    ['cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+    ['fib_618_fade', 'cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
   )
   setStage(db, { kind: 'strategy', key: 'cup_handle', stage: 'trade', on: true }, io)
   assert.equal(getState(db, 'cup_handle_enabled'), 'true')
