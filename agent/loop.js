@@ -1215,6 +1215,34 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client) {
   )
 
   if (check.action === 'EXIT') {
+    // D13 (audit F-L7-03): a text-generation judgement call should not be
+    // able to close a live position on its own — the thesis text it
+    // reasons over is itself partly model-authored and stored, so text
+    // that passed through the database could otherwise influence a live
+    // exit unchecked. Require a deterministic condition to agree first:
+    // reuse the same currentR the deterministic rules already computed
+    // this tick (evaluatePosition, above). A position sitting at a clear
+    // R-multiple profit has no price-based corroboration for "exit now" —
+    // that EXIT becomes advisory only, logged but not executed. A losing
+    // or breakeven-or-worse position (currentR <= 0, or unknown because
+    // price/risk data is missing) still executes normally: cutting a
+    // loser early on a broken thesis is exactly the case an LLM read
+    // should be allowed to act on.
+    const r = eval_.metrics.currentR
+    if (r != null && r > 0) {
+      log(`LLM EXIT deferred for ${pos.symbol}: currentR ${r.toFixed(2)} is positive — deterministic gate declined, no broker action taken. ${check.reasoning}`)
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'LLM_EXIT_DEFERRED', '/monitor',
+          JSON.stringify({
+            monitoredId: pos.id, symbol: pos.symbol, currentR: r, reasoning: check.reasoning,
+            detail: 'LLM monitor asked for an exit while currentR was positive — deterministic gate declined. Position left ACTIVE and unmanaged by this decision; broker SL/TP still protect.',
+          }).slice(0, 2000),
+        )
+      } catch { /* audit best-effort */ }
+      return
+    }
+
     // BUG FIX (owner: "why are 18 positions not being trimmed" — audit
     // found this): this branch used to call s.closePosition.run()
     // directly — a bare DB status flip with NO broker close. The

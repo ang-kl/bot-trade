@@ -78,8 +78,8 @@ D10–D14 are new and belong to the new phases.
 |---|---|---|---|
 | ~~D10~~ | ~~Loss-cap repair: treat a NULL `net_pnl` closure as unknown-and-blocking, or backfill-then-evaluate?~~ | **ANSWERED, unknown-and-blocking — shipped #397.** | ~~P1~~ |
 | ~~D11~~ | ~~Harden the manual ADD/REVERSE routes, or remove them?~~ | **ANSWERED (owner): harden both, cTrader permits adding to and reversing an active trade — shipped #401.** | ~~P2~~ |
-| D12 | Credential surface: keep one bearer token for every route, or split read from money-moving and add a second factor on the latter? | Split, and stop shipping any secret in the browser bundle | P5 |
-| D13 | Should the LLM monitor be able to close a position without a deterministic second gate? | No — require a deterministic condition to agree before an LLM-initiated exit executes | P9 |
+| ~~D12~~ | ~~Credential surface: keep one bearer token for every route, or split read from money-moving and add a second factor on the latter?~~ | **ANSWERED, split — shipped #414 (two-tier auth) + #417 (frontend read-only var).** | ~~P5~~ |
+| ~~D13~~ | ~~Should the LLM monitor be able to close a position without a deterministic second gate?~~ | **ANSWERED (owner, 2026-07-27): no — shipped, `currentR`-based gate.** | ~~P9~~ |
 | ~~D14~~ | ~~Is `VPO_ENABLED` / `TRAIL_TICK_ENABLED` set in production?~~ | **ANSWERED 2026-07-26: both true in both environments; `VPO_SYMBOLS` on staging only. See below — P7 is production-reachable and moves to the front; P6 is staging-only for now.** | ~~P6, P7~~ |
 | ~~D1~~ | ~~Fix the three C++ sidecar findings?~~ | **ANSWERED, yes — shipped #404.** | ~~P7~~ |
 | D2 | Build `position_events`? | Yes, and first among the record work — it accumulates nothing until it exists | P10 |
@@ -214,10 +214,10 @@ against the live host. The failure presents as `POSITION_NOT_FOUND`, which the
 amend path treats as "already closed" — so a live position can be recorded as
 gone.
 
-## P5 — One resettable credential path guards every money-moving route
+## P5 — SHIPPED (#414, #417) — One resettable credential path guards every money-moving route
 
 Capital at risk: **full trading authority.** Audit F-L7-04, F-L7-06, F-L7-05,
-carried F-L0-01, S28. Effort: medium. Gate: **D12**.
+carried F-L0-01, S28. Effort: medium. Gate: **D12, ANSWERED — split, shipped.**
 
 Everything under `/actions` — including `position-double`, `position-reverse`,
 `close-all` and `manual-order` — sits behind one bearer check accepting either
@@ -294,18 +294,31 @@ Audit F-L1-09, F-L2-04, F-L2-05, F-L7-02, S2, S7, S26, S27. Effort: small each.
 The one ceiling that is fail-closed today is the VPO config store's 5 minutes
 (`cpp-exec/src/vpo_config_store.cpp:23,36`) — the shape the others should copy.
 
-## P9 — Model output closes positions with no deterministic second gate
+## P9 — SHIPPED (2026-07-27) — Model output closes positions with no deterministic second gate
 
 Capital at risk: **an exit taken on unvalidated text.** Audit F-L7-03. Effort:
-small. Gate: **D13**.
+small. Gate: **D13, ANSWERED (owner, 2026-07-27): "No — require a
+deterministic condition to agree before an LLM-initiated exit executes."**
 
-`agent/loop.js:1964-1992`: on `check.action === 'EXIT'` the monitor calls
-`executeBrokerAction(… FULL_EXIT …)` with `check.reasoning` as the recorded
-reason. The action is not validated against a permitted set at the call site,
-and the thesis text the model reasons over is itself partly model-authored and
-stored (`monitored_positions.thesis`, appended to by the reconciler at
-`agent/services/reconciler.js:108`) — so text that has passed through the
-database can influence a live exit.
+`agent/loop.js` (`monitorOnePosition`): on `check.action === 'EXIT'` the
+monitor used to call `executeBrokerAction(… FULL_EXIT …)` unconditionally,
+with `check.reasoning` as the recorded reason — the action was not validated
+against a permitted set, and the thesis text the model reasons over is itself
+partly model-authored and stored (`monitored_positions.thesis`, appended to
+by the reconciler at `agent/services/reconciler.js:108`), so text that had
+passed through the database could influence a live exit.
+
+Fix: reuse `currentR` (the same R-multiple `evaluatePosition` already
+computed this same tick, from real broker price — not model text) as the
+deterministic second gate. A position sitting at a clear positive R has no
+price-based corroboration for "exit now," so that EXIT is logged
+(`action_log` method `LLM_EXIT_DEFERRED`) but not executed — the position
+stays active and broker SL/TP keep protecting it. A losing or
+breakeven-or-worse position (`currentR <= 0`, or unknown because
+risk/price data is missing) still executes normally: cutting a loser early on
+a broken thesis is exactly the case the LLM read should be allowed to act on.
+Covered by `agent/llm-exit-gate.test.js` (deferred / executes-on-loss /
+executes-on-unknown-R, 3 tests).
 
 ## P10 — `position_events` + write sites (was P2)
 
@@ -353,14 +366,12 @@ between adjacent PRICE·R tape labels.
 
 ## What's actually left (21:22 SGT)
 
-Every audit-ranked phase (P1–P9) is shipped or gated on the owner alone —
-none are blocked on more investigation. In gate order:
+Every audit-ranked phase (P1–P9) is shipped. P10 also shipped (`position_events`
++ all write sites, task ledger #98–103). None are blocked on more
+investigation. In gate order, what's actually still open:
 
 | Gate | Phase | What it decides |
 |---|---|---|
-| **D12** | P5 | Split the one bearer token (read vs money-moving), stop shipping any secret in the browser bundle |
-| **D13** | P9 | Require a deterministic second gate before an LLM-initiated exit executes |
-| **D2** | P10 | Build `position_events` — the record layer for weighted-basis exposure after an add |
 | **D3** | P12 | Cockpit endpoint id space (DB row id vs broker position id) |
 | **D4** | P14 | Whether/how to unblock the 127 s loop pass — needs a written plan first, not just a decision |
 | **D5–D9** | P15 | Cockpit polish (FLEET ranking, session-state display, phone scaling, VA/HVN/LVN labels, tape pitch) |
@@ -410,7 +421,8 @@ centralize both modules' send paths, not just `telegram.js`'s. Mechanical,
 low-risk, no behavior change to alerting itself — but explicitly held for the
 owner's word before it starts, per 2026-07-27's "do not complicate the bot
 trading" instruction: nothing here begins until asked for by name, and it
-ranks behind D12/D13 regardless.
+ranks below every capital-at-risk phase regardless (D12/D13, the only other
+gated items open when this was written, are both shipped as of the same day).
 
 A related gap raised in the same conversation, and corrected here after a
 second Codex review comment: `trade_postmortems` does **not** only cover
