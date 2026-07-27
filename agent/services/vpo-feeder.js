@@ -19,7 +19,57 @@
 
 import { getState } from '../db.js'
 import { getCtraderCreds } from '../lib/ctrader-creds.js'
-import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume } from './risk.js'
+import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume, persistRiskEvent } from './risk.js'
+import { evaluateGlobalGuards } from './global-guards.js'
+import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
+
+// ---------------------------------------------------------------------------
+// Pre-arm risk gate (owner-approved build 5, 2026-07-27 — audit finding
+// F-L4-01/DR-1: the C++ tier's tryFire→placeOrder path never touches
+// risk.js's evaluateTrade, so a VPO-armed strategy traded with the news
+// gate, duplicate-symbol veto, and global halt all bypassed). The sidecar's
+// only sizing source is the volume THIS feeder pushes, and its fire site
+// hard-refuses a non-positive volume (vpo_dispatcher.cpp:99-116, recorded
+// as no_sizing) — so vetoing here, by pushing -1, closes the bypass without
+// touching C++. Cheap sync checks only, mirroring evaluateTrade's own 0/0b
+// sections; the full gate (Kelly, margin shrink, exposure caps) still can't
+// run pre-arm because there is no concrete entry/SL yet — this is the
+// subset that needs no proposal to evaluate.
+// ---------------------------------------------------------------------------
+export function vpoPreArmVeto(db, cfg, symbol) {
+  const gg = evaluateGlobalGuards(db)
+  if (!gg.ok) return gg.reason
+
+  const dup = db.prepare(
+    `SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active' AND symbol = ?`
+  ).get(symbol)?.n || 0
+  const dupTrades = db.prepare(
+    `SELECT COUNT(*) AS n FROM trades WHERE status = 'open' AND symbol = ?`
+  ).get(symbol)?.n || 0
+  if (dup + dupTrades > 0) return `duplicate_symbol: ${symbol} already has an open position — VPO must not stack`
+
+  if (cfg.newsGateEnabled) {
+    const ev = newsWindowEvent(cachedEventsSync(db), symbol, Date.now(), {
+      minBefore: Number(cfg.newsGateMinBefore) || 15,
+      minAfter: Number(cfg.newsGateMinAfter) || 15,
+      impacts: Array.isArray(cfg.newsGateImpacts) && cfg.newsGateImpacts.length ? cfg.newsGateImpacts : ['High'],
+    })
+    if (ev) return `news_window: ${ev.impact} ${ev.country} ${ev.title}`
+  }
+
+  // Margin-level floor (build 3's key; undefined on configs predating it → skip).
+  if (cfg.marginLevelFloorPct != null && Number.isFinite(Number(cfg.marginLevelFloorPct))) {
+    try {
+      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
+      const lvl = snap?.account?.health?.marginLevelPct
+      const ageMs = snap?.fetchedAt ? Date.now() - Date.parse(snap.fetchedAt) : Infinity
+      if (Number.isFinite(lvl) && ageMs < 5 * 60_000 && lvl < Number(cfg.marginLevelFloorPct)) {
+        return `margin_level_floor: live margin level ${lvl.toFixed(1)}% < floor ${Number(cfg.marginLevelFloorPct)}%`
+      }
+    } catch { /* unreadable snapshot → fail open, same as the main gate */ }
+  }
+  return null
+}
 
 function execBase() {
   return process.env.EXEC_URL || 'http://127.0.0.1:8091'
@@ -93,6 +143,19 @@ export async function runVpoFeeder(db, deps = {}) {
       // distance only ever sizes smaller).
       const micro = batch[microTf] || []
       const lastClose = micro.length ? micro[micro.length - 1].c : null
+      // Pre-arm gate BEFORE sizing: a vetoed symbol pushes volume -1, which
+      // the C++ fire site hard-refuses (no_sizing) — the bypass-closing seam.
+      const vetoReason = vpoPreArmVeto(db, cfg, symbol)
+      if (vetoReason) {
+        volumesOut.push({ key: `${key}:${symbol}`, volume: -1 })
+        try {
+          persistRiskEvent(db,
+            { symbol, side: null, strategy: `vpo:${key}`, source: 'vpo_pre_arm' },
+            { approved: false, veto_reason: `vpo_pre_arm ${vetoReason}` })
+        } catch { /* visibility only — never block the push */ }
+        console.log(`[vpo-feeder] ${key}/${symbol} VETOED pre-arm: ${vetoReason}`)
+        continue
+      }
       if (balance != null && lastClose != null) {
         const slDistance = lastClose * (cfg.minSLDistancePct / 100)
         const sized = computeRiskBasedVolume(balance, symbol, slDistance, cfg.perTradeRiskPct, lastClose)
