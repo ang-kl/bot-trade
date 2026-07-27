@@ -191,8 +191,10 @@ function SessionClock() {
           )
         })}
       </div>
-      <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 600, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>
-        {p(now.getUTCHours())}:{p(now.getUTCMinutes())}:{p(now.getUTCSeconds())} UTC
+      <span style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, fontSize: 9, fontWeight: 600, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>
+        <span>{p(now.getUTCHours())}:{p(now.getUTCMinutes())}:{p(now.getUTCSeconds())} UTC</span>
+        {/* Device-local clock — owner (2026-07-27): "have a user's timezone below the UTC". */}
+        <span>🇸🇬 {p(now.getHours())}:{p(now.getMinutes())}:{p(now.getSeconds())}</span>
       </span>
     </>
   )
