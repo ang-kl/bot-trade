@@ -15,7 +15,7 @@
 // colour for price and TEXT markers (E / SL / X), not red/green coding.
 // ---------------------------------------------------------------------------
 
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
@@ -44,34 +44,6 @@ function dateTime(iso) {
   return `${d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })} ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
 }
 
-function Spark({ bars, entry, sl, exit }) {
-  if (!Array.isArray(bars) || bars.length < 2) return null
-  const W = 220, H = 56, PAD = 4
-  const closes = bars.map(b => b[4])
-  const lows = bars.map(b => b[3])
-  const highs = bars.map(b => b[2])
-  const lo = Math.min(...lows, sl ?? Infinity)
-  const hi = Math.max(...highs, entry ?? -Infinity)
-  if (!(hi > lo)) return null
-  const x = (i) => PAD + (i / (bars.length - 1)) * (W - 2 * PAD)
-  const y = (p) => PAD + (1 - (p - lo) / (hi - lo)) * (H - 2 * PAD)
-  const path = closes.map((c, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(c).toFixed(1)}`).join(' ')
-  const line = (p, label) => (p == null ? null : (
-    <g>
-      <line x1={PAD} x2={W - PAD} y1={y(p)} y2={y(p)} stroke="currentColor" strokeDasharray="3 3" strokeWidth="0.75" opacity="0.55" />
-      <text x={W - PAD} y={y(p) - 2} textAnchor="end" fontSize="8" fill="currentColor" opacity="0.85">{label}</text>
-    </g>
-  ))
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-[220px] h-[56px] text-[var(--color-text-sub)]" role="img" aria-label="price replay around the loss">
-      {line(entry, 'E')}
-      {line(sl, 'SL')}
-      {line(exit, 'X')}
-      <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="1.5" />
-    </svg>
-  )
-}
-
 // Owner: "collapse and expand the groups (losses, wins)" — same triangle
 // pattern as every other section/row in the app, not just the individual
 // trade rows underneath.
@@ -85,8 +57,9 @@ function Group({ title, rows }) {
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
         {title} ({rows.length})
       </button>
+      {/* Owner: 3 columns desktop, 2 columns iPad-mini-landscape and iPhone. */}
       {open && (
-        <div className="space-y-2">
+        <div className="grid grid-cols-2 xl:grid-cols-3 gap-2 items-start">
           {rows.map((r) => <Verdict key={r.id} r={r} />)}
         </div>
       )}
@@ -125,6 +98,12 @@ export default function LossReview({ postmortems }) {
   const [view, setView] = useState('groups') // 'groups' | 'symbol'
   const [sort, setSort] = useState({ key: 'date', dir: 'desc' })
   const [filter, setFilter] = useState({ symbol: '', strategy: '', classification: '', side: '' })
+  const [pageSize, setPageSize] = useState(50)
+  const [page, setPage] = useState(0)
+
+  // A narrower filter/sort/page-size must not leave the view stranded on a
+  // page that no longer exists.
+  useEffect(() => { setPage(0) }, [filter, sort, view, pageSize])
 
   if (allRows.length === 0) {
     return (
@@ -143,7 +122,7 @@ export default function LossReview({ postmortems }) {
   const strategies = [...new Set(allRows.map(r => r.strategy).filter(Boolean))].sort()
   const classifications = [...new Set(allRows.map(r => r.classification).filter(Boolean))].sort()
 
-  const rows = allRows
+  const filteredRows = allRows
     .filter(r => !filter.symbol || r.symbol === filter.symbol)
     .filter(r => !filter.strategy || r.strategy === filter.strategy)
     .filter(r => !filter.classification || r.classification === filter.classification)
@@ -156,6 +135,12 @@ export default function LossReview({ postmortems }) {
       const c = typeof va === 'string' ? va.localeCompare(vb) : va - vb
       return sort.dir === 'desc' ? -c : c
     })
+
+  // Multi-page pagination (owner: 25/50/100/200 per page) — clamp instead of
+  // trusting `page` blindly, since the useEffect above resets it async.
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize))
+  const safePage = Math.min(page, pageCount - 1)
+  const rows = filteredRows.slice(safePage * pageSize, (safePage + 1) * pageSize)
 
   const losses = rows.filter(r => !WIN_CLASSES.has(r.classification))
   const wins = rows.filter(r => WIN_CLASSES.has(r.classification))
@@ -214,7 +199,21 @@ export default function LossReview({ postmortems }) {
           <button type="button" onClick={() => setFilter({ symbol: '', strategy: '', classification: '', side: '' })}
             className="text-[var(--color-text-sub)] underline cursor-pointer">clear filters</button>
         )}
-        <span className="text-[var(--color-text-sub)]">{rows.length} of {allRows.length}</span>
+      </div>
+
+      {/* Pagination — owner: dropdown for 25/50/100/200 per page. */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+        <select className={selectCls} value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
+          {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} / page</option>)}
+        </select>
+        <button type="button" disabled={safePage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}
+          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">‹ prev</button>
+        <span className="text-[var(--color-text-sub)]">Page {safePage + 1} of {pageCount}</span>
+        <button type="button" disabled={safePage >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
+          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">next ›</button>
+        <span className="text-[var(--color-text-sub)]">
+          {filteredRows.length === 0 ? 0 : safePage * pageSize + 1}–{Math.min(filteredRows.length, (safePage + 1) * pageSize)} of {filteredRows.length} (of {allRows.length} total)
+        </span>
       </div>
 
       {rows.length === 0 ? (
@@ -279,14 +278,9 @@ function SymbolTable({ symbol, rows }) {
                     {isOpen && (
                       <tr className="border-b border-[var(--color-border)]">
                         <td colSpan={8} className="py-2">
-                          <div className="flex flex-wrap items-start gap-3">
-                            <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-                            <div className="flex-1 min-w-[200px]">
-                              {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-                              <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-                              <FieldGrid r={r} />
-                            </div>
-                          </div>
+                          {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+                          <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+                          <FieldGrid r={r} />
                         </td>
                       </tr>
                     )}
@@ -336,13 +330,10 @@ function Verdict({ r }) {
         </span>
       </button>
       {open && (
-        <div className="mt-1.5 flex flex-wrap items-start gap-3">
-          <Spark bars={r.bars} entry={r.entry_price} sl={r.sl_price} exit={r.exit_price} />
-          <div className="flex-1 min-w-[200px]">
-            {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-            <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
-            <FieldGrid r={r} />
-          </div>
+        <div className="mt-1.5">
+          {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
+          <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+          <FieldGrid r={r} />
         </div>
       )}
     </div>
@@ -350,8 +341,7 @@ function Verdict({ r }) {
 }
 
 const dash = (v) => (v == null || v === '' ? '—' : v)
-const untracked = 'not tracked yet'
-const px2 = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 5 }))
+const px2 = (v) =>(v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 5 }))
 
 // Full Trade-Lesson Extraction field breakdown (owner spec) — every field
 // the spec names, laid out explicitly. Fields this codebase doesn't capture
@@ -362,35 +352,34 @@ function FieldGrid({ r }) {
   const goal = r.tp1_price != null
     ? `reach TP1 (${px2(r.tp1_price)})`
     : 'no TP1 on record'
-  const rows = [
+  // Owner: don't show fields the codebase doesn't actually track — a row
+  // reading "not tracked yet" told the reader nothing they could act on.
+  // Only fields with real data now render at all.
+  const allRows = [
     ['Symbol', r.symbol],
     ['Strategy', dash(r.strategy)],
     ['Timeframe', dash(r.timeframe)],
-    ['Direction', r.side === 'BUY' || r.side === 'long' ? 'Long' : r.side === 'SELL' || r.side === 'short' ? 'Short' : '—'],
-    ['Fundamental', untracked],
-    ['Confluence — Indicators', untracked],
-    ['Confluence — Fib', untracked],
-    ['Confluence — VWAP', untracked],
-    ['Confluence-count', r.confluence_count != null ? String(r.confluence_count) : 'not recorded'],
-    ['Entry', px2(r.entry_price)],
-    ['Lot', r.lot != null ? Number(r.lot).toFixed(2) : '—'],
-    ['SL', px2(r.sl_price)],
-    ['TP1', px2(r.tp1_price)],
-    ['TP2', px2(r.tp2_price)],
-    ['TP3', untracked],
-    ['Exit', px2(r.exit_price)],
+    ['Direction', r.side === 'BUY' || r.side === 'long' ? 'Long' : r.side === 'SELL' || r.side === 'short' ? 'Short' : null],
+    ['Confluence-count', r.confluence_count != null ? String(r.confluence_count) : null],
+    ['Entry', r.entry_price != null ? px2(r.entry_price) : null],
+    ['Lot', r.lot != null ? Number(r.lot).toFixed(2) : null],
+    ['SL', r.sl_price != null ? px2(r.sl_price) : null],
+    ['TP1', r.tp1_price != null ? px2(r.tp1_price) : null],
+    ['TP2', r.tp2_price != null ? px2(r.tp2_price) : null],
+    ['Exit', r.exit_price != null ? px2(r.exit_price) : null],
     ['Goal (SMART)', goal],
-    ['Result', dash(r.result)],
-    ['R-multiple', r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : '—'],
-    ['Alpha-decay', r.alpha_decay ? `${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay} (keyed Symbol+Strategy+Timeframe)` : '—'],
-    ['Entry-quality', dash(r.entry_quality)],
+    ['Result', r.result ? r.result : null],
+    ['R-multiple', r.r_multiple != null ? `${r.r_multiple.toFixed(2)}R` : null],
+    ['Alpha-decay', r.alpha_decay ? `${r.alpha_decay === 'decay' ? 'DECAY' : r.alpha_decay} (keyed Symbol+Strategy+Timeframe)` : null],
+    ['Entry-quality', r.entry_quality ? r.entry_quality : null],
   ]
+  const rows = allRows.filter(([, value]) => value != null && value !== '')
   return (
     <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[9px]">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <span className="text-[var(--color-text-sub)]">{label}</span>
-          <span className={value === untracked || value === 'not recorded' ? 'text-[var(--color-text-sub)] italic' : ''}>{value}</span>
+          <span>{value}</span>
         </div>
       ))}
       {r.setup_thesis && (
