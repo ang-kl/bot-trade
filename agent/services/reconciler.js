@@ -434,7 +434,56 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // (working → gone) so a fill is tracked and the history survives a restart.
   const ordersGone = syncBrokerOrders(db, pendingOrders, { accountId: acct, includeNull })
 
-  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed }
+  // Upgrade any generic broker-close stamps whose exit price has since been
+  // backfilled — cheap, idempotent, pure DB (see reclassifyBrokerCloses).
+  const reclassified = reclassifyBrokerCloses(db)
+
+  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified }
+}
+
+/**
+ * CLOSE-CAUSE RECLASSIFICATION (owner: "Pipeline integrity = 0% —
+ * investigate", 2026-07-27). At detection time a broker-side close is a
+ * mystery — the reconciler can only stamp the generic "closed at the broker
+ * (manual close or broker-side SL/TP fill)" sentence, and the Workflow Audit
+ * page counts every such stamp as a PREMATURE manual close. But once
+ * /actions/broker-history backfills the broker-true exit price, the cause is
+ * usually inferable: an exit AT the stored SL/TP level is the bracket doing
+ * its job, and an exit BEYOND the stop is a gap/slippage fill or a
+ * margin-level liquidation — none of which are "premature manual closes".
+ * Same 0.1%-of-price proximity tolerance perf-ledger's classifyOutcome
+ * already uses, so the ledger and the stamped reason can never disagree.
+ * Only rows still carrying the generic stamp are touched — a reason the bot
+ * (or a human note) wrote is never overwritten. Truly manual closes keep the
+ * generic sentence, which is now an honest residual instead of a catch-all.
+ */
+export function reclassifyBrokerCloses(db) {
+  const rows = db.prepare(
+    `SELECT id, side, exit_price, sl_price, tp_price FROM trades
+     WHERE status = 'closed' AND exit_price IS NOT NULL
+       AND close_reason LIKE 'closed at the broker%'`
+  ).all()
+  const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
+  let n = 0
+  for (const t of rows) {
+    const exit = Number(t.exit_price)
+    if (!Number.isFinite(exit)) continue
+    const near = (p) => Number.isFinite(Number(p)) && Math.abs(exit - Number(p)) <= Math.abs(exit) * 0.001
+    let reason = null
+    if (near(t.tp_price)) {
+      reason = 'take profit hit — broker-side TP fill (reclassified from the broker exit price)'
+    } else if (near(t.sl_price)) {
+      reason = 'stop loss hit — broker-side SL fill (reclassified from the broker exit price)'
+    } else {
+      const sl = Number(t.sl_price)
+      const long = String(t.side || '').toUpperCase() === 'BUY'
+      if (Number.isFinite(sl) && (long ? exit < sl : exit > sl)) {
+        reason = 'stopped beyond the SL — gap/slippage through the stop or a margin-level liquidation (reclassified from the broker exit price)'
+      }
+    }
+    if (reason) { upd.run(reason, t.id); n++ }
+  }
+  return n
 }
 
 /**

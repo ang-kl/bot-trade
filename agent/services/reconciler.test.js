@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState } from '../db.js'
-import { reconcilePositions, syncBrokerOrders } from './reconciler.js'
+import { reconcilePositions, syncBrokerOrders, reclassifyBrokerCloses } from './reconciler.js'
 
 function mkDb() {
   return initDB(':memory:')
@@ -662,4 +662,72 @@ test('contamination: broker_orders gone-sweep is account-scoped', () => {
   // A's own empty snapshot does.
   const gone = syncBrokerOrders(db, [], { accountId: 'A', includeNull: true })
   assert.deepEqual(gone, ['500'])
+})
+
+// ---------------------------------------------------------------------------
+// reclassifyBrokerCloses — generic broker-close stamps upgrade to a real
+// cause once the broker-true exit price is known (owner: "Pipeline
+// integrity = 0% — investigate", 2026-07-27).
+// ---------------------------------------------------------------------------
+
+const GENERIC = 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot'
+
+function seedClosedTrade(db, { side = 'BUY', exit = null, sl = null, tp = null, reason = GENERIC }) {
+  return db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, status, opened_at, closed_at,
+       exit_price, sl_price, tp_price, close_reason)
+     VALUES ('EURUSD', ?, 100, 0.01, 'closed', datetime('now'), datetime('now'), ?, ?, ?, ?)`
+  ).run(side, exit, sl, tp, reason).lastInsertRowid
+}
+
+test('reclassify: exit at the TP level becomes a TP fill', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { exit: 110.005, sl: 99, tp: 110 }) // within 0.1%
+  const n = reclassifyBrokerCloses(db)
+  assert.equal(n, 1)
+  assert.match(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, /take profit hit/)
+})
+
+test('reclassify: exit at the SL level becomes an SL fill', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { exit: 99.02, sl: 99, tp: 110 })
+  reclassifyBrokerCloses(db)
+  assert.match(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, /stop loss hit/)
+})
+
+test('reclassify: long exit far BELOW the SL flags gap/liquidation', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { side: 'BUY', exit: 95, sl: 99, tp: 110 })
+  reclassifyBrokerCloses(db)
+  assert.match(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, /beyond the SL/)
+})
+
+test('reclassify: mid-range exit keeps the generic stamp (honest manual residual)', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { exit: 104, sl: 99, tp: 110 })
+  const n = reclassifyBrokerCloses(db)
+  assert.equal(n, 0)
+  assert.equal(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, GENERIC)
+})
+
+test('reclassify: a bot-written close_reason is never overwritten', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { exit: 110, sl: 99, tp: 110, reason: 'time_cap_expired (6h)' })
+  const n = reclassifyBrokerCloses(db)
+  assert.equal(n, 0)
+  assert.equal(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, 'time_cap_expired (6h)')
+})
+
+test('reclassify: no exit price yet — row left for a later pass', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { exit: null, sl: 99, tp: 110 })
+  assert.equal(reclassifyBrokerCloses(db), 0)
+  assert.equal(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, GENERIC)
+})
+
+test('reclassify: short exit ABOVE the SL flags gap/liquidation', () => {
+  const db = mkDb()
+  const id = seedClosedTrade(db, { side: 'SELL', exit: 103, sl: 101, tp: 95 })
+  reclassifyBrokerCloses(db)
+  assert.match(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, /beyond the SL/)
 })
