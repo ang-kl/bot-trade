@@ -379,6 +379,38 @@ because they're new trading logic:
 3. Volume-based take-profit assist in the exit layer — bank/tighten before
    the next LVN/HVN ahead of a winner.
 
+## P16 — Telegram message retention (new 2026-07-27, ungated, lowest priority)
+
+Not capital-at-risk — an observability gap, raised by the owner: "I keep
+having these setups but I don't see the log in the bot-trade website that you
+kept them for review and analysis." Confirmed: `agent/services/telegram.js`'s
+`sendMessage`/`sendScanAlert`/`sendTradeAlert` (17 call sites across
+`loop.js` and a handful of services) POST straight to the Bot API and persist
+nothing — a scanner alert, a veto alert, an LLM-monitor-failure alert exists
+only in the Telegram app once sent, never in the DB.
+
+Owner ask: keep every fired Telegram message for 400 days, for review and
+(separately) so every trade/veto eventually carries a stated
+fundamental-or-technical reason rather than free text alone. Sizing checked:
+~10-30 messages/day × 400 days × 1-3KB/row ≈ 16-36MB — trivial next to the
+already-unbounded `trades`/`broker_deals`/`trade_postmortems` tables.
+
+Proposed shape (not yet built, no code written): a `telegram_log` table
+(message text, type tag, chat_id, sent_at) written alongside each existing
+`sendMessage`/`sendScanAlert` call, pruned at 400 days by the same housekeeping
+sweep that already prunes `scans`/`decision_log`/`risk_events`
+(`loop.js:2490-2503`). Mechanical, low-risk, no behavior change to alerting
+itself — but explicitly held for the owner's word before it starts, per
+2026-07-27's "do not complicate the bot trading" instruction: nothing here
+begins until asked for by name, and it ranks behind D12/D13 regardless.
+
+A related, larger gap surfaced in the same conversation and intentionally
+**not** folded into this phase (different shape of work, would need its own
+gate): `trade_postmortems` only covers losses (`loss-postmortem.js` sweeps
+losses only) — a winning trade has no equivalent "why this worked" record,
+and nothing anywhere distinguishes a fundamental (news/macro) reason from a
+technical one. Noted here for later ranking, not scoped or estimated yet.
+
 ## What the shipped work added to the soak watch
 
 Three markers that should never appear on the demo trio, and that break the
