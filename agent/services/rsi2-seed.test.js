@@ -10,6 +10,11 @@ import { seedRsi2GoCombos, goCombosFromBaseline, RSI2_SEED_FLAG } from './rsi2-s
 
 const io = { getState, setState }
 
+// Registry defaultOn set (2026-07-27: everything except fib_618_fade) —
+// rsi2_reversion is already in here, so a fresh-DB seed no longer needs to
+// APPEND it; it's already part of the derived default list.
+const DEFAULT_ON_KEYS = ['cup_handle', 'inv_cup_handle', 'ema_pullback', 'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value', 'rsi2_reversion', 'fib_confluence', 'va_breakout']
+
 // A realistic baseline mirroring the "Your edge — backtest baseline" table.
 function seedBaseline(db, strategy = 'rsi2_reversion') {
   setState(db, 'backtest_baseline_json', JSON.stringify({
@@ -50,10 +55,12 @@ test('fresh DB with baseline: arms rsi2 and seeds the REAL combos', () => {
   seedBaseline(db)
   const out = seedRsi2GoCombos(db, io)
   assert.equal(out.seeded, true)
-  assert.equal(out.addedStrategy, true)
+  // rsi2_reversion is already in the registry's default-on set (2026-07-27),
+  // so a fresh DB doesn't need it APPENDED — it's already there.
+  assert.equal(out.addedStrategy, false)
   assert.equal(out.matrixSeeded, true)
 
-  assert.deepEqual(JSON.parse(getState(db, 'enabled_strategies_json')), ['fib_618_fade', 'rsi2_reversion'])
+  assert.deepEqual(JSON.parse(getState(db, 'enabled_strategies_json')), DEFAULT_ON_KEYS)
   const matrix = JSON.parse(getState(db, 'autotrade_matrix_json'))
   assert.deepEqual(matrix['GOOGL.US'], ['1h'])
   assert.deepEqual(matrix.US30, ['8h'])
@@ -64,11 +71,11 @@ test('fresh DB with baseline: arms rsi2 and seeds the REAL combos', () => {
 test('no baseline: arms strategy only, no fabricated combos', () => {
   const db = initDB(':memory:')
   const out = seedRsi2GoCombos(db, io)
-  assert.equal(out.addedStrategy, true)
+  assert.equal(out.addedStrategy, false) // already in the default-on set
   assert.equal(out.matrixSeeded, false)
   assert.match(out.note, /no RSI-2 backtest baseline/)
   assert.equal(getState(db, 'autotrade_matrix_json'), null)
-  assert.deepEqual(JSON.parse(getState(db, 'enabled_strategies_json')), ['fib_618_fade', 'rsi2_reversion'])
+  assert.deepEqual(JSON.parse(getState(db, 'enabled_strategies_json')), DEFAULT_ON_KEYS)
 })
 
 test('idempotent: a second call is a no-op', () => {
@@ -109,7 +116,7 @@ test('footgun guard: armed scope + no matrix → strategy-only, no matrix fabric
   seedBaseline(db)
   setState(db, 'autotrade_scope', 'armed')
   const out = seedRsi2GoCombos(db, io)
-  assert.equal(out.addedStrategy, true)
+  assert.equal(out.addedStrategy, false) // already in the default-on set
   assert.equal(out.matrixSeeded, false)
   assert.match(out.note, /armed scope/)
   assert.equal(getState(db, 'autotrade_matrix_json'), null)
