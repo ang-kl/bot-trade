@@ -87,6 +87,19 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
 
   const num = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: priceDp(v) }))
   const money2 = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '' : '−'}${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+  // SL/TP distance-from-entry as a %, next to the absolute price (owner:
+  // smaller font, lighter colour than black/blue/red — long-sighted and
+  // red/green colour-blind, so text-sub grey rather than a tone colour).
+  const pctOf = (entry, price) => {
+    const e = Number(entry)
+    const p = Number(price)
+    if (!Number.isFinite(e) || e === 0 || !Number.isFinite(p)) return null
+    return (Math.abs(e - p) / e * 100).toFixed(2) + '%'
+  }
+  const PctTag = ({ entry, price }) => {
+    const pct = pctOf(entry, price)
+    return pct ? <span className="text-[7px] text-[var(--color-text-sub)]"> {pct}</span> : null
+  }
   const timeCell = (v) => { const w2 = dateTimeParts(v); return w2 ? `${w2.day} ${w2.time}` : '—' }
   // How long a position/order has been open (or was held before closing) —
   // owner: "all table should also have the duration ... so you can also
@@ -253,6 +266,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     )}
                     <td className="py-1 pr-3 text-right whitespace-nowrap">
                       {num(r.sl)}{ccyTag(r.ccy)}
+                      {r.sl != null && <PctTag entry={r.entry} price={r.sl} />}
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
                         return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
@@ -266,11 +280,12 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                             <span key={t.n} className="block leading-tight">
                               <span className="text-[var(--color-text-sub)]">#{t.n}</span>
                               {' '}{num(t.price)}
+                              {t.price != null && <PctTag entry={r.entry} price={t.price} />}
                               {t.lots != null && <span className="text-[var(--color-text-sub)]"> · {num(t.lots)}</span>}
                               {t.done && <span title="partial already taken"> ✓</span>}
                             </span>
                           ))
-                        : <>{num(r.tp)}{ccyTag(r.ccy)}</>}
+                        : <>{num(r.tp)}{ccyTag(r.ccy)}{r.tp != null && <PctTag entry={r.entry} price={r.tp} />}</>}
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
                         return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
