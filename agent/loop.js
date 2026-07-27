@@ -2111,7 +2111,7 @@ async function runLoop(db) {
             // (profit-keeper, trade-guards, this very monitor) ever looked at
             // it again. Route through the same executeBrokerAction the
             // deterministic path uses so the broker position actually closes.
-            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'weekend_watch')
+            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'llm_monitor')
             if (outcome.error) {
               log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
             } else if (outcome.skipped) {
