@@ -379,6 +379,49 @@ because they're new trading logic:
 3. Volume-based take-profit assist in the exit layer — bank/tighten before
    the next LVN/HVN ahead of a winner.
 
+## P16 — Telegram message retention (new 2026-07-27, ungated, lowest priority)
+
+Not capital-at-risk — an observability gap, raised by the owner: "I keep
+having these setups but I don't see the log in the bot-trade website that you
+kept them for review and analysis." Confirmed: `agent/services/telegram.js`'s
+`sendMessage`/`sendScanAlert`/`sendTradeAlert` (17 call sites across
+`loop.js` and a handful of services) POST straight to the Bot API and persist
+nothing — a scanner alert, a veto alert, an LLM-monitor-failure alert exists
+only in the Telegram app once sent, never in the DB.
+
+Owner ask: keep every fired Telegram message for 400 days, for review and
+(separately) so every trade/veto eventually carries a stated
+fundamental-or-technical reason rather than free text alone. Sizing checked:
+~10-30 messages/day × 400 days × 1-3KB/row ≈ 16-36MB — trivial next to the
+already-unbounded `trades`/`broker_deals`/`trade_postmortems` tables.
+
+Proposed shape (not yet built, no code written): a `telegram_log` table
+(message text, type tag, chat_id, sent_at) written alongside every existing
+outbound path, pruned at 400 days by the same housekeeping sweep that already
+prunes `scans`/`decision_log`/`risk_events` (`loop.js:2490-2503`). "Every
+outbound path" is wider than the two functions first named here — a Codex
+review of this doc (PR #419) correctly caught that `telegram.js`'s
+`sendMessage`/`sendScanAlert`/`sendTradeAlert`/`sendDocument` are not the only
+senders: `telegram-control.js` has its own separate `tg('sendMessage', …)`
+calls (`:275,294,404,416`, command replies and `notifyOwner`-style alerts) and
+its own `sendDocument`-equivalent upload (`:117-126`), neither of which goes
+through `telegram.js` at all. Any real implementation needs to inventory or
+centralize both modules' send paths, not just `telegram.js`'s. Mechanical,
+low-risk, no behavior change to alerting itself — but explicitly held for the
+owner's word before it starts, per 2026-07-27's "do not complicate the bot
+trading" instruction: nothing here begins until asked for by name, and it
+ranks behind D12/D13 regardless.
+
+A related gap raised in the same conversation, and corrected here after a
+second Codex review comment: `trade_postmortems` does **not** only cover
+losses, contrary to what was first written in this entry — despite the
+module's name, `loss-postmortem.js`'s sweep (`:293-314`) selects every closed
+trade with a nonzero (or price-inferable) outcome, win or loss, and routes
+wins through `classifyWin` (`:131,348-349`) into the same table. The only
+genuinely open gap is the fundamental-vs-technical one: nothing anywhere
+distinguishes a fundamental (news/macro) reason from a technical one — that
+part stands, unscoped and unestimated.
+
 ## What the shipped work added to the soak watch
 
 Three markers that should never appear on the demo trio, and that break the
