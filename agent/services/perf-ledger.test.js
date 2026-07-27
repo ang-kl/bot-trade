@@ -11,25 +11,31 @@ import {
   plannedRr, buildPerfLedger, closedAtMs,
 } from './perf-ledger.js'
 
-test('categorize: six markets + stocks ride index, unknowns other', () => {
+test('categorize: shared classifier — stocks are their own class, unknowns other', () => {
   assert.equal(categorize('BTCUSD'), 'crypto')
   assert.equal(categorize('EURUSD'), 'fx')
   assert.equal(categorize('USDIDR'), 'fx')
   assert.equal(categorize('US30'), 'index')
-  assert.equal(categorize('MCHP.US'), 'index')
+  assert.equal(categorize('AUS200'), 'index') // index prefix wins over any suffix
+  assert.equal(categorize('MCHP.US'), 'stock')
+  assert.equal(categorize('0016.HK'), 'stock')
+  assert.equal(categorize('GOOGL.US'), 'stock')
   assert.equal(categorize('XAUUSD'), 'metal')
   assert.equal(categorize('NATGAS'), 'energy')
   assert.equal(categorize('WHEAT'), 'grain')
   assert.equal(categorize('???'), 'other')
 })
 
-test('anchors: day rolls at 22:00 UTC; week anchors Sunday 22:00 UTC', () => {
-  // Wed 2026-07-22 10:00 UTC → day anchor Tue 21st 22:00; week anchor Sun 19th 22:00
+test('anchors: day rolls at the FX day open (17:00 NY, DST-aware); week at Sunday\'s', () => {
+  // July = EDT (UTC-4) → 17:00 NY = 21:00 UTC.
+  // Wed 2026-07-22 10:00 UTC → day anchor Tue 21st 21:00; week anchor Sun 19th 21:00
   const now = Date.UTC(2026, 6, 22, 10)
-  assert.equal(dayAnchor(now), Date.UTC(2026, 6, 21, 22))
-  assert.equal(weekAnchor(now), Date.UTC(2026, 6, 19, 22))
-  // Wed 23:00 UTC → day anchor is the SAME day's 22:00
-  assert.equal(dayAnchor(Date.UTC(2026, 6, 22, 23)), Date.UTC(2026, 6, 22, 22))
+  assert.equal(dayAnchor(now), Date.UTC(2026, 6, 21, 21))
+  assert.equal(weekAnchor(now), Date.UTC(2026, 6, 19, 21))
+  // Wed 23:00 UTC → day anchor is the SAME day's 21:00
+  assert.equal(dayAnchor(Date.UTC(2026, 6, 22, 23)), Date.UTC(2026, 6, 22, 21))
+  // January = EST (UTC-5) → the anchor moves to 22:00 UTC with the tz database
+  assert.equal(dayAnchor(Date.UTC(2026, 0, 15, 23)), Date.UTC(2026, 0, 15, 22))
   // Windows list is complete and ordered
   const keys = ledgerWindows(now).map(w => w.key)
   assert.deepEqual(keys, ['1h', '4h', '12h', 'yesterday', '3d', 'wtd', '1w', '2w', '30d', 'mtd', 'lastmonth', '3m', '6m', '12m'])
