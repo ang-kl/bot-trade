@@ -43,6 +43,38 @@ export function evaluateCarryCost(db, proposal, maxNegative) {
   return { detail }
 }
 
+/**
+ * Commission-drag check: pure historical read over this symbol's own closed
+ * trades (no live pre-trade commission feed exists — the broker only reports
+ * commission after a fill closes). Returns null when there aren't yet
+ * `minTrades` closed, commission-known winning trades on this symbol (never
+ * a block on thin/new history), otherwise { detail, vetoReason? } —
+ * vetoReason set when average commission has been eating at least
+ * `maxFracOfWin` of the symbol's average winning trade's gross P&L.
+ */
+export function evaluateCommissionCost(db, proposal, maxFracOfWin, minTrades = 5, accountId = null) {
+  try {
+    const acct = accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
+    const rows = db.prepare(
+      `SELECT commission, gross_pnl FROM trades
+       WHERE symbol = ? AND status = 'closed' AND commission IS NOT NULL AND gross_pnl IS NOT NULL
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+       ORDER BY closed_at DESC LIMIT 30`
+    ).all(proposal.symbol, acct, acct)
+    const wins = rows.filter(r => r.gross_pnl > 0)
+    if (wins.length < (minTrades ?? 5)) return null
+    const avgWin = wins.reduce((s, r) => s + r.gross_pnl, 0) / wins.length
+    if (!(avgWin > 0)) return null
+    const avgCommission = Math.abs(rows.reduce((s, r) => s + (Number(r.commission) || 0), 0) / rows.length)
+    const frac = avgCommission / avgWin
+    const detail = `avg commission $${avgCommission.toFixed(2)} = ${(frac * 100).toFixed(0)}% of avg win $${avgWin.toFixed(2)} (${rows.length} closed trades, limit ${(maxFracOfWin * 100).toFixed(0)}%)`
+    if (frac >= maxFracOfWin) {
+      return { detail, vetoReason: `commission_drag: avg commission ${(frac * 100).toFixed(0)}% of avg win on ${proposal.symbol} ≥ limit ${(maxFracOfWin * 100).toFixed(0)}%` }
+    }
+    return { detail }
+  } catch { return null }
+}
+
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
   dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
@@ -126,6 +158,17 @@ export const DEFAULT_RISK_CONFIG = {
   // swap = no block, never a stuck veto. Default OFF.
   carryGateEnabled: false,
   carryMaxNegativeSwapPoints: null, // e.g. -10 vetoes when the side's swap < −10 pts/night; null = gate stays a no-op even when enabled
+  // Commission-drag gate (owner: small HK-stock trades getting eaten by
+  // commission — e.g. 0016.HK -$15.87 commission against a +$8.92 gross
+  // win). No live pre-trade commission feed exists (the broker only reports
+  // commission after a fill closes, same as swap used to be), so this is a
+  // HISTORICAL check over this symbol's own closed trades: once there are
+  // enough of them, veto new entries when the average commission has been
+  // eating too large a share of the average win. Too few closed trades on
+  // the symbol = no block, never a stuck veto. Default OFF.
+  commissionGateEnabled: false,
+  commissionMaxFracOfWin: null, // e.g. 0.5 vetoes when avg commission ≥ 50% of the symbol's avg win; null = gate stays a no-op even when enabled
+  commissionGateMinTrades: 5,   // closed trades required on the symbol before the gate can act
   // Instrument universe: empty = everything allowed. Put symbols here to veto
   // them regardless of balance (e.g. ["BTCUSD"] to temporarily disable crypto).
   // Tier is just a label for the dashboard — the real equity gate is
@@ -523,6 +566,20 @@ export function evaluateTrade(db, proposal, configOverride) {
     if (cc) {
       checks.carry_cost = cc.detail
       if (cc.vetoReason) return veto(cc.vetoReason, checks, proposal)
+    }
+  }
+
+  // ---- 0d. Commission-drag gate (config-gated, default OFF) ---------------
+  // Historical-only — no live pre-trade commission feed exists (the broker
+  // only reports commission after a fill closes). Too few closed trades on
+  // the symbol = no block, never a stuck veto. Same null-threshold-must-not-
+  // coerce-to-0 caution as the carry gate above.
+  if (config.commissionGateEnabled && config.commissionMaxFracOfWin != null
+    && Number.isFinite(Number(config.commissionMaxFracOfWin))) {
+    const cm = evaluateCommissionCost(db, proposal, Number(config.commissionMaxFracOfWin), config.commissionGateMinTrades, proposal.accountId)
+    if (cm) {
+      checks.commission_cost = cm.detail
+      if (cm.vetoReason) return veto(cm.vetoReason, checks, proposal)
     }
   }
 

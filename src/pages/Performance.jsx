@@ -787,6 +787,18 @@ function TodayTradesBody({ rows }) {
 // figure, since "average" and "mean" name the same number).
 const SESS_COLS = '58px 52px repeat(7, minmax(64px, 1fr))'
 function SessionStatsBody({ stats }) {
+  // Owner (2026-07-27): SYD and JPN show identical figures — genuinely
+  // correct, not a bug. ASX cash hours (10:00–16:00 AEST, UTC+10) and TSE
+  // cash hours (09:00–15:00 JST, UTC+9) land on the exact same UTC window
+  // this time of year — the 1h session-start gap cancels the 1h offset gap.
+  // Flag any such coincidence generically (not hardcoded to SYD/JPN) so it
+  // stays correct if the underlying windows ever change.
+  const twins = {}
+  for (const a of stats.buckets) {
+    for (const b of stats.buckets) {
+      if (a.key !== b.key && a.fromMin === b.fromMin && a.toMin === b.toMin) twins[a.key] = b.key
+    }
+  }
   const rows = [
     ...stats.buckets,
     { key: 'OFF', hint: 'today’s closes outside all six windows', ...stats.off },
@@ -807,6 +819,9 @@ function SessionStatsBody({ stats }) {
               <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
                 <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 6, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+              )}
+              {twins[s.key] && (
+                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 6, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
               )}
             </span>
             <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>

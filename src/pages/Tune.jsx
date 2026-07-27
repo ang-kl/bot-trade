@@ -23,6 +23,35 @@ const TF_MS = NATIVE_TF_MS
 const ALL_TIMEFRAMES = [...Object.keys(TF_MS)].sort((a, b) => tfMs(b) - tfMs(a))
 const byTfDesc = (a, b) => tfMs(b) - tfMs(a)
 
+// Shared row-pager for the two pipeline tables below (owner: match the
+// Trade-lessons card's 25/50/100/200 dropdown pattern — LossReview.jsx).
+// Reset-page-on-change is the caller's job (a plain useEffect at the call
+// site, same as LossReview) — this hook only slices.
+function usePager(rows, pageSize, page, setPage) {
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const safePage = Math.min(page, pageCount - 1)
+  const pageRows = rows.slice(safePage * pageSize, (safePage + 1) * pageSize)
+  return { pageRows, page: safePage, setPage, pageCount, total: rows.length }
+}
+
+function Pager({ pageSize, setPageSize, page, setPage, pageCount, total }) {
+  const selectCls = 'glass-inset rounded-[6px] px-1.5 py-1 text-[9px]'
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-1.5 text-[9px] text-[var(--color-text-sub)]">
+      <span>Show</span>
+      <select className={selectCls} value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(0) }}>
+        {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <button type="button" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}
+        className="glass-inset rounded-[6px] px-1.5 py-1 disabled:opacity-40">‹ prev</button>
+      <span>Page {page + 1} of {pageCount}</span>
+      <button type="button" disabled={page >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
+        className="glass-inset rounded-[6px] px-1.5 py-1 disabled:opacity-40">next ›</button>
+      <span>{total === 0 ? 0 : page * pageSize + 1}–{Math.min(total, (page + 1) * pageSize)} of {total}</span>
+    </div>
+  )
+}
+
 const TABS = [
   { id: 'pipeline', label: 'Pipeline' },
   { id: 'risk', label: 'Risk' },
@@ -61,6 +90,8 @@ function TimeframePerformance({ timeframes }) {
   })
   const [perf, setPerf] = useState(null)
   const [perfError, setPerfError] = useState(null)
+  const [pageSize, setPageSize] = useState(50)
+  const [page, setPage] = useState(0)
 
   useEffect(() => {
     if (!open) return
@@ -81,8 +112,10 @@ function TimeframePerformance({ timeframes }) {
 
   const armedRows = (perf?.rows || []).filter(r => r.armed).sort((a, b) => byTfDesc(a.timeframe, b.timeframe))
   const removedRows = (perf?.rows || []).filter(r => !r.armed).sort((a, b) => byTfDesc(a.timeframe, b.timeframe))
-  const rows = [...armedRows, ...removedRows]
+  const allRows = [...armedRows, ...removedRows]
   const windows = perf?.windows || ['2h', '4h', '1d', '5d', '1w']
+  const pager = usePager(allRows, pageSize, page, setPage)
+  const rows = pager.pageRows
 
   return (
     <div className="mt-3">
@@ -124,6 +157,7 @@ function TimeframePerformance({ timeframes }) {
               </tbody>
             </table>
           )}
+          {!perfError && perf && allRows.length > 0 && <Pager {...pager} pageSize={pageSize} setPageSize={setPageSize} />}
         </div>
       )}
     </div>
@@ -158,6 +192,9 @@ function StrategyTfPerformance() {
     return next
   })
   const money = (v) => `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}`
+  const [pageSize, setPageSize] = useState(50)
+  const [page, setPage] = useState(0)
+  const pager = usePager(grid?.strategies || [], pageSize, page, setPage)
 
   return (
     <div className="mt-3">
@@ -184,7 +221,7 @@ function StrategyTfPerformance() {
                   </tr>
                 </thead>
                 <tbody>
-                  {grid.strategies.map(s => (
+                  {pager.pageRows.map(s => (
                     <tr key={s.strategy} className="border-t border-[var(--color-border)]">
                       <td className="py-1 pr-3 whitespace-nowrap">{s.strategy}</td>
                       {grid.timeframes.map(tf => {
@@ -211,6 +248,7 @@ function StrategyTfPerformance() {
               <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
                 Cell = trades · net P&L, {grid.days}d window, hover for win rate. Grid total {grid.total_closed} = every closed trade once — nothing double-counted or dropped.
               </p>
+              {grid.strategies.length > 0 && <Pager {...pager} pageSize={pageSize} setPageSize={setPageSize} />}
             </>
           )}
         </div>

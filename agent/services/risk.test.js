@@ -16,6 +16,7 @@ import {
   getAccountLeverage,
   requiredMargin,
   portfolioMarginStatus,
+  evaluateCommissionCost,
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -28,7 +29,7 @@ function freshDB() {
       symbol TEXT, side TEXT, entry_price REAL, exit_price REAL,
       sl_price REAL, tp_price REAL, volume REAL,
       opened_at TEXT, closed_at TEXT, hold_duration_ms INTEGER,
-      gross_pnl REAL, net_pnl REAL,
+      gross_pnl REAL, net_pnl REAL, commission REAL,
       status TEXT DEFAULT 'open',
       close_reason TEXT, thesis TEXT, strategy TEXT, conviction REAL,
       ctrader_position_id TEXT, analysis_id INTEGER, label_strategy TEXT,
@@ -944,4 +945,76 @@ test('fxDayOpenMs/fxDayStartSql — anchors at the last 17:00 New York', async (
   assert.equal(new Date(fxDayOpenMs(winter)).toISOString(), '2026-01-15T22:00:00.000Z')
   // SQL form matches closeTradeRow's space-separated format.
   assert.equal(fxDayStartSql(after), '2026-07-24 21:00:00')
+})
+
+// Commission-drag gate --------------------------------------------------
+
+function insertClosedTradeWithCommission(db, symbol, grossPnl, commission, minsAgo = 1) {
+  const closedAt = new Date(Date.now() - minsAgo * 60_000).toISOString()
+  db.prepare(
+    `INSERT INTO trades (symbol, side, gross_pnl, commission, status, closed_at)
+     VALUES (?, 'BUY', ?, ?, 'closed', ?)`
+  ).run(symbol, grossPnl, commission, closedAt)
+}
+
+test('evaluateCommissionCost: too few closed trades → null, never blocks', () => {
+  const db = freshDB()
+  insertClosedTradeWithCommission(db, '0016.HK', 8.92, -15.87)
+  insertClosedTradeWithCommission(db, '0016.HK', 4.67, -8.30)
+  assert.equal(evaluateCommissionCost(db, { symbol: '0016.HK' }, 0.5, 5), null)
+})
+
+test('evaluateCommissionCost: no winning trades at all → null (avgWin undefined)', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', -3, -1, i + 1)
+  assert.equal(evaluateCommissionCost(db, { symbol: '0016.HK' }, 0.5, 5), null)
+})
+
+test('evaluateCommissionCost: commission eating most of the avg win → vetoReason', () => {
+  const db = freshDB()
+  // Mirrors the real 0016.HK incident: gross wins ~$8.92/$4.67, commission ~$15.87/$8.30 — commission > gross.
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', 8, -15, i + 1)
+  const r = evaluateCommissionCost(db, { symbol: '0016.HK' }, 0.5, 5)
+  assert.ok(r)
+  assert.match(r.vetoReason, /commission_drag/)
+  assert.match(r.detail, /avg commission/)
+})
+
+test('evaluateCommissionCost: commission is a small fraction of the avg win → detail only, no veto', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, 'EURUSD', 20, -1, i + 1)
+  const r = evaluateCommissionCost(db, { symbol: 'EURUSD' }, 0.5, 5)
+  assert.ok(r)
+  assert.equal(r.vetoReason, undefined)
+  assert.match(r.detail, /avg commission/)
+})
+
+test('evaluateCommissionCost: different symbol\'s history does not leak in', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', 8, -15, i + 1)
+  assert.equal(evaluateCommissionCost(db, { symbol: 'EURUSD' }, 0.5, 5), null)
+})
+
+test('evaluateTrade — commission gate default OFF does not veto even with bad history', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', 8, -15, i + 1)
+  const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), NO_SYMBOL_COOLDOWN)
+  assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
+})
+
+test('evaluateTrade — commission gate enabled vetoes a symbol with bad commission history', () => {
+  const db = freshDB()
+  for (let i = 0; i < 5; i++) insertClosedTradeWithCommission(db, '0016.HK', 8, -15, i + 1)
+  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGateEnabled: true, commissionMaxFracOfWin: 0.5, commissionGateMinTrades: 5 }
+  const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), cfg)
+  assert.equal(out.approved, false)
+  assert.match(out.veto_reason, /commission_drag/)
+})
+
+test('evaluateTrade — commission gate enabled but too few trades still approves', () => {
+  const db = freshDB()
+  insertClosedTradeWithCommission(db, '0016.HK', 8, -15)
+  const cfg = { ...NO_SYMBOL_COOLDOWN, commissionGateEnabled: true, commissionMaxFracOfWin: 0.5, commissionGateMinTrades: 5 }
+  const out = evaluateTrade(db, goodProposal({ symbol: '0016.HK' }), cfg)
+  assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })
