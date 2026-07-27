@@ -324,6 +324,12 @@ app.get('/health', (_req, res) => {
     lastScanAt: getState(db, 'last_scan_at'),
     lastLoopMs: Number(getState(db, 'last_loop_ms') || 0),
     lastScanMs: Number(getState(db, 'last_scan_ms') || 0),
+    // Hang forensics (owner-approved watchdog, 2026-07-27): the phase the
+    // loop is in RIGHT NOW and when the cycle started — a frozen loop names
+    // its stuck phase here instead of needing Railway log archaeology.
+    loopPhase: getState(db, 'loop_phase') || 'idle',
+    loopStartedAt: getState(db, 'loop_started_at') || null,
+    watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
     dbSize,
     dbSizeMB: dbSize == null ? null : Math.round((dbSize / 1048576) * 100) / 100,
     dbPath: resolvedPath,

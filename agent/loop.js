@@ -78,6 +78,7 @@ const DAILY_TOKEN_BUDGET = 500_000    // warn when daily LLM output tokens excee
 let loopCount = 0
 let consecutiveErrors = 0
 let loopRunning = false               // mutex — prevents concurrent iterations
+let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 
 /**
  * Clear the in-process consecutive-error count. POST /actions/reset-breaker
@@ -1483,6 +1484,7 @@ async function runLoop(db) {
 
   loopRunning = true
   loopCount++
+  lastLoopActivityAt = Date.now()
   const start = Date.now()
   console.log(`[diag] LOOP #${loopCount} start`)
   setState(db, 'loop_phase', 'starting')
@@ -2037,6 +2039,7 @@ async function runLoop(db) {
       // here must never take down the scan/monitor loop.
       // ---------------------------------------------------------------------
       try {
+        setState(db, 'loop_phase', 'pending orders')
         if (getState(db, 'pending_mode_enabled') === 'true') {
           const pendingCreds = getCtraderCreds(db)
           if (pendingCreds.ready) {
@@ -2507,6 +2510,7 @@ async function runLoop(db) {
       const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
       loopRunning = false
+      lastLoopActivityAt = Date.now()
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
       return
     }
@@ -2535,6 +2539,7 @@ async function runLoop(db) {
   }
 
   loopRunning = false
+  lastLoopActivityAt = Date.now()
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
@@ -2547,9 +2552,54 @@ async function runLoop(db) {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Loop watchdog (owner-approved 2026-07-27, audit F-L7-06/OQ-4): the loop
+// hung mid-cycle four times in one day — each hang left every open position
+// unmanaged until a HUMAN noticed and restarted Railway. This is the floor
+// under that: a plain timer (an unresolved await in a phase does not block
+// the event loop, so this timer still fires) that exits the process when no
+// cycle has started or finished for too long. Railway's restartPolicyType
+// ON_FAILURE brings it straight back up.
+//
+// Two limits, because "quiet" means different things mid-cycle vs. between:
+//  - mid-cycle (loopRunning): a cycle normally takes ≤2 min; stuck past
+//    LOOP_WATCHDOG_MINUTES (default 12) = a hung await → exit.
+//  - between cycles: the error path legitimately backs off up to 15 min, so
+//    only a gap past ~2× that means the setTimeout re-arm chain itself died.
+// A tripped circuit breaker is a DELIBERATE halt awaiting a human reset —
+// never watchdog-restarted (a fresh process would zero consecutiveErrors and
+// defeat the breaker). Set LOOP_WATCHDOG_MINUTES=0 to disable.
+// ---------------------------------------------------------------------------
+function startLoopWatchdog(db) {
+  const minutes = Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12)
+  if (!(minutes > 0)) { log('Loop watchdog DISABLED (LOOP_WATCHDOG_MINUTES=0)'); return }
+  const midCycleMs = minutes * 60_000
+  const idleMs = Math.max(midCycleMs, 30 * 60_000)
+  log(`Loop watchdog armed: mid-cycle limit ${minutes}m, idle limit ${idleMs / 60_000}m`)
+  const t = setInterval(() => {
+    try {
+      const quietMs = Date.now() - lastLoopActivityAt
+      const limit = loopRunning ? midCycleMs : idleMs
+      if (quietMs < limit) return
+      if (getState(db, 'circuit_breaker_tripped_at')) return
+      const phase = getState(db, 'loop_phase') || 'unknown'
+      const startedAt = getState(db, 'loop_started_at') || 'unknown'
+      const detail = { phase, loopCount, loopRunning, startedAt, quietMin: Math.round(quietMs / 60_000), limitMin: limit / 60_000 }
+      console.error(`[watchdog] LOOP HUNG — no cycle activity for ${detail.quietMin}m (limit ${detail.limitMin}m), stuck in phase "${phase}" (loop #${loopCount}, started ${startedAt}). Exiting for a Railway auto-restart.`)
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+          .run('WATCHDOG_EXIT', '/loop', JSON.stringify(detail))
+      } catch { /* the exit itself is the point */ }
+      process.exit(1)
+    } catch { /* watchdog must never throw */ }
+  }, 60_000)
+  t.unref?.()
+}
+
 export function startLoop(db) {
   log('Agent loop starting...')
   setTimeout(() => runLoop(db), 5000) // 5s delay on startup
+  startLoopWatchdog(db)
   // Fast position monitor — 30s ticker, volume-aware cadence per open
   // position (owner: active positions are watched in ~1 minute, not 5).
   import('./services/fast-monitor.js')
