@@ -70,17 +70,38 @@ export function fromOpenAIResponse(data, fallbackModel) {
   }
 }
 
-function openaiClient(apiKey, model, fetchImpl = fetch) {
+// A stalled fetch (no server response, dropped connection) never resolves OR
+// rejects on its own — Node's fetch has no built-in timeout. Without this,
+// one hung monitor check sits inside D4's Promise.all batch forever and
+// freezes the whole main loop (production incident 2026-07-27: loopCount
+// stuck for 80+ minutes, 28 positions unmonitored, no error ever logged
+// because nothing ever threw). AbortController turns "never" into "throws
+// after LLM_TIMEOUT_MS", which the existing per-position try/catch already
+// handles correctly.
+const LLM_TIMEOUT_MS = 30_000
+
+function openaiClient(apiKey, model, fetchImpl = fetch, timeoutMs = LLM_TIMEOUT_MS) {
   return {
     provider: 'openai',
     model,
     messages: {
       async create(params) {
-        const res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(toOpenAIBody(params, model)),
-        })
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+        let res
+        try {
+          res = await fetchImpl('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(toOpenAIBody(params, model)),
+            signal: controller.signal,
+          })
+        } catch (err) {
+          if (err.name === 'AbortError') throw new Error(`OpenAI request timed out after ${timeoutMs}ms`)
+          throw err
+        } finally {
+          clearTimeout(timer)
+        }
         if (!res.ok) {
           const body = await res.text().catch(() => '')
           throw new Error(`OpenAI ${res.status}: ${String(body).slice(0, 200)}`)
@@ -98,9 +119,12 @@ function openaiClient(apiKey, model, fetchImpl = fetch) {
 export function createLLMClient(env = process.env, deps = {}) {
   const info = llmProviderInfo(env)
   if (info.provider === 'openai') {
-    return openaiClient(env.OPENAI_API_KEY, info.model, deps.fetch)
+    return openaiClient(env.OPENAI_API_KEY, info.model, deps.fetch, deps.timeoutMs)
   }
-  const client = new Anthropic({ apiKey: env.CLAUDE_API_KEY })
+  // Explicit bound (the SDK's own default is 10 minutes) — same reasoning as
+  // the OpenAI path's AbortController above: this call sits inside D4's
+  // Promise.all batch, so it must fail fast rather than hang the loop.
+  const client = new Anthropic({ apiKey: env.CLAUDE_API_KEY, timeout: LLM_TIMEOUT_MS })
   client.provider = 'anthropic'
   client.model = info.model
   return client
