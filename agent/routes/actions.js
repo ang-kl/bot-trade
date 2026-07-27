@@ -1480,6 +1480,27 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /actions/vpo-status — plain read-only proxy to the C++ sidecar's own
+  // GET /vpo-status. The agent process holds EXEC_SECRET; nothing else does,
+  // so this is the only way to answer "is VPO_ENABLED armed right now, and
+  // on which strategies" from outside the sidecar's own container (audit
+  // 2026-07-27 DR-1/OQ-2). No request body, no side effects, no auth pushed
+  // anywhere — a single outbound GET and pass-through of the response.
+  // -----------------------------------------------------------------------
+  router.get('/vpo-status', async (_req, res) => {
+    try {
+      const base = process.env.EXEC_URL || 'http://127.0.0.1:8091'
+      const r = await fetch(base + '/vpo-status', {
+        headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
+      })
+      const text = await r.text()
+      res.status(r.status).type('application/json').send(text)
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/exec-parity — prove the C++ sidecar matches the JS path,
   // runnable from the UI (the agent DB and both paths live HERE, not on the
   // owner's laptop). Read-only: health + credentials push + reconcile diff.
