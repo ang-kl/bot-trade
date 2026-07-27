@@ -5,54 +5,31 @@
 // accounts — with carry-forward maths. Totals reconcile across lenses;
 // nothing is double-counted (each trade appears once per lens).
 //
-// Anchors (design spec): the trading DAY rolls at 22:00 UTC (AU open); the
-// broker WEEK anchors Sunday 22:00 UTC. Rolling windows (1H…12M) are
-// now-relative. All comparisons run on epoch ms parsed from closed_at with
-// the same space/'T' separator tolerance as the risk gate.
+// Anchors: the trading DAY rolls at the FX day open — 17:00 America/New_York,
+// DST-aware — and the WEEK at Sunday's 17:00 NY, both from shared/formulas.js
+// (this file previously used a fixed 22:00 UTC, one hour late under DST, so
+// "Yesterday" carried today's fills for the first hour of every day).
+// Rolling windows (1H…12M) are now-relative. All comparisons run on epoch ms
+// parsed from closed_at with the same space/'T' tolerance as the risk gate.
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { categorize, MARKETS, dayAnchorMs, weekAnchorMs, closedAtMs } from '../../shared/formulas.js'
 
-// --- market categorization (6 design categories) ---------------------------
-// Stocks (.US/.UK/.DE/.AU tickers) ride in 'index' — same session behaviour,
-// and the design has no seventh column. Unknowns land in 'other' and are
-// EXCLUDED from the six market cells but still count in window totals.
-const CRYPTO = /^(BTC|ETH|SOL|XRP|ADA|DOGE|LTC|BNB|DOT|LINK|AVAX|TRX)[A-Z]{3,4}$/
-const METAL = /^X(AU|AG|PT|PD)[A-Z]{3}$|^COPPER/
-const ENERGY = /^(NATGAS|SPOTCRUDE|BRENT|UKOIL|USOIL|OIL|WTI)/
-const GRAIN = /^(WHEAT|CORN|SOYBEAN|SUGAR|COFFEE|COCOA|COTTON|OATS|RICE)/
-const INDEX = /^(US30|US500|NAS100|USTEC|US2000|GER40|UK100|FRA40|JPN225|AUS200|EUSTX|VIX|DOW|HK50|CHINA50|SPAIN35|ITALY40|SWISS20|NETH25)/
-
-export function categorize(symbol) {
-  const s = String(symbol || '').toUpperCase()
-  if (CRYPTO.test(s)) return 'crypto'
-  if (METAL.test(s)) return 'metal'
-  if (ENERGY.test(s)) return 'energy'
-  if (GRAIN.test(s)) return 'grain'
-  if (INDEX.test(s) || /\.(US|UK|DE|AU)$/.test(s)) return 'index'
-  if (/^[A-Z]{6}$/.test(s)) return 'fx'
-  return 'other'
-}
-
-export const MARKETS = ['crypto', 'fx', 'index', 'metal', 'energy', 'grain']
+export { categorize, MARKETS, closedAtMs }
 
 // --- time anchors ----------------------------------------------------------
 const H = 3600_000
 const D = 24 * H
 
-/** Most recent 22:00 UTC at or before `now` — the trading-day anchor. */
+/** FX day open (17:00 NY, DST-aware) at or before `now` — shared anchor. */
 export function dayAnchor(nowMs) {
-  const d = new Date(nowMs)
-  const today22 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 22)
-  return nowMs >= today22 ? today22 : today22 - D
+  return dayAnchorMs(nowMs)
 }
 
-/** Most recent Sunday 22:00 UTC at or before `now` — the broker week open. */
+/** Sunday's FX day open at or before `now` — the FX week open. */
 export function weekAnchor(nowMs) {
-  let a = dayAnchor(nowMs)
-  // walk back to Sunday (getUTCDay() of the anchor instant: Sunday = 0)
-  while (new Date(a).getUTCDay() !== 0) a -= D
-  return a
+  return weekAnchorMs(nowMs)
 }
 
 /** The design's ledger windows, oldest-logic preserved: [from, to) in ms. */
@@ -79,14 +56,6 @@ export function ledgerWindows(nowMs = Date.now()) {
 }
 
 // --- trade shaping ---------------------------------------------------------
-/** closed_at → epoch ms, tolerant of the space/'T' separator split. */
-export function closedAtMs(row) {
-  if (row.closed_at_ms != null && Number.isFinite(Number(row.closed_at_ms))) return Number(row.closed_at_ms)
-  const raw = String(row.closed_at || '').replace(' ', 'T')
-  const t = Date.parse(raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z')
-  return Number.isFinite(t) ? t : null
-}
-
 /** tp | part | sl | manual from close_reason + prices (heuristic, tested). */
 export function classifyOutcome(row) {
   const r = String(row.close_reason || '').toLowerCase()
