@@ -51,6 +51,7 @@ import Tune from './pages/Tune.jsx'
 import Risk from './pages/Risk.jsx'
 import Connect from './pages/Connect.jsx'
 import AccountSwitcher from './components/AccountSwitcher.jsx'
+import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import { useTheme } from './lib/theme.js'
 import { Toaster } from 'sonner'
 
@@ -164,6 +165,7 @@ export default function App() {
           <div className="flex items-baseline gap-2 mb-4">
             <span className="text-[15px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent">bot-trade</span>
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
+            <LlmMonitorStatus />
           </div>
           <nav className="flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
@@ -197,6 +199,7 @@ export default function App() {
               bot-trade
             </span>
             <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
+            <LlmMonitorStatus />
             <nav className="flex gap-1">
               {ALL_TABS.map(t => (
                 <NavLink

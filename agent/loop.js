@@ -27,6 +27,7 @@ import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
 import { recordPositionEvent } from './services/position-events.js'
+import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
@@ -1906,6 +1907,7 @@ async function runLoop(db) {
           try {
             const check = await runWeekendPositionCheck(client, pos)
             recordAnthropicUsage(db, check.usage || { output_tokens: check.tokens || 0 }, 'weekend_watch', check.model)
+            recordLlmMonitorResult(db, { ok: true })
             // Store the full payload (citations, searches_used, watch_events)
             // in last_check_reasoning as JSON so Workshop can render the audit
             // trail — user sees WHICH headlines triggered the call.
@@ -1940,7 +1942,17 @@ async function runLoop(db) {
               } catch { /* non-fatal */ }
             }
           } catch (err) {
-            log(`Weekend check failed for ${pos.symbol}:`, err.message)
+            const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
+            log(`Weekend check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
+            if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
+              if (process.env.TELEGRAM_BOT_TOKEN) {
+                try {
+                  const { sendMessage } = await import('./services/telegram.js')
+                  await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected). Last error: ${err.message}`)
+                } catch { /* non-fatal */ }
+              }
+              markAlerted(db)
+            }
           }
         }
       }
@@ -2080,19 +2092,44 @@ async function runLoop(db) {
           }
 
           // Fallback: free-text theses and ambiguous cases → LLM Monitor.
-          const check = await runMonitorCheck(client, {
-            symbol: pos.symbol,
-            side: pos.side,
-            entry: pos.entry_price,
-            currentPrice,
-            sl: pos.current_sl,
-            tp1: pos.current_tp,
-            thesis: pos.thesis,
-            holdTime: eval_.metrics.minutesInTrade
-              ? `${Math.round(eval_.metrics.minutesInTrade)}m`
-              : null,
-          })
+          let check
+          try {
+            check = await runMonitorCheck(client, {
+              symbol: pos.symbol,
+              side: pos.side,
+              entry: pos.entry_price,
+              currentPrice,
+              sl: pos.current_sl,
+              tp1: pos.current_tp,
+              thesis: pos.thesis,
+              holdTime: eval_.metrics.minutesInTrade
+                ? `${Math.round(eval_.metrics.minutesInTrade)}m`
+                : null,
+            })
+          } catch (err) {
+            // Owner (2026-07-27): "I need to be alerted if any of the LLM
+            // failed and you still continue" — this used to be silently
+            // swallowed by the outer per-position catch below, with no
+            // distinction from a DB/broker error. Tracked here specifically
+            // so a sustained LLM outage (e.g. an exhausted credit balance)
+            // surfaces — trading itself is unaffected: the deterministic
+            // rules above already ran, and the broker-side SL/TP still
+            // protects the position regardless of whether the LLM answers.
+            const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
+            log(`LLM monitor check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
+            if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
+              if (process.env.TELEGRAM_BOT_TOKEN) {
+                try {
+                  const { sendMessage } = await import('./services/telegram.js')
+                  await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected), but position reviews are not getting a fresh LLM read. Last error: ${err.message}`)
+                } catch { /* non-fatal */ }
+              }
+              markAlerted(db)
+            }
+            continue
+          }
           recordAnthropicUsage(db, check.usage, 'position_monitor', check.model)
+          recordLlmMonitorResult(db, { ok: true })
 
           s.updatePositionCheck.run(
             check.action,
