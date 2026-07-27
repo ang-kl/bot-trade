@@ -70,3 +70,52 @@ test('OpenAI client surfaces API errors', async () => {
   const client = createLLMClient({ OPENAI_API_KEY: 'sk-bad' }, { fetch: fakeFetch })
   await assert.rejects(() => client.messages.create({ max_tokens: 1, messages: [] }), /OpenAI 401/)
 })
+
+// Production incident 2026-07-27: a stalled OpenAI response never resolves
+// nor rejects on its own (Node's fetch has no built-in timeout), and that
+// hung promise sat inside D4's Promise.all monitor batch, freezing the main
+// loop for 80+ minutes with 28 positions unmonitored — no error ever logged
+// because nothing ever threw. This must fail fast instead of hanging.
+test('OpenAI client times out instead of hanging forever on a stalled response', async () => {
+  const neverResolvingFetch = (url, opts) => new Promise((resolve, reject) => {
+    // A real stalled connection: only settles if the caller aborts it.
+    opts.signal.addEventListener('abort', () => {
+      const err = new Error('aborted')
+      err.name = 'AbortError'
+      reject(err)
+    })
+  })
+  const client = createLLMClient({ OPENAI_API_KEY: 'sk-test' }, { fetch: neverResolvingFetch, timeoutMs: 25 })
+  await assert.rejects(
+    () => client.messages.create({ max_tokens: 1, messages: [] }),
+    /OpenAI request timed out after 25ms/
+  )
+})
+
+test('OpenAI client clears its timeout on a normal response (no dangling timer)', async () => {
+  const fakeFetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) })
+  const client = createLLMClient({ OPENAI_API_KEY: 'sk-test' }, { fetch: fakeFetch, timeoutMs: 25 })
+  const resp = await client.messages.create({ max_tokens: 1, messages: [] })
+  assert.equal(resp.content[0].text, 'ok')
+})
+
+// Codex review (PR #421): fetch() resolves once HEADERS arrive, not once the
+// body is fully read. Headers arriving fine but the body stalling is the
+// same hang, just one await later — the timeout must still cover it.
+test('OpenAI client times out on a response whose BODY stalls (headers arrived, body never does)', async () => {
+  const fakeFetch = async (url, opts) => ({
+    ok: true,
+    json: () => new Promise((resolve, reject) => {
+      opts.signal.addEventListener('abort', () => {
+        const err = new Error('aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
+    }),
+  })
+  const client = createLLMClient({ OPENAI_API_KEY: 'sk-test' }, { fetch: fakeFetch, timeoutMs: 25 })
+  await assert.rejects(
+    () => client.messages.create({ max_tokens: 1, messages: [] }),
+    /OpenAI request timed out after 25ms/
+  )
+})
