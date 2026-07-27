@@ -231,11 +231,21 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
   }
 
-  // 5. NEW SETUPS — one working order per symbol, hard cap.
+  // 5. NEW SETUPS — one working order per symbol, hard cap, plus a TOTAL
+  // resting-order cap across BOTH bot placement paths (this one and the
+  // closed-market limits) — 82 resting orders helped drive a margin call
+  // (owner-approved build 2, 2026-07-27). Every resting order is potential
+  // exposure the moment it fills; the cap bounds worst-case fill exposure.
   const symbolsWithWorking = new Set(stillWorking.map(r => r.symbol))
   const riskCfg = risk.loadRiskConfig(db)
+  const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))
+  let totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
 
   for (const { symbol, timeframe, signal } of setups) {
+    if (totalWorking >= maxTotal) {
+      summary.skipped.push(`${symbol}: pending cap — ${totalWorking}/${maxTotal} resting orders already working`)
+      continue
+    }
     if (symbolsWithWorking.has(symbol)) {
       summary.skipped.push(`${symbol}: working order exists`)
       continue
@@ -362,6 +372,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       notify(`⏳ pending PLACED: ${symbol} ${timeframe} — limit @ ${orderPayload.limitPrice}, SL ${signal.sl}, TP ${signal.tp1}`)
       symbolsWithWorking.add(symbol)
       summary.placed++
+      totalWorking++
       risk.persistRiskEvent(db, proposal, {
         approved: true,
         veto_reason: null,
@@ -399,28 +410,76 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
  */
 export async function reconcileBrokerPendingOrders(db, creds, deps = {}) {
   const { exec } = await defaultDeps(deps)
-  const rec = await exec.reconcile(creds)
-  const brokerOrders = rec?.order || []
+  // The loop's reconcile phase already holds this cycle's broker order
+  // snapshot — passing it via deps.brokerOrders skips a second reconcile
+  // round-trip (each one is a fresh WS connection).
+  const brokerOrders = deps.brokerOrders ?? ((await exec.reconcile(creds))?.order || [])
 
   const known = new Set(
     db.prepare(`SELECT order_id FROM pending_orders WHERE status = 'working' AND order_id IS NOT NULL`)
       .all().map(r => String(r.order_id)),
   )
 
+  // Both bot markers, not just pending-fib: closed-market limits rest with
+  // 'pending-closed' and were previously miscounted as the owner's MANUAL
+  // orders here — so their orphans/duplicates were never cleaned by anything
+  // (owner-approved build 2, 2026-07-27: "i see duplication", 82 resting).
+  const BOT_MARKERS = [PENDING_MARKER, 'pending-closed']
+  const isBotOrder = (label) => BOT_MARKERS.some(m => label.includes(m))
+
   const out = { brokerOrders: brokerOrders.length, botMarked: 0, kept: 0, manual: 0, cancelled: [], failures: [] }
-  for (const o of brokerOrders) {
-    const orderId = o?.orderId ?? posField(o, 'orderId')
-    const label = String(posField(o, 'label') || posField(o, 'comment') || o?.comment || '')
-    if (!label.includes(PENDING_MARKER)) { out.manual++; continue }
-    out.botMarked++
-    if (orderId != null && known.has(String(orderId))) { out.kept++; continue }
+  const markCancelled = db.prepare(`UPDATE pending_orders SET status = 'cancelled' WHERE order_id = ?`)
+  const cancelOne = async (orderId, why, symbolId) => {
     try {
       await exec.cancelOrder(creds, { orderId })
-      out.cancelled.push({ orderId: orderId != null ? String(orderId) : null, symbolId: posField(o, 'symbolId') ?? null })
-      log(`broker cleanup: cancelled stale pending order ${orderId} (not in local ledger)`)
+      if (orderId != null) markCancelled.run(String(orderId))
+      out.cancelled.push({ orderId: orderId != null ? String(orderId) : null, symbolId: symbolId ?? null, why })
+      log(`broker cleanup: cancelled pending order ${orderId} (${why})`)
     } catch (err) {
       out.failures.push({ orderId: orderId != null ? String(orderId) : null, error: err.message })
       log(`broker cleanup: cancel FAILED for ${orderId} — ${err.message}`)
+    }
+  }
+
+  const kept = []
+  for (const o of brokerOrders) {
+    const orderId = o?.orderId ?? posField(o, 'orderId')
+    const label = String(posField(o, 'label') || posField(o, 'comment') || o?.comment || '')
+    if (!isBotOrder(label)) { out.manual++; continue }
+    out.botMarked++
+    if (orderId != null && known.has(String(orderId))) { out.kept++; kept.push(o); continue }
+    await cancelOne(orderId, 'not in local ledger', posField(o, 'symbolId'))
+  }
+
+  // DUPLICATE COLLAPSE among the ledger-known survivors: two bot orders on
+  // the same symbol+side whose entry prices sit within 0.01% of each other
+  // are one intended order placed twice (the desync signature of a hung
+  // pending phase re-placing after its ledger write was abandoned). Keep the
+  // newest, cancel the rest — the local rows of the cancelled ones flip to
+  // 'cancelled' so the ledger re-syncs instead of re-desyncing.
+  const groups = new Map()
+  for (const o of kept) {
+    const sid = posField(o, 'symbolId') ?? '?'
+    const side = posField(o, 'tradeSide') ?? '?'
+    const key = `${sid}|${side}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(o)
+  }
+  for (const list of groups.values()) {
+    if (list.length < 2) continue
+    const price = (o) => Number(o?.limitPrice ?? o?.stopPrice ?? NaN)
+    const ts = (o) => Number(o?.utcLastUpdateTimestamp ?? 0)
+    const sorted = [...list].sort((a, b) => ts(b) - ts(a)) // newest first
+    const survivors = []
+    for (const o of sorted) {
+      const p = price(o)
+      const dup = Number.isFinite(p) && survivors.some(s => {
+        const sp = price(s)
+        return Number.isFinite(sp) && Math.abs(sp - p) <= Math.abs(sp) * 1e-4
+      })
+      if (!dup) { survivors.push(o); continue }
+      out.kept--
+      await cancelOne(o?.orderId ?? posField(o, 'orderId'), 'duplicate of a newer resting order', posField(o, 'symbolId'))
     }
   }
   return out

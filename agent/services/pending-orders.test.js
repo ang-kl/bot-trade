@@ -272,3 +272,92 @@ test('pending orders size DYNAMICALLY: uncapped by default, watchlist Max lots c
   await managePendingOrders(db2, CREDS, SYMBOL_MAP, h2.deps)
   assert.equal(seen[0].requestedVolume, 0.05)
 })
+
+// ---------------------------------------------------------------------------
+// Build 2 (owner-approved 2026-07-27): pending-closed orders are bot orders
+// too, duplicates collapse to the newest, and a total resting cap holds
+// across placement.
+// ---------------------------------------------------------------------------
+
+test('broker cleanup recognises pending-closed labels as bot orders', async () => {
+  const db = freshDb()
+  const { deps, calls } = makeDeps({
+    reconcile: {
+      position: [],
+      order: [
+        { orderId: 61, tradeData: { label: 'ap|v1|other|low|Off|4h|-|pending-closed', symbolId: 3 } }, // orphan → cancel
+        { orderId: 62, tradeData: { label: 'truly manual', symbolId: 3 } },                            // manual → keep
+      ],
+    },
+  })
+  const { reconcileBrokerPendingOrders } = await import('./pending-orders.js')
+  const out = await reconcileBrokerPendingOrders(db, CREDS, deps)
+  assert.equal(out.botMarked, 1)
+  assert.equal(out.manual, 1)
+  assert.deepEqual(calls.cancelled, [61])
+})
+
+test('broker cleanup collapses same-symbol same-side near-price duplicates to the newest', async () => {
+  const db = freshDb()
+  for (const id of ['710', '720']) {
+    db.prepare(`
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
+      VALUES ('EURUSD', '4h', ?, 1, 1.1, 1.09, 1.12, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib')
+    `).run(id)
+  }
+  const { deps, calls } = makeDeps({
+    reconcile: {
+      position: [],
+      order: [
+        { orderId: 710, tradeData: { label: 'a|pending-fib', tradeSide: 'BUY', symbolId: 1 }, limitPrice: 1.10001, utcLastUpdateTimestamp: 1000 },
+        { orderId: 720, tradeData: { label: 'a|pending-fib', tradeSide: 'BUY', symbolId: 1 }, limitPrice: 1.10002, utcLastUpdateTimestamp: 2000 }, // newer → survives
+      ],
+    },
+  })
+  const { reconcileBrokerPendingOrders } = await import('./pending-orders.js')
+  const out = await reconcileBrokerPendingOrders(db, CREDS, deps)
+  assert.deepEqual(calls.cancelled, [710], 'older duplicate cancelled, newer kept')
+  assert.equal(out.kept, 1)
+  assert.equal(db.prepare(`SELECT status FROM pending_orders WHERE order_id = '710'`).get().status, 'cancelled')
+  assert.equal(db.prepare(`SELECT status FROM pending_orders WHERE order_id = '720'`).get().status, 'working')
+})
+
+test('broker cleanup keeps distinct-price same-symbol orders (not duplicates)', async () => {
+  const db = freshDb()
+  for (const id of ['810', '820']) {
+    db.prepare(`
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
+      VALUES ('EURUSD', '4h', ?, 1, 1.1, 1.09, 1.12, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib')
+    `).run(id)
+  }
+  const { deps, calls } = makeDeps({
+    reconcile: {
+      position: [],
+      order: [
+        { orderId: 810, tradeData: { label: 'a|pending-fib', tradeSide: 'BUY', symbolId: 1 }, limitPrice: 1.10, utcLastUpdateTimestamp: 1000 },
+        { orderId: 820, tradeData: { label: 'a|pending-fib', tradeSide: 'BUY', symbolId: 1 }, limitPrice: 1.15, utcLastUpdateTimestamp: 2000 },
+      ],
+    },
+  })
+  const { reconcileBrokerPendingOrders } = await import('./pending-orders.js')
+  const out = await reconcileBrokerPendingOrders(db, CREDS, deps)
+  assert.deepEqual(calls.cancelled, [], 'different levels are two real orders')
+  assert.equal(out.kept, 2)
+})
+
+test('placement refuses past the PENDING_MAX_TOTAL cap', async () => {
+  const db = freshDb()
+  process.env.PENDING_MAX_TOTAL = '1'
+  try {
+    db.prepare(`
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
+      VALUES ('GBPUSD', '4h', '910', 1, 1.3, 1.29, 1.32, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-closed')
+    `).run()
+    const { deps, calls } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+    const out = await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+    assert.equal(calls.placed.length, 0, 'no order placed past the cap')
+    assert.ok(out.skipped.some(s => /pending cap/.test(s)), `expected a pending-cap skip, got: ${out.skipped}`)
+  } finally {
+    delete process.env.PENDING_MAX_TOTAL
+  }
+})

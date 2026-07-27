@@ -1582,6 +1582,23 @@ async function runLoop(db) {
           // the placement controller (pending_orders).
           await hbeat(db, 'order_monitor')
 
+          // Broker resting-order cleanup (owner-approved build 2, 2026-07-27:
+          // "i see duplication" — 82 resting orders fed a margin call). The
+          // sweep previously existed only behind a manual HTTP route and only
+          // recognised pending-fib labels, so pending-closed orphans and
+          // ledger-desynced duplicates accumulated at the broker forever.
+          // Runs here every reconcile pass on the order snapshot fetched
+          // above — no second reconcile round-trip. Best-effort.
+          try {
+            const { reconcileBrokerPendingOrders } = await import('./services/pending-orders.js')
+            const sw = await reconcileBrokerPendingOrders(db, { host, clientId, clientSecret, accessToken, accountId }, { brokerOrders: reconcileData.order || [] })
+            if (sw.cancelled.length > 0) {
+              log(`Broker order cleanup: cancelled ${sw.cancelled.length} stale/duplicate bot order(s) (${sw.kept} kept, ${sw.manual} manual untouched)`)
+            }
+          } catch (err) {
+            log(`Broker order cleanup failed (non-fatal): ${err.message}`)
+          }
+
           // Un-blind the safety brakes: a position closed at the BROKER (a
           // resting SL/TP fill — the normal stop-out) was marked closed with
           // net_pnl NULL, invisible to the daily cap, equity stop, loss-streak
