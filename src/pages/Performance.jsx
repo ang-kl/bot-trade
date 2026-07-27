@@ -652,8 +652,13 @@ function OpenTableBody({ rows }) {
 // a partial last page, horizontal inherited from the wrapped table). The
 // ⤢ expand pop-up still renders the FULL, unpaginated table — pagination is
 // a card-view space constraint, not a data limit.
-function PagedRows({ rows, pageSize = 4, maxHeight = 150, children }) {
-  const [page, setPage] = useState(0)
+function PagedRows({ rows, pageSize = 4, maxHeight = 150, initialIndex = null, children }) {
+  // initialIndex: open on the page CONTAINING this row index instead of page
+  // 0 — the Today hourly table uses it to land on the current hour, because
+  // "page 1 = 21:00-04:00 UTC" made every daytime close look missing (owner:
+  // "why every hour isn't show the closed trades in this table").
+  const [page, setPage] = useState(() =>
+    initialIndex != null && initialIndex >= 0 ? Math.floor(initialIndex / pageSize) : 0)
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   const p = Math.min(page, pages - 1)
   const pageRows = rows.slice(p * pageSize, p * pageSize + pageSize)
@@ -2060,7 +2065,9 @@ export default function Performance() {
             {todayWin.label && <span style={{ fontSize: 9, color: P_WRN }}>{todayWin.label}</span>}
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
-            <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}>{(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
+            <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
+              initialIndex={todayHourly.findIndex(r => loadedAt >= r.from && loadedAt < r.to)}>
+              {(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
             <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
