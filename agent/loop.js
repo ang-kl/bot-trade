@@ -1061,6 +1061,283 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
   }
 }
 
+// D4 (2026-07-27): the monitor phase used to await runMonitorCheck (an LLM
+// round trip) one position at a time, serially — with 28 open positions at
+// ~2-4s each, a single tick took 60-120s, during which the whole Express
+// server was unresponsive (docs/d4-loop-block-fix-plan.md). This function is
+// the per-position body, extracted so the caller can run it at bounded
+// concurrency (mirrors the existing held-prices.js price-fetch pattern)
+// instead of one-at-a-time. Behavior is unchanged — same deterministic
+// rules first, same LLM fallback, same broker execution — only the
+// scheduling changed. Exported standalone (db/s/pos/currentPrice/client all
+// passed in, no closure over runLoop state) so it's unit-testable in
+// isolation, same as evaluatePosition/executeBrokerAction.
+export async function monitorOnePosition(db, s, pos, currentPrice, client) {
+  const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
+
+  // Persist MFE/MAE and any flag flips every loop, regardless of action.
+  s.updatePositionMetrics.run(
+    eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
+    eval_.updates.mae_r ?? pos.mae_r ?? 0,
+    eval_.updates.be_moved ?? pos.be_moved ?? 0,
+    eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
+    pos.id
+  )
+
+  // Deterministic rule fired — execute it at the broker (MOVE_SL /
+  // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor
+  // handles "position already closed" races gracefully and returns a
+  // summary string that rides along inside last_check_reasoning so the
+  // Workshop feed shows intent *and* broker outcome on one row.
+  if (eval_.action !== 'HOLD') {
+    // External positions: observe only — log what we'd do but don't touch the broker
+    if (pos.source === 'external') {
+      s.updatePositionCheck.run(
+        `EXT:${eval_.action}`,
+        `${eval_.reason} | external: observe_only`,
+        new Date().toISOString(),
+        eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+        pos.id
+      )
+      log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
+      return
+    }
+    // Stage-matrix "Live Tweak & Close" gate: when the position's
+    // strategy has that cell off, the monitor records intent but
+    // never touches the broker. Broker-resident SL/TP and any
+    // owner-armed per-position guards still protect the position.
+    if (!manageStageAllows(db, getState, pos.strategy)) {
+      s.updatePositionCheck.run(
+        `MGMT-OFF:${eval_.action}`,
+        `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
+        new Date().toISOString(),
+        eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
+        pos.id
+      )
+      log(`PM ${pos.symbol}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
+      return
+    }
+    const outcome = await executeBrokerAction(db, s, pos, eval_)
+    let reasoning = eval_.reason
+    let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
+    if (outcome.error) {
+      reasoning = `${reasoning} | broker_error: ${outcome.error}`
+      log(`PM ${pos.symbol}: ${eval_.action} FAILED — ${outcome.error}`)
+    } else if (outcome.skipped) {
+      reasoning = `${reasoning} | intent_only: ${outcome.reason}`
+      log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
+    } else {
+      reasoning = `${reasoning} | broker: ${outcome.summary}`
+      log(`PM ${pos.symbol}: ${eval_.action} — ${outcome.summary}`)
+      if (outcome.closedRemotely) thesisStatus = 'broken'
+    }
+    s.updatePositionCheck.run(
+      `PM:${eval_.action}`,
+      reasoning,
+      new Date().toISOString(),
+      thesisStatus,
+      pos.id
+    )
+    return
+  }
+
+  // External positions: skip LLM monitor — just update metrics, no
+  // token spend. Still stamp a HOLD checkpoint (owner: "why are you
+  // not monitoring" — this position WAS evaluated every cycle, the
+  // UI just never said so, because only a non-HOLD verdict used to
+  // get persisted here — a real position sitting well inside its
+  // rules for hours looked identical to one that was never checked).
+  if (pos.source === 'external') {
+    s.updatePositionCheck.run(
+      'HOLD', `${eval_.reason} | external: observe_only`, new Date().toISOString(), 'intact', pos.id
+    )
+    return
+  }
+
+  // Live Tweak & Close off for this strategy → no LLM monitor either
+  // (its EXIT would close the DB record while the broker still
+  // holds) — still stamp the HOLD check, same reasoning as above.
+  if (!manageStageAllows(db, getState, pos.strategy)) {
+    s.updatePositionCheck.run(
+      'HOLD',
+      `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
+      new Date().toISOString(), 'intact', pos.id
+    )
+    return
+  }
+
+  // Fallback: free-text theses and ambiguous cases → LLM Monitor.
+  let check
+  try {
+    check = await runMonitorCheck(client, {
+      symbol: pos.symbol,
+      side: pos.side,
+      entry: pos.entry_price,
+      currentPrice,
+      sl: pos.current_sl,
+      tp1: pos.current_tp,
+      thesis: pos.thesis,
+      holdTime: eval_.metrics.minutesInTrade
+        ? `${Math.round(eval_.metrics.minutesInTrade)}m`
+        : null,
+    })
+  } catch (err) {
+    // Owner (2026-07-27): "I need to be alerted if any of the LLM
+    // failed and you still continue" — this used to be silently
+    // swallowed by the outer per-position catch below, with no
+    // distinction from a DB/broker error. Tracked here specifically
+    // so a sustained LLM outage (e.g. an exhausted credit balance)
+    // surfaces — trading itself is unaffected: the deterministic
+    // rules above already ran, and the broker-side SL/TP still
+    // protects the position regardless of whether the LLM answers.
+    const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
+    log(`LLM monitor check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
+    if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        try {
+          const { sendMessage } = await import('./services/telegram.js')
+          await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected), but position reviews are not getting a fresh LLM read. Last error: ${err.message}`)
+        } catch { /* non-fatal */ }
+      }
+      markAlerted(db)
+    }
+    return
+  }
+  recordAnthropicUsage(db, check.usage, 'position_monitor', check.model)
+  recordLlmMonitorResult(db, { ok: true })
+
+  s.updatePositionCheck.run(
+    check.action,
+    check.reasoning,
+    new Date().toISOString(),
+    check.thesis_status,
+    pos.id
+  )
+
+  if (check.action === 'EXIT') {
+    // BUG FIX (owner: "why are 18 positions not being trimmed" — audit
+    // found this): this branch used to call s.closePosition.run()
+    // directly — a bare DB status flip with NO broker close. The
+    // position stayed open and margin-locked at the broker forever
+    // while the bot's own bookkeeping said 'closed', so nothing
+    // (profit-keeper, trade-guards, this very monitor) ever looked at
+    // it again. Route through the same executeBrokerAction the
+    // deterministic path uses so the broker position actually closes.
+    const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'llm_monitor')
+    if (outcome.error) {
+      log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
+    } else if (outcome.skipped) {
+      // AUDIT F-L6-02: this used to DB-close on ANY skip reason. The
+      // comment said "no broker to close against", but `skipped` also
+      // covers no_ctrader_position_id, unknown_volume and
+      // account_not_in_registry — cases where a LIVE broker position
+      // exists. Flipping the local row to 'closed' there re-created
+      // exactly the bug the block above says was fixed: the position
+      // survives at the broker with nothing watching it, because every
+      // manager reads status='active'.
+      //
+      // Only the genuinely-no-broker case may close DB-only. Every
+      // other skip leaves the row ACTIVE so the next tick retries, and
+      // says so loudly rather than quietly.
+      if (mayCloseDbOnlyAfterSkip(outcome.reason)) {
+        log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
+        s.closePosition.run('closed', pos.id) // no broker configured at all — DB-only, as before
+      } else {
+        log(`Position close (LLM) NOT EXECUTED for ${pos.symbol}: ${outcome.reason} — position left ACTIVE (a broker position may still be open) — ${check.reasoning}`)
+        try {
+          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+            'CLOSE_NOT_EXECUTED', '/monitor',
+            JSON.stringify({
+              monitoredId: pos.id, symbol: pos.symbol, reason: outcome.reason,
+              detail: 'LLM monitor asked for an exit; the executor could not reach the broker position. Row left active on purpose — do NOT read this as closed.',
+            }).slice(0, 2000),
+          )
+        } catch { /* audit best-effort */ }
+      }
+    } else {
+      log(`Position closed (LLM): ${pos.symbol} — ${outcome.summary} — ${check.reasoning}`)
+    }
+  }
+}
+
+// Bounded concurrency, mirroring held-prices.js's existing chunk-then-
+// Promise.all pattern — the same fix shape applied to the monitor phase's
+// per-position LLM calls (see monitorOnePosition's header comment).
+export const MONITOR_CONCURRENCY = 4
+
+export async function runMonitorPhase(db, s, positions, currentPriceOf, client) {
+  for (let i = 0; i < positions.length; i += MONITOR_CONCURRENCY) {
+    const chunk = positions.slice(i, i + MONITOR_CONCURRENCY)
+    await Promise.all(chunk.map(pos =>
+      monitorOnePosition(db, s, pos, currentPriceOf(pos), client).catch(err => {
+        log(`Monitor check failed for ${pos.symbol}:`, err.message)
+      })
+    ))
+  }
+}
+
+// D4b: the weekend-watch phase had the identical serial-per-position-LLM-call
+// anti-pattern as the routine monitor phase — same fix, same shape.
+export async function monitorOneWeekendPosition(db, s, pos, client) {
+  try {
+    const check = await runWeekendPositionCheck(client, pos)
+    recordAnthropicUsage(db, check.usage || { output_tokens: check.tokens || 0 }, 'weekend_watch', check.model)
+    recordLlmMonitorResult(db, { ok: true })
+    // Store the full payload (citations, searches_used, watch_events)
+    // in last_check_reasoning as JSON so Workshop can render the audit
+    // trail — user sees WHICH headlines triggered the call.
+    const reasoningPayload = JSON.stringify({
+      reasoning: check.reasoning,
+      gap_risk: check.gap_risk,
+      watch_events: check.watch_events,
+      citations: check.citations,
+      searches_used: check.searches_used,
+      suggested_sl: check.suggested_sl,
+      confidence: check.confidence,
+    })
+    s.updatePositionCheck.run(
+      `WEEKEND:${check.action}`,
+      reasoningPayload,
+      new Date().toISOString(),
+      check.thesis_status,
+      pos.id
+    )
+    log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action} (${check.searches_used} searches, ${check.citations.length} citations)`)
+
+    // Alert user if thesis broke or gap risk is high — include top citation URL
+    if ((check.thesis_status === 'broken' || check.gap_risk === 'high') && process.env.TELEGRAM_BOT_TOKEN) {
+      try {
+        const { sendMessage } = await import('./services/telegram.js')
+        const emoji = check.thesis_status === 'broken' ? '⚠️' : '🌊'
+        const topCite = check.citations[0]
+        const citeLine = topCite?.url ? `\nSource: ${topCite.title || topCite.url}\n${topCite.url}` : ''
+        await sendMessage(
+          `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}${citeLine}`
+        )
+      } catch { /* non-fatal */ }
+    }
+  } catch (err) {
+    const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
+    log(`Weekend check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
+    if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        try {
+          const { sendMessage } = await import('./services/telegram.js')
+          await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected). Last error: ${err.message}`)
+        } catch { /* non-fatal */ }
+      }
+      markAlerted(db)
+    }
+  }
+}
+
+export async function runWeekendWatchPhase(db, s, positions, client) {
+  for (let i = 0; i < positions.length; i += MONITOR_CONCURRENCY) {
+    const chunk = positions.slice(i, i + MONITOR_CONCURRENCY)
+    await Promise.all(chunk.map(pos => monitorOneWeekendPosition(db, s, pos, client)))
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Prepared-statement helpers (created once per db)
 // ---------------------------------------------------------------------------
@@ -1903,58 +2180,10 @@ async function runLoop(db) {
         : []
       if (weekendPositions.length > 0 && loopCount % 12 === 1) {
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
-        for (const pos of weekendPositions) {
-          try {
-            const check = await runWeekendPositionCheck(client, pos)
-            recordAnthropicUsage(db, check.usage || { output_tokens: check.tokens || 0 }, 'weekend_watch', check.model)
-            recordLlmMonitorResult(db, { ok: true })
-            // Store the full payload (citations, searches_used, watch_events)
-            // in last_check_reasoning as JSON so Workshop can render the audit
-            // trail — user sees WHICH headlines triggered the call.
-            const reasoningPayload = JSON.stringify({
-              reasoning: check.reasoning,
-              gap_risk: check.gap_risk,
-              watch_events: check.watch_events,
-              citations: check.citations,
-              searches_used: check.searches_used,
-              suggested_sl: check.suggested_sl,
-              confidence: check.confidence,
-            })
-            s.updatePositionCheck.run(
-              `WEEKEND:${check.action}`,
-              reasoningPayload,
-              new Date().toISOString(),
-              check.thesis_status,
-              pos.id
-            )
-            log(`Weekend ${pos.symbol}: ${check.thesis_status}/${check.gap_risk} — ${check.action} (${check.searches_used} searches, ${check.citations.length} citations)`)
-
-            // Alert user if thesis broke or gap risk is high — include top citation URL
-            if ((check.thesis_status === 'broken' || check.gap_risk === 'high') && process.env.TELEGRAM_BOT_TOKEN) {
-              try {
-                const { sendMessage } = await import('./services/telegram.js')
-                const emoji = check.thesis_status === 'broken' ? '⚠️' : '🌊'
-                const topCite = check.citations[0]
-                const citeLine = topCite?.url ? `\nSource: ${topCite.title || topCite.url}\n${topCite.url}` : ''
-                await sendMessage(
-                  `${emoji} WEEKEND WATCH: ${pos.symbol} ${pos.side} — ${check.thesis_status}/${check.gap_risk} gap\n${check.reasoning}\nAction at open: ${check.action}${citeLine}`
-                )
-              } catch { /* non-fatal */ }
-            }
-          } catch (err) {
-            const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
-            log(`Weekend check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
-            if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
-              if (process.env.TELEGRAM_BOT_TOKEN) {
-                try {
-                  const { sendMessage } = await import('./services/telegram.js')
-                  await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected). Last error: ${err.message}`)
-                } catch { /* non-fatal */ }
-              }
-              markAlerted(db)
-            }
-          }
-        }
+        // D4b: bounded-concurrency, not one-position-at-a-time — see
+        // monitorOneWeekendPosition/runWeekendWatchPhase above
+        // (docs/d4-loop-block-fix-plan.md).
+        await runWeekendWatchPhase(db, s, weekendPositions, client)
       }
 
       // ---------------------------------------------------------------------
@@ -1989,204 +2218,12 @@ async function runLoop(db) {
         }
       }
 
-      for (const pos of activePositions) {
-        try {
-          // Current price: the fresh spot quote first, then the most recent
-          // scan row as a fallback. When both are absent, position-manager
-          // returns HOLD + null metrics and we still hand off to the LLM so the
-          // position is never skipped silently.
-          const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
-          const currentPrice = heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
-
-          const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
-
-          // Persist MFE/MAE and any flag flips every loop, regardless of action.
-          s.updatePositionMetrics.run(
-            eval_.updates.mfe_r ?? pos.mfe_r ?? 0,
-            eval_.updates.mae_r ?? pos.mae_r ?? 0,
-            eval_.updates.be_moved ?? pos.be_moved ?? 0,
-            eval_.updates.scaled_out ?? pos.scaled_out ?? 0,
-            pos.id
-          )
-
-          // Deterministic rule fired — execute it at the broker (MOVE_SL /
-          // PARTIAL_EXIT / FULL_EXIT) then persist what happened. The executor
-          // handles "position already closed" races gracefully and returns a
-          // summary string that rides along inside last_check_reasoning so the
-          // Workshop feed shows intent *and* broker outcome on one row.
-          if (eval_.action !== 'HOLD') {
-            // External positions: observe only — log what we'd do but don't touch the broker
-            if (pos.source === 'external') {
-              s.updatePositionCheck.run(
-                `EXT:${eval_.action}`,
-                `${eval_.reason} | external: observe_only`,
-                new Date().toISOString(),
-                eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
-                pos.id
-              )
-              log(`PM ${pos.symbol}: ${eval_.action} (external, observe-only) — ${eval_.reason}`)
-              continue
-            }
-            // Stage-matrix "Live Tweak & Close" gate: when the position's
-            // strategy has that cell off, the monitor records intent but
-            // never touches the broker. Broker-resident SL/TP and any
-            // owner-armed per-position guards still protect the position.
-            if (!manageStageAllows(db, getState, pos.strategy)) {
-              s.updatePositionCheck.run(
-                `MGMT-OFF:${eval_.action}`,
-                `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
-                new Date().toISOString(),
-                eval_.action === 'FULL_EXIT' ? 'broken' : 'intact',
-                pos.id
-              )
-              log(`PM ${pos.symbol}: ${eval_.action} suppressed — Live Tweak & Close is off for ${pos.strategy || 'unlabelled'}`)
-              continue
-            }
-            const outcome = await executeBrokerAction(db, s, pos, eval_)
-            let reasoning = eval_.reason
-            let thesisStatus = eval_.action === 'FULL_EXIT' ? 'broken' : 'intact'
-            if (outcome.error) {
-              reasoning = `${reasoning} | broker_error: ${outcome.error}`
-              log(`PM ${pos.symbol}: ${eval_.action} FAILED — ${outcome.error}`)
-            } else if (outcome.skipped) {
-              reasoning = `${reasoning} | intent_only: ${outcome.reason}`
-              log(`PM ${pos.symbol}: ${eval_.action} — ${eval_.reason} (intent-only, ${outcome.reason})`)
-            } else {
-              reasoning = `${reasoning} | broker: ${outcome.summary}`
-              log(`PM ${pos.symbol}: ${eval_.action} — ${outcome.summary}`)
-              if (outcome.closedRemotely) thesisStatus = 'broken'
-            }
-            s.updatePositionCheck.run(
-              `PM:${eval_.action}`,
-              reasoning,
-              new Date().toISOString(),
-              thesisStatus,
-              pos.id
-            )
-            continue
-          }
-
-          // External positions: skip LLM monitor — just update metrics, no
-          // token spend. Still stamp a HOLD checkpoint (owner: "why are you
-          // not monitoring" — this position WAS evaluated every cycle, the
-          // UI just never said so, because only a non-HOLD verdict used to
-          // get persisted here — a real position sitting well inside its
-          // rules for hours looked identical to one that was never checked).
-          if (pos.source === 'external') {
-            s.updatePositionCheck.run(
-              'HOLD', `${eval_.reason} | external: observe_only`, new Date().toISOString(), 'intact', pos.id
-            )
-            continue
-          }
-
-          // Live Tweak & Close off for this strategy → no LLM monitor either
-          // (its EXIT would close the DB record while the broker still
-          // holds) — still stamp the HOLD check, same reasoning as above.
-          if (!manageStageAllows(db, getState, pos.strategy)) {
-            s.updatePositionCheck.run(
-              'HOLD',
-              `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
-              new Date().toISOString(), 'intact', pos.id
-            )
-            continue
-          }
-
-          // Fallback: free-text theses and ambiguous cases → LLM Monitor.
-          let check
-          try {
-            check = await runMonitorCheck(client, {
-              symbol: pos.symbol,
-              side: pos.side,
-              entry: pos.entry_price,
-              currentPrice,
-              sl: pos.current_sl,
-              tp1: pos.current_tp,
-              thesis: pos.thesis,
-              holdTime: eval_.metrics.minutesInTrade
-                ? `${Math.round(eval_.metrics.minutesInTrade)}m`
-                : null,
-            })
-          } catch (err) {
-            // Owner (2026-07-27): "I need to be alerted if any of the LLM
-            // failed and you still continue" — this used to be silently
-            // swallowed by the outer per-position catch below, with no
-            // distinction from a DB/broker error. Tracked here specifically
-            // so a sustained LLM outage (e.g. an exhausted credit balance)
-            // surfaces — trading itself is unaffected: the deterministic
-            // rules above already ran, and the broker-side SL/TP still
-            // protects the position regardless of whether the LLM answers.
-            const health = recordLlmMonitorResult(db, { ok: false, reason: err.message })
-            log(`LLM monitor check failed for ${pos.symbol} (streak ${health?.failStreak ?? '?'}):`, err.message)
-            if (health && shouldAlert(health.failStreak, health.lastAlertAt)) {
-              if (process.env.TELEGRAM_BOT_TOKEN) {
-                try {
-                  const { sendMessage } = await import('./services/telegram.js')
-                  await sendMessage(`\u{1F6AB} LLM monitor unavailable — ${health.failStreak} consecutive failures. Trading continues (deterministic rules + broker SL/TP unaffected), but position reviews are not getting a fresh LLM read. Last error: ${err.message}`)
-                } catch { /* non-fatal */ }
-              }
-              markAlerted(db)
-            }
-            continue
-          }
-          recordAnthropicUsage(db, check.usage, 'position_monitor', check.model)
-          recordLlmMonitorResult(db, { ok: true })
-
-          s.updatePositionCheck.run(
-            check.action,
-            check.reasoning,
-            new Date().toISOString(),
-            check.thesis_status,
-            pos.id
-          )
-
-          if (check.action === 'EXIT') {
-            // BUG FIX (owner: "why are 18 positions not being trimmed" — audit
-            // found this): this branch used to call s.closePosition.run()
-            // directly — a bare DB status flip with NO broker close. The
-            // position stayed open and margin-locked at the broker forever
-            // while the bot's own bookkeeping said 'closed', so nothing
-            // (profit-keeper, trade-guards, this very monitor) ever looked at
-            // it again. Route through the same executeBrokerAction the
-            // deterministic path uses so the broker position actually closes.
-            const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'llm_monitor')
-            if (outcome.error) {
-              log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
-            } else if (outcome.skipped) {
-              // AUDIT F-L6-02: this used to DB-close on ANY skip reason. The
-              // comment said "no broker to close against", but `skipped` also
-              // covers no_ctrader_position_id, unknown_volume and
-              // account_not_in_registry — cases where a LIVE broker position
-              // exists. Flipping the local row to 'closed' there re-created
-              // exactly the bug the block above says was fixed: the position
-              // survives at the broker with nothing watching it, because every
-              // manager reads status='active'.
-              //
-              // Only the genuinely-no-broker case may close DB-only. Every
-              // other skip leaves the row ACTIVE so the next tick retries, and
-              // says so loudly rather than quietly.
-              if (mayCloseDbOnlyAfterSkip(outcome.reason)) {
-                log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
-                s.closePosition.run('closed', pos.id) // no broker configured at all — DB-only, as before
-              } else {
-                log(`Position close (LLM) NOT EXECUTED for ${pos.symbol}: ${outcome.reason} — position left ACTIVE (a broker position may still be open) — ${check.reasoning}`)
-                try {
-                  db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
-                    'CLOSE_NOT_EXECUTED', '/monitor',
-                    JSON.stringify({
-                      monitoredId: pos.id, symbol: pos.symbol, reason: outcome.reason,
-                      detail: 'LLM monitor asked for an exit; the executor could not reach the broker position. Row left active on purpose — do NOT read this as closed.',
-                    }).slice(0, 2000),
-                  )
-                } catch { /* audit best-effort */ }
-              }
-            } else {
-              log(`Position closed (LLM): ${pos.symbol} — ${outcome.summary} — ${check.reasoning}`)
-            }
-          }
-        } catch (err) {
-          log(`Monitor check failed for ${pos.symbol}:`, err.message)
-        }
-      }
+      // D4: bounded-concurrency, not one-position-at-a-time — see
+      // monitorOnePosition/runMonitorPhase above (docs/d4-loop-block-fix-plan.md).
+      await runMonitorPhase(db, s, activePositions, pos => {
+        const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
+        return heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
+      }, client)
 
       // ---------------------------------------------------------------------
       // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
