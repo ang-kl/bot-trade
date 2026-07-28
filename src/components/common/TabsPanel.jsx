@@ -33,18 +33,24 @@ const TONE = {
 export default function TabsPanel() {
   const [sum, setSum] = useState(null)
   const [idleMin, setIdleMin] = useState(getIdleMinutes)
+  // Collapsed by default (owner 2026-07-28: "the setting is overshoot the
+  // web browser screen size, make it dynamic") — one summary line unless
+  // opened; the choice sticks per device.
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem('tabs_panel_open') === 'true' } catch { return false } })
+  const toggle = () => setOpen(o => { try { localStorage.setItem('tabs_panel_open', String(!o)) } catch { /* private mode */ } return !o })
   useEffect(() => onClientSummary(setSum), [])
   if (!sum) return null
   const me = myTabId()
   const rows = [...(sum.tabs || []), ...(sum.recentlyClosed || []).slice(0, 3)]
   return (
     <div className="glass-inset rounded-[1px] px-3 py-2 mb-2 text-[8px] leading-relaxed">
-      <div className="flex items-baseline justify-between mb-1">
-        <span className="font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">Tabs</span>
+      <button type="button" onClick={toggle} className="w-full flex items-baseline justify-between cursor-pointer bg-transparent border-0 p-0 text-inherit">
+        <span className="font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{open ? '▾' : '▸'} Tabs</span>
         <span className="text-[var(--color-text-sub)]" title={`${sum.visibleTabs} active of ${sum.openTabs} open · warn above ${sum.warnThreshold}`}>
           {sum.openTabs} open · {sum.visibleTabs} active
         </span>
-      </div>
+      </button>
+      {open && <div className="mt-1 max-h-40 overflow-y-auto">
       {rows.map(t => (
         <div key={t.id + (t.closedAt || '')} className="flex items-center gap-1.5 py-0.5 border-t border-[var(--glass-edge)]" title={`${t.page} · tz ${t.tz} · ip ${t.ip || 'unknown'} · opened ${hhmm(t.openedAt)}`}>
           <span aria-hidden="true" style={{ color: TONE[t.status] || 'var(--color-text-sub)', fontSize: 7 }}>●</span>
@@ -71,6 +77,7 @@ export default function TabsPanel() {
         ))}
         <span className="ml-auto" title="A sleeping tab stops all polling (zero load) and wakes on any click/key — browsers don't allow a website to close your tabs outright.">ⓘ</span>
       </div>
+      </div>}
     </div>
   )
 }
