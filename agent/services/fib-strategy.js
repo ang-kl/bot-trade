@@ -50,8 +50,12 @@ const TP2_EXTENSION = 0.272   // -27.2% extension beyond the swing end
 // would change live signals. That is a strategy change dressed as a bug fix.
 // So: fetch deep once, and hand each strategy the window it has always had —
 // except the two that need the depth. See barsFor() in scanSymbolFib.
-const FETCH_BARS = 260        // bars fetched per timeframe (one request either way)
-const SIGNAL_BARS = 150       // bars every pre-existing strategy sees — unchanged
+// Superseded by per-strategy depth (see fetchDepthFor/windowFor in
+// strategies.js). The fixed 260 fixed Cup & Handle at 210 but still starved
+// ema_pullback, which needs 450 — a second defaultOn strategy that could not
+// fire, and which the 260 did NOT rescue. Hard-coding a depth just moves the
+// cliff; deriving it from the ARMED set removes the cliff.
+const SIGNAL_BARS = 150       // floor: what every strategy with a smaller need sees
 const BAR_COUNT = SIGNAL_BARS // back-compat for callers that pass an explicit count
 
 // Instrument-class tuning (owner: "do you think current TP/SL for
@@ -469,10 +473,6 @@ function strategyFns(opts) {
  *   exactly as before. The scan uses it to give Cup & Handle the deeper history
  *   it needs without changing what any other strategy sees.
  */
-// The only strategies that need more than SIGNAL_BARS of history. Kept as a
-// set of function references (not keys) because that is what `fns` carries.
-const DEEP_HISTORY_FNS = new Set([computeCupHandleSignal, computeInvCupHandleSignal])
-
 export function pickBestSignal(fns, closed, timeframe, opts, barsFor = null) {
   // Prefer a strategy that is ARMED to trade over a higher-conviction one that
   // isn't. Only an armed strategy can actually place an order, so surfacing the
@@ -512,7 +512,13 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf))
   if (stale.length > 0) {
     try {
-      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, FETCH_BARS)
+      // Fetch as deep as the DEEPEST armed strategy needs — no deeper. When the
+      // deep strategies are disarmed this is the historical 150 and costs
+      // exactly what it always did. The broker limit is 5 REQUESTS/sec, not
+      // bars/sec, so depth changes response size, never request count.
+      const fetchBars = strategyFns(opts).reduce(
+        (deepest, fn) => Math.max(deepest, Number(fn?.minBars) || 0), SIGNAL_BARS)
+      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, fetchBars)
       const now = Date.now()
       for (const tf of stale) {
         barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now })
@@ -555,11 +561,14 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       // Best-conviction across ALL enabled strategies on this timeframe (not
       // "first in registry order wins" — that starved every strategy but fib).
       // All strategies share the one bar fetch/cache above.
-      // Cup & Handle sees the full fetched depth (it needs 210); everything
-      // else sees the same last-150 window it always has, so no other
-      // strategy's behaviour moves with this change.
-      const shallow = closed.length > SIGNAL_BARS ? closed.slice(-SIGNAL_BARS) : closed
-      const barsFor = (fn) => (DEEP_HISTORY_FNS.has(fn) ? closed : shallow)
+      // Each strategy sees exactly its own requirement, floored at SIGNAL_BARS.
+      // A strategy that needs less than the floor keeps the 150-bar window it
+      // was tuned on; one that needs more gets what it needs. Nothing silently
+      // starves and nothing silently widens.
+      const barsFor = (fn) => {
+        const want = Math.max(SIGNAL_BARS, Number(fn?.minBars) || 0)
+        return closed.length > want ? closed.slice(-want) : closed
+      }
       const cand = pickBestSignal(fns, closed, timeframe, opts, barsFor)
       if (cand) {
         cand._preferred = isPreferred(timeframe)

@@ -63,17 +63,24 @@ test('260 bars clears the guard — the functions evaluate instead of short-circ
   assert.ok(inv === null || typeof inv === 'object')
 })
 
-test('the fetch depth exceeds the cup-handle minimum, with headroom', async () => {
-  // Reads the source rather than exporting the constants purely for a test.
+// SUPERSEDED, deliberately. This originally asserted a fixed FETCH_BARS = 260.
+// That constant is gone: 260 satisfied cup_handle at 210 but still starved
+// ema_pullback at 450, so a fixed depth just moved the cliff instead of removing
+// it. Depth is now derived from the deepest ARMED strategy. The invariant worth
+// asserting is therefore about the derivation, not about a number — the
+// per-requirement guard lives in strategy-bar-requirements.test.js.
+test('fetch depth is derived from the armed set and covers cup-handle', async () => {
   const fs = await import('node:fs')
-  const src = fs.readFileSync(new URL('./fib-strategy.js', import.meta.url), 'utf8')
-  const fetchBars = Number(/const FETCH_BARS = (\d+)/.exec(src)?.[1])
-  const signalBars = Number(/const SIGNAL_BARS = (\d+)/.exec(src)?.[1])
+  const { fetchDepthFor, STRATEGY_REGISTRY } = await import('./strategies.js')
   const cupSrc = fs.readFileSync(new URL('./cup-handle.js', import.meta.url), 'utf8')
-  const minBars = Number(/const MIN_BARS = (\d+)/.exec(cupSrc)?.[1])
+  const cupMin = Number(/const MIN_BARS = (\d+)/.exec(cupSrc)?.[1])
 
-  assert.ok(Number.isFinite(fetchBars) && Number.isFinite(signalBars) && Number.isFinite(minBars))
-  assert.ok(fetchBars >= minBars, `FETCH_BARS ${fetchBars} must cover cup-handle MIN_BARS ${minBars}`)
-  assert.equal(signalBars, 150, 'pre-existing strategies must keep their historical window')
-  assert.ok(fetchBars > signalBars, 'the deep window has to actually be deeper')
+  const cupFns = STRATEGY_REGISTRY.filter(s => s.key.endsWith('cup_handle')).map(s => s.compute)
+  assert.ok(cupFns.length >= 2, 'both cup variants should be in the registry')
+  assert.ok(fetchDepthFor(cupFns, 150) >= cupMin,
+    `arming cup-handle must fetch at least its ${cupMin}-bar requirement`)
+
+  const src = fs.readFileSync(new URL('./fib-strategy.js', import.meta.url), 'utf8')
+  assert.equal(Number(/const SIGNAL_BARS = (\d+)/.exec(src)?.[1]), 150,
+    'the floor must stay at 150 — raising it silently re-tunes every shallow strategy')
 })
