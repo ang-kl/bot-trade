@@ -894,11 +894,41 @@ export function sweepMonitoredPositionsForAccounts(db, keepAccountIds, { sweepNu
 
 /**
  * Single-account convenience wrapper: everything not belonging to
- * `newAccountId` (including legacy NULL rows) is swept. Used by
- * /actions/ctrader-select-account, which collapses roles to one account.
+ * `newAccountId` (including legacy NULL rows) is swept.
+ *
+ * DO NOT use this for an account switch. It was the select-account handler's
+ * sweep until 2026-07-28, and that is exactly how switching came to abandon
+ * the previous account's open positions — closing their monitor rows stops
+ * trailing, the loss cap, the ratchet and time caps while the positions are
+ * still live at the broker. A switch must keep every account that still
+ * holds exposure: see `accountsWithOpenPositions` below and the retain path
+ * in /actions/ctrader-select-account.
  */
 export function sweepMonitoredPositionsForAccount(db, newAccountId) {
   return sweepMonitoredPositionsForAccounts(db, [newAccountId]);
+}
+
+/**
+ * Accounts that still have ACTIVE monitored positions — i.e. real money the
+ * bot is currently looking after. Rows with a NULL account_id are excluded:
+ * they cannot be attributed to anyone, so they are not evidence that some
+ * particular account has exposure.
+ *
+ * Used by the account switch to decide which accounts must keep being
+ * managed after you move on (owner 2026-07-28). Before this, switching
+ * closed the old account's monitor rows outright, so trailing stops, the
+ * per-position loss cap, the profit ratchet and time caps all stopped for
+ * positions that were still open at the broker.
+ */
+export function accountsWithOpenPositions(db) {
+  try {
+    return db.prepare(
+      `SELECT DISTINCT account_id FROM monitored_positions
+        WHERE status = 'active' AND account_id IS NOT NULL`
+    ).all().map(r => String(r.account_id));
+  } catch {
+    return [];
+  }
 }
 
 // SQLite's datetime('now') writes 'YYYY-MM-DD HH:MM:SS' (UTC, no offset) —
