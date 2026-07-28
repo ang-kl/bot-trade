@@ -869,8 +869,32 @@ export function initDB(dbPath) {
  * @param {string} key
  * @returns {string|null}
  */
+// getState/setState are the hottest calls in the process — the stage matrix
+// alone does ~6 reads per position per pass, and the 3-second fast-monitor tick
+// re-reads them for every open position. Re-`prepare()`ing on every call means
+// re-compiling the same two SQL strings hundreds of times a cycle for nothing.
+//
+// Keyed by the Database handle in a WeakMap so tests that open many short-lived
+// DBs (there are dozens) don't accumulate statements, and so nothing has to be
+// threaded through the callers.
+const stateStmts = new WeakMap();
+
+function stateStatements(db) {
+  let cached = stateStmts.get(db);
+  if (!cached) {
+    cached = {
+      get: db.prepare('SELECT value FROM agent_state WHERE key = ?'),
+      set: db.prepare(
+        'INSERT INTO agent_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ),
+    };
+    stateStmts.set(db, cached);
+  }
+  return cached;
+}
+
 export function getState(db, key) {
-  const row = db.prepare('SELECT value FROM agent_state WHERE key = ?').get(key);
+  const row = stateStatements(db).get.get(key);
   return row ? row.value : null;
 }
 
@@ -882,9 +906,7 @@ export function getState(db, key) {
  * @param {string|null} value
  */
 export function setState(db, key, value) {
-  db.prepare(
-    'INSERT INTO agent_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-  ).run(key, value);
+  stateStatements(db).set.run(key, value);
 }
 
 /**
