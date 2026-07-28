@@ -46,6 +46,18 @@ export default function stateRouter(db) {
   const respCache = new Map() // originalUrl → { body, etag, at }
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
   const NO_CACHE = new Set(['/client-ping', '/backtest-report'])
+  // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
+  // open tab cold-missed the cache at once, and each miss ran its OWN full
+  // synchronous aggregation (perf-ledger etc.) on the event loop — reads
+  // stacked until even 401 rejections took 30s+ and the site read as dead.
+  // Now the FIRST miss for a URL computes; every concurrent request for the
+  // same URL parks and is answered from that one result the moment it lands.
+  const inflight = new Map() // originalUrl → [{ req, res }] parked waiters
+  const settleWaiters = (key, fn) => {
+    const waiters = inflight.get(key)
+    inflight.delete(key)
+    if (waiters) for (const w of waiters) { try { fn(w) } catch { /* client gone */ } }
+  }
   router.use((req, res, next) => {
     if (req.method !== 'GET' || NO_CACHE.has(req.path)) return next()
     const key = req.originalUrl
@@ -56,12 +68,16 @@ export default function stateRouter(db) {
       if (req.headers['if-none-match'] === hit.etag) return res.status(304).end()
       return res.type('application/json').send(hit.body)
     }
+    if (inflight.has(key)) { inflight.get(key).push({ req, res }); return }
+    const myFlight = []
+    inflight.set(key, myFlight)
     const origJson = res.json.bind(res)
     res.json = (obj) => {
       try {
         const body = JSON.stringify(obj)
         const etag = `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"`
-        if (res.statusCode < 400) {
+        const status = res.statusCode
+        if (status < 400) {
           respCache.set(key, { body, etag, at: Date.now() })
           if (respCache.size > 300) { // bound: drop the oldest entry
             let oldK = null, oldAt = Infinity
@@ -69,14 +85,33 @@ export default function stateRouter(db) {
             if (oldK) respCache.delete(oldK)
           }
         }
+        // Answer everyone who piled up behind this compute — errors too, at
+        // the same status, so a failing route fails fast for all callers
+        // instead of each retrying the same broken compute serially.
+        settleWaiters(key, (w) => {
+          w.res.status(status)
+          w.res.setHeader('etag', etag)
+          w.res.setHeader('x-cache', 'coalesced')
+          if (status < 400 && w.req.headers['if-none-match'] === etag) { w.res.status(304); return w.res.end() }
+          return w.res.type('application/json').send(body)
+        })
         res.setHeader('etag', etag)
         res.setHeader('x-cache', 'miss')
         if (req.headers['if-none-match'] === etag) return res.status(304).end()
         return res.type('application/json').send(body)
       } catch {
+        settleWaiters(key, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
         return origJson(obj)
       }
     }
+    // Leader finished WITHOUT res.json (res.send route, thrown error, client
+    // abort): release any parked waiters with a fast retryable answer rather
+    // than leaving them to hang into their own 45s timeouts.
+    res.on('close', () => {
+      // Identity check: only flush waiters that piled up behind THIS leader —
+      // a later request may have already claimed the key as the new leader.
+      if (inflight.get(key) === myFlight) settleWaiters(key, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
+    })
     next()
   })
 
