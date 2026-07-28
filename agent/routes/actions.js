@@ -404,6 +404,107 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/loss-cap — partial update of loss_cap_json (A1's
+  // per-position dollar/percent floating-loss cap). Only provided keys
+  // change; null explicitly disables that cap. Validated hard: this layer
+  // CLOSES live positions, so a garbage write must never reach it.
+  // -----------------------------------------------------------------------
+  router.post('/loss-cap', async (req, res) => {
+    try {
+      const { loadLossCapConfig } = await import('../services/loss-cap.js')
+      const cur = loadLossCapConfig(db)
+      const b = req.body || {}
+      const num = (v, name, max) => {
+        if (v === null) return null
+        const n = Number(v)
+        if (!Number.isFinite(n) || n <= 0 || (max && n > max)) throw new Error(`${name} must be a positive number${max ? ` ≤ ${max}` : ''} or null`)
+        return n
+      }
+      const next = {
+        ...cur,
+        ...(b.on !== undefined ? { on: b.on !== false } : {}),
+        ...(b.maxLossUsd !== undefined ? { maxLossUsd: num(b.maxLossUsd, 'maxLossUsd') } : {}),
+        ...(b.maxLossPctOfBalance !== undefined ? { maxLossPctOfBalance: num(b.maxLossPctOfBalance, 'maxLossPctOfBalance', 50) } : {}),
+        ...(b.scope !== undefined ? { scope: b.scope === 'bot' ? 'bot' : 'all' } : {}),
+        ...(b.action !== undefined ? { action: b.action === 'alert' ? 'alert' : 'close' } : {}),
+        ...(b.retryMinutes !== undefined ? { retryMinutes: num(b.retryMinutes, 'retryMinutes', 1440) } : {}),
+      }
+      setState(db, 'loss_cap_json', JSON.stringify(next))
+      console.log(`[actions] loss cap → ${next.on ? 'ON' : 'off'} $${next.maxLossUsd ?? '—'} / ${next.maxLossPctOfBalance ?? '—'}% scope=${next.scope} action=${next.action}`)
+      res.json({ ok: true, lossCap: next })
+    } catch (err) {
+      res.status(400).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/profit-ratchet — partial update of profit_ratchet_json
+  // (A4's equity high-water staircase), plus { resetState: true } to
+  // re-baseline the staircase at current equity (e.g. after a deposit).
+  // -----------------------------------------------------------------------
+  router.post('/profit-ratchet', async (req, res) => {
+    try {
+      const { loadProfitRatchetConfig } = await import('../services/profit-ratchet.js')
+      const cur = loadProfitRatchetConfig(db)
+      const b = req.body || {}
+      let stepUsd = cur.stepUsd
+      if (b.stepUsd !== undefined) {
+        if (b.stepUsd === null) stepUsd = null
+        else {
+          const n = Number(b.stepUsd)
+          if (!Number.isFinite(n) || n < 5 || n > 100000) return res.status(400).json({ error: 'stepUsd must be $5-$100,000 or null (auto: 1% of balance, $25-$500)' })
+          stepUsd = n
+        }
+      }
+      const next = {
+        ...cur,
+        ...(b.on !== undefined ? { on: b.on !== false } : {}),
+        stepUsd,
+        ...(b.floorAction !== undefined ? { floorAction: b.floorAction === 'halt' ? 'halt' : 'flatten' } : {}),
+      }
+      setState(db, 'profit_ratchet_json', JSON.stringify(next))
+      if (b.resetState === true) setState(db, 'profit_ratchet_state_json', 'null')
+      console.log(`[actions] profit ratchet → ${next.on ? 'ON' : 'off'} step=${next.stepUsd ?? 'auto'} floorAction=${next.floorAction}${b.resetState ? ' (staircase reset)' : ''}`)
+      res.json({ ok: true, profitRatchet: next, stateReset: b.resetState === true })
+    } catch (err) {
+      res.status(400).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // POST /actions/loss-guardian — partial update of loss_guardian_json.
+  // maxAtrMult / fallbackAdversePct existed as config keys with NO route or
+  // UI (calibration audit, A2) — the protective-stop distance was
+  // effectively hardcoded in production.
+  // -----------------------------------------------------------------------
+  router.post('/loss-guardian', async (req, res) => {
+    try {
+      const { loadLossGuardianConfig } = await import('../services/loss-guardian.js')
+      const cur = loadLossGuardianConfig(db)
+      const b = req.body || {}
+      const num = (v, name, min, max) => {
+        if (v === null) return null
+        const n = Number(v)
+        if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${name} must be ${min}-${max} or null`)
+        return n
+      }
+      const next = {
+        ...cur,
+        ...(b.on !== undefined ? { on: b.on !== false } : {}),
+        ...(b.scope !== undefined ? { scope: b.scope === 'external' ? 'external' : 'all' } : {}),
+        ...(b.maxAtrMult !== undefined ? { maxAtrMult: num(b.maxAtrMult, 'maxAtrMult', 0.5, 10) ?? cur.maxAtrMult } : {}),
+        ...(b.fallbackAdversePct !== undefined ? { fallbackAdversePct: num(b.fallbackAdversePct, 'fallbackAdversePct', 0.001, 0.2) ?? cur.fallbackAdversePct } : {}),
+        ...(b.maxHoldHours !== undefined ? { maxHoldHours: num(b.maxHoldHours, 'maxHoldHours', 1, 720) } : {}),
+      }
+      setState(db, 'loss_guardian_json', JSON.stringify(next))
+      console.log(`[actions] loss guardian → ${next.on ? 'ON' : 'off'} scope=${next.scope} atr=${next.maxAtrMult} fallback=${next.fallbackAdversePct} timeCap=${next.maxHoldHours ?? 'off'}`)
+      res.json({ ok: true, lossGuardian: next })
+    } catch (err) {
+      res.status(400).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/guardian-move-pct — { pct } sets the tick guardian's
   // significant-move threshold (% of price) that triggers an immediate
   // position sweep between the normal 30s ticks, instead of the 0.05%

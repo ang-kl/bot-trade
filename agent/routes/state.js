@@ -1135,6 +1135,25 @@ export default function stateRouter(db) {
           enabled: (getState(db, 'vpo_enabled') || 'false') === 'true',
           config: parse('vpo_config_json', '[]'),
         },
+        // A2 rework (owner 2026-07-28): the two new protection layers ride
+        // in the same single call — effective config (defaults merged) plus,
+        // for the ratchet, the live staircase state to render.
+        lossCap: await (async () => {
+          const { loadLossCapConfig, DEFAULT_LOSS_CAP } = await import('../services/loss-cap.js')
+          return { effective: loadLossCapConfig(db), defaults: DEFAULT_LOSS_CAP }
+        })(),
+        profitRatchet: await (async () => {
+          const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET } = await import('../services/profit-ratchet.js')
+          return {
+            effective: loadProfitRatchetConfig(db),
+            defaults: DEFAULT_PROFIT_RATCHET,
+            state: parse('profit_ratchet_state_json', 'null'),
+          }
+        })(),
+        lossGuardian: await (async () => {
+          const { loadLossGuardianConfig, DEFAULT_LOSS_GUARDIAN } = await import('../services/loss-guardian.js')
+          return { effective: loadLossGuardianConfig(db), defaults: DEFAULT_LOSS_GUARDIAN }
+        })(),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
