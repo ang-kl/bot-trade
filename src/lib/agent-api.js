@@ -163,7 +163,57 @@ async function request(method, path, body) {
   return res.json()
 }
 
-export const agentGet = (path) => request('GET', path)
+// ---------------------------------------------------------------------------
+// Stale-while-revalidate for GETs (owner 2026-07-28: "do you need to refresh
+// everything ... think harder"). Every successful GET is written through to
+// an in-memory + sessionStorage cache; agentGetSWR() hands the caller the
+// LAST KNOWN data instantly (any age — stale beats blank) and revalidates in
+// the background. Pages paint immediately on mount/navigation and update in
+// place when the fresh answer lands; a slow or briefly unreachable agent no
+// longer means an empty screen. Large payloads (>200KB) skip sessionStorage
+// (quota) but still ride the in-memory cache for the tab's lifetime.
+// ---------------------------------------------------------------------------
+const swrMem = new Map() // path → { data, at }
+function swrRead(path) {
+  const m = swrMem.get(path)
+  if (m) return m
+  try {
+    const raw = sessionStorage.getItem(`ag:${path}`)
+    if (raw) { const v = JSON.parse(raw); swrMem.set(path, v); return v }
+  } catch { /* quota/private mode */ }
+  return null
+}
+function swrWrite(path, data) {
+  const v = { data, at: Date.now() }
+  swrMem.set(path, v)
+  try {
+    const raw = JSON.stringify(v)
+    if (raw.length <= 200_000) sessionStorage.setItem(`ag:${path}`, raw)
+  } catch { /* quota — memory cache still holds it */ }
+}
+
+export const agentGet = async (path) => {
+  const data = await request('GET', path)
+  swrWrite(path, data)
+  return data
+}
+
+/** Synchronous peek at the last cached copy of a GET (or null). */
+export function swrPeek(path) {
+  const v = swrRead(path)
+  return v ? v.data : null
+}
+
+/**
+ * Stale-while-revalidate GET: calls `onData(data, { stale })` immediately
+ * with the cached copy when one exists (stale: true), then again with the
+ * fresh network answer (stale: false). Returns the fresh promise.
+ */
+export function agentGetSWR(path, onData) {
+  const cached = swrRead(path)
+  if (cached) { try { onData(cached.data, { stale: true, at: cached.at }) } catch { /* caller's problem */ } }
+  return agentGet(path).then(data => { onData(data, { stale: false, at: Date.now() }); return data })
+}
 
 // ---------------------------------------------------------------------------
 // Tab presence + background-tab throttling (owner 2026-07-28: "monitor the

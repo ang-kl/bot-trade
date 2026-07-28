@@ -42,14 +42,19 @@ function CockpitHost() {
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
 import { getAgentConn, agentConfigured, sendClientPing } from './lib/agent-api.js'
+// Owner (2026-07-28): "can you not load the other pages first except the
+// performance" — Performance is the landing page and stays in the main
+// bundle; every other page is code-split and only downloads (and only
+// starts its data polling) when the user actually navigates to it. This
+// cuts both the initial JS payload and the first-load agent query burst.
 import Performance from './pages/Performance.jsx'
-import Desk from './pages/Desk.jsx'
-import Trade from './pages/Trade.jsx'
-import Accounts from './pages/Accounts.jsx'
-import AccountsAudit from './pages/AccountsAudit.jsx'
-import Tune from './pages/Tune.jsx'
-import Risk from './pages/Risk.jsx'
-import Connect from './pages/Connect.jsx'
+const Desk = lazy(() => import('./pages/Desk.jsx'))
+const Trade = lazy(() => import('./pages/Trade.jsx'))
+const Accounts = lazy(() => import('./pages/Accounts.jsx'))
+const AccountsAudit = lazy(() => import('./pages/AccountsAudit.jsx'))
+const Tune = lazy(() => import('./pages/Tune.jsx'))
+const Risk = lazy(() => import('./pages/Risk.jsx'))
+const Connect = lazy(() => import('./pages/Connect.jsx'))
 import AccountSwitcher from './components/AccountSwitcher.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import TabsPanel from './components/common/TabsPanel.jsx'
@@ -238,6 +243,9 @@ export default function App() {
         <CockpitHost />
 
         <main className="px-4 py-4 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
+          {/* Lazy routes need a Suspense boundary — a light skeleton line,
+              not a spinner wall, while a page chunk downloads. */}
+          <Suspense fallback={<div className="p-6 text-[9px] text-[var(--color-text-sub)]">loading page…</div>}>
           <Routes>
             <Route path="/" element={<Navigate to="/performance" replace />} />
             <Route path="/performance" element={<Performance />} />
@@ -256,6 +264,7 @@ export default function App() {
             <Route path="/link-up" element={<Connect />} />
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
+          </Suspense>
         </main>
         {/* Owner (2026-07-24): "I cannot see the footer in this HD notebook,
             dynamically adjust up the footer... allow there for both the

@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
+import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
@@ -28,6 +29,56 @@ import { postmortemStats } from '../services/loss-postmortem.js'
  */
 export default function stateRouter(db) {
   const router = Router()
+
+  // -----------------------------------------------------------------------
+  // Server-side response cache (owner 2026-07-28: "some information already
+  // cache or store in the backend, do you need to recompute and send"). The
+  // expensive /state/* aggregations (perf-ledger, risk-full, trades slices)
+  // were recomputed FROM SCRATCH for every poll from every open tab — six
+  // tabs polling every 5-20s meant the same ledger rebuilt dozens of times a
+  // minute on the same box that runs the trading loop. One compute now
+  // serves everyone for STATE_CACHE_MS (default 10s — inside every page's
+  // poll cadence, so data is never staler than one poll), and an ETag lets
+  // the browser skip re-downloading an unchanged payload entirely.
+  // client-ping is excluded: each ping must register (it IS a write in
+  // read-clothing), and the roster must stay per-second live.
+  // -----------------------------------------------------------------------
+  const respCache = new Map() // originalUrl → { body, etag, at }
+  const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report'])
+  router.use((req, res, next) => {
+    if (req.method !== 'GET' || NO_CACHE.has(req.path)) return next()
+    const key = req.originalUrl
+    const hit = respCache.get(key)
+    if (hit && Date.now() - hit.at < STATE_CACHE_MS) {
+      res.setHeader('etag', hit.etag)
+      res.setHeader('x-cache', 'hit')
+      if (req.headers['if-none-match'] === hit.etag) return res.status(304).end()
+      return res.type('application/json').send(hit.body)
+    }
+    const origJson = res.json.bind(res)
+    res.json = (obj) => {
+      try {
+        const body = JSON.stringify(obj)
+        const etag = `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"`
+        if (res.statusCode < 400) {
+          respCache.set(key, { body, etag, at: Date.now() })
+          if (respCache.size > 300) { // bound: drop the oldest entry
+            let oldK = null, oldAt = Infinity
+            for (const [k, v] of respCache) if (v.at < oldAt) { oldAt = v.at; oldK = k }
+            if (oldK) respCache.delete(oldK)
+          }
+        }
+        res.setHeader('etag', etag)
+        res.setHeader('x-cache', 'miss')
+        if (req.headers['if-none-match'] === etag) return res.status(304).end()
+        return res.type('application/json').send(body)
+      } catch {
+        return origJson(obj)
+      }
+    }
+    next()
+  })
 
   // -----------------------------------------------------------------------
   // GET /state/health
