@@ -1,0 +1,48 @@
+// cTrader Open API payload-type constants.
+//
+// Extracted from ctrader-ws.js (2026-07-28) so ctrader-session.js can use them
+// without an import cycle — the session module is imported BY ctrader-ws.js,
+// so it cannot import back from it. ctrader-ws.js re-exports PT unchanged, so
+// every existing `import { PT } from './ctrader-ws.js'` keeps working.
+export const PT = Object.freeze({
+  HEARTBEAT:               51,
+  APP_AUTH_REQ:            2100,
+  APP_AUTH_RES:            2101,
+  ACCOUNT_AUTH_REQ:        2102,
+  ACCOUNT_AUTH_RES:        2103,
+  NEW_ORDER_REQ:           2106,
+  CANCEL_ORDER_REQ:        2108,
+  AMEND_POSITION_SLTP_REQ: 2110,
+  CLOSE_POSITION_REQ:      2111,
+  ASSET_LIST_REQ:          2112,
+  ASSET_LIST_RES:          2113,
+  SYMBOLS_LIST_REQ:        2114,
+  SYMBOLS_LIST_RES:        2115,
+  SYMBOL_BY_ID_REQ:        2116,
+  SYMBOL_BY_ID_RES:        2117,
+  TRADER_REQ:              2121,
+  TRADER_RES:              2122,
+  ASSET_CLASS_LIST_REQ:    2153,
+  ASSET_CLASS_LIST_RES:    2154,
+  SYMBOL_CATEGORY_REQ:     2160,
+  SYMBOL_CATEGORY_RES:     2161,
+  GET_ACCOUNTS_BY_TOKEN_REQ: 2149,
+  GET_ACCOUNTS_BY_TOKEN_RES: 2150,
+  RECONCILE_REQ:           2124,
+  RECONCILE_RES:           2125,
+  EXECUTION_EVENT:         2126,
+  SUBSCRIBE_SPOTS_REQ:     2127,
+  SUBSCRIBE_SPOTS_RES:     2128,
+  UNSUBSCRIBE_SPOTS_REQ:   2129,
+  UNSUBSCRIBE_SPOTS_RES:   2130,
+  SPOT_EVENT:              2131,
+  ORDER_ERROR_EVENT:       2132,
+  DEAL_LIST_REQ:           2133,
+  DEAL_LIST_RES:           2134,
+  GET_TRENDBARS_REQ:       2137,
+  GET_TRENDBARS_RES:       2138,
+  ERROR_RES:               2142,
+  GET_POSITION_UNREALIZED_PNL_REQ: 2187,
+  GET_POSITION_UNREALIZED_PNL_RES: 2188,
+})
+
