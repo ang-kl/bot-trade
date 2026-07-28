@@ -81,6 +81,50 @@ let loopRunning = false               // mutex — prevents concurrent iteration
 let lastLoopActivityAt = Date.now()   // watchdog: stamped at cycle start/end
 let pendingPhaseInFlight = false      // a budget-abandoned pending phase still executing detached
 
+// Sub-phase time budgets (incident follow-up, 2026-07-28: the loop re-hung
+// AFTER the pending-phase budget shipped, and /health showed "pending
+// orders" for 8+ minutes — because that label covers EVERY block between
+// the pending phase and the monitor phase, and only managePendingOrders
+// itself had a budget. Any of burn-in / pending-signals / trade-guards /
+// profit-keeper / loss-guardian / hours-refresh / autopilot could still
+// hang the cycle forever behind one stuck broker await.) Same contract as
+// the pending budget: on breach the CYCLE moves on, the abandoned run
+// finishes detached, and the next cycle SKIPS that sub-phase while it is
+// still in flight (these phases place/amend real orders — two interleaved
+// runs must never happen). Each sub-phase also stamps its own loop_phase
+// so /health forensics name the actual culprit next time.
+const subPhaseInFlight = new Map()    // name → true while a detached run is still executing
+const SUB_PHASE_BUDGET_MS = Math.max(10_000, Number(process.env.LOOP_SUBPHASE_BUDGET_MS || 90_000))
+
+/**
+ * Run one loop sub-phase under a wall-clock budget with a no-overlap guard.
+ * `startWork` is only called when no previous run is in flight. Returns the
+ * work's own result, `{ skippedOverlap: true }`, or `{ timedOut: true }`.
+ * Failures REJECT so each call site's existing non-fatal catch handles them.
+ */
+async function runBudgetedSubPhase(db, name, startWork, budgetMs = SUB_PHASE_BUDGET_MS) {
+  if (subPhaseInFlight.get(name)) {
+    log(`${name} from a previous cycle still in flight — skipping this cycle (no overlap)`)
+    return { skippedOverlap: true }
+  }
+  const startedAt = Date.now()
+  const work = startWork()
+  subPhaseInFlight.set(name, true)
+  work.catch(() => {}).finally(() => subPhaseInFlight.set(name, false))
+  let timer
+  const r = await Promise.race([
+    work,
+    new Promise(resolve => { timer = setTimeout(() => resolve({ __timedOut: true }), budgetMs); timer.unref?.() }),
+  ])
+  clearTimeout(timer)
+  if (r?.__timedOut) {
+    log(`${name} exceeded its ${Math.round(budgetMs / 1000)}s budget after ${Math.round((Date.now() - startedAt) / 1000)}s — abandoning the wait, cycle continues (run finishes detached)`)
+    await hbeat(db, name, false, `budget ${Math.round(budgetMs / 1000)}s exceeded`)
+    return { timedOut: true }
+  }
+  return r
+}
+
 /**
  * Clear the in-process consecutive-error count. POST /actions/reset-breaker
  * was only clearing the DB-persisted `circuit_breaker_tripped_at`/`errors_today`
@@ -2128,8 +2172,9 @@ async function runLoop(db) {
       try {
         const biCreds = getCtraderCreds(db)
         if (biCreds.ready) {
+          setState(db, 'loop_phase', 'burn-in')
           const { runBurnIn } = await import('./services/burn-in.js')
-          const b = await runBurnIn(db, biCreds)
+          const b = await runBudgetedSubPhase(db, 'burn_in', () => runBurnIn(db, biCreds))
           if (b?.placed || b?.attempted) log(`Burn-in: ${b.summary}`)
         }
         await hbeat(db, 'burn_in')
@@ -2146,8 +2191,9 @@ async function runLoop(db) {
       // and fired through the same gate chain — never blind on stale prices.
       try {
         const psCreds = getCtraderCreds(db)
+        setState(db, 'loop_phase', 'pending signals')
         const { runPendingSignals } = await import('./services/pending-signals.js')
-        const p = await runPendingSignals(db, psCreds)
+        const p = await runBudgetedSubPhase(db, 'pending_signals', () => runPendingSignals(db, psCreds))
         if (p.fired || p.expired) log(`Pending signals: ${p.fired} fired, ${p.expired} expired, ${p.checked} checked`)
         await hbeat(db, 'pending_signals')
       } catch (err) {
@@ -2161,12 +2207,13 @@ async function runLoop(db) {
       try {
         const guardCreds = getCtraderCreds(db)
         if (guardCreds.ready) {
+          setState(db, 'loop_phase', 'trade guards')
           const { runTradeGuards } = await import('./services/trade-guard.js')
-          const g = await runTradeGuards(db, guardCreds, {
+          const g = await runBudgetedSubPhase(db, 'trade_guards', () => runTradeGuards(db, guardCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          })
+          }))
           if (g.slMoves || g.partialCloses) log(`Trade guards: ${g.slMoves} SL move(s), ${g.partialCloses} partial close(s)`)
-          if (g.errors.length) log(`Trade guards errors: ${g.errors.join(' · ')}`)
+          if (g.errors?.length) log(`Trade guards errors: ${g.errors.join(' · ')}`)
         }
         await hbeat(db, 'trade_guards')
       } catch (err) {
@@ -2180,12 +2227,13 @@ async function runLoop(db) {
       try {
         const keeperCreds = getCtraderCreds(db)
         if (keeperCreds.ready) {
+          setState(db, 'loop_phase', 'profit keeper')
           const { runProfitKeeper } = await import('./services/profit-keeper.js')
-          const k = await runProfitKeeper(db, keeperCreds, {
+          const k = await runBudgetedSubPhase(db, 'profit_keeper', () => runProfitKeeper(db, keeperCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          })
+          }))
           if (k.slMoves || k.closes) log(`Profit Keeper: ${k.slMoves} lock(s), ${k.closes} close(s)`)
-          if (k.errors.length) log(`Profit Keeper errors: ${k.errors.join(' · ')}`)
+          if (k.errors?.length) log(`Profit Keeper errors: ${k.errors.join(' · ')}`)
         }
         await hbeat(db, 'profit_keeper')
       } catch (err) {
@@ -2200,12 +2248,13 @@ async function runLoop(db) {
       try {
         const guardCreds = getCtraderCreds(db)
         if (guardCreds.ready) {
+          setState(db, 'loop_phase', 'loss guardian')
           const { runLossGuardian } = await import('./services/loss-guardian.js')
-          const g = await runLossGuardian(db, guardCreds, {
+          const g = await runBudgetedSubPhase(db, 'loss_guardian', () => runLossGuardian(db, guardCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          })
+          }))
           if (g.stops || g.closes) log(`Loss Guardian: ${g.stops} protective stop(s), ${g.closes} close(s)`)
-          if (g.errors.length) log(`Loss Guardian errors: ${g.errors.join(' · ')}`)
+          if (g.errors?.length) log(`Loss Guardian errors: ${g.errors.join(' · ')}`)
         }
         await hbeat(db, 'loss_guardian')
       } catch (err) {
@@ -2222,9 +2271,12 @@ async function runLoop(db) {
         const creds = getCtraderCreds(db)
         const haveHours = db.prepare('SELECT COUNT(*) AS n FROM symbol_hours').get().n
         if (creds.ready && (loopCount % 288 === 5 || haveHours === 0)) {
+          setState(db, 'loop_phase', 'market-hours refresh')
           const { refreshSymbolHours } = await import('./services/symbol-hours.js')
-          const r = await refreshSymbolHours(db, creds)
-          if (r.updated) log(`Market hours refreshed: ${r.updated} symbols${r.errors.length ? `, ${r.errors.length} batch error(s)` : ''}`)
+          // Hours refresh sweeps 1,900+ symbols in batches — give it a wider
+          // budget than the order-touching phases, but still bounded.
+          const r = await runBudgetedSubPhase(db, 'hours_refresh', () => refreshSymbolHours(db, creds), SUB_PHASE_BUDGET_MS * 2)
+          if (r.updated) log(`Market hours refreshed: ${r.updated} symbols${r.errors?.length ? `, ${r.errors.length} batch error(s)` : ''}`)
           await hbeat(db, 'hours_refresh')
         }
       } catch (err) {
@@ -2235,9 +2287,10 @@ async function runLoop(db) {
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {
+        setState(db, 'loop_phase', 'autopilot')
         const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
-        const r = await maybeRunAutopilot(db, getCtraderCreds(db))
-        if (r && !r.skipped) log(`Autopilot: ${JSON.stringify(r)}`)
+        const r = await runBudgetedSubPhase(db, 'autopilot', () => maybeRunAutopilot(db, getCtraderCreds(db)), SUB_PHASE_BUDGET_MS * 2)
+        if (r && !r.skipped && !r.skippedOverlap && !r.timedOut) log(`Autopilot: ${JSON.stringify(r)}`)
         await hbeat(db, 'autopilot')
       } catch (err) {
         log(`Autopilot failed (non-fatal): ${err.message}`)
@@ -2259,11 +2312,12 @@ async function runLoop(db) {
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
       if (weekendPositions.length > 0 && loopCount % 12 === 1) {
+        setState(db, 'loop_phase', `weekend watch (${weekendPositions.length})`)
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see
         // monitorOneWeekendPosition/runWeekendWatchPhase above
         // (docs/d4-loop-block-fix-plan.md).
-        await runWeekendWatchPhase(db, s, weekendPositions, client)
+        await runBudgetedSubPhase(db, 'weekend_watch', () => runWeekendWatchPhase(db, s, weekendPositions, client), SUB_PHASE_BUDGET_MS * 2)
       }
 
       // ---------------------------------------------------------------------
