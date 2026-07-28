@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
@@ -67,7 +67,29 @@ if (!AGENT_SECRET) {
 // Database — ensure parent directory exists before opening SQLite
 // ---------------------------------------------------------------------------
 
-const resolvedDbPath = DB_PATH || './agent.db';
+// DB_PATH is TRIMMED before use. Found in production 2026-07-28: /health
+// reported dbPath as " /data/agent.db" — a leading space in the Railway
+// variable. That single character is enough to lose the database: the value is
+// no longer an absolute path, so SQLite resolves it against the process cwd and
+// writes to "<cwd>/ /data/agent.db" INSIDE the container instead of the mounted
+// volume at /data — and every redeploy then wipes the account link, the logins
+// and the trade history. Nothing failed loudly, because opening a wrong path
+// still succeeds.
+//
+// So: trim it, and refuse to report persistence we cannot prove.
+const rawDbPath = DB_PATH ?? '';
+const trimmedDbPath = rawDbPath.trim();
+if (DB_PATH && trimmedDbPath !== rawDbPath) {
+  console.warn(`[boot] ⚠ DB_PATH had surrounding whitespace (${JSON.stringify(rawDbPath)}) — trimmed to ${JSON.stringify(trimmedDbPath)}. Fix the variable; an untrimmed value silently writes to the container filesystem instead of the volume.`);
+}
+const resolvedDbPath = trimmedDbPath || './agent.db';
+
+// A configured-but-relative DB_PATH is the same data-loss trap by another
+// route, so it gets the same warning rather than passing silently.
+if (trimmedDbPath && !isAbsolute(trimmedDbPath)) {
+  console.warn(`[boot] ⚠⚠⚠ DB_PATH is not absolute (${JSON.stringify(trimmedDbPath)}) — it resolves against the working directory (${resolve(trimmedDbPath)}), NOT a mounted volume. Every redeploy will wipe the database.`);
+}
+
 try {
   const dir = dirname(resolve(resolvedDbPath));
   if (!fs.existsSync(dir)) {
@@ -78,7 +100,7 @@ try {
   console.error(`[boot] Cannot create DB directory for ${resolvedDbPath}:`, err.message);
 }
 
-console.log(`[boot] Opening database at: ${resolvedDbPath}`);
+console.log(`[boot] Opening database at: ${resolvedDbPath} (absolute: ${resolve(resolvedDbPath)})`);
 if (!DB_PATH) {
   console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
 }
@@ -319,10 +341,17 @@ app.get('/health', (_req, res) => {
   // unknown size now reports null, and the resolved path plus whether it is on
   // a configured volume are reported alongside, so persistence is a fact you
   // can read rather than something to infer from a zero.
-  const resolvedPath = DB_PATH || './agent.db';
+  //
+  // 2026-07-28: this handler re-derived the path from the raw env var, so an
+  // untrimmed DB_PATH made it stat a path nothing was ever written to — dbSize
+  // came back null while the DB itself was fine. It now reports the path SQLite
+  // ACTUALLY opened (db.name), which is the only authoritative answer, and
+  // dbPersistent means "that file is where we can prove it is" rather than
+  // merely "the variable was set".
+  const openedPath = db.name || resolvedDbPath;
   let dbSize = null;
   try {
-    dbSize = fs.statSync(resolvedPath).size;
+    dbSize = fs.statSync(openedPath).size;
   } catch { /* leave null — unknown, not empty */ }
 
   const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
@@ -381,9 +410,13 @@ app.get('/health', (_req, res) => {
     historicalRate: historicalRateStatus(),
     dbSize,
     dbSizeMB: dbSize == null ? null : Math.round((dbSize / 1048576) * 100) / 100,
-    dbPath: resolvedPath,
+    dbPath: openedPath,
+    dbPathAbsolute: resolve(openedPath),
     // false = the DB lives in the container filesystem; a rebuild loses it.
-    dbPersistent: Boolean(DB_PATH),
+    // Requires an absolute configured path AND a file we can actually stat —
+    // a set-but-malformed DB_PATH (leading space, relative value) used to
+    // report true while writing inside the container.
+    dbPersistent: Boolean(trimmedDbPath) && isAbsolute(trimmedDbPath) && dbSize != null,
     errorsToday,
     lastError: lastError || null,
     // A count with no causes is unactionable — production once showed
