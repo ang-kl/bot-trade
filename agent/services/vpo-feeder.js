@@ -180,13 +180,21 @@ export async function runVpoFeeder(db, deps = {}) {
 /** Runs the feeder on an interval until stopped. Mirrors guardian.js's startX(db, ...) shape. */
 export function startVpoFeeder(db, intervalMs = 60_000) {
   let stopped = false
+  // Overlap guard: a pass walks every configured entry serially, each doing
+  // broker round-trips — with a slow broker one pass outlives the 60s
+  // interval and copies stack, re-pushing to the sidecar in parallel.
+  // `stopped` only covers shutdown.
+  let running = false
   const tick = async () => {
-    if (stopped) return
+    if (stopped || running) return
+    running = true
     try {
       const r = await runVpoFeeder(db)
       if (r?.ok) console.log(`[vpo-feeder] pushed ${r.bars} bar set(s), ${r.volumes} volume(s)`)
     } catch (err) {
       console.error('[vpo-feeder] pass failed:', err.message)
+    } finally {
+      running = false
     }
   }
   const t = setInterval(tick, intervalMs)

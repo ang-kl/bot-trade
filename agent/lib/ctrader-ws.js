@@ -109,6 +109,87 @@ export const TRENDBAR_PERIODS = Object.freeze({
  * @param {boolean} [collectAll=false]
  * @returns {Promise<any>}
  */
+// ---------------------------------------------------------------------------
+// HISTORICAL-REQUEST RATE LIMITER (incident 2026-07-28)
+//
+// cTrader Open API allows 50 req/s per connection for normal requests but
+// only **5 req/s for HISTORICAL ones** (trendbars, deal list). Nothing in
+// this process enforced that. The scan phase fans out over SCAN_CONCURRENCY
+// (default 6) symbols with Promise.all, and each of those connections
+// pipelines one trendbar request per stale timeframe back to back — so ~6
+// historical requests stayed in flight for the whole scan, i.e. 20-40/s at
+// typical RTT, four to eight times the allowance. The broker throttled us,
+// each request stretched to ~29s, withRetry re-sent them, and the scan ran
+// 7+ minutes while /health starved. We were gating ourselves.
+//
+// A single process-wide token bucket now paces every historical step. It is
+// deliberately GLOBAL, not per-connection: the limit is per account, and
+// concurrent ephemeral sockets all spend from the same allowance. Normal
+// requests (auth, reconcile, spot, trader) are untouched.
+// ---------------------------------------------------------------------------
+const HISTORICAL_PAYLOADS = new Set([PT.GET_TRENDBARS_REQ, PT.DEAL_LIST_REQ])
+// 4/s against a documented 5/s: headroom for clock skew and for the broker
+// counting arrival rather than send time. Override for probes/tests.
+const HIST_RATE_PER_SEC = Math.max(1, Number(process.env.CTRADER_HIST_RATE_PER_SEC) || 4)
+
+/**
+ * Token bucket. `take()` resolves with the milliseconds it made the caller
+ * wait (0 = immediate), so a caller can credit that time back to its own
+ * timeout. Exported as a factory so the pacing is unit-testable without a
+ * broker; the module keeps one shared instance below.
+ * `deps.now` / `deps.setTimeout` are injectable for deterministic tests.
+ */
+export function createRateBucket(perSec, deps = {}) {
+  const now = deps.now ?? (() => Date.now())
+  const delay = deps.setTimeout ?? setTimeout
+  let tokens = perSec
+  let last = now()
+  let waiting = 0
+  const refill = () => {
+    const t = now()
+    const gained = ((t - last) / 1000) * perSec
+    if (gained > 0) { tokens = Math.min(perSec, tokens + gained); last = t }
+  }
+  return {
+    take() {
+      refill()
+      // The `waiting === 0` term preserves arrival order: a newcomer must not
+      // jump a queue of callers already parked on the same bucket.
+      if (tokens >= 1 && waiting === 0) { tokens -= 1; return Promise.resolve(0) }
+      waiting++
+      const startedAt = now()
+      return new Promise((resolve) => {
+        const attempt = () => {
+          refill()
+          if (tokens >= 1) {
+            tokens -= 1
+            waiting--
+            resolve(now() - startedAt)
+            return
+          }
+          // Sleep exactly as long as the next token needs, not a fixed poll.
+          delay(attempt, Math.max(10, Math.ceil(((1 - tokens) / perSec) * 1000)))
+        }
+        delay(attempt, 10)
+      })
+    },
+    // Refill before reporting: tokens accrue with elapsed time, and a status
+    // read that skipped this showed an idle bucket as permanently empty.
+    status: () => {
+      refill()
+      return { perSec, queued: waiting, tokens: Math.round(tokens * 100) / 100 }
+    },
+  }
+}
+
+const histBucket = createRateBucket(HIST_RATE_PER_SEC)
+const takeHistoricalToken = () => histBucket.take()
+
+/** Observability: current limiter pressure, surfaced on /health. */
+export function historicalRateStatus() {
+  return histBucket.status()
+}
+
 function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${host}:5036`)
@@ -122,7 +203,7 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
       if (ws.readyState === WebSocket.OPEN) ws.close()
     }
 
-    timer = setTimeout(() => {
+    const onTimeout = () => {
       cleanup()
       const pending = steps[stepIdx]
       const label = pending
@@ -130,10 +211,23 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
         : 'unknown step'
       const seenStr = seen.length ? ` received=[${seen.join(',')}]` : ''
       reject(new Error(`cTrader WS timeout after ${timeoutMs}ms — ${label}${seenStr}`))
-    }, timeoutMs)
+    }
+    timer = setTimeout(onTimeout, timeoutMs)
 
-    const sendStep = (i) => {
+    const sendStep = async (i) => {
       const step = steps[i]
+      // Historical steps queue behind the shared token bucket. Time spent
+      // WAITING is added back to the timeout — otherwise a request that
+      // queued 3s would fail on a budget it never got to use, and the retry
+      // would put the very load back on the broker we are pacing away.
+      if (HISTORICAL_PAYLOADS.has(step.send.payloadType)) {
+        const waited = await takeHistoricalToken()
+        if (ws.readyState !== WebSocket.OPEN) return // closed while queued
+        if (waited > 0) {
+          clearTimeout(timer)
+          timer = setTimeout(onTimeout, timeoutMs)
+        }
+      }
       ws.send(JSON.stringify({
         clientMsgId: `step_${i}`,
         payloadType: step.send.payloadType,
@@ -147,7 +241,7 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
           ws.send(JSON.stringify({ payloadType: PT.HEARTBEAT }))
         }
       }, 9000)
-      sendStep(0)
+      sendStep(0).catch(err => { cleanup(); reject(err) })
     })
 
     ws.on('message', (raw) => {
@@ -178,7 +272,7 @@ function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
           cleanup()
           resolve(collectAll ? collected : (msg.payload || {}))
         } else {
-          sendStep(stepIdx)
+          sendStep(stepIdx).catch(err => { cleanup(); reject(err) })
         }
       }
     })

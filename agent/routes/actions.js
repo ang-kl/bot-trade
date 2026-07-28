@@ -2047,11 +2047,18 @@ export default function actionsRouter(db) {
       const { host, clientId, clientSecret, accessToken, accountId } = creds
       let stream = null
       let hb = null
+      let gone = false
       const shutdown = () => {
+        gone = true
         clearInterval(hb)
         try { stream?.close() } catch { /* already closed */ }
         try { res.end() } catch { /* client gone */ }
       }
+      // Register BEFORE the await: a client that aborts during the websocket
+      // handshake used to fire 'close' before this listener existed, so
+      // shutdown never ran and the broker stream (plus its own heartbeat
+      // timer) leaked — one orphan per aborted page load, forever.
+      req.on('close', shutdown)
       try {
         stream = await wsStreamSpots(host, clientId, clientSecret, accessToken, accountId, ids,
           (tick) => {
@@ -2065,8 +2072,10 @@ export default function actionsRouter(db) {
         res.write(`event: end\ndata: ${JSON.stringify({ reason: err.message })}\n\n`)
         return shutdown()
       }
+      // The client may have vanished during the handshake above — close the
+      // stream we just opened instead of arming a heartbeat onto a dead socket.
+      if (gone) return shutdown()
       hb = setInterval(() => res.write(': ping\n\n'), 15_000)
-      req.on('close', shutdown)
     } catch (err) {
       if (!res.headersSent) res.status(502).json({ error: err.message })
     }

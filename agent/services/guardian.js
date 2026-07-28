@@ -221,8 +221,20 @@ export function startGuardian(db, getCreds, deps = {}) {
     } catch { /* observability only */ }
   }
 
-  const t = setInterval(() => { if (!stopped) maintain() }, maintMs)
+  // `stopped` is a SHUTDOWN flag, not a re-entrancy one — maintain() awaits a
+  // websocket handshake, so a connect slower than maintMs let a second copy
+  // start, tear down the stream the first was about to install, and open
+  // another (duplicate streams, each with its own heartbeat timer, both
+  // mutating streamKey). sweep() has had a proper guard all along; this is
+  // the same discipline for maintain().
+  let maintaining = false
+  const maintainOnce = async () => {
+    if (stopped || maintaining) return
+    maintaining = true
+    try { await maintain() } finally { maintaining = false }
+  }
+  const t = setInterval(maintainOnce, maintMs)
   t.unref?.()
-  setTimeout(() => maintain(), 3_000) // first attach shortly after boot
+  setTimeout(maintainOnce, 3_000) // first attach shortly after boot
   return () => { stopped = true; clearInterval(t); teardown() }
 }
