@@ -40,6 +40,7 @@ const SOURCE_OF_TRUTH = {
   rsi2_reversion: { file: 'rsi2-reversion.js', note: 'TREND_PERIOD + RSI_PERIOD + 2 = 104', expect: 104 },
   fib_confluence: { file: 'fib-confluence.js', const: 'MIN_BARS' },
   va_breakout: { file: 'va-breakout.js', const: 'MIN_BARS' },
+  fvg_retrace: { file: 'fvg-strategy.js', const: 'MIN_BARS' },
 }
 
 const readConst = (file, name) => {

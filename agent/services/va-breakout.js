@@ -34,9 +34,17 @@
 // "sellers are in control" (or buyers) has been falsified — bounded to
 // SL_MAX_ATR so a wide value area cannot demand an oversized stop.
 //
-// FVG stops from the owner's note are NOT implemented: this codebase has no
-// fair-value-gap detector, and inventing one inline would be a second
-// unaudited structure concept. Recorded as future work, not silently faked.
+// FVG stops from the owner's note are still NOT implemented here — but the
+// reason originally given was wrong and is corrected (2026-07-29). This
+// codebase DOES have fair-value-gap detection, and did when that was written:
+// `findFvgZones` (lib/indicators.js, with fill marking) and `findFVGs`
+// (fib-strategy.js). What was missing was a strategy built on them, which now
+// exists as services/fvg-strategy.js.
+//
+// So the honest statement is narrower: this strategy's stop still sits at the
+// value-area edge, because moving it to a gap boundary would change where
+// va_breakout is proven wrong, and that is a strategy change wanting its own
+// backtest — not a detector gap. Recorded as future work on those terms.
 // ---------------------------------------------------------------------------
 
 import { atr } from './fib-strategy.js'

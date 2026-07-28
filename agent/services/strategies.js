@@ -13,6 +13,7 @@
 
 import { computeFibSignal } from './fib-strategy.js'
 import { computeCupHandleSignal, computeInvCupHandleSignal } from './cup-handle.js'
+import { computeFvgSignal } from './fvg-strategy.js'
 
 // The three newer strategy modules are loaded defensively: if a module is
 // missing or broken the registry still builds, with a compute that simply
@@ -67,6 +68,10 @@ export const STRATEGY_REGISTRY = [
   { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: true,  pendingCapable: false, minBars: 104 },
   { key: 'fib_confluence',    name: 'Fib confluence zone', compute: computeFibConfluence,   defaultOn: true,  pendingCapable: false, minBars: 40  },
   { key: 'va_breakout',       name: 'Value-area breakout', compute: computeVaBreakout,      defaultOn: true,  pendingCapable: false, minBars: 60  },
+  // Ships DISARMED. Every other entry here was armed after its own backtest;
+  // this one has none yet, and arming a brand-new strategy by default is how
+  // an unproven edge reaches live capital without anyone deciding to let it.
+  { key: 'fvg_retrace',       name: 'FVG retrace',        compute: computeFvgSignal,       defaultOn: false, pendingCapable: false, minBars: 60  },
 ]
 
 // Stamp the requirement onto the compute function itself. fib-strategy.js needs
