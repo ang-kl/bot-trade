@@ -9,6 +9,7 @@ import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
+import { readRecentErrors } from './services/error-log.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -327,6 +328,7 @@ app.get('/health', (_req, res) => {
   const circuitBreaker = getState(db, 'circuit_breaker_tripped_at')
   const lastError = getState(db, 'last_error')
   const errorsToday = Number(getState(db, 'errors_today') || 0)
+  const recentErrors = readRecentErrors(db)
 
   let openPositions = 0
   let openTrades = 0
@@ -376,6 +378,11 @@ app.get('/health', (_req, res) => {
     dbPersistent: Boolean(DB_PATH),
     errorsToday,
     lastError: lastError || null,
+    // A count with no causes is unactionable — production once showed
+    // errorsToday: 21 next to an April lastError. Every increment now goes
+    // through recordError(), and this is the bounded ring it maintains:
+    // newest first, repeats collapsed into `n`.
+    recentErrors: recentErrors.slice(0, 5),
     circuitBreaker: circuitBreaker || null,
     openPositions,
     openTrades,

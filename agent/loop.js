@@ -27,6 +27,7 @@ import { ctraderEnv } from './lib/ctrader-env.js'
 import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
 import { recordPositionEvent } from './services/position-events.js'
+import { recordError } from './services/error-log.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
@@ -1573,6 +1574,11 @@ async function runLoop(db) {
   const lastReset = getState(db, 'errors_reset_date')
   const todayUTC = new Date().toISOString().slice(0, 10)
   if (lastReset !== todayUTC) {
+    // Deliberately does NOT clear the recent-errors ring: the counter is a
+    // daily figure, the ring is forensic history. Every ring entry carries its
+    // own timestamp, so yesterday's causes sitting beside errorsToday: 0 reads
+    // correctly — and losing them at midnight is exactly how a failure that
+    // started at 23:50 becomes unexplainable.
     setState(db, 'errors_today', '0')
     setState(db, 'daily_tokens_used', '0')
     setState(db, 'errors_reset_date', todayUTC)
@@ -2038,9 +2044,10 @@ async function runLoop(db) {
     // indistinguishable from "no setups found".
     if (scanResult.errors?.length) {
       log(`Scan fetch errors (${scanResult.errors.length}): ${scanResult.errors[0]}`)
-      setState(db, 'api_ctrader_last_error', `${new Date().toISOString()} ${scanResult.errors[0]}`)
-      const errorsToday0 = Number(getState(db, 'errors_today') || 0)
-      setState(db, 'errors_today', String(errorsToday0 + 1))
+      // Through recordError so this bump also lands in `last_error` and the
+      // recent-errors ring. It used to write api_ctrader_last_error only,
+      // which is why /health could show 21 errors with an April lastError.
+      recordError(db, 'scan-fetch', scanResult.errors[0], { extraKey: 'api_ctrader_last_error' })
     } else if (ctraderCreds.ready && scanResult.scans.length > 0) {
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     }
@@ -2645,9 +2652,7 @@ async function runLoop(db) {
     console.error('[loop] error:', err.message)
     await hbeat(db, 'main_loop', false, err.message)
     consecutiveErrors++
-    const errCount = parseInt(getState(db, 'errors_today') || '0') + 1
-    setState(db, 'errors_today', String(errCount))
-    setState(db, 'last_error', `${new Date().toISOString()} ${err.message}`)
+    recordError(db, 'loop', err.message)
 
     if (consecutiveErrors >= 5) {
       const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)

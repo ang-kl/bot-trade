@@ -22,6 +22,7 @@ import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { setAssetController } from '../services/asset-controllers.js'
 import { recordPositionEvent } from '../services/position-events.js'
+import { clearErrorLog } from '../services/error-log.js'
 
 /**
  * Resolve which symbols a backtest run covers.
@@ -3520,7 +3521,9 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/reset-breaker', async (_req, res) => {
     setState(db, 'circuit_breaker_tripped_at', null)
-    setState(db, 'errors_today', '0')
+    // Clears errors_today, last_error and the recent-errors ring together —
+    // a cleared counter beside a stale cause list is the defect this fixes.
+    clearErrorLog(db)
     try {
       const { resetCircuitBreaker } = await import('../loop.js')
       resetCircuitBreaker()
@@ -3555,9 +3558,8 @@ export default function actionsRouter(db) {
 
         // 2. Reset agent_state counters (preserve config / toggles)
         setState(db, 'loop_count', '0')
-        setState(db, 'errors_today', '0')
         setState(db, 'last_scan_at', null)
-        setState(db, 'last_error', null)
+        clearErrorLog(db)
         setState(db, 'circuit_breaker_tripped_at', null)
       })()
 
