@@ -700,14 +700,23 @@ button, a, [role="button"], summary {
 }
 
 /* Owner (2026-07-28): "all field input in all pages should be 1px increase
-   only font size as the row and not bigger than that." Inputs inherit the
-   surrounding row's size plus exactly 1px — the !important is deliberate:
-   it overrides scattered per-page text-[..px] utilities so no field can
-   drift bigger than its row again. Checkbox/radio/range have no text. */
+   only font size as the row and not bigger than that" — then, seeing it:
+   "the free text field font size is so huge."
+
+   Both are the same instruction and the first attempt only honoured half of
+   it. `calc(1em + 1px)` resolves `em` against the element's PARENT, which is
+   the row's size only when the field actually sits in a row. In a card or a
+   form the parent is the page body, so a field rendered at ~17px next to
+   9px UI text — hence "so huge".
+
+   `min()` implements the whole sentence: row + 1px where that is small, and
+   never above the cap whatever the field is nested in. The !important still
+   beats the scattered per-page text-[..px] utilities. */
+:root { --font-field-max: 10px; }
 input:not([type='checkbox']):not([type='radio']):not([type='range']),
 select,
 textarea {
-  font-size: calc(1em + 1px) !important;
+  font-size: min(calc(1em + 1px), var(--font-field-max)) !important;
 }
 
 /* Owner (2026-07-28): "1px curved corner pill and not a oval shape pill."
