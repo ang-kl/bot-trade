@@ -35,6 +35,10 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
   const [sort, setSort] = useState({ col: 'symbol', dir: 'asc' })
   const [selected, setSelected] = useState(() => new Set())
   const [expanded, setExpanded] = useState(null)
+  // Owner 2026-07-28: symbols ALREADY on the watchlist clutter the "find
+  // new ones" job (the added defence stocks kept re-listing) — hidden by
+  // default, one tap shows them for the "check what's in this set" job.
+  const [hideOnList, setHideOnList] = useState(true)
 
   const have = new Set((allSymbols || []).map(s => s.toUpperCase()))
   const inWatchlist = new Set((symbols || []).map(s => s.symbol.toUpperCase()))
@@ -70,7 +74,10 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
       default: return r.symbol
     }
   }
-  const sorted = [...rows].sort((a, b) => {
+  const visible = hideOnList ? rows.filter(r => !r.onList) : rows
+  const hiddenCount = rows.length - visible.length
+
+  const sorted = [...visible].sort((a, b) => {
     const va = sortVal(a), vb = sortVal(b)
     const c = typeof va === 'string' ? va.localeCompare(vb) : va - vb
     return sort.dir === 'desc' ? -c : c
@@ -82,8 +89,8 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
     n.has(sym) ? n.delete(sym) : n.add(sym)
     return n
   })
-  const allSelected = rows.length > 0 && rows.every(r => selected.has(r.symbol))
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(rows.map(r => r.symbol)))
+  const allSelected = visible.length > 0 && visible.every(r => selected.has(r.symbol))
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(visible.map(r => r.symbol)))
 
   if (rows.length === 0) {
     return <p className="text-[9px] text-[var(--color-text-sub)]">None of the {title.toLowerCase()} list is offered by this broker account.</p>
@@ -96,7 +103,15 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-1.5 text-[9px]">
-        <span className="text-[var(--color-text-sub)]">{rows.length} available · {selected.size} selected</span>
+        <span className="text-[var(--color-text-sub)]">{visible.length} shown · {selected.size} selected</span>
+        {hiddenCount > 0 && hideOnList && (
+          <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline"
+            onClick={() => setHideOnList(false)}>show {hiddenCount} already on the watchlist</button>
+        )}
+        {!hideOnList && (
+          <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline"
+            onClick={() => setHideOnList(true)}>hide the ones already added</button>
+        )}
         {selToAdd.length > 0 && (
           <Button size="sm" variant="subtle" onClick={() => { onAdd?.(selToAdd); setSelected(new Set()) }}>
             Add {selToAdd.length} to watchlist
@@ -112,7 +127,10 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
           </Button>
         )}
       </div>
-      <div className="overflow-x-auto">
+      {visible.length === 0 && (
+        <p className="text-[9px] text-[var(--color-text-sub)]">All {rows.length} available symbols in this set are already on the watchlist.</p>
+      )}
+      {visible.length > 0 && <div className="overflow-x-auto">
         <table className="w-full text-[9px] tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
@@ -161,7 +179,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>
   )
 }

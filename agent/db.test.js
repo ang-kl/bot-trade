@@ -309,3 +309,24 @@ test('insertCupHandleDiagnostic: bias defaults to null when omitted (pre-inverte
   const row = db.prepare('SELECT bias FROM cup_handle_diagnostics WHERE symbol = ?').get('EURUSD')
   assert.equal(row.bias, null)
 })
+
+test('backtest_runs table exists with per-symbol history + retention query shape', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(
+    `INSERT INTO backtest_runs (ran_at, strategy, entry_mode, bars, symbol, timeframe,
+       trades, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'EURUSD', '4h', 12, 58.3, 1.7, 4.2, 3, 4, null)
+  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'XAUUSD', '-', null, null, null, null, null, null, 'only 40 bars available')
+  const rows = db.prepare('SELECT * FROM backtest_runs WHERE symbol = ? ORDER BY id DESC').all('EURUSD')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].trades, 12)
+  const bySymbol = db.prepare(
+    `SELECT symbol, COUNT(*) AS rows, SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
+       FROM backtest_runs GROUP BY symbol`
+  ).all()
+  assert.equal(bySymbol.find(r => r.symbol === 'XAUUSD').errors, 1)
+  // retention: the DELETE the actions route runs must be valid SQL on this schema
+  assert.doesNotThrow(() => db.prepare('DELETE FROM backtest_runs WHERE id NOT IN (SELECT id FROM backtest_runs ORDER BY id DESC LIMIT 2000)').run())
+})
