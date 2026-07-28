@@ -20,9 +20,13 @@
 //    `danger` keeps colour, because destructive really does need signalling
 //    — but flat, without the gradient and glow.
 const VARIANTS = {
-  // The default: reads as a control, not an advertisement.
+  // The default: reads as a control, not an advertisement. Owner 2026-07-28
+  // pointed at the reference's "Auto" chip — a soft SOLID surface with a
+  // hairline edge, not a translucent panel. glass-inset let the page
+  // gradient show through, which made the button look unfinished on the
+  // Risk page's tinted cards.
   primary: [
-    'glass-inset text-[var(--color-text)]',
+    'bg-[var(--color-surface)] text-[var(--color-text)] border-[var(--glass-edge)]',
     'hover:border-[var(--color-accent)]',
   ].join(' '),
   // Opt-in emphasis — use sparingly, ideally once per view.

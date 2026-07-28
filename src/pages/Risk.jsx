@@ -46,17 +46,38 @@ function AnimatedNumber({ value, decimals = 2, className = '' }) {
   return <span ref={ref} className={className}>{fmt$(value, decimals)}</span>
 }
 
-// Tiny bordered pill toggle (same convention as Tune's genuine toggles).
-function Pill({ on, label, onClick }) {
+// Tiny bordered pill toggle.
+//
+// Owner 2026-07-28: "if current state is OFF, state 'Off' in red bold text
+// with red border button."
+//
+// That request exposed a genuine defect, not just a styling gap. Eleven
+// pills on this page are boolean toggles whose label is the word "On", and
+// the off branch rendered label.toUpperCase() — so a DISABLED per-position
+// loss cap displayed the word "ON" in grey. On a safety control that is the
+// worst possible failure of a label: you read "ON" and believe your loss
+// floor is armed when it is not.
+//
+// Boolean toggles now pass offLabel and get an unmistakable off state — red
+// bold text, red border, faint red wash. Segmented either/or choices (Scope,
+// Action on breach, At the floor) pass no offLabel and keep the neutral
+// treatment, because their unselected side is an alternative, not a danger.
+function Pill({ on, label, offLabel = null, onClick }) {
+  const off = offLabel != null
+    ? 'border-[var(--color-down)] text-[var(--color-down)] font-bold bg-[color-mix(in_srgb,var(--color-down)_10%,transparent)]'
+    : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'
   return (
-    <button type="button" onClick={onClick}
-      className={`rounded-[2px] border px-[4px] py-[3px] text-[9px] cursor-pointer ${on
+    <button type="button" onClick={onClick} aria-pressed={!!on}
+      className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-[9px] cursor-pointer ${on
         ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
-        : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'}`}>
-      {on ? label : label.toUpperCase()}
+        : off}`}>
+      {on ? label : (offLabel ?? label.toUpperCase())}
     </button>
   )
 }
+
+// Save buttons: "Overall save button can be 1 point increase font size."
+const SAVE_BTN = '!text-[10px]'
 
 // Compact labelled field. `pct` fields edit in % but store fractions.
 // EVERY entry field is the SAME fixed width (owner 2026-07-24: "the size of
@@ -65,7 +86,7 @@ function Pill({ on, label, onClick }) {
 // silently winning over a plain w-[120px] — that is exactly why the fields
 // rendered full-width and "Guardian move %" wrapped onto two lines in the
 // owner's screenshot.
-const FIELD_W = '!w-[120px]'
+const FIELD_W = '!w-[76px]'
 // `unit` renders a fixed chip after the input ($, %, min, ×SL, h…) so every
 // number on the page declares what it is measured in (owner 2026-07-28: the
 // mixed decimals/percentages/dollars were unreadable without labels).
@@ -312,7 +333,7 @@ export default function Risk() {
             <span className="font-semibold">{data?.account?.accountId || '—'}</span>
           </div>
           <span data-save-pulse="account">
-            <Button size="sm" onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
+            <Button size="sm" className={SAVE_BTN} onClick={() => save('account', () => agentPost('/actions/balance', { balance: acct.balance, leverage: acct.leverage }))}>Save account</Button>
           </span>
         </div>
       </Card>
@@ -330,13 +351,13 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
-              <Pill on={!!lossCap?.on} label="On" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
+              <Pill on={!!lossCap?.on} label="On" offLabel="Off" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
             </div>
             <Field label="Max loss per position" unit="$" value={lossCap?.maxLossUsd} onChange={v => setLossCap(c => ({ ...c, maxLossUsd: v }))}
-              placeholder="empty = % only"
+              placeholder="% only"
               hint="Absolute dollar floor for ONE position's floating loss. The $900 GOOGL slide would have been cut at this number. Empty leaves only the % cap below." recommend="$500 — or whatever one trade is allowed to cost you." />
             <Field label="Max loss, % of balance" unit="%" value={lossCap?.maxLossPctOfBalance} onChange={v => setLossCap(c => ({ ...c, maxLossPctOfBalance: v }))}
-              placeholder="empty = $ only"
+              placeholder="$ only"
               hint="Same floor as % of current balance; the TIGHTER of the two caps applies. 2% of $48,000 ≈ $960." recommend="2% of balance." />
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
@@ -364,14 +385,14 @@ export default function Risk() {
                 </div>
               )
             })()}
-            <span data-save-pulse="loss-cap"><Button size="sm" onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', lossCap))}>Save loss cap</Button></span>
+            <span data-save-pulse="loss-cap"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', lossCap))}>Save loss cap</Button></span>
           </div>
 
           {/* Layer 2 — profit ratchet staircase (A4) */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
-              <Pill on={!!ratchet?.on} label="On" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
+              <Pill on={!!ratchet?.on} label="On" offLabel="Off" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
             </div>
             <Field label="Step size" unit="$" value={ratchet?.stepUsd} onChange={v => setRatchet(c => ({ ...c, stepUsd: v }))}
               placeholder="auto"
@@ -409,7 +430,7 @@ export default function Risk() {
               )
             })()}
             <div className="flex items-center gap-2">
-              <span data-save-pulse="ratchet"><Button size="sm" onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', ratchet))}>Save ratchet</Button></span>
+              <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', ratchet))}>Save ratchet</Button></span>
               <Button size="sm" variant="ghost" onClick={() => {
                 if (!window.confirm('Re-baseline the staircase at CURRENT equity? Banked floors are forgotten (use after a deposit/withdrawal).')) return
                 save('ratchet', () => agentPost('/actions/profit-ratchet', { ...ratchet, resetState: true }))
@@ -421,7 +442,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Naked-position guardian</span>
-              <Pill on={!!guardian2?.on} label="On" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
+              <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
@@ -435,9 +456,9 @@ export default function Risk() {
             <Field label="Fallback cap (no ATR)" pct value={guardian2?.fallbackAdversePct} onChange={v => setGuardian2(c => ({ ...c, fallbackAdversePct: v }))}
               hint="When ATR data is unavailable, cap the adverse move at this % of entry price instead." recommend="2% of entry price." />
             <Field label="Max hold time" unit="h" value={guardian2?.maxHoldHours} onChange={v => setGuardian2(c => ({ ...c, maxHoldHours: v }))}
-              placeholder="empty = off"
+              placeholder="off"
               hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
-            <span data-save-pulse="loss-guardian"><Button size="sm" onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', guardian2))}>Save guardian</Button></span>
+            <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', guardian2))}>Save guardian</Button></span>
           </div>
         </div>
       </Card>
@@ -458,7 +479,7 @@ export default function Risk() {
             <div className="border-t border-[var(--glass-edge)] pt-2 space-y-2">
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="A losing run sizes DOWN automatically instead of compounding.">Drawdown de-risk{mark('deriskOnDrawdown')}</span>
-                <Pill on={!!risk.deriskOnDrawdown} label="On" onClick={() => setRisk(r => ({ ...r, deriskOnDrawdown: !r.deriskOnDrawdown }))} />
+                <Pill on={!!risk.deriskOnDrawdown} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, deriskOnDrawdown: !r.deriskOnDrawdown }))} />
               </div>
               <Field label={`window${mark('deriskWindowHours')}`} unit="h" value={risk.deriskWindowHours} onChange={v => setRisk(r => ({ ...r, deriskWindowHours: v }))}
                 recommend="24 hours." />
@@ -473,7 +494,7 @@ export default function Risk() {
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
             </label>
-            <span data-save-pulse="risk"><Button size="sm" onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+            <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
           </div>
         </Card>
 
@@ -499,18 +520,18 @@ export default function Risk() {
                   <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
                   <Field label={`Per-trade risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
-                    hint="Absolute $ risk per trade; when set, overrides the %." placeholder="empty = % applies" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
+                    hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
                   <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                     hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
                   <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} unit="$" value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
-                    hint="Optional absolute $ ceiling per trade." placeholder="empty = no $ ceiling" recommend="unset — no $ ceiling by default." />
+                    hint="Optional absolute $ ceiling per trade." placeholder="no cap" recommend="unset — no $ ceiling by default." />
                   <Field label={`Min lot size${mark('minLotSize')}`} unit="lots" value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
                     recommend="0.01 — the broker's own minimum." />
                   <Field label={`Min trades for Kelly${mark('minTradesForKelly')}`} unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
                     hint="Below this trade count, Kelly sizing is skipped." recommend="30 closed trades before Kelly sizing kicks in." />
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
-                    <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
+                    <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
                   </div>
                 </div>
               </div>
@@ -557,7 +578,7 @@ export default function Risk() {
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
-                    <Pill on={weekendBank} label="On" onClick={() => {
+                    <Pill on={weekendBank} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendBank
                       setWeekendBank(next)
                       save('weekend-bank', () => agentPost('/actions/weekend-bank', { on: next }))
@@ -565,7 +586,7 @@ export default function Risk() {
                   </div>
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag</span>
-                    <Pill on={weekendLossFlag} label="On" onClick={() => {
+                    <Pill on={weekendLossFlag} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendLossFlag
                       setWeekendLossFlag(next)
                       save('weekend-loss-flag', () => agentPost('/actions/weekend-loss-flag', { on: next }))
@@ -626,7 +647,7 @@ export default function Risk() {
                     <span className="text-right tabular-nums">{m?.freeMargin != null ? `$${fmt$(m.freeMargin, 3)}` : '—'}</span>
                   </div>
                   <div className="mt-1">
-                    <span data-save-pulse="risk"><Button size="sm" onClick={() => saveRisk(['perTradeRiskPct', 'perTradeRiskUsd'])}>Save sizing mode</Button></span>
+                    <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['perTradeRiskPct', 'perTradeRiskUsd'])}>Save sizing mode</Button></span>
                   </div>
                 </div>
               )
@@ -642,17 +663,17 @@ export default function Risk() {
               </div>
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require stop loss</span>
-                <Pill on={guard.requireBracket !== false} label="On" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
+                <Pill on={guard.requireBracket !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
               </div>
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require take profit</span>
-                <Pill on={guard.requireTarget !== false} label="On" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
+                <Pill on={guard.requireTarget !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
               <Field label="Max order volume (units×100)" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
-                <Pill on={vpoEnabled} label="On" onClick={() => {
+                <Pill on={vpoEnabled} label="On" offLabel="Off" onClick={() => {
                   const next = !vpoEnabled
                   setVpoEnabled(next)
                   save('vpo', () => agentPost('/actions/vpo-settings', { enabled: next }))
@@ -663,7 +684,7 @@ export default function Risk() {
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <span data-save-pulse="exec-guard"><Button size="sm" onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button></span>
+              <span data-save-pulse="exec-guard"><Button size="sm" className={SAVE_BTN} onClick={() => save('exec-guard', () => agentPost('/actions/exec-guard', guard))}>Save cpp guard</Button></span>
             </div>
           </Card>
 
