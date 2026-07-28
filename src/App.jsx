@@ -154,7 +154,7 @@ function AgentDownBanner() {
 function navLinkClasses(isActive) {
   return `rounded-[10px] px-3 py-2 text-[9px] font-semibold inline-flex items-center gap-2 transition-all w-full ${
     isActive
-      ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
+      ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
       : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
   }`
 }
@@ -174,7 +174,7 @@ export default function App() {
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-screen lg:sticky lg:top-0 p-4">
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-y-auto">
           <div className="flex items-baseline gap-2 mb-4">
-            <span className="text-[15px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent">bot-trade</span>
+            <span className="text-[15px] font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
             <LlmMonitorStatus />
           </div>
@@ -209,7 +209,7 @@ export default function App() {
         {/* Top bar — mobile/tablet only */}
         <header className="sticky top-3 z-50 px-3 lg:hidden">
           <div className="glass-bar flex items-center gap-3 rounded-[1px] px-4 py-2 overflow-x-auto scrollbar-none">
-            <span className="text-[14px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent shrink-0">
+            <span className="text-[14px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">
               bot-trade
             </span>
             <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
@@ -223,7 +223,7 @@ export default function App() {
                   className={({ isActive }) =>
                     `rounded-[12px] px-3 py-1.5 text-[9px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
                       isActive
-                        ? 'text-white bg-[linear-gradient(135deg,var(--color-accent),color-mix(in_srgb,var(--color-accent)_60%,#a855f7))] shadow-[var(--glow-accent)]'
+                        ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
                         : 'glass-inset text-[var(--color-text-sub)]'
                     }`
                   }

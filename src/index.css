@@ -52,8 +52,11 @@
   --color-bg:           #eef1fb;
   --color-surface:      rgba(255, 255, 255, 0.62);
   --color-border:       rgba(120, 140, 200, 0.28);
-  --color-accent:       #2b5cff;
-  --color-accent-soft:  rgba(59, 108, 255, 0.12);
+  --color-accent:       #a34718;
+  --color-accent-soft:  rgba(163, 71, 24, 0.10);
+  /* Text drawn ON the accent fill (active nav pill). Measured, not assumed:
+     white reads 6.05:1 on this deep clay. */
+  --color-on-accent:    #ffffff;
   --color-text:         #131a2e;
   --color-text-sub:     #47536f;
   /* Apple system-grey table header (light): systemGray6 + secondary label */
@@ -107,7 +110,7 @@
   --glass-sheen:     rgba(255, 255, 255, 0.85);
   --glass-shadow:    0 8px 32px rgba(60, 80, 180, 0.14), 0 1.5px 4px rgba(60, 80, 180, 0.08);
   --glass-blur:      22px;
-  --glow-accent:     0 0 18px rgba(43, 92, 255, 0.35);
+  --glow-accent:     0 0 12px rgba(163, 71, 24, 0.18);
   --glow-down:       0 0 18px rgba(225, 29, 72, 0.35);
 
   /* Ambient background field */
@@ -128,8 +131,11 @@
   --color-bg:           #060913;
   --color-surface:      rgba(20, 26, 48, 0.55);
   --color-border:       rgba(120, 150, 255, 0.18);
-  --color-accent:       #4f8cff;
-  --color-accent-soft:  rgba(79, 140, 255, 0.14);
+  --color-accent:       #d97757;
+  --color-accent-soft:  rgba(217, 119, 87, 0.12);
+  /* This clay is LIGHT, so white on it is only 3.12:1 — fails AA for the
+     9px nav labels. Near-black reads 5.93:1. */
+  --color-on-accent:    #1a1207;
   --color-text:         #e8edfb;
   --color-text-sub:     #9aa8cc;
   /* Apple system-grey table header (dark): systemGray6 dark + secondary label */
@@ -177,7 +183,7 @@
   --glass-edge:      rgba(90, 110, 200, 0.20);
   --glass-sheen:     rgba(170, 195, 255, 0.28);
   --glass-shadow:    0 8px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(90, 120, 255, 0.06);
-  --glow-accent:     0 0 22px rgba(79, 140, 255, 0.55);
+  --glow-accent:     0 0 12px rgba(217, 119, 87, 0.22);
   --glow-down:       0 0 22px rgba(255, 77, 109, 0.5);
 
   --ambient-base:    #060913;
@@ -190,6 +196,11 @@
 
 /* -- Sepia theme: warm smoked glass -- */
 [data-theme="sepia"] {
+  /* Sepia's accent was already clay, so it needs no change — only its own
+     on-accent value, or it would inherit the light theme's and the pill
+     contrast would be accidental rather than checked. White on #8c5a1c
+     measures 5.84:1. */
+  --color-on-accent:    #ffffff;
   --color-bg:           #f0e9d8;
   --color-surface:      rgba(252, 248, 238, 0.6);
   --color-border:       rgba(160, 130, 60, 0.30);
