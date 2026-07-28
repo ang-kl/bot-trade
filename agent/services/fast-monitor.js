@@ -316,6 +316,19 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       } catch (err) {
         console.error('[fast-monitor] pnl-watch failed:', err.message)
       }
+      // Hard per-position loss cap (owner 2026-07-28, the GOOGL −$900 case):
+      // same 60s broker-truth cadence, but this one ACTS — closes a position
+      // whose floating loss breached the $/% cap instead of only messaging.
+      try {
+        const creds = getCreds(db)
+        if (creds?.ready) {
+          const { runLossCap } = await import('./loss-cap.js')
+          const lc = await runLossCap(db, creds)
+          if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
+        }
+      } catch (err) {
+        console.error('[fast-monitor] loss-cap failed:', err.message)
+      }
     }
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
