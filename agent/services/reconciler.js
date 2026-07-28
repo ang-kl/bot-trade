@@ -461,7 +461,16 @@ export function reclassifyBrokerCloses(db) {
   const rows = db.prepare(
     `SELECT id, side, exit_price, sl_price, tp_price FROM trades
      WHERE status = 'closed' AND exit_price IS NOT NULL
-       AND close_reason LIKE 'closed at the broker%'`
+       AND (
+         close_reason LIKE 'closed at the broker%'
+         -- BACKFILL (2026-07-29). Rows already carrying the FALSE
+         -- stopped-beyond-the-SL stamp, written before the null-SL bug above
+         -- was fixed. Normally this function never overwrites a reason it did
+         -- not write, but leaving these would leave the ledger asserting a
+         -- stop existed on positions that ran naked. Narrowly scoped: only
+         -- that exact stamp, and only where there is provably no stop.
+         OR (sl_price IS NULL AND close_reason LIKE 'stopped beyond the SL%')
+       )`
   ).all()
   const upd = db.prepare('UPDATE trades SET close_reason = ? WHERE id = ?')
   let n = 0
@@ -474,10 +483,25 @@ export function reclassifyBrokerCloses(db) {
       reason = 'take profit hit — broker-side TP fill (reclassified from the broker exit price)'
     } else if (near(t.sl_price)) {
       reason = 'stop loss hit — broker-side SL fill (reclassified from the broker exit price)'
+    } else if (t.sl_price == null) {
+      // NO STOP ON RECORD. This branch exists because the one below asserted
+      // the opposite (owner report 2026-07-29, an ETHUSD short).
+      //
+      // `Number(null)` is 0, not NaN, and `Number.isFinite(0)` is true — so
+      // the old test collapsed to `exit > 0` for every short, and stamped
+      // "stopped beyond the SL" on positions that had no stop at all. It
+      // reported the safety system working at exactly the moment it was
+      // absent, which is the worst direction for that error to run. Longs
+      // escaped by accident (`exit < 0` is never true).
+      //
+      // The same trap is already documented at loss-postmortem.js:192 — "a
+      // missing TP must read as 'no goal', not 'goal 0'". It was guarded
+      // there and missed here.
+      reason = 'closed at the broker with NO STOP LOSS on record — this position was unprotected; cause of exit unknown (reclassified from the broker exit price)'
     } else {
       const sl = Number(t.sl_price)
       const long = String(t.side || '').toUpperCase() === 'BUY'
-      if (Number.isFinite(sl) && (long ? exit < sl : exit > sl)) {
+      if (Number.isFinite(sl) && sl > 0 && (long ? exit < sl : exit > sl)) {
         reason = 'stopped beyond the SL — gap/slippage through the stop or a margin-level liquidation (reclassified from the broker exit price)'
       }
     }
