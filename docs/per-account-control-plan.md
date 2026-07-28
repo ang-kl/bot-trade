@@ -144,23 +144,52 @@ Three dispositions, all legitimate:
 
 | choice | behaviour | when it's right |
 | :-- | :-- | :-- |
-| **`cancel`** *(recommended default)* | cancel this account's working entry orders on pause; log each one with its price so it can be re-armed | you are stepping away and will not be watching |
-| **`drain`** | create no new pendings; let existing ones live to their natural expiry, then go quiet | your phrasing — "let the last pending order finish". Respects analysis already committed |
-| **`keep`** | leave everything armed; only stop scanning | you're pausing for a few minutes, not leaving |
+| **`supervised-drain`** ← **OWNER'S DECISION, the default** | pendings stay pending. Keep monitoring them until each one is either filled **or closed because the monitor judges the setup no longer valid**. Create no new ones. Go quiet only once the last one resolves | you committed the analysis and want it to play out, but not unwatched |
+| **`cancel`** | cancel this account's working entry orders on pause; log each with its price so it can be re-armed | you want a hard stop and will accept the missed opportunity |
+| **`keep`** | leave everything armed and stop looking | short pause only — not for stepping away |
 
-**Why `cancel` as the default:** a pending order encodes a prediction you made
-under conditions you were actively watching. Once you switch accounts, that
-supervision is gone. A fill then creates a *new position on an account you have
-mentally left* — the worst outcome available. Cancelling costs only a missed
-opportunity, which is recoverable; an unattended fill may not be.
+### Owner's decision (2026-07-28), overriding my recommendation
+
+> *"default pending disposition should still be pending trade. and default is
+> to continue monitor until last one is traded or close if monitor deem
+> otherwise."*
+
+I had recommended `cancel`, reasoning that an unattended fill creates a
+position on an account you have mentally left. **The owner's choice is better
+than my recommendation, and here is why I was wrong:** my argument assumed
+pausing means *unwatched*. It does not — §1 already establishes that
+management never pauses. So the pending is not resting unsupervised; the
+monitor is still on it, and can close it when the setup breaks. Cancelling
+would throw away committed analysis to avoid a risk the monitor already
+covers.
+
+That makes `supervised-drain` the default, and it is materially stronger than
+the plain `drain` I originally described: plain drain waits passively for
+expiry, whereas this **actively re-evaluates** and closes early when the
+thesis is dead. It also self-terminates — the account goes quiet on its own
+once the last pending resolves.
+
+Two requirements this places on the build:
+
+1. **The monitor must keep evaluating pendings on a paused account**, not just
+   open positions. A pending under `supervised-drain` is live work, so the
+   account's MANAGE capability covers pendings as well as positions — and the
+   account cannot reach `archived` while any pending is still working.
+2. **"Close if the monitor deems otherwise" needs stated criteria**, or it is
+   a promise with no mechanism. The existing invalidation signals are the
+   honest starting set: the setup's own expiry, the level being breached in
+   the wrong direction, the symbol's cooldown or streak breaker firing, the
+   strategy being disarmed by the edge watchdog, and the news-window gate
+   opening against it. Each early close should log which of those fired.
 
 **Important scope limit:** this applies to **entry** pendings only. Protective
 stop-loss and take-profit orders live broker-side on open positions and are
 never touched by a pause — cancelling those would be the naked-position bug.
 
-`drain` needs one guard: a pending with no expiry never drains. Require an
-expiry (or apply a pause-drain deadline, default 24h) and show the countdown,
-otherwise "drain" quietly becomes "keep" forever.
+`supervised-drain` needs one guard: a pending with no expiry and no
+invalidation trigger never resolves, so the account never goes quiet. Require
+an expiry (or apply a drain deadline, default 24h) and show the countdown —
+otherwise the default quietly degrades into `keep`.
 
 Whichever is chosen, **write it down**: a `position_events` / `action_log`
 record per cancelled or drained order, so tomorrow you can answer "why didn't
@@ -253,14 +282,16 @@ A1 and A2 are the ones I would not run a second live account without.
 
 ## 7. Open decisions for the owner
 
-1. **Default pause disposition** — I recommend `cancel`; `drain` is the closest
-   to your wording. Which should be the default, and should it be per-account?
+1. ~~Default pause disposition~~ — **ANSWERED 2026-07-28: `supervised-drain`**
+   (pendings stay pending, monitored until filled or invalidated). Still open:
+   should the disposition be settable per account, or is one global default
+   enough?
 2. **Scan while `manage_only`?** Costs scan budget shared with the active
    account; buys warm insight history. Default off, opt in per account?
 3. **Which settings are overridable per account** — risk sizing and protection
    layers yes; what else?
-4. **Should switching require the old account to be flat**, or is a warning
-   with an explicit "leave it managed in the background" enough? (I lean to the
-   latter — a hard block would be unusable.)
+4. ~~Should switching require the old account to be flat~~ — **ANSWERED
+   2026-07-28: neither block nor warn.** Safe because A1 (shipped, PR #455)
+   keeps the departed account managed rather than abandoning it.
 5. **Archive semantics** — does archiving retain history for reporting
    (recommended) or hide it from all aggregates?
