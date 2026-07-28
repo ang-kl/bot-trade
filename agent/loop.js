@@ -1560,6 +1560,42 @@ async function runLoop(db) {
   const CYCLE_SOFT_DEADLINE_MS = Math.max(120_000, Number(process.env.CYCLE_SOFT_DEADLINE_MS || 7 * 60_000))
   const cycleOverBudget = () => Date.now() - start > CYCLE_SOFT_DEADLINE_MS
   console.log(`[diag] LOOP #${loopCount} start`)
+
+  // -------------------------------------------------------------------------
+  // Phase accounting (2026-07-28). `loop_phase` was being stamped 'monitoring
+  // N positions' and then not re-stamped until 'sleeping' at the very end of
+  // the cycle — so the four breakers, the whole QUANT block and the 8-hourly
+  // retention DELETEs all reported as "monitoring". Every read-stall report
+  // therefore blamed the monitor phase for a window it barely occupies, and
+  // the tuning that followed was aimed at the wrong code.
+  //
+  // phase() replaces the bare setState so each sub-phase both NAMES itself and
+  // records how long the previous one took. `loop_phase_ms_json` then carries
+  // the per-cycle breakdown, which is what makes "reads stall for 8-29s"
+  // answerable instead of arguable.
+  // -------------------------------------------------------------------------
+  const phaseMs = {}
+  let phaseName = 'starting'
+  let phaseStart = start
+  // `key` keeps the ms buckets stable when the visible label carries data —
+  // 'analyzing EURUSD, XAUUSD' must not become its own bucket every cycle.
+  const phase = (name, key = name) => {
+    const now = Date.now()
+    phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (now - phaseStart)
+    phaseName = key
+    phaseStart = now
+    setState(db, 'loop_phase', name)
+  }
+  const closePhases = () => {
+    phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (Date.now() - phaseStart)
+    // Slowest first — the answer to "what is holding the loop" should be the
+    // first thing read, not something to scan a list for.
+    const ordered = Object.entries(phaseMs)
+      .filter(([, ms]) => ms >= 1)
+      .sort((a, b) => b[1] - a[1])
+    setState(db, 'loop_phase_ms_json', JSON.stringify(Object.fromEntries(ordered)))
+  }
+
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
 
@@ -1611,7 +1647,7 @@ async function runLoop(db) {
         const isLive = getState(db, 'ctrader_is_live') === 'true'
 
         if (clientId && clientSecret && accessToken && accountId) {
-          setState(db, 'loop_phase', 'reconciling broker positions')
+          phase('reconciling broker positions')
           const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
           const reconcileData = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
 
@@ -1959,7 +1995,7 @@ async function runLoop(db) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }
 
-    setState(db, 'loop_phase', `scanning ${symbols.length} symbols`)
+    phase(`scanning ${symbols.length} symbols`, 'scan')
 
     // Deterministic 61.8% Fibonacci retracement fade scan — no LLM calls.
     // Needs cTrader trendbar access (symbol map + credentials); skip cleanly
@@ -2124,7 +2160,7 @@ async function runLoop(db) {
       try { baseline = JSON.parse(getState(db, 'backtest_baseline_json') || 'null') } catch { /* none */ }
       const ranked = rankHotSymbols(scanResult.scans, scanResult.hot, { provenEdgeSymbols: provenEdgeSymbolsFrom(baseline) })
       const hotToAnalyze = ranked.slice(0, 3)
-      setState(db, 'loop_phase', `analyzing ${hotToAnalyze.join(', ')}`)
+      phase(`analyzing ${hotToAnalyze.join(', ')}`, 'analyze')
       for (const sym of hotToAnalyze) {
         try {
           await dispatchSymbolSignal(db, s, symbols, sym, scanResult.signals[sym])
@@ -2142,7 +2178,7 @@ async function runLoop(db) {
       // here must never take down the scan/monitor loop.
       // ---------------------------------------------------------------------
       try {
-        setState(db, 'loop_phase', 'pending orders')
+        phase('pending orders')
         // TIME BUDGET + NO-OVERLAP (owner-approved 2026-07-27, root-cause fix
         // for the day's hang→watchdog-restart cycle: /health's loopPhase
         // forensics caught the loop stuck HERE on every observed hang). The
@@ -2215,7 +2251,7 @@ async function runLoop(db) {
       try {
         const biCreds = getCtraderCreds(db)
         if (biCreds.ready && !cycleOverBudget()) {
-          setState(db, 'loop_phase', 'burn-in')
+          phase('burn-in')
           const { runBurnIn } = await import('./services/burn-in.js')
           const b = await runBudgetedSubPhase(db, 'burn_in', () => runBurnIn(db, biCreds))
           if (b?.placed || b?.attempted) log(`Burn-in: ${b.summary}`)
@@ -2235,7 +2271,7 @@ async function runLoop(db) {
       try {
         const psCreds = getCtraderCreds(db)
         if (!cycleOverBudget()) {
-          setState(db, 'loop_phase', 'pending signals')
+          phase('pending signals')
           const { runPendingSignals } = await import('./services/pending-signals.js')
           const p = await runBudgetedSubPhase(db, 'pending_signals', () => runPendingSignals(db, psCreds))
           if (p.fired || p.expired) log(`Pending signals: ${p.fired} fired, ${p.expired} expired, ${p.checked} checked`)
@@ -2252,7 +2288,7 @@ async function runLoop(db) {
       try {
         const guardCreds = getCtraderCreds(db)
         if (guardCreds.ready && !cycleOverBudget()) {
-          setState(db, 'loop_phase', 'trade guards')
+          phase('trade guards')
           const { runTradeGuards } = await import('./services/trade-guard.js')
           const g = await runBudgetedSubPhase(db, 'trade_guards', () => runTradeGuards(db, guardCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2272,7 +2308,7 @@ async function runLoop(db) {
       try {
         const keeperCreds = getCtraderCreds(db)
         if (keeperCreds.ready && !cycleOverBudget()) {
-          setState(db, 'loop_phase', 'profit keeper')
+          phase('profit keeper')
           const { runProfitKeeper } = await import('./services/profit-keeper.js')
           const k = await runBudgetedSubPhase(db, 'profit_keeper', () => runProfitKeeper(db, keeperCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2293,7 +2329,7 @@ async function runLoop(db) {
       try {
         const guardCreds = getCtraderCreds(db)
         if (guardCreds.ready && !cycleOverBudget()) {
-          setState(db, 'loop_phase', 'loss guardian')
+          phase('loss guardian')
           const { runLossGuardian } = await import('./services/loss-guardian.js')
           const g = await runBudgetedSubPhase(db, 'loss_guardian', () => runLossGuardian(db, guardCreds, {
             notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2316,7 +2352,7 @@ async function runLoop(db) {
         const creds = getCtraderCreds(db)
         const haveHours = db.prepare('SELECT COUNT(*) AS n FROM symbol_hours').get().n
         if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 5 || haveHours === 0)) {
-          setState(db, 'loop_phase', 'market-hours refresh')
+          phase('market-hours refresh')
           const { refreshSymbolHours } = await import('./services/symbol-hours.js')
           // Hours refresh sweeps 1,900+ symbols in batches — give it a wider
           // budget than the order-touching phases, but still bounded.
@@ -2333,7 +2369,7 @@ async function runLoop(db) {
       // failures must never touch the trading phases).
       try {
         if (!cycleOverBudget()) {
-          setState(db, 'loop_phase', 'autopilot')
+          phase('autopilot')
           const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
           const r = await runBudgetedSubPhase(db, 'autopilot', () => maybeRunAutopilot(db, getCtraderCreds(db)), SUB_PHASE_BUDGET_MS * 2)
           if (r && !r.skipped && !r.skippedOverlap && !r.timedOut) log(`Autopilot: ${JSON.stringify(r)}`)
@@ -2359,7 +2395,7 @@ async function runLoop(db) {
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
       if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget()) {
-        setState(db, 'loop_phase', `weekend watch (${weekendPositions.length})`)
+        phase(`weekend watch (${weekendPositions.length})`, 'weekend-watch')
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see
         // monitorOneWeekendPosition/runWeekendWatchPhase above
@@ -2372,7 +2408,7 @@ async function runLoop(db) {
       // scan+analyze was skipped (market closed, etc). Crypto positions and
       // stale FX positions still need tick checks.
       // ---------------------------------------------------------------------
-      if (openPositions.length > 0) setState(db, 'loop_phase', `monitoring ${openPositions.length} positions`)
+      if (openPositions.length > 0) phase(`monitoring ${openPositions.length} positions`, 'monitor')
       const activePositions = openPositions.length > 0
         ? openPositions
         : s.selectActivePositions.all('active')
@@ -2412,6 +2448,7 @@ async function runLoop(db) {
       // (owner: cooldown pauses are for humans). Non-fatal by construction.
       // ---------------------------------------------------------------------
       try {
+        phase('adaptive breaker')
         const { runAdaptiveBreaker } = await import('./services/adaptive-breaker.js')
         const ab = runAdaptiveBreaker(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2431,6 +2468,7 @@ async function runLoop(db) {
       // that broker stop-outs are backfilled, this runs on honest numbers.
       // ---------------------------------------------------------------------
       try {
+        phase('edge watchdog')
         const { runEdgeWatchdog } = await import('./services/edge-watchdog.js')
         const ew = runEdgeWatchdog(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2450,6 +2488,7 @@ async function runLoop(db) {
       // 2026-07-24, same anchor as the risk gate's daily-loss check).
       // ---------------------------------------------------------------------
       try {
+        phase('equity stop')
         const riskCfg = loadRiskConfig(db)
         const stopPct = riskCfg.equityStopPct ?? riskCfg.dailyLossPct
         const balance = getAccountBalance(db)
@@ -2505,6 +2544,7 @@ async function runLoop(db) {
       // checkpoints would trigger all hands on deck").
       // ---------------------------------------------------------------------
       try {
+        phase('performance breaker')
         const { runPerformanceBreaker } = await import('./services/performance-breaker.js')
         const pb = runPerformanceBreaker(db, {
           notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
@@ -2519,6 +2559,7 @@ async function runLoop(db) {
     // 4. QUANT PHASE — every 6th loop (~30 min)
     // -----------------------------------------------------------------------
     if (loopCount % 6 === 0) {
+      phase('quant')
       log('Quant phase — computing regime + performance snapshot')
       try {
         // Regime from REAL price structure, not the bot's own scan confidence
@@ -2657,6 +2698,9 @@ async function runLoop(db) {
     if (consecutiveErrors >= 5) {
       const backoff = Math.min(15 * 60_000, loopIntervalMs(db) * consecutiveErrors)
       log(`Self-healing: ${consecutiveErrors} consecutive errors — backing off ${Math.round(backoff / 60000)}m`)
+      // Persist the breakdown on the way out too: the phase that was running
+      // when a cycle died is exactly the one worth seeing.
+      closePhases()
       loopRunning = false
       lastLoopActivityAt = Date.now()
       setTimeout(() => runLoop(db).catch(err => console.error('[loop] unhandled:', err.message)), backoff)
@@ -2670,6 +2714,7 @@ async function runLoop(db) {
   // ---- Housekeeping: data retention (once per 100 loops ≈ 8 hours) ----
   if (loopCount % 100 === 0) {
     try {
+      phase('housekeeping')
       const cutoff30d = new Date(Date.now() - 30 * 86400_000).toISOString()
       const cutoff90d = new Date(Date.now() - 90 * 86400_000).toISOString()
       const d1 = db.prepare('DELETE FROM scans WHERE scanned_at < ?').run(cutoff30d)
@@ -2694,6 +2739,7 @@ async function runLoop(db) {
   lastLoopActivityAt = Date.now()
   const elapsed = Date.now() - start
   const delay = Math.max(10_000, loopIntervalMs(db) - elapsed)
+  closePhases()
   setState(db, 'loop_phase', `sleeping ${Math.round(delay / 1000)}s`)
   console.log(`[diag] LOOP #${loopCount} end ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)
   log(`Loop #${loopCount} done in ${elapsed}ms — next in ${Math.round(delay / 1000)}s`)

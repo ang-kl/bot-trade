@@ -480,6 +480,36 @@ const INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_trades_symbol_closed    ON trades  (symbol, closed_at);
   CREATE INDEX IF NOT EXISTS idx_trades_source_strategy   ON trades  (source, label_strategy, closed_at);
   CREATE INDEX IF NOT EXISTS idx_trades_label_regime      ON trades  (label_regime, closed_at);
+  -- Every-cycle breaker reads (2026-07-28 profiling). adaptive-breaker and
+  -- edge-watchdog each run "WHERE status='closed' AND label_strategy=? ORDER BY
+  -- closed_at DESC" once per enabled strategy — 11 strategies × 2 services × a
+  -- full table scan plus a temp-b-tree sort, every five minutes, in a stretch
+  -- of the cycle with no I/O to yield on. idx_trades_source_strategy cannot
+  -- serve them: it leads with "source", which those queries don't constrain.
+  CREATE INDEX IF NOT EXISTS idx_trades_strategy_closed   ON trades  (label_strategy, closed_at DESC, id DESC);
+  -- performance-breaker + the QUANT aggregate: "WHERE status='closed'" with no
+  -- other predicate had no index at all.
+  --
+  -- It does NOT help the equity stop's day-PnL sum. Measured with 4k rows and
+  -- ANALYZE: that query still plans as a full SCAN, because REPLACE(closed_at,
+  -- 'T',' ') is unindexable and status='closed' matches most of the table, so
+  -- the index is not selective enough to be worth it. The REPLACE is left
+  -- alone deliberately — it exists because two writers store two timestamp
+  -- formats, and rewriting it is a live-money correctness change, not an index
+  -- change. One bounded scan per cycle is not the read-stall culprit.
+  CREATE INDEX IF NOT EXISTS idx_trades_status_closed     ON trades  (status, closed_at);
+  -- reconciler's NOT IN (SELECT MAX(id) ... GROUP BY ctrader_position_id) dedupe
+  -- sweeps and pending-orders' known-position Set, both full scans before this.
+  CREATE INDEX IF NOT EXISTS idx_trades_position_id       ON trades  (ctrader_position_id);
+  -- QUANT's "DISTINCT symbol FROM scans WHERE scanned_at > ?" and the 8-hourly
+  -- retention DELETE both filter on time alone; idx_scans_symbol_at leads with
+  -- symbol, so both walked the whole index.
+  CREATE INDEX IF NOT EXISTS idx_scans_at                 ON scans   (scanned_at);
+  CREATE INDEX IF NOT EXISTS idx_signals_at               ON signals (recorded_at);
+  CREATE INDEX IF NOT EXISTS idx_regimes_at               ON regimes (computed_at);
+  -- Read every 3s by fast-monitor and several times per cycle by the loop;
+  -- idx_monitored_source leads with "source", which these don't constrain.
+  CREATE INDEX IF NOT EXISTS idx_monitored_status         ON monitored_positions(status);
   CREATE INDEX IF NOT EXISTS idx_monitored_symbol_at    ON monitored_positions(symbol, last_check_at);
   CREATE INDEX IF NOT EXISTS idx_monitored_source       ON monitored_positions(source, status);
   CREATE INDEX IF NOT EXISTS idx_perf_computed          ON performance_snapshots(computed_at);
