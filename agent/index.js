@@ -171,6 +171,38 @@ app.use(
 );
 
 // ---------------------------------------------------------------------------
+// NEVER let an edge/CDN cache this API (owner enabled Railway CDN caching,
+// 2026-07-28). Every response here is live trading state — positions, P&L,
+// balances, config — or a money-moving action. A cached copy is a WRONG
+// copy, and an edge that caches a response fetched WITH an Authorization
+// header could serve it to a request without one (we send only
+// `vary: accept-encoding`, not `vary: authorization`).
+//
+// This app previously sent NO Cache-Control at all, which is precisely the
+// condition Railway's "Default TTL" fallback is documented to act on. An
+// explicit no-store removes the guesswork: the setting can stay on for
+// whatever static assets the platform serves, and the API is exempt by its
+// own instruction rather than by a heuristic we do not control.
+//
+// The in-process response cache in routes/state.js is unaffected — that one
+// is ours, lives inside the agent, is bounded to STATE_CACHE_MS, and is what
+// actually stops duplicate recomputation.
+//
+// Cost, stated plainly: `no-store` also stops the BROWSER storing responses,
+// so it will no longer send If-None-Match and our 304s go unused. That is a
+// bandwidth saving, not a speed one — instant paint comes from the
+// sessionStorage SWR layer in src/lib/agent-api.js, which is untouched. A
+// weaker `private, no-cache` would keep the 304s, but it relies on every
+// intermediary honouring `private` correctly. Trading data is not where we
+// spend a correctness budget to save a few kilobytes.
+// ---------------------------------------------------------------------------
+app.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+  res.setHeader('Vary', 'Authorization, Accept-Encoding')
+  next()
+});
+
+// ---------------------------------------------------------------------------
 // Auth middleware — skip for GET /health
 // ---------------------------------------------------------------------------
 
