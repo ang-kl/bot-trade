@@ -58,6 +58,11 @@ export const STRATEGY_KIND = {
   inv_cup_handle: 'trend',
   vwap_trend: 'trend',      // VWAP pullback in a trend — dies in quiet chop
   va_breakout: 'trend',     // value-area edge giving way — a whipsaw range kills the pullback hold
+  // A gap retrace is a CONTINUATION trade: the thesis is that the impulse
+  // resumes once the imbalance is repaired. In a dead market gaps form on
+  // noise and fill with no follow-through, which is exactly what 'trend'
+  // keeps it out of.
+  fvg_retrace: 'trend',
 }
 
 export function loadRegimeGateConfig(db) {
