@@ -53,10 +53,14 @@ export default function stateRouter(db) {
   // Now the FIRST miss for a URL computes; every concurrent request for the
   // same URL parks and is answered from that one result the moment it lands.
   const inflight = new Map() // originalUrl → [{ req, res }] parked waiters
-  const settleWaiters = (key, fn) => {
-    const waiters = inflight.get(key)
+  // `flight` identity-checks EVERY settle path (Codex review): an abandoned
+  // leader whose client disconnected mid-await can still reach res.json
+  // later, and without this check it would hand its stale result to a NEWER
+  // leader's waiters and strand that leader unable to coalesce its own.
+  const settleWaiters = (key, flight, fn) => {
+    if (inflight.get(key) !== flight) return
     inflight.delete(key)
-    if (waiters) for (const w of waiters) { try { fn(w) } catch { /* client gone */ } }
+    for (const w of flight) { try { fn(w) } catch { /* client gone */ } }
   }
   router.use((req, res, next) => {
     if (req.method !== 'GET' || NO_CACHE.has(req.path)) return next()
@@ -88,7 +92,7 @@ export default function stateRouter(db) {
         // Answer everyone who piled up behind this compute — errors too, at
         // the same status, so a failing route fails fast for all callers
         // instead of each retrying the same broken compute serially.
-        settleWaiters(key, (w) => {
+        settleWaiters(key, myFlight, (w) => {
           w.res.status(status)
           w.res.setHeader('etag', etag)
           w.res.setHeader('x-cache', 'coalesced')
@@ -100,7 +104,7 @@ export default function stateRouter(db) {
         if (req.headers['if-none-match'] === etag) return res.status(304).end()
         return res.type('application/json').send(body)
       } catch {
-        settleWaiters(key, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
+        settleWaiters(key, myFlight, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
         return origJson(obj)
       }
     }
@@ -108,9 +112,7 @@ export default function stateRouter(db) {
     // abort): release any parked waiters with a fast retryable answer rather
     // than leaving them to hang into their own 45s timeouts.
     res.on('close', () => {
-      // Identity check: only flush waiters that piled up behind THIS leader —
-      // a later request may have already claimed the key as the new leader.
-      if (inflight.get(key) === myFlight) settleWaiters(key, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
+      settleWaiters(key, myFlight, (w) => w.res.status(503).json({ error: 'busy — retry shortly' }))
     })
     next()
   })
