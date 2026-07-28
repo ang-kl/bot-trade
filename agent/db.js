@@ -766,6 +766,23 @@ export function initDB(dbPath) {
   for (const [col, type] of [["result", "TEXT"], ["lesson", "TEXT"], ["alpha_decay", "TEXT"], ["entry_quality", "TEXT"]]) {
     if (!pmColNames.has(col)) db.exec(`ALTER TABLE trade_postmortems ADD COLUMN ${col} ${type}`);
   }
+  // Daily ATR history — the 252-day baseline the vol-gate percentile is
+  // measured against (spec §2). One row per symbol per day, so a refresh is
+  // idempotent and a backfill can fill gaps without duplicating. Kept in its
+  // own table rather than on `regimes` because regimes is written every scan
+  // (many rows per symbol per day) and this is deliberately once-daily.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS atr_history (
+      symbol      TEXT NOT NULL,
+      day         TEXT NOT NULL,        -- YYYY-MM-DD, the bar's UTC day
+      atr         REAL NOT NULL,
+      close       REAL,
+      computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (symbol, day)
+    );
+    CREATE INDEX IF NOT EXISTS idx_atr_history_symbol_day ON atr_history(symbol, day DESC);
+  `);
+
   // ------------------------------------------------------------------
   // VOL-GATE (docs/volatility-gate-integration-spec.md), 2026-07-29.
   //
