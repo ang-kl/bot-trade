@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { Router } from 'express'
-import { getState, setState, sweepMonitoredPositionsForAccount, sweepMonitoredPositionsForAccounts } from '../db.js'
+import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpenPositions } from '../db.js'
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
@@ -3169,20 +3169,45 @@ export default function actionsRouter(db) {
       const clientId = ctraderEnv('clientId')
       const clientSecret = ctraderEnv('clientSecret')
 
-      // On a genuine account change, close local monitor rows from the old
-      // account so they stop gating risk checks immediately — the reconciler
-      // would only catch them on its next pass against the new account.
+      // Account switch keeps managing what it leaves behind (owner
+      // 2026-07-28: "switching away from an account with open positions ...
+      // should be okay, don't have to warn"). It is okay precisely BECAUSE
+      // of this block — without it, switching was an abandonment: the old
+      // account's monitor rows were closed outright, so trailing stops, the
+      // per-position loss cap, the profit ratchet and time caps all stopped
+      // for positions still open at the broker, leaving only whatever SL/TP
+      // the broker happened to hold.
+      //
+      // The original justification for the wholesale sweep — "they gate risk
+      // checks for the new account" — is obsolete: both open-position
+      // queries in the risk gate filter on account_id (services/risk.js:357,
+      // :757), so another account's positions no longer count against this
+      // one. Unattributable NULL rows DO still leak (those same queries
+      // accept `account_id IS NULL`), so they are still swept.
       const previousAccountId = getState(db, 'ctrader_account_id')
+      const retained = accountsWithOpenPositions(db).filter(id => id !== String(accountId))
       if (previousAccountId && String(previousAccountId) !== String(accountId)) {
-        const swept = sweepMonitoredPositionsForAccount(db, accountId)
+        // Keep = the new account + every account still holding positions.
+        // Everything else (including NULL rows) is genuinely stale.
+        const swept = sweepMonitoredPositionsForAccounts(db, [String(accountId), ...retained])
         if (swept > 0) {
-          console.log(`[actions] account switch ${previousAccountId} → ${accountId}: swept ${swept} stale monitored position(s)`)
+          console.log(`[actions] account switch ${previousAccountId} → ${accountId}: swept ${swept} unattributable/stale monitored position(s)`)
+        }
+        if (retained.length) {
+          console.log(`[actions] account switch: still managing ${retained.length} account(s) with open positions — ${retained.join(', ')} (manage_only: no new entries, protection stays on)`)
         }
       }
 
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
-      setState(db, 'ctrader_account_roles_json', JSON.stringify([{ accountId, isLive: !!isLive, autopilot: true }]))
+      // Retained accounts ride in the roster with autopilot:false —
+      // getAutopilotAccounts (loop.js:186) filters on that flag, so they are
+      // never dispatched a new entry, but they stay visible to the reconcile
+      // and sidecar paths that keep their stops honest.
+      setState(db, 'ctrader_account_roles_json', JSON.stringify([
+        { accountId, isLive: !!isLive, autopilot: true },
+        ...retained.map(id => ({ accountId: id, isLive: !!isLive, autopilot: false })),
+      ]))
       // The human-facing account number (traderLogin, e.g. 5306502) — the
       // ctidTraderAccountId above is cTrader's internal id and confused the
       // owner when the health strip showed it. Stored best-effort at select
@@ -3201,7 +3226,7 @@ export default function actionsRouter(db) {
       // sources always agree.
       try {
         const { syncSelectedAccount } = await import('../services/account-registry.js')
-        syncSelectedAccount(db, accountId, !!isLive, traderLogin)
+        syncSelectedAccount(db, accountId, !!isLive, traderLogin, { retainAccountIds: retained })
       } catch (e) { console.warn('[actions/ctrader-select-account] registry sync failed (non-fatal):', e.message) }
 
       const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'

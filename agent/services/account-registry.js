@@ -88,13 +88,31 @@ export function upsertAccount(db, { accountId, traderLogin = null, brokerLabel =
  * /actions/ctrader-select-account already does to the legacy state keys.
  * Creates the row if the id is new.
  */
-export function syncSelectedAccount(db, accountId, isLive, traderLogin = null) {
+export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, { retainAccountIds = [] } = {}) {
   if (accountId == null) return
   upsertAccount(db, { accountId, traderLogin, isLive })
-  db.prepare(`UPDATE accounts SET enabled = 0, mode = 'manage_only', updated_at = ? WHERE enabled = 1 AND account_id != ?`)
-    .run(now(), String(accountId))
+  // Accounts named in `retainAccountIds` keep enabled = 1 but drop to
+  // mode = 'manage_only' (owner 2026-07-28). That combination is exactly
+  // "look after what is open, start nothing new": `enabled` is what keeps a
+  // row in getEnabledAccounts — and so in the reconcile sweep and the
+  // sidecar roster — while `mode !== 'active'` removes it from
+  // registryAutopilotAccounts, so it is never dispatched a new entry.
+  //
+  // Disabling it instead (the old behaviour) dropped it from the reconciler
+  // entirely, which is how switching accounts silently stopped managing
+  // positions that were still open at the broker.
+  const retain = new Set((retainAccountIds || []).map(String).filter(id => id !== String(accountId)))
+  const stamp = now()
+  for (const id of retain) {
+    db.prepare(`UPDATE accounts SET enabled = 1, mode = 'manage_only', updated_at = ? WHERE account_id = ?`)
+      .run(stamp, id)
+  }
+  const keep = [String(accountId), ...retain]
+  const placeholders = keep.map(() => '?').join(', ')
+  db.prepare(`UPDATE accounts SET enabled = 0, mode = 'manage_only', updated_at = ? WHERE enabled = 1 AND account_id NOT IN (${placeholders})`)
+    .run(stamp, ...keep)
   db.prepare(`UPDATE accounts SET enabled = 1, mode = 'active', is_live = ?, updated_at = ? WHERE account_id = ?`)
-    .run(isLive ? 1 : 0, now(), String(accountId))
+    .run(isLive ? 1 : 0, stamp, String(accountId))
 }
 
 /**
