@@ -8,6 +8,7 @@ import { initDB, getState, setState } from './db.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
+import { historicalRateStatus } from './lib/ctrader-ws.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -331,6 +332,11 @@ app.get('/health', (_req, res) => {
     loopPhase: getState(db, 'loop_phase') || 'idle',
     loopStartedAt: getState(db, 'loop_started_at') || null,
     watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
+    // Broker pacing (incident 2026-07-28): historical requests (trendbars,
+    // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
+    // non-zero `queued` here means work is waiting on the limiter — the
+    // honest reading of "the broker is the bottleneck right now".
+    historicalRate: historicalRateStatus(),
     dbSize,
     dbSizeMB: dbSize == null ? null : Math.round((dbSize / 1048576) * 100) / 100,
     dbPath: resolvedPath,

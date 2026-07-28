@@ -278,11 +278,40 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   // pnl-watch / watchdog / cpp-probe traffic.
   const tickMs = deps.tickMs ?? Math.max(1_000, Number(process.env.FAST_MONITOR_MS) || 3_000)
   const everyTicks = (secs) => Math.max(1, Math.round((secs * 1000) / tickMs))
+  // WHOLE-TICK overlap guard (incident 2026-07-28: the site became
+  // unreachable while the loop itself was healthy). setInterval does not
+  // await an async callback, and only runFastMonitor was guarded — every
+  // 3s the tick ALSO launched an unguarded session-open-guard pass, which
+  // walks open positions serially opening a NEW websocket (+ its own 9s
+  // heartbeat timer) per position with a 6s timeout each. With a dozen
+  // positions and a slow broker one pass outlives twenty ticks, so copies
+  // stacked into dozens of concurrent broker sockets — self-inflicted rate
+  // limiting, and enough synchronous SQLite interleaving to starve HTTP
+  // reads until even a 401 took 30s. One flag now covers the entire body:
+  // a pass that overruns skips ticks instead of multiplying them.
+  let tickRunning = false
+  let skipped = 0
   const t = setInterval(async () => {
     tick++
+    if (tickRunning) {
+      skipped++
+      // Still beat — a busy monitor is not a stalled one, and skipping the
+      // heartbeat would trip the watchdog's stall alert on our own backlog.
+      try {
+        const hb = deps.heartbeat ?? await import('./heartbeat.js')
+        hb.beat(db, 'fast_monitor', { ok: true, error: null, detail: { busy: true, skipped } })
+      } catch { /* heartbeat is best-effort */ }
+      if (skipped === 1 || skipped % 20 === 0) console.warn(`[fast-monitor] previous pass still running — skipped ${skipped} tick(s)`)
+      return
+    }
+    tickRunning = true
+    // ONE creds read per tick: this was called five times per tick, each
+    // doing several getState reads plus a JSON.parse of the symbol map.
+    const creds = getCreds(db)
+    try {
+    skipped = 0
     let tickErr = null
     try {
-      const creds = getCreds(db)
       await runFastMonitor(db, creds, deps)
     } catch (err) {
       tickErr = err
@@ -293,7 +322,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     // positions already in decent profit, since opens are where reversals
     // hit hardest (owner: XAUUSD +$218 → −$261 across a session open).
     try {
-      const creds = getCreds(db)
       if (creds?.ready) {
         const { runSessionOpenGuard } = await import('./session-open-guard.js')
         await runSessionOpenGuard(db, creds, {
@@ -308,7 +336,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     // trade crosses ±N% of balance (owner audit: nothing warned on drift).
     if (tick % everyTicks(60) === 0) {
       try {
-        const creds = getCreds(db)
         if (creds?.ready) {
           const { runPnlWatch } = await import('./pnl-watch.js')
           await runPnlWatch(db, creds)
@@ -320,7 +347,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // same 60s broker-truth cadence, but this one ACTS — closes a position
       // whose floating loss breached the $/% cap instead of only messaging.
       try {
-        const creds = getCreds(db)
         if (creds?.ready) {
           const { runLossCap } = await import('./loss-cap.js')
           const lc = await runLossCap(db, creds)
@@ -333,7 +359,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // floor rises with banked steps, equity touching the floor flattens
       // bot positions + disarms autotrade so gains stop being given back.
       try {
-        const creds = getCreds(db)
         if (creds?.ready) {
           const { runProfitRatchet } = await import('./profit-ratchet.js')
           const pr = await runProfitRatchet(db, creds)
@@ -354,6 +379,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       }
     } catch (err) {
       console.error('[fast-monitor] watchdog failed:', err.message)
+    }
+    } finally {
+      tickRunning = false
     }
   // Owner 2026-07-24: default tick 3s (was 30s) so profit-banking and stop
   // management react inside spike moves; FAST_MONITOR_MS overrides, floored
