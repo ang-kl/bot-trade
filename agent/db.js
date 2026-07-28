@@ -766,6 +766,62 @@ export function initDB(dbPath) {
   for (const [col, type] of [["result", "TEXT"], ["lesson", "TEXT"], ["alpha_decay", "TEXT"], ["entry_quality", "TEXT"]]) {
     if (!pmColNames.has(col)) db.exec(`ALTER TABLE trade_postmortems ADD COLUMN ${col} ${type}`);
   }
+  // ------------------------------------------------------------------
+  // VOL-GATE (docs/volatility-gate-integration-spec.md), 2026-07-29.
+  //
+  // The volatility context a trade was OPENED in is a property of that
+  // trade, so it lives on `trades` beside confluence_count — not in a
+  // side table that would need joining and could go missing. The
+  // postmortem carries it forward at close, exactly as it already does
+  // for confluence_count, so there is ONE writer per field and no second
+  // close handler.
+  //
+  // Every column is nullable and nothing writes them yet: the gate ships
+  // log-only, and until it runs these read NULL, which is the honest
+  // "we did not measure this trade" — not a zero that would look like a
+  // LOW-vol reading.
+  //
+  // The spec asked for `trade_outcome_vol_adjusted: WIN|LOSS|WHIPSAW`.
+  // Deliberately NOT added: trade_postmortems.classification already
+  // carries a richer, established vocabulary (stop_hunt | thesis_wrong |
+  // chop | time_cap | inconclusive | clean_win | gave_back), and
+  // classifyResult/classifyWin already populate it for wins and losses
+  // alike. A second outcome vocabulary for the same event would be the
+  // same disease as a second volatility classifier — two answers, no
+  // owner. Bucket the existing classification by entry_vol_regime instead.
+  const tColsVol = new Set(db.prepare("PRAGMA table_info(trades)").all().map(c => c.name));
+  for (const [col, type] of [
+    ['entry_vol_regime',            'TEXT'],     // LOW | NORMAL | HIGH
+    ['entry_vol_percentile',        'REAL'],     // 0-100 within the 252d ATR history
+    ['entry_vol_insufficient',      'INTEGER'],  // 1 = under 252d of history, treated as NORMAL
+    ['position_size_ratio_applied', 'REAL'],
+    ['stop_loss_expanded_pips',     'REAL'],
+    ['confirmation_candles_required', 'INTEGER'],
+    ['vol_volume_divergence_flag',  'INTEGER'],  // HIGH vol on thin participation
+    ['fvg_origin_vol_regime',       'TEXT'],
+    ['fvg_fill_target_pct',         'INTEGER'],
+    ['confluence_tool_count',       'INTEGER'],
+    ['confluence_conflict_flagged', 'INTEGER'],
+    ['vol_gate_mode',               'TEXT'],     // 'log_only' | 'live' — which mode produced the row
+  ]) {
+    if (!tColsVol.has(col)) db.exec(`ALTER TABLE trades ADD COLUMN ${col} ${type}`);
+  }
+  // Mirrored onto the postmortem so a lesson row is self-contained — the
+  // lessons tuner reads postmortems, not trades.
+  const pmColsVol = new Set(db.prepare("PRAGMA table_info(trade_postmortems)").all().map(c => c.name));
+  for (const [col, type] of [
+    ['entry_vol_regime',            'TEXT'],
+    ['entry_vol_percentile',        'REAL'],
+    ['position_size_ratio_applied', 'REAL'],
+    ['stop_loss_expanded_pips',     'REAL'],
+    ['vol_volume_divergence_flag',  'INTEGER'],
+    ['confluence_tool_count',       'INTEGER'],
+    ['confluence_conflict_flagged', 'INTEGER'],
+    ['vol_gate_mode',               'TEXT'],
+  ]) {
+    if (!pmColsVol.has(col)) db.exec(`ALTER TABLE trade_postmortems ADD COLUMN ${col} ${type}`);
+  }
+
   const tCols2 = db.prepare("PRAGMA table_info(trades)").all();
   if (!new Set(tCols2.map(c => c.name)).has("confluence_count")) {
     db.exec("ALTER TABLE trades ADD COLUMN confluence_count INTEGER");
