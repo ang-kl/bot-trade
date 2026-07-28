@@ -12,7 +12,7 @@
 // nav, hit targets ≥44px) below lg. Theme is the app-wide system-default
 // toggle — mobile follows the system exactly as the design asks.
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1105,6 +1105,30 @@ export default function Performance() {
       setError('')
     } catch (e) { setError(e.message) }
   }, [acct])
+
+  // Instant paint (owner 2026-07-28: "not able to see the information now
+  // is frustrating") — hydrate every section synchronously from the last
+  // cached responses BEFORE the first network round-trip; the fresh data
+  // then updates in place. A revisit or slow agent shows numbers
+  // immediately instead of a blank page.
+  useEffect(() => {
+    const led = swrPeek(`/state/perf-ledger${acct !== 'all' ? `?account=${encodeURIComponent(acct)}` : ''}`)
+    if (led) setLedger(led)
+    const ac = swrPeek('/state/accounts')
+    if (ac) { setAccounts(ac.accounts || []); setSelectedAccountId(ac.selectedAccountId || null) }
+    const t2 = swrPeek('/state/trades')
+    if (t2) setAllTrades(t2.rows || t2.trades || [])
+    const r2 = swrPeek('/state/risk-events?limit=200')
+    if (r2) setEvents(r2.rows || [])
+    const p2 = swrPeek('/state/positions')
+    if (p2) setPositions(p2.rows || p2.positions || [])
+    const pm2 = swrPeek('/state/postmortems?limit=200')
+    if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
+    const rf2 = swrPeek('/state/risk-full')
+    if (rf2) setRiskFull(rf2)
+    if (led || t2) setLoadedAt(Date.now())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const kick = setTimeout(load, 0)
