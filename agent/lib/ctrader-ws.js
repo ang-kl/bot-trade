@@ -26,48 +26,12 @@
 import WebSocket from 'ws'
 import { parseTimeframe, fetchPlan, aggregateBars } from './timeframes.js'
 
-// Payload type constants — from github.com/spotware/openapi-proto-messages
-export const PT = Object.freeze({
-  HEARTBEAT:               51,
-  APP_AUTH_REQ:            2100,
-  APP_AUTH_RES:            2101,
-  ACCOUNT_AUTH_REQ:        2102,
-  ACCOUNT_AUTH_RES:        2103,
-  NEW_ORDER_REQ:           2106,
-  CANCEL_ORDER_REQ:        2108,
-  AMEND_POSITION_SLTP_REQ: 2110,
-  CLOSE_POSITION_REQ:      2111,
-  ASSET_LIST_REQ:          2112,
-  ASSET_LIST_RES:          2113,
-  SYMBOLS_LIST_REQ:        2114,
-  SYMBOLS_LIST_RES:        2115,
-  SYMBOL_BY_ID_REQ:        2116,
-  SYMBOL_BY_ID_RES:        2117,
-  TRADER_REQ:              2121,
-  TRADER_RES:              2122,
-  ASSET_CLASS_LIST_REQ:    2153,
-  ASSET_CLASS_LIST_RES:    2154,
-  SYMBOL_CATEGORY_REQ:     2160,
-  SYMBOL_CATEGORY_RES:     2161,
-  GET_ACCOUNTS_BY_TOKEN_REQ: 2149,
-  GET_ACCOUNTS_BY_TOKEN_RES: 2150,
-  RECONCILE_REQ:           2124,
-  RECONCILE_RES:           2125,
-  EXECUTION_EVENT:         2126,
-  SUBSCRIBE_SPOTS_REQ:     2127,
-  SUBSCRIBE_SPOTS_RES:     2128,
-  UNSUBSCRIBE_SPOTS_REQ:   2129,
-  UNSUBSCRIBE_SPOTS_RES:   2130,
-  SPOT_EVENT:              2131,
-  ORDER_ERROR_EVENT:       2132,
-  DEAL_LIST_REQ:           2133,
-  DEAL_LIST_RES:           2134,
-  GET_TRENDBARS_REQ:       2137,
-  GET_TRENDBARS_RES:       2138,
-  ERROR_RES:               2142,
-  GET_POSITION_UNREALIZED_PNL_REQ: 2187,
-  GET_POSITION_UNREALIZED_PNL_RES: 2188,
-})
+// Payload-type constants live in their own module so ctrader-session.js can
+// share them without an import cycle. Re-exported here so existing importers
+// are unaffected.
+export { PT } from './ctrader-payload-types.js'
+import { PT } from './ctrader-payload-types.js'
+import { poolEnabled, pooledRun, poolStatus } from './ctrader-session.js'
 
 // ProtoOATrendbarPeriod enum codes + bar durations, one table so a period
 // can never exist in one map but not the other (a missing duration would
@@ -187,10 +151,27 @@ const takeHistoricalToken = () => histBucket.take()
 
 /** Observability: current limiter pressure, surfaced on /health. */
 export function historicalRateStatus() {
-  return histBucket.status()
+  return { ...histBucket.status(), pool: poolEnabled() ? poolStatus() : null }
 }
 
 function wsRun(host, steps, timeoutMs = 20_000, collectAll = false) {
+  // POOLED PATH (2026-07-28, CTRADER_WS_POOL=1). Every helper below builds its
+  // steps as [APP_AUTH_REQ, ACCOUNT_AUTH_REQ, ...the actual request], so the
+  // auth prefix is peeled off here and satisfied once per socket instead of
+  // once per call — ~1.8s of measured fixed cost, plus the connect/auth
+  // failures that cost production 46 scans on 2026-07-28.
+  //
+  // Peeled here rather than at the 19 call sites so no helper can be missed,
+  // and so a helper that does NOT start with the auth pair (there are none
+  // today) silently keeps the legacy path instead of losing its auth.
+  if (poolEnabled() && steps.length > 2 &&
+      steps[0]?.send?.payloadType === PT.APP_AUTH_REQ &&
+      steps[1]?.send?.payloadType === PT.ACCOUNT_AUTH_REQ) {
+    return pooledRun(host, steps[0].send.payload, steps[1].send.payload, steps.slice(2), timeoutMs, collectAll, {
+      takeHistoricalToken,
+      isHistorical: (t) => HISTORICAL_PAYLOADS.has(t),
+    })
+  }
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`wss://${host}:5036`)
     let hb, timer, stepIdx = 0
