@@ -698,3 +698,21 @@ button, a, [role="button"], summary {
 .std-cols td:not(:last-child) {
   border-right: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
 }
+
+/* Owner (2026-07-28): "all field input in all pages should be 1px increase
+   only font size as the row and not bigger than that." Inputs inherit the
+   surrounding row's size plus exactly 1px — the !important is deliberate:
+   it overrides scattered per-page text-[..px] utilities so no field can
+   drift bigger than its row again. Checkbox/radio/range have no text. */
+input:not([type='checkbox']):not([type='radio']):not([type='range']),
+select,
+textarea {
+  font-size: calc(1em + 1px) !important;
+}
+
+/* Owner (2026-07-28): "1px curved corner pill and not a oval shape pill."
+   Component classes were converted (rounded-full → rounded-[1px] on text
+   pills); this backstop catches any padded pill that still slips through
+   with a full radius. Dot indicators (no horizontal padding) keep their
+   circles. */
+.pill-1px { border-radius: 1px !important; }

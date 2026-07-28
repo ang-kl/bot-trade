@@ -10,7 +10,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
-import { agentGet, agentPost, agentConfigured, pageHidden } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
@@ -978,7 +978,7 @@ export default function Tune() {
   useEffect(() => {
     if (!agentConfigured()) return undefined
     const t = setInterval(async () => {
-      if (pageHidden()) return // background tab — skip the sync poll
+      if (pageAsleep()) return // background/idle tab — skip the sync poll
       try {
         const c = await agentGet('/state/config')
         setConfig(prev => prev ? {
@@ -1425,7 +1425,7 @@ export default function Tune() {
                       setConfig(c => ({ ...c, autopilot_mode: m }))
                     }, `Autopilot: ${m}`)
                   }}
-                  className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
                 >{m}</button>
               ))}
               <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -1594,7 +1594,7 @@ export default function Tune() {
                 <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[9px]">Set</Button>
               </form>
               {Object.entries(config?.monitor_overrides || {}).map(([sym, m]) => (
-                <span key={sym} className="glass-inset rounded-full px-2 py-0.5 inline-flex items-center gap-1.5 font-semibold">
+                <span key={sym} className="glass-inset rounded-[1px] px-2 py-0.5 inline-flex items-center gap-1.5 font-semibold">
                   {sym} {m}m
                   <button
                     type="button" aria-label={`Clear ${sym} override`}
@@ -1753,7 +1753,7 @@ export default function Tune() {
                       {['adaptive', 'fixed'].map(m => (
                         <button key={m} type="button" role="radio" aria-checked={keeper.mode === m}
                           onClick={() => post({ mode: m }, `Profit Keeper mode: ${m}`)}
-                          className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{m}</button>
                       ))}
                     </span>
@@ -1774,7 +1774,7 @@ export default function Tune() {
                       {['external', 'all'].map(sc => (
                         <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
                           onClick={() => post({ scope: sc }, `Profit Keeper scope: ${sc}`)}
-                          className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{sc === 'external' ? 'manual only' : 'all positions'}</button>
                       ))}
                     </span>
@@ -2530,7 +2530,7 @@ export default function Tune() {
                           // stale tick can't ride along with another strategy
                           if (val !== 'fib_618_fade') setBtTouchFill(false)
                         }}
-                        className={`rounded-full px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                        className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     ))}
                   </span>

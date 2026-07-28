@@ -520,7 +520,9 @@ export default function stateRouter(db) {
       const { registerClientPing } = await import('../services/client-presence.js')
       res.json(registerClientPing({
         tab: req.query.tab, tz: req.query.tz, page: req.query.page,
-        hidden: req.query.hidden, ua: req.headers['user-agent'],
+        hidden: req.query.hidden, idle: req.query.idle, closed: req.query.closed,
+        ua: req.headers['user-agent'],
+        ip: String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim(),
       }))
     } catch (err) {
       res.status(500).json({ error: err.message })

@@ -1,43 +1,91 @@
 // ---------------------------------------------------------------------------
 // agent/services/client-presence.js — who has the dashboard open right now
 // (owner, 2026-07-28: "Can you monitor the number of website open ... and
-// timezone? I don't think I need to open more than 6 at the same time.
-// More website open means more queries right?").
+// timezone?" then "in the left navigation at the bottom ... how many tabs
+// are opened and when open/last used ... is closed also stated there and
+// when closed ... and which country IP address").
 //
-// Yes: every open tab is an independent polling client (Desk 5-20s, page
-// timers, health pings), so N tabs = N× the query load on the agent. This
-// module is the visibility half of the fix — each tab heartbeats every
-// ~30s (a single tiny GET, sent even when the tab is hidden so the count
-// stays honest), and the roster is surfaced on /health and warned about on
-// Telegram when the VISIBLE tab count exceeds the threshold. The load half
-// is client-side: hidden tabs stop their heavy polls entirely.
+// Every open tab is an independent polling client, so N visible tabs = N×
+// the query load. Each tab heartbeats ~30s (a single tiny GET, sent even
+// when hidden/idle so the roster stays honest) and fires a keepalive
+// "closed" ping on pagehide. The roster keeps the full lifecycle per tab:
+// openedAt → lastSeenAt (+ visible/hidden/idle) → closedAt, plus the
+// request IP and a country derived from the reported IANA timezone
+// (Asia/Singapore → SG; Australia/Brisbane → AU — moving cities just
+// changes what the tab reports, nothing breaks).
 //
-// In-memory by design: a restart forgets the roster and tabs re-announce
-// within 30s. TTL 90s — three missed heartbeats and a tab is gone.
+// In-memory by design: a restart forgets the roster and live tabs
+// re-announce within 30s. Active TTL 90s (three missed heartbeats = shown
+// stale, then treated as closed); closed tabs are kept for 24h, max 20.
 // ---------------------------------------------------------------------------
 
-const tabs = new Map() // tabId → { tz, page, hidden, ua, at }
+const tabs = new Map() // tabId → { tz, page, hidden, idle, ua, ip, openedAt, at, closedAt }
 const TTL_MS = 90_000
+const CLOSED_KEEP_MS = 24 * 3600_000
+const CLOSED_KEEP_MAX = 20
 const WARN_THRESHOLD = Math.max(1, Number(process.env.CLIENT_TAB_WARN || 6))
 const WARN_EVERY_MS = 60 * 60_000
 let lastWarnAt = 0
 
-function prune(nowMs) {
-  for (const [k, v] of tabs) if (nowMs - v.at > TTL_MS) tabs.delete(k)
+// Country from the IANA timezone the tab reports. Continent zones map by
+// region where the region IS the country; the short list covers the rest of
+// the zones this desk realistically sees. Unknown → the raw tz is shown.
+const TZ_COUNTRY = {
+  'Asia/Singapore': 'SG', 'Asia/Kuala_Lumpur': 'MY', 'Asia/Jakarta': 'ID',
+  'Asia/Bangkok': 'TH', 'Asia/Hong_Kong': 'HK', 'Asia/Shanghai': 'CN',
+  'Asia/Tokyo': 'JP', 'Asia/Seoul': 'KR', 'Asia/Dubai': 'AE', 'Asia/Kolkata': 'IN',
+  'Europe/London': 'GB', 'Europe/Paris': 'FR', 'Europe/Berlin': 'DE', 'Europe/Zurich': 'CH',
+  'America/New_York': 'US', 'America/Chicago': 'US', 'America/Denver': 'US', 'America/Los_Angeles': 'US',
+}
+export function countryFromTz(tz) {
+  const t = String(tz || '')
+  if (TZ_COUNTRY[t]) return TZ_COUNTRY[t]
+  if (t.startsWith('Australia/')) return 'AU'
+  if (t.startsWith('Pacific/Auckland')) return 'NZ'
+  if (t.startsWith('America/')) return 'Americas'
+  if (t.startsWith('Europe/')) return 'Europe'
+  if (t.startsWith('Africa/')) return 'Africa'
+  return t || 'unknown'
 }
 
-/** Register one heartbeat. Returns the post-registration summary. */
-export function registerClientPing({ tab, tz, page, hidden, ua } = {}, nowMs = Date.now()) {
+function sweep(nowMs) {
+  const closed = []
+  for (const [k, v] of tabs) {
+    if (v.closedAt) {
+      if (nowMs - v.closedAt > CLOSED_KEEP_MS) tabs.delete(k)
+      else closed.push([k, v])
+    } else if (nowMs - v.at > TTL_MS) {
+      // Missed three heartbeats without a close beacon (crashed tab, killed
+      // browser) — treat the last heartbeat as the close time.
+      v.closedAt = v.at
+      closed.push([k, v])
+    }
+  }
+  // Bound the closed history to the newest CLOSED_KEEP_MAX.
+  if (closed.length > CLOSED_KEEP_MAX) {
+    closed.sort((a, b) => b[1].closedAt - a[1].closedAt)
+    for (const [k] of closed.slice(CLOSED_KEEP_MAX)) tabs.delete(k)
+  }
+}
+
+/** Register one heartbeat (or a close beacon). Returns the live summary. */
+export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip } = {}, nowMs = Date.now()) {
   if (tab) {
-    tabs.set(String(tab).slice(0, 64), {
-      tz: String(tz || 'unknown').slice(0, 64),
-      page: String(page || '/').slice(0, 128),
+    const id = String(tab).slice(0, 64)
+    const prev = tabs.get(id)
+    tabs.set(id, {
+      tz: String(tz || prev?.tz || 'unknown').slice(0, 64),
+      page: String(page || prev?.page || '/').slice(0, 128),
       hidden: hidden === true || hidden === 'true' || hidden === '1',
-      ua: String(ua || '').slice(0, 120),
+      idle: idle === true || idle === 'true' || idle === '1',
+      ua: String(ua || prev?.ua || '').slice(0, 120),
+      ip: String(ip || prev?.ip || '').slice(0, 64),
+      openedAt: prev?.openedAt ?? nowMs,
       at: nowMs,
+      closedAt: (closed === true || closed === 'true' || closed === '1') ? nowMs : null,
     })
   }
-  prune(nowMs)
+  sweep(nowMs)
   const summary = clientSummary(nowMs)
   if (summary.visibleTabs > WARN_THRESHOLD && nowMs - lastWarnAt > WARN_EVERY_MS) {
     lastWarnAt = nowMs
@@ -50,18 +98,25 @@ export function registerClientPing({ tab, tz, page, hidden, ua } = {}, nowMs = D
   return summary
 }
 
-/** Current roster: counts, timezones, and per-tab detail (freshest first). */
+/** Roster: open tabs (freshest first) + recent closures + counts/timezones. */
 export function clientSummary(nowMs = Date.now()) {
-  prune(nowMs)
-  const list = [...tabs.values()].sort((a, b) => b.at - a.at)
+  sweep(nowMs)
+  const all = [...tabs.entries()].map(([id, t]) => ({ id, ...t }))
+  const open = all.filter(t => !t.closedAt).sort((a, b) => b.at - a.at)
+  const closed = all.filter(t => t.closedAt).sort((a, b) => b.closedAt - a.closedAt)
+  const shape = (t) => ({
+    id: t.id, tz: t.tz, country: countryFromTz(t.tz), ip: t.ip || null, page: t.page,
+    status: t.closedAt ? 'closed' : t.idle ? 'idle' : t.hidden ? 'background' : 'active',
+    openedAt: new Date(t.openedAt).toISOString(),
+    lastSeenAt: new Date(t.at).toISOString(),
+    closedAt: t.closedAt ? new Date(t.closedAt).toISOString() : null,
+  })
   return {
-    openTabs: list.length,
-    visibleTabs: list.filter(t => !t.hidden).length,
+    openTabs: open.length,
+    visibleTabs: open.filter(t => !t.hidden && !t.idle).length,
     warnThreshold: WARN_THRESHOLD,
-    timezones: [...new Set(list.map(t => t.tz))],
-    tabs: list.map(t => ({
-      tz: t.tz, page: t.page, hidden: t.hidden,
-      secondsAgo: Math.round((nowMs - t.at) / 1000),
-    })),
+    timezones: [...new Set(open.map(t => t.tz))],
+    tabs: open.map(shape),
+    recentlyClosed: closed.map(shape),
   }
 }

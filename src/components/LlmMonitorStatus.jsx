@@ -6,7 +6,7 @@
 // degraded (a few consecutive failures, not one blip), so it stays out
 // of the way the rest of the time.
 import { useEffect, useState } from 'react'
-import { agentGet, pageHidden } from '../lib/agent-api.js'
+import { agentGet, pageAsleep } from '../lib/agent-api.js'
 
 const POLL_MS = 60_000
 
@@ -21,7 +21,7 @@ export default function LlmMonitorStatus() {
         .catch(() => { /* best effort — absence is not itself alarming */ })
     }
     poll()
-    const t = setInterval(() => { if (!pageHidden()) poll() }, POLL_MS)
+    const t = setInterval(() => { if (!pageAsleep()) poll() }, POLL_MS)
     return () => { alive = false; clearInterval(t) }
   }, [])
 

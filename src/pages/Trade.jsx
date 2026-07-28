@@ -7,7 +7,7 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { Link } from 'react-router-dom'
-import { agentGet, agentPost, agentConfigured, pageHidden } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
@@ -377,7 +377,7 @@ export default function Trade() {
   const hasActivity = positions.length > 0 || liveOrders.length > 0
   useEffect(() => {
     load()
-    const id = setInterval(() => { if (!pageHidden()) load() }, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
+    const id = setInterval(() => { if (!pageAsleep()) load() }, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => clearInterval(id)
   }, [load, hasActivity])
 

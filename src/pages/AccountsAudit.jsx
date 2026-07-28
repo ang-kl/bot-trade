@@ -14,7 +14,7 @@ import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import WorkflowAudit from '../components/WorkflowAudit.jsx'
 import SymbolClusters from '../components/SymbolClusters.jsx'
-import { agentGet, agentConfigured, pageHidden } from '../lib/agent-api.js'
+import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 
 const REFRESH_MS = 60_000
 
@@ -63,7 +63,7 @@ export default function AccountsAudit() {
 
   useEffect(() => {
     const kick = setTimeout(load, 0)
-    const t = setInterval(() => { if (!pageHidden()) load() }, REFRESH_MS)
+    const t = setInterval(() => { if (!pageAsleep()) load() }, REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
 

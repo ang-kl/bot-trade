@@ -176,6 +176,33 @@ export const agentGet = (path) => request('GET', path)
 // ---------------------------------------------------------------------------
 export const pageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
 
+// Idle tracking (owner 2026-07-28: sleep a tab after 5 minutes without
+// activity). A browser page CANNOT close a tab the user opened — window.close
+// is blocked by every browser — so "close" here means SLEEP: all polling
+// stops (same zero-load effect as closing) and the roster shows the tab as
+// idle. Any click/key/scroll wakes it instantly.
+// Sleep-after is a per-device session setting (owner: "can we set to 60
+// minutes or 4 hours if i want, there should be session setting") —
+// localStorage `tab_idle_minutes`, default 5, picked in the sidebar panel.
+export function getIdleMinutes() {
+  try {
+    const v = Number(localStorage.getItem('tab_idle_minutes'))
+    return Number.isFinite(v) && v > 0 ? v : 5
+  } catch { return 5 }
+}
+export function setIdleMinutes(min) {
+  try { localStorage.setItem('tab_idle_minutes', String(min)) } catch { /* private mode */ }
+}
+let lastActivityAt = Date.now()
+if (typeof window !== 'undefined') {
+  for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll']) {
+    window.addEventListener(ev, () => { lastActivityAt = Date.now() }, { passive: true, capture: true })
+  }
+}
+export const pageIdle = () => Date.now() - lastActivityAt > getIdleMinutes() * 60_000
+/** Polls should skip when the tab is hidden OR asleep. */
+export const pageAsleep = () => pageHidden() || pageIdle()
+
 function tabId() {
   try {
     let id = sessionStorage.getItem('tab_id')
@@ -186,12 +213,41 @@ function tabId() {
     return id
   } catch { return 'tab_unknown' }
 }
+export const myTabId = () => tabId()
 
-/** One presence heartbeat: tab id, timezone, page, visibility. */
-export function sendClientPing(page) {
+// The ping response is the live roster — cache it and let the sidebar
+// TabsPanel subscribe instead of issuing its own duplicate pings.
+let lastSummary = null
+const summaryListeners = new Set()
+export function onClientSummary(cb) {
+  summaryListeners.add(cb)
+  if (lastSummary) cb(lastSummary)
+  return () => summaryListeners.delete(cb)
+}
+
+/** One presence heartbeat: tab id, timezone, page, visibility, idle state. */
+export async function sendClientPing(page, { closed = false } = {}) {
   const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'unknown' } })()
-  const q = new URLSearchParams({ tab: tabId(), tz, page: page || '/', hidden: String(pageHidden()) })
-  return request('GET', `/state/client-ping?${q}`)
+  const q = new URLSearchParams({
+    tab: tabId(), tz, page: page || '/',
+    hidden: String(pageHidden()), idle: String(pageIdle()), closed: String(closed),
+  })
+  if (closed) {
+    // pagehide: a normal fetch is killed with the page — keepalive survives.
+    try {
+      const c = getAgentConn()
+      fetch(`${c.base}/state/client-ping?${q}`, { keepalive: true, headers: { Authorization: `Bearer ${c.secret}` } })
+    } catch { /* best-effort */ }
+    return null
+  }
+  const summary = await request('GET', `/state/client-ping?${q}`)
+  lastSummary = summary
+  for (const cb of summaryListeners) { try { cb(summary) } catch { /* listener's problem */ } }
+  return summary
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => { sendClientPing(window.location.pathname, { closed: true }) })
 }
 // POSTs are user-initiated actions (close, arm, save config…) — failures
 // surface as a global toast (sonner) so the click never fails silently,
