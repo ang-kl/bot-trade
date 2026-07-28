@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import gsap from 'gsap'
 import { cockpitFrame } from './cockpit-data.js'
+import { pageAsleep } from '../lib/agent-api.js'
 import { makeFs } from './typeScale.js'
 import './cockpit-tokens.css'
 
@@ -98,14 +99,19 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
       t = setTimeout(retry, 800)
       return () => clearTimeout(t)
     }
-    const t = setInterval(() => setTick(k => k + 1), 2200)
+    // Sleep guard (owner 2026-07-28, "is the cockpit popup a culprit"): this
+    // component makes no network calls, but it re-renders a large SVG panel
+    // every 2.2s forever — in a hidden or idle tab that is pure CPU and
+    // battery burn. Every other poller got this guard in the tab-presence
+    // work; this one was missed because it has no fetch to guard.
+    const t = setInterval(() => { if (!pageAsleep()) setTick(k => k + 1) }, 2200)
     return () => clearInterval(t)
   }, [marketClosed, feedBlocked])
 
   // Stale detection — DISABLED on a closed market ("closed is not broken").
   useEffect(() => {
     if (marketClosed || feedBlocked) { const id = setTimeout(() => setStaleFor(0), 0); return () => clearTimeout(id) }
-    const t = setInterval(() => setStaleFor(s => (window.__tcSimStale ? s + 1 : 0)), 1000)
+    const t = setInterval(() => { if (!pageAsleep()) setStaleFor(s => (window.__tcSimStale ? s + 1 : 0)) }, 1000)
     return () => clearInterval(t)
   }, [marketClosed, feedBlocked])
   const stale = staleFor > 5
