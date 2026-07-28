@@ -33,7 +33,11 @@ const trueRange = (bar, prevClose) => Math.max(
 )
 
 /** Simple mean true range over the last `period` bars (matches fib-strategy.atr). */
-function meanAtr(bars, period, endIdx = bars.length - 1) {
+// Exported (2026-07-29) so vol-gate.js can build its 252-day ATR history from
+// the SAME implementation this module classifies with. The alternative — a
+// second ATR in the gate — is how a system ends up with two volatility
+// opinions that disagree at 3am with no owner. See vol-gate.js's header.
+export function meanAtr(bars, period, endIdx = bars.length - 1) {
   const start = Math.max(1, endIdx - period + 1)
   let sum = 0
   let n = 0
