@@ -365,6 +365,14 @@ app.get('/health', (_req, res) => {
     // its stuck phase here instead of needing Railway log archaeology.
     loopPhase: getState(db, 'loop_phase') || 'idle',
     loopStartedAt: getState(db, 'loop_started_at') || null,
+    // Per-sub-phase ms from the last completed cycle, slowest first. Until
+    // 2026-07-28 loop_phase read 'monitoring N positions' for everything from
+    // the breakers through the retention DELETEs, so read-stall reports blamed
+    // the monitor phase for a window it barely occupies. This names the real
+    // owner of the time.
+    loopPhaseMs: (() => {
+      try { return JSON.parse(getState(db, 'loop_phase_ms_json') || 'null') } catch { return null }
+    })(),
     watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,
     // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
