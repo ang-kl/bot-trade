@@ -613,7 +613,14 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   })
 
   const results = []
+  let deadlineHit = false
   for (let i = 0; i < batch.length; i += SCAN_CONCURRENCY) {
+    // Scan deadline (incident 2026-07-28: under broker-side throttling each
+    // symbol's bar fetches ran ~29s, so even a 15-symbol batch ate 7+ minutes
+    // and starved /health + the monitor phase). Past the deadline the scan
+    // returns what it has — partial coverage this cycle beats a wedged loop;
+    // the rotation cursor still advances so coverage self-heals.
+    if (options.deadlineAt && Date.now() > options.deadlineAt) { deadlineHit = true; break }
     const chunk = batch.slice(i, i + SCAN_CONCURRENCY)
     const chunkResults = await Promise.all(chunk.map(async (w) => {
       const symbol = w.symbol
@@ -656,7 +663,8 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     scans,
     hot,
     warm,
-    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} of ${symbols.length} symbols this run (full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}.`,
+    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scans.length} of ${symbols.length} symbols this run (full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}${deadlineHit ? ' — scan DEADLINE hit, partial batch (broker calls running slow)' : ''}.`,
+    deadlineHit,
     usage: { output_tokens: 0 },
     signals,
     errors,

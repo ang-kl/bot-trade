@@ -1999,9 +1999,16 @@ async function runLoop(db) {
       prioritySpikeSymbols = takeScanPrioritySymbols(db)
     } catch { /* rotation proceeds unboosted */ }
     const scanT0 = Date.now()
+    // The scan gets at most HALF the cycle's soft deadline (incident
+    // 2026-07-28: broker throttling stretched each symbol to ~29s, the scan
+    // alone ran 7+ minutes, and /health starved — the owner couldn't load
+    // the site). Past its share the scan returns partial results and the
+    // cycle moves on; the rotation cursor keeps coverage honest over runs.
+    const scanDeadlineAt = start + Math.floor(CYCLE_SOFT_DEADLINE_MS / 2)
     const scanResult = ctraderCreds.ready
-      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols })
+      ? await runFibScan(ctraderCreds, symbolMap, symbols, { hotThreshold: 6, ...stageFilterOpts, strategies, armedStrategyKeys, extraTimeframes, matrix: scanMatrix, armedTfs: extraTimeframes.length ? extraTimeframes : null, cursor: scanCursor, prioritySymbols, prioritySpikeSymbols, deadlineAt: scanDeadlineAt })
       : { scans: [], hot: [], warm: [], desk_note: 'cTrader credentials not configured — scan skipped', usage: { output_tokens: 0 }, signals: {}, errors: [] }
+    if (scanResult.deadlineHit) log(`Scan hit its deadline (${Math.round((Date.now() - scanT0) / 1000)}s) — partial batch, broker calls running slow`)
     const scanMs = Date.now() - scanT0
     setState(db, 'last_scan_ms', String(scanMs))
     if (scanResult.next_cursor != null) setState(db, 'scan_cursor', String(scanResult.next_cursor))
