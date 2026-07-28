@@ -295,6 +295,13 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
     SELECT t.id, t.symbol, t.side, t.entry_price, t.exit_price, t.sl_price,
            t.net_pnl, t.close_reason, t.opened_at, t.closed_at, t.tp_price,
            t.confluence_count, t.account_id,
+           -- VOL-GATE entry context. This SELECT names columns explicitly
+           -- rather than using a star, so a column omitted here reads
+           -- undefined in JS and silently writes NULL to the postmortem
+           -- forever -- a failure indistinguishable from "the gate never ran".
+           t.entry_vol_regime, t.entry_vol_percentile, t.position_size_ratio_applied,
+           t.stop_loss_expanded_pips, t.vol_volume_divergence_flag,
+           t.confluence_tool_count, t.confluence_conflict_flagged, t.vol_gate_mode,
            COALESCE(t.label_strategy, t.strategy) AS strategy,
            t.label_timeframe AS timeframe,
            (SELECT initial_risk FROM monitored_positions WHERE trade_id = t.id ORDER BY id DESC LIMIT 1) AS initial_risk
@@ -378,8 +385,11 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       INSERT INTO trade_postmortems
         (trade_id, symbol, strategy, timeframe, side, entry_price, exit_price, sl_price,
          net_pnl, r_multiple, classification, detail, bars_json,
-         result, lesson, alpha_decay, entry_quality, account_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         result, lesson, alpha_decay, entry_quality, account_id,
+         entry_vol_regime, entry_vol_percentile, position_size_ratio_applied,
+         stop_loss_expanded_pips, vol_volume_divergence_flag,
+         confluence_tool_count, confluence_conflict_flagged, vol_gate_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       t.id, t.symbol, t.strategy || null, tf, t.side, t.entry_price, t.exit_price, t.sl_price,
       t.net_pnl, rMult, verdict.classification, verdict.detail,
@@ -388,6 +398,24 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
       // M1 lesson scoping (plan D5): the lesson inherits its TRADE's account
       // so demo lessons can never tune the live account once reads scope.
       t.account_id ?? null,
+      // VOL-GATE: the volatility context this trade was OPENED in, carried
+      // forward so a lesson row is self-contained — the lessons tuner reads
+      // postmortems, not trades. This is the whole point of the close hook
+      // the spec asked for, done in the handler that already exists rather
+      // than a second one: `runLossPostmortems` already runs on every closed
+      // trade, win or loss, and already computes the outcome vocabulary.
+      //
+      // NULL until the gate actually runs. That is the honest "not measured",
+      // and it is why every bucketed report must exclude nulls rather than
+      // fold them into NORMAL — a pre-gate trade is not a NORMAL-vol trade.
+      t.entry_vol_regime ?? null,
+      t.entry_vol_percentile ?? null,
+      t.position_size_ratio_applied ?? null,
+      t.stop_loss_expanded_pips ?? null,
+      t.vol_volume_divergence_flag ?? null,
+      t.confluence_tool_count ?? null,
+      t.confluence_conflict_flagged ?? null,
+      t.vol_gate_mode ?? null,
     )
     classified++
   }
