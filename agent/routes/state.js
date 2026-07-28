@@ -19,6 +19,7 @@ import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats } from '../services/loss-postmortem.js'
+import { readRecentErrors } from '../services/error-log.js'
 
 /**
  * Factory — returns a configured Express Router.
@@ -164,6 +165,9 @@ export default function stateRouter(db) {
       dailyTokensUsed: Number(getState(db, 'daily_tokens_used') || 0),
       dailyTokenBudget: 500000,
       lastError: lastError || null,
+      // The causes behind errorsToday — see services/error-log.js. Without
+      // this the counter is a number the owner cannot resolve to anything.
+      recentErrors: readRecentErrors(db),
       circuitBreaker: circuitBreaker || null,
       memoryMB: Math.round(memUsage.rss / 1048576),
       dbSizeMB: (() => { try { const { size } = require('fs').statSync(db.name); return Math.round(size / 1048576 * 10) / 10 } catch { return null } })(),
