@@ -193,7 +193,15 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          <div className="mt-auto">
+          {/* Owner 2026-07-28: "I still cannot see the active web setting,
+              can you make the setting card 10% spacing gap from the bottom."
+              mt-auto parked this block flush against the panel's bottom edge,
+              which sits at the viewport bottom — so the sleep-after row and
+              the theme button below it disappeared behind the OS taskbar and
+              browser chrome. 10vh (10% of the VIEWPORT height) is the gap;
+              a percentage padding would have resolved against the sidebar's
+              224px WIDTH, giving ~22px, which is not what was asked for. */}
+          <div className="mt-auto pb-[10vh]">
             <TabsPanel />
             <button
               type="button"
