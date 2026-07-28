@@ -23,7 +23,7 @@ import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
 import { useAutoAnimate } from '@formkit/auto-animate/react'
-import { MARKET_COLS, categorize as catOf, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../shared/formulas.js'
+import { MARKET_COLS, categorize as catOf, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
 
