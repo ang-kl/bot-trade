@@ -193,7 +193,15 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          <div className="mt-auto">
+          {/* Owner 2026-07-28: "I still cannot see the active web setting,
+              can you make the setting card 10% spacing gap from the bottom."
+              mt-auto parked this block flush against the panel's bottom edge,
+              which sits at the viewport bottom — so the sleep-after row and
+              the theme button below it disappeared behind the OS taskbar and
+              browser chrome. 10vh (10% of the VIEWPORT height) is the gap;
+              a percentage padding would have resolved against the sidebar's
+              224px WIDTH, giving ~22px, which is not what was asked for. */}
+          <div className="mt-auto pb-[10vh]">
             <TabsPanel />
             <button
               type="button"
@@ -265,6 +273,14 @@ export default function App() {
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
           </Suspense>
+          {/* Small screens have no sidebar, so the tab roster above is
+              lg-only — which made the click-to-expand detail unreachable on
+              exactly the touch devices it was built for (Codex review).
+              Mounted here at the end of the page content for < lg, where it
+              scrolls into reach instead of fighting the fixed footer. */}
+          <div className="lg:hidden mt-4">
+            <TabsPanel />
+          </div>
         </main>
         {/* Owner (2026-07-24): "I cannot see the footer in this HD notebook,
             dynamically adjust up the footer... allow there for both the
