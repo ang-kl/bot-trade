@@ -223,6 +223,40 @@ export default function actionsRouter(db) {
         if (strategy) all[strategy] = baseline
         setState(db, 'backtest_baselines_json', JSON.stringify(all))
       } catch { /* baseline is best-effort */ }
+      // Durable per-symbol history (owner 2026-07-28) — the HTML report dies
+      // with the container disk; these rows survive redeploys and power the
+      // watchlist page's backtest-history view. Errors are recorded too, so
+      // "this symbol keeps failing to fetch" is visible history, not silence.
+      try {
+        const ins = db.prepare(
+          `INSERT INTO backtest_runs (ran_at, strategy, entry_mode, bars, symbol, timeframe,
+             trades, losses, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        for (const [symName, data] of Object.entries(symbols)) {
+          if (data.error) { ins.run(payload.ranAt, strategy, entryMode, count, symName, '-', null, null, null, null, null, null, null, String(data.error).slice(0, 300)); continue }
+          for (const [tf, r] of Object.entries(data.results || {})) {
+            // profitFactor is NULL when grossLoss is 0 — the losses column
+            // (0 with trades > 0) is what lets the UI render that as ∞
+            // instead of a dash (Codex review).
+            if (r?.error) ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, null, null, null, null, null, null, null, String(r.error).slice(0, 300))
+            else ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, r.trades ?? 0, r.losses ?? null, r.winRatePct ?? null, Number.isFinite(r.profitFactor) ? r.profitFactor : null, r.totalProfitPct ?? null, r.wfPositive ?? null, r.wfActive ?? null, null)
+          }
+        }
+        db.prepare('DELETE FROM backtest_runs WHERE id NOT IN (SELECT id FROM backtest_runs ORDER BY id DESC LIMIT 2000)').run()
+      } catch (err) { console.error('[backtest] history write failed:', err.message) }
+      // Post-backtest watchdog pass (owner: "watchdog after backtest") — the
+      // same edge watchdog the loop runs, immediately, so a strategy whose
+      // LIVE results are clearly negative is disarmed the moment fresh
+      // backtest optimism might otherwise leave it armed. Verdict rides in
+      // the result payload for the UI to show.
+      try {
+        const { runEdgeWatchdog } = await import('../services/edge-watchdog.js')
+        const wd = runEdgeWatchdog(db, {})
+        payload.watchdog = { at: new Date().toISOString(), actions: wd.actions || [], evaluated: wd.evaluated || [], skipped: wd.skipped || null }
+      } catch (err) {
+        payload.watchdog = { error: err.message }
+      }
       return payload
       } // end runWork
 
@@ -3349,6 +3383,28 @@ export default function actionsRouter(db) {
           enabled: s.enabled !== false,
         }
       })
+      // Previously-watched record (owner 2026-07-28: a card of symbols that
+      // USED to be on the list, with one-tap re-add). Diff old vs new here —
+      // every watchlist write funnels through this route, so removals are
+      // caught regardless of which UI gesture caused them. Newest first,
+      // capped at 100; re-adding a symbol clears its entry.
+      try {
+        let prev = []
+        try { prev = JSON.parse(getState(db, 'autopilot_symbols_json') || '[]') || [] } catch { prev = [] }
+        const now = new Set(normalized.map(s => s.symbol))
+        const removed = prev
+          .map(s => (typeof s === 'string' ? { symbol: s } : s))
+          .filter(s => s.symbol && !now.has(String(s.symbol).toUpperCase().trim()))
+        if (removed.length || now.size) {
+          let hist = []
+          try { hist = JSON.parse(getState(db, 'watchlist_removed_json') || '[]') || [] } catch { hist = [] }
+          const at = new Date().toISOString()
+          const fresh = removed.map(s => ({ symbol: String(s.symbol).toUpperCase().trim(), group: s.group || null, removedAt: at }))
+          const seen = new Set(fresh.map(s => s.symbol))
+          const kept = hist.filter(h => !seen.has(h.symbol) && !now.has(h.symbol))
+          setState(db, 'watchlist_removed_json', JSON.stringify([...fresh, ...kept].slice(0, 100)))
+        }
+      } catch { /* history is best-effort — never blocks the save */ }
       setState(db, 'autopilot_symbols_json', JSON.stringify(normalized))
       console.log('[actions] Autopilot symbols updated:', normalized.map(w => w.symbol).join(', '))
       res.json({ ok: true, symbols: normalized })

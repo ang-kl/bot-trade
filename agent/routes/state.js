@@ -700,6 +700,40 @@ export default function stateRouter(db) {
     } catch (err) { res.status(500).json({ error: err.message }) }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/backtest-history?symbol=&limit= — durable per-symbol backtest
+  // record (backtest_runs table; survives redeploys, unlike the HTML
+  // reports). Rows newest first, plus a per-symbol rollup for the watchlist.
+  // -----------------------------------------------------------------------
+  router.get('/backtest-history', (req, res) => {
+    try {
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
+      const sym = String(req.query.symbol || '').toUpperCase().trim()
+      const rows = sym
+        ? db.prepare('SELECT * FROM backtest_runs WHERE symbol = ? ORDER BY id DESC LIMIT ?').all(sym, limit)
+        : db.prepare('SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?').all(limit)
+      const bySymbol = db.prepare(
+        `SELECT symbol, COUNT(*) AS rows, MAX(ran_at) AS lastRanAt,
+                SUM(COALESCE(trades, 0)) AS totalTrades,
+                SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
+           FROM backtest_runs GROUP BY symbol ORDER BY lastRanAt DESC`
+      ).all()
+      res.json({ rows, bySymbol })
+    } catch (err) { res.status(500).json({ error: err.message }) }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/watchlist-removed — symbols that used to be on the watchlist
+  // (recorded by POST /actions/symbols on every save), newest first.
+  // -----------------------------------------------------------------------
+  router.get('/watchlist-removed', (_req, res) => {
+    try {
+      let hist = []
+      try { hist = JSON.parse(getState(db, 'watchlist_removed_json') || '[]') || [] } catch { hist = [] }
+      res.json({ removed: hist })
+    } catch (err) { res.status(500).json({ error: err.message }) }
+  })
+
   // GET /state/trades — trade journal (last 100 closed)
   // -----------------------------------------------------------------------
   router.get('/trades', (_req, res) => {

@@ -417,6 +417,28 @@ const TABLES = `
   -- local row by position id when one exists, and read only by callers that
   -- ask for it. deal_id is the broker's own primary key, so re-importing an
   -- overlapping window is a no-op.
+  -- Durable backtest history (owner 2026-07-28: "backtest history per
+  -- symbol"). One row per symbol×timeframe per run — the HTML reports live
+  -- on ephemeral disk and vanish on redeploy, so this table is the record
+  -- the watchlist page reads. Pruned to the newest ~2000 rows on write.
+  CREATE TABLE IF NOT EXISTS backtest_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at           TEXT NOT NULL,
+    strategy         TEXT,
+    entry_mode       TEXT,
+    bars             INTEGER,
+    symbol           TEXT NOT NULL,
+    timeframe        TEXT NOT NULL,
+    trades           INTEGER,
+    losses           INTEGER,          -- 0 with trades > 0 = no losing trade (PF is ∞, stored NULL)
+    win_rate_pct     REAL,
+    profit_factor    REAL,
+    total_profit_pct REAL,
+    wf_positive      INTEGER,          -- walk-forward segments that ended positive
+    wf_active        INTEGER,          -- walk-forward segments with any trades
+    error            TEXT              -- per-symbol fetch/data failure, honestly kept
+  );
+
   CREATE TABLE IF NOT EXISTS broker_deals (
     deal_id          TEXT PRIMARY KEY,
     position_id      TEXT,
@@ -441,6 +463,8 @@ const TABLES = `
 `;
 
 const INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_backtest_runs_symbol   ON backtest_runs(symbol, ran_at);
+  CREATE INDEX IF NOT EXISTS idx_backtest_runs_at       ON backtest_runs(ran_at);
   CREATE INDEX IF NOT EXISTS idx_broker_deals_closed    ON broker_deals(closed_at);
   CREATE INDEX IF NOT EXISTS idx_broker_deals_sym_open   ON broker_deals(symbol, opened_at);
   CREATE INDEX IF NOT EXISTS idx_broker_deals_position   ON broker_deals(position_id);

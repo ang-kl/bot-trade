@@ -731,24 +731,28 @@ function sortBtRows(entries, { col, dir }) {
 // tickers are silently dropped and the chip shows the true count. Broker
 // naming varies for single equities (suffix conventions) — the counts make
 // gaps visible instead of failing silently.
+// `market` buckets the screener's group picker into sub-sections (owner
+// 2026-07-28: "stocks sub-tab by market") — one <optgroup> per market, so
+// the stock lists sit under their market instead of one flat list.
 const PRESET_GROUPS = [
-  { key: 'FX majors', names: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'] },
-  { key: 'FX minors (crosses)', names: ['EURGBP', 'EURJPY', 'EURCHF', 'EURAUD', 'EURCAD', 'EURNZD', 'GBPJPY', 'GBPCHF', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'AUDJPY', 'AUDCAD', 'AUDCHF', 'AUDNZD', 'CADJPY', 'CADCHF', 'CHFJPY', 'NZDJPY', 'NZDCAD', 'NZDCHF'] },
-  { key: 'Asian indices', names: ['JPN225', 'HK50', 'CN50', 'AUS200', 'SGP30', 'INDIA50', 'CHINAH', 'TWIX'] },
-  { key: 'European indices', names: ['GER40', 'UK100', 'FRA40', 'SPA35', 'EU50', 'EUSTX50', 'SWI20', 'NETH25', 'IT40'] },
-  { key: 'US indices', names: ['US30', 'US500', 'NAS100', 'US2000', 'VIX'] },
-  { key: 'Metals', names: ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD', 'COPPER'] },
-  { key: 'Energies', names: ['SPOTCRUDE', 'WTI', 'BRENT', 'NATGAS'] },
-  { key: 'Softs & agri', names: ['COCOA', 'COFFEE', 'SUGAR', 'COTTON', 'WHEAT', 'CORN', 'SOYBEAN'] },
-  { key: 'Crypto majors', names: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD'] },
-  { key: 'US mega-cap 10', names: ['AAPL.US', 'MSFT.US', 'NVDA.US', 'GOOGL.US', 'AMZN.US', 'META.US', 'TSLA.US', 'AVGO.US', 'LLY.US', 'JPM.US'] },
-  { key: 'FTSE 100 top 20', names: ['AZN.UK', 'SHEL.UK', 'HSBA.UK', 'ULVR.UK', 'BP.UK', 'GSK.UK', 'RIO.UK', 'DGE.UK', 'REL.UK', 'BATS.UK', 'AAL.UK', 'LSEG.UK', 'BARC.UK', 'NG.UK', 'VOD.UK', 'PRU.UK', 'LLOY.UK', 'TSCO.UK', 'CPG.UK', 'RR.UK'] },
+  { key: 'FX majors', market: 'Forex', names: ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'] },
+  { key: 'FX minors (crosses)', market: 'Forex', names: ['EURGBP', 'EURJPY', 'EURCHF', 'EURAUD', 'EURCAD', 'EURNZD', 'GBPJPY', 'GBPCHF', 'GBPAUD', 'GBPCAD', 'GBPNZD', 'AUDJPY', 'AUDCAD', 'AUDCHF', 'AUDNZD', 'CADJPY', 'CADCHF', 'CHFJPY', 'NZDJPY', 'NZDCAD', 'NZDCHF'] },
+  { key: 'Asian indices', market: 'Indices', names: ['JPN225', 'HK50', 'CN50', 'AUS200', 'SGP30', 'INDIA50', 'CHINAH', 'TWIX'] },
+  { key: 'European indices', market: 'Indices', names: ['GER40', 'UK100', 'FRA40', 'SPA35', 'EU50', 'EUSTX50', 'SWI20', 'NETH25', 'IT40'] },
+  { key: 'US indices', market: 'Indices', names: ['US30', 'US500', 'NAS100', 'US2000', 'VIX'] },
+  { key: 'Metals', market: 'Commodities', names: ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD', 'COPPER'] },
+  { key: 'Energies', market: 'Commodities', names: ['SPOTCRUDE', 'WTI', 'BRENT', 'NATGAS'] },
+  { key: 'Softs & agri', market: 'Commodities', names: ['COCOA', 'COFFEE', 'SUGAR', 'COTTON', 'WHEAT', 'CORN', 'SOYBEAN'] },
+  { key: 'Crypto majors', market: 'Crypto', names: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'BNBUSD', 'ADAUSD', 'LTCUSD', 'DOGEUSD'] },
+  { key: 'US mega-cap 10', market: 'Stocks — US', names: ['AAPL.US', 'MSFT.US', 'NVDA.US', 'GOOGL.US', 'AMZN.US', 'META.US', 'TSLA.US', 'AVGO.US', 'LLY.US', 'JPM.US'] },
+  { key: 'FTSE 100 top 20', market: 'Stocks — UK', names: ['AZN.UK', 'SHEL.UK', 'HSBA.UK', 'ULVR.UK', 'BP.UK', 'GSK.UK', 'RIO.UK', 'DGE.UK', 'REL.UK', 'BATS.UK', 'AAL.UK', 'LSEG.UK', 'BARC.UK', 'NG.UK', 'VOD.UK', 'PRU.UK', 'LLOY.UK', 'TSCO.UK', 'CPG.UK', 'RR.UK'] },
   // Owner-curated (no sector data exists anywhere in this app — see the
   // Defense screener note below): well-known, liquid US aerospace/defense
   // contractors. Same "intersect with what the broker actually offers"
   // handling as every other preset group.
-  { key: 'Defense stocks', names: ['LMT.US', 'RTX.US', 'NOC.US', 'GD.US', 'BA.US', 'LHX.US', 'HII.US', 'TXT.US', 'KTOS.US', 'LDOS.US', 'AVAV.US', 'BWXT.US', 'CW.US', 'HEI.US', 'TDY.US'] },
+  { key: 'Defense stocks', market: 'Stocks — US', names: ['LMT.US', 'RTX.US', 'NOC.US', 'GD.US', 'BA.US', 'LHX.US', 'HII.US', 'TXT.US', 'KTOS.US', 'LDOS.US', 'AVAV.US', 'BWXT.US', 'CW.US', 'HEI.US', 'TDY.US'] },
 ]
+const PRESET_MARKETS = [...new Set(PRESET_GROUPS.map(g => g.market))]
 
 // Owner spec (2026-07-22): shrink every genuine on/off control app-wide —
 // tiny bordered curved-square, background matched to the page (not a fixed
@@ -866,6 +870,17 @@ export default function Tune() {
   const [screenerChatOpen, setScreenerChatOpen] = useState(false)
   const [screenerAiSymbols, setScreenerAiSymbols] = useState(null)
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
+  const [wlRemoved, setWlRemoved] = useState(null)   // previously-watched symbols (server record)
+  const [wlSelected, setWlSelected] = useState(() => new Set()) // checkbox bulk-select in the watchlist table
+  // Screener sections collapse (owner 2026-07-28: triangle collapse — the
+  // two screeners took the whole first screen). Default CLOSED, per device.
+  const [screenerOpen, setScreenerOpen] = useState(() => { try { return localStorage.getItem('tune_screener_open') === 'true' } catch { return false } })
+  const [chScreenerOpen, setChScreenerOpen] = useState(() => { try { return localStorage.getItem('tune_ch_open') === 'true' } catch { return false } })
+  const flip = (setter, storageKey) => setter(v => { try { localStorage.setItem(storageKey, String(!v)) } catch { /* private mode */ } return !v })
+  // Durable backtest history (backtest_runs table) — loaded when opened.
+  const [btHistOpen, setBtHistOpen] = useState(false)
+  const [btHist, setBtHist] = useState(null)
+  const [btHistSym, setBtHistSym] = useState('')
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
   const [monOvDraft, setMonOvDraft] = useState({ symbol: '', minutes: '' }) // per-symbol monitor override editor
@@ -1017,7 +1032,18 @@ export default function Tune() {
     agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
     // Live per-symbol results — evidence beside the config (owner order).
     agentGet('/state/watchlist-stats').then(r => setWlStats(r || null)).catch(() => {})
+    // Previously-watched record — powers the re-add card.
+    agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
   }, [tab])
+
+  // Durable backtest history — (re)loaded when the section opens, the symbol
+  // filter changes, OR a run finishes while the section is open (bt?.ranAt
+  // changes when the job poll applies a completed run — Codex review).
+  useEffect(() => {
+    if (!btHistOpen || !agentConfigured()) return
+    const q = btHistSym.trim() ? `?symbol=${encodeURIComponent(btHistSym.trim().toUpperCase())}` : ''
+    agentGet(`/state/backtest-history${q}`).then(r => setBtHist(r || null)).catch(() => {})
+  }, [btHistOpen, btHistSym, bt?.ranAt])
 
   // Profit Keeper policy — loaded once; updates flow through the POST replies.
   useEffect(() => {
@@ -1106,7 +1132,12 @@ export default function Tune() {
   const btSymbols = enabledSymbols.filter(s => !btSkip.has(s))
 
   const pushSymbols = (next) =>
-    run(() => agentPost('/actions/symbols', { symbols: next }), 'Watchlist saved')
+    run(async () => {
+      await agentPost('/actions/symbols', { symbols: next })
+      // The save may have RECORDED removals — refresh the Previously-watched
+      // card in place, or it stays stale until a tab switch (Codex review).
+      agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
+    }, 'Watchlist saved')
 
   const addSymbol = () => {
     const sym = newSymbol.toUpperCase().trim()
@@ -1952,6 +1983,77 @@ export default function Tune() {
               <p className="text-[9px] text-[var(--color-warning-text)] mb-2">No instrument matching “{q}” on this broker account.</p>
             )}
 
+            {/* Watchlist insight — one honest glance: composition, live
+                results, and the volatility outliers (owner: "insight card").
+                Every number comes from data already on this page; nothing
+                is fetched twice. */}
+            {symbols.length > 0 && (() => {
+              const enabled = symbols.filter(s => s.enabled !== false)
+              // Both stats endpoints keep HISTORY for symbols no longer on the
+              // list — filter to the CURRENT watchlist or removed instruments
+              // leak into the totals and movers (Codex review).
+              const onList = new Set(symbols.map(s => String(s.symbol).toUpperCase()))
+              const stats = Object.entries(wlStats?.by || {}).filter(([sym]) => onList.has(sym.toUpperCase()))
+              const withNet = stats.map(([sym, st]) => ({ sym, ...st }))
+              const totalNet = withNet.reduce((n, s) => n + (Number(s.net) || 0), 0)
+              const losers = withNet.filter(s => s.loser)
+              const best = withNet.filter(s => s.n > 0).sort((a, b) => b.net - a.net)[0]
+              const worst = withNet.filter(s => s.n > 0).sort((a, b) => a.net - b.net)[0]
+              const hotMovers = Object.entries(regimeBy || {})
+                .filter(([sym]) => onList.has(sym.toUpperCase()))
+                .map(([sym, r]) => ({ sym, atr: Number(r?.atr_pct) }))
+                .filter(m => Number.isFinite(m.atr))
+                .sort((a, b) => b.atr - a.atr).slice(0, 3)
+              const scannedCount = Object.keys(scanInfo?.by || {}).length
+              return (
+                <div className="glass-inset rounded-[1px] p-2 mb-3 text-[9px]">
+                  <div className="font-semibold mb-1">Watchlist insight</div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-1">
+                    <span><span className="text-[var(--color-text-sub)]">Coverage: </span>{symbols.length} symbols · {enabled.length} enabled · {groupOf.size} group{groupOf.size === 1 ? '' : 's'} · {scannedCount} scanned last cycle</span>
+                    <span><span className="text-[var(--color-text-sub)]">Live results: </span>
+                      <span className={`font-semibold ${totalNet >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{totalNet >= 0 ? '+' : ''}{totalNet.toFixed(2)}</span> net
+                      {best && <> · best {best.sym} {best.net >= 0 ? '+' : ''}{best.net}</>}
+                      {worst && worst.sym !== best?.sym && <> · worst {worst.sym} {worst.net}</>}
+                    </span>
+                    {losers.length > 0 && (
+                      <span className="text-[var(--color-down)] font-semibold" title={losers.map(l => `${l.sym} ${l.net}`).join(' · ')}>
+                        {losers.length} LOSER{losers.length === 1 ? '' : 'S'} (net negative with enough sample): {losers.map(l => l.sym).join(', ')} — consider disabling
+                      </span>
+                    )}
+                    {hotMovers.length > 0 && (
+                      <span><span className="text-[var(--color-text-sub)]">Most volatile now: </span>{hotMovers.map(m => `${m.sym} ${m.atr.toFixed(2)}%`).join(' · ')}</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+
+            {/* Previously watched — removed symbols with one-tap re-add
+                (owner: "free-text re-add + previously-watched card"). The
+                record is server-side (survives devices); re-adding or
+                manually re-typing a symbol clears it from the card. */}
+            {(wlRemoved?.length ?? 0) > 0 && (() => {
+              const onList = new Set(symbols.map(s => s.symbol))
+              const gone = wlRemoved.filter(r => !onList.has(r.symbol))
+              if (gone.length === 0) return null
+              return (
+                <div className="glass-inset rounded-[1px] p-2 mb-3 text-[9px]">
+                  <div className="font-semibold mb-1">Previously watched <span className="font-normal text-[var(--color-text-sub)]">— tap to re-add (or type any symbol above)</span></div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {gone.slice(0, 30).map(r => (
+                      <button key={r.symbol} type="button"
+                        onClick={() => addSymbolsPlain([r.symbol])}
+                        title={`Removed ${r.removedAt ? new Date(r.removedAt).toLocaleString() : ''}${r.group ? ` (was in ${r.group})` : ''} — tap to re-add`}
+                        className="rounded-[1px] border border-[var(--glass-edge)] px-1.5 py-0.5 cursor-pointer hover:border-[var(--color-accent)]">
+                        + {r.symbol}
+                      </button>
+                    ))}
+                    {gone.length > 30 && <span className="text-[var(--color-text-sub)]">+{gone.length - 30} more</span>}
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* Quick groups — market-standard buckets, one tap to add the
                 whole set as ONE watchlist row. Each preset is intersected
                 with the instruments THIS broker account actually offers, so
@@ -2006,8 +2108,13 @@ export default function Tune() {
                 lists every symbol this broker offers from the chosen set,
                 whether or not it's already on the watchlist. */}
             <div className="mb-3">
-              <div className="text-[9px] font-semibold mb-1">Screener</div>
-              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+              <button type="button" aria-expanded={screenerOpen} onClick={() => flip(setScreenerOpen, 'tune_screener_open')}
+                className="text-[9px] font-semibold cursor-pointer flex items-center gap-1.5">
+                <span aria-hidden="true">{screenerOpen ? '▾' : '▸'}</span> Screener
+                <span className="font-normal text-[var(--color-text-sub)]">— preset groups by market, custom lists, AI search</span>
+              </button>
+              {screenerOpen && <>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5 mt-1">
                 Advice is a technical read only (bias + confidence from the last scan, ATR% from the regime detector) — not a fundamentals or sector call; it stays blank until a symbol has actually been scanned.
               </p>
               <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -2016,7 +2123,11 @@ export default function Tune() {
                   onChange={e => { setScreenerGroupKey(e.target.value); setScreenerCustom(''); setScreenerAiSymbols(null) }}
                   className="glass-inset rounded-[7px] px-2 py-1.5 text-[9px] min-h-[32px]"
                 >
-                  {PRESET_GROUPS.map(g => <option key={g.key} value={g.key}>{g.key}</option>)}
+                  {PRESET_MARKETS.map(m => (
+                    <optgroup key={m} label={m}>
+                      {PRESET_GROUPS.filter(g => g.market === m).map(g => <option key={g.key} value={g.key}>{g.key}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
                 <span className="text-[9px] text-[var(--color-text-sub)]">or a custom list:</span>
                 <input
@@ -2064,12 +2175,19 @@ export default function Tune() {
                 onClose={() => setScreenerChatOpen(false)}
                 onApply={(syms) => { setScreenerAiSymbols(syms); setScreenerChatOpen(false) }}
               />
+              </>}
             </div>
 
             {/* Cup & Handle screener — the video's funnel, broker-honest:
                 price / avg volume / RelVol>1 / SMA stack. P/E + sector are
                 manual (not in cTrader data) and the panel says so. */}
             <div className="mb-3">
+              <button type="button" aria-expanded={chScreenerOpen} onClick={() => flip(setChScreenerOpen, 'tune_ch_open')}
+                className="text-[9px] font-semibold cursor-pointer flex items-center gap-1.5 mb-1">
+                <span aria-hidden="true">{chScreenerOpen ? '▾' : '▸'}</span> Cup &amp; Handle screener
+                {screenerBusy && <span className="font-normal text-[var(--color-text-sub)]">running…</span>}
+              </button>
+              {chScreenerOpen && <>
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm" variant="subtle" disabled={screenerBusy}
@@ -2104,6 +2222,7 @@ export default function Tune() {
                   <p className="mt-1.5 text-[var(--color-text-sub)]">{screener.manualChecks} Then eyeball the survivors for the actual cup &amp; handle shape.</p>
                 </div>
               )}
+              </>}
             </div>
             {symbols.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">No symbols yet — add one above.</div>}
             {/* ONE table, ONE header — the old side-by-side half-tables
@@ -2112,6 +2231,11 @@ export default function Tune() {
             {(() => {
               const prevBy = {}
               for (const r of (sizingPrev?.rows || [])) prevBy[r.symbol] = r
+              const toggleWlSel = (sym) => setWlSelected(prev2 => {
+                const next = new Set(prev2)
+                if (next.has(sym)) next.delete(sym); else next.add(sym)
+                return next
+              })
               const renderRow = (s) => {
                 const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
@@ -2120,6 +2244,9 @@ export default function Tune() {
                 const on = s.enabled !== false
                 return (
                   <tr key={s.symbol} className="border-t border-[var(--color-border)]">
+                    <td className="pr-1 py-1">
+                      <input type="checkbox" checked={wlSelected.has(s.symbol)} onChange={() => toggleWlSel(s.symbol)} aria-label={`Select ${s.symbol}`} />
+                    </td>
                     <td className="pr-2 py-1 whitespace-nowrap">{s.symbol}</td>
                     <td className="pr-2 text-[9px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
                     <td className="pr-2"><Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge></td>
@@ -2197,16 +2324,42 @@ export default function Tune() {
                   </tr>
                 )
               }
+              const selInList = [...wlSelected].filter(sym => symbols.some(s => s.symbol === sym))
               return (
                 // Bounded + internally scrollable (owner: "shifting the screen up
                 // and down whenever I tap the group") — expanding a band with 100s
                 // of members used to reflow the whole page around your tap; now the
                 // scroll stays INSIDE this box and everything below the card is
                 // rock-still. Sticky header keeps column names visible mid-scroll.
+                <>
+                {selInList.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5 text-[9px]">
+                    <span className="text-[var(--color-text-sub)]">{selInList.length} selected</span>
+                    <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => {
+                      // One list, one save (same lesson as the screener bulk
+                      // remove) — the removals also land in Previously watched.
+                      const drop = new Set(selInList)
+                      pushSymbols(symbols.filter(s => !drop.has(s.symbol)))
+                      setWlSelected(new Set())
+                    }}>Remove {selInList.length} selected</Button>
+                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => {
+                      const pick = new Set(selInList)
+                      pushSymbols(symbols.map(s => pick.has(s.symbol) ? { ...s, enabled: false } : s))
+                      setWlSelected(new Set())
+                    }}>Disable selected</Button>
+                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => {
+                      const pick = new Set(selInList)
+                      pushSymbols(symbols.map(s => pick.has(s.symbol) ? { ...s, enabled: true } : s))
+                      setWlSelected(new Set())
+                    }}>Enable selected</Button>
+                    <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline" onClick={() => setWlSelected(new Set())}>clear</button>
+                  </div>
+                )}
                 <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
                   <table className="std-cols min-w-full text-[9px]">
                     <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
                       <tr>
+                        <th className="pr-1 pb-1" title="Tick rows, then Remove/Disable selected above">✓</th>
                         <th className="pr-2 pb-1">Symbol</th>
                         <th className="pr-2 pb-1">Type</th>
                         <th className="pr-2 pb-1">Scanned</th>
@@ -2230,7 +2383,7 @@ export default function Tune() {
                         return (
                           <Fragment key={`band:${key}`}>
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={9} className="py-1.5">
+                              <td colSpan={10} className="py-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
                                     type="button" onClick={() => toggleBand(key)} aria-expanded={bandOpen}
@@ -2260,7 +2413,7 @@ export default function Tune() {
                         <Fragment key="band:__singles__">
                           {groupOf.size > 0 && (
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={9} className="py-1.5">
+                              <td colSpan={10} className="py-1.5">
                                 <button
                                   type="button" onClick={() => toggleBand('__singles__')} aria-expanded={openBands.has('__singles__')}
                                   className="flex items-center gap-1.5 font-bold cursor-pointer"
@@ -2278,6 +2431,7 @@ export default function Tune() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )
             })()}
             <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
@@ -2547,11 +2701,88 @@ export default function Tune() {
               </>
             )}
 
+            {/* Post-backtest watchdog verdict (owner 2026-07-28): the edge
+                watchdog runs immediately after every backtest, so fresh
+                backtest optimism never leaves a live-losing strategy armed. */}
+            {bt?.watchdog && !bt.watchdog.error && (
+              bt.watchdog.actions?.length > 0 ? (
+                <div className="mt-2 glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-[9px]">
+                  <span className="font-bold text-[var(--color-down)]">Watchdog acted after this run: </span>
+                  {bt.watchdog.actions.map(a => `${a.strategy} disarmed (live: ${a.trades} trades, PF ${a.profitFactor ?? '—'}, net $${a.net})`).join(' · ')}
+                </div>
+              ) : (
+                <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
+                  Post-backtest watchdog: {bt.watchdog.skipped ? `skipped (${bt.watchdog.skipped})` : `${bt.watchdog.evaluated?.length || 0} armed strateg${(bt.watchdog.evaluated?.length || 0) === 1 ? 'y' : 'ies'} checked against LIVE results — none disarmed`}.
+                </p>
+              )
+            )}
+
             {/* Saved runs on the agent (ephemeral — wiped on redeploy) */}
             <details className="mt-2 text-[9px]">
               <summary className="cursor-pointer font-semibold text-[var(--color-accent)]">Past reports saved on the agent</summary>
               <SavedReports />
             </details>
+
+            {/* Durable per-symbol backtest history (backtest_runs table —
+                survives redeploys, unlike the HTML reports above). */}
+            <div className="mt-2 text-[9px]">
+              <button type="button" aria-expanded={btHistOpen} onClick={() => setBtHistOpen(o => !o)}
+                className="cursor-pointer font-semibold text-[var(--color-accent)] flex items-center gap-1.5">
+                <span aria-hidden="true">{btHistOpen ? '▾' : '▸'}</span> Backtest history per symbol (durable)
+              </button>
+              {btHistOpen && (
+                <div className="mt-1.5">
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                    <Input value={btHistSym} onChange={e => setBtHistSym(e.target.value)} placeholder="Filter by symbol…" className="max-w-[160px] !py-1 !min-h-0" />
+                    {btHist?.bySymbol?.length > 0 && (
+                      <span className="text-[var(--color-text-sub)]">{btHist.bySymbol.length} symbols ever tested · newest first · last 2,000 rows kept</span>
+                    )}
+                  </div>
+                  {!btHist && <Skeleton lines={3} />}
+                  {btHist && btHist.rows.length === 0 && (
+                    <p className="text-[var(--color-text-sub)]">No recorded runs{btHistSym ? ` for ${btHistSym.toUpperCase()}` : ''} yet — history starts recording from the next backtest.</p>
+                  )}
+                  {btHist && btHist.rows.length > 0 && (
+                    <div className="overflow-auto max-h-[45vh] border border-[var(--color-border)] rounded-[8px]">
+                      <table className="std-cols min-w-full text-[9px]">
+                        <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
+                          <tr>
+                            <th className="pr-3 pb-1">Ran</th>
+                            <th className="pr-3 pb-1">Symbol</th>
+                            <th className="pr-3 pb-1">TF</th>
+                            <th className="pr-3 pb-1">Strategy</th>
+                            <th className="pr-3 pb-1 text-right">Trades</th>
+                            <th className="pr-3 pb-1 text-right">Win %</th>
+                            <th className="pr-3 pb-1 text-right">PF</th>
+                            <th className="pr-3 pb-1 text-right">Net %</th>
+                            <th className="pr-3 pb-1 text-right" title="Walk-forward: positive segments / active segments">WF</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {btHist.rows.map(r => (
+                            <tr key={r.id} className="border-t border-[var(--color-border)] tabular-nums">
+                              <td className="pr-3 py-0.5 whitespace-nowrap text-[var(--color-text-sub)]">{new Date(r.ran_at).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+                              <td className="pr-3 font-semibold whitespace-nowrap">{r.symbol}</td>
+                              <td className="pr-3">{r.timeframe}</td>
+                              <td className="pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{r.strategy}{r.entry_mode === 'touch' ? ' · touch' : ''}</td>
+                              {r.error
+                                ? <td colSpan={5} className="pr-3 text-[var(--color-warning-text)]">{r.error}</td>
+                                : <>
+                                    <td className="pr-3 text-right">{r.trades ?? '—'}</td>
+                                    <td className="pr-3 text-right">{r.win_rate_pct != null ? `${r.win_rate_pct}%` : '—'}</td>
+                                    <td className="pr-3 text-right">{r.profit_factor != null ? r.profit_factor : (r.trades > 0 && r.losses === 0 ? '∞' : '—')}</td>
+                                    <td className={`pr-3 text-right font-semibold ${Number(r.total_profit_pct) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{r.total_profit_pct != null ? `${r.total_profit_pct}%` : '—'}</td>
+                                    <td className="pr-3 text-right">{r.wf_positive != null ? `${r.wf_positive}/${r.wf_active ?? '?'}` : '—'}</td>
+                                  </>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             {bt?.report?.html && (
               <div className="mt-3">
                 <Button
