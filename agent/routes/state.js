@@ -658,6 +658,21 @@ export default function stateRouter(db) {
   // decisions (skips included), newest first. ?symbol= &stage= &limit=
   // filter. Risk-gate vetoes remain in risk_events; this covers the stages
   // upstream of the gate.
+  // GET /state/strategy-liveness — is each armed strategy actually alive?
+  //
+  // Answers the question that Cup & Handle went weeks without anyone being able
+  // to ask: a strategy that is armed, backtests well, and produces nothing looks
+  // exactly like a strategy waiting for a setup. This separates them.
+  router.get('/strategy-liveness', async (req, res) => {
+    try {
+      const { strategyLiveness } = await import('../services/strategy-liveness.js')
+      const windowDays = Number(req.query.days) > 0 ? Number(req.query.days) : undefined
+      res.json(strategyLiveness(db, { windowDays }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/decisions', async (req, res) => {
     try {
       const { recentDecisions } = await import('../services/decision-log.js')
