@@ -10,6 +10,7 @@ import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { readRecentErrors } from './services/error-log.js';
+import { startLagMonitor } from './services/event-loop-lag.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -109,6 +110,10 @@ const db = initDB(resolvedDbPath);
 // Exhaustive lifecycle/crash diagnostics to stdout (owner reads these from
 // Railway to find the ~4-min restarts). Installed as early as possible so a
 // boot-time error is still captured; the heartbeat reads live loop stats.
+// Start sampling event-loop delay before anything heavy runs, so the first
+// cycle's phases already have numbers. Idempotent.
+startLagMonitor();
+
 installProcessDiagnostics({
   version: APP_VERSION,
   commit: (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '?').slice(0, 7),
@@ -401,6 +406,15 @@ app.get('/health', (_req, res) => {
     // owner of the time.
     loopPhaseMs: (() => {
       try { return JSON.parse(getState(db, 'loop_phase_ms_json') || 'null') } catch { return null }
+    })(),
+    // Event-loop delay per phase from the last completed cycle, worst first.
+    // maxMs is how long a ready-to-run callback actually waited — i.e. the
+    // worst extra latency an HTTP request could have taken purely from being
+    // queued behind the loop during that phase. Low maxMs beside high
+    // loopPhaseMs means the phase was WAITING, not blocking, and a read stall
+    // in that window has a cause outside this process.
+    loopPhaseLag: (() => {
+      try { return JSON.parse(getState(db, 'loop_phase_lag_json') || 'null') } catch { return null }
     })(),
     watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,

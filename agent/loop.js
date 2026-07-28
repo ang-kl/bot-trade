@@ -28,6 +28,7 @@ import { reconcilePositions } from './services/reconciler.js'
 import { checkRegimeGate } from './services/regime-gate.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
+import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
@@ -1574,7 +1575,17 @@ async function runLoop(db) {
   // the per-cycle breakdown, which is what makes "reads stall for 8-29s"
   // answerable instead of arguable.
   // -------------------------------------------------------------------------
+  // Alongside wall-clock, each phase records its EVENT-LOOP DELAY — how long a
+  // callback that was ready to run had to wait. Wall-clock alone cannot tell a
+  // phase that spends 60s waiting on the broker (event loop free, HTTP fine)
+  // from one that spends 60s in thousands of small CPU bursts (HTTP starved).
+  // Those two need opposite fixes. See services/event-loop-lag.js.
+  // Idempotent — covers contexts that run the loop without agent/index.js
+  // (tests, scripts), so a phase never reports lag of "unknown" for want of a
+  // monitor nobody started.
+  startLagMonitor()
   const phaseMs = {}
+  const phaseLag = {}
   let phaseName = 'starting'
   let phaseStart = start
   // `key` keeps the ms buckets stable when the visible label carries data —
@@ -1582,18 +1593,27 @@ async function runLoop(db) {
   const phase = (name, key = name) => {
     const now = Date.now()
     phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (now - phaseStart)
+    const lag = sampleLag()
+    if (lag) phaseLag[phaseName] = lag
     phaseName = key
     phaseStart = now
     setState(db, 'loop_phase', name)
   }
   const closePhases = () => {
     phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (Date.now() - phaseStart)
+    const lag = sampleLag()
+    if (lag) phaseLag[phaseName] = lag
     // Slowest first — the answer to "what is holding the loop" should be the
     // first thing read, not something to scan a list for.
     const ordered = Object.entries(phaseMs)
       .filter(([, ms]) => ms >= 1)
       .sort((a, b) => b[1] - a[1])
     setState(db, 'loop_phase_ms_json', JSON.stringify(Object.fromEntries(ordered)))
+    // Worst-blocking first, for the same reason.
+    const byLag = Object.entries(phaseLag)
+      .filter(([, l]) => l.maxMs != null)
+      .sort((a, b) => b[1].maxMs - a[1].maxMs)
+    setState(db, 'loop_phase_lag_json', JSON.stringify(Object.fromEntries(byLag)))
   }
 
   setState(db, 'loop_phase', 'starting')
