@@ -273,6 +273,14 @@ export default function App() {
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
           </Suspense>
+          {/* Small screens have no sidebar, so the tab roster above is
+              lg-only — which made the click-to-expand detail unreachable on
+              exactly the touch devices it was built for (Codex review).
+              Mounted here at the end of the page content for < lg, where it
+              scrolls into reach instead of fighting the fixed footer. */}
+          <div className="lg:hidden mt-4">
+            <TabsPanel />
+          </div>
         </main>
         {/* Owner (2026-07-24): "I cannot see the footer in this HD notebook,
             dynamically adjust up the footer... allow there for both the
