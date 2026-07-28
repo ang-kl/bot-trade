@@ -17,9 +17,18 @@ test('vwap anchors mid-series (bars before the anchor excluded)', () => {
   assert.ok(Math.abs(vwap(bars, 1) - 15) < 1e-10)
 })
 
-test('vwap falls back to equal weights on zero volume; null on empty', () => {
-  assert.ok(Math.abs(vwap([bar(12, 8, 10, 0), bar(22, 18, 20, 0)], 0) - 15) < 1e-10)
+// CHANGED 2026-07-28. This previously asserted the equal-weight fallback as
+// intended behaviour — vwap() returned sumTypical/n when the window carried no
+// volume. The volume audit established that this is not a degraded VWAP but a
+// different indicator (an SMA of typical price), and because it was non-null
+// the confluence filters kept voting on it without ever seeing a bad input.
+// The fallback is now null so those filters fail closed. The null-on-empty half
+// of the original assertion is unchanged.
+test('vwap returns null on zero volume (no VWAP without volume) and on empty', () => {
+  assert.equal(vwap([bar(12, 8, 10, 0), bar(22, 18, 20, 0)], 0), null)
   assert.equal(vwap([], 0), null)
+  // Still computes normally when volume exists.
+  assert.ok(Math.abs(vwap([bar(12, 8, 10, 1), bar(22, 18, 20, 1)], 0) - 15) < 1e-10)
 })
 
 test('findFVGs: bullish 3-bar gap with correct zone', () => {

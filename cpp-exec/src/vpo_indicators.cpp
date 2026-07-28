@@ -43,7 +43,15 @@ std::vector<double> vwapAnchored(const std::vector<Bar>& bars, double periodMs) 
     const double v = b.v;
     pv += tp * v;
     vol += v;
-    out[i] = vol > 0.0 ? pv / vol : tp;
+    // NO VOLUME → NO VWAP, signalled as NaN so callers must decide explicitly.
+    // The old fallback returned the bar's own typical price, which is not a
+    // degraded VWAP — it is a different line that tracks price exactly. For
+    // VwapTrendStrategy that INVERTS the strategy: `bar.l <= vwap` is always
+    // true when vwap is (h+l+c)/3, so a "pullback to VWAP" arms MORE often on
+    // missing data, not less — and VPO decisions are originating ones that
+    // bypass the risk, news and correlation gates. Mirrors the same change in
+    // agent/lib/indicators.js. See the 2026-07-28 volume audit.
+    out[i] = vol > 0.0 ? pv / vol : std::numeric_limits<double>::quiet_NaN();
   }
   return out;
 }

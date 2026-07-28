@@ -127,9 +127,13 @@ export function vwapSeries(bars, anchorIdx = 0) {
     const v = b.v || 0;
     pv += tp * v;
     vol += v;
-    // Zero-volume run since anchor: fall back to typical price so the line
-    // is still drawable rather than NaN.
-    out[i] = vol > 0 ? pv / vol : tp;
+    // NO VOLUME → NO VWAP. This used to fall back to the bar's own typical
+    // price "so the line is still drawable", which is the wrong trade for an
+    // indicator that gates live entries: it returns a number, so every caller
+    // keeps computing, and a volume-weighted average silently becomes an
+    // unweighted one. Null is the honest answer, and every consumer of these
+    // series already treats null as "no signal". See the 2026-07-28 audit.
+    out[i] = vol > 0 ? pv / vol : null;
   }
   return out;
 }
@@ -159,7 +163,13 @@ export function vwapAnchored(bars, periodMs = 86_400_000) {
     const v = b.v || 0;
     pv += tp * v;
     vol += v;
-    out[i] = vol > 0 ? pv / vol : tp;
+    // Same rule as vwapSeries: without volume there is no volume-weighted
+    // average, and returning the bar's own typical price is not a degraded
+    // VWAP — it is a different indicator that tracks price exactly. For
+    // vwap_trend that inverts the strategy: `bar.l <= vwap` is ALWAYS true
+    // when vwap is (h+l+c)/3, so a "pullback to VWAP" gate would fire more
+    // often, not less. Null instead, and the strategy disarms.
+    out[i] = vol > 0 ? pv / vol : null;
   }
   return out;
 }

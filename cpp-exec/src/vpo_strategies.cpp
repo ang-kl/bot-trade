@@ -88,6 +88,12 @@ void VwapTrendStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const s
   if (i - kSlopeLookback < 0) { disarm(); return; }
   const double v = vw[i];
   const double vPrev = vw[i - kSlopeLookback];
+  // vwapAnchored returns NaN when the window carried no volume. Disarm rather
+  // than compare against it: every NaN comparison is false, so `risingTrend`
+  // and `fallingTrend` would both be false and the strategy would idle by
+  // accident rather than by decision. Matches vwap-trend.js:50, which returns
+  // null on the same condition.
+  if (std::isnan(v) || std::isnan(vPrev)) { disarm(); return; }
   const double a = atr(microBars, kAtrPeriod);
   if (!(a > 0.0)) { disarm(); return; }
 

@@ -213,18 +213,22 @@ export function vwap(bars, anchorIdx = 0) {
   let pv = 0
   let v = 0
   let n = 0
-  let sumTypical = 0
   for (let i = Math.max(0, anchorIdx); i < bars.length; i++) {
     const b = bars[i]
     const typical = (b.h + b.l + b.c) / 3
     const vol = Number(b.v) || 0
     pv += typical * vol
     v += vol
-    sumTypical += typical
     n++
   }
   if (n === 0) return null
-  return v > 0 ? pv / v : sumTypical / n
+  // No volume → no VWAP. The old fallback returned sumTypical/n — an UNWEIGHTED
+  // mean of typical price, i.e. a simple moving average wearing VWAP's name.
+  // Because it was non-null, the confluence filters at fib-strategy and
+  // cup-handle kept voting on it: they never saw a degraded input, they saw a
+  // different indicator. Null makes both of them fail closed, which they
+  // already handle (`vw == null` → filter fails / return null).
+  return v > 0 ? pv / v : null
 }
 
 /**
