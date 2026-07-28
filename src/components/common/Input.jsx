@@ -2,7 +2,9 @@
 
 export default function Input({ value, onChange, type = 'text', className = '', ...rest }) {
   const cls = [
-    'block w-full rounded-[12px]',
+    // Same --radius-control token as Button: a 12px-cornered field sitting
+    // next to a 1px-cornered button is what made the styling look unfinished.
+    'block w-full rounded-[var(--radius-control)]',
     'glass-inset text-[var(--color-text)]',
     'px-3 py-2 text-[14px] min-h-[36px]',
     'placeholder:text-[var(--color-muted)]',

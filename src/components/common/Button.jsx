@@ -32,7 +32,11 @@ const SIZES = {
 export default function Button({ children, variant = 'primary', size = 'md', className = '', ...rest }) {
   const cls = [
     'inline-flex items-center justify-center gap-1',
-    'rounded-full border font-semibold',
+    // Owner 2026-07-28: iOS-style square-ish control, NOT an oval pill. Reads
+    // the shared --radius-control token so buttons, inputs and pills can never
+    // drift apart again (this component was missed by the earlier pill sweep,
+    // which is exactly why the Save button still looked wrong).
+    'rounded-[var(--radius-control)] border font-semibold',
     // transform-gpu isolate: own compositing layer — iOS Safari ghost-paints
     // gradient/glow elements at stale positions on reflow (owner saw a blue
     // smear behind the "Saved" state; same family as the Badge/slider fixes).
