@@ -67,3 +67,29 @@ test('reported fields are finite numbers or explicit nulls, never NaN', async ()
     assert.ok(v === null || Number.isFinite(v), `${k} was ${v}`)
   }
 })
+
+test('a CPU-burning block reports cpuRatio near 1 — "our code is holding the thread"', async () => {
+  _resetForTests()
+  startLagMonitor()
+  await sleep(120)
+  sampleLag()
+  blockFor(400)              // a busy-wait: burns CPU while blocking
+  await sleep(150)
+  const lag = sampleLag()
+  assert.ok(lag.maxMs >= 100, `expected a visible stall, got ${lag.maxMs}ms`)
+  assert.ok(lag.worstStallCpuRatio !== null, 'the worst stall should carry a CPU ratio')
+  // Busy-waiting consumes CPU for essentially the whole stall.
+  assert.ok(lag.worstStallCpuRatio > 0.5,
+    `a busy-wait should burn CPU, got ratio ${lag.worstStallCpuRatio}`)
+})
+
+test('idle time reports a LOW cpuRatio — the distinction the field exists for', async () => {
+  _resetForTests()
+  startLagMonitor()
+  await sleep(120)
+  sampleLag()
+  await sleep(400)           // sleeping: no CPU consumed
+  const lag = sampleLag()
+  assert.ok(lag.cpuRatio !== null)
+  assert.ok(lag.cpuRatio < 0.5, `idle should not look CPU-bound, got ${lag.cpuRatio}`)
+})
