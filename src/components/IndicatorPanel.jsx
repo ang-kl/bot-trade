@@ -56,7 +56,7 @@ export default function IndicatorPanel({ value, onChange, avwapArmed = false, on
             aria-pressed={on}
             onClick={() => toggle(id)}
             // ≥28px touch target via min-height; state = fill + aria, not hue pair
-            className={`rounded-full px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
+            className={`rounded-[1px] px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
               on ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
             }`}
           >{LABELS[id]}</button>
@@ -67,7 +67,7 @@ export default function IndicatorPanel({ value, onChange, avwapArmed = false, on
           aria-label="Volume profile type"
           value={prefs.vpType}
           onChange={e => commit({ ...prefs, vpType: e.target.value })}
-          className="glass-inset rounded-full px-2 min-h-[28px] text-[9px] text-[var(--color-text-sub)] bg-transparent cursor-pointer"
+          className="glass-inset rounded-[1px] px-2 min-h-[28px] text-[9px] text-[var(--color-text-sub)] bg-transparent cursor-pointer"
         >
           {VP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
@@ -77,7 +77,7 @@ export default function IndicatorPanel({ value, onChange, avwapArmed = false, on
           type="button"
           aria-pressed={avwapArmed}
           onClick={() => onArmAvwap?.()}
-          className={`rounded-full px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
+          className={`rounded-[1px] px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
             avwapArmed ? 'bg-[var(--orange,#c2410c)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
           }`}
         >{avwapArmed ? 'click chart…' : 'set AVWAP anchor'}</button>

@@ -8,7 +8,7 @@
 // trust — this page assembles, it does not invent.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -313,7 +313,7 @@ export default function Desk() {
   const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
   useEffect(() => {
     const kick = setTimeout(load, 0) // async kick keeps the effect render-clean
-    const t = setInterval(load, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
+    const t = setInterval(() => { if (!pageAsleep()) load() }, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load, hasActivity])
 
@@ -492,7 +492,7 @@ export default function Desk() {
             <button
               key={n} type="button" role="radio" aria-checked={pnlGridN === n}
               onClick={() => pickPnlGrid(n)}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n}</button>
           ))}
         </div>
@@ -515,7 +515,7 @@ export default function Desk() {
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
               title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-full px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
@@ -803,7 +803,7 @@ export default function Desk() {
             <button
               key={d} type="button" role="radio" aria-checked={historyDays === d}
               onClick={() => setHistoryDays(d)}
-              className={`rounded-full px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{label}</button>
           ))}
         </div>
@@ -1115,7 +1115,7 @@ export default function Desk() {
                       {backtestsList.map(b => (
                         <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
                           onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-full px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
                           {STRAT_SHORT[b.strategy] || b.strategy}
                         </button>
                       ))}

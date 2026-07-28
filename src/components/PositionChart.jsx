@@ -8,7 +8,7 @@
 // orange (#c2410c) ONLY — state also carried by words/shape, never hue.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
-import { agentPost, agentStreamPrices } from '../lib/agent-api.js'
+import { agentPost, agentStreamPrices, pageAsleep } from '../lib/agent-api.js'
 import { CHART_TF_ROWS } from '../lib/chart-timeframes.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { tfMs } from '../lib/timeframes.js'
@@ -288,7 +288,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
     }
     load()
     if (at) return () => { dead = true } // historical: one fetch, no polling
-    const t = setInterval(load, grid ? 60_000 : POLL_MS)
+    const t = setInterval(() => { if (!pageAsleep()) load() }, grid ? 60_000 : POLL_MS)
     return () => { dead = true; clearInterval(t) }
   }, [symbol, timeframe, at, grid, showPanel, indKey, indPrefs.vpType, avwapAnchorT]) // eslint-disable-line react-hooks/exhaustive-deps
 

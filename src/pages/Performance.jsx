@@ -12,7 +12,7 @@
 // nav, hit targets ≥44px) below lg. Theme is the app-wide system-default
 // toggle — mobile follows the system exactly as the design asks.
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1108,7 +1108,7 @@ export default function Performance() {
 
   useEffect(() => {
     const kick = setTimeout(load, 0)
-    const t = setInterval(load, REFRESH_MS)
+    const t = setInterval(() => { if (!pageAsleep()) load() }, REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
 

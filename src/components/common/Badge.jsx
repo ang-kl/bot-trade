@@ -11,7 +11,7 @@ const TONES = {
 }
 
 export default function Badge({ children, tone = 'neutral', pill = false, className = '' }) {
-  const radius = pill ? 'rounded-full' : 'rounded-[6px]'
+  const radius = pill ? 'rounded-[1px]' : 'rounded-[6px]' // owner 2026-07-28: pills are 1px-corner rectangles, not ovals
   const pad = pill ? 'px-2.5 py-0.5' : 'px-1.5 py-0.5'
   const cls = [
     'inline-flex items-center gap-1 border font-semibold',

@@ -17,7 +17,7 @@ import MarketClock from '../components/MarketClock.jsx'
 import StrategyInsights from '../components/StrategyInsights.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
-import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import Skeleton from '../components/common/Skeleton.jsx'
 
 const REFRESH_MS = 30_000
@@ -147,7 +147,7 @@ export default function Accounts() {
 
   useEffect(() => {
     const kick = setTimeout(loadBot, 0)
-    timer.current = setInterval(loadBot, REFRESH_MS)
+    timer.current = setInterval(() => { if (!pageAsleep()) loadBot() }, REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(timer.current) }
   }, [loadBot])
 

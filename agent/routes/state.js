@@ -509,6 +509,27 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/client-ping — dashboard-tab presence heartbeat (owner
+  // 2026-07-28: "monitor the number of website open ... and timezone").
+  // A GET on purpose: read-tier device tokens can call it, and it changes
+  // nothing durable — the roster is in-memory with a 90s TTL. Each tab
+  // pings ~30s with its id/tz/page/visibility; the response is the live
+  // roster so any tab can render "N tabs open". Also on /health.
+  router.get('/client-ping', async (req, res) => {
+    try {
+      const { registerClientPing } = await import('../services/client-presence.js')
+      res.json(registerClientPing({
+        tab: req.query.tab, tz: req.query.tz, page: req.query.page,
+        hidden: req.query.hidden, idle: req.query.idle, closed: req.query.closed,
+        ua: req.headers['user-agent'],
+        ip: String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim(),
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/accounts — the Account Registry (multi-account plan, M0).
   // Read-only view: which accounts exist, which one is enabled, mode,
   // metadata. The registry itself is written only by

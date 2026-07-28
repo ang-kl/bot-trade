@@ -41,7 +41,7 @@ function CockpitHost() {
   )
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import { getAgentConn, agentConfigured } from './lib/agent-api.js'
+import { getAgentConn, agentConfigured, sendClientPing } from './lib/agent-api.js'
 import Performance from './pages/Performance.jsx'
 import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
@@ -52,6 +52,7 @@ import Risk from './pages/Risk.jsx'
 import Connect from './pages/Connect.jsx'
 import AccountSwitcher from './components/AccountSwitcher.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
+import TabsPanel from './components/common/TabsPanel.jsx'
 import { useTheme } from './lib/theme.js'
 import { Toaster } from 'sonner'
 
@@ -115,6 +116,11 @@ function AgentDownBanner() {
         if (dead) return
         if (res.ok) { setFails(0); okAt.current = Date.now(); setStaleMins(null) }
         else setFails(n => n + 1)
+        // Presence heartbeat (owner 2026-07-28: "monitor the number of
+        // website open ... and timezone") — one tiny GET per 30s per tab,
+        // sent even when hidden so the agent's roster distinguishes
+        // visible tabs (full polling) from background ones (polls paused).
+        sendClientPing(window.location.pathname).catch(() => {})
       } catch {
         if (dead) return
         setFails(n => n + 1)
@@ -182,19 +188,22 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          <button
-            type="button"
-            onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-            title={`Theme: ${theme}`}
-            className="mt-auto glass-inset rounded-[10px] px-3 py-2 text-[9px] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
-          >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
+          <div className="mt-auto">
+            <TabsPanel />
+            <button
+              type="button"
+              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+              title={`Theme: ${theme}`}
+              className="w-full glass-inset rounded-[10px] px-3 py-2 text-[9px] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
+            >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
+          </div>
         </div>
       </aside>
 
       <div className="flex-1 min-w-0">
         {/* Top bar — mobile/tablet only */}
         <header className="sticky top-3 z-50 px-3 lg:hidden">
-          <div className="glass-bar flex items-center gap-3 rounded-full px-4 py-2 overflow-x-auto scrollbar-none">
+          <div className="glass-bar flex items-center gap-3 rounded-[1px] px-4 py-2 overflow-x-auto scrollbar-none">
             <span className="text-[14px] font-extrabold tracking-tight bg-[linear-gradient(90deg,var(--color-accent),#a855f7,var(--color-accent))] bg-clip-text text-transparent shrink-0">
               bot-trade
             </span>
@@ -220,7 +229,7 @@ export default function App() {
               type="button"
               onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
               title={`Theme: ${theme}`}
-              className="ml-auto glass-inset rounded-full px-2.5 py-1 text-[14px] cursor-pointer shrink-0"
+              className="ml-auto glass-inset rounded-[1px] px-2.5 py-1 text-[14px] cursor-pointer shrink-0"
             >{THEME_ICON[theme] || '◐'}</button>
           </div>
         </header>
