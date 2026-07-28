@@ -329,6 +329,19 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       } catch (err) {
         console.error('[fast-monitor] loss-cap failed:', err.message)
       }
+      // Profit ratchet (owner-approved A4): equity high-water staircase —
+      // floor rises with banked steps, equity touching the floor flattens
+      // bot positions + disarms autotrade so gains stop being given back.
+      try {
+        const creds = getCreds(db)
+        if (creds?.ready) {
+          const { runProfitRatchet } = await import('./profit-ratchet.js')
+          const pr = await runProfitRatchet(db, creds)
+          if (pr?.triggered) console.log(`[fast-monitor] profit-ratchet TRIGGERED at equity ${pr.equity} (floor ${pr.floor}) — ${pr.closes} close(s)`)
+        }
+      } catch (err) {
+        console.error('[fast-monitor] profit-ratchet failed:', err.message)
+      }
     }
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
