@@ -161,3 +161,44 @@ Ship as its own PR once D4a-D4d are answered. Given this touches the live
 position-monitoring path, per `CLAUDE.md` I'll hold it for your explicit
 review even with a green gate, the same way D12 was handled — not
 auto-merge, regardless of test results.
+
+---
+
+## 7. Follow-up (2026-07-28): naming the CPU burner
+
+The D4 fix removed the *serial* stacking. It did not remove the block. Later
+per-phase instrumentation showed the loop still stalls ~53s at a time, and
+`services/event-loop-lag.js` settled the mechanism: during the worst stall the
+process burns CPU at a ratio of **1.02 in `monitor`** and **1.01 in
+`autopilot`**, while every broker-bound phase sits at **0.02-0.06**. So this is
+our own JS holding the single thread, not Railway starving the container and
+not network waiting.
+
+That still does not say *which function*. Two previous answers to that question
+came from reading the code — the deeper bar fetch, and the broker transport —
+and measurement killed both. So the next step is sampled, not read.
+
+`services/cpu-profile.js` takes a real V8 CPU profile over exactly one named
+phase and reports self time per call frame, including native frames (synchronous
+better-sqlite3 calls, TLS, GC) that no hand-placed timer can see.
+
+**Operating it**
+
+- Off by default. Set `CPU_PROFILE_PHASES` to a comma-separated list of phase
+  keys — the same keys that appear in `/health`'s `loopPhaseMs` — e.g.
+  `CPU_PROFILE_PHASES=monitor`. `*` arms every phase.
+- `CPU_PROFILE_INTERVAL_US` tunes the sampling interval (default 5000µs).
+- Read the result at `/health` → `loopCpuProfile`, keyed by phase:
+  `totalMs`, `samples`, `idleMs`, `programMs`, `gcMs`, and `top[]` of
+  `{ frame, selfMs, pct }` sorted by self time.
+- Turn it back off once the burner is named. A diagnostic left running becomes
+  part of the problem it was meant to explain.
+
+**Reading it honestly**
+
+- A high `idleMs`/`programMs` share means the phase *waited*, whatever the top
+  JS frame says — check that before believing `top[0]`.
+- `top[0]` is self time, not inclusive time. `runLoop` will never appear;
+  that is the point.
+- Arm it on **staging** first. The demo trio is the only account set this may
+  run against.
