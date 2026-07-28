@@ -1712,6 +1712,43 @@ async function runLoop(db) {
 
           const result = reconcilePositions(db, positions, orders, (k, v) => setState(db, k, v))
           setState(db, 'api_ctrader_last_ok', new Date().toISOString())
+
+          // PROTECTION AUDIT (owner report 2026-07-29). Every other stop guard
+          // in this system fires at the MOMENT OF ACTION — risk.js refuses to
+          // open without a bracket, manual-position-guards refuses to add to a
+          // naked one. Nothing asked, of the positions already open, whether
+          // they are STILL protected. A bracket can go missing after entry: a
+          // failed amend, a broker-side cancellation, a position adopted from
+          // the broker that never had one. The ETHUSD short that prompted this
+          // ran unprotected and the ledger called it "stopped beyond the SL".
+          //
+          // Runs here because broker truth is already in hand — no extra
+          // broker calls — and it reads the BROKER's stop, not ours, because
+          // our own record only proves what we believe.
+          try {
+            const { runProtectionAudit } = await import('./services/naked-position-guard.js')
+            const openRows = db.prepare(
+              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id
+               FROM monitored_positions WHERE status = 'active' AND ctrader_position_id IS NOT NULL`
+            ).all()
+            const brokerSl = positions.map(p => ({
+              positionId: p.positionId,
+              stopLoss: p.stopLoss ?? null,
+              takeProfit: p.takeProfit ?? null,
+            }))
+            let notify = null
+            if (process.env.TELEGRAM_BOT_TOKEN) {
+              notify = (await import('./services/telegram.js')).sendMessage
+            }
+            const prot = await runProtectionAudit(db, openRows, brokerSl, { sendMessage: notify })
+            if (prot.naked.length || prot.phantom.length) {
+              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
+            }
+            const { beat: beatProt } = await import('./services/heartbeat.js')
+            beatProt(db, 'protection_audit')
+          } catch (err) {
+            log('Protection audit failed (non-fatal):', err.message)
+          }
           if ((result.orphansClosed || []).length > 0) {
             log(`Reconcile: closed ${result.orphansClosed.length} stale open trade(s) whose broker position is gone (ledger drift cleanup)`)
           }

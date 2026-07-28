@@ -46,6 +46,12 @@ export const CONTROLLERS = {
   weekend_loss_flag: { label: 'Weekend loss flag',     tiedToLoop: true, loopMultiplier: 3, factor: 4 },
   guardian:         { label: 'Tick guardian',          expectedSec: 30,   factor: 10 },
   cpp_exec:         { label: 'C++ exec engine',        expectedSec: 120,  factor: 3 },
+  // Answers "is every open position actually protected right now?" — the one
+  // question no controller asked before 2026-07-29, when an ETHUSD short was
+  // found to have closed with no stop loss at all while the ledger called it
+  // "stopped beyond the SL". A stalled protection audit is itself dangerous:
+  // it means nothing is checking, so it gets a heartbeat like everything else.
+  protection_audit: { label: 'Position protection audit', tiedToLoop: true, factor: 3 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
