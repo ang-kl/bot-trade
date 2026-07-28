@@ -716,3 +716,21 @@ textarea {
    with a full radius. Dot indicators (no horizontal padding) keep their
    circles. */
 .pill-1px { border-radius: 1px !important; }
+
+/* ---------------------------------------------------------------------------
+   CONTROL CORNER RADIUS — one number, one place (owner 2026-07-28: the Save
+   button "doesn't follow what I wanted ... very tiny 1px curved corner",
+   after pills were already converted).
+
+   The pill sweep changed pills but missed Button/Input/FormControls, so the
+   Save button kept a full radius while the pills beside it went square. That
+   is what a scattered value costs. Every rectangular control now reads its
+   radius from this token, so changing the design language is a one-line edit
+   here instead of another grep-and-hope pass.
+
+   What deliberately does NOT use it: genuine circles — toggle-switch tracks
+   and knobs (an iOS switch IS an oval), status dots, and the round floating
+   action button. Those are shapes, not corner styling.
+   --------------------------------------------------------------------------- */
+:root { --radius-control: 1px; }
+.radius-control { border-radius: var(--radius-control); }

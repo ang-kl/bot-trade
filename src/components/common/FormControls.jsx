@@ -30,7 +30,7 @@ export function SliderInput({ label, value, onChange, min, max, step, display = 
             onChange={e => setText(e.target.value)}
             onBlur={commit}
             onKeyDown={e => e.key === 'Enter' && (commit(), e.target.blur())}
-            className="glass-inset w-20 rounded-[8px] px-2 py-1 text-right text-[9px] font-semibold text-[var(--color-text)] focus:outline-2 focus:outline-[var(--color-accent)] bg-transparent"
+            className="glass-inset w-20 rounded-[var(--radius-control)] px-2 py-1 text-right text-[9px] font-semibold text-[var(--color-text)] focus:outline-2 focus:outline-[var(--color-accent)] bg-transparent"
             aria-label={`${label} value`}
           />
           {unit && <span className="text-[9px]">{unit}</span>}
@@ -79,7 +79,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
       <button
         type="button" aria-haspopup="listbox" aria-expanded={open}
         onClick={() => setOpen(o => !o)}
-        className="glass-inset mt-1 w-full rounded-[9px] px-3 py-2 text-left text-[9px] min-h-[40px] cursor-pointer flex items-center justify-between gap-2 focus:outline-2 focus:outline-[var(--color-accent)]"
+        className="glass-inset mt-1 w-full rounded-[var(--radius-control)] px-3 py-2 text-left text-[9px] min-h-[40px] cursor-pointer flex items-center justify-between gap-2 focus:outline-2 focus:outline-[var(--color-accent)]"
       >
         <span className="font-semibold text-[var(--color-text)]">{current ? current[1] : `${display(num)} (custom)`}</span>
         <span aria-hidden="true" className={`text-[9px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
@@ -92,7 +92,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
               <button
                 key={v} type="button" role="option" aria-selected={active}
                 onClick={() => { onChange(Number(v)); setOpen(false) }}
-                className={`w-full text-left rounded-[8px] px-3 py-2 text-[9px] cursor-pointer flex items-center justify-between ${
+                className={`w-full text-left rounded-[var(--radius-control)] px-3 py-2 text-[9px] cursor-pointer flex items-center justify-between ${
                   active ? 'bg-[var(--color-accent)] text-white font-semibold' : 'hover:bg-[var(--color-accent-soft)] text-[var(--color-text)]'
                 }`}
               >
@@ -105,11 +105,11 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
               type="number" step="any" value={custom} placeholder="Custom…"
               onChange={e => setCustom(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && commitCustom()}
-              className="glass-inset flex-1 min-w-0 rounded-[8px] px-2 py-1.5 text-[9px] bg-transparent focus:outline-2 focus:outline-[var(--color-accent)]"
+              className="glass-inset flex-1 min-w-0 rounded-[var(--radius-control)] px-2 py-1.5 text-[9px] bg-transparent focus:outline-2 focus:outline-[var(--color-accent)]"
               aria-label={`Custom ${label}`}
             />
             {unit && <span className="text-[9px] text-[var(--color-text-sub)]">{unit}</span>}
-            <button type="button" onClick={commitCustom} className="rounded-[8px] bg-[var(--color-accent)] text-white text-[9px] font-semibold px-2.5 py-1.5 cursor-pointer">Set</button>
+            <button type="button" onClick={commitCustom} className="rounded-[var(--radius-control)] bg-[var(--color-accent)] text-white text-[9px] font-semibold px-2.5 py-1.5 cursor-pointer">Set</button>
           </div>
         </div>
       )}
