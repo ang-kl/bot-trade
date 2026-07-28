@@ -430,6 +430,7 @@ const TABLES = `
     symbol           TEXT NOT NULL,
     timeframe        TEXT NOT NULL,
     trades           INTEGER,
+    losses           INTEGER,          -- 0 with trades > 0 = no losing trade (PF is ∞, stored NULL)
     win_rate_pct     REAL,
     profit_factor    REAL,
     total_profit_pct REAL,

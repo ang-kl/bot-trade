@@ -314,14 +314,20 @@ test('backtest_runs table exists with per-symbol history + retention query shape
   const db = initDB(':memory:')
   const ins = db.prepare(
     `INSERT INTO backtest_runs (ran_at, strategy, entry_mode, bars, symbol, timeframe,
-       trades, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       trades, losses, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'EURUSD', '4h', 12, 58.3, 1.7, 4.2, 3, 4, null)
-  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'XAUUSD', '-', null, null, null, null, null, null, 'only 40 bars available')
+  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'EURUSD', '4h', 12, 5, 58.3, 1.7, 4.2, 3, 4, null)
+  // no-loss run: profit_factor NULL but losses 0 with trades > 0 — the UI
+  // renders this ∞, so the distinction must survive the round trip
+  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'US500', '1d', 4, 0, 100, null, 2.1, 2, 2, null)
+  ins.run('2026-07-28T02:00:00Z', 'fib_618_fade', 'close', 1000, 'XAUUSD', '-', null, null, null, null, null, null, null, 'only 40 bars available')
   const rows = db.prepare('SELECT * FROM backtest_runs WHERE symbol = ? ORDER BY id DESC').all('EURUSD')
   assert.equal(rows.length, 1)
   assert.equal(rows[0].trades, 12)
+  const noLoss = db.prepare('SELECT * FROM backtest_runs WHERE symbol = ?').get('US500')
+  assert.equal(noLoss.losses, 0)
+  assert.equal(noLoss.profit_factor, null)
   const bySymbol = db.prepare(
     `SELECT symbol, COUNT(*) AS rows, SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
        FROM backtest_runs GROUP BY symbol`

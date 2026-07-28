@@ -1036,13 +1036,14 @@ export default function Tune() {
     agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
   }, [tab])
 
-  // Durable backtest history — (re)loaded when the section opens or the
-  // symbol filter changes; never polled (it only changes when a run ends).
+  // Durable backtest history — (re)loaded when the section opens, the symbol
+  // filter changes, OR a run finishes while the section is open (bt?.ranAt
+  // changes when the job poll applies a completed run — Codex review).
   useEffect(() => {
     if (!btHistOpen || !agentConfigured()) return
     const q = btHistSym.trim() ? `?symbol=${encodeURIComponent(btHistSym.trim().toUpperCase())}` : ''
     agentGet(`/state/backtest-history${q}`).then(r => setBtHist(r || null)).catch(() => {})
-  }, [btHistOpen, btHistSym])
+  }, [btHistOpen, btHistSym, bt?.ranAt])
 
   // Profit Keeper policy — loaded once; updates flow through the POST replies.
   useEffect(() => {
@@ -1131,7 +1132,12 @@ export default function Tune() {
   const btSymbols = enabledSymbols.filter(s => !btSkip.has(s))
 
   const pushSymbols = (next) =>
-    run(() => agentPost('/actions/symbols', { symbols: next }), 'Watchlist saved')
+    run(async () => {
+      await agentPost('/actions/symbols', { symbols: next })
+      // The save may have RECORDED removals — refresh the Previously-watched
+      // card in place, or it stays stale until a tab switch (Codex review).
+      agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
+    }, 'Watchlist saved')
 
   const addSymbol = () => {
     const sym = newSymbol.toUpperCase().trim()
@@ -1983,13 +1989,18 @@ export default function Tune() {
                 is fetched twice. */}
             {symbols.length > 0 && (() => {
               const enabled = symbols.filter(s => s.enabled !== false)
-              const stats = Object.entries(wlStats?.by || {})
+              // Both stats endpoints keep HISTORY for symbols no longer on the
+              // list — filter to the CURRENT watchlist or removed instruments
+              // leak into the totals and movers (Codex review).
+              const onList = new Set(symbols.map(s => String(s.symbol).toUpperCase()))
+              const stats = Object.entries(wlStats?.by || {}).filter(([sym]) => onList.has(sym.toUpperCase()))
               const withNet = stats.map(([sym, st]) => ({ sym, ...st }))
               const totalNet = withNet.reduce((n, s) => n + (Number(s.net) || 0), 0)
               const losers = withNet.filter(s => s.loser)
               const best = withNet.filter(s => s.n > 0).sort((a, b) => b.net - a.net)[0]
               const worst = withNet.filter(s => s.n > 0).sort((a, b) => a.net - b.net)[0]
               const hotMovers = Object.entries(regimeBy || {})
+                .filter(([sym]) => onList.has(sym.toUpperCase()))
                 .map(([sym, r]) => ({ sym, atr: Number(r?.atr_pct) }))
                 .filter(m => Number.isFinite(m.atr))
                 .sort((a, b) => b.atr - a.atr).slice(0, 3)
@@ -2759,7 +2770,7 @@ export default function Tune() {
                                 : <>
                                     <td className="pr-3 text-right">{r.trades ?? '—'}</td>
                                     <td className="pr-3 text-right">{r.win_rate_pct != null ? `${r.win_rate_pct}%` : '—'}</td>
-                                    <td className="pr-3 text-right">{r.profit_factor != null ? r.profit_factor : '—'}</td>
+                                    <td className="pr-3 text-right">{r.profit_factor != null ? r.profit_factor : (r.trades > 0 && r.losses === 0 ? '∞' : '—')}</td>
                                     <td className={`pr-3 text-right font-semibold ${Number(r.total_profit_pct) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{r.total_profit_pct != null ? `${r.total_profit_pct}%` : '—'}</td>
                                     <td className="pr-3 text-right">{r.wf_positive != null ? `${r.wf_positive}/${r.wf_active ?? '?'}` : '—'}</td>
                                   </>}

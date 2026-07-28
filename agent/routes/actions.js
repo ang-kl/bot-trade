@@ -230,14 +230,17 @@ export default function actionsRouter(db) {
       try {
         const ins = db.prepare(
           `INSERT INTO backtest_runs (ran_at, strategy, entry_mode, bars, symbol, timeframe,
-             trades, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             trades, losses, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         for (const [symName, data] of Object.entries(symbols)) {
-          if (data.error) { ins.run(payload.ranAt, strategy, entryMode, count, symName, '-', null, null, null, null, null, null, String(data.error).slice(0, 300)); continue }
+          if (data.error) { ins.run(payload.ranAt, strategy, entryMode, count, symName, '-', null, null, null, null, null, null, null, String(data.error).slice(0, 300)); continue }
           for (const [tf, r] of Object.entries(data.results || {})) {
-            if (r?.error) ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, null, null, null, null, null, null, String(r.error).slice(0, 300))
-            else ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, r.trades ?? 0, r.winRatePct ?? null, Number.isFinite(r.profitFactor) ? r.profitFactor : null, r.totalProfitPct ?? null, r.wfPositive ?? null, r.wfActive ?? null, null)
+            // profitFactor is NULL when grossLoss is 0 — the losses column
+            // (0 with trades > 0) is what lets the UI render that as ∞
+            // instead of a dash (Codex review).
+            if (r?.error) ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, null, null, null, null, null, null, null, String(r.error).slice(0, 300))
+            else ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, r.trades ?? 0, r.losses ?? null, r.winRatePct ?? null, Number.isFinite(r.profitFactor) ? r.profitFactor : null, r.totalProfitPct ?? null, r.wfPositive ?? null, r.wfActive ?? null, null)
           }
         }
         db.prepare('DELETE FROM backtest_runs WHERE id NOT IN (SELECT id FROM backtest_runs ORDER BY id DESC LIMIT 2000)').run()
