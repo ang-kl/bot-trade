@@ -6,6 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
+import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
 
 // Load .env file if present (no dotenv dependency needed)
@@ -344,8 +345,19 @@ app.get('/health', (_req, res) => {
     analyzeEnabled: getState(db, 'analyze_enabled') !== 'false',
     autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
     memoryMB: Number((process.memoryUsage().heapUsed / 1048576).toFixed(1)),
+    // Dashboard-tab presence (owner 2026-07-28): how many browser tabs have
+    // the app open right now, and from which timezones — each visible tab
+    // polls the agent every 5-20s, so this is the query-load multiplier.
+    clients: clientSummaryOrNull(),
   });
 });
+
+function clientSummaryOrNull() {
+  try {
+    // Sync require-shape: presence is a plain in-memory module, no I/O.
+    return clientPresence.clientSummary()
+  } catch { return null }
+}
 
 // ---------------------------------------------------------------------------
 // Mount route modules

@@ -164,6 +164,35 @@ async function request(method, path, body) {
 }
 
 export const agentGet = (path) => request('GET', path)
+
+// ---------------------------------------------------------------------------
+// Tab presence + background-tab throttling (owner 2026-07-28: "monitor the
+// number of website open ... more website open means more queries right?").
+// Every open tab is an independent polling client, so page poll loops call
+// pageHidden() and skip their heavy loads while the tab is in the background
+// — the broker/agent stop being queried by tabs nobody is looking at. The
+// per-tab id lives in sessionStorage: one id per TAB (not per browser),
+// which is exactly the granularity the owner asked to count.
+// ---------------------------------------------------------------------------
+export const pageHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
+
+function tabId() {
+  try {
+    let id = sessionStorage.getItem('tab_id')
+    if (!id) {
+      id = 'tab_' + Math.random().toString(36).slice(2, 10)
+      sessionStorage.setItem('tab_id', id)
+    }
+    return id
+  } catch { return 'tab_unknown' }
+}
+
+/** One presence heartbeat: tab id, timezone, page, visibility. */
+export function sendClientPing(page) {
+  const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'unknown' } })()
+  const q = new URLSearchParams({ tab: tabId(), tz, page: page || '/', hidden: String(pageHidden()) })
+  return request('GET', `/state/client-ping?${q}`)
+}
 // POSTs are user-initiated actions (close, arm, save config…) — failures
 // surface as a global toast (sonner) so the click never fails silently,
 // in ADDITION to the caller's own error handling, not instead of it.

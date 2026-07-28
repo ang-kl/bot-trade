@@ -8,7 +8,7 @@
 // trust — this page assembles, it does not invent.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageHidden } from '../lib/agent-api.js'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -313,7 +313,7 @@ export default function Desk() {
   const hasActivity = positions.length > 0 || (broker?.orders?.length || 0) > 0
   useEffect(() => {
     const kick = setTimeout(load, 0) // async kick keeps the effect render-clean
-    const t = setInterval(load, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
+    const t = setInterval(() => { if (!pageHidden()) load() }, hasActivity ? ACTIVE_REFRESH_MS : REFRESH_MS)
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load, hasActivity])
 

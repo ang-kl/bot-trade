@@ -41,7 +41,7 @@ function CockpitHost() {
   )
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import { getAgentConn, agentConfigured } from './lib/agent-api.js'
+import { getAgentConn, agentConfigured, sendClientPing } from './lib/agent-api.js'
 import Performance from './pages/Performance.jsx'
 import Desk from './pages/Desk.jsx'
 import Trade from './pages/Trade.jsx'
@@ -115,6 +115,11 @@ function AgentDownBanner() {
         if (dead) return
         if (res.ok) { setFails(0); okAt.current = Date.now(); setStaleMins(null) }
         else setFails(n => n + 1)
+        // Presence heartbeat (owner 2026-07-28: "monitor the number of
+        // website open ... and timezone") — one tiny GET per 30s per tab,
+        // sent even when hidden so the agent's roster distinguishes
+        // visible tabs (full polling) from background ones (polls paused).
+        sendClientPing(window.location.pathname).catch(() => {})
       } catch {
         if (dead) return
         setFails(n => n + 1)

@@ -10,7 +10,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
-import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured, pageHidden } from '../lib/agent-api.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
@@ -978,6 +978,7 @@ export default function Tune() {
   useEffect(() => {
     if (!agentConfigured()) return undefined
     const t = setInterval(async () => {
+      if (pageHidden()) return // background tab — skip the sync poll
       try {
         const c = await agentGet('/state/config')
         setConfig(prev => prev ? {
