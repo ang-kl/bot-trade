@@ -29,6 +29,7 @@ import { checkRegimeGate } from './services/regime-gate.js'
 import { recordPositionEvent } from './services/position-events.js'
 import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
+import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
@@ -1590,19 +1591,33 @@ async function runLoop(db) {
   let phaseStart = start
   // `key` keeps the ms buckets stable when the visible label carries data —
   // 'analyzing EURUSD, XAUUSD' must not become its own bucket every cycle.
+  // Where the profile summaries land. Keyed by phase so arming two phases at
+  // once doesn't have them overwrite each other, and merged on every arrival
+  // because the inspector hands results back asynchronously — possibly after
+  // closePhases() has already run.
+  const cpuProfiles = {}
+  const takeProfile = (summary) => {
+    cpuProfiles[summary.phase] = summary
+    try { setState(db, 'loop_cpu_profile_json', JSON.stringify(cpuProfiles)) } catch { /* diagnostics are best-effort */ }
+  }
   const phase = (name, key = name) => {
     const now = Date.now()
     phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (now - phaseStart)
     const lag = sampleLag()
     if (lag) phaseLag[phaseName] = lag
+    // Profile boundaries ride on the phase boundaries, so an armed phase is
+    // sampled over exactly the window its wall-clock and lag numbers describe.
+    stopPhaseProfile(takeProfile)
     phaseName = key
     phaseStart = now
     setState(db, 'loop_phase', name)
+    startPhaseProfile(key)
   }
   const closePhases = () => {
     phaseMs[phaseName] = (phaseMs[phaseName] || 0) + (Date.now() - phaseStart)
     const lag = sampleLag()
     if (lag) phaseLag[phaseName] = lag
+    stopPhaseProfile(takeProfile)
     // Slowest first — the answer to "what is holding the loop" should be the
     // first thing read, not something to scan a list for.
     const ordered = Object.entries(phaseMs)

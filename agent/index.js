@@ -416,6 +416,14 @@ app.get('/health', (_req, res) => {
     loopPhaseLag: (() => {
       try { return JSON.parse(getState(db, 'loop_phase_lag_json') || 'null') } catch { return null }
     })(),
+    // V8 CPU profile of the armed phase(s), from the last cycle that ran one.
+    // Null unless CPU_PROFILE_PHASES is set — see services/cpu-profile.js.
+    // loopPhaseLag settles WHETHER a phase burns CPU; this settles WHICH
+    // function does, by self time, including native frames (sync SQLite, TLS,
+    // GC) that no hand-placed timer can see.
+    loopCpuProfile: (() => {
+      try { return JSON.parse(getState(db, 'loop_cpu_profile_json') || 'null') } catch { return null }
+    })(),
     watchdogMinutes: Number(process.env.LOOP_WATCHDOG_MINUTES ?? 12),
     // Broker pacing (incident 2026-07-28): historical requests (trendbars,
     // deals) are capped at 5/s by cTrader and we were sending 20-40/s. A
