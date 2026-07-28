@@ -33,17 +33,45 @@ import { volumeProfile } from './indicators.js'
 // registry, which imports vp-value.js, which imports THIS file — a cycle
 // that deadlocks the registry's top-level await). The test asserts the two
 // implementations agree, so a drift fails loudly rather than silently.
+//
+// PERFORMANCE (2026-07-28). This was the single hottest JS frame in a
+// production CPU profile of the scan phase — 630ms of self time in one cycle,
+// six times the next frame — because sessionSlices calls it ONCE PER BAR and
+// each call built a fresh Intl.DateTimeFormat. Constructing one of those is
+// among the most expensive things in the runtime (it resolves an ICU locale
+// and time zone); doing it tens of thousands of times per scan is the whole
+// cost. The formatter is stateless for formatToParts, so it is built once.
+const NY_HMS = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', hour12: false,
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+})
+
+// Second layer: the ANSWER is constant across a whole FX day, and bars in a
+// scan cluster into a handful of days. Cache on the UTC hour — safe because
+// both boundaries that can change the answer (17:00 New York, and the DST
+// shift at 02:00 local) fall on exact UTC hour boundaries, so every instant
+// within one UTC hour shares one FX-day open. Bounded so a long backtest
+// cannot grow it without limit.
+const dayOpenCache = new Map()
+const DAY_OPEN_CACHE_MAX = 512
+
 export function fxDayOpenMs(nowMs = Date.now()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York', hour12: false,
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(new Date(nowMs))
+  const hourKey = Math.floor(nowMs / 3_600_000)
+  const hit = dayOpenCache.get(hourKey)
+  if (hit !== undefined) return hit
+  const parts = NY_HMS.formatToParts(new Date(nowMs))
   const get = (t) => Number(parts.find(p => p.type === t)?.value)
   const min = (get('hour') % 24) * 60 + get('minute')
   const anchorMin = 17 * 60
   const sinceMin = min >= anchorMin ? min - anchorMin : min + 24 * 60 - anchorMin
-  return nowMs - sinceMin * 60_000 - get('second') * 1000 - (nowMs % 1000)
+  const open = nowMs - sinceMin * 60_000 - get('second') * 1000 - (nowMs % 1000)
+  if (dayOpenCache.size >= DAY_OPEN_CACHE_MAX) dayOpenCache.clear()
+  dayOpenCache.set(hourKey, open)
+  return open
 }
+
+/** Test seam — the cache must not carry answers between cases. */
+export function _clearDayOpenCache() { dayOpenCache.clear() }
 
 // A bucket counts as a low-volume node when it holds no more than this
 // fraction of the POC bucket's volume. 0.3 is the conventional "thin" line —
