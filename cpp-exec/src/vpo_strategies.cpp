@@ -72,6 +72,10 @@ constexpr int kSlopeLookback = 10;       // vwap-trend.js SLOPE_LOOKBACK
 constexpr double kEdgeToleranceAtr = 0.5; // vp-value.js EDGE_TOLERANCE_ATR
 constexpr int kMinBarsVwap = 30;
 constexpr int kMinBarsVp = 40;
+// The bar window vp_value evaluates on, independent of how deep the feeder
+// pushes. Matches SIGNAL_BARS in agent/services/fib-strategy.js so the two
+// engines score the same strategy on the same history.
+constexpr int kVpWindowBars = 150;
 } // namespace
 
 void VwapTrendStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const std::vector<Bar>& microBars) {
@@ -125,13 +129,27 @@ void VwapTrendStrategy::recompute(const std::vector<Bar>& /*macroBars*/, const s
 void VpValueStrategy::recompute(const std::vector<Bar>& macroBars, const std::vector<Bar>& /*microBars*/) {
   if (static_cast<int>(macroBars.size()) < kMinBarsVp) { disarm(); return; }
 
-  const double a = atr(macroBars, kAtrPeriod);
+  // The feeder now pushes a DEEPER macro window than it used to, because Cup &
+  // Handle needs 210 bars (kChMinBars) and 150 were being sent — so that
+  // strategy could never clear its own length guard. See vpo-feeder.js.
+  //
+  // vp_value must not silently inherit that extra depth. volumeProfile() reads
+  // the WHOLE slice, so a wider window is a different value area, a different
+  // POC, and therefore different arm prices and take-profit distances. That
+  // would be a strategy change smuggled in behind a bug fix. Slice back to the
+  // window this strategy has always seen (the Node scan's SIGNAL_BARS).
+  const std::vector<Bar> window =
+      macroBars.size() > static_cast<size_t>(kVpWindowBars)
+          ? std::vector<Bar>(macroBars.end() - kVpWindowBars, macroBars.end())
+          : macroBars;
+
+  const double a = atr(window, kAtrPeriod);
   if (!(a > 0.0)) { disarm(); return; }
 
-  const VolumeProfileResult vp = volumeProfile(macroBars, 24);
+  const VolumeProfileResult vp = volumeProfile(window, 24);
   if (!vp.valid || !(vp.vahPrice > vp.valPrice)) { disarm(); return; } // degenerate/flat profile
 
-  const Bar& bar = macroBars.back();
+  const Bar& bar = window.back();
   const double tol = kEdgeToleranceAtr * a;
   const double distToVal = std::fabs(bar.c - vp.valPrice);
   const double distToVah = std::fabs(bar.c - vp.vahPrice);

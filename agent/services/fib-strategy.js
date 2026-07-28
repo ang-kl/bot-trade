@@ -30,7 +30,29 @@ const ATR_PERIOD = 14
 // at the level, so the risk gate vetoed every at-level entry as bad_rr.)
 const SL_BUFFER = 0.02
 const TP2_EXTENSION = 0.272   // -27.2% extension beyond the swing end
-const BAR_COUNT = 150         // bars fetched per timeframe
+// Bars FETCHED per timeframe vs bars each strategy SEES. These were one
+// number, and that silently disabled two armed strategies.
+//
+// Cup & Handle requires 210 bars (cup-handle.js MIN_BARS — SMA200 plus
+// headroom) and the scan fetched 150, so computeCupHandleSignal and
+// computeInvCupHandleSignal returned null at their length guard before any
+// pattern logic ran. Both are defaultOn. Worse, it backtests fine — a backtest
+// ingests a full series, so the pattern scored well, the autopilot armed it on
+// that evidence, and it could never fire live.
+//
+// The cTrader limit is 5 REQUESTS per second, not 5 bars per second, so
+// fetching a deeper window costs the same single request — only a slightly
+// larger response, far inside the 3,000-bar cap.
+//
+// But depth cannot simply be raised for everyone: several strategies read the
+// WHOLE series (volume profile composite, volumeStructure's session split, fib
+// swing selection), so handing them 260 bars where they have always seen 150
+// would change live signals. That is a strategy change dressed as a bug fix.
+// So: fetch deep once, and hand each strategy the window it has always had —
+// except the two that need the depth. See barsFor() in scanSymbolFib.
+const FETCH_BARS = 260        // bars fetched per timeframe (one request either way)
+const SIGNAL_BARS = 150       // bars every pre-existing strategy sees — unchanged
+const BAR_COUNT = SIGNAL_BARS // back-compat for callers that pass an explicit count
 
 // Instrument-class tuning (owner: "do you think current TP/SL for
 // commodities and INDICES make sense... tweaking should be dynamic based on
@@ -437,7 +459,17 @@ function strategyFns(opts) {
  * use"). Now the strongest setup wins regardless of order; ties keep the earlier
  * (registry-order) strategy, so behaviour is deterministic. Pure/testable.
  */
-export function pickBestSignal(fns, closed, timeframe, opts) {
+/**
+ * @param {(fn: Function) => Array} [barsFor] — optional per-strategy bar window.
+ *   Omitted (backtest, display, legacy callers) → every strategy sees `closed`,
+ *   exactly as before. The scan uses it to give Cup & Handle the deeper history
+ *   it needs without changing what any other strategy sees.
+ */
+// The only strategies that need more than SIGNAL_BARS of history. Kept as a
+// set of function references (not keys) because that is what `fns` carries.
+const DEEP_HISTORY_FNS = new Set([computeCupHandleSignal, computeInvCupHandleSignal])
+
+export function pickBestSignal(fns, closed, timeframe, opts, barsFor = null) {
   // Prefer a strategy that is ARMED to trade over a higher-conviction one that
   // isn't. Only an armed strategy can actually place an order, so surfacing the
   // objectively-strongest UNARMED signal just gets it vetoed at the trade gate
@@ -451,7 +483,7 @@ export function pickBestSignal(fns, closed, timeframe, opts) {
   const isArmed = (c) => !armedSet || armedSet.size === 0 || armedSet.has(c.strategy)
   let best = null
   for (const fn of fns) {
-    const c = fn(closed, timeframe, opts)
+    const c = fn(barsFor ? barsFor(fn) : closed, timeframe, opts)
     if (!c) continue
     if (!best) { best = c; continue }
     const ca = isArmed(c), ba = isArmed(best)
@@ -476,7 +508,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const stale = scanTfs.filter(tf => !cachedBars(symbolId, tf))
   if (stale.length > 0) {
     try {
-      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, BAR_COUNT)
+      const fetched = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, stale, FETCH_BARS)
       const now = Date.now()
       for (const tf of stale) {
         barCache.set(`${symbolId}|${tf}`, { bars: fetched[tf] || [], fetchedAt: now })
@@ -519,7 +551,12 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
       // Best-conviction across ALL enabled strategies on this timeframe (not
       // "first in registry order wins" — that starved every strategy but fib).
       // All strategies share the one bar fetch/cache above.
-      const cand = pickBestSignal(fns, closed, timeframe, opts)
+      // Cup & Handle sees the full fetched depth (it needs 210); everything
+      // else sees the same last-150 window it always has, so no other
+      // strategy's behaviour moves with this change.
+      const shallow = closed.length > SIGNAL_BARS ? closed.slice(-SIGNAL_BARS) : closed
+      const barsFor = (fn) => (DEEP_HISTORY_FNS.has(fn) ? closed : shallow)
+      const cand = pickBestSignal(fns, closed, timeframe, opts, barsFor)
       if (cand) {
         cand._preferred = isPreferred(timeframe)
         if (!signal || (cand._preferred && !signal._preferred)) signal = cand

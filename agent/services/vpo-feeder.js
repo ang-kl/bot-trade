@@ -94,6 +94,9 @@ function getVpoConfig(db) {
   try { return JSON.parse(getState(db, 'vpo_config_json') || '[]') } catch { return [] }
 }
 
+// Deep enough for the sidecar's Cup & Handle (kChMinBars = 210), with headroom.
+const VPO_FETCH_BARS = 260
+
 /** One feeder pass: fetch bars + resolve sizing for every configured entry, push once. */
 export async function runVpoFeeder(db, deps = {}) {
   if ((getState(db, 'vpo_enabled') || 'false') !== 'true') return { skipped: 'vpo_enabled is not true' }
@@ -122,9 +125,16 @@ export async function runVpoFeeder(db, deps = {}) {
       const cacheKey = `${symbol}|${macroTf}|${microTf}`
       let batch = batchCache.get(cacheKey)
       if (!batch) {
+        // Explicit depth. This defaulted to 150 (ctrader-ws.js), and the
+        // sidecar's Cup & Handle needs 210 (kChMinBars in vpo_strategies.cpp),
+        // so cup_handle / inv_cup_handle could never clear their length guard
+        // on the VPO path either — armed, and structurally unable to fire.
+        // Costs no extra request: the broker limit is 5 REQUESTS/sec, not bars.
+        // vp_value slices back to its historical 150-bar window on the C++
+        // side so the extra depth does not silently change its value area.
         batch = await wsGetTrendbarsBatch(
           creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
-          symbolId, [macroTf, microTf],
+          symbolId, [macroTf, microTf], VPO_FETCH_BARS,
         )
         batchCache.set(cacheKey, batch)
       }
