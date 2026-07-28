@@ -1118,7 +1118,7 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 // scheduling changed. Exported standalone (db/s/pos/currentPrice/client all
 // passed in, no closure over runLoop state) so it's unit-testable in
 // isolation, same as evaluatePosition/executeBrokerAction.
-export async function monitorOnePosition(db, s, pos, currentPrice, client) {
+export async function monitorOnePosition(db, s, pos, currentPrice, client, skipLlm = () => false) {
   const eval_ = evaluatePosition(pos, { currentPrice, rules: rulesForSymbol(db, pos.symbol) })
 
   // Persist MFE/MAE and any flag flips every loop, regardless of action.
@@ -1207,6 +1207,18 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client) {
     s.updatePositionCheck.run(
       'HOLD',
       `${eval_.reason} | live_tweak_disabled: ${pos.strategy || 'unlabelled'} is OFF in Live Tweak & Close — broker SL/TP still protect`,
+      new Date().toISOString(), 'intact', pos.id
+    )
+    return
+  }
+
+  // Cycle past its soft deadline → deterministic rules already ran above;
+  // skip only the LLM read this cycle (broker SL/TP + fast-monitor still
+  // protect). A stamped HOLD keeps the UI honest about what happened.
+  if (skipLlm()) {
+    s.updatePositionCheck.run(
+      'HOLD',
+      `${eval_.reason} | llm_skipped: cycle past its soft deadline — deterministic rules only this cycle`,
       new Date().toISOString(), 'intact', pos.id
     )
     return
@@ -1339,11 +1351,14 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client) {
 // per-position LLM calls (see monitorOnePosition's header comment).
 export const MONITOR_CONCURRENCY = 4
 
-export async function runMonitorPhase(db, s, positions, currentPriceOf, client) {
+export async function runMonitorPhase(db, s, positions, currentPriceOf, client, skipLlm = () => false) {
   for (let i = 0; i < positions.length; i += MONITOR_CONCURRENCY) {
+    // Progress in the phase label — a stall here now reads "monitoring 22
+    // positions (9-12)" instead of a frozen count (incident forensics).
+    setState(db, 'loop_phase', `monitoring ${positions.length} positions (${i + 1}-${Math.min(i + MONITOR_CONCURRENCY, positions.length)})`)
     const chunk = positions.slice(i, i + MONITOR_CONCURRENCY)
     await Promise.all(chunk.map(pos =>
-      monitorOnePosition(db, s, pos, currentPriceOf(pos), client).catch(err => {
+      monitorOnePosition(db, s, pos, currentPriceOf(pos), client, skipLlm).catch(err => {
         log(`Monitor check failed for ${pos.symbol}:`, err.message)
       })
     ))
@@ -1531,6 +1546,18 @@ async function runLoop(db) {
   loopCount++
   lastLoopActivityAt = Date.now()
   const start = Date.now()
+  // Cycle soft deadline (incident 2026-07-28, third fix of the night: the
+  // per-sub-phase budgets each held, but under a SYSTEMIC slowdown — every
+  // broker/LLM call slow at once — their SUM (6×90s + 2×180s + scan +
+  // monitor) still crossed the 12-min watchdog, so cycles never completed
+  // and loopCount sat frozen while the watchdog crash-looped the process.
+  // Past this deadline the cycle sheds load instead of dying: optional
+  // management sub-phases are skipped outright, the monitor phase drops to
+  // deterministic-rules-only (no LLM reads — broker SL/TP and fast-monitor
+  // still protect), and the cycle COMPLETES. A degraded finished cycle
+  // beats a perfect one the watchdog never lets finish.)
+  const CYCLE_SOFT_DEADLINE_MS = Math.max(120_000, Number(process.env.CYCLE_SOFT_DEADLINE_MS || 7 * 60_000))
+  const cycleOverBudget = () => Date.now() - start > CYCLE_SOFT_DEADLINE_MS
   console.log(`[diag] LOOP #${loopCount} start`)
   setState(db, 'loop_phase', 'starting')
   setState(db, 'loop_started_at', new Date().toISOString())
@@ -2112,7 +2139,9 @@ async function runLoop(db) {
         // cycle SKIP its pending phase rather than run two concurrently
         // (managePendingOrders cancels/places real broker orders — two
         // interleaved runs could double-place).
-        if (pendingPhaseInFlight) {
+        if (cycleOverBudget()) {
+          log('Cycle past soft deadline — skipping pending-order phase this cycle')
+        } else if (pendingPhaseInFlight) {
           log('Pending-order phase from a previous cycle still in flight — skipping this cycle (no overlap)')
         } else if (getState(db, 'pending_mode_enabled') === 'true') {
           const pendingCreds = getCtraderCreds(db)
@@ -2171,7 +2200,7 @@ async function runLoop(db) {
       // autotrade armed; a failure must never take down the loop.
       try {
         const biCreds = getCtraderCreds(db)
-        if (biCreds.ready) {
+        if (biCreds.ready && !cycleOverBudget()) {
           setState(db, 'loop_phase', 'burn-in')
           const { runBurnIn } = await import('./services/burn-in.js')
           const b = await runBudgetedSubPhase(db, 'burn_in', () => runBurnIn(db, biCreds))
@@ -2191,10 +2220,12 @@ async function runLoop(db) {
       // and fired through the same gate chain — never blind on stale prices.
       try {
         const psCreds = getCtraderCreds(db)
-        setState(db, 'loop_phase', 'pending signals')
-        const { runPendingSignals } = await import('./services/pending-signals.js')
-        const p = await runBudgetedSubPhase(db, 'pending_signals', () => runPendingSignals(db, psCreds))
-        if (p.fired || p.expired) log(`Pending signals: ${p.fired} fired, ${p.expired} expired, ${p.checked} checked`)
+        if (!cycleOverBudget()) {
+          setState(db, 'loop_phase', 'pending signals')
+          const { runPendingSignals } = await import('./services/pending-signals.js')
+          const p = await runBudgetedSubPhase(db, 'pending_signals', () => runPendingSignals(db, psCreds))
+          if (p.fired || p.expired) log(`Pending signals: ${p.fired} fired, ${p.expired} expired, ${p.checked} checked`)
+        }
         await hbeat(db, 'pending_signals')
       } catch (err) {
         log(`Pending-signals retry failed (non-fatal): ${err.message}`)
@@ -2206,7 +2237,7 @@ async function runLoop(db) {
       // rules; a failure must never take down the loop.
       try {
         const guardCreds = getCtraderCreds(db)
-        if (guardCreds.ready) {
+        if (guardCreds.ready && !cycleOverBudget()) {
           setState(db, 'loop_phase', 'trade guards')
           const { runTradeGuards } = await import('./services/trade-guard.js')
           const g = await runBudgetedSubPhase(db, 'trade_guards', () => runTradeGuards(db, guardCreds, {
@@ -2226,7 +2257,7 @@ async function runLoop(db) {
       // when off; a failure must never take down the loop.
       try {
         const keeperCreds = getCtraderCreds(db)
-        if (keeperCreds.ready) {
+        if (keeperCreds.ready && !cycleOverBudget()) {
           setState(db, 'loop_phase', 'profit keeper')
           const { runProfitKeeper } = await import('./services/profit-keeper.js')
           const k = await runBudgetedSubPhase(db, 'profit_keeper', () => runProfitKeeper(db, keeperCreds, {
@@ -2247,7 +2278,7 @@ async function runLoop(db) {
       // never tightens a valid mean-reversion stop. Inert when off; non-fatal.
       try {
         const guardCreds = getCtraderCreds(db)
-        if (guardCreds.ready) {
+        if (guardCreds.ready && !cycleOverBudget()) {
           setState(db, 'loop_phase', 'loss guardian')
           const { runLossGuardian } = await import('./services/loss-guardian.js')
           const g = await runBudgetedSubPhase(db, 'loss_guardian', () => runLossGuardian(db, guardCreds, {
@@ -2270,7 +2301,7 @@ async function runLoop(db) {
       try {
         const creds = getCtraderCreds(db)
         const haveHours = db.prepare('SELECT COUNT(*) AS n FROM symbol_hours').get().n
-        if (creds.ready && (loopCount % 288 === 5 || haveHours === 0)) {
+        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 5 || haveHours === 0)) {
           setState(db, 'loop_phase', 'market-hours refresh')
           const { refreshSymbolHours } = await import('./services/symbol-hours.js')
           // Hours refresh sweeps 1,900+ symbols in batches — give it a wider
@@ -2287,10 +2318,12 @@ async function runLoop(db) {
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {
-        setState(db, 'loop_phase', 'autopilot')
-        const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
-        const r = await runBudgetedSubPhase(db, 'autopilot', () => maybeRunAutopilot(db, getCtraderCreds(db)), SUB_PHASE_BUDGET_MS * 2)
-        if (r && !r.skipped && !r.skippedOverlap && !r.timedOut) log(`Autopilot: ${JSON.stringify(r)}`)
+        if (!cycleOverBudget()) {
+          setState(db, 'loop_phase', 'autopilot')
+          const { maybeRunAutopilot } = await import('./services/strategy-autopilot.js')
+          const r = await runBudgetedSubPhase(db, 'autopilot', () => maybeRunAutopilot(db, getCtraderCreds(db)), SUB_PHASE_BUDGET_MS * 2)
+          if (r && !r.skipped && !r.skippedOverlap && !r.timedOut) log(`Autopilot: ${JSON.stringify(r)}`)
+        }
         await hbeat(db, 'autopilot')
       } catch (err) {
         log(`Autopilot failed (non-fatal): ${err.message}`)
@@ -2311,7 +2344,7 @@ async function runLoop(db) {
       const weekendPositions = weekendNow
         ? tradPositions.filter(p => !isSymbolMarketOpen(p.symbol).open)
         : []
-      if (weekendPositions.length > 0 && loopCount % 12 === 1) {
+      if (weekendPositions.length > 0 && loopCount % 12 === 1 && !cycleOverBudget()) {
         setState(db, 'loop_phase', `weekend watch (${weekendPositions.length})`)
         log(`Weekend watch — reviewing ${weekendPositions.length} closed-market position(s)`)
         // D4b: bounded-concurrency, not one-position-at-a-time — see
@@ -2357,7 +2390,7 @@ async function runLoop(db) {
       await runMonitorPhase(db, s, activePositions, pos => {
         const scanRow = lastScanResults?.scans?.find(sc => sc.symbol === pos.symbol)
         return heldPrices[String(pos.symbol).toUpperCase()] ?? scanRow?.price ?? null
-      }, client)
+      }, client, cycleOverBudget)
 
       // ---------------------------------------------------------------------
       // 4a-bis. ADAPTIVE BREAKER — the machine response to a loss streak:
