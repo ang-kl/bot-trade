@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
-import { categorize, MARKETS, dayAnchorMs, weekAnchorMs, closedAtMs } from '../../shared/formulas.js'
+import { categorize, MARKETS, dayAnchorMs, weekAnchorMs, closedAtMs } from '../shared/formulas.js'
 
 export { categorize, MARKETS, closedAtMs }
 
