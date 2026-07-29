@@ -8,6 +8,7 @@ import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
+import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { stratShort } from '../lib/strategy-labels.js'
@@ -1393,22 +1394,19 @@ export default function Tune() {
             <Card id="sec-pipe-cadence" className="w3-hover-shadow">
               <SectionTitle>Cadence and coverage</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">How often the loop runs, how often open positions are checked, and which timeframes are scanned at all.</p>
-            <div className="mt-3 flex items-center gap-2 text-[9px]">
-              <label className="flex items-center gap-1.5">
-                Scan every
-                <Input
-                  type="number" min="1" max="60" className="w-16 !py-0.5 !min-h-0"
-                  value={config?.loop_interval_min ?? 5}
-                  aria-label="Scan interval in minutes (1 to 60)"
-                  onChange={e => setConfig(c => ({ ...c, loop_interval_min: e.target.value === '' ? '' : Number(e.target.value) }))}
-                  onBlur={() => {
-                    const n = Number(config?.loop_interval_min)
-                    if (Number.isFinite(n) && n >= 1 && n <= 60) run(() => agentPost('/actions/loop-interval', { minutes: n }), `Scan cadence: every ${n} min`)
-                  }}
-                />
-                minutes
-              </label>
-              <span className="text-[9px] text-[var(--color-text-sub)]">— applies from the next cycle, no restart. Faster = more broker calls (still free), slower = later entries.</span>
+            {/* UI-6: the shared Field row. onChange tracks the draft, onCommit
+                fires on blur — the same commit point as before, so typing "1"
+                on the way to "15" still cannot post a 1-minute loop. */}
+            <div className="mt-3">
+              <Field label="Scan every" unit="min" min="1" max="60" placeholder="5"
+                value={config?.loop_interval_min ?? 5}
+                onChange={v => setConfig(c => ({ ...c, loop_interval_min: v ?? '' }))}
+                onCommit={() => {
+                  const n = Number(config?.loop_interval_min)
+                  if (Number.isFinite(n) && n >= 1 && n <= 60) run(() => agentPost('/actions/loop-interval', { minutes: n }), `Scan cadence: every ${n} min`)
+                }}
+                hint="How often the whole loop runs — scan, analyze, dispatch, monitor. Applies from the next cycle, no restart."
+                recommend="5 minutes. Faster = more broker calls (still free); slower = later entries." />
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px]">
               <span className="font-semibold">Position monitor:</span>
@@ -1651,18 +1649,17 @@ export default function Tune() {
                 }, `Loss Guardian ${next ? 'armed' : 'off'}`)
               }} />
               {lossGuard?.on && (
-                <label className="flex items-center gap-1 text-[9px] text-[var(--color-text-sub)]">
-                  Time cap (h)
-                  <Input type="number" min="0" step="1" className="w-16 !py-0.5 !min-h-0"
-                    value={lossGuard.maxHoldHours ?? ''}
-                    aria-label="Loss Guardian time cap hours"
-                    placeholder="off"
-                    onChange={e => setLossGuard(g => ({ ...g, maxHoldHours: e.target.value === '' ? null : Number(e.target.value) }))}
-                    onBlur={() => run(async () => {
+                <span className="min-w-[190px]">
+                  <Field label="Time cap" unit="h" min="0" step="1" placeholder="off"
+                    value={lossGuard.maxHoldHours ?? null}
+                    onChange={v => setLossGuard(g => ({ ...g, maxHoldHours: v }))}
+                    onCommit={() => run(async () => {
                       const r = await agentPost('/actions/loss-guardian', { maxHoldHours: lossGuard.maxHoldHours === '' || lossGuard.maxHoldHours == null ? null : Number(lossGuard.maxHoldHours) })
                       setLossGuard(r.config)
-                    }, 'Loss Guardian updated')} />
-                </label>
+                    }, 'Loss Guardian updated')}
+                    hint="A naked position still open after this many hours is closed regardless of P&L. Empty = off."
+                    recommend="unset — let price levels decide, unless positions keep rotting for days." />
+                </span>
               )}
               <span className="w-full text-[9px] text-[var(--color-text-sub)]">
                 Safety net for LOSING positions the Profit Keeper won't touch. A position with NO stop gets a protective SL {lossGuard?.maxAtrMult ?? 3}×ATR from entry (or is closed if already past that); an optional time cap closes anything held too long. It never tightens a stop you already set — your mean-reversion trades keep their room to breathe.
@@ -1702,14 +1699,18 @@ export default function Tune() {
                   const r = await agentPost('/actions/profit-keeper', patch)
                   setKeeper(r.config)
                 }, msg)
+                // UI-6: same shared Field row as the Risk page. The commit
+                // point is unchanged (blur → POST); `opts.wide` is gone
+                // because every field is now the same width, which was the
+                // point of the uniform row.
                 const numField = (label, key, opts = {}) => (
-                  <label key={key} className="flex items-center gap-1">{label}
-                    <Input type="number" className={`${opts.wide ? 'w-16' : 'w-14'} !py-0.5 !min-h-0`} value={keeper[key] ?? ''}
+                  <span key={key} className="min-w-[170px]">
+                    <Field label={label} unit={opts.suffix ? opts.suffix.trim() : undefined}
                       min={opts.min} max={opts.max} step={opts.step || 'any'}
-                      aria-label={`Profit Keeper ${label}`}
-                      onChange={e => setKeeper(k => ({ ...k, [key]: e.target.value }))}
-                      onBlur={() => post({ [key]: Number(keeper[key]) })} />{opts.suffix || ''}
-                  </label>
+                      value={keeper[key] ?? null} hint={opts.hint}
+                      onChange={v => setKeeper(k => ({ ...k, [key]: v }))}
+                      onCommit={() => post({ [key]: Number(keeper[key]) })} />
+                  </span>
                 )
                 return (
                   <>
@@ -1723,15 +1724,15 @@ export default function Tune() {
                     </span>
                     {keeper.mode === 'adaptive' ? (
                       <>
-                        {numField('arm ×ATR', 'armAtrMult', { min: 0.1, max: 10, step: 0.1 })}
-                        {numField('floor', 'armBalancePct', { min: 0.01, max: 5, step: 0.05, suffix: '% bal' })}
-                        {numField('trail ×ATR', 'trailAtrMult', { min: 0.5, max: 10, step: 0.5 })}
-                        {numField('bank at arm', 'scaleOutFrac', { min: 0, max: 0.9, step: 0.1, suffix: ' frac' })}
+                        {numField('Arm', 'armAtrMult', { min: 0.1, max: 10, step: 0.1, suffix: '×ATR', hint: "Arms once peak profit passes this many ATRs of the position's own value." })}
+                        {numField('Noise floor', 'armBalancePct', { min: 0.01, max: 5, step: 0.05, suffix: '% bal', hint: 'Minimum arm threshold as a % of balance — stops tiny instruments arming on noise.' })}
+                        {numField('Trail', 'trailAtrMult', { min: 0.5, max: 10, step: 0.5, suffix: '×ATR', hint: 'Chandelier distance: the broker stop sits this many ATRs behind the peak price. Only ever rises.' })}
+                        {numField('Bank at arm', 'scaleOutFrac', { min: 0, max: 0.9, step: 0.1, suffix: 'frac', hint: 'Fraction closed the moment it arms; the rest runs on the trail. 0 = off.' })}
                       </>
                     ) : (
                       <>
-                        {numField('arm at +$', 'armProfitUsd', { min: 1, wide: true })}
-                        {numField('giveback', 'givebackPct', { min: 5, max: 95, suffix: '%' })}
+                        {numField('Arm at', 'armProfitUsd', { min: 1, suffix: '$', hint: 'Fixed mode: nothing happens until peak floating profit reaches this.' })}
+                        {numField('Giveback', 'givebackPct', { min: 5, max: 95, suffix: '%', hint: 'Fixed mode: the lock sits at (100 − this)% of the peak. Clamped 0–95 by the engine.' })}
                       </>
                     )}
                     <span role="radiogroup" aria-label="Profit Keeper scope" className="flex items-center gap-1">
