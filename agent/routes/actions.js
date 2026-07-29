@@ -3184,9 +3184,45 @@ export default function actionsRouter(db) {
       const accessToken = getState(db, 'ctrader_access_token') || ctraderEnv('accessToken')
       if (!accessToken) return res.status(400).json({ error: 'No access token stored — connect cTrader first' })
       const accounts = await listCtraderAccounts(accessToken)
+
+      // REGISTER WHAT WE DISCOVER (2026-07-29). Browsing the broker's account
+      // list used to leave no trace, so an account only entered the registry
+      // once it was SELECTED or role-pushed. Everything that reads the
+      // registry — the account roster, per-account watchlists, the compare &
+      // copy panel — therefore could not see an account the operator had
+      // never selected. Owner, on their live account: "How come cannot see
+      // the live account?" Because it had never been selected, so it was
+      // never registered.
+      //
+      // Registering is NOT enabling. upsertAccount inserts with enabled = 0
+      // and mode = 'manage_only', and never touches those flags on a row that
+      // already exists — so a discovered account becomes VISIBLE and
+      // configurable without becoming tradeable. Nothing dispatches to it
+      // until it is deliberately enabled, which is exactly what the
+      // multi-account plan intended for non-selected live accounts.
+      let registered = 0
+      try {
+        const { upsertAccount } = await import('../services/account-registry.js')
+        for (const a of accounts) {
+          if (a?.accountId == null) continue
+          upsertAccount(db, {
+            accountId: a.accountId,
+            traderLogin: a.traderLogin ?? null,
+            isLive: !!a.isLive,
+            brokerLabel: a.brokerTitle || null,
+          })
+          registered++
+        }
+      } catch (e) {
+        // Discovery must still answer even if the registry write fails —
+        // the picker is how the operator recovers from a broken link.
+        console.warn('[actions/ctrader-accounts] registry upsert failed (non-fatal):', e.message)
+      }
+
       res.json({
         ok: true,
         accounts,
+        registered,
         selectedAccountId: getState(db, 'ctrader_account_id') || null,
       })
     } catch (err) {
