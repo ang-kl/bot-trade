@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -317,6 +319,10 @@ export default function Desk() {
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load, hasActivity])
 
+  // An account switch must not wait out this page's poll interval (see
+  // src/lib/selected-account.js — it was up to 70s with the server cache).
+  const switchingTo = useAccountSwitch(load)
+
   const watch = (config?.symbols || []).filter(w => w.enabled !== false).map(w => w.symbol)
   // Chart wall order: live broker positions first, then bot-tracked, then
   // whatever the scan currently finds ACTIVE (a live bias — hot before
@@ -413,6 +419,7 @@ export default function Desk() {
   return (
     <div className="space-y-2">
       <SectionNavFab sections={DESK_SECTIONS} />
+      <SwitchingNote to={switchingTo} />
       {error && <Card className="text-[9px]">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.

@@ -13,6 +13,8 @@
 // toggle — mobile follows the system exactly as the design asks.
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -1150,6 +1152,10 @@ export default function Performance() {
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
 
+  // An account switch must not wait out this page's poll interval (see
+  // src/lib/selected-account.js — it was up to 70s with the server cache).
+  const switchingTo = useAccountSwitch(load)
+
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
   const scopedClosed = useMemo(() => {
@@ -1783,6 +1789,7 @@ export default function Performance() {
 
   return (
     <div className="space-y-2">
+      <SwitchingNote to={switchingTo} />
       <SectionNavFab sections={PERF_SECTIONS} />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}

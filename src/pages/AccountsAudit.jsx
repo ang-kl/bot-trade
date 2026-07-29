@@ -15,6 +15,8 @@ import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import WorkflowAudit from '../components/WorkflowAudit.jsx'
 import SymbolClusters from '../components/SymbolClusters.jsx'
 import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import SwitchingNote from '../components/common/SwitchingNote.jsx'
 
 const REFRESH_MS = 60_000
 
@@ -67,10 +69,15 @@ export default function AccountsAudit() {
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load])
 
+  // An account switch must not wait out this page's poll interval (see
+  // src/lib/selected-account.js — it was up to 70s with the server cache).
+  const switchingTo = useAccountSwitch(load)
+
   useEffect(() => { loadClusters() }, [loadClusters])
 
   return (
     <div className="space-y-2">
+      <SwitchingNote to={switchingTo} />
       <SectionNavFab sections={[{ id: 'sec-clusters', label: 'Same-symbol clusters' }, { id: 'sec-workflow', label: 'Workflow audit' }]} />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts · Workflow audit</h1>
