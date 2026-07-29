@@ -1240,9 +1240,6 @@ export default function Performance() {
   // adding unrealized money to either would make the close-balance line
   // disagree with the broker's balance. Equity = balance + floating, and this
   // column is the floating half shown next to it, not mixed into it.
-  const liveFloating = useMemo(
-    () => totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot),
-    [openSplit])
 
   // Today's closed-trade stats per market session (owner: "all the
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
@@ -1374,6 +1371,16 @@ export default function Performance() {
     const tot = (l) => (l.some(r => r.pnl != null) ? l.reduce((s, r) => s + (r.pnl ?? 0), 0) : null)
     return { floating, closed, weekend24, floatTot: tot(floating), closedTot: tot(closed), weekendTot: tot(weekend24) }
   }, [positions, loadedAt])
+
+  // MUST stay BELOW openSplit. It was declared ~80 lines above it and read
+  // openSplit inside the useMemo factory, which React runs during render —
+  // so it hit the temporal dead zone and threw "Cannot access 'openSplit'
+  // before initialization". Performance is the landing route AND is in the
+  // main bundle, so the throw took out the whole app: every page rendered
+  // blank. Shipped in #482 and live until 2026-07-29.
+  const liveFloating = useMemo(
+    () => totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot),
+    [openSplit])
 
 
   // Stat tiles migrated verbatim from Desk's old Performance section —

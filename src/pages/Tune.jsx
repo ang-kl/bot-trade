@@ -762,7 +762,6 @@ export default function Tune() {
   const [stageMx, setStageMx] = useState(null)       // strategy × stage matrix (Pipeline table)
   const [vetoMix, setVetoMix] = useState(null)       // veto reasons breakdown (30d)
   const [monOvDraft, setMonOvDraft] = useState({ symbol: '', minutes: '' }) // per-symbol monitor override editor
-  const [guardianPctDraft, setGuardianPctDraft] = useState('') // tick guardian move-threshold editor
   // Excel-style bands in the active watchlist: which group bands are OPEN.
   // Groups default COLLAPSED (100s of instruments must not overwhelm the
   // page); the Singles band starts open. Persisted per device.
@@ -1446,8 +1445,17 @@ export default function Tune() {
                   }, mins == null ? `${sym} monitor cadence → auto` : `${sym} monitor cadence pinned to ${mins}m`)
                 }}
               >
-                <Input value={monOvDraft.symbol} onChange={e => setMonOvDraft(d => ({ ...d, symbol: e.target.value }))} placeholder="SYMBOL" className="w-24 !py-0.5 !min-h-0 text-[9px]" aria-label="Override symbol" />
-                <Input type="number" step="0.25" min="0.25" max="30" value={monOvDraft.minutes} onChange={e => setMonOvDraft(d => ({ ...d, minutes: e.target.value }))} placeholder="min (empty=auto)" className="w-32 !py-0.5 !min-h-0 text-[9px]" aria-label="Override minutes" />
+                {/* UI-6 part 4: styling unified with every other input on the
+                    page, but the SUBMIT IS DELIBERATELY KEPT. This is not a
+                    setting — it is a two-field ADD, and the two fields are
+                    only meaningful together. On blur-to-commit, tabbing out
+                    of the symbol box would POST an override with no cadence,
+                    and leaving the row half-filled would create a bogus
+                    entry. A commit that needs two values needs a commit
+                    button; converting it for consistency's sake would be
+                    consistency bought with a real bug. */}
+                <Input value={monOvDraft.symbol} onChange={e => setMonOvDraft(d => ({ ...d, symbol: e.target.value }))} placeholder="SYMBOL" className="!w-24 !min-h-[26px] max-[430px]:!min-h-[44px] !py-0.5 !px-2 !text-[9px]" aria-label="Override symbol" />
+                <Input type="number" step="0.25" min="0.25" max="30" value={monOvDraft.minutes} onChange={e => setMonOvDraft(d => ({ ...d, minutes: e.target.value }))} placeholder="min (empty=auto)" className="!w-32 !min-h-[26px] max-[430px]:!min-h-[44px] !py-0.5 !px-2 !text-[9px] text-right" aria-label="Override minutes" />
                 <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[9px]">Set</Button>
               </form>
               {Object.entries(config?.monitor_overrides || {}).map(([sym, m]) => (
@@ -1548,11 +1556,20 @@ export default function Tune() {
                         <td className="py-1 pr-3">{row.class}{row.overridden ? ' *' : ''}</td>
                         {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR'].map(k => (
                           <td key={k} className="py-1 pr-3">
-                            <input
+                            {/* UI-6 part 4: was a bare <input> with its own
+                                hand-rolled border/padding — the last control
+                                on this page not using the shared Input. Its
+                                COMMIT POINT is unchanged (it already fired on
+                                blur, and still skips the POST when the value
+                                did not actually move). It stays a bare cell
+                                rather than a Field row because the table
+                                header already labels the column; a Field row
+                                here would put a second label in every cell. */}
+                            <Input
                               type="number" step="0.1" min="0.1" max="20"
                               defaultValue={row[k]}
                               aria-label={`${row.class} ${k}`}
-                              className="w-16 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9px]"
+                              className="!w-16 !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right"
                               onBlur={(e) => {
                                 const v = e.target.value === '' ? null : Number(e.target.value)
                                 if (e.target.value !== '' && Number(v) === row[k]) return
@@ -1585,27 +1602,22 @@ export default function Tune() {
                 inside the final window before a weekend/holiday closure, closes any position (bot or manual) that's in profit — skips losers, avoids holding gap risk through the close
               </span>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px]">
-              <span className="font-semibold">Tick guardian threshold:</span>
-              <form
-                className="flex items-center gap-1"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  const pct = Number(guardianPctDraft)
+            {/* UI-6 part 4: was a write-only box + Set button that started
+                EMPTY and printed "current: 0.05%" in prose beside it — so the
+                field never showed you the setting, only accepted a new one.
+                As a Field row the current value IS the field, which is how
+                every other setting on this page and the Risk page behaves. */}
+            <div className="mt-2 max-w-[320px]">
+              <Field label="Tick guardian threshold" unit="%" min="0.01" max="5" step="0.01"
+                value={config?.guardian_move_pct ?? 0.05}
+                onChange={v => setConfig(c => ({ ...c, guardian_move_pct: v }))}
+                onCommit={() => {
+                  const pct = Number(config?.guardian_move_pct)
                   if (!Number.isFinite(pct) || pct <= 0) { setError('Guardian threshold must be a positive percent'); return }
-                  run(async () => {
-                    await agentPost('/actions/guardian-move-pct', { pct })
-                    setConfig(c => ({ ...c, guardian_move_pct: pct }))
-                    setGuardianPctDraft('')
-                  }, `Tick guardian threshold → ${pct}%`)
+                  run(() => agentPost('/actions/guardian-move-pct', { pct }), `Tick guardian threshold → ${pct}%`)
                 }}
-              >
-                <Input type="number" step="0.01" min="0.01" max="5" value={guardianPctDraft} onChange={e => setGuardianPctDraft(e.target.value)} className="w-20 !py-0.5 !min-h-0 text-[9px]" aria-label="Guardian move threshold percent" />
-                <Button size="sm" variant="subtle" type="submit" className="!px-2 !py-0.5 !min-h-0 text-[9px]">Set</Button>
-              </form>
-              <span className="text-[9px] text-[var(--color-text-sub)]">
-                current: {config?.guardian_move_pct ?? 0.05}% — a live price tick moving this much between the 30s checks triggers an immediate sweep of open positions instead of waiting for the next tick
-              </span>
+                hint="A live price tick moving this much between the 30-second checks triggers an immediate sweep of open positions instead of waiting for the next one."
+                recommend="0.05% — small enough to catch a spike, large enough not to sweep on noise." />
             </div>
             {/* Burn-in — the track-record builder: min-size trades with
                 tight time caps across the enabled watchlist, mass-producing
