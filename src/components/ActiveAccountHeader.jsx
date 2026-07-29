@@ -21,7 +21,9 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 const CACHE = 'accounts_cache_v1'
 const POLL_MS = 30_000
 
-export default function ActiveAccountHeader() {
+// Shared reader so the sidebar block and the touch-header chip agree about
+// which account is selected and whether it is trading.
+function useActiveAccount() {
   const [acct, setAcct] = useState(null)      // { accountId, traderLogin, isLive, balance }
   const [armed, setArmed] = useState(null)    // autotradeEnabled — null until known
   const [ccy, setCcy] = useState(null)        // deposit currency, when the broker has told us
@@ -58,6 +60,35 @@ export default function ActiveAccountHeader() {
     return () => clearInterval(id)
   }, [])
 
+  return { acct, armed, ccy }
+}
+
+/**
+ * Compact chip for the touch header — the same fact in one line, because a
+ * phone header has no room for three (owner: "dense and less screen
+ * scrolling"). Same colour rule: accent while trading, grey while not.
+ */
+export function ActiveAccountHeaderCompact() {
+  const { acct, armed, ccy } = useActiveAccount()
+  if (!acct) return null
+  const trading = armed === true
+  return (
+    <span
+      className={`text-[9px] font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}
+      title={trading ? 'autotrade is ARMED on this account' : 'autotrade is OFF on this account'}
+    >
+      {acct.isLive ? 'LIVE' : 'DEMO'} {acct.traderLogin ?? acct.accountId}
+      {acct.balance != null && (
+        <span className="ml-1 font-normal text-[var(--color-text-sub)]">
+          {ccy ? `${ccy} ` : ''}{Number(acct.balance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+        </span>
+      )}
+    </span>
+  )
+}
+
+export default function ActiveAccountHeader() {
+  const { acct, armed, ccy } = useActiveAccount()
   if (!acct) return null
 
   const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
