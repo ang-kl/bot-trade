@@ -407,3 +407,97 @@ test('the loop query returns the fields auditProtection reads', () => {
   assert.equal(a.naked.length, 1, 'the real query feeding the real audit must still detect a naked position')
   assert.equal(a.unmatched, 0)
 })
+
+// ---------------------------------------------------------------------------
+// UNMATCHED IS NOT "FINE", AND ONE ACCOUNT IS NOT THE BOOK.
+//
+// Staging, 2026-07-29 03:19, first successful run after the wrong-table fix:
+//   { checked: 4, unmatched: 4, summary: "4 position(s) checked, all protected" }
+// All four positions were on account 46130058 and were compared against the
+// PRIMARY account's broker snapshot, so none matched. The audit verified
+// nothing and said everything was fine — the exact false reassurance this
+// module exists to prevent, reproduced one level up.
+// ---------------------------------------------------------------------------
+
+test('THE STAGING CASE: nothing verified must not read as "all protected"', async () => {
+  const db = tmpDb()
+  // Four open rows, and a broker snapshot that mentions none of them.
+  const rows = [1, 2, 3, 4].map(i => row({ id: i, ctrader_position_id: String(900 + i), current_sl: 1.5 }))
+  await runProtectionAudit(db, rows, [{ positionId: '555', stopLoss: 1.5, takeProfit: 1.4 }], {
+    nowMs: T0, sendMessage: async () => {},
+  })
+  const last = lastProtectionAudit(db, { nowMs: T0 })
+  assert.equal(last.checked, 4)
+  assert.equal(last.unmatched, 4)
+  assert.match(last.summary, /NONE could be checked against broker truth/)
+  assert.ok(!/all protected/.test(last.summary), 'claiming "all protected" here is the bug')
+})
+
+test('a PARTIAL match says how many were actually verified', () => {
+  const a = auditProtection(
+    [row({ id: 1, ctrader_position_id: '555', current_sl: 1.5 }),
+      row({ id: 2, ctrader_position_id: '777', current_sl: 1.5 })],
+    [{ positionId: '555', stopLoss: 1.5, takeProfit: 1.4 }],
+  )
+  assert.equal(a.checked, 2)
+  assert.equal(a.unmatched, 1)
+})
+
+test('a partially-verified book names the gap instead of rounding it away', async () => {
+  const db = tmpDb()
+  await runProtectionAudit(db,
+    [row({ id: 1, ctrader_position_id: '555', current_sl: 1.5 }),
+      row({ id: 2, ctrader_position_id: '777', current_sl: 1.5 })],
+    [{ positionId: '555', stopLoss: 1.5, takeProfit: 1.4 }],
+    { nowMs: T0, sendMessage: async () => {} })
+  const s = lastProtectionAudit(db, { nowMs: T0 }).summary
+  assert.match(s, /1 of 2 position\(s\) verified, all protected/)
+  assert.match(s, /1 could not be matched to broker truth/)
+})
+
+test('each account keeps its OWN record — the last one to run must not clobber the rest', async () => {
+  const db = tmpDb()
+  // Account A: one position, protected. Account B: one position, NAKED.
+  await runProtectionAudit(db, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5, account_id: 'A' })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }],
+    { nowMs: T0, accountId: 'A', sendMessage: async () => {} })
+  await runProtectionAudit(db, [row({ id: 2, ctrader_position_id: '222', current_sl: null, account_id: 'B' })],
+    [{ positionId: '222', stopLoss: null }],
+    { nowMs: T0 + 1000, accountId: 'B', sendMessage: async () => {} })
+
+  // Per-account reads stay separate.
+  assert.equal(lastProtectionAudit(db, { nowMs: T0 + 1000, accountId: 'A' }).naked, 0)
+  assert.equal(lastProtectionAudit(db, { nowMs: T0 + 1000, accountId: 'B' }).naked, 1)
+
+  // The whole-book read SUMS them — B's naked position must not vanish
+  // because A ran first and A was clean.
+  const all = lastProtectionAudit(db, { nowMs: T0 + 1000 })
+  assert.equal(all.checked, 2)
+  assert.equal(all.naked, 1, 'the unprotected position on B must survive into the portfolio view')
+  assert.equal(all.accounts, 2)
+})
+
+test('the whole-book age comes from the STALEST account, not the freshest', async () => {
+  const db = tmpDb()
+  await runProtectionAudit(db, [row({ id: 1, ctrader_position_id: '111', current_sl: 1.5 })],
+    [{ positionId: '111', stopLoss: 1.5, takeProfit: 1.4 }],
+    { nowMs: T0, accountId: 'A', sendMessage: async () => {} })
+  await runProtectionAudit(db, [row({ id: 2, ctrader_position_id: '222', current_sl: 1.5 })],
+    [{ positionId: '222', stopLoss: 1.5, takeProfit: 1.4 }],
+    { nowMs: T0 + 3600_000, accountId: 'B', sendMessage: async () => {} })
+
+  // A portfolio is only as freshly verified as its stalest account. Reporting
+  // the newest would let one healthy account mask five unchecked ones.
+  const all = lastProtectionAudit(db, { nowMs: T0 + 3600_000 })
+  assert.equal(all.ageSec, 3600, 'age must come from account A, the older check')
+})
+
+test('with every account failing, the whole-book read surfaces a real reason', () => {
+  const db = tmpDb()
+  recordAuditUnavailable(db, 'broker unreachable', { nowMs: T0, accountId: 'A' })
+  recordAuditUnavailable(db, 'reconcile failed: boom', { nowMs: T0 + 5000, accountId: 'B' })
+  const all = lastProtectionAudit(db, { nowMs: T0 + 5000 })
+  assert.equal(all.hasRun, false)
+  assert.match(all.summary, /never completed/)
+  assert.match(all.summary, /boom|unreachable/, 'a bare "never run" hides why')
+})

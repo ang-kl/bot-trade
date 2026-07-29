@@ -1753,13 +1753,21 @@ async function runLoop(db) {
             // and the panel's "idle" was that crash, not a resting state.
             // Found 2026-07-29 02:51 only because ¶D·2's failed-beat put the
             // message somewhere a human could read it.
+            // SCOPED TO THIS ACCOUNT. `positions` is the broker snapshot for
+            // `accountId` alone, so auditing every account's rows against it
+            // marks all the others `unmatched` — checked but never verified.
+            // Staging showed exactly that on 2026-07-29: 4 open positions on
+            // 46130058 audited against 43097342's snapshot, 4 unmatched, and
+            // the panel said "all protected". Other accounts are audited in
+            // the per-account reconcile pass below, against their own truth.
             const openRows = db.prepare(
               `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
                       t.ctrader_position_id
                  FROM monitored_positions mp
                  LEFT JOIN trades t ON t.id = mp.trade_id
-                WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL`
-            ).all()
+                WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL
+                  AND (mp.account_id = ? OR mp.account_id IS NULL)`
+            ).all(String(accountId))
             const brokerSl = positions.map(p => ({
               positionId: p.positionId,
               stopLoss: p.stopLoss ?? null,
@@ -2039,6 +2047,37 @@ async function runLoop(db) {
                   (k, v) => setAccountState(db, acc.account_id, k, v),
                   { accountId: acc.account_id })
                 log(`Reconcile[${acc.account_id}]: ${r2.newExternal.length} new external, ${r2.closedDetected.length} closed, ${(r2.orphansClosed || []).length} orphan(s)`)
+
+                // Audit THIS account against ITS OWN broker truth. Without
+                // this, every position on a non-primary account is `unmatched`
+                // — counted as checked and never actually verified. On staging
+                // that meant all four live positions, i.e. the whole book.
+                try {
+                  const { runProtectionAudit } = await import('./services/naked-position-guard.js')
+                  const rows2 = db.prepare(
+                    `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
+                            t.ctrader_position_id
+                       FROM monitored_positions mp
+                       LEFT JOIN trades t ON t.id = mp.trade_id
+                      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL
+                        AND mp.account_id = ?`
+                  ).all(String(acc.account_id))
+                  if (rows2.length) {
+                    const bp2 = pos2.map(p => ({
+                      positionId: p.positionId,
+                      stopLoss: p.stopLoss ?? null,
+                      takeProfit: p.takeProfit ?? null,
+                    }))
+                    let notify2 = null
+                    if (process.env.TELEGRAM_BOT_TOKEN) notify2 = (await import('./services/telegram.js')).sendMessage
+                    const p2 = await runProtectionAudit(db, rows2, bp2, { sendMessage: notify2, accountId: acc.account_id })
+                    if (p2.naked.length || p2.targetless.length || p2.phantom.length) {
+                      log(`PROTECTION AUDIT[${acc.account_id}]: ${p2.naked.length} with NO stop, ${p2.targetless.length} with no take profit, ${p2.phantom.length} disagreement(s)`)
+                    }
+                  }
+                } catch (e2) {
+                  log(`Protection audit[${acc.account_id}] failed (non-fatal): ${e2.message}`)
+                }
               } catch (e) {
                 log(`Reconcile[${acc.account_id}] failed (non-fatal): ${e.message}`)
               }
