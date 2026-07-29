@@ -14,6 +14,8 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import WorkedExample from '../components/common/WorkedExample.jsx'
+import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -444,7 +446,14 @@ export default function Risk() {
                   </div>
                 </div>
               ) : (
-                <div className="text-[9px] text-[var(--color-text-sub)]">No staircase state yet — it baselines at current equity on the ratchet's first pass after enabling.</div>
+                // No live staircase to show. THIS is where a worked example
+                // earns its place: once the ratchet has run, the real
+                // baseline/HWM/floor above beats any hypothetical.
+                <div className="text-[9px] text-[var(--color-text-sub)] space-y-1">
+                  <div>No staircase state yet — it baselines at current equity on the ratchet's first pass after enabling.</div>
+                  <WorkedExample label="What that will look like"
+                    lines={ratchetExample({ balance: balNow, stepUsd: ratchet?.stepUsd })} />
+                </div>
               )
             })()}
             <div className="flex items-center gap-2">
@@ -476,6 +485,7 @@ export default function Risk() {
             <Field label="Max hold time" unit="h" value={guardian2?.maxHoldHours} onChange={v => setGuardian2(c => ({ ...c, maxHoldHours: v }))}
               placeholder="off"
               hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
+            <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />
             <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', guardian2))}>Save guardian</Button></span>
           </div>
         </div>
