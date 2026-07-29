@@ -56,6 +56,8 @@ const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
 import AccountSwitcher from './components/AccountSwitcher.jsx'
+import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/ActiveAccountHeader.jsx'
+import MobileTabBar from './components/MobileTabBar.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import TabsPanel from './components/common/TabsPanel.jsx'
 import { useTheme } from './lib/theme.js'
@@ -161,6 +163,46 @@ function navLinkClasses(isActive) {
 
 export default function App() {
   const { theme, setTheme } = useTheme()
+  // The desktop footer wraps to two lines on narrow desktops (measured: ~39px
+  // at 1440x900, ~58px at 1280x800), so its height cannot be hardcoded — and
+  // the sidebar has to stop exactly above it or the two overlap, which is the
+  // bug the owner reported. Measure it and publish --footer-h.
+  const footerRef = useRef(null)
+  useEffect(() => {
+    const el = footerRef.current
+    if (!el) return undefined
+    // Two measurements, both necessary.
+    //
+    // The footer WRAPS on narrow desktops (~39px at 1440x900, ~58px at
+    // 1280x800), so its height cannot be hardcoded — that is why this is a
+    // ResizeObserver and not a constant.
+    //
+    // And index.css applies `zoom: 1.1` to html above 1153px. Under zoom,
+    // getBoundingClientRect reports VISUAL pixels while CSS lengths resolve
+    // in LAYOUT pixels, so `100dvh` inside the zoomed document is 10% taller
+    // than the window. That is precisely what ran the sidebar panel under the
+    // fixed footer — measured at 1440x900: panel bottom 930px, footer top
+    // 861px. Deriving the factor and publishing an already-converted height
+    // sidesteps the whole trap; doing this in a Tailwind calc() does not,
+    // because a var() FALLBACK contains a comma and silently fails to
+    // compile the utility (verified against the built CSS).
+    const apply = () => {
+      const root = document.documentElement
+      // Read the factor off the element itself. Deriving it from
+      // innerWidth / clientWidth does NOT work: Chromium reports
+      // clientWidth already in visual pixels, so the ratio comes back 1 and
+      // the correction silently does nothing (measured).
+      const zoom = parseFloat(getComputedStyle(root).zoom) || 1
+      const footerVisual = el.getBoundingClientRect().height
+      root.style.setProperty('--footer-h', `${Math.ceil(footerVisual)}px`)
+      root.style.setProperty('--sidebar-h', `${Math.floor(Math.max(0, window.innerHeight - footerVisual) / zoom)}px`)
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    window.addEventListener('resize', apply)
+    return () => { ro.disconnect(); window.removeEventListener('resize', apply) }
+  }, [])
 
   return (
     <div className="min-h-screen text-[var(--color-text)] lg:flex">
@@ -171,13 +213,28 @@ export default function App() {
         theme={theme === 'system' ? undefined : theme}
         toastOptions={{ style: { fontSize: 9 } }} />
       {/* Left sidebar — desktop */}
-      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-screen lg:sticky lg:top-0 p-4">
+      {/* Owner (2026-07-29): "UI top header and footer not link to the side
+          bar on desktop aspect ratio." Measured at 1440x900: the sidebar
+          panel's bottom edge was at 972px in a 900px viewport — it ran 111px
+          UNDER the fixed footer and 72px past the screen. lg:h-screen made
+          the aside a full viewport tall while the footer covers the bottom
+          ~40-60px of that same viewport, so the two chrome pieces overlapped
+          instead of meeting. --footer-h is measured live below (the footer
+          wraps to two lines on narrow desktops, so a hardcoded number would
+          be wrong on exactly the screens the owner uses). */}
+      <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-[var(--sidebar-h)] lg:sticky lg:top-0 p-4">
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-y-auto">
           <div className="flex items-baseline gap-2 mb-4">
             <span className="text-[15px] font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
             <LlmMonitorStatus />
           </div>
+          {/* Which account am I looking at? (owner 2026-07-29: "above the
+              OVERVIEW state the Account · {DEMO 5203012} I am viewing now").
+              It sits ABOVE the first nav group because every number on every
+              page below belongs to this account — reading Performance without
+              knowing whose Performance it is has bitten before. */}
+          <ActiveAccountHeader />
           <nav className="flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>
@@ -225,45 +282,25 @@ export default function App() {
             edge for the same reason. Splitting them fixes both: the tabs
             scroll, the theme button stays put and is always reachable.
             min-h-[44px] on the tabs is the HIG touch minimum; they were 36. */}
-        <header className="sticky top-3 z-50 px-3 lg:hidden">
-          <div className="glass-bar flex items-center gap-3 rounded-[1px] px-4 py-2">
-            <div className="flex items-center gap-3 min-w-0 flex-1 overflow-x-auto scrollbar-none">
-              <span className="text-[14px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">
-                bot-trade
-              </span>
-              <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
-              <LlmMonitorStatus />
-              <nav className="flex gap-1 shrink-0">
-                {ALL_TABS.map(t => (
-                  <NavLink
-                    key={t.to}
-                    to={t.to}
-                    viewTransition
-                    className={({ isActive }) =>
-                      `rounded-[12px] px-3 py-1.5 text-[9px] font-semibold min-h-[44px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
-                        isActive
-                          ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
-                          : 'glass-inset text-[var(--color-text-sub)]'
-                      }`
-                    }
-                  ><span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}</NavLink>
-                ))}
-              </nav>
-            </div>
-            <button
-              type="button"
-              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-              title={`Theme: ${theme}`}
-              aria-label={`Theme: ${theme} — tap to change`}
-              className="glass-inset rounded-[1px] px-2.5 min-h-[44px] min-w-[44px] text-[14px] cursor-pointer shrink-0"
-            >{THEME_ICON[theme] || '◐'}</button>
+        {/* Touch header — IDENTITY ONLY. Navigation moved to the bottom
+            tab bar (HIG: tab bars switch top-level sections, and stay
+            visible). The old header carried a horizontally-scrolling
+            SEVEN-tab strip, which at 744x1133 (iPad mini portrait) pushed
+            22px of horizontal overflow onto the body — the whole page
+            scrolled sideways. One row, no scroll, no nav. */}
+        <header className="sticky top-2 z-40 px-3 lg:hidden">
+          <div className="glass-bar flex items-center gap-2 rounded-[1px] px-3 py-1.5">
+            <span className="text-[13px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">bot-trade</span>
+            <span className="text-[9px] text-[var(--color-text-sub)] shrink-0 truncate" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__}</span>
+            <LlmMonitorStatus />
+            <span className="ml-auto shrink-0"><ActiveAccountHeaderCompact /></span>
           </div>
         </header>
 
         <AgentDownBanner />
         <CockpitHost />
 
-        <main className="px-4 py-4 pb-20 lg:pr-6 lg:pb-16 max-w-[1720px]">
+        <main className="px-4 py-3 pb-[calc(env(safe-area-inset-bottom,0px)+68px)] lg:pr-6 lg:pb-[calc(var(--footer-h)+12px)] max-w-[1720px]">
           {/* Lazy routes need a Suspense boundary — a light skeleton line,
               not a spinner wall, while a page chunk downloads. */}
           <Suspense fallback={<div className="p-6 text-[9px] text-[var(--color-text-sub)]">loading page…</div>}>
@@ -303,7 +340,7 @@ export default function App() {
             sticky sidebar; page content scrolls underneath the translucent
             glass-bar material. main's bottom padding above keeps real
             content from ending up permanently hidden under it. */}
-        <footer className="glass-fixed fixed bottom-0 inset-x-0 lg:left-56 z-40 px-4 py-2.5 text-[9px] text-[var(--color-text-sub)] flex flex-wrap gap-x-4 gap-y-1">
+        <footer ref={footerRef} className="glass-fixed hidden lg:flex fixed bottom-0 inset-x-0 lg:left-52 z-40 px-4 py-2.5 text-[9px] text-[var(--color-text-sub)] flex-wrap gap-x-4 gap-y-1">
           <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
           {/* Keep this line TRUE: 5 registry strategies armed per-stage in
               Tune; entries/risk gate are deterministic, but the position
@@ -311,6 +348,25 @@ export default function App() {
           <span>5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
           <span>trading involves risk — demo first, never money you can't lose</span>
         </footer>
+
+        {/* Bottom tab bar — touch only. Always mounted, never conditionally
+            hidden on navigation (HIG). Carries the footer copy and the theme
+            control inside its More sheet so neither costs vertical space on
+            a phone. */}
+        <MobileTabBar
+          footerNote={<>
+            bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__} · 5 strategies (fib 61.8% fade default),
+            armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor
+            fallback · trading involves risk — demo first, never money you can&apos;t lose
+          </>}
+          themeButton={
+            <button
+              type="button"
+              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+              className="glass-inset rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-[9px] font-semibold text-[var(--color-text-sub)] cursor-pointer"
+            >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
+          }
+        />
       </div>
     </div>
   )

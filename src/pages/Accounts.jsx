@@ -133,6 +133,39 @@ export default function Accounts() {
     }).catch(() => {})
   }, [])
 
+  // Account SWITCH (owner 2026-07-29: "I change account - DEMO 5268549 - why
+  // the Accounts page, is the loading slow"). Measured on staging:
+  // /state/broker-cache 0.73s, /actions/broker-positions {selectedOnly} 5.1s.
+  // The cold-load instant paint above is guarded by `prev ?? …`, so after a
+  // switch `prev` is the PREVIOUS account's snapshot and the guard keeps it —
+  // you stared at the old account's numbers for the whole 5s live call with
+  // nothing saying they were stale. Showing the wrong account's balance and
+  // positions under the new account's name is worse than showing nothing.
+  //
+  // So: watch the selected id (the switcher writes it to the same session
+  // cache), and on a change clear the card, name what is loading, and refetch.
+  const [switchingTo, setSwitchingTo] = useState(null)
+  const selectedRef = useRef(null)
+  useEffect(() => {
+    if (!agentConfigured()) return undefined
+    const tick = () => {
+      let c = null
+      try { c = JSON.parse(sessionStorage.getItem('accounts_cache_v1')) } catch { return }
+      const id = c?.selectedAccountId ?? null
+      if (id == null) return
+      if (selectedRef.current == null) { selectedRef.current = id; return }
+      if (id === selectedRef.current) return
+      selectedRef.current = id
+      const a = c?.accounts?.find(x => x.accountId === id)
+      setSwitchingTo(a?.traderLogin ?? String(id))
+      setBot(null)
+      setOthers(null)
+      loadBot().finally(() => setSwitchingTo(null))
+    }
+    const t = setInterval(tick, 1_000)
+    return () => clearInterval(t)
+  }, [loadBot])
+
   const loadAll = useCallback(async () => {
     setLoadingAll(true)
     try {
@@ -171,7 +204,19 @@ export default function Accounts() {
 
       <div id="sec-clock"><MarketClock /></div>
 
-      {!bot && !error && <Card><Skeleton lines={4} /></Card>}
+      {/* A named wait reads as work; an unnamed one reads as a hang. The
+          broker call is ~5s and there is no making it instant, so say whose
+          account is on its way. */}
+      {!bot && !error && (
+        <Card>
+          {switchingTo && (
+            <div className="mb-2 text-[9px] font-semibold text-[var(--color-text-sub)]">
+              Loading {switchingTo} from the broker — about 5 seconds.
+            </div>
+          )}
+          <Skeleton lines={4} />
+        </Card>
+      )}
       <div id="sec-primary">{bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}</div>
 
       <div id="sec-others" className="space-y-8">{others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>

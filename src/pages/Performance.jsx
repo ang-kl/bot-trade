@@ -360,7 +360,7 @@ function GradientBody({
           onClick={() => { setHiddenRows(new Set()); setHiddenCols(new Set()) }}>Show all</button>
       </div>
       )}
-      <div style={{ overflowX: 'auto' }}>
+      <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
         <div style={{ minWidth: groups && colsOpen ? 760 : undefined, display: 'grid', gridTemplateColumns: template, gap: 2, alignItems: 'center' }}>
           {groups && colsOpen && (() => {
             // Group spans must count only the columns still visible, or the
@@ -555,7 +555,7 @@ function OpenTableBody({ rows }) {
   // a tap, so on the iPad it was unreachable. Tapping a row now reveals it.
   const [openId, setOpenId] = useState(null)
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div ref={animRef} style={{ minWidth: 560 }}>
       <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
         <span>Symbol</span><span>Side · lots</span><span>Latest P&amp;L</span><span>Entry</span><span>Price</span><span>Vol</span><span></span><span>SL / TP away</span>
@@ -630,7 +630,7 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, initialIndex = null, c
   const btn = { cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`, borderRadius: 6, padding: '1px 6px' }
   return (
     <div>
-      <div style={{ maxHeight, overflowY: 'auto', overflowX: 'auto' }}>
+      <div style={{ maxHeight, overflowY: 'auto', overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
         {children(pageRows)}
       </div>
       {rows.length > pageSize && (
@@ -661,7 +661,7 @@ function Weekend24Body({ rows }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   const [openId, setOpenId] = useState(null)
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div ref={animRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(240px, 1fr))', gap: '0 16px', minWidth: 520 }}>
         {rows.map(p2 => (
           <div key={p2.id}>
@@ -695,7 +695,7 @@ const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px
 function TodayHourlyBody({ rows, floatingNow = null }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div ref={animRef} style={{ minWidth: 420 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
@@ -797,7 +797,7 @@ function SessionStatsBody({ stats }) {
     ? <span style={{ fontSize: 9, color: P_MU, textAlign: 'right' }}>—</span>
     : <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: col ?? (v > 0 ? P_UP : v < 0 ? P_DN : P_SB) }}>{signed(v)}</span>)
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div style={{ minWidth: 700 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
           <span>Session</span><span style={{ textAlign: 'right' }}>Trades</span><span style={{ textAlign: 'right' }}>+$</span><span style={{ textAlign: 'right' }}>−$</span><span style={{ textAlign: 'right' }}>Highest</span><span style={{ textAlign: 'right' }}>Lowest</span><span style={{ textAlign: 'right' }}>Average</span><span style={{ textAlign: 'right' }}>Sum</span><span style={{ textAlign: 'right' }}>Median</span>

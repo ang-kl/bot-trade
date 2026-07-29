@@ -48,6 +48,13 @@
  */
 
 :root {
+  --zoom: 1;
+  /* Overwritten live by App's footer ResizeObserver; the default keeps the
+     sidebar sane before the first measurement. */
+  --footer-h: 44px;
+  /* Set live by App (see the footer ResizeObserver). Default is the
+     pre-measurement fallback, never the final value on desktop. */
+  --sidebar-h: 100dvh;
   /* -- Core palette: liquid light glass -- */
   --color-bg:           #eef1fb;
   --color-surface:      rgba(255, 255, 255, 0.62);
@@ -298,7 +305,12 @@
 
 @media (min-width: 768px)  { html { font-size: 15px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } }
-@media (min-width: 1153px) { html { zoom: 1.1; } }
+/* The 1.1 zoom is invisible to CSS calc(): viewport units resolve in LAYOUT
+   pixels and are then painted 1.1x larger, so `100dvh` inside this document
+   is 10% TALLER than the window. That is what pushed the sidebar panel under
+   the fixed footer (measured 2026-07-29: panel bottom 934px in a 900px
+   viewport). --zoom mirrors the factor so layout maths can divide it out. */
+@media (min-width: 1153px) { html { zoom: 1.1; --zoom: 1.1; } }
 @media (min-width: 2000px) { html { font-size: 18px; } }
 @media (min-width: 2560px) { html { font-size: 20px; } }
 

@@ -64,7 +64,14 @@ export function computeFloor(baseline, hwm, step) {
   return baseline + (steps - 1) * step
 }
 
-function loadRatchetState(db) {
+/**
+ * The live staircase — { baseline, hwm, floor, startedAt, lastTriggerAt } or
+ * null before the first run. Exported for GET /state/profit-ratchet: when
+ * autotrade disarms itself with no manual action and no PERF_BREAKER row, the
+ * ratchet is the prime suspect and there was previously no way to look at it
+ * without opening the database (owner, serial 1,807).
+ */
+export function loadRatchetState(db) {
   try { return JSON.parse(getState(db, 'profit_ratchet_state_json') || 'null') } catch { return null }
 }
 function saveRatchetState(db, st) {

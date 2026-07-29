@@ -1050,7 +1050,12 @@ export function persistRiskEvent(db, proposal, result) {
     proposal.side,
     result.approved ? 1 : 0,
     result.veto_reason || null,
-    JSON.stringify(result.checks || {}),
+    // adjusted_volume rides INTO checks_json (owner 2026-07-29: the Order
+    // log's Qty column was blank). The only size on a stored attempt was
+    // proposal.requestedVolume, which is an optional per-symbol CAP (see the
+    // reqVol read above) — not what the gate actually sized. Without this the
+    // volume the bot really asked the broker for was never recorded anywhere.
+    JSON.stringify({ ...(result.checks || {}), adjusted_volume: result.adjusted_volume ?? null }),
     JSON.stringify(proposal),
     // M1 provenance: which account this decision was evaluated FOR — the
     // proposal's own account when the caller carries one, else the

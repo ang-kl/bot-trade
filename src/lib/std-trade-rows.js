@@ -1,6 +1,7 @@
 // Shared helpers + broker-snapshot adapters for the STANDARD trade table
 // (src/components/StdTradeTable.jsx). Lives outside the component file so
 // react-refresh stays happy and non-React code can import the helpers.
+import { notionalUsd, usdLossPerLot } from '../../agent/lib/contracts.js'
 
 // SQLite/ISO datetimes are UTC (sometimes without a zone marker); broker
 // snapshots may pass epoch-ms numbers. Normalise both.
@@ -38,6 +39,75 @@ export function nextOpenLabel(iso, now = new Date()) {
 }
 
 // ---------------------------------------------------------------------------
+// Bracket money — what the SL and TP are actually WORTH (owner 2026-07-29:
+// "adding [SL Loss in $] to existing Stop Loss ... and [TP Profit in $] to
+// Take Profit"). A price level tells you nothing about the damage; the
+// money does.
+//
+// SIGN IS REAL, not assumed. slMoney is negative for a stop below entry on a
+// long (the usual case) but POSITIVE once the stop has been trailed past
+// entry — that is locked-in profit, and printing it as a loss would be a lie.
+// Same logic for a TP the market has already run past.
+//
+// Units: USD, via agent/lib/contracts.js — the one place that knows contract
+// sizes and the USD conversion path per instrument. `rates` is the live
+// price map (SYMBOL → price) the callers already build; crosses need it to
+// convert their quote-currency loss, and return null without it rather than
+// guessing. qty is LOTS everywhere in this app (agent/services/reconciler.js
+// converts broker units on the way in).
+// ---------------------------------------------------------------------------
+function levelMoney(symbol, side, lots, entry, level, ref, rates) {
+  const e = Number(entry)
+  const l = Number(level)
+  const q = Number(lots)
+  if (!Number.isFinite(e) || !Number.isFinite(l) || !Number.isFinite(q) || q === 0) return null
+  const dir = String(side || '').toUpperCase() === 'BUY' ? 1 : -1
+  // usdLossPerLot takes the magnitude; the direction decides the sign.
+  const perLot = usdLossPerLot(symbol, l - e, Number.isFinite(Number(ref)) ? Number(ref) : e, rates)
+  if (!Number.isFinite(perLot)) return null
+  const sign = (l - e) * dir >= 0 ? 1 : -1
+  return sign * perLot * Math.abs(q)
+}
+
+/**
+ * { slMoney, tpMoney } in USD for one row. tpMoney sums a TP ladder using
+ * each leg's own lots when the ladder carries them, so a scale-out plan
+ * reports what the WHOLE plan is worth rather than just leg #1.
+ */
+export function bracketMoney({ symbol, side, qty, entry, sl, tp, tps, ref, rates }) {
+  const slMoney = sl == null ? null : levelMoney(symbol, side, qty, entry, sl, ref, rates)
+  let tpMoney = null
+  if (tps?.length) {
+    let sum = 0
+    let any = false
+    for (const t of tps) {
+      const m = levelMoney(symbol, side, t.lots ?? qty, entry, t.price, ref, rates)
+      if (m != null) { sum += m; any = true }
+    }
+    tpMoney = any ? sum : null
+  } else if (tp != null) {
+    tpMoney = levelMoney(symbol, side, qty, entry, tp, ref, rates)
+  }
+  return { slMoney, tpMoney }
+}
+
+/**
+ * Margin an already-closed / never-placed row WOULD have used, from notional
+ * ÷ leverage (owner: Margin Used on Recent trades and the Order log too).
+ * Broker truth is always preferred where it exists — this only fills rows the
+ * broker no longer reports, and callers mark it estimated so it is never
+ * mistaken for the real figure.
+ */
+export function estimateMargin({ symbol, qty, price, leverage, rates }) {
+  const lev = Number(leverage)
+  const q = Number(qty)
+  const p = Number(price)
+  if (!Number.isFinite(lev) || lev <= 0 || !Number.isFinite(q) || q === 0 || !Number.isFinite(p)) return null
+  const notional = notionalUsd(symbol, q, p, rates)
+  return Number.isFinite(notional) ? notional / lev : null
+}
+
+// ---------------------------------------------------------------------------
 // Broker-snapshot adapters (the /actions/broker-positions and broker-history
 // shapes used by Desk and Accounts). Money strings keep their sign so a loss
 // is unmistakable even inside the muted Reason column.
@@ -72,12 +142,24 @@ function integrityOf(p2, dbRow) {
 /** Live broker positions → standard rows. manageable=true arms the panel.
  * dbByPid: optional Map<String(ctrader_position_id), dbRow> — when passed,
  * each row gets an `integrity` field cross-checking DB vs broker truth. */
-export function brokerPositionRows(positions, { manageable = false, dbByPid = null } = {}) {
+export function brokerPositionRows(positions, { manageable = false, dbByPid = null, rates = null } = {}) {
   return (positions || []).map(p2 => {
     // Broker-truth net P&L first (cTrader's own figure, every asset class);
     // the client-side estimate only fills the gap and is marked as such.
     const net = p2.netPnl ?? p2.estNetPnl ?? p2.estPnlQuote
+    // The server already computes what each bracket is worth in the DEPOSIT
+    // currency, net of swap and commission (actions.js:3028-3031). That beats
+    // any client-side estimate, so it wins; bracketMoney only fills a gap.
+    const slTruth = p2.slNetImpact ?? p2.slGrossImpact ?? null
+    const tpTruth = p2.tpNetImpact ?? p2.tpGrossImpact ?? null
+    const bracket = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
+      symbol: p2.symbol, side: p2.side, qty: p2.lots, entry: p2.entry,
+      sl: p2.sl, tp: p2.tp, tps: p2.tps, ref: p2.currentPrice, rates,
+    })
     return {
+      slMoney: slTruth ?? bracket.slMoney,
+      tpMoney: tpTruth ?? bracket.tpMoney,
+      moneyEst: slTruth == null && tpTruth == null,
       id: `bp-${p2.positionId}`,
       at: p2.openedAt ?? null,
       symbol: p2.symbol,
@@ -145,7 +227,7 @@ export function brokerOrderRows(orders, { manageable = false } = {}) {
 }
 
 /** Closed broker deals (history) → standard rows. */
-export function brokerDealRows(deals) {
+export function brokerDealRows(deals, { rates = null, leverage = null } = {}) {
   return (deals || []).map((d, i) => {
     // Provenance comes from OUR OWN ledger (agent/routes/actions.js joins
     // the local trades table by positionId) — cTrader deals themselves
@@ -153,7 +235,19 @@ export function brokerDealRows(deals) {
     // or older than the local DB) reads MANUAL, same as the broker itself
     // would show for an untracked position.
     const isBot = !!d.source && d.source !== 'manual' && d.source !== 'external'
+    const bracket = bracketMoney({
+      symbol: d.symbol, side: d.side, qty: d.lots, entry: d.entryPrice,
+      sl: d.sl, tp: d.tp, ref: d.closePrice, rates,
+    })
     return {
+      slMoney: bracket.slMoney,
+      tpMoney: bracket.tpMoney,
+      moneyEst: true,
+      // The broker stops reporting margin the moment a position closes, so
+      // this is the at-entry estimate (notional ÷ leverage), flagged as such
+      // in the cell rather than passed off as broker truth.
+      margin: estimateMargin({ symbol: d.symbol, qty: d.lots, price: d.entryPrice, leverage, rates }),
+      marginEst: true,
       id: `bd-${d.dealId ?? `${d.positionId}-${i}`}`,
       at: d.closedAt ?? null,
       symbol: d.symbol,
