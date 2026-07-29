@@ -59,12 +59,40 @@ export function shouldRunPnlBackfill(result) {
  * @returns {Promise<{ backfilled: number, closingDeals: number, scanned: number }>}
  */
 export async function backfillClosedPnl(db, creds, opts = {}) {
-  // Nothing to do unless some closed trade is actually missing its P&L. This
-  // cheap check gates the broker round-trip so we don't hit the deal API when
-  // every closed trade is already accounted for.
+  // ACCOUNT SCOPE (2026-07-29). This used to count the gap across EVERY
+  // account while fetching deal history for exactly ONE — whichever account
+  // happened to be selected. On the M4 soak that meant seven closed trades on
+  // 46130058 were counted as a gap, the deal list was requested for 43097342,
+  // nothing matched, and the loop logged "deal history had no matching close
+  // (check broker deal-history coverage)" every cycle. The coverage was fine.
+  // It was asking the wrong account.
+  //
+  // That is not just a reporting miss. This module's whole purpose (see the
+  // header) is that the daily-loss veto, equity stop, loss-streak cooldown,
+  // performance breaker and Kelly veto all key on realised P&L — so on every
+  // account except the selected one, all of those brakes were blind to
+  // broker-side stop-outs. The caller now passes an accountId and iterates.
+  //
+  // `includeNull` mirrors reconciler.js: rows predating account stamping
+  // belong to the SELECTED account, because that was the only account trading
+  // when they were written. A non-selected pass must not claim them.
+  const selected = (() => {
+    try { return db.prepare(`SELECT value FROM agent_state WHERE key = 'ctrader_account_id'`).get()?.value || null }
+    catch { return null }
+  })()
+  const acct = opts.accountId != null ? String(opts.accountId) : selected
+  const includeNull = acct == null || acct === selected
+  const scopeSql = acct == null
+    ? ''
+    : includeNull ? 'AND (account_id = ? OR account_id IS NULL)' : 'AND account_id = ?'
+  const scopeParams = acct == null ? [] : [acct]
+
+  // Nothing to do unless some closed trade ON THIS ACCOUNT is actually
+  // missing its P&L. This cheap check gates the broker round-trip so we don't
+  // hit the deal API when every closed trade is already accounted for.
   const gap = db.prepare(
-    `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL`
-  ).get()
+    `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${scopeSql}`
+  ).get(...scopeParams)
   if (!gap || gap.n === 0) return { backfilled: 0, closingDeals: 0, scanned: 0 }
 
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
@@ -112,11 +140,14 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Fill ONLY the gaps: a closed trade whose net_pnl is still NULL. Never
   // touch a row the bot already stamped — that value is already broker-true,
   // and overwriting it with an aggregate could double-count partial closes.
+  // Scoped on the way in AND on the way out: a position id is unique at the
+  // broker, but writing without the account clause would let one account's
+  // deal list fill another account's row if ids ever collided across accounts.
   const upd = db.prepare(
     `UPDATE trades
         SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
             swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
-      WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL`
+      WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL ${scopeSql}`
   )
   let backfilled = 0
   const tx = db.transaction((entries) => {
@@ -127,6 +158,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         Math.round((agg.swap || 0) * 100) / 100,
         Math.round((agg.commission || 0) * 100) / 100,
         positionId,
+        ...scopeParams,
       )
       backfilled += r.changes
     }

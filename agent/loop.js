@@ -1929,13 +1929,49 @@ async function runLoop(db) {
               const gapBefore = db.prepare(
                 `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL`
               ).get()?.n || 0
-              const bf = await backfillClosedPnl(db, { host, clientId, clientSecret, accessToken, accountId })
-              if (bf.backfilled > 0) {
-                log(`P&L backfill: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
-              } else if (gapBefore === 0) {
-                log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
-              } else {
-                log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after this cycle's attempt — deal history had no matching close (check broker deal-history coverage)`)
+
+              // EVERY ENABLED ACCOUNT ON THIS SIDE, not just the selected one.
+              // This ran single-account until 2026-07-29: it counted the gap
+              // across all accounts, then asked ONE account's deal history to
+              // fill it. On the M4 soak that meant seven closed trades on
+              // 46130058 while the selected account was 43097342 — nothing
+              // matched, and the log blamed "deal-history coverage" every
+              // cycle when the coverage was fine.
+              //
+              // It is a safety gap, not a reporting one: the daily-loss veto,
+              // equity stop, loss-streak cooldown, performance breaker and
+              // Kelly veto all key on realised P&L, so on every account except
+              // the selected one they were blind to broker-side stop-outs —
+              // exactly the losers that close at the broker.
+              let targets = [String(accountId)]
+              try {
+                const { getEnabledAccounts } = await import('./services/account-registry.js')
+                const same = getEnabledAccounts(db)
+                  .filter(a => (a.is_live === 1) === isLive)
+                  .map(a => String(a.account_id))
+                if (same.length) targets = [...new Set([String(accountId), ...same])]
+              } catch { /* registry unavailable — selected account only, as before */ }
+
+              let filled = 0
+              for (const acct of targets) {
+                try {
+                  const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
+                  const bf = await backfillClosedPnl(db, creds, { accountId: acct })
+                  if (bf.backfilled > 0) {
+                    filled += bf.backfilled
+                    log(`P&L backfill [${acct}]: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
+                  }
+                } catch (e) {
+                  log(`P&L backfill [${acct}] failed (non-fatal): ${e.message}`)
+                }
+              }
+
+              if (filled === 0) {
+                if (gapBefore === 0) {
+                  log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
+                } else {
+                  log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after trying ${targets.length} account(s) [${targets.join(', ')}] — deal history had no matching close`)
+                }
               }
             }
           } catch (err) {
