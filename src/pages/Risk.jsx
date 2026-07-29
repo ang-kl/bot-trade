@@ -93,14 +93,32 @@ const FIELD_W = '!w-[76px]'
 function Unit({ children }) {
   return <span className="text-[8px] text-[var(--color-text-sub)] border border-[var(--glass-edge)] rounded-[1px] px-1 py-px min-w-[24px] text-center shrink-0">{children}</span>
 }
+// UI-4 — the "(default)" suffix was TEN characters on ~19 labels, in columns
+// whose label budget is roughly 19-30 characters at 9px. It, not the wording,
+// was what pushed labels onto a second line. It is now a single dimmed dot
+// with the meaning in its tooltip.
+//
+// It travels as a suffix on the label STRING rather than a prop because
+// `mark()` is called inside template literals at ~19 sites (`{`Daily loss
+// cap${mark('dailyLossPct')}`}`) and `Field` is declared outside the
+// component that knows which values are overridden. Rewriting all 19 call
+// sites to pass a flag would be a larger, more typo-prone change for the same
+// pixels. Field strips the sentinel and renders it properly styled.
+export const DEFAULT_MARK = '\u2009\u00B7'   // thin space + middle dot
+
 function Field({ label, value, onChange, pct = false, unit, hint, recommend, placeholder = 'not set' }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
+  const isDefault = typeof label === 'string' && label.endsWith(DEFAULT_MARK)
+  const text = isDefault ? label.slice(0, -DEFAULT_MARK.length) : label
   return (
     <div className="text-[9px]">
       <label className="flex items-center justify-between gap-2">
         <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
-          {label}
+          {text}
+          {isDefault && (
+            <span className="opacity-40 ml-0.5" title="Still on the built-in default — this value has not been changed">·</span>
+          )}
           {hint && (
             <button type="button" aria-label={`Explain: ${label}`} title={hint}
               onClick={e => { e.preventDefault(); setShowHint(s => !s) }}
@@ -248,7 +266,7 @@ export default function Risk() {
   }
 
   const overridden = new Set(data?.risk?.overridden || [])
-  const mark = (k) => overridden.has(k) ? '' : ' (default)'
+  const mark = (k) => overridden.has(k) ? '' : DEFAULT_MARK
 
   // GSAP entrance + scroll reveals (guarded — static page if the CDN is
   // blocked). Runs once after the first successful data load.
@@ -438,10 +456,10 @@ export default function Risk() {
             </div>
           </div>
 
-          {/* Layer 3 — naked-position loss guardian */}
+          {/* Layer 3 — Loss Guardian: the safety net for naked positions */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
-              <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Naked-position guardian</span>
+              <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
               <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
             <div className="flex items-center justify-between text-[9px]">
@@ -536,7 +554,7 @@ export default function Risk() {
                 </div>
               </div>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop loss &amp; take profit</div>
+                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Min SL distance${mark('minSLDistancePct')}`} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
@@ -662,11 +680,11 @@ export default function Risk() {
                 <Pill on={!!guard.halt} label={guard.halt ? 'Halted — no orders' : 'Off'} onClick={() => setGuard(g => ({ ...g, halt: !g.halt }))} />
               </div>
               <div className="flex items-center justify-between text-[9px]">
-                <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require stop loss</span>
+                <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require Stop Loss</span>
                 <Pill on={guard.requireBracket !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
               </div>
               <div className="flex items-center justify-between text-[9px]">
-                <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require take profit</span>
+                <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require Take Profit</span>
                 <Pill on={guard.requireTarget !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
               <Field label="Max order volume (units×100)" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}

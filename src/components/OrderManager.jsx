@@ -80,10 +80,10 @@ export default function OrderManager({ o, onDone }) {
             <span>Quantity</span><span className="font-semibold">{qty}</span>
           </div>
           <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
-            <span>Stop loss</span><span className="font-semibold">{fmt(o.sl, o.digits ?? 5)}</span>
+            <span>Stop Loss</span><span className="font-semibold">{fmt(o.sl, o.digits ?? 5)}</span>
           </div>
           <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
-            <span>Take profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
+            <span>Take Profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
           </div>
 
           <button type="button" disabled className="w-full mt-2 rounded-[10px] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
@@ -111,8 +111,8 @@ export default function OrderManager({ o, onDone }) {
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Quantity</span><span>{qty}{o.lots != null ? ' lots' : ''}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Trigger price</span><span>{fmt(trigger, o.digits ?? 5)}</span></div>
-          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Stop loss</span><span>{fmt(o.sl, o.digits ?? 5)}</span></div>
-          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Take profit</span><span>{fmt(o.tp, o.digits ?? 5)}</span></div>
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Stop Loss</span><span>{fmt(o.sl, o.digits ?? 5)}</span></div>
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Take Profit</span><span>{fmt(o.tp, o.digits ?? 5)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Expires</span><span>{o.expiresAt ? new Date(o.expiresAt).toLocaleString() : 'Good till cancelled'}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Last modified</span><span>{o.updatedAt ? new Date(o.updatedAt).toLocaleString() : '—'}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Source</span><Badge tone={(o.label || o.bot) ? 'special' : 'neutral'}>{(o.label || o.bot) ? 'BOT' : 'MANUAL'}</Badge></div>
