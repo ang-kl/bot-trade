@@ -2449,7 +2449,52 @@ async function runLoop(db) {
       let baseline = null
       try { baseline = JSON.parse(getState(db, 'backtest_baseline_json') || 'null') } catch { /* none */ }
       const ranked = rankHotSymbols(scanResult.scans, scanResult.hot, { provenEdgeSymbols: provenEdgeSymbolsFrom(baseline) })
-      const hotToAnalyze = ranked.slice(0, 3)
+
+      // CLUSTER CONVICTION (owner 2026-07-29: "Correlation clusters ... better
+      // use as a strategy"). When most members of a correlated group point the
+      // same way, that is one macro bet showing up N times — take the best
+      // expression of it, not all N. This is the shape of the 29-07 production
+      // day: four fib_618_fade entries in five minutes, −2,317.70 between them.
+      //
+      // SHIPS LOG-ONLY. `enforce` defaults false, so this records what it WOULD
+      // have done and changes nothing until the owner has seen it run against
+      // real scans. Never allowed to take the loop down.
+      let clusterRead = null
+      try {
+        const { clusterConviction, loadClusterConvictionConfig } = await import('./services/cluster-conviction.js')
+        const { loadStoredMatrix } = await import('./services/correlation-matrix.js')
+        let liveMatrix = null
+        try { liveMatrix = loadStoredMatrix(db) } catch { /* none computed yet */ }
+        clusterRead = clusterConviction(
+          (scanResult.scans || []).map(sc => ({ symbol: sc.symbol, bias: sc.bias, conviction: sc.confidence })),
+          { config: loadClusterConvictionConfig(db), liveMatrix },
+        )
+        if (clusterRead.groups.length) {
+          const { recordDecision } = await import('./services/decision-log.js')
+          for (const g of clusterRead.groups) {
+            log(`Cluster agreement: ${g.label} ${g.direction > 0 ? 'LONG' : 'SHORT'} ${g.agree}/${g.total} — best ${g.best.symbol}${clusterRead.enforce ? '' : ' (observe only)'}`)
+            for (const other of g.others) {
+              recordDecision(db, {
+                symbol: other,
+                stage: 'cluster_conviction',
+                decision: clusterRead.enforce ? 'skip' : 'observe',
+                reason: `same bet as ${g.best.symbol} via ${g.label} (${g.agree}/${g.total} agree)`,
+              })
+            }
+          }
+        }
+      } catch (err) {
+        log('Cluster conviction read failed (non-fatal):', err.message)
+      }
+
+      // Only ENFORCE mode reshapes the slot allocation. Superseded symbols drop
+      // out; the group's best member keeps its place. If that would empty the
+      // list entirely the original ranking stands — collapsing a cycle to zero
+      // trades is a bigger change than this feature is allowed to make.
+      const afterCluster = clusterRead?.enforce
+        ? ranked.filter(sym => !clusterRead.supersededBy[String(sym).toUpperCase()])
+        : ranked
+      const hotToAnalyze = (afterCluster.length ? afterCluster : ranked).slice(0, 3)
       phase(`analyzing ${hotToAnalyze.join(', ')}`, 'analyze')
       for (const sym of hotToAnalyze) {
         try {

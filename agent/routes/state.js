@@ -496,6 +496,40 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/cluster-conviction — what the correlation clusters say about
+  // the CURRENT scan, read offensively rather than as a veto. Shows every
+  // group that agrees, its best member, and the symbols that group would
+  // rather not open separately. Read only; runs the same pure function the
+  // loop runs, against the latest stored scan.
+  router.get('/cluster-conviction', async (_req, res) => {
+    try {
+      const { clusterConviction, loadClusterConvictionConfig } = await import('../services/cluster-conviction.js')
+      const { loadStoredMatrix } = await import('../services/correlation-matrix.js')
+      // The newest scan row per symbol — one scan cycle's view, not a mix of
+      // cycles (a stale row for one symbol would fabricate agreement).
+      const scans = db.prepare(`
+        SELECT symbol, bias, confidence FROM scans
+         WHERE id IN (SELECT MAX(id) FROM scans GROUP BY symbol)
+           AND datetime(scanned_at) >= datetime('now', '-1 day')
+      `).all()
+      let liveMatrix = null
+      try { liveMatrix = loadStoredMatrix(db) } catch { /* none yet */ }
+      const cfg = loadClusterConvictionConfig(db)
+      const read = clusterConviction(
+        scans.map(s2 => ({ symbol: s2.symbol, bias: s2.bias, conviction: s2.confidence })),
+        { config: cfg, liveMatrix },
+      )
+      res.json({
+        config: cfg,
+        scanned: scans.length,
+        matrixSymbols: liveMatrix?.symbols?.length || 0,
+        ...read,
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
   router.get('/correlation', async (_req, res) => {
     try {
       const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
