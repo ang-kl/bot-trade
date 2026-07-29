@@ -104,6 +104,13 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: `unknown strategy '${strategy}' — one of: ${STRATEGY_KEYS.join(', ')}` })
       }
       const entryMode = req.body?.entryMode === 'touch' ? 'touch' : 'close'
+      // D5 — run the volatility gate inside the backtest. OFF by default, so
+      // every existing caller and every stored backtest_runs row keeps meaning
+      // exactly what it meant. `volGate: 'compare'` runs BOTH over the SAME
+      // bars and returns the pair: two separate requests could straddle a new
+      // bar, and the whole difference would be the bar rather than the gate.
+      const volGateReq = req.body?.volGate
+      const volGate = volGateReq === 'compare' ? 'compare' : (volGateReq === true || volGateReq === 'on')
       // Evaluation profile: the DEFAULT backtest samples the setup more
       // permissively than LIVE so a testable sample appears instead of the
       // "0 trades → NO-GO everywhere" the owner hit. Live autotrade keeps its
@@ -157,13 +164,23 @@ export default function actionsRouter(db) {
               minConviction,
               minRr,
             }
-            const { stats } = runBacktest(bars.slice(0, -1), btOpts)
+            const closed = bars.slice(0, -1)
+            if (volGate === 'compare') {
+              // Both sides walk the IDENTICAL series. Reported as a pair with
+              // the gate's own counters, so a null result reads as "the gate
+              // never reached HIGH volatility here" rather than "no effect".
+              const { compareOnOff } = await import('../scripts/backtest-vol-gate.js')
+              results[tf] = { ...compareOnOff(closed, btOpts), barsUsed: closed.length, volGateMode: 'compare' }
+              continue
+            }
+            const { stats } = runBacktest(closed, { ...btOpts, volGate })
             // Walk-forward: same rule over 4 sequential segments — evidence
             // that the edge repeats, not one lucky window.
-            const wf = walkForward(bars.slice(0, -1), btOpts, 4)
+            const wf = walkForward(closed, { ...btOpts, volGate }, 4)
             results[tf] = {
               ...stats,
-              barsUsed: bars.length - 1,
+              barsUsed: closed.length,
+              volGateMode: volGate ? 'on' : 'off',
               wfSegments: wf.segments,
               wfActive: wf.active,
               wfPositive: wf.positive,
@@ -262,7 +279,10 @@ export default function actionsRouter(db) {
       } // end runWork
 
       const started = startBacktestJob(
-        { symbols: names, timeframes, bars: count, strategy, entryMode },
+        // volGate rides in the params so a stored/polled job says which mode
+        // produced its numbers — an ON result mistaken for an OFF baseline
+        // would silently corrupt every later comparison.
+        { symbols: names, timeframes, bars: count, strategy, entryMode, volGate: volGate || 'off' },
         runWork,
       )
       if (started.conflict) {
