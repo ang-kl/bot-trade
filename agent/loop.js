@@ -1767,6 +1767,16 @@ async function runLoop(db) {
             beatProt(db, 'protection_audit')
           } catch (err) {
             log('Protection audit failed (non-fatal):', err.message)
+            // ¶D·2 covered the WRONG failure mode. It handled "reconcile threw"
+            // and "no credentials", but not "the audit block itself threw" —
+            // which left this catch logging and moving on WITHOUT a beat, so
+            // the controller sat at `idle` (runs=0) exactly as the owner
+            // originally reported. Found on staging 2026-07-29 02:33 with the
+            // fix already deployed: protection_audit still idle, runs=0.
+            //
+            // A not-beat is silence. Beat it as FAILED so a throw in here is a
+            // visible STALLED/failing controller instead of a resting one.
+            await noteProtectionAuditBlocked(db, `protection audit threw: ${err.message}`)
           }
           if ((result.orphansClosed || []).length > 0) {
             log(`Reconcile: closed ${result.orphansClosed.length} stale open trade(s) whose broker position is gone (ledger drift cleanup)`)
@@ -2483,11 +2493,33 @@ async function runLoop(db) {
       try {
         const creds = getCtraderCreds(db)
         const haveAtr = db.prepare('SELECT COUNT(*) AS n FROM atr_history').get().n
-        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 11 || haveAtr === 0)) {
+        // The empty-table trigger is a SELF-SEED for a fresh deploy, not a
+        // retry loop. Without a back-off, a sweep that writes nothing (no
+        // symbols, every fetch failing) re-fires every 5 minutes forever and
+        // spends broker calls on it — which is what staging was doing.
+        const lastAtrTry = Number(getState(db, 'atr_refresh_last_attempt_ms')) || 0
+        const seedBackoffOk = Date.now() - lastAtrTry > 3600_000
+        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 11 || (haveAtr === 0 && seedBackoffOk))) {
+          setState(db, 'atr_refresh_last_attempt_ms', String(Date.now()))
           phase('ATR baseline refresh')
           const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
           const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-          const symbols = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
+          // `'[]'` is TRUTHY, so `a || b` picks an EMPTY autopilot list over a
+          // populated watchlist and the sweep silently has nothing to do.
+          // Observed on staging 2026-07-29: atr_refresh runs=10 over 10 loops
+          // with atr_history still empty — it re-ran every cycle because the
+          // empty-table condition below never cleared. Parse both, take the
+          // first that actually has symbols.
+          const firstNonEmpty = (...keys) => {
+            for (const k of keys) {
+              try {
+                const v = JSON.parse(getState(db, k) || '[]')
+                if (Array.isArray(v) && v.length) return v
+              } catch { /* a malformed key must not stop the next one */ }
+            }
+            return []
+          }
+          const symbols = firstNonEmpty('autopilot_symbols_json', 'watchlist_json')
           const atrFetch = async (sym, count) => {
             const sid = symbolMap[String(sym).toUpperCase()]
             if (!sid) throw new Error(`symbolId unknown for ${sym}`)
@@ -2496,6 +2528,15 @@ async function runLoop(db) {
               sid, ['D1'], count, 20_000, 0)
             return byTf.D1 || []
           }
+          if (!symbols.length) {
+            // Say it, and beat FAILED. A sweep with no symbols that beats OK
+            // looks identical to a sweep that worked, and every downstream vol
+            // reading would sit at NORMAL for want of a baseline nobody knew
+            // was missing — the same class of silent-reassurance bug as the
+            // protection audit reading "idle".
+            log('ATR baseline: no symbols in autopilot_symbols_json or watchlist_json — nothing to refresh')
+            await hbeat(db, 'atr_refresh', false, 'no symbols configured')
+          } else {
           const r = await runBudgetedSubPhase(db, 'atr_refresh',
             () => refreshAtrHistory(db, symbols, atrFetch), SUB_PHASE_BUDGET_MS * 2)
           if (r && !r.timedOut) {
@@ -2505,7 +2546,12 @@ async function runLoop(db) {
             log(`ATR baseline: ${r.updated}/${r.symbols} symbols refreshed${r.failed ? `, ${r.failed} fetch failure(s)` : ''}${r.skipped?.length ? `, ${r.skipped.length} skipped (too little history)` : ''}`)
             try { pruneAtrHistory(db) } catch { /* pruning is housekeeping */ }
           }
+          // An OK beat means the sweep RAN. Whether it wrote anything is in
+          // the log line above and in the row count — a sweep that updated 0
+          // of 40 symbols is a working controller reporting a data problem,
+          // not a broken controller.
           await hbeat(db, 'atr_refresh')
+          }
         }
       } catch (err) {
         log(`ATR baseline refresh failed (non-fatal): ${err.message}`)
