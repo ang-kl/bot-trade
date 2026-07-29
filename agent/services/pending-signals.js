@@ -22,7 +22,7 @@
 // not fired blind.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { tfMs } from '../lib/timeframes.js'
 
 // Queue horizon scales with the signal's own timeframe — a 1w/1mo fade is
@@ -94,8 +94,9 @@ export async function runPendingSignals(db, creds, deps = {}) {
 
   let watch = []
   try {
-    watch = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
-      .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
+    // Union across enabled accounts: a queued signal on a symbol only one
+    // account watches still has to be retried.
+    watch = readTradableUnion(db)
   } catch { /* empty */ }
 
   let fired = 0

@@ -34,6 +34,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
 
 /** Pure: is this move big enough to wake the guards? */
@@ -63,17 +64,15 @@ export function watchedSymbolIds(db) {
 export function watchlistSymbolIds(db) {
   let map = {}
   try { map = JSON.parse(getState(db, 'symbol_id_map') || '{}') } catch { map = {} }
+  // The spot stream must cover the UNION of every enabled account's list.
+  // Scoping it to one account would leave another account's instruments
+  // untick'd while that account was still holding positions in them.
   let list = []
-  try {
-    const raw = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]'
-    const parsed = JSON.parse(raw)
-    list = Array.isArray(parsed) ? parsed : []
-  } catch { list = [] }
+  try { list = readTradableUnion(db) } catch { list = [] }
   const ids = []
-  for (const w of list) {
-    const entry = typeof w === 'string' ? { symbol: w, enabled: true } : w
+  for (const entry of list) {
     if (!entry?.symbol || entry.enabled === false || entry.force_skip) continue
-    const sym = String(entry.symbol).toUpperCase()
+    const sym = entry.symbol
     const id = map[sym]
     if (id) ids.push({ symbol: sym, symbolId: Number(id) })
   }

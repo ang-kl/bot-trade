@@ -3470,6 +3470,39 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/watchlist-copy — copy symbols from one account to others.
+  // Body: { from, to: [], symbols?: [], mode?: 'merge'|'replace' }
+  //
+  // This decides which instruments an account may trade, so it is a config
+  // write on the money path, not a display preference. Two consequences are
+  // deliberate: `replace` is destructive and must be asked for by name, and
+  // the response reports per destination what was added, updated and REMOVED
+  // — "ok: true" alone would not let anyone check what just happened.
+  //
+  // A destination that was inheriting the shared list keeps everything it was
+  // already trading and gains the copied symbols; `inherited: true` in its
+  // result says the inheritance has now ended.
+  // -----------------------------------------------------------------------
+  router.post('/watchlist-copy', async (req, res) => {
+    try {
+      const { copyWatchlist } = await import('../services/watchlists.js')
+      const { from, to, symbols = null, mode = 'merge' } = req.body || {}
+      const report = copyWatchlist(db, { from, to, symbols, mode })
+      for (const r of report.results) {
+        console.log(`[actions] watchlist-copy ${report.from} → ${r.accountId} (${report.mode})`
+          + ` +${r.added.length} ~${r.updated.length} -${r.removed.length} = ${r.total}`
+          + (r.inherited ? ' [was inheriting the shared list]' : ''))
+      }
+      res.json({ ok: true, ...report })
+    } catch (err) {
+      console.error('[actions/watchlist-copy] error:', err.message)
+      // A bad account id or an empty selection is the caller's mistake, not a
+      // server fault — 400 so the UI can show the reason instead of "failed".
+      res.status(400).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/risk-config — update Risk Manager limits
   // Body: partial risk config, merged over current. Unknown keys are dropped
   // to prevent pollution. Pass empty {} to reset to defaults.

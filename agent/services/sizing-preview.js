@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { loadRiskConfig, getAccountBalance, computeRiskBasedVolume } from './risk.js'
 import { contractSize, instrumentType, usdLossPerLot } from '../lib/contracts.js'
 
@@ -24,7 +25,9 @@ export function sizingPreview(db) {
 
   let watch = []
   try {
-    watch = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
+    // Union: the preview is an operator-facing view of everything the system
+    // may size, across accounts.
+    watch = readTradableUnion(db)
   } catch { /* empty watchlist */ }
 
   // Latest scan prices — the loop refreshes these every cycle.

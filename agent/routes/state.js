@@ -685,6 +685,94 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/watchlists — every account's watchlist, plus the diff between
+  // any two (?source=&destination=).
+  //
+  // `inherited` on each account is the fact that makes the compare readable:
+  // an account with no list of its own is showing the SHARED list, and two
+  // accounts both inheriting will look identical because they literally are
+  // the same list — not because someone synced them.
+  // -----------------------------------------------------------------------
+  router.get('/watchlists', async (req, res) => {
+    try {
+      const { listAccounts } = await import('../services/account-registry.js')
+      const { readWatchlist, hasOwnWatchlist, diffWatchlists } = await import('../services/watchlists.js')
+      const { loadRiskConfig, getAccountLeverage, requiredMargin } = await import('../services/risk.js')
+
+      // LAST TRADED, per account per symbol — the operator's sketch asks for
+      // it because "this account has never touched that symbol" is the thing
+      // that makes a copy decision obvious. Legacy rows carry a NULL
+      // account_id; they belong to the account that was selected at the time,
+      // so they count for the currently-selected one rather than for nobody.
+      const selected = getState(db, 'ctrader_account_id') || null
+      const lastTraded = {}
+      try {
+        for (const r of db.prepare(
+          `SELECT COALESCE(account_id, ?) AS acct, symbol, MAX(COALESCE(closed_at, opened_at)) AS last
+             FROM trades WHERE symbol IS NOT NULL GROUP BY acct, symbol`
+        ).all(selected)) {
+          if (!r.acct) continue
+          ;(lastTraded[String(r.acct)] ||= {})[r.symbol] = r.last
+        }
+      } catch { /* no history is a blank cell, not an error */ }
+
+      // MARGIN PER LOT — what one standard lot of this instrument commits on
+      // THIS account, at its own leverage. It is an estimate off the last
+      // scanned price, so a symbol with no cached price reports null and the
+      // UI shows a dash rather than a confident zero.
+      const riskCfg = loadRiskConfig(db)
+      const prices = {}
+      try {
+        const last = JSON.parse(getState(db, 'last_scan_results') || 'null')
+        for (const r of (last?.scans || last?.rows || [])) {
+          const px = Number(r.price ?? r.close)
+          if (Number.isFinite(px) && px > 0) prices[String(r.symbol).toUpperCase()] = px
+        }
+      } catch { /* no scan cache — every margin cell is a dash */ }
+
+      const accounts = listAccounts(db).map(a => {
+        const rawItems = readWatchlist(db, a.account_id)
+        const lev = getAccountLeverage(db, riskCfg, a.account_id)
+        const traded = lastTraded[String(a.account_id)] || {}
+        const items = rawItems.map(i => {
+          const px = prices[i.symbol]
+          return {
+            ...i,
+            lastTradedAt: traded[i.symbol] ?? null,
+            marginPerLotUsd: px
+              ? Number(requiredMargin(i.symbol, 1, px, lev).marginRequired.toFixed(2))
+              : null,
+          }
+        })
+        return {
+          accountId: a.account_id,
+          isLive: a.is_live === 1,
+          enabled: a.enabled === 1,
+          mode: a.mode,
+          leverage: lev,
+          inherited: !hasOwnWatchlist(db, a.account_id),
+          count: items.length,
+          enabledCount: items.filter(i => i.enabled !== false).length,
+          items,
+        }
+      })
+      const src = req.query.source ? String(req.query.source) : null
+      const dst = req.query.destination ? String(req.query.destination) : null
+      const diff = src && dst
+        ? diffWatchlists(readWatchlist(db, src), readWatchlist(db, dst))
+        : null
+      res.json({
+        accounts,
+        shared: readWatchlist(db, null),
+        selectedAccountId: selected,
+        diff,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/perf-ledger — the Performance Ledger aggregation (design_
   // claude PR B): timeframe windows × market categories × account, with
   // carry-forward. ?account=<id>|all (default all).

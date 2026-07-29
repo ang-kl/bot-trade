@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
@@ -264,8 +265,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     // is my lot still baked 0.01 … where is the dynamic sizing?").
     let wlCap = null
     try {
-      const wl = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
-      const item = (Array.isArray(wl) ? wl : []).find(w => (typeof w === 'string' ? w : w.symbol) === symbol)
+      const item = readTradableUnion(db).find(w => w.symbol === String(symbol).toUpperCase())
       const mv = Number(item?.maxVolume)
       if (Number.isFinite(mv) && mv > 0) wlCap = mv
     } catch { /* no watchlist cap */ }

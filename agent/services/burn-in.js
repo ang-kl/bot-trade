@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { atrFromBars } from './profit-keeper.js'
 import { relVolFromBars } from './fast-monitor.js'
 
@@ -126,8 +127,11 @@ export async function runBurnIn(db, creds, deps = {}) {
 
   let watch = []
   try {
-    watch = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
-      .map(w => (typeof w === 'string' ? { symbol: w, enabled: true } : w))
+    // The UNION across enabled accounts, not one account's list — the
+    // candidate pool has no account in scope, and a symbol only account B
+    // watches still deserves a burn-in slot. Identical to the old global
+    // read until somebody writes a per-account list.
+    watch = readTradableUnion(db)
       .filter(w => w.enabled !== false && !w.force_skip)
       .map(w => w.symbol)
   } catch { /* empty */ }

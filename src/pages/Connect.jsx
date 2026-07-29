@@ -7,11 +7,13 @@ import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
+import WatchlistCompare from '../components/watchlist/WatchlistCompare.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
 
 const CONNECT_SECTIONS = [
   { id: 'sec-agent', label: 'Agent backend' },
   { id: 'sec-ctrader', label: 'cTrader account' },
+  { id: 'sec-watchlists', label: 'Compare & copy watchlists' },
 ]
 
 export default function Connect() {
@@ -336,6 +338,12 @@ export default function Connect() {
           The token is stored in the agent's database, never in this browser.
         </p>
       </Card>
+
+      {/* Copy a curated watchlist onto other accounts (owner, 2026-07-29).
+          It lives here because this is where accounts already are — the
+          picker above chooses which one trades, this chooses what they
+          each trade. */}
+      <WatchlistCompare />
     </div>
   )
 }
