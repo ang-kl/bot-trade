@@ -13,6 +13,7 @@
 // toggle — mobile follows the system exactly as the design asks.
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
+import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -691,7 +692,7 @@ function Weekend24Body({ rows }) {
 // trades, close trades") — one row per elapsed hour since FX day open, so
 // the card always has structure even before the first close of the day.
 const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
-function TodayHourlyBody({ rows }) {
+function TodayHourlyBody({ rows, floatingNow = null }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -704,12 +705,25 @@ function TodayHourlyBody({ rows }) {
             {/* Hour in the VIEWER'S local timezone; the FX-day UTC hour rides
                 beside it 2pt smaller (owner 2026-07-28: "use user's tz with
                 bracket (FX UTC timezone) in tiny font size"). */}
-            <span style={{ fontSize: 9, color: P_MU }}>
+            <span style={{ fontSize: 9, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined }}>
               {new Date(r.from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
               <span style={{ fontSize: 7, marginLeft: 3 }}>({new Date(r.from).toISOString().slice(11, 16)} UTC)</span>
+              {r.isLive && <span style={{ fontSize: 6, marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
             </span>
             <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.openBal != null ? money(r.openBal) : '—'}</span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>{!r.pending && r.closedN ? signed(r.net) : '—'}</span>
+            {/* Realized P&L from closes in this hour. On the LIVE hour the
+                floating figure rides alongside in brackets — it is unrealized
+                and belongs to no single hour, so it is never summed into
+                `net` and never touches the balance columns. */}
+            <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
+              {!r.pending && r.closedN ? signed(r.net) : '—'}
+              {r.isLive && floatingNow != null && (
+                <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
+                  style={{ fontSize: 7, marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
+                  ({signed(floatingNow)} float)
+                </span>
+              )}
+            </span>
             <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.closeBal != null ? money(r.closeBal) : '—'}</span>
             <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.openedN) || '—'}</span>
             <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.closedN) || '—'}</span>
@@ -1209,8 +1223,26 @@ export default function Performance() {
       withBal.unshift({ ...s, openBal: ob, closeBal: cb })
       closeBal = ob
     }
-    return withBal
-  }, [scopedClosed, todayWin, ledger])
+
+    // UI-2 — newest hour first, live hour marked. The reverse happens AFTER
+    // the carry above, which must run oldest-to-newest; see hourly-order.js
+    // for why reversing before it would invert every balance on the page.
+    return orderHourlyForDisplay(withBal, loadedAt)
+  }, [scopedClosed, todayWin, ledger, loadedAt])
+
+  // UI-2 — floating P&L for the LIVE hour. Summed across every open position
+  // regardless of which sub-table it renders in (market-open, market-closed,
+  // weekend-24h), because the question the row answers is "what is live right
+  // now", not "what is tradeable right now".
+  //
+  // Deliberately NOT folded into the hour's `net` or the balance carry. `net`
+  // is REALIZED P&L from closes, and the balance column is realized-only;
+  // adding unrealized money to either would make the close-balance line
+  // disagree with the broker's balance. Equity = balance + floating, and this
+  // column is the floating half shown next to it, not mixed into it.
+  const liveFloating = useMemo(
+    () => totalFloating(openSplit.floatTot, openSplit.closedTot, openSplit.weekendTot),
+    [openSplit])
 
   // Today's closed-trade stats per market session (owner: "all the
   // statistics for today: different markets (SYD, SG, HK, JPN, EUR, NY
@@ -2037,7 +2069,7 @@ export default function Performance() {
                   ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
-                render={() => <><TodayHourlyBody rows={todayHourly} /><TodayTradesBody rows={todayTrades} /></>} />
+                render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
             </span>
             <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
               {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
@@ -2047,8 +2079,8 @@ export default function Performance() {
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
-              initialIndex={Math.max(0, todayHourly.findIndex(r => loadedAt >= r.from && loadedAt < r.to))}>
-              {(pageRows) => <TodayHourlyBody rows={pageRows} />}</PagedRows>
+              initialIndex={0}>
+              {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} />}</PagedRows>
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
             <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
