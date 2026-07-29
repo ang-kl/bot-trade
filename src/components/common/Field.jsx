@@ -27,6 +27,14 @@ import { parseDurationToMinutes, formatMinutesShort } from '../../lib/duration-i
 // owner's screenshot.
 export const FIELD_W = '!w-[76px]'
 
+// UI-7 — phone tap height. 26px is a comfortable target for a mouse and a
+// poor one for a thumb; the HIG minimum is 44. This raises ONLY the box on a
+// phone-width screen, so the dense desktop row is untouched. It lives here,
+// on the element's own class list, because `!min-h-[26px]` is an important
+// declaration inside a Tailwind cascade layer and no rule in index.css can
+// outrank it — for important declarations, unlayered loses to layered.
+const TAP_H = 'max-[430px]:!min-h-[44px]'
+
 // `unit` renders a fixed chip after the input ($, %, min, ×SL, h…) so every
 // number on the page declares what it is measured in (owner 2026-07-28: the
 // mixed decimals/percentages/dollars were unreadable without labels).
@@ -62,7 +70,7 @@ function DurationField({ value, onChange, onCommit, placeholder }) {
     <Input type="text" value={text} placeholder={placeholder}
       aria-invalid={invalid || undefined}
       title="Type a number of minutes, or a duration like 90s / 5m / 2h"
-      className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right${invalid ? ' border-[var(--color-down)]' : ''}`}
+      className={`${FIELD_W} !min-h-[26px] ${TAP_H} !py-0.5 !px-2 !text-[9px] text-right${invalid ? ' border-[var(--color-down)]' : ''}`}
       onBlur={() => { if (!invalid && onCommit) onCommit() }}
       onChange={e => {
         const raw = e.target.value
@@ -110,7 +118,7 @@ export default function Field({
             ? <DurationField value={value} onChange={onChange} onCommit={onCommit} placeholder={placeholder} />
             : <Input type="number" step={step} min={min} max={max} value={display} placeholder={placeholder}
                 aria-label={typeof label === 'string' ? text : undefined}
-                className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right`}
+                className={`${FIELD_W} !min-h-[26px] ${TAP_H} !py-0.5 !px-2 !text-[9px] text-right`}
                 onBlur={() => { if (onCommit) onCommit() }}
                 onChange={e => {
                   const raw = e.target.value
