@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -317,6 +319,10 @@ export default function Desk() {
     return () => { clearTimeout(kick); clearInterval(t) }
   }, [load, hasActivity])
 
+  // An account switch must not wait out this page's poll interval (see
+  // src/lib/selected-account.js — it was up to 70s with the server cache).
+  const switchingTo = useAccountSwitch(load)
+
   const watch = (config?.symbols || []).filter(w => w.enabled !== false).map(w => w.symbol)
   // Chart wall order: live broker positions first, then bot-tracked, then
   // whatever the scan currently finds ACTIVE (a live bias — hot before
@@ -413,6 +419,7 @@ export default function Desk() {
   return (
     <div className="space-y-2">
       <SectionNavFab sections={DESK_SECTIONS} />
+      <SwitchingNote to={switchingTo} />
       {error && <Card className="text-[9px]">{error}</Card>}
 
       {/* ---- Status strip — desk-style: dots + text, no pill clutter.
@@ -1067,7 +1074,7 @@ export default function Desk() {
                           <td className="py-1 pr-3">
                             {un
                               ? <span className="text-[var(--color-text-sub)]">manual</span>
-                              : <Badge tone={s2.armed ? 'up' : 'neutral'}>{s2.armed ? 'ARMED' : 'off'}</Badge>}
+                              : <Badge tone={s2.armed ? 'on' : 'off'}>{s2.armed ? 'ARMED' : 'OFF'}</Badge>}
                           </td>
                           <td className={`py-1 pr-3 text-right ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {traded ? `${s2.netPnl >= 0 ? '+' : '−'}$${Math.abs(s2.netPnl).toFixed(2)}` : '—'}

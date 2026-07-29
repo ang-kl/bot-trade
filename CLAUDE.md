@@ -63,11 +63,28 @@ node scripts/count-interactions.js --serial     # just the number
 
 `reply turns` counts assistant entries on the main thread carrying a non-empty
 text block — i.e. every reply, tool calls excluded, subagent chatter excluded.
-Measurement at 2026-07-26 01:00 UTC on session `ad9d1f6f`: **1,773 reply
-turns** (404 owner turns, 10,558 assistant entries in total, 28 compact
-events, 172 MB). The count was therefore **rebased to `№ 1,773` as the last
-reply**, and the next reply is `№ 1,774`. Continue from there; re-measure
-rather than guess if the thread is ever lost.
+
+**RUN THE SCRIPT AS THE FIRST ACTION OF EVERY SESSION.** Owner, 2026-07-30:
+*"where is your serial numbering again, it always gone after i resume the
+session."* That is the whole failure mode. Carrying the number in context works
+until the session is resumed or compacted, at which point the sequence is gone
+and the next number gets *guessed* from whatever fragment survived — which is
+how the count drifted by more than 1,500. The number is not remembered, it is
+measured, and it must be measured before the first reply, not recovered after
+someone notices it is wrong.
+
+Measurement history — each line is a real run of the script, not a claim:
+
+- 2026-07-26 01:00 UTC, single session `ad9d1f6f`: **1,773** reply turns.
+  Rebased to `№ 1,773`. This measurement was correct but too narrow: it
+  counted ONE session file.
+- 2026-07-30 00:00 UTC, **all 63 session files**: **3,403** reply turns
+  (767 owner turns, 22,166 assistant entries, 54 compact events). Rebased to
+  `№ 3,403` as the last reply; the next reply is `№ 3,404`.
+
+The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
+a correction of the script — it is the cost of the sessions that were never
+counted. Scan all sessions, not one.
 
 Two earlier claims in this file were wrong and are corrected here:
 

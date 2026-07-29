@@ -111,6 +111,40 @@ P_ACS  --color-accent-soft     active tint
 **Green is forbidden** and enforced by `npm run check:no-green`. Positive is
 `--color-up`, which is not green in this theme.
 
+### ON / OFF state
+
+Owner, 2026-07-29: *"The positive / or ON button or state should be blue with
+the blueish-tint background while the negative or OFF button or state is red
+with redish-tint background."* Plus the HIG note: *"Use green or system accent
+colors sparingly and consistently to show completion or active choices."*
+
+```
+--color-state-on-text / -bg / -border     ON, armed, enabled, open, reachable
+--color-state-off-text / -bg / -border    OFF, disarmed, disabled, closed, failed
+```
+
+Both states are **filled**, not just outlined — a tinted background is the
+cue that survives a 9px label. Use `<Badge tone="on">` / `tone="off"`, or the
+tokens directly on a switch.
+
+Three rules that are easy to get wrong:
+
+1. **Do not use `up`/`down` for state.** Those mean profit and loss. An armed
+   strategy is not a profit. `tone={x ? 'up' : 'down'}` on an ON/OFF pill
+   reads as money and was corrected across Tune, Desk, Connect and MarketClock.
+2. **OFF is red, not neutral grey.** Several tables rendered a disarmed
+   strategy in the same muted grey as "no data", so *off* and *unknown* were
+   indistinguishable. Grey means "we don't know"; red means "we know, and it
+   is off".
+3. **The clay accent is navigation, not state.** `--color-accent` marks the
+   active nav pill and section titles. An armed toggle painted with it looked
+   like a selected tab; ON is blue.
+
+Per theme: light and dark resolve ON to blue and OFF to red. **Sepia** has no
+blue in its palette, so it resolves ON to its own warm accent — declared
+explicitly rather than inherited, because inheriting light mode's `#1a56db`
+would drop a cold blue onto warm paper.
+
 Table heads use Apple system-grey tokens, set per theme:
 
 ```

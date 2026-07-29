@@ -8,6 +8,8 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
@@ -488,6 +490,10 @@ export default function Trade() {
     return () => clearInterval(id)
   }, [load, hasActivity])
 
+  // An account switch must not wait out this page's poll interval (see
+  // src/lib/selected-account.js — it was up to 70s with the server cache).
+  const switchingTo = useAccountSwitch(load)
+
   const act = async (label, path) => {
     setBusy(label)
     try { await agentPost(path); await load() } catch (e) { setError(e.message) } finally { setBusy('') }
@@ -560,6 +566,7 @@ export default function Trade() {
   return (
     <div className="space-y-3">
       <SectionNavFab sections={TRADE_SECTIONS} />
+      <SwitchingNote to={switchingTo} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 
       {/* ONE card, ACCOUNT line first (owner spec): row 1 = who/where the

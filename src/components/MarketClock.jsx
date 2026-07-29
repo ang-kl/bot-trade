@@ -46,7 +46,7 @@ export default function MarketClock() {
           const open = !weekend && sessionOpenNow(s, now)
           return (
             <div key={s.id} className="flex items-center gap-1.5 rounded-[8px] glass-inset px-2 py-1">
-              <Badge tone={open ? 'up' : 'neutral'}>{open ? 'OPEN' : 'CLOSED'}</Badge>
+              <Badge tone={open ? 'on' : 'off'}>{open ? 'OPEN' : 'CLOSED'}</Badge>
               <span className="text-[9px] font-semibold">{s.label}</span>
               <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums">{fmtInTz(now, s.tz)}</span>
             </div>

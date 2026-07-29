@@ -163,6 +163,7 @@ function navLinkClasses(isActive) {
 
 export default function App() {
   const { theme, setTheme } = useTheme()
+  const [footerOpen, setFooterOpen] = useState(false)
   // The desktop footer wraps to two lines on narrow desktops (measured: ~39px
   // at 1440x900, ~58px at 1280x800), so its height cannot be hardcoded — and
   // the sidebar has to stop exactly above it or the two overlap, which is the
@@ -341,12 +342,27 @@ export default function App() {
             glass-bar material. main's bottom padding above keeps real
             content from ending up permanently hidden under it. */}
         <footer ref={footerRef} className="glass-fixed hidden lg:flex fixed bottom-0 inset-x-0 lg:left-52 z-40 px-4 py-2.5 text-[9px] text-[var(--color-text-sub)] flex-wrap gap-x-4 gap-y-1">
+          {/* Owner (2026-07-30): "why i still have [the strategy blurb] in the
+              footer". The footer WAS already fixed — it never scrolled — but
+              it was still spending three lines of permanent chrome on prose
+              that is read once. Two things stay visible because they are
+              operational: the build stamp (the only thing that can prove WHICH
+              code is deployed) and the risk line. The rest moves behind the
+              disclosure, same as it already does inside the touch More sheet. */}
           <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
+          <span>trading involves risk — demo first, never money you can&apos;t lose</span>
+          <button
+            type="button"
+            onClick={() => setFooterOpen(v => !v)}
+            aria-expanded={footerOpen}
+            className="underline underline-offset-2 cursor-pointer text-[var(--color-text-sub)]"
+          >{footerOpen ? 'less' : 'how it trades'}</button>
           {/* Keep this line TRUE: 5 registry strategies armed per-stage in
               Tune; entries/risk gate are deterministic, but the position
               monitor has an LLM fallback — never claim "no LLM" outright. */}
-          <span>5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
-          <span>trading involves risk — demo first, never money you can't lose</span>
+          {footerOpen && (
+            <span className="basis-full">5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
+          )}
         </footer>
 
         {/* Bottom tab bar — touch only. Always mounted, never conditionally
