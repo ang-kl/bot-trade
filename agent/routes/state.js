@@ -750,6 +750,18 @@ export default function stateRouter(db) {
         })
         return {
           accountId: a.account_id,
+          // THE SAME ACCOUNT HAS TWO IDs. `account_id` is cTrader's
+          // ctidTraderAccountId (4xxxxxxx); `trader_login` is the broker login
+          // (5xxxxxx) — and the login is the ONLY one the operator ever sees
+          // elsewhere, because the account picker on this same page is built
+          // from the broker's account list. Owner, 2026-07-29: "the account I
+          // pick to trade starts with five but the account I selected as
+          // source to copy the watchlist starts with four — how do I know
+          // which one am I using now?" Exactly right: they could not. Both
+          // travel now, and `isSelected` marks the one the bot actually trades.
+          traderLogin: a.trader_login || null,
+          brokerLabel: a.broker_label || null,
+          isSelected: selected != null && String(a.account_id) === String(selected),
           isLive: a.is_live === 1,
           enabled: a.enabled === 1,
           mode: a.mode,
