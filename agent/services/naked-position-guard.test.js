@@ -355,3 +355,55 @@ test('it never throws — a protection audit that can crash the loop removes saf
   assert.ok(res)
   assert.equal(res.naked.length, 0)
 })
+
+// ---------------------------------------------------------------------------
+// THE GAP THAT LET A DEAD AUDIT SHIP.
+//
+// Every test above hands auditProtection a hand-built row object, so all 23 of
+// them passed while the query the LOOP actually runs threw
+// `no such column: ctrader_position_id` on every pass — that column is on
+// `trades`, not `monitored_positions`. The audit never ran once between #476
+// and 2026-07-29, and the panel's "idle" was the crash.
+//
+// Unit tests of a pure function cannot catch a broken SELECT. This one runs
+// the real statement, lifted from loop.js, against a real schema.
+// ---------------------------------------------------------------------------
+test('THE LOOP QUERY runs against the real schema', () => {
+  const db = tmpDb()
+  const src = fs.readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+
+  // Lift the statement out of loop.js rather than restating it here — a copy
+  // would drift and re-open exactly the hole this test exists to close.
+  const m = src.match(/SELECT mp\.id[\s\S]*?t\.ctrader_position_id IS NOT NULL/)
+  assert.ok(m, 'could not find the protection-audit query in loop.js — re-point this test')
+
+  // Throws on any column that does not exist. That is the whole assertion.
+  const rows = db.prepare(m[0]).all()
+  assert.ok(Array.isArray(rows))
+})
+
+test('the loop query returns the fields auditProtection reads', () => {
+  const db = tmpDb()
+  db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, sl_price, volume, opened_at, ctrader_position_id, account_id)
+              VALUES ('ETHUSD','SELL','open',1700,1723.26,1,'2026-07-29 01:00:00','555','43097342')`).run()
+  const tradeId = db.prepare('SELECT last_insert_rowid() AS id').get().id
+  db.prepare(`INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, source, account_id, status)
+              VALUES ('ETHUSD', ?, 'short', 1700, 1723.26, 'autopilot', '43097342', 'active')`).run(tradeId)
+
+  const src = fs.readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
+  const q = src.match(/SELECT mp\.id[\s\S]*?t\.ctrader_position_id IS NOT NULL/)[0]
+  const rows = db.prepare(q).all()
+
+  assert.equal(rows.length, 1)
+  // A row that came back without the position id would be counted `unmatched`
+  // and silently excluded — the audit would report "nothing to check" on a
+  // book full of positions.
+  assert.equal(String(rows[0].ctrader_position_id), '555')
+  assert.equal(rows[0].current_sl, 1723.26)
+  assert.equal(rows[0].source, 'autopilot')
+
+  // And end-to-end: those rows must actually produce a finding.
+  const a = auditProtection(rows, [{ positionId: '555', stopLoss: null, takeProfit: null }])
+  assert.equal(a.naked.length, 1, 'the real query feeding the real audit must still detect a naked position')
+  assert.equal(a.unmatched, 0)
+})

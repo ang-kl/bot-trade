@@ -1746,9 +1746,19 @@ async function runLoop(db) {
           // our own record only proves what we believe.
           try {
             const { runProtectionAudit } = await import('./services/naked-position-guard.js')
+            // ctrader_position_id lives on TRADES, not monitored_positions.
+            // The original query selected it straight off monitored_positions
+            // and threw `no such column` on every single pass — so the
+            // protection audit has never once run since it shipped in #476,
+            // and the panel's "idle" was that crash, not a resting state.
+            // Found 2026-07-29 02:51 only because ¶D·2's failed-beat put the
+            // message somewhere a human could read it.
             const openRows = db.prepare(
-              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id, source
-               FROM monitored_positions WHERE status = 'active' AND ctrader_position_id IS NOT NULL`
+              `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
+                      t.ctrader_position_id
+                 FROM monitored_positions mp
+                 LEFT JOIN trades t ON t.id = mp.trade_id
+                WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL`
             ).all()
             const brokerSl = positions.map(p => ({
               positionId: p.positionId,
