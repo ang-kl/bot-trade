@@ -16,6 +16,7 @@ import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
+import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 
@@ -750,6 +751,8 @@ export default function Tune() {
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [wlRemoved, setWlRemoved] = useState(null)   // previously-watched symbols (server record)
   const [wlSelected, setWlSelected] = useState(() => new Set()) // checkbox bulk-select in the watchlist table
+  // Symbol whose strategy picker is open, or '__bulk__' for the selected rows.
+  const [stratEditor, setStratEditor] = useState(null)
   // Screener sections collapse (owner 2026-07-28: triangle collapse — the
   // two screeners took the whole first screen). Default CLOSED, per device.
   const [screenerOpen, setScreenerOpen] = useState(() => { try { return localStorage.getItem('tune_screener_open') === 'true' } catch { return false } })
@@ -816,8 +819,19 @@ export default function Tune() {
   const [lastSaved, setLastSaved] = useState(null) // persistent save proof { msg, at }
   const [error, setError] = useState('')
 
+  // Stamped every time this page WRITES. A /state/config fetch issued before
+  // a save resolves after it and carries the pre-save answer — applying that
+  // silently reverts what you just changed on screen while the server holds
+  // the new value (seen at 390px, where the page has more in flight: a symbol
+  // reverted to its old strategy pick 2.5s after a save the agent had
+  // accepted). Any load() whose fetches began before the newest write is
+  // therefore discarded; the write's own load() is the one that lands.
+  const writeSeq = useRef(0)
+
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
+    const seenSeq = writeSeq.current
+    console.log('[dbg] load start seq=', seenSeq)
     try {
       const [c, r, tf, rf, vf, ff, sm, vm] = await Promise.all([
         agentGet('/state/config'),
@@ -829,6 +843,8 @@ export default function Tune() {
         agentGet('/state/stage-matrix').catch(() => null),
         agentGet('/state/veto-breakdown?days=30').catch(() => null),
       ])
+      console.log('[dbg] load done seen=', seenSeq, 'now=', writeSeq.current, 'EURUSD=', JSON.stringify(c.symbols?.find(x=>x.symbol==='EURUSD')?.strategies))
+      if (writeSeq.current !== seenSeq) { console.log('[dbg] DISCARDED'); return }
       setConfig(c)
       setRisk(r)
       if (tf?.timeframes) setTimeframes(tf.timeframes)
@@ -934,7 +950,9 @@ export default function Tune() {
   const flash = (msg) => { setStatus(msg); setTimeout(() => setStatus(''), 2500) }
   const run = async (fn, okMsg) => {
     try {
-      await fn(); await load(); flash(okMsg)
+      await fn()
+      writeSeq.current += 1; console.log('[dbg] write done seq=', writeSeq.current)
+      await load(); flash(okMsg)
       // Persistent "it saved" proof (owner: "i feel not saved but actually is").
       // The flash vanishes in 2.5s; this line stays with a clock time so you
       // can always confirm the last change stuck.
@@ -2043,6 +2061,9 @@ export default function Tune() {
             {(() => {
               const prevBy = {}
               for (const r of (sizingPrev?.rows || [])) prevBy[r.symbol] = r
+              // The globally-armed keys. A per-symbol pick intersects with
+              // this, so it is what "n of m" counts against.
+              const armedKeys = (config?.strategies || []).filter(x => x.on).map(x => x.key)
               const toggleWlSel = (sym) => setWlSelected(prev2 => {
                 const next = new Set(prev2)
                 if (next.has(sym)) next.delete(sym); else next.add(sym)
@@ -2054,8 +2075,10 @@ export default function Tune() {
                 const scan = scanInfo?.by?.[s.symbol]
                 const prev = prevBy[String(s.symbol).toUpperCase()]
                 const on = s.enabled !== false
+                const picked = Array.isArray(s.strategies) && s.strategies.length ? s.strategies : null
                 return (
-                  <tr key={s.symbol} className="border-t border-[var(--color-border)]">
+                  <Fragment key={s.symbol}>
+                  <tr className="border-t border-[var(--color-border)]">
                     <td className="pr-1 py-1">
                       <input type="checkbox" checked={wlSelected.has(s.symbol)} onChange={() => toggleWlSel(s.symbol)} aria-label={`Select ${s.symbol}`} />
                     </td>
@@ -2126,6 +2149,29 @@ export default function Tune() {
                         }}
                       />
                     </td>
+                    {/* Which of the ARMED strategies may trade this symbol.
+                        "all" is the default and means "follow Tune >
+                        Strategies" — the same thing every row means today. */}
+                    <td className="pr-2 whitespace-nowrap">
+                      <button
+                        type="button"
+                        className="cursor-pointer hover:underline text-[9px]"
+                        aria-label={`Choose strategies for ${s.symbol}`}
+                        onClick={() => setStratEditor(stratEditor === s.symbol ? null : s.symbol)}
+                      >
+                        {picked
+                          ? <span className="text-[var(--color-accent)] font-semibold">{picked.length} of {armedKeys.length}</span>
+                          : <span className="text-[var(--color-text-sub)]">all</span>}
+                        <span aria-hidden="true"> {stratEditor === s.symbol ? '▾' : '▸'}</span>
+                      </button>
+                      {/* A pick that intersects the armed set to NOTHING stops
+                          the symbol trading entirely. That is a legal thing to
+                          configure and a terrible thing to configure by
+                          accident, so it is named on the row. */}
+                      {picked && picked.every(k => !armedKeys.includes(k)) && (
+                        <span className="ml-1 font-bold text-[var(--color-down)]" title="None of this symbol's chosen strategies is armed in Tune > Strategies — nothing can trade it">NONE ARMED</span>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap">
                       <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => pushSymbols(symbols.map((x, j) => j === i ? { ...x, enabled: x.enabled === false } : x))}>
                         {on ? 'Disable' : 'Enable'}
@@ -2134,6 +2180,29 @@ export default function Tune() {
                       <Button size="sm" variant="danger" className="!px-2 !py-0.5 !min-h-0 text-[9px]" aria-label={`Remove ${s.symbol}`} onClick={() => pushSymbols(symbols.filter((_, j) => j !== i))}>Remove</Button>
                     </td>
                   </tr>
+                  {stratEditor === s.symbol && (
+                    <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
+                      <td colSpan={11} className="py-2 px-2">
+                        <StrategyPicker
+                          all={config?.strategies || []}
+                          value={s.strategies || null}
+                          onChange={(next) => {
+                            const list = symbols.map((x, j) => j === i ? (next ? { ...x, strategies: next } : (() => { const c = { ...x }; delete c.strategies; return c })()) : x)
+                            // Apply locally as well as posting — load() re-reads
+                            // eight endpoints, so the cell would otherwise sit on
+                            // its old value for a beat after a save that worked
+                            // (same reason the Max lots editor does this).
+                            setConfig(c => ({ ...c, symbols: list }))
+                            pushSymbols(list)
+                            setStratEditor(null)
+                          }}
+                          onCancel={() => setStratEditor(null)}
+                          label={s.symbol}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               }
               const selInList = [...wlSelected].filter(sym => symbols.some(s => s.symbol === sym))
@@ -2164,7 +2233,34 @@ export default function Tune() {
                       pushSymbols(symbols.map(s => pick.has(s.symbol) ? { ...s, enabled: true } : s))
                       setWlSelected(new Set())
                     }}>Enable selected</Button>
+                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => setStratEditor(stratEditor === '__bulk__' ? null : '__bulk__')}>
+                      Set strategies for {selInList.length}…
+                    </Button>
                     <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline" onClick={() => setWlSelected(new Set())}>clear</button>
+                  </div>
+                )}
+                {/* Bulk pick — the only practical route when the watchlist runs
+                    to hundreds of instruments. One list, one save, same as the
+                    other bulk gestures above it. */}
+                {stratEditor === '__bulk__' && selInList.length > 0 && (
+                  <div className="mb-1.5 p-2 rounded-[8px] border border-[var(--color-border)]">
+                    <StrategyPicker
+                      all={config?.strategies || []}
+                      value={null}
+                      label={`${selInList.length} selected symbols`}
+                      onCancel={() => setStratEditor(null)}
+                      onChange={(next) => {
+                        const pick = new Set(selInList)
+                        const list = symbols.map(s => {
+                          if (!pick.has(s.symbol)) return s
+                          if (next) return { ...s, strategies: next }
+                          const c = { ...s }; delete c.strategies; return c
+                        })
+                        setConfig(c => ({ ...c, symbols: list }))
+                        pushSymbols(list)
+                        setStratEditor(null)
+                      }}
+                    />
                   </div>
                 )}
                 <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
@@ -2180,6 +2276,7 @@ export default function Tune() {
                         <th className="pr-2 pb-1" title="LIVE closed trades on this account: count · net P&L · win rate. LOSER = net negative after enough sample — consider disabling">Live results</th>
                         <th className="pr-2 pb-1" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
                         <th className="pr-2 pb-1" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
+                        <th className="pr-2 pb-1" title="Which of the ARMED strategies may trade this symbol. 'all' follows Tune &gt; Strategies. A pick can only NARROW that set — a symbol cannot arm a strategy you have disarmed globally.">Strategies</th>
                         <th className="pb-1">Actions</th>
                       </tr>
                     </thead>
@@ -2195,7 +2292,7 @@ export default function Tune() {
                         return (
                           <Fragment key={`band:${key}`}>
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={10} className="py-1.5">
+                              <td colSpan={11} className="py-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
                                     type="button" onClick={() => toggleBand(key)} aria-expanded={bandOpen}
@@ -2225,7 +2322,7 @@ export default function Tune() {
                         <Fragment key="band:__singles__">
                           {groupOf.size > 0 && (
                             <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={10} className="py-1.5">
+                              <td colSpan={11} className="py-1.5">
                                 <button
                                   type="button" onClick={() => toggleBand('__singles__')} aria-expanded={openBands.has('__singles__')}
                                   className="flex items-center gap-1.5 font-bold cursor-pointer"

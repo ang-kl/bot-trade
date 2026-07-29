@@ -15,6 +15,7 @@ import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
+import { invalidateStateCache } from '../lib/state-cache.js'
 import { setStage } from '../services/stage-matrix.js'
 import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
@@ -61,6 +62,24 @@ export function pickBacktestSymbols(body, watchlistJson) {
  */
 export default function actionsRouter(db) {
   const router = Router()
+
+  // Every successful write makes the /state/* read cache stale. Without this
+  // the UI saves, re-reads, and paints the PRE-SAVE answer back over the new
+  // one for up to STATE_CACHE_MS — measured directly against the agent on
+  // 2026-07-29 (POST, then three GETs, all three superseded). Bumped on
+  // `finish` so it happens after the handler's own writes, and only for a
+  // 2xx/3xx: a rejected request changed nothing and must not throw away a
+  // cache the whole dashboard is reading from.
+  //
+  // Declared AFTER `router` on purpose: the first draft put this block above
+  // the `const`, which is a temporal dead zone — the same failure that blanked
+  // every page on 2026-07-29 (#489). Lint and tests did not see that one
+  // either; booting the agent did.
+  router.use((req, res, next) => {
+    if (req.method === 'GET') return next()
+    res.on('finish', () => { if (res.statusCode < 400) invalidateStateCache() })
+    next()
+  })
 
   // -----------------------------------------------------------------------
   // POST /actions/backtest — walk-forward backtest of the fib strategy on
@@ -3428,15 +3447,37 @@ export default function actionsRouter(db) {
       if (!symbols || !Array.isArray(symbols)) {
         return res.status(400).json({ error: 'Missing required field: symbols (array)' })
       }
+      // A per-symbol `strategies` pick is VALIDATED against the registry, not
+      // trusted. The pick narrows what may trade the symbol, so a typo'd key
+      // ('cup_handel') would intersect to nothing and silently stop the symbol
+      // trading altogether — a config that looks set and does the opposite of
+      // what it reads. Naming the bad keys back is cheap; the UI sends them
+      // from the registry, so this only ever fires on a hand-rolled call.
+      const badKeys = new Set()
+      for (const s of symbols) {
+        if (s && typeof s === 'object' && Array.isArray(s.strategies)) {
+          for (const k of s.strategies) if (!STRATEGY_KEYS.includes(String(k))) badKeys.add(String(k))
+        }
+      }
+      if (badKeys.size) {
+        return res.status(400).json({
+          error: `Unknown strategy key(s): ${[...badKeys].join(', ')}. Known: ${STRATEGY_KEYS.join(', ')}`,
+        })
+      }
+
       const normalized = symbols.map(s => {
         if (typeof s === 'string') {
           return { symbol: s.toUpperCase().trim(), enabled: true }
         }
-        return {
+        const out = {
           ...s,
           symbol: (s.symbol || '').toUpperCase().trim(),
           enabled: s.enabled !== false,
         }
+        // An empty pick means "follow the global armed set" — store it as
+        // absent so the two ways of saying that cannot drift apart.
+        if (Array.isArray(out.strategies) && out.strategies.length === 0) delete out.strategies
+        return out
       })
       // Previously-watched record (owner 2026-07-28: a card of symbols that
       // USED to be on the list, with one-tap re-add). Diff old vs new here —

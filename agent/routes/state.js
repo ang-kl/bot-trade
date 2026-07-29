@@ -9,6 +9,7 @@ import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLever
 import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
+import { stateEpoch } from '../lib/state-cache.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
@@ -68,7 +69,10 @@ export default function stateRouter(db) {
     if (req.method !== 'GET' || NO_CACHE.has(req.path)) return next()
     const key = req.originalUrl
     const hit = respCache.get(key)
-    if (hit && Date.now() - hit.at < STATE_CACHE_MS) {
+    // An entry from before the last write is not merely old, it is WRONG —
+    // see lib/state-cache.js. Age alone let a save be followed by up to ten
+    // seconds of the pre-save answer.
+    if (hit && hit.epoch === stateEpoch() && Date.now() - hit.at < STATE_CACHE_MS) {
       res.setHeader('etag', hit.etag)
       res.setHeader('x-cache', 'hit')
       if (req.headers['if-none-match'] === hit.etag) return res.status(304).end()
@@ -84,7 +88,7 @@ export default function stateRouter(db) {
         const etag = `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 16)}"`
         const status = res.statusCode
         if (status < 400) {
-          respCache.set(key, { body, etag, at: Date.now() })
+          respCache.set(key, { body, etag, at: Date.now(), epoch: stateEpoch() })
           if (respCache.size > 300) { // bound: drop the oldest entry
             let oldK = null, oldAt = Infinity
             for (const [k, v] of respCache) if (v.at < oldAt) { oldAt = v.at; oldK = k }

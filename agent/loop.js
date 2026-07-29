@@ -888,7 +888,9 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     // margin when the snapshot is fresh (see portfolioMarginStatus).
     if (portfolioMarginExhausted(db)) return { fired: false, synth }
     const apAccounts = getAutopilotAccounts(db)
-    const { accountMayTrade } = await import('./services/watchlists.js')
+    const { accountMayTrade, symbolAllowsStrategy } = await import('./services/watchlists.js')
+    const { enabledStrategies } = await import('./services/strategies.js')
+    const globalArmed = enabledStrategies(db, getState).map(s => s.key)
     for (const acct of apAccounts) {
       // PER-ACCOUNT MEMBERSHIP GATE. The scan universe is the union of every
       // enabled account's watchlist, so a symbol reaching here may belong to
@@ -916,6 +918,31 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // carries its lot cap, and a cap that silently reverted to the shared
       // list's would resize the trade.
       const acctItem = { ...wItem, ...member.item }
+
+      // PER-SYMBOL STRATEGY GATE. A symbol row may narrow which of the armed
+      // strategies are allowed to trade it — "run RSI-2 on this one, not the
+      // breakout". It can only ever narrow: a row cannot arm something the
+      // operator disarmed globally, or a strategy with no backtest behind it
+      // would reach capital through a watchlist edit.
+      //
+      // Enforced here rather than in the scan because the scan has no account
+      // in scope, and two accounts may pick differently for the same symbol.
+      // The cost is one wasted compute per suppressed signal; the alternative
+      // is a scan that is wrong for whichever account it did not pick.
+      const stratGate = symbolAllowsStrategy(acctItem, synth.strategy, globalArmed)
+      if (!stratGate.ok) {
+        log(`Symbol strategy gate: ${sym} on ${acct.accountId} — ${stratGate.reason}`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'symbol_strategy', decision: 'skip', reason: stratGate.reason,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+
       const tradeResult = await autoTrade(db, sym, synth, acctItem, acct)
       if (tradeResult) {
         fired = true
