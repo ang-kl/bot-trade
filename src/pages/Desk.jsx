@@ -1067,7 +1067,7 @@ export default function Desk() {
                           <td className="py-1 pr-3">
                             {un
                               ? <span className="text-[var(--color-text-sub)]">manual</span>
-                              : <Badge tone={s2.armed ? 'up' : 'neutral'}>{s2.armed ? 'ARMED' : 'off'}</Badge>}
+                              : <Badge tone={s2.armed ? 'on' : 'off'}>{s2.armed ? 'ARMED' : 'OFF'}</Badge>}
                           </td>
                           <td className={`py-1 pr-3 text-right ${!traded ? 'text-[var(--color-text-sub)]' : s2.netPnl >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                             {traded ? `${s2.netPnl >= 0 ? '+' : '−'}$${Math.abs(s2.netPnl).toFixed(2)}` : '—'}

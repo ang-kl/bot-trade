@@ -95,6 +95,25 @@
   --color-success-bg:     rgba(43, 92, 255, 0.10);
   --color-success-border: rgba(43, 92, 255, 0.30);
 
+  /* -- ON / OFF state (owner 2026-07-29) --
+     "The positive / or ON button or state should be blue with the blueish-
+      tint background while the negative or OFF button or state is red with
+      redish-tint background."
+     These are named for STATE, deliberately not reused from up/down — those
+     mean profit and loss. A control being ON is not a profit, and reading one
+     as the other is exactly the confusion this pair exists to prevent.
+     Also the owner's HIG note: "use green or system accent colors sparingly
+     and consistently" — there is no green anywhere in this palette
+     (scripts/check-no-green.sh enforces it), and the clay ACCENT is reserved
+     for navigation and headings, never for state. */
+  --color-state-on-text:   #1a56db;
+  --color-state-on-bg:     rgba(43, 92, 255, 0.12);
+  --color-state-on-border: rgba(43, 92, 255, 0.34);
+
+  --color-state-off-text:   #dc2626;
+  --color-state-off-bg:     rgba(225, 29, 72, 0.10);
+  --color-state-off-border: rgba(225, 29, 72, 0.32);
+
   --color-special-text:   #7c3aed;
   --color-special-bg:     rgba(139, 92, 246, 0.12);
   --color-special-border: rgba(139, 92, 246, 0.32);
@@ -171,6 +190,17 @@
   --color-success-bg:     rgba(79, 140, 255, 0.12);
   --color-success-border: rgba(79, 140, 255, 0.32);
 
+  /* ON / OFF on the Claude dark surface (#060913): the tints are carried a
+     little stronger than light mode because a 10% wash disappears against a
+     near-black background. */
+  --color-state-on-text:   #7aa7ff;
+  --color-state-on-bg:     rgba(79, 140, 255, 0.16);
+  --color-state-on-border: rgba(79, 140, 255, 0.38);
+
+  --color-state-off-text:   #ff6b81;
+  --color-state-off-bg:     rgba(255, 77, 109, 0.14);
+  --color-state-off-border: rgba(255, 77, 109, 0.36);
+
   --color-special-text:   #c4a5ff;
   --color-special-bg:     rgba(167, 139, 250, 0.12);
   --color-special-border: rgba(167, 139, 250, 0.32);
@@ -236,6 +266,18 @@
   --color-success-text:   #8c5a1c;
   --color-success-bg:     rgba(140, 90, 28, 0.12);
   --color-success-border: rgba(140, 90, 28, 0.30);
+
+  /* Sepia has no blue in its palette by design, so ON reads as the theme's
+     own warm accent rather than importing a blue that would break the paper
+     look. OFF stays the sepia red. Declared explicitly — inheriting the
+     light theme's #1a56db here would drop a cold blue onto warm paper. */
+  --color-state-on-text:   #8c5a1c;
+  --color-state-on-bg:     rgba(140, 90, 28, 0.14);
+  --color-state-on-border: rgba(140, 90, 28, 0.34);
+
+  --color-state-off-text:   #a33a1e;
+  --color-state-off-bg:     rgba(163, 58, 30, 0.12);
+  --color-state-off-border: rgba(163, 58, 30, 0.32);
   --color-special-text:   #6b4b8a;
   --color-special-bg:     rgba(107, 75, 138, 0.12);
   --color-special-border: rgba(107, 75, 138, 0.30);

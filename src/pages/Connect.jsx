@@ -173,7 +173,7 @@ export default function Connect() {
           <Button size="sm" variant="ghost" onClick={testConn}>Test connection</Button>
           <Button size="sm" variant="subtle" onClick={() => { clearAgentConn(); setUrl(''); setSecret(''); flash('Cleared — falling back to build-time env vars') }}>Clear</Button>
           {testResult && (
-            <Badge tone={testResult.ok ? 'up' : 'down'}>{testResult.ok ? `REACHABLE — ${testResult.detail}` : `FAILED — ${testResult.detail}`}</Badge>
+            <Badge tone={testResult.ok ? 'on' : 'off'}>{testResult.ok ? `REACHABLE — ${testResult.detail}` : `FAILED — ${testResult.detail}`}</Badge>
           )}
         </div>
         <div className="mt-3 border-t border-[var(--color-border)] pt-3">

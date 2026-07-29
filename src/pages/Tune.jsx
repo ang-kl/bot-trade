@@ -432,7 +432,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
             <div className="flex flex-wrap items-center gap-2 text-[9px]">
               <span className="font-semibold">{sel.name}</span>
               <span className="text-[var(--color-text-sub)]">× {selCol?.label || sel.stage} — currently</span>
-              <Badge tone={selOn ? 'up' : 'down'}>{selOn ? 'ON ✓' : 'OFF ✗'}</Badge>
+              <Badge tone={selOn ? 'on' : 'off'}>{selOn ? 'ON ✓' : 'OFF ✗'}</Badge>
               <Button size="sm" disabled={busy || selOn === true} onClick={() => apply(true)}>Turn ON</Button>
               <Button size="sm" variant="subtle" disabled={busy || selOn === false} onClick={() => apply(false)}>Turn OFF</Button>
               <Button size="sm" variant="subtle" onClick={() => setSel(null)}>Close</Button>
@@ -638,16 +638,31 @@ function SectionTitle({ children }) {
   )
 }
 
+// Owner (2026-07-29): "The positive / or ON button or state should be blue
+// with the blueish-tint background while the negative or OFF button or state
+// is red with redish-tint background."
+//
+// Two things were wrong here before. ON was the clay ACCENT, which is the
+// navigation colour — so an armed strategy looked like a selected tab. And
+// NEITHER state had a tinted background: both sat on --color-bg, so the only
+// signal was a 1px border and the text colour, which is the weakest possible
+// cue on a page carrying dozens of these.
+//
+// Case is no longer doing semantic work either. It used to shout an OFF
+// toggle in bold uppercase and whisper an ON one in normal capitalize, which
+// inverted the emphasis — the state you want to notice is whichever one is
+// unexpected, and case cannot know that. Colour carries it now; the label
+// reads the same either way.
 function Toggle({ on, onClick, label }) {
   return (
     <button
       type="button" role="switch" aria-checked={on}
       onClick={onClick}
-      title={`${label}: ${on ? 'ON' : 'OFF'}`}
-      className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer transition-colors px-[3px] py-[1px] bg-[var(--color-bg)] ${
+      title={`${label}: ${on ? 'ON' : 'OFF'} — tap to turn ${on ? 'off' : 'on'}`}
+      className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer transition-colors px-[3px] py-[1px] text-[9px] font-semibold capitalize ${
         on
-          ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[9px] font-normal capitalize'
-          : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
+          ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)]'
+          : 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
       }`}
     >
       {label}
@@ -2084,7 +2099,7 @@ export default function Tune() {
                     </td>
                     <td className="pr-2 py-1 whitespace-nowrap">{s.symbol}</td>
                     <td className="pr-2 text-[9px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
-                    <td className="pr-2"><Badge tone={on ? 'up' : 'neutral'}>{on ? 'ON' : 'OFF'}</Badge></td>
+                    <td className="pr-2"><Badge tone={on ? 'on' : 'off'}>{on ? 'ON' : 'OFF'}</Badge></td>
                     <td className="pr-2 text-[9px] tabular-nums whitespace-nowrap">
                       {scan
                         ? <>
@@ -2302,7 +2317,7 @@ export default function Tune() {
                                     {key}
                                     <span className="font-normal text-[var(--color-text-sub)]">({members.length} symbols · {onCount} on)</span>
                                   </button>
-                                  <Badge tone={onCount > 0 ? 'up' : 'neutral'}>{onCount > 0 ? 'ON' : 'OFF'}</Badge>
+                                  <Badge tone={onCount > 0 ? 'on' : 'off'}>{onCount > 0 ? 'ON' : 'OFF'}</Badge>
                                   <span className="ml-auto flex items-center gap-2">
                                     <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => toggleGroupEnabled(key, onCount === 0)}>
                                       {onCount > 0 ? 'Disable group' : 'Enable group'}

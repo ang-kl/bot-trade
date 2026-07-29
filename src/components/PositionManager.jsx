@@ -77,9 +77,19 @@ function ToggleRow({ label, on, onToggle }) {
       <span className="text-[9px] font-semibold">{label}</span>
       <button
         type="button" role="switch" aria-checked={on} onClick={onToggle}
-        className={`w-11 h-6 rounded-full transition-colors cursor-pointer ${on ? 'bg-[var(--color-accent)]' : 'glass-inset'}`}
+        title={`${label}: ${on ? 'ON' : 'OFF'}`}
+        // ON is the blue STATE colour, not the clay accent (which is
+        // navigation). OFF gets the red tint rather than bare glass so a
+        // disabled bracket cannot be mistaken for an unrendered control.
+        className={`w-11 h-6 rounded-full border transition-colors cursor-pointer ${
+          on
+            ? 'bg-[var(--color-state-on-bg)] border-[var(--color-state-on-border)]'
+            : 'bg-[var(--color-state-off-bg)] border-[var(--color-state-off-border)]'
+        }`}
       >
-        <span className={`block w-5 h-5 rounded-full bg-white shadow transform transition-transform ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
+        <span className={`block w-5 h-5 rounded-full shadow transform transition-transform ${
+          on ? 'translate-x-5 bg-[var(--color-state-on-text)]' : 'translate-x-0.5 bg-[var(--color-state-off-text)]'
+        }`} />
       </button>
     </div>
   )

@@ -74,7 +74,7 @@ export function ActiveAccountHeaderCompact() {
   const trading = armed === true
   return (
     <span
-      className={`text-[9px] font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}
+      className={`text-[9px] font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
       title={trading ? 'autotrade is ARMED on this account' : 'autotrade is OFF on this account'}
     >
       {acct.isLive ? 'LIVE' : 'DEMO'} {acct.traderLogin ?? acct.accountId}
@@ -97,7 +97,7 @@ export default function ActiveAccountHeader() {
     <div className="mb-4 px-3">
       <div className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</div>
       <div
-        className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-accent)]' : 'text-[var(--color-muted)]'}`}
+        className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
         title={armed == null
           ? 'checking whether autotrade is armed…'
           : trading ? 'autotrade is ARMED — the bot is trading this account' : 'autotrade is OFF — the bot is not opening new trades on this account'}

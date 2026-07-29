@@ -1,5 +1,9 @@
 // Status badge / pill — Ultra Neo Glass: frosted micro-pills with a soft
 // neon tint. 9-11px font, nowrap, flex-shrink 0. No green.
+//
+// Tone vocabulary: up/down = PROFIT and LOSS. on/off = STATE (armed,
+// enabled, open). info/warning/special = classification. Reaching for
+// up/down to mean "enabled" is the mistake this split exists to stop.
 
 const TONES = {
   neutral:  'bg-[var(--glass-bg)] text-[var(--color-text)] border-[var(--glass-edge)]',
@@ -8,6 +12,14 @@ const TONES = {
   info:     'bg-[var(--color-info-bg)] text-[var(--color-info-text)] border-[var(--color-info-border)]',
   warning:  'bg-[var(--color-warning-bg)] text-[var(--color-warning-text)] border-[var(--color-warning-border)]',
   special:  'bg-[var(--color-special-bg)] text-[var(--color-special-text)] border-[var(--color-special-border)]',
+  // ON / OFF STATE (owner 2026-07-29): "positive / ON ... blue with the
+  // blueish-tint background ... negative or OFF ... red with redish-tint
+  // background." Separate from up/down on purpose — up/down mean profit and
+  // loss, and an armed toggle is not a profit. OFF is deliberately RED, not
+  // neutral grey: several tables used to render a disarmed strategy in the
+  // same muted grey as "no data", so "off" and "unknown" looked identical.
+  on:       'bg-[var(--color-state-on-bg)] text-[var(--color-state-on-text)] border-[var(--color-state-on-border)]',
+  off:      'bg-[var(--color-state-off-bg)] text-[var(--color-state-off-text)] border-[var(--color-state-off-border)]',
 }
 
 export default function Badge({ children, tone = 'neutral', pill = false, className = '' }) {
