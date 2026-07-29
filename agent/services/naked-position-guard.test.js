@@ -39,10 +39,11 @@ test('THE WORSE CASE: we show a stop, the broker holds none', () => {
   assert.match(a.naked[0].detail, /we show a stop at 1723.26 but the broker holds NONE/)
 })
 
-test('a protected position is not reported', () => {
-  const a = auditProtection([row({ current_sl: 1723.26 })], [{ positionId: '555', stopLoss: 1723.26 }])
+test('a fully protected position — stop AND target — is not reported at all', () => {
+  const a = auditProtection([row({ current_sl: 1723.26 })], [{ positionId: '555', stopLoss: 1723.26, takeProfit: 1600 }])
   assert.equal(a.naked.length, 0)
   assert.equal(a.phantom.length, 0)
+  assert.equal(a.targetless.length, 0)
 })
 
 test('a stop the broker holds but we never recorded is protection, not a fault', () => {
@@ -71,7 +72,124 @@ test('a position absent at the broker is NOT called unprotected', () => {
 
 test('empty inputs are a clean no-op', () => {
   const a = auditProtection([], [])
-  assert.deepEqual(a, { naked: [], phantom: [], checked: 0, unmatched: 0 })
+  assert.deepEqual(a, { naked: [], targetless: [], phantom: [], checked: 0, unmatched: 0 })
+})
+
+// ---------------------------------------------------------------------------
+// D4 — the take-profit requirement, applied to positions we did not open.
+//
+// exec-engine.js refuses to SUBMIT a market order with no target
+// (guard_no_target). An adopted position never passes through that guard, so
+// the rule the owner asked for most explicitly was the one rule adopted
+// positions were exempt from. The 0003.HK pair found on 2026-07-29 had stops
+// and no targets.
+// ---------------------------------------------------------------------------
+
+test('THE 0003.HK CASE: a stop but no take profit is reported', () => {
+  const a = auditProtection(
+    [row({ symbol: '0003.HK', current_sl: 6.994, source: 'autopilot' })],
+    [{ positionId: '555', stopLoss: 6.994, takeProfit: null }],
+  )
+  assert.equal(a.naked.length, 0, 'it has a stop — this is not an emergency')
+  assert.equal(a.targetless.length, 1)
+  assert.equal(a.targetless[0].symbol, '0003.HK')
+  assert.equal(a.targetless[0].brokerSl, 6.994)
+  // The detail must name the guard, so the owner can see this is the same
+  // rule the order path already enforces — not a new opinion.
+  assert.match(a.targetless[0].detail, /guard_no_target/)
+})
+
+test('a take profit of ZERO is no take profit — the same null-becomes-0 trap', () => {
+  const a = auditProtection([row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 0 }])
+  assert.equal(a.targetless.length, 1)
+})
+
+test('a NAKED position is not also reported as targetless', () => {
+  // It has neither. Reporting "and no target either" underneath the no-stop
+  // siren is noise on top of an emergency: the stop is what it needs first.
+  const a = auditProtection([row()], [{ positionId: '555', stopLoss: null, takeProfit: null }])
+  assert.equal(a.naked.length, 1)
+  assert.equal(a.targetless.length, 0)
+})
+
+test('a hand-opened position says so, because the rule never applied to it', () => {
+  const a = auditProtection(
+    [row({ current_sl: 1700, source: 'external' })],
+    [{ positionId: '555', stopLoss: 1700, takeProfit: null }],
+  )
+  assert.equal(a.targetless[0].source, 'external')
+  assert.match(a.targetless[0].detail, /opened outside the bot/)
+})
+
+test('a take profit the broker holds but we never recorded is NOT a fault', () => {
+  const a = auditProtection([row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }])
+  assert.equal(a.targetless.length, 0, 'the broker holds a target — that is what closes the trade')
+})
+
+test('a MOVED take profit is deliberately not reported', () => {
+  // The profit keeper ratchets targets and partial ladders move them, so a
+  // "we show X, broker holds Y" check on the target would fire during normal
+  // operation. A check that cries wolf in normal operation gets ignored,
+  // which is the same outcome as not having it. Missing is unambiguous.
+  const a = auditProtection(
+    [row({ current_sl: 1700, current_tp: 1600 })],
+    [{ positionId: '555', stopLoss: 1700, takeProfit: 1450 }],
+  )
+  assert.equal(a.targetless.length, 0)
+  assert.equal(a.phantom.length, 0, 'target disagreement is not in scope — see the module header')
+})
+
+test('the targetless alert is separate, quieter, and separately muted', async () => {
+  const db = tmpDb()
+  const sent = []
+  const res = await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: null }], {
+    nowMs: 1_000_000, sendMessage: async (m) => { sent.push(m) },
+  })
+  assert.equal(res.alerted, 0, 'nothing is unprotected — the siren must not fire')
+  assert.equal(res.targetAlerted, 1)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /NO TAKE PROFIT/)
+  assert.ok(!sent[0].includes('\u{1F6A8}'), 'a managed position with no target is not an emergency')
+  assert.match(sent[0], /position-protect/, 'the message must say how to fix it')
+
+  assert.deepEqual(
+    db.prepare("SELECT method FROM action_log WHERE path='/protection-audit'").all().map(r => r.method),
+    ['POSITION_NO_TARGET'],
+  )
+  assert.match(getState(db, 'targetless_position_alerts_json') || '', /555/)
+  assert.equal(getState(db, 'naked_position_alerts_json'), '{}', 'the two mute maps are independent')
+})
+
+test('the targetless mute window is longer than the naked one by default', async () => {
+  const db = tmpDb()
+  const pos = [{ positionId: '555', stopLoss: 1700, takeProfit: null }]
+  const sent = []
+  const send = async (m) => { sent.push(m) }
+  const t0 = 1_700_000_000_000
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], pos, { nowMs: t0, sendMessage: send })
+  // Two hours on: past the 1h naked window, still inside the 6h target one.
+  const again = await runProtectionAudit(db, [row({ current_sl: 1700 })], pos, { nowMs: t0 + 2 * 3600_000, sendMessage: send })
+  assert.equal(again.targetAlerted, 0, 'a target gap does not repeat hourly')
+  assert.equal(sent.length, 1)
+  // Past the window it is due again — still open seven hours later is worth saying.
+  const later = await runProtectionAudit(db, [row({ current_sl: 1700 })], pos, { nowMs: t0 + 7 * 3600_000, sendMessage: send })
+  assert.equal(later.targetAlerted, 1)
+})
+
+test('the targetless mute map also forgets positions that are no longer open', async () => {
+  const db = tmpDb()
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700 }], { nowMs: 1000, sendMessage: async () => {} })
+  assert.match(getState(db, 'targetless_position_alerts_json'), /555/)
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], { nowMs: 2000, sendMessage: async () => {} })
+  assert.equal(getState(db, 'targetless_position_alerts_json'), '{}')
+})
+
+test('the audit never attaches a target itself', () => {
+  // Choosing a take-profit price is a strategy judgement. A guessed one closes
+  // trades where nothing supports it, which is worse than no target at all.
+  const src = fs.readFileSync(new URL('./naked-position-guard.js', import.meta.url), 'utf8')
+  assert.ok(!/wsAmend|amendPosition|placeOrder|closePosition/.test(src),
+    'the protection audit must report, never act')
 })
 
 test('alerts are muted per position, so a persistent gap does not spam hourly', () => {

@@ -1728,7 +1728,7 @@ async function runLoop(db) {
           try {
             const { runProtectionAudit } = await import('./services/naked-position-guard.js')
             const openRows = db.prepare(
-              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id
+              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id, source
                FROM monitored_positions WHERE status = 'active' AND ctrader_position_id IS NOT NULL`
             ).all()
             const brokerSl = positions.map(p => ({
@@ -1741,8 +1741,8 @@ async function runLoop(db) {
               notify = (await import('./services/telegram.js')).sendMessage
             }
             const prot = await runProtectionAudit(db, openRows, brokerSl, { sendMessage: notify })
-            if (prot.naked.length || prot.phantom.length) {
-              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
+            if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
+              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
             }
             const { beat: beatProt } = await import('./services/heartbeat.js')
             beatProt(db, 'protection_audit')

@@ -26,21 +26,52 @@
 // reconcile pass) is the authority, and a disagreement between the two is
 // itself reportable — arguably the more dangerous state, because the UI shows
 // a stop that will not fire.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE TAKE-PROFIT REQUIREMENT, APPLIED TO POSITIONS WE DID NOT OPEN
+//
+// exec-engine.js refuses a market order with no take profit attached
+// (`guard_no_target`, owner-approved 2026-07-22: SL-only was never enough to
+// call a trade managed). But that guard fires at SUBMISSION, and an ADOPTED
+// position never passes through it — the reconciler takes it from broker
+// truth, brackets and all, or brackets and none. So the one rule the owner
+// asked for most explicitly was the one rule adopted positions were exempt
+// from. The 0003.HK pair found on 2026-07-29 had stops and no targets.
+//
+// It cannot be enforced retroactively — a position is already open — so the
+// equivalent is to detect it and say so. What this deliberately does NOT do:
+//
+//   · attach a target itself. Choosing a take-profit price is a strategy
+//     judgement (structure, R-multiple, session). A guessed one closes trades
+//     at a level nothing supports, which is worse than none at all.
+//   · report a take-profit DISAGREEMENT the way it reports a stop
+//     disagreement. Targets are amended constantly in normal operation — the
+//     profit keeper ratchets them, partial ladders move them — so a mismatch
+//     check would fire during ordinary work. A check that cries wolf during
+//     normal operation trains the owner to ignore it, which is the same
+//     outcome as not having it. MISSING is unambiguous; different is not.
+// ─────────────────────────────────────────────────────────────────────────────
 import { getState, setState } from '../db.js'
 
 /** Alert at most this often per position, so a persistent gap does not spam. */
 const MUTE_MS = Math.max(60_000, Number(process.env.NAKED_ALERT_MUTE_MS) || 3600_000)
+
+// A missing target is a management gap, not live unbounded risk — the stop
+// still caps the loss. So it alerts on a slower cadence than a naked position,
+// and never with the siren.
+const TARGET_MUTE_MS = Math.max(60_000, Number(process.env.TARGETLESS_ALERT_MUTE_MS) || 6 * 3600_000)
 
 const num = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
 
 /**
  * Compare our open book against broker truth.
  *
- * @param {Array} openRows   rows with { id, symbol, trade_id, ctrader_position_id, current_sl, account_id }
+ * @param {Array} openRows   rows with { id, symbol, trade_id, ctrader_position_id, current_sl, account_id, source }
  * @param {Array} brokerPositions  [{ positionId, stopLoss, takeProfit }]
- * @returns {{naked:Array, phantom:Array, checked:number, unmatched:number}}
- *   naked   — no stop at the broker: real, live, unprotected exposure
- *   phantom — we show a stop the broker is not holding: the UI is lying
+ * @returns {{naked:Array, targetless:Array, phantom:Array, checked:number, unmatched:number}}
+ *   naked      — no stop at the broker: real, live, unprotected exposure
+ *   targetless — stop present, no take profit: the order-time rule, unmet
+ *   phantom    — we show a stop the broker is not holding: the UI is lying
  */
 export function auditProtection(openRows = [], brokerPositions = []) {
   const byId = new Map()
@@ -49,6 +80,7 @@ export function auditProtection(openRows = [], brokerPositions = []) {
   }
 
   const naked = []
+  const targetless = []
   const phantom = []
   let unmatched = 0
 
@@ -76,16 +108,36 @@ export function auditProtection(openRows = [], brokerPositions = []) {
           ? `we show a stop at ${ourSl} but the broker holds NONE — this position is unprotected and the UI says otherwise`
           : 'no stop loss at the broker and none on record — this position is unprotected',
       })
-    } else if (ourSl != null && Math.abs(brokerSl - ourSl) > Math.abs(brokerSl) * 0.001) {
-      phantom.push({
-        monitoredId: row.id, tradeId: row.trade_id ?? null, symbol: row.symbol,
-        positionId: pid, accountId: row.account_id ?? null,
-        ourSl, brokerSl,
-        detail: `stop disagreement — we show ${ourSl}, the broker holds ${brokerSl}`,
-      })
+    } else {
+      if (ourSl != null && Math.abs(brokerSl - ourSl) > Math.abs(brokerSl) * 0.001) {
+        phantom.push({
+          monitoredId: row.id, tradeId: row.trade_id ?? null, symbol: row.symbol,
+          positionId: pid, accountId: row.account_id ?? null,
+          ourSl, brokerSl,
+          detail: `stop disagreement — we show ${ourSl}, the broker holds ${brokerSl}`,
+        })
+      }
+      // Only asked of positions that HAVE a stop. A naked position needs a
+      // stop first; adding "and no target either" underneath the siren is
+      // noise on top of an emergency.
+      const brokerTp = num(bp.takeProfit)
+      if (brokerTp == null || brokerTp === 0) {
+        const src = row.source || 'unknown'
+        targetless.push({
+          monitoredId: row.id, tradeId: row.trade_id ?? null, symbol: row.symbol,
+          positionId: pid, accountId: row.account_id ?? null,
+          source: src, brokerSl,
+          detail: src === 'external'
+            // Opened by hand at the broker, so it never met the order-time
+            // rule and arguably was never meant to. Still reported — the
+            // owner asked to see unmanaged exposure, not just the bot's.
+            ? `no take profit at the broker (opened outside the bot) — stop at ${brokerSl}, no target`
+            : `no take profit at the broker — an order placed through the bot could not have been submitted this way (guard_no_target); this one was adopted, so the guard never saw it`,
+        })
+      }
     }
   }
-  return { naked, phantom, checked: openRows.length, unmatched }
+  return { naked, targetless, phantom, checked: openRows.length, unmatched }
 }
 
 /** Which findings are due an alert, given the mute window. Pure — testable. */
@@ -97,6 +149,7 @@ export function dueForAlert(findings, lastAlertMap, nowMs, muteMs = MUTE_MS) {
 }
 
 const STATE_KEY = 'naked_position_alerts_json'
+const TARGET_STATE_KEY = 'targetless_position_alerts_json'
 
 /**
  * Run the audit, record it, and alert on anything newly unprotected.
@@ -105,22 +158,29 @@ const STATE_KEY = 'naked_position_alerts_json'
  * safety than it adds.
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
-  nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS,
+  nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
 
-    let lastAlerts = {}
-    try { lastAlerts = JSON.parse(getState(db, STATE_KEY) || '{}') } catch { lastAlerts = {} }
+    const readMap = (key) => {
+      try { return JSON.parse(getState(db, key) || '{}') } catch { return {} }
+    }
+    const lastAlerts = readMap(STATE_KEY)
+    const lastTargetAlerts = readMap(TARGET_STATE_KEY)
 
     const due = dueForAlert(audit.naked, lastAlerts, nowMs, muteMs)
+    const targetDue = dueForAlert(audit.targetless, lastTargetAlerts, nowMs, targetMuteMs)
 
-    for (const f of [...audit.naked, ...audit.phantom]) {
+    const KIND = new Map()
+    for (const f of audit.naked) KIND.set(f, 'POSITION_UNPROTECTED')
+    for (const f of audit.targetless) KIND.set(f, 'POSITION_NO_TARGET')
+    for (const f of audit.phantom) KIND.set(f, 'POSITION_STOP_MISMATCH')
+
+    for (const [f, method] of KIND) {
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
-          audit.naked.includes(f) ? 'POSITION_UNPROTECTED' : 'POSITION_STOP_MISMATCH',
-          '/protection-audit',
-          JSON.stringify(f).slice(0, 2000),
+          method, '/protection-audit', JSON.stringify(f).slice(0, 2000),
         )
       } catch { /* audit best-effort */ }
     }
@@ -135,14 +195,37 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       } catch { /* a failed alert must not lose the audit */ }
     }
 
-    // Forget positions that are no longer open, so the mute map cannot grow
-    // without bound across a long-running process.
-    const live = new Set(audit.naked.map(f => String(f.positionId)))
-    for (const k of Object.keys(lastAlerts)) if (!live.has(k)) delete lastAlerts[k]
-    try { setState(db, STATE_KEY, JSON.stringify(lastAlerts)) } catch { /* non-fatal */ }
+    // Separate message, no siren: a stop is in place, so this is a management
+    // gap rather than an emergency. Batched into one so a book with several
+    // targetless positions produces one line per position, not one alert each.
+    if (targetDue.length && typeof sendMessage === 'function') {
+      const lines = targetDue.map(f => `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot' : ''}`)
+      try {
+        await sendMessage(
+          `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT\n${lines.join('\n')}\n\nThe order path refuses to submit these (guard_no_target) — these were adopted from the broker, so the guard never saw them. Set a target with POST /actions/position-protect {positionId, tp}.`
+        )
+        for (const f of targetDue) lastTargetAlerts[String(f.positionId)] = nowMs
+      } catch { /* a failed alert must not lose the audit */ }
+    }
 
-    return { ...audit, alerted: due.length }
+    // Forget positions that are no longer open, so the mute maps cannot grow
+    // without bound across a long-running process.
+    const prune = (map, findings) => {
+      const live = new Set(findings.map(f => String(f.positionId)))
+      for (const k of Object.keys(map)) if (!live.has(k)) delete map[k]
+    }
+    prune(lastAlerts, audit.naked)
+    prune(lastTargetAlerts, audit.targetless)
+    try {
+      setState(db, STATE_KEY, JSON.stringify(lastAlerts))
+      setState(db, TARGET_STATE_KEY, JSON.stringify(lastTargetAlerts))
+    } catch { /* non-fatal */ }
+
+    return { ...audit, alerted: due.length, targetAlerted: targetDue.length }
   } catch (err) {
-    return { naked: [], phantom: [], checked: 0, unmatched: 0, alerted: 0, error: err.message }
+    return {
+      naked: [], targetless: [], phantom: [], checked: 0, unmatched: 0,
+      alerted: 0, targetAlerted: 0, error: err.message,
+    }
   }
 }
