@@ -121,3 +121,87 @@ test('end-to-end: a trade closed ONLY via the orphan-sweep path (net_pnl NULL, n
   assert.equal(r.backfilled, 1)
   assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '555'`).get().net_pnl, -10.5)
 })
+
+// ---------------------------------------------------------------------------
+// ACCOUNT SCOPING (2026-07-29). Until this, the gap was counted across EVERY
+// account while the deal history was fetched for exactly ONE — whichever was
+// selected. On the M4 soak that meant 7 closed trades on 46130058, a deal list
+// requested for 43097342, nothing matched, and a log line blaming
+// "deal-history coverage" every cycle when the coverage was fine.
+//
+// It is a SAFETY gap, not a reporting one. Per this module's own header the
+// daily-loss veto, equity stop, loss-streak cooldown, performance breaker and
+// Kelly veto all key on realised P&L — so on every account except the selected
+// one, all of those brakes were blind to broker-side stop-outs, which are
+// exactly the losers that close at the broker.
+// ---------------------------------------------------------------------------
+
+function seedAcct(db, { positionId, accountId, net = null }) {
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, account_id)
+     VALUES ('EURUSD', 'BUY', 'closed', ?, ?, ?)`
+  ).run(String(positionId), net, accountId)
+}
+
+test('a non-selected account backfills from its OWN deal history', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', '43097342')
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run()
+  seedAcct(db, { positionId: 777, accountId: '46130058' })   // NOT the selected account
+
+  const getDeals = dealsApi([deal(777, 2500, { commCents: -100 })])
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '46130058' })
+  assert.equal(r.backfilled, 1, 'the soak case: trades on one account, selection on another')
+  assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '777'`).get().net_pnl, 24)
+})
+
+test('one account\'s deal list never fills another account\'s row', async () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', '43097342')
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run()
+  seedAcct(db, { positionId: 888, accountId: '46979908' })
+
+  // Running the pass for a DIFFERENT account must leave that row alone, even
+  // though the deal list happens to carry a matching position id.
+  const getDeals = dealsApi([deal(888, 9999)])
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '46130058' })
+  assert.equal(r.backfilled, 0)
+  assert.equal(db.prepare(`SELECT net_pnl FROM trades WHERE ctrader_position_id = '888'`).get().net_pnl, null)
+})
+
+test('the gap check is scoped too — no broker round-trip for an account with no gap', async () => {
+  // Before scoping, ANY account's gap triggered a fetch for the selected one.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', '43097342')
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run()
+  seedAcct(db, { positionId: 999, accountId: '46130058' })   // a gap, on ANOTHER account
+  let called = false
+  const getDeals = async () => { called = true; return { deal: [] } }
+
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '43097342' })
+  assert.equal(called, false, 'this account has no gap — it must not call the broker')
+  assert.equal(r.backfilled, 0)
+})
+
+test('legacy rows with a NULL account_id belong to the SELECTED account only', async () => {
+  // Same convention as reconciler.js: rows predating account stamping were
+  // written when the selected account was the only one trading. A pass for
+  // another account must not claim them.
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', '43097342')
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run()
+  seedAcct(db, { positionId: 1001, accountId: null })
+
+  const getDeals = dealsApi([deal(1001, 500)])
+  assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '46130058' })).backfilled, 0,
+    'a non-selected account must not claim unstamped rows')
+  assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '43097342' })).backfilled, 1,
+    'the selected account does')
+})
+
+test('with no accountId passed, behaviour is unchanged for a single-account setup', async () => {
+  const db = initDB(':memory:')
+  seedClosed(db, { positionId: 1100, net: null })
+  const getDeals = dealsApi([deal(1100, 1000)])
+  assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW })).backfilled, 1)
+})
