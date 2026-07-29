@@ -80,6 +80,7 @@ export function writeWatchlist(db, accountId, items) {
 // defaults — the symbol would look transferred and behave differently.
 export const CARRIED_FIELDS = [
   'enabled', 'group', 'maxVolume', 'autoTradeThreshold', 'allowed_styles', 'override_bias',
+  'strategies',
 ]
 
 const carried = (item) => {
@@ -220,4 +221,57 @@ export function accountMayTrade(db, accountId, symbol) {
   if (!item) return { ok: false, reason: `${sym} is not on account ${accountId}'s watchlist` }
   if (item.enabled === false) return { ok: false, reason: `${sym} is disabled on account ${accountId}'s watchlist` }
   return { ok: true, reason: null, item }
+}
+
+/**
+ * Which strategies may trade THIS symbol.
+ *
+ * `item.strategies` is a NARROWING filter over the globally-armed set, never a
+ * widening one. A symbol row cannot arm a strategy the operator has disarmed
+ * globally — that would be a back door for an unproven edge to reach capital
+ * without anyone deciding to let it, which is exactly the reason fvg_retrace
+ * ships disarmed in the registry. So: intersection, always.
+ *
+ * Unset / empty / not-an-array means "follow the global set", which is what
+ * every existing row means today — so this is inert until someone picks.
+ *
+ * @param {string[]} globalArmed  enabledStrategies(...).map(s => s.key)
+ */
+export function resolveSymbolStrategies(item, globalArmed) {
+  const armed = Array.isArray(globalArmed) ? globalArmed : []
+  const picked = item?.strategies
+  if (!Array.isArray(picked) || picked.length === 0) return armed
+  const want = new Set(picked.map(k => String(k)))
+  return armed.filter(k => want.has(k))
+}
+
+/**
+ * May this strategy trade this symbol on this account?
+ *
+ * Enforced at DISPATCH rather than at scan time, because the scan has no
+ * account in scope — two accounts can pick different strategies for the same
+ * symbol, so there is no single answer to narrow the scan by. The cost is one
+ * wasted compute per suppressed signal; the alternative is a scan that is
+ * wrong for whichever account it did not pick.
+ *
+ * Returns { ok, reason } so the skip can be recorded, never dropped silently.
+ */
+export function symbolAllowsStrategy(item, strategy, globalArmed) {
+  const key = String(strategy || '')
+  if (!key) return { ok: true, reason: null }
+  const picked = item?.strategies
+  // No per-symbol choice → the global set already decided; nothing to add.
+  if (!Array.isArray(picked) || picked.length === 0) return { ok: true, reason: null }
+  const allowed = resolveSymbolStrategies(item, globalArmed)
+  if (allowed.includes(key)) return { ok: true, reason: null }
+  // Say WHICH of the two rules refused, because the fixes are different: a
+  // globally-disarmed strategy is fixed in Tune > Strategies, a
+  // symbol-excluded one on the symbol's own row.
+  const globallyOff = !(Array.isArray(globalArmed) ? globalArmed : []).includes(key)
+  return {
+    ok: false,
+    reason: globallyOff
+      ? `${key} is not armed globally`
+      : `${key} is not one of ${item.symbol}'s ${picked.length} chosen strategies`,
+  }
 }

@@ -12,7 +12,10 @@ import { upsertAccount, setAccountEnabled } from './account-registry.js'
 import {
   readWatchlist, writeWatchlist, hasOwnWatchlist, diffWatchlists, copyWatchlist,
   acctWatchlistKey, normalizeItem, readTradableUnion, accountMayTrade,
+  resolveSymbolStrategies, symbolAllowsStrategy,
 } from './watchlists.js'
+
+const ARMED = ['cup_handle', 'ema_pullback', 'rsi2_reversion']
 
 const db = () => initDB(':memory:')
 const GLOBAL = [
@@ -206,6 +209,45 @@ test('an inheriting account is gated by the shared list, exactly as before', () 
   setState(d, 'autopilot_symbols_json', JSON.stringify(GLOBAL))
   assert.equal(accountMayTrade(d, '43097342', 'EURUSD').ok, true)
   assert.equal(accountMayTrade(d, '43097342', 'BTCUSD').ok, false)
+})
+
+test('a symbol with no strategy pick follows the global armed set', () => {
+  // The inert property again. Every row that exists today has no `strategies`
+  // field, so every row must behave exactly as it did before this existed.
+  for (const item of [{ symbol: 'EURUSD' }, { symbol: 'EURUSD', strategies: [] }, { symbol: 'EURUSD', strategies: 'nonsense' }]) {
+    assert.deepEqual(resolveSymbolStrategies(item, ARMED), ARMED)
+    assert.equal(symbolAllowsStrategy(item, 'cup_handle', ARMED).ok, true)
+    assert.equal(symbolAllowsStrategy(item, 'fvg_retrace', ARMED).ok, true,
+      'with no pick, this function has no opinion — the global set already decided')
+  }
+})
+
+test('a per-symbol pick NARROWS the global set and can never widen it', () => {
+  // The safety property. fvg_retrace ships disarmed because it has no
+  // backtest; a watchlist row must not be a back door that arms it.
+  const item = { symbol: 'EURUSD', strategies: ['cup_handle', 'fvg_retrace'] }
+  assert.deepEqual(resolveSymbolStrategies(item, ARMED), ['cup_handle'],
+    'fvg_retrace was picked on the row but is disarmed globally — it stays out')
+  assert.equal(symbolAllowsStrategy(item, 'cup_handle', ARMED).ok, true)
+
+  const off = symbolAllowsStrategy(item, 'fvg_retrace', ARMED)
+  assert.equal(off.ok, false)
+  assert.match(off.reason, /not armed globally/,
+    'the reason must name the rule that refused — this one is fixed in Tune, not on the row')
+
+  const excluded = symbolAllowsStrategy(item, 'ema_pullback', ARMED)
+  assert.equal(excluded.ok, false)
+  assert.match(excluded.reason, /chosen strategies/,
+    'armed globally but not chosen for this symbol — fixed on the row')
+})
+
+test('strategy picks travel with a copy', () => {
+  const d = db()
+  writeWatchlist(d, 'SRC', [{ symbol: 'EURUSD', strategies: ['cup_handle'] }])
+  copyWatchlist(d, { from: 'SRC', to: ['DST'] })
+  const row = readWatchlist(d, 'DST').find(i => i.symbol === 'EURUSD')
+  assert.deepEqual(row.strategies, ['cup_handle'],
+    'a copy that dropped the strategy pick would silently re-widen the symbol to every armed strategy')
 })
 
 test('the per-account key is the acct: convention the rest of the codebase uses', () => {
