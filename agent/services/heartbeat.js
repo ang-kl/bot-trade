@@ -52,6 +52,11 @@ export const CONTROLLERS = {
   // "stopped beyond the SL". A stalled protection audit is itself dangerous:
   // it means nothing is checking, so it gets a heartbeat like everything else.
   protection_audit: { label: 'Position protection audit', tiedToLoop: true, factor: 3 },
+  // D6 — the daily ATR baseline the volatility gate reads. If this stops
+  // running, atr_history goes stale and every symbol quietly reads as NORMAL
+  // volatility: a verdict none of them earned, and indistinguishable from a
+  // real one. Daily cadence, generous grace — it is once per ~288 loops.
+  atr_refresh: { label: 'ATR baseline refresh', expectedSec: 86_400, factor: 2 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

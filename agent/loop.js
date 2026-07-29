@@ -2465,6 +2465,53 @@ async function runLoop(db) {
         await hbeat(db, 'hours_refresh', false, err.message)
       }
 
+      // D6 — daily ATR baseline refresh (vol-gate spec §2: "recompute the
+      // rolling window daily, not per-signal").
+      //
+      // Without this the atr_history table stays EMPTY, classifyVolRegime can
+      // never place a symbol in its own volatility distribution, and the whole
+      // volatility gate is inert while looking installed — the worst kind of
+      // dead feature, because every downstream reading says NORMAL and nobody
+      // can tell that from a real verdict.
+      //
+      // Once a day (every ~288 five-min loops), and once shortly after boot
+      // while the table is empty so a fresh deploy self-seeds instead of
+      // waiting a day. Daily bars are HISTORICAL requests — capped by cTrader
+      // at 5/s, paced to 4/s by ctrader-ws.js's shared bucket — so this is
+      // deliberately a once-a-day sweep. Doing it per-signal is exactly the
+      // 2026-07-28 throttling incident.
+      try {
+        const creds = getCtraderCreds(db)
+        const haveAtr = db.prepare('SELECT COUNT(*) AS n FROM atr_history').get().n
+        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 11 || haveAtr === 0)) {
+          phase('ATR baseline refresh')
+          const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
+          const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+          const symbols = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
+          const atrFetch = async (sym, count) => {
+            const sid = symbolMap[String(sym).toUpperCase()]
+            if (!sid) throw new Error(`symbolId unknown for ${sym}`)
+            const byTf = await wsGetTrendbarsBatch(
+              creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
+              sid, ['D1'], count, 20_000, 0)
+            return byTf.D1 || []
+          }
+          const r = await runBudgetedSubPhase(db, 'atr_refresh',
+            () => refreshAtrHistory(db, symbols, atrFetch), SUB_PHASE_BUDGET_MS * 2)
+          if (r && !r.timedOut) {
+            // Name the misses. A symbol silently absent from atr_history reads
+            // downstream as "normal volatility", which is a verdict it never
+            // earned.
+            log(`ATR baseline: ${r.updated}/${r.symbols} symbols refreshed${r.failed ? `, ${r.failed} fetch failure(s)` : ''}${r.skipped?.length ? `, ${r.skipped.length} skipped (too little history)` : ''}`)
+            try { pruneAtrHistory(db) } catch { /* pruning is housekeeping */ }
+          }
+          await hbeat(db, 'atr_refresh')
+        }
+      } catch (err) {
+        log(`ATR baseline refresh failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'atr_refresh', false, err.message)
+      }
+
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {
