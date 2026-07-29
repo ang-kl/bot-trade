@@ -1,3 +1,5 @@
+import { STRAT_SHORT } from './strategy-labels.js'
+
 // Risk-veto reasons in TRADER words. The agent stores machine-readable
 // codes ("sl_too_tight 0.038%<0.15%"); a Chief Trading Officer reading the
 // desk should see "Stop too tight — 0.038% vs 0.15% min". The raw code
@@ -22,8 +24,12 @@ function relAge(raw) {
   return mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`
 }
 
-// Strategy code → short label, mirroring the desk's STRAT_SHORT.
-const STRAT_LABEL = { fib_618_fade: 'FIB', cup_handle: 'C&H', inv_cup_handle: 'Inv C&H', ema_pullback: 'EMA', donchian_breakout: 'BRK', rsi_meanrev: 'RSI', vwap_trend: 'VWAP', vp_value: 'VP' }
+// Strategy code → short label. This used to be a hand-copied "mirror" of the
+// desk's STRAT_SHORT and had already drifted: it was missing rsi2_reversion
+// and fib_confluence entirely (so those vetoes rendered a raw snake_case key)
+// and spelled inv_cup_handle 'Inv C&H' where every other table says 'ICUP'.
+// strategy-labels.js documents that this exact drift happened once before.
+// A mirror you have to remember to update is not a mirror — import the map.
 
 const RULES = [
   // Detail groups are OPTIONAL so bare family keys (from the veto-breakdown
@@ -36,7 +42,7 @@ const RULES = [
       // Full audit line (owner: "show evidence of your veto"): which
       // strategy opened the blocking position, at what price, when
       // (absolute HH:MM dd/MM + relative), and when it was last monitored.
-      const strat = m[4] && m[4] !== 'na' ? (STRAT_LABEL[m[4]] || m[4].toUpperCase()) : null
+      const strat = m[4] && m[4] !== 'na' ? (STRAT_SHORT[m[4]] || m[4].toUpperCase()) : null
       const parts = [`Already ${m[1]}${strat ? ` (${strat})` : ''}`]
       if (m[2] && m[2] !== 'na') parts.push(`@ ${m[2]}`)
       const openStamp = shortStamp(m[3])

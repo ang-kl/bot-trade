@@ -427,7 +427,7 @@ export default function Trade() {
 
   const placeOrder = async () => {
     const sym = order.symbol.toUpperCase().trim()
-    if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and stop-loss are required' }); return }
+    if (!sym || !order.sl) { setOrderResult({ ok: false, text: 'Symbol and Stop Loss are required' }); return }
     if (!window.confirm(`Place a REAL ${order.side} market order on ${sym} (SL ${order.sl}${order.tp ? `, TP ${order.tp}` : ''})?`)) return
     setPlacing(true)
     setOrderResult(null)

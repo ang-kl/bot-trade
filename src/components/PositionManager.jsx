@@ -217,7 +217,7 @@ export default function PositionManager({ p, onDone }) {
       {tab === 'Protect' && (
         <div>
           {/* Take profit — TP1 is the broker's native TP */}
-          <ToggleRow label="Take profit" on={tpOn} onToggle={() => setTpOn(v => !v)} />
+          <ToggleRow label="Take Profit" on={tpOn} onToggle={() => setTpOn(v => !v)} />
           {tpOn && (
             <Stepper label="Price" value={tpPrice} onChange={setTpPrice} step={p.pipSize ?? 0.001} digits={p.digits ?? 5} />
           )}
@@ -239,7 +239,7 @@ export default function PositionManager({ p, onDone }) {
           ))}
 
           {/* Stop loss — native, with signed pips + absolute price steppers */}
-          <ToggleRow label="Stop loss" on={slOn} onToggle={() => setSlOn(v => !v)} />
+          <ToggleRow label="Stop Loss" on={slOn} onToggle={() => setSlOn(v => !v)} />
           {slOn && (
             <>
               <Stepper label="Pips" value={slPips != null ? String(slPips) : ''} step={1} digits={1}
@@ -251,7 +251,7 @@ export default function PositionManager({ p, onDone }) {
               <div className="flex items-center justify-between border-t border-[var(--color-border)] py-1.5 text-[9px]">
                 <span>Trigger</span><span className="text-[var(--color-text-sub)]">Trade ›</span>
               </div>
-              <ToggleRow label="Trailing stop loss" on={trailOn} onToggle={() => setTrailOn(v => !v)} />
+              <ToggleRow label="Trailing Stop Loss" on={trailOn} onToggle={() => setTrailOn(v => !v)} />
               {trailOn && (
                 <Stepper label="Distance (pips)" value={trailPips} onChange={setTrailPips} step={1} digits={1} />
               )}

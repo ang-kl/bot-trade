@@ -11,6 +11,7 @@ import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { stratShort } from '../lib/strategy-labels.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
@@ -223,7 +224,11 @@ function StrategyTfPerformance() {
                 <tbody>
                   {pager.pageRows.map(s => (
                     <tr key={s.strategy} className="border-t border-[var(--color-border)]">
-                      <td className="py-1 pr-3 whitespace-nowrap">{s.strategy}</td>
+                      {/* Short code, not the raw registry key: every other
+                          table in the app renders `FIB`, this one alone
+                          rendered `fib_618_fade`, which is both inconsistent
+                          and the widest column in a dense grid. */}
+                      <td className="py-1 pr-3 whitespace-nowrap" title={s.strategy}>{stratShort(s.strategy)}</td>
                       {grid.timeframes.map(tf => {
                         const c = s.cells[tf]
                         return (
@@ -259,7 +264,7 @@ function StrategyTfPerformance() {
 
 // ---------------------------------------------------------------------------
 // Strategy × stage matrix — the Pipeline control table. Columns are the four
-// pipeline stages (Scan / Back Test / Auto Trade & Open / Live Tweak & Close);
+// pipeline stages (Scan / Backtest / Auto Trade & Open / Live Tweak & Close);
 // rows are the registry strategies with the fib confluence filters beneath.
 // Each cell shows ✓/✗ plus its last-30-day usage counts. Changing a cell:
 // click it, then use the editor that opens BELOW the table, separated by a
@@ -429,7 +434,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
               <Button size="sm" variant="subtle" onClick={() => setSel(null)}>Close</Button>
               <span className="w-full text-[9px] text-[var(--color-text-sub)]">
                 {sel.stage === 'scan' && 'Scan: whether the 5-minute scan computes this at all. Filters ON here gate the scan the old strict way; OFF means analyse everything and let Auto Trade & Open decide.'}
-                {sel.stage === 'backtest' && 'Back Test: whether the nightly autopilot sweep tests this strategy / the manual Backtest tab applies this filter.'}
+                {sel.stage === 'backtest' && 'Backtest: whether the nightly autopilot sweep tests this strategy / the manual Backtest tab applies this filter.'}
                 {sel.stage === 'trade' && 'Auto Trade & Open: the live gate. Writes the same agent key the old toggles used — Telegram and autopilot stay in sync.'}
                 {sel.stage === 'manage' && 'Live Tweak & Close: whether the monitor may move stops / close positions opened by this strategy. Broker-side SL/TP and your per-position guards always stay active.'}
               </span>
@@ -1187,7 +1192,7 @@ export default function Tune() {
   const toggleGroupEnabled = (key, on) =>
     pushSymbols(symbols.map(s => (s.group === key ? { ...s, enabled: on } : s)))
 
-  // Backtest filters come from the stage matrix's "Back Test" column — the
+  // Backtest filters come from the stage matrix's "Backtest" column — the
   // owner's point: backtest setups are tuned separately from live trading.
   const mxBtFilter = (k) => !!stageMx?.filters?.find(f => f.key === k)?.stages?.backtest
   const mxBtFilterNames = ['rsi', 'vwap', 'fvg'].filter(mxBtFilter).map(k => k.toUpperCase())
@@ -2696,7 +2701,7 @@ export default function Tune() {
                     <input type="checkbox" checked={btSessionFilter} onChange={e => setBtSessionFilter(e.target.checked)} />
                     Session filter
                   </label>
-                  <span className="text-[9px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · filters: {mxBtFilterNames.length ? mxBtFilterNames.join(' + ') : 'none'} (Back Test column of the Pipeline matrix) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · gap-honest SL · 0.02% cost · SL-before-TP</span>
+                  <span className="text-[9px] text-[var(--color-text-sub)]">on {[...timeframes].sort((a, b) => tfMs(a) - tfMs(b)).join(' + ')} (set on Pipeline) · filters: {mxBtFilterNames.length ? mxBtFilterNames.join(' + ') : 'none'} (Backtest column of the Pipeline matrix) · 1,000 real broker bars per timeframe · walk-forward · next-open fills · gap-honest SL · 0.02% cost · SL-before-TP</span>
                 </div>
               </>
             )}

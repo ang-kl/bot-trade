@@ -12,6 +12,12 @@ export const STRAT_SHORT = {
   vwap_trend: 'VWAP',
   vp_value: 'VP',
   fib_confluence: 'FIBC',
+  // Added 2026-07-29: both were in STRATEGY_REGISTRY and missing here, so
+  // their trades and vetoes rendered a raw snake_case key. Found by the
+  // registry-coverage test in strategy-labels.test.js, which now fails the
+  // build rather than letting the next one slip through the same way.
+  va_breakout: 'VAB',
+  fvg_retrace: 'FVG',
 }
 
 // key → short code, falling back to the raw key (never blank for a real

@@ -93,14 +93,32 @@ const FIELD_W = '!w-[76px]'
 function Unit({ children }) {
   return <span className="text-[8px] text-[var(--color-text-sub)] border border-[var(--glass-edge)] rounded-[1px] px-1 py-px min-w-[24px] text-center shrink-0">{children}</span>
 }
+// UI-4 — the "(default)" suffix was TEN characters on ~19 labels, in columns
+// whose label budget is roughly 19-30 characters at 9px. It, not the wording,
+// was what pushed labels onto a second line. It is now a single dimmed dot
+// with the meaning in its tooltip.
+//
+// It travels as a suffix on the label STRING rather than a prop because
+// `mark()` is called inside template literals at ~19 sites (`{`Daily loss
+// cap${mark('dailyLossPct')}`}`) and `Field` is declared outside the
+// component that knows which values are overridden. Rewriting all 19 call
+// sites to pass a flag would be a larger, more typo-prone change for the same
+// pixels. Field strips the sentinel and renders it properly styled.
+export const DEFAULT_MARK = '\u2009\u00B7'   // thin space + middle dot
+
 function Field({ label, value, onChange, pct = false, unit, hint, recommend, placeholder = 'not set' }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
+  const isDefault = typeof label === 'string' && label.endsWith(DEFAULT_MARK)
+  const text = isDefault ? label.slice(0, -DEFAULT_MARK.length) : label
   return (
     <div className="text-[9px]">
       <label className="flex items-center justify-between gap-2">
         <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
-          {label}
+          {text}
+          {isDefault && (
+            <span className="opacity-40 ml-0.5" title="Still on the built-in default — this value has not been changed">·</span>
+          )}
           {hint && (
             <button type="button" aria-label={`Explain: ${label}`} title={hint}
               onClick={e => { e.preventDefault(); setShowHint(s => !s) }}
@@ -248,7 +266,7 @@ export default function Risk() {
   }
 
   const overridden = new Set(data?.risk?.overridden || [])
-  const mark = (k) => overridden.has(k) ? '' : ' (default)'
+  const mark = (k) => overridden.has(k) ? '' : DEFAULT_MARK
 
   // GSAP entrance + scroll reveals (guarded — static page if the CDN is
   // blocked). Runs once after the first successful data load.
@@ -438,10 +456,10 @@ export default function Risk() {
             </div>
           </div>
 
-          {/* Layer 3 — naked-position loss guardian */}
+          {/* Layer 3 — Loss Guardian: the safety net for naked positions */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
-              <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Naked-position guardian</span>
+              <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
               <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
             <div className="flex items-center justify-between text-[9px]">
@@ -519,7 +537,7 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
-                  <Field label={`Per-trade risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
+                  <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
                     hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
                   <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                     hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
@@ -527,7 +545,7 @@ export default function Risk() {
                     hint="Optional absolute $ ceiling per trade." placeholder="no cap" recommend="unset — no $ ceiling by default." />
                   <Field label={`Min lot size${mark('minLotSize')}`} unit="lots" value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
                     recommend="0.01 — the broker's own minimum." />
-                  <Field label={`Min trades for Kelly${mark('minTradesForKelly')}`} unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
+                  <Field label={`Kelly min trades${mark('minTradesForKelly')}`} unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
                     hint="Below this trade count, Kelly sizing is skipped." recommend="30 closed trades before Kelly sizing kicks in." />
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
@@ -536,11 +554,11 @@ export default function Risk() {
                 </div>
               </div>
               <div>
-                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop loss &amp; take profit</div>
+                <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Min SL distance${mark('minSLDistancePct')}`} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
-                  <Field label={`Min R:R (TP distance)${mark('minRR')}`} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
+                  <Field label={`Min R:R${mark('minRR')}`} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                     hint="TP must sit at least this multiple of the SL distance from entry — the take-profit rule." recommend="1.5 — TP at least 1.5× the SL distance." />
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
@@ -565,7 +583,7 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} unit="min" value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
                     hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
-                  <Field label={`Loss streak breaker${mark('maxConsecutiveLosses')}`} unit="losses" value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
+                  <Field label={`Loss streak${mark('maxConsecutiveLosses')}`} unit="losses" value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
                     hint="After N losses in a row, pause. 0 = off." recommend="3 losses in a row." />
                   <Field label={`Streak cooldown${mark('cooldownMinutes')}`} unit="min" value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
                     recommend="60 minutes." />
@@ -662,14 +680,14 @@ export default function Risk() {
                 <Pill on={!!guard.halt} label={guard.halt ? 'Halted — no orders' : 'Off'} onClick={() => setGuard(g => ({ ...g, halt: !g.halt }))} />
               </div>
               <div className="flex items-center justify-between text-[9px]">
-                <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require stop loss</span>
+                <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require Stop Loss</span>
                 <Pill on={guard.requireBracket !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
               </div>
               <div className="flex items-center justify-between text-[9px]">
-                <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require take profit</span>
+                <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require Take Profit</span>
                 <Pill on={guard.requireTarget !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
-              <Field label="Max order volume (units×100)" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
+              <Field label="Max order volume" unit="×100" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
