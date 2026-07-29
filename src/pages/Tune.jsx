@@ -9,12 +9,10 @@ import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
-import { SliderInput, PresetSelect } from '../components/common/FormControls.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { stratShort } from '../lib/strategy-labels.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
-import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
@@ -55,9 +53,11 @@ function Pager({ pageSize, setPageSize, page, setPage, pageCount, total }) {
   )
 }
 
+// UI-6: the 'risk' tab was removed 2026-07-29 (owner). Every field it carried
+// now lives on the Risk page, which is the single home for risk settings —
+// two editors for one config is how two editors disagree.
 const TABS = [
   { id: 'pipeline', label: 'Pipeline' },
-  { id: 'risk', label: 'Risk' },
   { id: 'watchlist', label: 'Watchlist' },
   { id: 'backtest', label: 'Backtest' },
   { id: 'presets', label: 'Presets' },
@@ -448,154 +448,11 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Typed-field draft persistence — owner requirement: "when I type in the
-// field and switch pages, keep it". Money-critical fields (risk %, balance)
-// must NOT auto-commit half-typed numbers ("0.0" mid-keystroke would become
-// live risk), so Save stays the commit point — but the DRAFT now survives
-// page switches in sessionStorage and is restored on return.
-// ---------------------------------------------------------------------------
-const TUNE_DRAFTS_KEY = 'tune_drafts_v1'
-const readDrafts = () => {
-  try { return JSON.parse(sessionStorage.getItem(TUNE_DRAFTS_KEY)) || {} } catch { return {} }
-}
-const writeDraft = (key, value) => {
-  try {
-    const d = readDrafts()
-    if (value == null) delete d[key]; else d[key] = value
-    sessionStorage.setItem(TUNE_DRAFTS_KEY, JSON.stringify(d))
-  } catch { /* private mode — drafts just don't persist */ }
-}
+// UI-6 (2026-07-29): the typed-field draft persistence that lived here
+// existed only for the Risk tab's money-critical inputs. The tab is gone and
+// the Risk page is now the single editor for those fields, so the machinery
+// went with it rather than lingering with no consumer.
 
-// Risk fields exposed for editing: [key, label, hint]
-const RISK_FIELDS = [
-  ['perTradeRiskPct', 'Risk per trade', 'fraction of balance, e.g. 0.01 = 1%'],
-  ['dailyLossPct', 'Daily loss cap', 'fraction of balance, e.g. 0.03 = 3%'],
-  ['minRR', 'Min risk:reward', 'trades below this R:R are vetoed'],
-  ['maxOpenPositions', 'Max open positions', 'hard cap on concurrent positions'],
-  ['symbolCooldownMinutes', 'Symbol cooldown', 'lock a symbol after any closed trade'],
-  ['maxConsecutiveLosses', 'Loss streak limit', 'losses in a row before cooldown'],
-  ['cooldownMinutes', 'Streak cooldown', 'pause after hitting the streak'],
-  ['minSLDistancePct', 'Min SL distance', 'stops tighter than this % are vetoed'],
-  ['maxSpreadFracOfSL', 'Max spread (of SL)', 'veto entry if the live spread exceeds this share of the SL distance — blocks off-hours/rollover fills'],
-  ['maxMarginUsagePct', 'Max margin usage', 'fraction of balance lockable in margin'],
-  ['maxClusterExposure', 'Max cluster exposure', 'net same-direction bets allowed in one correlation cluster (USD, US equity, crude…) — see Desk → Correlation clusters'],
-  ['maxCurrencyExposure', 'Max currency exposure', 'net long/short exposure to any single currency'],
-]
-
-// Grouped by what the trader is deciding — sizing, when to stop, what
-// counts as a good trade, and how much runs at once.
-const RISK_GROUPS = [
-  { title: 'Position sizing', blurb: 'How much one trade can lose.', keys: ['perTradeRiskPct', 'maxMarginUsagePct'] },
-  { title: 'Circuit breakers', blurb: 'When the bot must stand down.', keys: ['dailyLossPct', 'maxConsecutiveLosses', 'cooldownMinutes'] },
-  { title: 'Trade quality', blurb: 'Signals below this bar are vetoed.', keys: ['minRR', 'minSLDistancePct', 'maxSpreadFracOfSL'] },
-  { title: 'Exposure & pacing', blurb: 'How many trades, how often.', keys: ['maxOpenPositions', 'symbolCooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure'] },
-]
-
-// Rich controls for the Risk tab — sliders for continuous fractions
-// (displayed as %), dropdowns for enumerable choices. Values are stored in
-// the same units the agent expects; only the display is humanised.
-const RISK_CONTROLS = {
-  perTradeRiskPct: { type: 'slider', min: 0.0025, max: 0.05, step: 0.0025, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
-  dailyLossPct: { type: 'slider', min: 0.01, max: 0.1, step: 0.005, fraction: true, fmt: v => `${(v * 100).toFixed(1)}%` },
-  minRR: { type: 'select', options: [[1, '1.0 — every signal'], [1.2, '1.2'], [1.5, '1.5 — default'], [2, '2.0'], [3, '3.0 — very picky']] },
-  maxOpenPositions: { type: 'select', options: [1, 2, 3, 5, 8, 10, 15, 25, 50, 100, 200].map(n => [n, String(n)]) },
-  symbolCooldownMinutes: { type: 'select', options: [[0, 'off'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours — default'], [480, '8 hours'], [1440, '1 day']] },
-  maxConsecutiveLosses: { type: 'select', options: [[0, 'off — no streak breaker'], ...[2, 3, 4, 5, 6].map(n => [n, String(n)])] },
-  // Free-text duration (owner: "can I type 5m/5s/5h") instead of a fixed
-  // preset list — parseDurationToMinutes/formatMinutesShort in
-  // src/lib/duration-input.js do the s/m/h <-> minutes conversion; the
-  // stored value is still plain minutes (possibly fractional), same as
-  // every other consumer of this field expects (risk.js: cooldownMinutes *
-  // 60_000). Values under ~1 loop cycle won't have a practical effect since
-  // the cooldown is only re-checked when a new proposal is evaluated.
-  cooldownMinutes: { type: 'duration' },
-  minSLDistancePct: { type: 'slider', min: 0.01, max: 0.5, step: 0.01, fmt: v => `${Number(v).toFixed(2)}%` },
-  maxSpreadFracOfSL: { type: 'slider', min: 0.05, max: 1, step: 0.05, fraction: true, fmt: v => `${(v * 100).toFixed(0)}%` },
-  maxClusterExposure: { type: 'select', options: [[0, 'off — no cluster gate'], [1, '±1 — one bet per cluster'], [2, '±2 — default'], [3, '±3'], [4, '±4 — loose']] },
-  maxCurrencyExposure: { type: 'select', options: [[0, 'off'], [1, '±1'], [2, '±2 — default'], [3, '±3'], [4, '±4 — loose']] },
-  maxMarginUsagePct: { type: 'slider', min: 0.001, max: 1, step: 0.0001, fraction: true, fmt: v => `${(v * 100).toFixed(2)}%` },
-}
-
-// Free-text "5m" / "30s" / "2h" duration field (owner spec) — keeps its own
-// local text so typing isn't fought by the parsed-value round-trip; only
-// re-syncs from `value` when it changed from something OTHER than our own
-// last emit (e.g. "Reset to defaults"). Re-sync happens during render (the
-// React-recommended "adjusting state when a prop changes" pattern), not in
-// an effect, so reformatting mid-keystroke never stomps on what's typed and
-// never cascades an extra render.
-function DurationInput({ label, hint, value, onChange }) {
-  const [text, setText] = useState(() => formatMinutesShort(value))
-  const [invalid, setInvalid] = useState(false)
-  const [lastEmitted, setLastEmitted] = useState(value)
-  if (value !== lastEmitted) {
-    setLastEmitted(value)
-    setText(formatMinutesShort(value))
-    setInvalid(false)
-  }
-  return (
-    <label className="block text-[9px]" title={hint}>
-      <span className="text-[var(--color-text-sub)]">{label}</span>
-      <Input
-        type="text"
-        value={text}
-        onChange={e => {
-          const raw = e.target.value
-          setText(raw)
-          const mins = parseDurationToMinutes(raw)
-          if (mins == null) { setInvalid(true); return }
-          setInvalid(false)
-          setLastEmitted(mins)
-          onChange(mins)
-        }}
-        placeholder="e.g. 5m, 30s, 2h, or off"
-        className={invalid ? 'border-[var(--color-down)]' : ''}
-      />
-      {invalid && <span className="text-[9px] text-[var(--color-down)]">Use a number, or number + s/m/h — e.g. 90s, 5m, 2h</span>}
-    </label>
-  )
-}
-
-function RiskControl({ k, label, hint, value, onChange }) {
-  const ctl = RISK_CONTROLS[k]
-  if (ctl?.type === 'duration') {
-    return <DurationInput label={label} hint={hint} value={value} onChange={onChange} />
-  }
-  if (ctl?.type === 'slider') {
-    // Percent-style fields edit in % but the model stays a fraction where
-    // flagged (perTradeRiskPct/dailyLossPct/maxMarginUsagePct are fractions;
-    // minSLDistancePct is already percent-native).
-    const isFraction = !!ctl.fraction
-    return (
-      <div title={hint}>
-        <SliderInput
-          label={label} value={value} onChange={onChange}
-          min={ctl.min} max={ctl.max} step={ctl.step}
-          display={ctl.fmt}
-          unit="%"
-          toInput={v => isFraction ? Number((v * 100).toFixed(3)) : v}
-          parse={v => isFraction ? v / 100 : v}
-        />
-      </div>
-    )
-  }
-  if (ctl?.type === 'select') {
-    return (
-      <div title={hint}>
-        <PresetSelect
-          label={label} value={value} onChange={onChange}
-          options={ctl.options} display={v => String(v)}
-        />
-      </div>
-    )
-  }
-  return (
-    <label className="block text-[9px]" title={hint}>
-      <span className="text-[var(--color-text-sub)]">{label}</span>
-      <Input type="number" step="any" value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={hint} />
-    </label>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Backtest verdict — evidence-based, three states:
@@ -820,7 +677,10 @@ export default function Tune() {
       // last used (owner: "hyperlink to Risk... i cannot arm them, why?").
       const urlTab = new URLSearchParams(window.location.search).get('tab')
       if (urlTab && TABS.some(t => t.id === urlTab)) return urlTab
-      return sessionStorage.getItem('tune_tab') || 'pipeline'
+      // Validate the REMEMBERED tab too: anyone whose session last sat on the
+      // now-deleted 'risk' tab would otherwise land on a blank page.
+      const saved = sessionStorage.getItem('tune_tab')
+      return saved && TABS.some(t => t.id === saved) ? saved : 'pipeline'
     } catch { return 'pipeline' }
   })
   const pickTab = (id) => { setTab(id); try { sessionStorage.setItem('tune_tab', id) } catch { /* quota — skip */ } }
@@ -831,7 +691,6 @@ export default function Tune() {
 
   const [config, setConfig] = useState(null)          // toggles + symbols
   const [risk, setRisk] = useState(null)              // { effective, derived }
-  const [riskDraft, setRiskDraft] = useState({})
   const [timeframes, setTimeframes] = useState(['4h', '1d'])
   const [armedMatrix, setArmedMatrix] = useState(null)   // {SYM:[tfs]} currently armed on the agent
   const [tfMenu, setTfMenu] = useState(false)
@@ -848,7 +707,6 @@ export default function Tune() {
   const [screener, setScreener] = useState(null)     // cup-screener results
   const [screenerBusy, setScreenerBusy] = useState(false)
   const [fvgFilter, setFvgFilter] = useState(false)
-  const [balanceDraft, setBalanceDraft] = useState({ balance: '', leverage: '' })
   const [newSymbol, setNewSymbol] = useState('')
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
   const [browse, setBrowse] = useState(false)        // full-catalogue browser open?
@@ -961,13 +819,6 @@ export default function Tune() {
       ])
       setConfig(c)
       setRisk(r)
-      // Restore any unsaved typed drafts from a previous visit — a page
-      // switch must not throw away what the owner typed. A draft counts
-      // only when it differs from the server's values; Save clears it.
-      const drafts = readDrafts()
-      const serverRisk = Object.fromEntries(RISK_FIELDS.map(([k]) => [k, r.effective?.[k] ?? '']))
-      const riskRestored = drafts.risk && JSON.stringify(drafts.risk) !== JSON.stringify(serverRisk)
-      setRiskDraft(riskRestored ? drafts.risk : serverRisk)
       if (tf?.timeframes) setTimeframes(tf.timeframes)
       setArmedMatrix(tf?.matrix && typeof tf.matrix === 'object' ? tf.matrix : null)
       if (rf) setRsiFilter(!!rf.on)
@@ -975,12 +826,6 @@ export default function Tune() {
       if (ff) setFvgFilter(!!ff.on)
       if (sm) setStageMx(sm)
       if (vm) setVetoMix(vm)
-      const serverBal = { balance: r.derived?.balance ?? '', leverage: r.derived?.leverage ?? '' }
-      const balRestored = drafts.balance && JSON.stringify(drafts.balance) !== JSON.stringify(serverBal)
-      setBalanceDraft(balRestored ? drafts.balance : serverBal)
-      if (riskRestored || balRestored) {
-        setStatus('Restored your unsaved edits from the last visit — tap Save to apply them, or Reset to discard.')
-      }
       setError('')
     } catch (e) { setError(e.message) }
   }, [])
@@ -1110,29 +955,9 @@ export default function Tune() {
     toggleTimeframe(parsed.label)
   }
 
-  const saveRisk = () => {
-    const body = {}
-    for (const [k] of RISK_FIELDS) {
-      const v = Number(riskDraft[k])
-      if (Number.isFinite(v)) body[k] = v
-    }
-    run(async () => { await agentPost('/actions/risk-config', body); writeDraft('risk', null) }, 'Risk config saved')
-  }
-
-  const saveBalance = () => {
-    const body = {}
-    if (balanceDraft.balance !== '') body.balance = Number(balanceDraft.balance)
-    if (balanceDraft.leverage !== '') body.leverage = Number(balanceDraft.leverage)
-    run(async () => { await agentPost('/actions/balance', body); writeDraft('balance', null) }, 'Account saved')
-  }
-
-  // Persist typed drafts as they change — a page switch keeps them.
-  useEffect(() => {
-    if (Object.keys(riskDraft).length) writeDraft('risk', riskDraft)
-  }, [riskDraft])
-  useEffect(() => {
-    if (balanceDraft.balance !== '' || balanceDraft.leverage !== '') writeDraft('balance', balanceDraft)
-  }, [balanceDraft])
+  // UI-6: saveRisk / saveBalance and their draft-persistence effects were
+  // removed with the Risk tab. Both configs are edited on the Risk page now,
+  // which owns /actions/risk-config and /actions/balance.
 
   const symbols = config?.symbols || []
   const enabledSymbols = symbols.filter(s => s.enabled !== false).map(s => s.symbol)
@@ -1832,7 +1657,7 @@ export default function Tune() {
                   passed when known so the noise floor is a real figure; when it
                   is not, the example says so rather than assuming one. */}
               <WorkedExample label="Worked example"
-                lines={keeperExample(keeper || {}, { balance: Number(balanceDraft.balance) || Number(risk?.derived?.balance) || null })} />
+                lines={keeperExample(keeper || {}, { balance: Number(risk?.derived?.balance) || null })} />
             </div>
             <div className="mt-3 flex items-center gap-2 text-[9px]">
               <label className="flex items-center gap-1.5">
@@ -1905,79 +1730,6 @@ export default function Tune() {
           </div>
         )}
 
-        {tab === 'risk' && (() => {
-          const labels = Object.fromEntries(RISK_FIELDS.map(([k, label, hint]) => [k, { label, hint }]))
-          const bal = Number(balanceDraft.balance) || Number(risk?.derived?.balance) || null
-          const usd = (frac) => {
-            const f = Number(frac)
-            return bal && Number.isFinite(f) ? `$${(bal * f).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'
-          }
-          const dirty = risk?.effective && RISK_FIELDS.some(([k]) => Number(riskDraft[k]) !== Number(risk.effective[k]))
-          return (
-          <div>
-            {/* Live impact strip — recomputes from the DRAFT values as you drag,
-                so the money consequence is visible before saving. */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-              {[
-                ['Balance', bal ? `$${bal.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'not set'],
-                ['Risk per trade', usd(riskDraft.perTradeRiskPct)],
-                ['Daily stop-out', usd(riskDraft.dailyLossPct)],
-                ['Worst case open', bal && Number.isFinite(Number(riskDraft.perTradeRiskPct)) && Number.isFinite(Number(riskDraft.maxOpenPositions))
-                  ? `$${(bal * riskDraft.perTradeRiskPct * riskDraft.maxOpenPositions).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                  : '—'],
-              ].map(([label, value]) => (
-                <div key={label} className="glass-inset rounded-[10px] px-3 py-2">
-                  <div className="text-[9px] text-[var(--color-text-sub)]">{label}</div>
-                  <div className="text-[9px] font-bold tabular-nums">{value}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Tight 2-col groups — the whole tab should fit ~one screen. */}
-            <div className="grid gap-2.5 lg:grid-cols-2">
-              {RISK_GROUPS.map(g => (
-                <div key={g.title} className="glass-inset rounded-[12px] p-2.5">
-                  <div className="flex items-baseline justify-between mb-1.5">
-                    <h3 className="t-h3">{g.title}</h3>
-                    <span className="text-[9px] text-[var(--color-text-sub)]">{g.blurb}</span>
-                  </div>
-                  <div className="space-y-2">
-                    {g.keys.map(k => (
-                      <RiskControl
-                        key={k} k={k} label={labels[k].label} hint={labels[k].hint}
-                        value={riskDraft[k]}
-                        onChange={v => setRiskDraft(d => ({ ...d, [k]: v }))}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <Button size="sm" onClick={saveRisk} disabled={!dirty}>{dirty ? 'Save risk config' : 'Saved'}</Button>
-              {dirty && <span className="text-[9px] font-semibold text-[var(--color-warning-text)]">Unsaved changes — the bot still uses the old values.</span>}
-              <span className="ml-auto">
-                <Button size="sm" variant="subtle" onClick={() => run(async () => { await agentPost('/actions/risk-config', { reset: true }); writeDraft('risk', null) }, 'Risk config reset to defaults')}>Reset to defaults</Button>
-              </span>
-            </div>
-
-            <h2 className="t-h3 mt-3 mb-1 pt-2.5 border-t border-[var(--color-border)]">Account</h2>
-            <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">These feed every $ figure above. Balance auto-syncs from the broker when linked.</p>
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="block text-[9px]">
-                <span className="text-[var(--color-text-sub)]">Balance (USD)</span>
-                <Input type="number" step="any" value={balanceDraft.balance} onChange={e => setBalanceDraft(d => ({ ...d, balance: e.target.value }))} />
-              </label>
-              <label className="block text-[9px]">
-                <span className="text-[var(--color-text-sub)]">Leverage (e.g. 200 = 1:200)</span>
-                <Input type="number" value={balanceDraft.leverage} onChange={e => setBalanceDraft(d => ({ ...d, leverage: e.target.value }))} />
-              </label>
-              <Button size="sm" onClick={saveBalance}>Save account</Button>
-            </div>
-          </div>
-          )
-        })()}
 
         {tab === 'watchlist' && (
           <div>

@@ -15,6 +15,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
+import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -108,7 +109,12 @@ function Unit({ children }) {
 // pixels. Field strips the sentinel and renders it properly styled.
 export const DEFAULT_MARK = '\u2009\u00B7'   // thin space + middle dot
 
-function Field({ label, value, onChange, pct = false, unit, hint, recommend, placeholder = 'not set' }) {
+// `duration` swaps the number box for free text that accepts "90s", "5m",
+// "2h" or a bare number of minutes — the affordance the owner asked for on
+// the cooldowns, migrated here from Tune > Risk (UI-6) when that tab was
+// removed. Everything else about the row is unchanged: same label, same
+// hint/recommend, same width, so the card still reads as one grid.
+function Field({ label, value, onChange, pct = false, unit, hint, recommend, placeholder = 'not set', duration = false }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
   const isDefault = typeof label === 'string' && label.endsWith(DEFAULT_MARK)
@@ -128,16 +134,18 @@ function Field({ label, value, onChange, pct = false, unit, hint, recommend, pla
           )}
         </span>
         <span className="flex items-center gap-1 shrink-0">
-          <Input type="number" step="any" value={display} placeholder={placeholder}
-            className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right`}
-            onChange={e => {
-              const raw = e.target.value
-              if (raw === '') { onChange(null); return }
-              const n = Number(raw)
-              if (!Number.isFinite(n)) return
-              onChange(pct ? n / 100 : n)
-            }} />
-          {(pct || unit) && <Unit>{pct ? '%' : unit}</Unit>}
+          {duration
+            ? <DurationField value={value} onChange={onChange} placeholder={placeholder} />
+            : <Input type="number" step="any" value={display} placeholder={placeholder}
+                className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right`}
+                onChange={e => {
+                  const raw = e.target.value
+                  if (raw === '') { onChange(null); return }
+                  const n = Number(raw)
+                  if (!Number.isFinite(n)) return
+                  onChange(pct ? n / 100 : n)
+                }} />}
+          {(pct || unit) && !duration && <Unit>{pct ? '%' : unit}</Unit>}
         </span>
       </label>
       {showHint && (
@@ -147,6 +155,37 @@ function Field({ label, value, onChange, pct = false, unit, hint, recommend, pla
         </p>
       )}
     </div>
+  )
+}
+
+// The text box behind Field's `duration` mode. Stores plain MINUTES — the
+// unit every consumer already expects (risk.js: cooldownMinutes * 60_000) —
+// and only ever emits a parsed value, so a half-typed "5" on the way to "5h"
+// cannot commit 5 minutes as if it were the answer.
+function DurationField({ value, onChange, placeholder }) {
+  const [text, setText] = useState(() => formatMinutesShort(value))
+  const [invalid, setInvalid] = useState(false)
+  const [lastEmitted, setLastEmitted] = useState(value)
+  if (value !== lastEmitted) {
+    setLastEmitted(value)
+    setText(formatMinutesShort(value))
+    setInvalid(false)
+  }
+  return (
+    <Input type="text" value={text} placeholder={placeholder}
+      aria-invalid={invalid || undefined}
+      title="Type a number of minutes, or a duration like 90s / 5m / 2h"
+      className={`${FIELD_W} !min-h-[26px] !py-0.5 !px-2 !text-[9px] text-right${invalid ? ' border-[var(--color-down)]' : ''}`}
+      onChange={e => {
+        const raw = e.target.value
+        setText(raw)
+        if (raw === '') { setInvalid(false); setLastEmitted(null); onChange(null); return }
+        const mins = parseDurationToMinutes(raw)
+        if (mins == null) { setInvalid(true); return }
+        setInvalid(false)
+        setLastEmitted(mins)
+        onChange(mins)
+      }} />
   )
 }
 
@@ -325,6 +364,46 @@ export default function Risk() {
         {saving && <Badge tone="info">saving {saving}…</Badge>}
       </div>
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+
+      {/* ---- Live impact strip (migrated from Tune > Risk, UI-6) ----------
+          Percentages are the units the gate uses, but they are not the units
+          a decision is made in. This turns the three that matter into money,
+          recomputed from the values ON SCREEN — so the consequence is visible
+          BEFORE saving, not after the first trade sized off a typo.
+          Every tile shows a dash when its inputs are missing; none of them
+          fall back to a plausible number. */}
+      {(() => {
+        const b = Number(acct.balance)
+        const money = (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+        const usd = (frac) => {
+          const f = Number(frac)
+          return b > 0 && Number.isFinite(f) && frac !== '' && frac != null ? money(b * f) : '—'
+        }
+        const perTrade = Number(risk.perTradeRiskUsd) > 0 ? Number(risk.perTradeRiskUsd) : null
+        const maxOpen = Number(risk.maxOpenPositions)
+        // Worst case = every slot open and every one stopped out. The honest
+        // ceiling, and the number the daily cap has to survive.
+        const worst = b > 0 && Number.isFinite(maxOpen) && maxOpen > 0
+          ? (perTrade != null ? perTrade * maxOpen
+            : (Number.isFinite(Number(risk.perTradeRiskPct)) ? b * Number(risk.perTradeRiskPct) * maxOpen : null))
+          : null
+        const tiles = [
+          ['Balance', b > 0 ? money(b) : 'not set'],
+          ['Risk per trade', perTrade != null ? `${money(perTrade)} (fixed $)` : usd(risk.perTradeRiskPct)],
+          ['Daily stop-out', usd(risk.dailyLossPct)],
+          ['Worst case open', worst != null ? money(worst) : '—'],
+        ]
+        return (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {tiles.map(([label, value]) => (
+              <div key={label} className="glass-inset rounded-[10px] px-3 py-2">
+                <div className="text-[9px] text-[var(--color-text-sub)]">{label}</div>
+                <div className="text-[9px] font-bold tabular-nums">{value}</div>
+              </div>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
       <Card id="sec-account" data-risk-card className="w3-hover-shadow">
@@ -522,7 +601,16 @@ export default function Risk() {
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
             </label>
-            <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+            <div className="flex items-center gap-2">
+              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+              {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
+                  risk_config_json, not just this card's — it is the only
+                  control on the page with that reach, so it confirms first. */}
+              <Button size="sm" variant="ghost" onClick={() => {
+                if (!window.confirm('Reset the ENTIRE risk config to defaults? Every field on this page returns to its shipped value — sizing, caps, cooldowns, exposure limits. Your account balance and leverage are not touched.')) return
+                save('risk', () => agentPost('/actions/risk-config', { reset: true }))
+              }}>Reset to defaults</Button>
+            </div>
           </div>
         </Card>
 
@@ -591,11 +679,11 @@ export default function Risk() {
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
-                  <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} unit="min" value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
+                  <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} unit="min" duration value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
                     hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
                   <Field label={`Loss streak${mark('maxConsecutiveLosses')}`} unit="losses" value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
                     hint="After N losses in a row, pause. 0 = off." recommend="3 losses in a row." />
-                  <Field label={`Streak cooldown${mark('cooldownMinutes')}`} unit="min" value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
+                  <Field label={`Streak cooldown${mark('cooldownMinutes')}`} unit="min" duration value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
                     recommend="60 minutes." />
                 </div>
               </div>
