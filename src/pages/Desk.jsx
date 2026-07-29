@@ -384,8 +384,12 @@ export default function Desk() {
     return m
   }, [positions])
 
+  // Scan closes double as the FX rate map bracketMoney needs to convert a
+  // cross's quote-currency risk into USD (GBPJPY risk lands in JPY). Without
+  // it crosses report blank rather than a wrong number.
+  const rateMap = useMemo(() => Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), [scans])
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid }), [posSig, monitorByPid])
+  const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid, rates: rateMap }), [posSig, monitorByPid, rateMap])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const brokerOrderRowsM = useMemo(() => brokerOrderRows(broker?.orders || [], { manageable: true }), [ordSig])
 
@@ -812,7 +816,7 @@ export default function Desk() {
           <p className="text-[9px] text-[var(--color-text-sub)]">history {ago(brokerHistory._cachedAt)} — refreshing live…</p>
         )}
         {(brokerHistory?.rows?.length ?? 0) > 0 && (
-          <StdTradeTable rows={brokerDealRows(brokerHistory.rows)} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
+          <StdTradeTable rows={brokerDealRows(brokerHistory.rows, { rates: rateMap })} countLabel="closed deals" marketHours={marketHours} onSymbolClick={(sym3) => { pickSymbol(sym3); pickGrid(1) }} />
         )}
         {brokerHistory && brokerHistory.rows?.length === 0 && (
           <p className="text-[9px] text-[var(--color-text-sub)]">Nothing closed in the last {historyDays === 7 ? '7 days' : historyDays === 30 ? '30 days' : historyDays === 90 ? '3 months' : '6 months'}.</p>

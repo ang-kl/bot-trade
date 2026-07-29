@@ -100,6 +100,31 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     const pct = pctOf(entry, price)
     return pct ? <span className="text-[7px] text-[var(--color-text-sub)]"> {pct}</span> : null
   }
+  // What the bracket is WORTH, on its own line under the price (owner
+  // 2026-07-29: "[SL Loss in $] to existing Stop Loss on second line and
+  // [TP Profit in $] to Take Profit on second line"). Coloured by SIGN, not
+  // by which bracket it is — a stop trailed past entry is locked-in profit
+  // and prints green, because that is what it actually is.
+  const MoneyLine = ({ v, label, est, ccy }) => {
+    if (v == null || !Number.isFinite(Number(v))) return null
+    const n = Number(v)
+    // Broker-computed impacts land in the DEPOSIT currency net of swap and
+    // commission; the client-side fallback is a USD price-move estimate. The
+    // cell says which, so the two are never read as the same number.
+    const unit = est ? 'USD' : (ccy || '')
+    return (
+      <span
+        className={`block leading-tight text-[8px] ${n >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}
+        title={est
+          ? `estimated ${label} if this level is hit, at this size — price move only, excludes swap and commission`
+          : `${label} if this level is hit, at this size — broker figure, includes swap and commission`}
+      >
+        {n >= 0 ? '+' : '−'}{Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        {unit && <span className="ml-0.5 text-[7px] text-[var(--color-text-sub)]">{unit}</span>}
+        {est && <span className="ml-0.5 text-[7px] text-[var(--color-text-sub)]">est</span>}
+      </span>
+    )
+  }
   const timeCell = (v) => { const w2 = dateTimeParts(v); return w2 ? `${w2.day} ${w2.time}` : '—' }
   // How long a position/order has been open (or was held before closing) —
   // owner: "all table should also have the duration ... so you can also
@@ -122,7 +147,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
     // when rows carry a parsed label — closed deals / attempts stay lean.
     { key: 'timeframe', label: 'TF', fmt: (v) => v || '—' },
     { key: 'strategy', label: 'Strategy', fmt: (v) => stratShort(v) || '—' },
-    { key: 'margin', label: 'Margin Used', fmt: money2, money: true },
+    { key: 'margin', label: 'Margin Used', fmt: money2, money: true, estKey: 'marginEst' },
     { key: 'bid', label: 'Bid', fmt: num },
     { key: 'ask', label: 'Ask', fmt: num },
     { key: 'commission', label: 'Commission', fmt: money2, money: true },
@@ -267,6 +292,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     <td className="py-1 pr-3 text-right whitespace-nowrap">
                       {num(r.sl)}{ccyTag(r.ccy)}
                       {r.sl != null && <PctTag entry={r.entry} price={r.sl} />}
+                      <MoneyLine v={r.slMoney} label="loss" est={r.moneyEst} ccy={r.moneyCcy} />
                       {r.slAt && (() => {
                         const s = dateTimeParts(r.slAt)
                         return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="stop loss last set">{s.day} {s.time}</span> : null
@@ -286,6 +312,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                             </span>
                           ))
                         : <>{num(r.tp)}{ccyTag(r.ccy)}{r.tp != null && <PctTag entry={r.entry} price={r.tp} />}</>}
+                      <MoneyLine v={r.tpMoney} label="profit" est={r.moneyEst} ccy={r.moneyCcy} />
                       {r.tpAt && (() => {
                         const s = dateTimeParts(r.tpAt)
                         return s ? <span className="block text-[9px] leading-tight text-[var(--color-text-sub)]" title="take profit last set">{s.day} {s.time}</span> : null
@@ -321,7 +348,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     )}
                     {activeOpt.map(c => (
                       <td key={c.key} className="py-1 pr-3 text-right whitespace-nowrap">
-                        {r[c.key] != null ? <>{c.fmt(r[c.key])}{c.money ? ccyTag(r.moneyCcy) : null}</> : '—'}
+                        {r[c.key] != null
+                          ? <>
+                              {c.fmt(r[c.key])}
+                              {c.money ? ccyTag(r.moneyCcy) : null}
+                              {/* An estimate must never look like broker truth. */}
+                              {c.estKey && r[c.estKey] ? <span className="text-[7px] text-[var(--color-text-sub)]" title="estimated from notional ÷ leverage at entry — the broker stops reporting margin once a position closes"> est</span> : null}
+                            </>
+                          : '—'}
                       </td>
                     ))}
                     <td className="py-1 whitespace-nowrap">
@@ -359,16 +393,30 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
               "each of the table where there are Margin Used and TP and SL
               headers should have a sub-total". P&L and Margin sum; the rest
               aren't meaningfully summable. */}
-          {(rows.some(r => r.pnl != null) || rows.some(r => r.margin != null)) && (() => {
+          {(rows.some(r => r.pnl != null) || rows.some(r => r.margin != null) || rows.some(r => r.slMoney != null || r.tpMoney != null)) && (() => {
             const pnlSum = rows.reduce((a, r) => a + (Number(r.pnl) || 0), 0)
             const marginSum = rows.reduce((a, r) => a + (Number(r.margin) || 0), 0)
             const hasMargin = rows.some(r => r.margin != null)
+            // Total money at risk and total money on the table across EVERY
+            // row (owner: sub-totals wherever Margin Used / TP / SL appear) —
+            // the two numbers that say what this whole book is playing for.
+            const slSum = rows.reduce((a, r) => a + (Number(r.slMoney) || 0), 0)
+            const tpSum = rows.reduce((a, r) => a + (Number(r.tpMoney) || 0), 0)
+            const hasSl = rows.some(r => r.slMoney != null)
+            const hasTp = rows.some(r => r.tpMoney != null)
+            const sumCell = (v) => (
+              <span className={v >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>
+                {`${v >= 0 ? '+' : '−'}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              </span>
+            )
             return (
               <tfoot>
                 <tr className="border-t-2 border-[var(--color-border)] font-semibold">
-                  <td colSpan={10 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1 pr-3 text-right text-[var(--color-text-sub)]">
+                  <td colSpan={8 + (anyRef ? 1 : 0) + (anyUpdated ? 1 : 0) + (anyDuration ? 1 : 0)} className="py-1 pr-3 text-right text-[var(--color-text-sub)]">
                     Sub-total ({rows.length} rows)
                   </td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[8px]">{hasSl ? sumCell(slSum) : ''}</td>
+                  <td className="py-1 pr-3 text-right whitespace-nowrap text-[8px]">{hasTp ? sumCell(tpSum) : ''}</td>
                   <td className={`py-1 pr-3 text-right whitespace-nowrap ${pnlSum >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
                     {`${pnlSum >= 0 ? '+' : '−'}${Math.abs(pnlSum).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </td>

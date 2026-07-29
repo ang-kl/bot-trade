@@ -56,6 +56,7 @@ const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
 import AccountSwitcher from './components/AccountSwitcher.jsx'
+import ActiveAccountHeader from './components/ActiveAccountHeader.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import TabsPanel from './components/common/TabsPanel.jsx'
 import { useTheme } from './lib/theme.js'
@@ -178,6 +179,12 @@ export default function App() {
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
             <LlmMonitorStatus />
           </div>
+          {/* Which account am I looking at? (owner 2026-07-29: "above the
+              OVERVIEW state the Account · {DEMO 5203012} I am viewing now").
+              It sits ABOVE the first nav group because every number on every
+              page below belongs to this account — reading Performance without
+              knowing whose Performance it is has bitten before. */}
+          <ActiveAccountHeader />
           <nav className="flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>

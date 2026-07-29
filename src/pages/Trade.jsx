@@ -11,7 +11,7 @@ import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-a
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
-import { toMs, priceDp, brokerOrderRows } from '../lib/std-trade-rows.js'
+import { toMs, priceDp, brokerOrderRows, bracketMoney, estimateMargin } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
@@ -57,6 +57,13 @@ function buildEnrichMap(positions) {
       ask: p.ask ?? null,
       commission: p.commission ?? null,
       swap: p.swap ?? null,
+      // What the brackets are WORTH, straight from the server (deposit ccy,
+      // net of swap + commission) — so Open positions shows broker figures
+      // rather than the client-side price-move estimate.
+      slNetImpact: p.slNetImpact ?? null,
+      slGrossImpact: p.slGrossImpact ?? null,
+      tpNetImpact: p.tpNetImpact ?? null,
+      tpGrossImpact: p.tpGrossImpact ?? null,
     }
   }
   return by
@@ -69,7 +76,7 @@ function buildEnrichMap(positions) {
 // this DB-only row never had — ccy, margin, bid/ask, commission, swap —
 // matching the richness Desk's "At the broker" table already shows (owner:
 // "why you didn't include" the same columns here).
-function openPositionRows(positions, prices = {}, enrichById = {}) {
+function openPositionRows(positions, prices = {}, enrichById = {}, leverage = null) {
   return positions.map(p => {
     const src = p.source || 'autopilot'
     const checkedAt = p.last_check_at || p.last_checked_at
@@ -84,8 +91,26 @@ function openPositionRows(positions, prices = {}, enrichById = {}) {
       ? (enr.bid + enr.ask) / 2
       : (Number(prices[String(p.symbol).toUpperCase()]) || null)
     const openedAt = p.opened_at || p.created_at
+    const tps = tpLadder(p.current_tp, p.tp2_price, p.volume, { scaledOut: !!p.scaled_out })
+    // Broker-computed bracket impacts (deposit ccy, net of swap+commission)
+    // ride in on the same enrichment join; the client estimate is the fallback.
+    const slTruth = enr.slNetImpact ?? enr.slGrossImpact ?? null
+    const tpTruth = enr.tpNetImpact ?? enr.tpGrossImpact ?? null
+    const money = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
+      symbol: p.symbol, side: p.side, qty: p.volume, entry: p.entry_price,
+      sl: p.current_sl, tp: p.current_tp, tps, ref: current, rates: prices,
+    })
+    // Broker truth first; the notional ÷ leverage estimate only fills the gap
+    // when the live enrichment hasn't landed (or the position is untracked).
+    const marginTruth = enr.usedMargin ?? null
+    const marginEst = marginTruth == null
+      ? estimateMargin({ symbol: p.symbol, qty: p.volume, price: p.entry_price, leverage, rates: prices })
+      : null
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
+      slMoney: slTruth ?? money.slMoney,
+      tpMoney: tpTruth ?? money.tpMoney,
+      moneyEst: slTruth == null && tpTruth == null,
       id: `pos-${p.id}`,
       at: openedAt,
       symbol: p.symbol,
@@ -96,11 +121,12 @@ function openPositionRows(positions, prices = {}, enrichById = {}) {
       entry: p.entry_price,
       sl: p.current_sl,
       tp: p.current_tp,
-      tps: tpLadder(p.current_tp, p.tp2_price, p.volume, { scaledOut: !!p.scaled_out }),
+      tps,
       current,
       ccy: enr.quoteCcy ?? null,
       moneyCcy: enr.depositCcy ?? null,
-      margin: enr.usedMargin ?? null,
+      margin: marginTruth ?? marginEst,
+      marginEst: marginTruth == null && marginEst != null,
       bid: enr.bid ?? null,
       ask: enr.ask ?? null,
       commission: enr.commission ?? null,
@@ -121,12 +147,26 @@ function openPositionRows(positions, prices = {}, enrichById = {}) {
 // prices (latest scan close per symbol) light up the To TP/SL distance —
 // the owner's own trades deserve the same live protection read. enrichById
 // carries the same live-broker richness as openPositionRows above.
-function externalPositionRows(positions, prices = {}, enrichById = {}) {
+function externalPositionRows(positions, prices = {}, enrichById = {}, leverage = null) {
   return positions.map(p => {
     const enr = enrichById[String(p.ctrader_position_id)] || {}
     const openedAt = p.opened_at || p.created_at || null
+    const current = (enr.bid != null && enr.ask != null) ? (enr.bid + enr.ask) / 2 : (Number(prices[String(p.symbol).toUpperCase()]) || null)
+    const slTruth = enr.slNetImpact ?? enr.slGrossImpact ?? null
+    const tpTruth = enr.tpNetImpact ?? enr.tpGrossImpact ?? null
+    const money = (slTruth != null && tpTruth != null) ? { slMoney: null, tpMoney: null } : bracketMoney({
+      symbol: p.symbol, side: p.side, qty: p.volume, entry: p.entry_price,
+      sl: p.current_sl, tp: p.current_tp, ref: current, rates: prices,
+    })
+    const marginTruth = enr.usedMargin ?? null
+    const marginEst = marginTruth == null
+      ? estimateMargin({ symbol: p.symbol, qty: p.volume, price: p.entry_price, leverage, rates: prices })
+      : null
     return {
       pnl: enr.netPnl ?? enr.estNetPnl ?? null,
+      slMoney: slTruth ?? money.slMoney,
+      tpMoney: tpTruth ?? money.tpMoney,
+      moneyEst: slTruth == null && tpTruth == null,
       id: `ext-${p.id}`,
       at: openedAt,
       symbol: p.symbol,
@@ -137,10 +177,11 @@ function externalPositionRows(positions, prices = {}, enrichById = {}) {
       entry: p.entry_price,
       sl: p.current_sl ?? null,
       tp: p.current_tp ?? null,
-      current: (enr.bid != null && enr.ask != null) ? (enr.bid + enr.ask) / 2 : (Number(prices[String(p.symbol).toUpperCase()]) || null),
+      current,
       ccy: enr.quoteCcy ?? null,
       moneyCcy: enr.depositCcy ?? null,
-      margin: enr.usedMargin ?? null,
+      margin: marginTruth ?? marginEst,
+      marginEst: marginTruth == null && marginEst != null,
       bid: enr.bid ?? null,
       ask: enr.ask ?? null,
       commission: enr.commission ?? null,
@@ -157,11 +198,27 @@ function externalPositionRows(positions, prices = {}, enrichById = {}) {
 // Recent BOT trades → the standard shape (owner: "Recent trades follows the
 // same table structure as the order log"). REJECTED = broker has no record
 // (reconciled); UNCONFIRMED = order sent but no fill recorded yet.
-function closedTradeRows(trades) {
+function closedTradeRows(trades, prices = {}, leverage = null) {
   return trades.map(t => {
     const rejected = t.status === 'rejected'
     const unconfirmed = !rejected && t.entry_price == null
+    const tps = tpLadder(t.tp_price, t.tp2_price, t.volume, { scaledOut: !!t.scaled_out })
+    // Reference = the recorded exit once closed, else the live scan price —
+    // same rule the To-TP/SL trio uses, so the money and the distances always
+    // agree about which price they are measured from.
+    const ref = (rejected || unconfirmed ? null : t.exit_price) ?? (Number(prices[String(t.symbol).toUpperCase()]) || null)
+    const money = bracketMoney({
+      symbol: t.symbol, side: t.side, qty: t.volume, entry: t.entry_price,
+      sl: t.sl_price, tp: t.tp_price, tps, ref, rates: prices,
+    })
     return {
+      slMoney: money.slMoney,
+      tpMoney: money.tpMoney,
+      moneyEst: true,
+      // The broker stops reporting margin at close — this is the at-entry
+      // estimate, flagged `est` in the cell so it can't pass for truth.
+      margin: estimateMargin({ symbol: t.symbol, qty: t.volume, price: t.entry_price, leverage, rates: prices }),
+      marginEst: true,
       id: `tr-${t.id}`,
       at: t.closed_at || t.opened_at,
       symbol: t.symbol,
@@ -175,7 +232,7 @@ function closedTradeRows(trades) {
       entry: t.entry_price,
       sl: t.sl_price,
       tp: t.tp_price,
-      tps: tpLadder(t.tp_price, t.tp2_price, t.volume, { scaledOut: !!t.scaled_out }),
+      tps,
       // No live price on a closed/rejected/unconfirmed row — the recorded
       // exit IS the final reference point, so "how close did it come to
       // TP/SL" is still real, computable data (owner pushback: "you can
@@ -222,11 +279,54 @@ const ATTEMPT_SOURCE = {
 // Order log rows (risk_events) → the standard shape. prices (latest scan
 // close per symbol) light up "To TP/SL" for still-relevant proposals —
 // owner: "Those pending should have current price movement."
-function OrderLogTable({ rows, marketHours = null, prices = {} }) {
+function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], leverage = null }) {
+  // (e) The computed columns were blank because an attempt row carries no
+  // SIZE and no OUTCOME: `requestedVolume` is an optional per-symbol CAP (see
+  // agent/services/risk.js:895), not the volume the gate actually sized, and
+  // the gate's `adjusted_volume` was never persisted. So an approved attempt
+  // is matched to the trade it BECAME (same symbol + side, the first fill at
+  // or after the decision, within an hour) and borrows its real volume, exit
+  // and P&L. Newer rows also carry checks_json.adjusted_volume directly.
+  // A VETOED attempt has no size and no P&L and never will — those cells stay
+  // honestly empty instead of being filled with the cap or a zero.
+  const byKey = new Map()
+  for (const t of trades) {
+    const k = `${String(t.symbol).toUpperCase()}|${String(t.side || '').toUpperCase()}`
+    if (!byKey.has(k)) byKey.set(k, [])
+    byKey.get(k).push(t)
+  }
+  const matchTrade = (ev) => {
+    if (!ev.approved) return null
+    const list = byKey.get(`${String(ev.symbol).toUpperCase()}|${String(ev.side || '').toUpperCase()}`)
+    if (!list?.length) return null
+    const at = toMs(ev.created_at)
+    if (at == null) return null
+    let best = null
+    for (const t of list) {
+      const o = toMs(t.opened_at)
+      if (o == null || o < at - 60_000 || o > at + 3_600_000) continue
+      if (!best || o < toMs(best.opened_at)) best = t
+    }
+    return best
+  }
   const mapped = rows.map(ev => {
     let prop = null
     try { prop = ev.proposal_json ? JSON.parse(ev.proposal_json) : null } catch { /* legacy row */ }
+    let checks = null
+    try { checks = ev.checks_json ? JSON.parse(ev.checks_json) : null } catch { /* legacy row */ }
     const src = ATTEMPT_SOURCE[prop?.source] || (prop?.source ? String(prop.source).toUpperCase() : 'AUTO')
+    const filled = matchTrade(ev)
+    const qty = checks?.adjusted_volume ?? filled?.volume ?? (ev.approved ? prop?.requestedVolume ?? null : null)
+    const entry = filled?.entry_price ?? prop?.entry
+    const tps = tpLadder(prop?.tp1, prop?.tp2, qty)
+    // Reference price: the fill's exit if it ran its course, else the live
+    // scan/tick price — without one the To-TP/SL trio has nothing to measure
+    // from and the whole column group hides itself.
+    const ref = filled?.exit_price ?? (Number(prices[String(ev.symbol).toUpperCase()]) || null)
+    const money = bracketMoney({
+      symbol: ev.symbol, side: ev.side, qty, entry,
+      sl: prop?.sl, tp: prop?.tp1, tps, ref, rates: prices,
+    })
     return {
       id: `ol-${ev.id}`,
       at: ev.created_at,
@@ -234,12 +334,19 @@ function OrderLogTable({ rows, marketHours = null, prices = {} }) {
       result: { text: ev.approved ? 'OK' : 'VETO', tone: ev.approved ? 'up' : 'warning' },
       source: { text: src, tone: prop?.source === 'validation_fill' ? 'special' : 'neutral' },
       side: ev.side || null,
-      qty: prop?.requestedVolume,
-      entry: prop?.entry,
+      qty,
+      entry,
       sl: prop?.sl,
       tp: prop?.tp1,
-      tps: tpLadder(prop?.tp1, prop?.tp2, prop?.requestedVolume),
-      current: Number(prices[String(ev.symbol).toUpperCase()]) || null,
+      tps,
+      current: filled?.exit_price != null ? null : (Number(prices[String(ev.symbol).toUpperCase()]) || null),
+      exit: filled?.exit_price ?? null,
+      pnl: filled?.net_pnl ?? null,
+      slMoney: money.slMoney,
+      tpMoney: money.tpMoney,
+      moneyEst: true,
+      margin: estimateMargin({ symbol: ev.symbol, qty, price: entry, leverage, rates: prices }),
+      marginEst: true,
       // Trader words up front; the raw machine code stays in the tooltip.
       reason: humanVeto(ev.veto_reason) || ev.sizing_note || '',
       reasonTitle: ev.veto_reason || ev.sizing_note || '',
@@ -562,7 +669,7 @@ export default function Trade() {
       <Card id="sec-positions">
         <h2 className="t-h3 mb-2">Open positions ({positions.length})</h2>
         {positions.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">Flat.</div>}
-        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById)} countLabel="open positions" marketHours={marketHours} />}
+        {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
       {/* Manual order — a FAB bottom-left (owner spec): the form floats
@@ -665,7 +772,7 @@ export default function Trade() {
             <div>
               <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
               <StdTradeTable
-                rows={externalPositionRows(broker.externalPositions, priceMap, enrichById)}
+                rows={externalPositionRows(broker.externalPositions, priceMap, enrichById, account?.leverage)}
                 countLabel="external positions"
                 marketHours={marketHours}
                 extraAction={(row) => {
@@ -720,7 +827,7 @@ export default function Trade() {
           </div>
           {reconcileNote && <p className="text-[9px] text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
           {trades.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">None yet.</div>}
-          {trades.length > 0 && <StdTradeTable rows={closedTradeRows(trades)} countLabel="trades" marketHours={marketHours} />}
+          {trades.length > 0 && <StdTradeTable rows={closedTradeRows(trades, priceMap, account?.leverage)} countLabel="trades" marketHours={marketHours} />}
         </Card>
 
         {/* Order log — the audit trail the owner asked for: EVERY order
@@ -772,7 +879,7 @@ export default function Trade() {
               {vetoBd.vetoes[0]?.reason === 'market_closed' && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
             </p>
           )}
-          <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={priceMap} />
+          <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={priceMap} trades={trades} leverage={account?.leverage} />
         </Card>
       </div>
     </div>
