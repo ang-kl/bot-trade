@@ -10,6 +10,47 @@ export function execEngineMode() {
   return process.env.EXEC_ENGINE === 'cpp' ? 'cpp' : 'js'
 }
 
+// ---------------------------------------------------------------------------
+// SIDECAR-DOWN FALLBACK (incident 2026-07-29). When the sidecar loses its
+// broker session, cpp mode used to simply fail every order, close and amend
+// for the duration — while Node's own complete implementation of the same
+// operations sat unused. `withFallback` retries on the JS path, but ONLY when
+// lib/exec-fallback.js can prove the sidecar did not act. See that file: it
+// refuses far more often than it allows, because a wrong "yes" here places a
+// live order twice.
+//
+// Enabled by default; EXEC_FALLBACK=0 disables it and restores the old
+// fail-hard behaviour.
+// ---------------------------------------------------------------------------
+const fallbackEnabled = () => String(process.env.EXEC_FALLBACK ?? '1') !== '0'
+
+/** Records every fallback so an engine switch can never be discovered later from P&L alone. */
+let onFallback = (note) => console.warn(`[exec] ${note}`)
+export function setFallbackReporter(fn) { onFallback = typeof fn === 'function' ? fn : onFallback }
+
+async function withFallback(op, cppFn, jsFn) {
+  try {
+    return await cppFn()
+  } catch (err) {
+    if (!fallbackEnabled()) throw err
+    const { mayFallbackToJs, fallbackNote } = await import('./exec-fallback.js')
+    // Ask the sidecar whether it holds a broker session. A short timeout: this
+    // runs on an already-failing path and must not add latency to an order.
+    let connected = null
+    let reachable = true
+    try {
+      const h = await pingSidecar({ timeoutMs: 2_000 })
+      connected = h?.connected ?? null
+      reachable = h?.ok === true || h?.connected !== undefined
+    } catch { reachable = false }
+
+    const verdict = mayFallbackToJs({ op, sidecarConnected: connected, err, sidecarReachable: reachable })
+    if (!verdict.fallback) throw err
+    try { onFallback(fallbackNote(op, verdict.reason)) } catch { /* logging must never break execution */ }
+    return jsFn()
+  }
+}
+
 // Dynamic import keeps the ws module (and its socket deps) out of the process
 // entirely when the sidecar handles execution.
 async function ws() {
@@ -219,8 +260,12 @@ export async function placeOrder(creds, orderPayload) {
   const v = validateOrderBracket(orderPayload)
   if (!v.ok) throw new Error(v.reason)
   if (execEngineMode() === 'cpp') {
-    await ensureSidecarSession(creds)
-    return sidecar('POST', '/order', orderPayload)
+    return withFallback('order',
+      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/order', orderPayload) },
+      async () => {
+        const m = await ws()
+        return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+      })
   }
   const m = await ws()
   return m.wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
@@ -235,8 +280,12 @@ export async function setExecGuard(creds, cfg) {
 
 export async function amendPosition(creds, args) {
   if (execEngineMode() === 'cpp') {
-    await ensureSidecarSession(creds)
-    return sidecar('POST', '/amend', args)
+    return withFallback('amend',
+      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/amend', args) },
+      async () => {
+        const m = await ws()
+        return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
+      })
   }
   const m = await ws()
   return m.wsAmendPosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
@@ -244,8 +293,12 @@ export async function amendPosition(creds, args) {
 
 export async function closePosition(creds, args) {
   if (execEngineMode() === 'cpp') {
-    await ensureSidecarSession(creds)
-    return sidecar('POST', '/close', args)
+    return withFallback('close',
+      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/close', args) },
+      async () => {
+        const m = await ws()
+        return m.wsClosePosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
+      })
   }
   const m = await ws()
   return m.wsClosePosition(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, args)
@@ -253,8 +306,12 @@ export async function closePosition(creds, args) {
 
 export async function cancelOrder(creds, { orderId }) {
   if (execEngineMode() === 'cpp') {
-    await ensureSidecarSession(creds)
-    return sidecar('POST', '/cancel', { ctidTraderAccountId: parseInt(creds.accountId), orderId })
+    return withFallback('cancel',
+      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/cancel', { ctidTraderAccountId: parseInt(creds.accountId), orderId }) },
+      async () => {
+        const m = await ws()
+        return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
+      })
   }
   const m = await ws()
   return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })
