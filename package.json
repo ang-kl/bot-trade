@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:no-green": "bash scripts/check-no-green.sh",
-    "serial": "node scripts/count-interactions.js --serial"
+    "serial": "node scripts/count-interactions.js --serial",
+    "audit:ui": "node scripts/responsive-audit.mjs",
+    "audit:ui:live": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect --live"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
