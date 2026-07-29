@@ -85,3 +85,27 @@ docker build -t cpp-exec .
    with `test_engine_telemetry.cpp`'s `readBack()` pattern (fixed-size
    `TelemetryRecord`s, no framing) or just watch `/health`'s
    `telemetryWritten`/`telemetryDropped` counters.
+
+## Deploy isolation — why `watchPatterns` exists
+
+`railway.json` declares:
+
+```json
+"watchPatterns": ["cpp-exec/**", "agent/lib/exec-engine.*"]
+```
+
+Without it Railway's GitHub integration rebuilds this service on **every**
+push to the deploy branch, whatever the change touched. That meant a
+UI-only merge — a colour tweak, a table column — tore down the execution
+sidecar and reconnected it minutes later. Observed repeatedly on
+2026-07-29, a day with five merges: five unnecessary execution outages.
+
+That is tolerable on a demo soak and not tolerable once real money is on,
+because the window it opens is precisely the one where positions are
+unmanaged: the sidecar holds the broker session, the trail engine and the
+spot feed.
+
+The pattern list mirrors `.github/workflows/cpp-exec.yml`, which had the
+path filter right all along — CI knew which changes were ours; the deploy
+did not. Keep the two in step: if the CI filter gains a path, this list
+needs it too, or a change that CI tests will not be deployed.

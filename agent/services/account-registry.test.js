@@ -7,7 +7,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB, setState } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
 import {
   ensureAccountRegistry,
   syncSelectedAccount,
@@ -155,4 +155,59 @@ test('M4 setAccountEnabled: lifts sole-enabled, refuses unknown ids, modes valid
   // Unknown id refused; bad mode refused.
   assert.equal(setAccountEnabled(db, 'ZZZ', true).ok, false)
   assert.equal(setAccountEnabled(db, 'B', true, 'bogus').ok, false)
+})
+
+// ---------------------------------------------------------------------------
+// DISCOVERY REGISTERS, IT DOES NOT ENABLE (2026-07-29).
+//
+// POST /actions/ctrader-accounts now upserts every account the broker returns,
+// because browsing the list used to leave no trace: an account entered the
+// registry only when SELECTED or role-pushed, so everything registry-backed —
+// the roster, per-account watchlists, the compare & copy panel — could not see
+// an account the operator had never selected. Owner, of their live account:
+// "How come cannot see the live account?" Because it had never been selected.
+//
+// That is only safe because registering is not enabling. These pin it: a
+// discovered account arrives disabled and manage_only, and an upsert NEVER
+// touches the flags of a row that already exists. Get this wrong and merely
+// opening the Connect page would arm a live account.
+// ---------------------------------------------------------------------------
+
+test('a newly discovered account arrives DISABLED and manage_only', () => {
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: '1251247', traderLogin: '1251247', isLive: true, brokerLabel: 'Pepperstone' })
+
+  const row = db.prepare('SELECT * FROM accounts WHERE account_id = ?').get('1251247')
+  assert.ok(row, 'discovery registers it')
+  assert.equal(row.enabled, 0, 'visible, NOT tradeable')
+  assert.equal(row.mode, 'manage_only')
+  assert.equal(row.is_live, 1)
+  assert.equal(row.trader_login, '1251247')
+})
+
+test('re-discovery never re-flags an account that is already enabled', () => {
+  // The Connect page can be opened at any time, including while the account
+  // it lists is actively trading. An upsert that reset enabled/mode would
+  // silently disarm a running account — or arm a disabled one.
+  const db = initDB(':memory:')
+  upsertAccount(db, { accountId: '46130058', isLive: false })
+  setAccountEnabled(db, '46130058', true, 'active')
+
+  upsertAccount(db, { accountId: '46130058', traderLogin: '5203012', isLive: false, brokerLabel: 'Pepperstone' })
+
+  const row = db.prepare('SELECT * FROM accounts WHERE account_id = ?').get('46130058')
+  assert.equal(row.enabled, 1, 'still enabled')
+  assert.equal(row.mode, 'active', 'still active')
+  assert.equal(row.trader_login, '5203012', 'metadata DID refresh')
+})
+
+test('discovering a LIVE account does not make it the selected one', () => {
+  // The strongest version of the same guarantee: listing accounts must never
+  // change which account the bot trades.
+  const db = initDB(':memory:')
+  setState(db, 'ctrader_account_id', '46130058')
+  upsertAccount(db, { accountId: '1251247', isLive: true })
+
+  assert.equal(getState(db, 'ctrader_account_id'), '46130058')
+  assert.equal(db.prepare('SELECT enabled FROM accounts WHERE account_id = ?').get('1251247').enabled, 0)
 })

@@ -7,5 +7,9 @@
   "deploy": {
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
-  }
+  },
+  "watchPatterns": [
+    "cpp-exec/**",
+    "agent/lib/exec-engine.*"
+  ]
 }
