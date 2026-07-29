@@ -453,6 +453,49 @@ export default function stateRouter(db) {
   // clusters, each cluster's LIVE net exposure from active positions, the
   // caps, and the rolling-matrix config + freshness.
   // -----------------------------------------------------------------------
+  // GET /state/profit-ratchet — READ ONLY. The staircase's own account of
+  // itself: config, the step it is using, the high-water mark, the protected
+  // floor, how far equity sits above that floor, and whether it has ever
+  // fired. This exists because autotrade disarmed itself on staging between
+  // 12:32Z and 13:07Z on 2026-07-29 with no manual disarm, no route call and
+  // no PERF_BREAKER row, and the ratchet — which disarms without necessarily
+  // flattening — could not be inspected from outside the DB.
+  //
+  // Writes NOTHING. It does not run the ratchet, does not touch the
+  // staircase, and cannot arm or disarm anything.
+  router.get('/profit-ratchet', async (_req, res) => {
+    try {
+      const { loadProfitRatchetConfig, loadRatchetState, autoStepUsd } = await import('../services/profit-ratchet.js')
+      const cfg = loadProfitRatchetConfig(db)
+      const st = loadRatchetState(db)
+      const balance = getAccountBalance(db)
+      const step = cfg.stepUsd > 0 ? Number(cfg.stepUsd) : autoStepUsd(balance)
+      // Equity here is the LAST known figure the ratchet itself recorded, not
+      // a fresh broker call — this route must stay cheap and side-effect free.
+      const floor = st?.floor ?? null
+      const hwm = st?.hwm ?? null
+      res.json({
+        config: cfg,
+        balance,
+        step,
+        state: st,
+        // The two numbers that decide whether the ratchet fired: how far the
+        // high-water mark sits above the protected floor, and whether the
+        // ratchet has ever triggered (which is what disarms autotrade).
+        headroomFromFloor: floor != null && hwm != null ? Math.round((hwm - floor) * 100) / 100 : null,
+        hasTriggered: !!st?.lastTriggerAt,
+        lastTriggerAt: st?.lastTriggerAt ?? null,
+        // 'flatten' closes BOT positions on trigger; 'halt' only disarms.
+        // A disarm with positions still open is consistent with 'halt', or
+        // with 'flatten' finding no autopilot-sourced rows to close.
+        floorAction: cfg.floorAction,
+        autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
+      })
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
   router.get('/correlation', async (_req, res) => {
     try {
       const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
