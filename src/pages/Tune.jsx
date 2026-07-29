@@ -624,6 +624,18 @@ const PRESET_MARKETS = [...new Set(PRESET_GROUPS.map(g => g.market))]
 // padding, and the ON/OFF word itself dropped — state is carried by color +
 // weight + case alone (bold uppercase = off, normal titlecase = on) instead
 // of spelling it out, since that's the actual "estate" being reclaimed.
+// UI-6: the Risk page's section heading, so the Pipeline tab's cards read
+// the same way. Deliberately the same markup rather than a shared import —
+// the two pages have diverged before, and a copied six-line heading is a
+// cheaper mistake than a shared component that grows props for both.
+function SectionTitle({ children }) {
+  return (
+    <div className="flex items-center gap-2 mb-1">
+      <h3 className="t-h3">{children}</h3>
+    </div>
+  )
+}
+
 function Toggle({ on, onClick, label }) {
   return (
     <button
@@ -1190,7 +1202,10 @@ export default function Tune() {
 
       <FolioTabs tabs={TABS} active={tab} onChange={pickTab}>
         {tab === 'pipeline' && (
-          <div>
+          <div className="space-y-2">
+            <Card id="sec-pipe-master" className="w3-hover-shadow">
+              <SectionTitle>Master switches</SectionTitle>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">The three phases, and how wide autotrade casts. Everything below only matters while these are on.</p>
             <div className="flex flex-wrap gap-2">
               <Toggle on={config?.scan_enabled} label="Scan" onClick={() => toggle('/actions/scan-toggle', 'Scan', config?.scan_enabled)} />
               <Toggle on={config?.analyze_enabled} label="Analyze" onClick={() => toggle('/actions/analyze-toggle', 'Analyze', config?.analyze_enabled)} />
@@ -1221,6 +1236,10 @@ export default function Tune() {
                 Full watchlist = every enabled symbol may trade on any scanned timeframe with every armed strategy; backtest-armed combos stay as micro-tuning. The risk gate, stage matrix, market hours and equity stop still veto every order.
               </span>
             </div>
+            </Card>
+            <Card id="sec-pipe-strategy" className="w3-hover-shadow">
+              <SectionTitle>What may trade</SectionTitle>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>
             {/* Strategy × stage matrix replaces the old strategy/filter chips:
                 every strategy and filter is set PER PIPELINE STAGE. Trade
                 edits write the same legacy keys the chips used. */}
@@ -1295,6 +1314,10 @@ export default function Tune() {
                 nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
               </span>
             </div>
+            </Card>
+            <Card id="sec-pipe-breakers" className="w3-hover-shadow">
+              <SectionTitle>Breakers and gates</SectionTitle>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">When the bot must adapt or stand down on its own — a loss streak, a decayed edge, the wrong regime, or the minutes right after a session opens.</p>
             {/* Adaptive breaker + fast monitor cadence — the owner's "no
                 human pauses" doctrine: a loss streak CHANGES strategy/
                 filters; open positions are watched every ~minute, scaled
@@ -1336,54 +1359,6 @@ export default function Tune() {
                 }, `Performance breaker auto-disarm ${next ? 'ON' : 'off'}`)
               }} />
             </div>
-            {/* Per-asset-class controllers — owner: "separate controllers for
-                forex/indices/commodities... trading like a beginner." A
-                EURUSD and a NatGas trade shouldn't be managed identically. */}
-            <div className="mt-3">
-              <div className="text-[9px] font-semibold mb-1">Asset-class controllers</div>
-              <span className="text-[9px] text-[var(--color-text-sub)]">
-                per-class breakeven / partial / runner triggers (in R). Whippy classes (energy, crypto) lock in sooner; clean trenders (indices, gold) give runners more room. Blank = class default.
-              </span>
-              <div className="overflow-x-auto mt-1">
-                <table className="std-cols text-[9px] tabular-nums">
-                  <thead>
-                    <tr className="border-b border-[var(--color-border)]">
-                      <th className="py-1 pr-3">Class</th>
-                      <th className="py-1 pr-3" title="Move stop to breakeven at this R">BE @R</th>
-                      <th className="py-1 pr-3" title="Take half off at this R">Partial @R</th>
-                      <th className="py-1 pr-3" title="Start trailing the runner at this R">Runner @R</th>
-                      <th className="py-1 pr-3" title="Trail this many R behind price">Trail R</th>
-                      <th className="py-1" title="Close the WHOLE position at this R — recycles margin out of big winners into new setups">Bank @R</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(config?.asset_controllers || []).map(row => (
-                      <tr key={row.class} className="border-b border-[var(--color-border)]/40">
-                        <td className="py-1 pr-3">{row.class}{row.overridden ? ' *' : ''}</td>
-                        {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR'].map(k => (
-                          <td key={k} className="py-1 pr-3">
-                            <input
-                              type="number" step="0.1" min="0.1" max="20"
-                              defaultValue={row[k]}
-                              aria-label={`${row.class} ${k}`}
-                              className="w-16 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9px]"
-                              onBlur={(e) => {
-                                const v = e.target.value === '' ? null : Number(e.target.value)
-                                if (e.target.value !== '' && Number(v) === row[k]) return
-                                run(async () => {
-                                  const r = await agentPost('/actions/asset-controller', { class: row.class, [k]: v })
-                                  setConfig(c => ({ ...c, asset_controllers: r.asset_controllers }))
-                                }, `${row.class} ${k} → ${v ?? 'default'}`)
-                              }}
-                            />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
             {/* Regime gate — owner: "trading like a beginner" (PF 0.15). The
                 fade strategy was firing into trends where its levels get
                 blown through; this blocks strategy/regime mismatches. */}
@@ -1413,6 +1388,27 @@ export default function Tune() {
               <span className="text-[9px] text-[var(--color-text-sub)]">
                 first {config?.session_open_guard?.windowMin ?? 30}m after a major session opens (Tokyo/London/NY…), any bot position already up ≥ {config?.session_open_guard?.minR ?? 0.3}R gets its SL locked to breakeven — opens are where reversals hit hardest
               </span>
+            </div>
+            </Card>
+            <Card id="sec-pipe-cadence" className="w3-hover-shadow">
+              <SectionTitle>Cadence and coverage</SectionTitle>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">How often the loop runs, how often open positions are checked, and which timeframes are scanned at all.</p>
+            <div className="mt-3 flex items-center gap-2 text-[9px]">
+              <label className="flex items-center gap-1.5">
+                Scan every
+                <Input
+                  type="number" min="1" max="60" className="w-16 !py-0.5 !min-h-0"
+                  value={config?.loop_interval_min ?? 5}
+                  aria-label="Scan interval in minutes (1 to 60)"
+                  onChange={e => setConfig(c => ({ ...c, loop_interval_min: e.target.value === '' ? '' : Number(e.target.value) }))}
+                  onBlur={() => {
+                    const n = Number(config?.loop_interval_min)
+                    if (Number.isFinite(n) && n >= 1 && n <= 60) run(() => agentPost('/actions/loop-interval', { minutes: n }), `Scan cadence: every ${n} min`)
+                  }}
+                />
+                minutes
+              </label>
+              <span className="text-[9px] text-[var(--color-text-sub)]">— applies from the next cycle, no restart. Faster = more broker calls (still free), slower = later entries.</span>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px]">
               <span className="font-semibold">Position monitor:</span>
@@ -1472,6 +1468,109 @@ export default function Tune() {
               {Object.keys(config?.monitor_overrides || {}).length === 0 && (
                 <span className="text-[var(--color-text-sub)]">none — all symbols on auto (volume-adaptive)</span>
               )}
+            </div>
+            <div className="mt-3">
+              <div className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+                Autotrade timeframes — add or remove any the broker supports (1m → 1 month). Scans and backtests follow this list:
+              </div>
+              <div className="flex flex-wrap gap-1.5 items-center">
+                {[...timeframes].sort(byTfDesc).map(tf => (
+                  <span
+                    key={tf}
+                    className="inline-flex items-center gap-1.5 rounded-[20px] bg-[var(--color-accent)] text-white px-3 py-1 text-[9px] font-semibold min-h-[36px]"
+                  >
+                    {tf}
+                    <button
+                      type="button" aria-label={`Remove ${tf}`}
+                      onClick={() => toggleTimeframe(tf)}
+                      className="cursor-pointer rounded-full hover:bg-white/25 w-5 h-5 leading-none"
+                    >×</button>
+                  </span>
+                ))}
+                <span className="relative">
+                  <button
+                    type="button" onClick={() => setTfMenu(o => !o)} aria-expanded={tfMenu}
+                    className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[9px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+                  >+ Add timeframe</button>
+                  {tfMenu && (
+                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
+                      <span className="flex gap-1 p-1">
+                        <Input
+                          value={tfDraft} onChange={e => setTfDraft(e.target.value)}
+                          placeholder="e.g. 90m · 1.5h · 2d · 1M"
+                          className="!py-1 text-[9px]"
+                          onKeyDown={e => e.key === 'Enter' && addCustomTimeframe()}
+                        />
+                        <Button size="sm" onClick={addCustomTimeframe}>Add</Button>
+                      </span>
+                      <span className="block px-2 pb-1 text-[9px] text-[var(--color-text-sub)]">
+                        min/h/d/w · M = month · decimals from hours up
+                      </span>
+                      {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
+                        <button
+                          key={tf} type="button"
+                          onClick={() => { setTfMenu(false); toggleTimeframe(tf) }}
+                          className="w-full text-left rounded-[8px] px-3 py-1.5 text-[9px] cursor-pointer hover:bg-[var(--color-accent-soft)] block"
+                        >{tf}</button>
+                      ))}
+                    </span>
+                  )}
+                </span>
+              </div>
+              <TimeframePerformance timeframes={timeframes} />
+              <StrategyTfPerformance />
+            </div>
+            </Card>
+            <Card id="sec-pipe-protection" className="w3-hover-shadow">
+              <SectionTitle>Position management</SectionTitle>
+              <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">What happens to a position once it is open: per-class exit ladders, the weekend and tick sweeps, and the three guardians.</p>
+            {/* Per-asset-class controllers — owner: "separate controllers for
+                forex/indices/commodities... trading like a beginner." A
+                EURUSD and a NatGas trade shouldn't be managed identically. */}
+            <div className="mt-3">
+              <div className="text-[9px] font-semibold mb-1">Asset-class controllers</div>
+              <span className="text-[9px] text-[var(--color-text-sub)]">
+                per-class breakeven / partial / runner triggers (in R). Whippy classes (energy, crypto) lock in sooner; clean trenders (indices, gold) give runners more room. Blank = class default.
+              </span>
+              <div className="overflow-x-auto mt-1">
+                <table className="std-cols text-[9px] tabular-nums">
+                  <thead>
+                    <tr className="border-b border-[var(--color-border)]">
+                      <th className="py-1 pr-3">Class</th>
+                      <th className="py-1 pr-3" title="Move stop to breakeven at this R">BE @R</th>
+                      <th className="py-1 pr-3" title="Take half off at this R">Partial @R</th>
+                      <th className="py-1 pr-3" title="Start trailing the runner at this R">Runner @R</th>
+                      <th className="py-1 pr-3" title="Trail this many R behind price">Trail R</th>
+                      <th className="py-1" title="Close the WHOLE position at this R — recycles margin out of big winners into new setups">Bank @R</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(config?.asset_controllers || []).map(row => (
+                      <tr key={row.class} className="border-b border-[var(--color-border)]/40">
+                        <td className="py-1 pr-3">{row.class}{row.overridden ? ' *' : ''}</td>
+                        {['beTriggerR', 'partialTriggerR', 'runnerTriggerR', 'runnerTrailR', 'bankTriggerR'].map(k => (
+                          <td key={k} className="py-1 pr-3">
+                            <input
+                              type="number" step="0.1" min="0.1" max="20"
+                              defaultValue={row[k]}
+                              aria-label={`${row.class} ${k}`}
+                              className="w-16 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9px]"
+                              onBlur={(e) => {
+                                const v = e.target.value === '' ? null : Number(e.target.value)
+                                if (e.target.value !== '' && Number(v) === row[k]) return
+                                run(async () => {
+                                  const r = await agentPost('/actions/asset-controller', { class: row.class, [k]: v })
+                                  setConfig(c => ({ ...c, asset_controllers: r.asset_controllers }))
+                                }, `${row.class} ${k} → ${v ?? 'default'}`)
+                              }}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
             {/* Weekend bank + tick guardian — both existed backend-only with
                 no control here (audit finding, owner: "audit the last 20
@@ -1659,74 +1758,7 @@ export default function Tune() {
               <WorkedExample label="Worked example"
                 lines={keeperExample(keeper || {}, { balance: Number(risk?.derived?.balance) || null })} />
             </div>
-            <div className="mt-3 flex items-center gap-2 text-[9px]">
-              <label className="flex items-center gap-1.5">
-                Scan every
-                <Input
-                  type="number" min="1" max="60" className="w-16 !py-0.5 !min-h-0"
-                  value={config?.loop_interval_min ?? 5}
-                  aria-label="Scan interval in minutes (1 to 60)"
-                  onChange={e => setConfig(c => ({ ...c, loop_interval_min: e.target.value === '' ? '' : Number(e.target.value) }))}
-                  onBlur={() => {
-                    const n = Number(config?.loop_interval_min)
-                    if (Number.isFinite(n) && n >= 1 && n <= 60) run(() => agentPost('/actions/loop-interval', { minutes: n }), `Scan cadence: every ${n} min`)
-                  }}
-                />
-                minutes
-              </label>
-              <span className="text-[9px] text-[var(--color-text-sub)]">— applies from the next cycle, no restart. Faster = more broker calls (still free), slower = later entries.</span>
-            </div>
-            <div className="mt-3">
-              <div className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
-                Autotrade timeframes — add or remove any the broker supports (1m → 1 month). Scans and backtests follow this list:
-              </div>
-              <div className="flex flex-wrap gap-1.5 items-center">
-                {[...timeframes].sort(byTfDesc).map(tf => (
-                  <span
-                    key={tf}
-                    className="inline-flex items-center gap-1.5 rounded-[20px] bg-[var(--color-accent)] text-white px-3 py-1 text-[9px] font-semibold min-h-[36px]"
-                  >
-                    {tf}
-                    <button
-                      type="button" aria-label={`Remove ${tf}`}
-                      onClick={() => toggleTimeframe(tf)}
-                      className="cursor-pointer rounded-full hover:bg-white/25 w-5 h-5 leading-none"
-                    >×</button>
-                  </span>
-                ))}
-                <span className="relative">
-                  <button
-                    type="button" onClick={() => setTfMenu(o => !o)} aria-expanded={tfMenu}
-                    className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[9px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
-                  >+ Add timeframe</button>
-                  {tfMenu && (
-                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
-                      <span className="flex gap-1 p-1">
-                        <Input
-                          value={tfDraft} onChange={e => setTfDraft(e.target.value)}
-                          placeholder="e.g. 90m · 1.5h · 2d · 1M"
-                          className="!py-1 text-[9px]"
-                          onKeyDown={e => e.key === 'Enter' && addCustomTimeframe()}
-                        />
-                        <Button size="sm" onClick={addCustomTimeframe}>Add</Button>
-                      </span>
-                      <span className="block px-2 pb-1 text-[9px] text-[var(--color-text-sub)]">
-                        min/h/d/w · M = month · decimals from hours up
-                      </span>
-                      {ALL_TIMEFRAMES.filter(tf => !timeframes.includes(tf)).map(tf => (
-                        <button
-                          key={tf} type="button"
-                          onClick={() => { setTfMenu(false); toggleTimeframe(tf) }}
-                          className="w-full text-left rounded-[8px] px-3 py-1.5 text-[9px] cursor-pointer hover:bg-[var(--color-accent-soft)] block"
-                        >{tf}</button>
-                      ))}
-                    </span>
-                  )}
-                </span>
-              </div>
-              <TimeframePerformance timeframes={timeframes} />
-              <StrategyTfPerformance />
-            </div>
+            </Card>
           </div>
         )}
 
