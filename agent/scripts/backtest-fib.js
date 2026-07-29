@@ -22,6 +22,14 @@ import { pathToFileURL } from 'node:url'
 // Strategies resolve through the registry — any registry key is backtestable.
 import { STRATEGY_REGISTRY, strategyByKey, minRrFor } from '../services/strategies.js'
 import { inPrimeSession } from '../lib/sessions.js'
+// D5 — the volatility gate, evaluated point-in-time. classifyVolFromBars reads
+// only bars at or before the decision index, so the ON run cannot be flattered
+// by a distribution its trader could not have seen. evaluateVolGate is the
+// SAME function the live entry path calls; the backtest does not re-implement
+// the policy, it only supplies the inputs and applies the outputs.
+import { classifyVolFromBars, ATR_PERIOD } from '../services/vol-gate.js'
+import { evaluateVolGate } from '../services/vol-adjust.js'
+import { meanAtr } from '../services/regime.js'
 
 /**
  * Resolve whether `bar` exits the position, honestly:
@@ -88,10 +96,63 @@ export function runBacktest(bars, opts) {
   const minRr = minRrFor(opts.strategy, opts.minRr ?? MIN_RR)
 
   const touchMode = opts.entryMode === 'touch'
+  // D5 — vol gate OFF by default so every existing caller is byte-identical.
+  const volGateOn = opts.volGate === true || opts.volGate === 'on'
   const trades = []
   let pos = null            // { dir, entry, sl, tp, entryT, capMs }
   let pending = null        // touch mode: resting limit at the 61.8 level
   let cooldownUntil = -1
+  // Counters so an ON run can say WHY it differs, not just that it does.
+  const volStats = { high: 0, normal: 0, low: 0, stopsWidened: 0, confirmationsRequired: 0, confirmationsTimedOut: 0 }
+
+  /**
+   * The gate's verdict for the bar being decided on, or null when it is off.
+   * Inputs the adjusters need (atr, relativeVolume) are derived from the same
+   * bars, using regime.js's meanAtr — the single owner of ATR in this system.
+   */
+  const gateAt = (i, signal) => {
+    if (!volGateOn) return null
+    const vol = classifyVolFromBars(bars, i, { period: ATR_PERIOD, lookback: opts.volLookback ?? 252 })
+    const atr = meanAtr(bars, ATR_PERIOD, i)
+    // Relative volume against the same trailing window the ATR percentile
+    // uses, so §3.4's thin-participation test is on a comparable basis.
+    let relativeVolume = null
+    const from = Math.max(0, i - 20)
+    let vsum = 0, vn = 0
+    for (let k = from; k < i; k++) { const v = Number(bars[k]?.v); if (Number.isFinite(v)) { vsum += v; vn++ } }
+    const vnow = Number(bars[i]?.v)
+    if (vn > 0 && vsum > 0 && Number.isFinite(vnow)) relativeVolume = vnow / (vsum / vn)
+
+    if (vol.regime === 'HIGH') volStats.high++
+    else if (vol.regime === 'LOW') volStats.low++
+    else volStats.normal++
+
+    return evaluateVolGate(vol, [{
+      strategy: opts.strategy,
+      atr: Number.isFinite(atr) && atr > 0 ? atr : null,
+      relativeVolume,
+      originVolRegime: signal?.origin_vol_regime || null,
+    }], { mode: 'enforce' })
+  }
+
+  /**
+   * Apply the gate's stop widening. The widening always moves the stop AWAY
+   * from entry — never toward it — so this can only ever loosen a stop, never
+   * tighten one into the market.
+   *
+   * Note on sizing: the live system derives lots so (stop distance x size) is
+   * a fixed % of equity, which means a wider stop AUTOMATICALLY shrinks the
+   * position. This backtest reports per-trade pnlPct, which is size-agnostic,
+   * so the ON run shows the stop's effect on WIN RATE and R, not the
+   * accompanying size reduction. That understates the gate's drawdown benefit
+   * and is stated here rather than left for a reader to discover.
+   */
+  const widenStop = (dir, entry, sl, verdict) => {
+    const w = Number(verdict?.stopWidenPrice)
+    if (!Number.isFinite(w) || w <= 0) return sl
+    volStats.stopsWidened++
+    return dir === 1 ? sl - w : sl + w
+  }
 
   const closeTrade = (exitPrice, exitT, reason) => {
     const gross = pos.dir * ((exitPrice - pos.entry) / pos.entry) * 100
@@ -109,6 +170,9 @@ export function runBacktest(bars, opts) {
       // instead of that being invisible outside the live position rows.
       slAtrMult: pos.slAtrMult,
       slWidenedToFloor: pos.slWidenedToFloor,
+      // D5 — the vol regime at entry, so an ON run can be sliced by regime
+      // instead of only compared in aggregate.
+      volRegime: pos.volRegime ?? null,
     })
     cooldownUntil = exitT + cooldownMs
     pos = null
@@ -131,6 +195,7 @@ export function runBacktest(bars, opts) {
           dir: pending.dir, entry: pending.level, sl: pending.sl, tp: pending.tp,
           entryT: next.t, capMs: pending.capMs,
           slAtrMult: pending.slAtrMult, slWidenedToFloor: pending.slWidenedToFloor,
+          volRegime: pending.volRegime ?? null,
         }
         pending = null
         const sameBar = resolveExit(pos, next)
@@ -165,31 +230,72 @@ export function runBacktest(bars, opts) {
     // Pass minConviction: 0 to test every zone touch instead.
     if (signal.conviction < (opts.minConviction ?? 8)) continue
 
+    // D5 — the volatility gate, at the moment of the entry decision.
+    const dir0 = signal.bias === 'long' ? 1 : -1
+    const verdict = gateAt(i, signal)
+
+    // Confirmation candles: the gate wants N more closes in the signal's
+    // direction before committing. Modelled as a real wait — the entry moves
+    // to a LATER bar at a WORSE price, which is the honest cost of confirming.
+    // If the move does not confirm, the trade is never taken.
+    if (verdict?.confirmationCandles > 0) {
+      const need = verdict.confirmationCandles
+      volStats.confirmationsRequired++
+      let ok = true
+      for (let k = 1; k <= need; k++) {
+        const b = bars[i + k]
+        const prev = bars[i + k - 1]
+        if (!b || !prev) { ok = false; break }
+        if (dir0 === 1 ? !(b.c > prev.c) : !(b.c < prev.c)) { ok = false; break }
+      }
+      if (!ok) { volStats.confirmationsTimedOut++; continue }
+      // Skip the bars we waited through so the loop cannot re-enter on them.
+      const entryBar = bars[i + need + 1]
+      if (!entryBar) continue
+      pos = {
+        dir: dir0,
+        entry: entryBar.o,
+        sl: widenStop(dir0, entryBar.o, signal.sl, verdict),
+        tp: signal.tp1,
+        entryT: entryBar.t,
+        capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
+        slAtrMult: signal.sl_atr_mult,
+        slWidenedToFloor: signal.sl_widened_to_floor,
+        volRegime: verdict.entryVolRegime,
+      }
+      i += need
+      const sameBarC = resolveExit(pos, entryBar)
+      if (sameBarC) closeTrade(sameBarC.price, entryBar.t, sameBarC.reason)
+      continue
+    }
+
     if (touchMode && strat.pendingCapable) {
       // Park a limit at the level instead of entering at market. TTL = the
       // signal's own time cap — a zone older than its trade horizon is stale.
       const capMs = signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 86_400_000
       pending = {
-        dir: signal.bias === 'long' ? 1 : -1,
+        dir: dir0,
         level: signal.entry, // = level618 in pendingSetup mode
-        sl: signal.sl,
+        sl: widenStop(dir0, signal.entry, signal.sl, verdict),
         tp: signal.tp1,
         capMs,
         expireT: next.t + capMs,
         slAtrMult: signal.sl_atr_mult,
         slWidenedToFloor: signal.sl_widened_to_floor,
+        volRegime: verdict?.entryVolRegime ?? null,
       }
       continue
     }
     pos = {
-      dir: signal.bias === 'long' ? 1 : -1,
+      dir: dir0,
       entry: next.o, // fill at next bar's open, not the signal close
-      sl: signal.sl,
+      sl: widenStop(dir0, next.o, signal.sl, verdict),
       tp: signal.tp1,
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
       slAtrMult: signal.sl_atr_mult,
       slWidenedToFloor: signal.sl_widened_to_floor,
+      volRegime: verdict?.entryVolRegime ?? null,
     }
     // The entry bar's own range can hit the SL/TP after the open fill —
     // skipping it understated losses (audit flaw #1).
@@ -198,7 +304,11 @@ export function runBacktest(bars, opts) {
   }
   if (pos) closeTrade(bars[bars.length - 1].c, bars[bars.length - 1].t, 'end_of_data')
 
-  return { trades, stats: computeStats(trades) }
+  return {
+    trades,
+    stats: computeStats(trades),
+    ...(volGateOn ? { volGate: volStats } : {}),
+  }
 }
 
 export function computeStats(trades) {
