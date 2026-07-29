@@ -93,7 +93,11 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   const gap = db.prepare(
     `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${scopeSql}`
   ).get(...scopeParams)
-  if (!gap || gap.n === 0) return { backfilled: 0, closingDeals: 0, scanned: 0 }
+  // `gap` travels back out so the caller can tell "nothing was missing" from
+  // "something was missing and the broker had no matching close". Those two
+  // look identical from backfilled === 0 alone, and only the second one
+  // should cost a retry.
+  if (!gap || gap.n === 0) return { backfilled: 0, closingDeals: 0, scanned: 0, gap: 0 }
 
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const now = opts.now ?? Date.now()
@@ -165,5 +169,59 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   })
   tx([...byPosition])
 
-  return { backfilled, closingDeals, scanned: deals.length }
+  return { backfilled, closingDeals, scanned: deals.length, gap: gap.n }
 }
+
+// ---------------------------------------------------------------------------
+// ATTEMPT PACING (2026-07-29).
+//
+// The backfill used to run ONLY on a cycle where the reconciler reported a
+// close (shouldRunPnlBackfill). That trigger cannot see most closes: the
+// reconcile that feeds it runs once, for the SELECTED account (loop.js), so a
+// position closing on any other account never sets it. Measured on the M4
+// soak — Cocoa closed at 12:14:30Z on 46130058 while 43097342 was selected,
+// and not one of the eight closed trades gained a net_pnl.
+//
+// So the gate is inverted: attempt whenever a GAP EXISTS, which is a question
+// about our own database and cannot be wrong about which account it is
+// asking. A detected close still short-circuits the pacing below, so a fresh
+// stop-out is filled on the same cycle rather than waiting on a backoff.
+//
+// The pacing exists because a gap can be PERMANENT: a trade whose closing
+// deal falls outside the deal-history window will never fill, and without
+// pacing that one row would buy a deal-list fetch per account every five
+// minutes forever. Exponential backoff, reset the moment anything fills.
+//
+// State is in-memory on purpose. A redeploy clears it, which means a fresh
+// process retries immediately — the right bias: after a restart we would
+// rather pay one fetch than stay quiet about money the brakes need.
+// ---------------------------------------------------------------------------
+const BACKOFF_MS = [0, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 3_600_000]
+const attempts = new Map() // accountId → { n, nextAt }
+
+/** Is this account due for a backfill attempt? */
+export function dueForBackfill(accountId, now = Date.now()) {
+  const a = attempts.get(String(accountId))
+  return !a || now >= a.nextAt
+}
+
+/**
+ * Record what an attempt achieved, and pace the next one.
+ *
+ * Anything filled, or no gap at all, resets the ladder — the account is
+ * healthy. A gap that did not fill is the only case that costs a step.
+ */
+export function noteBackfillAttempt(accountId, result, now = Date.now()) {
+  const id = String(accountId)
+  const filled = (result?.backfilled || 0) > 0
+  const stuck = !filled && (result?.gap || 0) > 0
+  if (!stuck) { attempts.delete(id); return { n: 0, nextAt: now } }
+  const prev = attempts.get(id)?.n || 0
+  const n = Math.min(prev + 1, BACKOFF_MS.length - 1)
+  const next = { n, nextAt: now + BACKOFF_MS[n] }
+  attempts.set(id, next)
+  return next
+}
+
+/** Test/ops hook — forget all pacing state. */
+export function resetBackfillPacing() { attempts.clear() }
