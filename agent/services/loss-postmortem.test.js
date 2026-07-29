@@ -339,7 +339,7 @@ test('THE NAS100 CASE: 12 minutes after close on a 10m chart, the lesson is PEND
   const { rows, waiting } = pendingLessons(db, { now: NOW })
   assert.equal(waiting, 1)
   assert.equal(rows[0].state, 'waiting')
-  assert.equal(rows[0].barsSoFar, 1)
+  assert.equal(rows[0].barsSoFarEstimate, 1)
   assert.equal(rows[0].barsRequired, 5)
   assert.match(rows[0].note, /lesson pending — needs 5 bars after close/)
   assert.match(rows[0].note, /10m chart/)
@@ -349,11 +349,32 @@ test('THE NAS100 CASE: 12 minutes after close on a 10m chart, the lesson is PEND
 
 test('once the aftermath has passed it is DUE, not waiting', () => {
   const db = pendDb()
-  closedTrade(db, { minsAgo: 60 })   // 6 bars on a 10m chart
+  closedTrade(db, { minsAgo: 60 })   // 6 bars' worth on a 10m chart
   const { rows, waiting } = pendingLessons(db, { now: NOW })
   assert.equal(waiting, 0)
   assert.equal(rows[0].state, 'due')
-  assert.match(rows[0].note, /next sweep will classify/)
+  assert.match(rows[0].note, /next sweep classifies this once the market has actually printed/)
+})
+
+test('DUE never promises the sweep will classify it — elapsed time is not bars', () => {
+  // Codex review, #477: a trade closed on a Friday evening accrues a whole
+  // weekend of wall clock and not one bar. classifyLoss counts REAL bars and
+  // keeps waiting. Promising the next sweep would replace the old blank with
+  // a new lie, so every count and time here is named an estimate.
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 60 })
+  const r = pendingLessons(db, { now: NOW }).rows[0]
+  assert.ok(!/will classify this$/.test(r.note))
+  assert.match(r.note, /once the market has actually printed that many bars/)
+  assert.ok('barsSoFarEstimate' in r, 'the field name must say it is an estimate')
+  assert.ok('readyAtEstimate' in r)
+  assert.ok(!('barsSoFar' in r), 'a bare bar COUNT would be a claim this cannot make')
+})
+
+test('a waiting estimate is conditioned on the market staying open', () => {
+  const db = pendDb()
+  closedTrade(db)
+  assert.match(pendingLessons(db, { now: NOW }).rows[0].note, /if the market stays open/)
 })
 
 test('the timeframe drives the wait — an H1 trade waits five hours', () => {
@@ -361,7 +382,7 @@ test('the timeframe drives the wait — an H1 trade waits five hours', () => {
   closedTrade(db, { minsAgo: 60, tf: 'H1' })
   const r = pendingLessons(db, { now: NOW }).rows[0]
   assert.equal(r.state, 'waiting')
-  assert.equal(r.barsSoFar, 1)
+  assert.equal(r.barsSoFarEstimate, 1)
   assert.match(r.note, /~240 min away/)
 })
 
@@ -374,7 +395,7 @@ test('a trade that will NEVER get a lesson says so instead of waiting forever', 
   assert.equal(ineligible, 1)
   assert.equal(rows[0].state, 'ineligible')
   assert.match(rows[0].note, /closed exactly flat/)
-  assert.equal(rows[0].readyAt, null, 'promising a time it will never arrive is worse than the blank')
+  assert.equal(rows[0].readyAtEstimate, null, 'promising a time it will never arrive is worse than the blank')
 })
 
 test('a trade that already HAS a lesson is not listed as pending', () => {

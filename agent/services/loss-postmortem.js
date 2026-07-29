@@ -28,6 +28,7 @@
 // ---------------------------------------------------------------------------
 
 import { tfMs } from '../lib/timeframes.js'
+import { isSymbolMarketOpen } from '../lib/sessions.js'
 
 export const AFTERMATH_BARS = 12   // how many post-exit bars the verdict may use
 export const MIN_AFTER_BARS = 5    // fewer than this → wait (or inconclusive)
@@ -298,10 +299,19 @@ export function sqliteMs(s) {
  * disagree about what is in the queue — a "pending" trade the sweep will
  * never pick up would be a worse lie than the blank it replaces.
  *
+ * ELAPSED TIME IS NOT COMPLETED BARS (Codex review, #477). A trade closed on
+ * a Friday evening accrues a whole weekend of wall clock and not one bar. So
+ * every count and time here is an ESTIMATE and is named as one: `due` says
+ * the wait is over BY THE CLOCK, not that the sweep will definitely classify
+ * it next pass — classifyLoss counts real bars and will keep waiting if the
+ * market never printed them. Reading it out of a read route would mean
+ * fetching bars per trade on a page load, which is the wrong trade;
+ * over-promising is fixed by saying less, not by working harder here.
+ *
  * @returns {{rows:Array, waiting:number, ineligible:number}}
  *   rows[].state — 'waiting' (aftermath still accumulating) | 'due' (enough
- *   bars have passed; the next sweep should classify it) | 'ineligible'
- *   (no outcome can be derived — it will never get a lesson).
+ *   time has passed) | 'ineligible' (no outcome can be derived — it will
+ *   never get a lesson).
  */
 export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS } = {}) {
   let rows = []
@@ -318,6 +328,12 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
        ORDER BY t.closed_at DESC LIMIT ?
     `).all(`-${windowDays} days`, limit)
   } catch { return { rows: [], waiting: 0, ineligible: 0 } }
+
+  // Best-effort: an unmapped or exotic symbol simply reports null rather than
+  // blocking the whole list on a schedule lookup.
+  const marketOpenFor = (sym) => {
+    try { return isSymbolMarketOpen(sym) } catch { return null }
+  }
 
   const out = []
   for (const t of rows) {
@@ -340,13 +356,18 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
     const base = {
       tradeId: t.id, symbol: t.symbol, side: t.side, strategy: t.strategy || null,
       timeframe: tf, closedAt: t.closed_at, accountId: t.account_id ?? null,
-      barsSoFar, barsRequired: minAfterBars,
-      readyAt: new Date(readyAtMs).toISOString(),
+      // Named as estimates. A trade closed on a Friday evening accrues a
+      // weekend of clock and no bars at all, so these are an upper bound on
+      // progress, never a bar count.
+      barsSoFarEstimate: barsSoFar, barsRequired: minAfterBars,
+      readyAtEstimate: new Date(readyAtMs).toISOString(),
+      // Cheap, already-loaded truth that explains most of the gap.
+      marketOpen: marketOpenFor(t.symbol),
     }
 
     if (!eligible) {
       out.push({
-        ...base, state: 'ineligible', readyAt: null,
+        ...base, state: 'ineligible', readyAtEstimate: null,
         note: t.net_pnl != null && Number(t.net_pnl) === 0
           // Worth naming: a flat trade is not a bug, and it will never appear
           // in the lesson list no matter how long anyone waits.
@@ -356,11 +377,22 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
       continue
     }
 
+    // "the market has been closed since" is the honest reason a due trade can
+    // sit unclassified, and it is the common one — most trades that look
+    // overdue closed before a weekend.
+    const closedNote = base.marketOpen === false ? '; the market is closed, so no new bars are printing' : ''
+
     out.push(barsSoFar >= minAfterBars
-      ? { ...base, state: 'due', note: `enough aftermath (${barsSoFar}/${minAfterBars} bars) — the next sweep will classify this` }
+      ? {
+        ...base, state: 'due',
+        // Deliberately conditional. classifyLoss counts REAL bars and will
+        // keep waiting if the market never printed them, so promising the
+        // next sweep would be a new lie in place of the old blank.
+        note: `${minAfterBars} bars' worth of time has passed — the next sweep classifies this once the market has actually printed that many bars${closedNote}`,
+      }
       : {
         ...base, state: 'waiting',
-        note: `lesson pending — needs ${minAfterBars} bars after close to see what the market did, ${barsSoFar} so far on the ${tf} chart (~${remainMin} min away)`,
+        note: `lesson pending — needs ${minAfterBars} bars after close to see what the market did, roughly ${barsSoFar} so far on the ${tf} chart (~${remainMin} min away if the market stays open)${closedNote}`,
       })
   }
 
