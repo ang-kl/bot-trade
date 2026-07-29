@@ -888,8 +888,35 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     // margin when the snapshot is fresh (see portfolioMarginStatus).
     if (portfolioMarginExhausted(db)) return { fired: false, synth }
     const apAccounts = getAutopilotAccounts(db)
+    const { accountMayTrade } = await import('./services/watchlists.js')
     for (const acct of apAccounts) {
-      const tradeResult = await autoTrade(db, sym, synth, wItem, acct)
+      // PER-ACCOUNT MEMBERSHIP GATE. The scan universe is the union of every
+      // enabled account's watchlist, so a symbol reaching here may belong to
+      // only some of them. Until an account owns a list this resolves to the
+      // shared one and passes exactly what it passed before.
+      //
+      // It records a decision rather than skipping quietly: the stage-matrix
+      // gate blocked every dispatch for a day while writing only to stdout,
+      // and nothing in the DB showed why (see agent/dispatch-skip-provenance
+      // .test.js). Every gate on this path leaves a row.
+      const member = accountMayTrade(db, acct.accountId, sym)
+      if (!member.ok) {
+        log(`Watchlist gate: ${sym} not tradable on ${acct.accountId} — ${member.reason}`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'account_watchlist', decision: 'skip', reason: member.reason,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+      // The account's OWN row wins on sizing and thresholds — a copied symbol
+      // carries its lot cap, and a cap that silently reverted to the shared
+      // list's would resize the trade.
+      const acctItem = { ...wItem, ...member.item }
+      const tradeResult = await autoTrade(db, sym, synth, acctItem, acct)
       if (tradeResult) {
         fired = true
         if (process.env.TELEGRAM_BOT_TOKEN) {

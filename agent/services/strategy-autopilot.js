@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { verdictFor } from '../lib/backtest-report.js'
 import { backtestRemote } from '../lib/exec-engine.js'
 import { tfMs } from '../lib/timeframes.js'
@@ -183,7 +184,9 @@ async function evaluateAll(db, creds, deps) {
   const { getSymbolMap } = deps.credsLib ?? await import('../lib/ctrader-creds.js')
 
   let watch = []
-  try { watch = JSON.parse(getState(db, 'autopilot_symbols_json') || '[]').filter(w => w.enabled !== false).map(w => w.symbol) } catch { /* empty */ }
+  // Union across enabled accounts — the nightly sweep evaluates strategies
+  // for every symbol somebody trades, not just the shared list's.
+  try { watch = readTradableUnion(db).filter(w => w.enabled !== false).map(w => w.symbol) } catch { /* empty */ }
   let tfs = ['4h', '1d']
   try { const t = JSON.parse(getState(db, 'autotrade_timeframes') || '[]'); if (t.length) tfs = t } catch { /* default */ }
   const map = getSymbolMap(db)

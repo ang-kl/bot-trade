@@ -685,6 +685,48 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/watchlists — every account's watchlist, plus the diff between
+  // any two (?source=&destination=).
+  //
+  // `inherited` on each account is the fact that makes the compare readable:
+  // an account with no list of its own is showing the SHARED list, and two
+  // accounts both inheriting will look identical because they literally are
+  // the same list — not because someone synced them.
+  // -----------------------------------------------------------------------
+  router.get('/watchlists', async (req, res) => {
+    try {
+      const { listAccounts } = await import('../services/account-registry.js')
+      const { readWatchlist, hasOwnWatchlist, diffWatchlists } = await import('../services/watchlists.js')
+      const accounts = listAccounts(db).map(a => {
+        const items = readWatchlist(db, a.account_id)
+        return {
+          accountId: a.account_id,
+          isLive: a.is_live === 1,
+          enabled: a.enabled === 1,
+          mode: a.mode,
+          inherited: !hasOwnWatchlist(db, a.account_id),
+          count: items.length,
+          enabledCount: items.filter(i => i.enabled !== false).length,
+          items,
+        }
+      })
+      const src = req.query.source ? String(req.query.source) : null
+      const dst = req.query.destination ? String(req.query.destination) : null
+      const diff = src && dst
+        ? diffWatchlists(readWatchlist(db, src), readWatchlist(db, dst))
+        : null
+      res.json({
+        accounts,
+        shared: readWatchlist(db, null),
+        selectedAccountId: getState(db, 'ctrader_account_id') || null,
+        diff,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/perf-ledger — the Performance Ledger aggregation (design_
   // claude PR B): timeframe windows × market categories × account, with
   // carry-forward. ?account=<id>|all (default all).
