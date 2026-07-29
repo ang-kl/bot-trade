@@ -215,34 +215,47 @@ export default function App() {
 
       <div className="flex-1 min-w-0">
         {/* Top bar — mobile/tablet only */}
+        {/* UI-7: the bar is now SCROLLING REGION + PINNED CONTROL, not one
+            scrolling row.
+            Measured 2026-07-29 at 390px on all seven pages: the theme button
+            carried `ml-auto` INSIDE the `overflow-x-auto` row, and ml-auto
+            resolves against the scroll width rather than the viewport — so
+            the toggle sat off the right edge on every page, reachable only by
+            scrolling a bar with no scroll affordance. The nav ran past the
+            edge for the same reason. Splitting them fixes both: the tabs
+            scroll, the theme button stays put and is always reachable.
+            min-h-[44px] on the tabs is the HIG touch minimum; they were 36. */}
         <header className="sticky top-3 z-50 px-3 lg:hidden">
-          <div className="glass-bar flex items-center gap-3 rounded-[1px] px-4 py-2 overflow-x-auto scrollbar-none">
-            <span className="text-[14px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">
-              bot-trade
-            </span>
-            <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
-            <LlmMonitorStatus />
-            <nav className="flex gap-1">
-              {ALL_TABS.map(t => (
-                <NavLink
-                  key={t.to}
-                  to={t.to}
-                  viewTransition
-                  className={({ isActive }) =>
-                    `rounded-[12px] px-3 py-1.5 text-[9px] font-semibold min-h-[36px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
-                      isActive
-                        ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
-                        : 'glass-inset text-[var(--color-text-sub)]'
-                    }`
-                  }
-                ><span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}</NavLink>
-              ))}
-            </nav>
+          <div className="glass-bar flex items-center gap-3 rounded-[1px] px-4 py-2">
+            <div className="flex items-center gap-3 min-w-0 flex-1 overflow-x-auto scrollbar-none">
+              <span className="text-[14px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">
+                bot-trade
+              </span>
+              <span className="text-[11px] text-[var(--color-text-sub)] shrink-0" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
+              <LlmMonitorStatus />
+              <nav className="flex gap-1 shrink-0">
+                {ALL_TABS.map(t => (
+                  <NavLink
+                    key={t.to}
+                    to={t.to}
+                    viewTransition
+                    className={({ isActive }) =>
+                      `rounded-[12px] px-3 py-1.5 text-[9px] font-semibold min-h-[44px] inline-flex items-center gap-1.5 transition-all shrink-0 ${
+                        isActive
+                          ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
+                          : 'glass-inset text-[var(--color-text-sub)]'
+                      }`
+                    }
+                  ><span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}</NavLink>
+                ))}
+              </nav>
+            </div>
             <button
               type="button"
               onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
               title={`Theme: ${theme}`}
-              className="ml-auto glass-inset rounded-[1px] px-2.5 py-1 text-[14px] cursor-pointer shrink-0"
+              aria-label={`Theme: ${theme} — tap to change`}
+              className="glass-inset rounded-[1px] px-2.5 min-h-[44px] min-w-[44px] text-[14px] cursor-pointer shrink-0"
             >{THEME_ICON[theme] || '◐'}</button>
           </div>
         </header>
