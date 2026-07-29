@@ -317,20 +317,37 @@ export function findOpenDuplicates(db) {
   }
 
   const sameSecond = group(
+    // SCOPED TO THE ACCOUNT. This system runs several accounts, and copying
+    // one trade across them produces the same symbol, side, price and second
+    // on each — legitimately. Without account_id in the key those legs merge
+    // into one "duplicate" reported under the first row's account, which is
+    // both a false alarm and wrong about whose exposure it is. A false alarm
+    // trains the owner to ignore the audit, which is the same outcome as not
+    // having it. (A legacy NULL account groups with other NULLs, as before.)
     (r) => (r.opened_at && r.entry_price != null
-      ? [r.symbol, r.side, r.entry_price, r.opened_at].join('|') : null),
+      ? [r.account_id ?? '', r.symbol, r.side, r.entry_price, r.opened_at].join('|') : null),
     'same_second_same_price',
   )
   const samePos = group(
+    // NOT scoped by account, deliberately: a broker position id identifies one
+    // position at the broker. The same id under two account rows is a
+    // bookkeeping fault however it arose, so scoping would hide it.
     (r) => normalisePositionId(r.ctrader_position_id),
     'same_broker_position_id',
   )
 
   // A row already reported by the stronger signal is not reported twice.
+  // Subtract those rows from the weaker group rather than keeping the whole
+  // group when any one row survives — otherwise three same-second rows, two of
+  // which share a broker id, get reported as a 2-row group AND a 3-row group,
+  // double-counting the shared legs and overstating the extra exposure.
   const seen = new Set(samePos.flatMap(g => g.rows.map(r => r.id)))
   const merged = [
     ...samePos,
-    ...sameSecond.filter(g => g.rows.some(r => !seen.has(r.id))),
+    ...sameSecond
+      .map(g => ({ ...g, rows: g.rows.filter(r => !seen.has(r.id)) }))
+      // One leftover row is not a duplicate of anything.
+      .filter(g => g.rows.length > 1),
   ]
 
   const groups = merged.map(({ kind, rows: g }) => ({

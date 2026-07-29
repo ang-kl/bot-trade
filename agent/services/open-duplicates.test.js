@@ -74,6 +74,62 @@ test('a row is not reported twice when both signals catch it', () => {
   assert.equal(groups[0].kind, 'same_broker_position_id')
 })
 
+// ---------------------------------------------------------------------------
+// MULTI-ACCOUNT + GROUP-OVERLAP correctness (Codex review, PR #477). Both of
+// these shipped wrong in the first version: one invented duplicates that were
+// not duplicates, the other counted real ones twice.
+// ---------------------------------------------------------------------------
+
+test('the SAME trade copied to two accounts is not a duplicate', () => {
+  const db = tmpDb()
+  // Copy-trading produces identical symbol/side/price/second on each account.
+  // Each account holds exactly ONE position — there is no doubled exposure
+  // anywhere, and reporting it under the first account is wrong twice over.
+  openPosition(db, { account: '43097342', posId: 1 })
+  openPosition(db, { account: '46979908', posId: 2 })
+  assert.equal(findOpenDuplicates(db).count, 0)
+})
+
+test('a duplicate WITHIN one account is still caught when other accounts hold the same trade', () => {
+  const db = tmpDb()
+  openPosition(db, { account: '43097342', posId: 1 })
+  openPosition(db, { account: '43097342', posId: 2 })   // the real duplicate
+  openPosition(db, { account: '46979908', posId: 3 })   // a legitimate copy
+  const { groups, count } = findOpenDuplicates(db)
+  assert.equal(count, 1)
+  assert.equal(groups[0].accountId, '43097342')
+  assert.equal(groups[0].count, 2, 'only the two legs on the affected account')
+})
+
+test('rows caught by the stronger signal are REMOVED from the weaker group, not just tolerated', () => {
+  const db = tmpDb()
+  // Three identical-second rows; two of them share one broker position id.
+  const a = openPosition(db, { posId: 555 })
+  const b = openPosition(db, { posId: 555 })
+  openPosition(db, { posId: 777 })
+  const { groups, count } = findOpenDuplicates(db)
+  // Keeping the whole 3-row same-second group would report a/b twice and
+  // overstate the extra exposure.
+  assert.equal(count, 1, 'the leftover single row is not a duplicate of anything')
+  assert.equal(groups[0].kind, 'same_broker_position_id')
+  assert.deepEqual(groups[0].positionIds.sort((x, y) => x - y), [a, b])
+  assert.equal(groups[0].extraLegs, 1)
+})
+
+test('a same-second group that only PARTLY overlaps still reports its remainder', () => {
+  const db = tmpDb()
+  const a = openPosition(db, { posId: 555 })
+  const b = openPosition(db, { posId: 555 })
+  const c = openPosition(db, { posId: 777 })
+  const d = openPosition(db, { posId: 888 })
+  const { groups } = findOpenDuplicates(db)
+  assert.equal(groups.length, 2)
+  const pos = groups.find(g => g.kind === 'same_broker_position_id')
+  const sec = groups.find(g => g.kind === 'same_second_same_price')
+  assert.deepEqual(pos.positionIds.sort((x, y) => x - y), [a, b])
+  assert.deepEqual(sec.positionIds.sort((x, y) => x - y), [c, d], 'the two rows the stronger signal did not claim')
+})
+
 // -------------------------------------------------- the false alarms to avoid
 
 test('two entries on the same symbol at DIFFERENT prices are not duplicates', () => {
