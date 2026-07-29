@@ -15,6 +15,8 @@ import { stratShort } from '../lib/strategy-labels.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { parseDurationToMinutes, formatMinutesShort } from '../lib/duration-input.js'
+import WorkedExample from '../components/common/WorkedExample.jsx'
+import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 
@@ -1741,6 +1743,7 @@ export default function Tune() {
               <span className="w-full text-[9px] text-[var(--color-text-sub)]">
                 Safety net for LOSING positions the Profit Keeper won't touch. A position with NO stop gets a protective SL {lossGuard?.maxAtrMult ?? 3}×ATR from entry (or is closed if already past that); an optional time cap closes anything held too long. It never tightens a stop you already set — your mean-reversion trades keep their room to breathe.
               </span>
+              <WorkedExample lines={guardianExample(lossGuard || {})} label="Worked example" />
             </div>
             {/* Closed-market resting limits — when a signal fires while its
                 market is closed, place a broker LIMIT at the entry so it fills
@@ -1756,6 +1759,7 @@ export default function Tune() {
               <span className="w-full text-[9px] text-[var(--color-text-sub)]">
                 When a setup fires while its market is CLOSED (weekend FX/metals, off-hours stocks/indices), rest a real broker LIMIT order at the entry — visible on the desk, filling automatically at open with the setup's SL/TP — instead of the hidden re-fire queue. One order per symbol, clears the SAME risk gate, expires with the timeframe. Off → falls back to the internal queue (re-scan &amp; market order at open).
               </span>
+              <WorkedExample lines={closedMarketExample(closedLimits || {})} label="Worked example" />
             </div>
             {/* Profit Keeper — automatic protection for MANUAL/external
                 positions: ratchets a broker-side SL once peak profit arms,
@@ -1823,6 +1827,12 @@ export default function Tune() {
                   : <>adaptive mode (recommended): arms once profit exceeds {keeper?.armAtrMult ?? 1}× the instrument's ATR (min {keeper?.armBalancePct ?? 0.1}% of balance), then a broker-side SL trails {keeper?.trailAtrMult ?? 2.5}×ATR behind the peak — volatility-scaled per instrument, so winners get room to run and noise never arms it.{Number(keeper?.scaleOutFrac) > 0 ? ` Banks ${Math.round(keeper.scaleOutFrac * 100)}% when it arms; the rest runs.` : ''}</>}
                 {' '}The SL sits at the broker (tick-level between scan cycles). Losing positions are untouched; positions with their own Manage-sheet rules are left alone.
               </span>
+              {/* The example follows the MODE — adaptive and fixed have entirely
+                  different arithmetic, and adaptive is the default. Balance is
+                  passed when known so the noise floor is a real figure; when it
+                  is not, the example says so rather than assuming one. */}
+              <WorkedExample label="Worked example"
+                lines={keeperExample(keeper || {}, { balance: Number(balanceDraft.balance) || Number(risk?.derived?.balance) || null })} />
             </div>
             <div className="mt-3 flex items-center gap-2 text-[9px]">
               <label className="flex items-center gap-1.5">
