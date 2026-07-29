@@ -1919,8 +1919,25 @@ async function runLoop(db) {
           // unnecessary broker calls. Best-effort (a deal-history hiccup must
           // never stall the loop).
           try {
-            const { backfillClosedPnl, shouldRunPnlBackfill } = await import('./services/pnl-backfill.js')
-            if (shouldRunPnlBackfill(result)) {
+            const { backfillClosedPnl, shouldRunPnlBackfill, dueForBackfill, noteBackfillAttempt } =
+              await import('./services/pnl-backfill.js')
+            // TRIGGER ON A GAP, NOT ON A DETECTED CLOSE (2026-07-29).
+            //
+            // shouldRunPnlBackfill reads the reconcile result, and that
+            // reconcile runs ONCE for the SELECTED account (see the single
+            // reconcilePositions call above) — so a position closing on any
+            // other account never reaches it. Measured on the M4 soak: Cocoa
+            // closed 12:14:30Z on 46130058 while 43097342 was selected, and
+            // none of the eight closed trades gained a net_pnl. Fixing the
+            // fetch (#494) was not enough while the trigger above it was
+            // still single-account.
+            //
+            // "Is any closed trade missing its money?" is a question about our
+            // own database. It cannot be wrong about which account it asks.
+            // A detected close still forces an immediate attempt, so a fresh
+            // stop-out is filled the same cycle instead of waiting on pacing.
+            const closeSeen = shouldRunPnlBackfill(result)
+            {
               // Cheap pre-check so the log can tell "nothing was missing"
               // apart from "something was missing and still is after this
               // attempt" — those two are otherwise indistinguishable from
@@ -1953,10 +1970,17 @@ async function runLoop(db) {
               } catch { /* registry unavailable — selected account only, as before */ }
 
               let filled = 0
+              let skipped = 0
               for (const acct of targets) {
+                // Pacing only ever delays an account whose gap did NOT fill
+                // last time — a permanently unfillable row (closing deal
+                // older than the deal-history window) would otherwise buy a
+                // broker fetch per account every cycle, forever.
+                if (!closeSeen && !dueForBackfill(acct)) { skipped++; continue }
                 try {
                   const creds = { host, clientId, clientSecret, accessToken, accountId: acct }
                   const bf = await backfillClosedPnl(db, creds, { accountId: acct })
+                  noteBackfillAttempt(acct, bf)
                   if (bf.backfilled > 0) {
                     filled += bf.backfilled
                     log(`P&L backfill [${acct}]: filled ${bf.backfilled} broker-closed trade(s) with realized P&L`)
@@ -1970,7 +1994,7 @@ async function runLoop(db) {
                 if (gapBefore === 0) {
                   log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
                 } else {
-                  log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after trying ${targets.length} account(s) [${targets.join(', ')}] — deal history had no matching close`)
+                  log(`P&L backfill: ${gapBefore} closed trade(s) still missing net_pnl after trying ${targets.length - skipped}/${targets.length} account(s) [${targets.join(', ')}]${skipped ? `, ${skipped} paced off` : ''} — deal history had no matching close`)
                 }
               }
             }

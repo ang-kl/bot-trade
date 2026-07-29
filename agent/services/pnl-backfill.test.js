@@ -68,7 +68,10 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   const getDeals = async () => { called = true; return { deal: [] } }
   const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW })
   assert.equal(called, false, 'must not fetch deals when there is no gap')
-  assert.deepEqual(r, { backfilled: 0, closingDeals: 0, scanned: 0 })
+  // `gap: 0` joined the shape when the caller gained the ability to tell
+  // "nothing was missing" from "something was missing and would not fill" —
+  // this test's point is the assertion above: NO broker call.
+  assert.deepEqual(r, { backfilled: 0, closingDeals: 0, scanned: 0, gap: 0 })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -204,4 +207,79 @@ test('with no accountId passed, behaviour is unchanged for a single-account setu
   seedClosed(db, { positionId: 1100, net: null })
   const getDeals = dealsApi([deal(1100, 1000)])
   assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW })).backfilled, 1)
+})
+
+// ---------------------------------------------------------------------------
+// GAP-TRIGGERED ATTEMPTS (2026-07-29). The close-based trigger cannot see most
+// closes: the reconcile feeding shouldRunPnlBackfill runs once, for the
+// SELECTED account, so a position closing anywhere else never sets it.
+// Measured on the M4 soak — Cocoa closed 12:14:30Z on 46130058 while 43097342
+// was selected, and none of the eight closed trades gained a net_pnl even
+// after the fetch itself was account-scoped (#494).
+//
+// The gate is now "is any closed trade missing its money?", a question about
+// our own database that cannot be wrong about which account it asks. Pacing
+// exists only so a PERMANENTLY unfillable row (closing deal outside the
+// deal-history window) cannot buy a broker fetch per account every cycle.
+// ---------------------------------------------------------------------------
+import { dueForBackfill, noteBackfillAttempt, resetBackfillPacing } from './pnl-backfill.js'
+
+test('backfillClosedPnl reports the GAP it saw, not just what it filled', async () => {
+  // Without this, "nothing was missing" and "something was missing and the
+  // broker had no matching close" are indistinguishable — and only the second
+  // should ever cost a retry.
+  const db = initDB(':memory:')
+  assert.equal((await backfillClosedPnl(db, {}, { getDeals: dealsApi([]), now: NOW })).gap, 0)
+
+  seedClosed(db, { positionId: 2001, net: null })
+  const stuck = await backfillClosedPnl(db, {}, { getDeals: dealsApi([]), now: NOW })
+  assert.equal(stuck.gap, 1, 'a gap the broker could not fill is still a gap')
+  assert.equal(stuck.backfilled, 0)
+
+  const ok = await backfillClosedPnl(db, {}, { getDeals: dealsApi([deal(2001, 1000)]), now: NOW })
+  assert.equal(ok.backfilled, 1)
+  assert.equal(ok.gap, 1)
+})
+
+test('pacing backs off only an account whose gap did NOT fill', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  assert.equal(dueForBackfill('A', T), true, 'an unseen account is always due')
+
+  // Gap, nothing filled → step onto the ladder.
+  noteBackfillAttempt('A', { backfilled: 0, gap: 3 }, T)
+  assert.equal(dueForBackfill('A', T + 60_000), false, 'still inside the 5-minute step')
+  assert.equal(dueForBackfill('A', T + 6 * 60_000), true)
+
+  // Repeated failure lengthens the wait.
+  noteBackfillAttempt('A', { backfilled: 0, gap: 3 }, T)
+  noteBackfillAttempt('A', { backfilled: 0, gap: 3 }, T)
+  assert.equal(dueForBackfill('A', T + 30 * 60_000), false, 'now past 15 minutes')
+
+  // Anything filled resets it immediately — the account is healthy again.
+  noteBackfillAttempt('A', { backfilled: 1, gap: 3 }, T)
+  assert.equal(dueForBackfill('A', T), true)
+})
+
+test('an account with NO gap is never paced', () => {
+  // Pacing a healthy account would delay the first real stop-out it ever has.
+  resetBackfillPacing()
+  noteBackfillAttempt('B', { backfilled: 0, gap: 0 }, 1_000_000)
+  assert.equal(dueForBackfill('B', 1_000_000), true)
+})
+
+test('pacing is per account — one stuck account never delays another', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  noteBackfillAttempt('STUCK', { backfilled: 0, gap: 1 }, T)
+  assert.equal(dueForBackfill('STUCK', T + 1000), false)
+  assert.equal(dueForBackfill('HEALTHY', T + 1000), true,
+    'a permanently unfillable row on one account must not blind the others')
+})
+
+test('the ladder is bounded — it cannot grow without limit', () => {
+  resetBackfillPacing()
+  const T = 1_000_000
+  for (let i = 0; i < 50; i++) noteBackfillAttempt('C', { backfilled: 0, gap: 1 }, T)
+  assert.equal(dueForBackfill('C', T + 6 * 3_600_000), true, 'capped at the 6-hour step')
 })
