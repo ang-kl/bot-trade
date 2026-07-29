@@ -533,6 +533,20 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/open-duplicates — the same audit as /duplicate-trades, but on
+  // positions that are STILL OPEN. The closed-only version correctly reported
+  // two historical pairs and was completely blind to a live 0003.HK pair
+  // sitting in the book. Detecting a duplicate only once it closes is
+  // detecting it after the money is gone.
+  router.get('/open-duplicates', async (_req, res) => {
+    try {
+      const { findOpenDuplicates } = await import('../services/trade-integrity.js')
+      res.json(findOpenDuplicates(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;
