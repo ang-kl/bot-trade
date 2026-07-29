@@ -35,7 +35,21 @@ const fmtDate = (iso) => {
 // printing "$0" would read as "this instrument is free to hold".
 const fmtMoney = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
 
-const acctLabel = (a) => `${a.accountId}${a.isLive ? ' · LIVE' : ''}`
+// THE SAME ACCOUNT HAS TWO IDs, and this picker used to show the one the
+// operator never sees anywhere else. cTrader's ctidTraderAccountId (4xxxxxxx)
+// is what the registry keys on; the broker LOGIN (5xxxxxx) is what the account
+// picker higher up this very page displays. Owner, 2026-07-29: "the account I
+// pick to trade starts with five but the account I selected as source to copy
+// the watchlist starts with four — how do I know which one am I using now?"
+// They could not, and that is a way to copy a watchlist onto the wrong
+// account. Lead with the login so the two lists line up, and keep the ctid
+// visible so nothing is hidden.
+const acctLabel = (a) => [
+  a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`,
+  a.isLive ? 'LIVE' : 'DEMO',
+  a.traderLogin ? `id ${a.accountId}` : null,
+  a.isSelected ? '← the bot trades this one' : null,
+].filter(Boolean).join(' · ')
 
 /** The settings that travel with a symbol, rendered for the eye. */
 function settingsSummary(i) {
@@ -161,7 +175,14 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
         {acct && (
           <>
             <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-            <span className="text-[9px] text-[var(--color-text-sub)]">{acct.enabledCount}/{acct.count} armed · 1:{acct.leverage}</span>
+            {/* The one the bot is actually trading. Without this the operator
+                has to hold the login↔id mapping in their head to tell whether
+                they are about to overwrite the account that is live-trading. */}
+            {acct.isSelected && <Badge tone="warning">the bot trades this one</Badge>}
+            <span className="text-[9px] text-[var(--color-text-sub)]">
+              {acct.traderLogin && <>Login {acct.traderLogin} · id {acct.accountId} · </>}
+              {acct.enabledCount}/{acct.count} armed · 1:{acct.leverage}
+            </span>
             {/* Two accounts that are both inheriting look identical because
                 they ARE the same list — not because anyone synced them. */}
             {acct.inherited && <Badge tone="warning">inheriting the shared list</Badge>}
@@ -214,11 +235,34 @@ export default function WatchlistCompare() {
 
   const accounts = data?.accounts || []
 
+  // Name an account the way the operator sees it everywhere else — by broker
+  // login — with the internal id in brackets. A confirmation that said only
+  // "account 46130058" is not a confirmation anyone can check.
+  const nameOf = (id) => {
+    const a = accounts.find(x => String(x.accountId) === String(id))
+    if (!a) return `account ${id}`
+    const bits = [a.isLive ? 'LIVE' : 'demo', `id ${a.accountId}`]
+    if (a.isSelected) bits.push('the account the bot trades')
+    return `${a.traderLogin ? `Login ${a.traderLogin}` : `account ${a.accountId}`} (${bits.join(', ')})`
+  }
+
   const copy = async (from, to, symbols) => {
     if (!from || !to || !symbols.length) return
+    const dst = accounts.find(x => String(x.accountId) === String(to[0]))
+    // A copy changes what an account may trade. Onto a LIVE account, or onto
+    // the one the bot is currently trading, that is a live-money change and
+    // gets named out loud before it happens — the whole reason the owner could
+    // not tell which account was which.
+    if (dst?.isLive || dst?.isSelected) {
+      const ok = window.confirm(
+        `This will change what ${nameOf(to[0])} may trade.\n\n` +
+        `${symbols.length} symbol(s) from ${nameOf(from)}. Continue?`
+      )
+      if (!ok) return
+    }
     if (mode === 'replace') {
       const ok = window.confirm(
-        `REPLACE will make account ${to}'s watchlist exactly the ${symbols.length} selected symbol(s).\n\n` +
+        `REPLACE will make ${nameOf(to[0])}'s watchlist exactly the ${symbols.length} selected symbol(s).\n\n` +
         'Everything else it currently watches will be removed. Continue?'
       )
       if (!ok) return
@@ -290,7 +334,7 @@ export default function WatchlistCompare() {
             <div className="mt-2 text-[9px]">
               {report.results.map(r => (
                 <div key={r.accountId}>
-                  <span className="font-semibold">{report.from} → {r.accountId}</span>
+                  <span className="font-semibold">{nameOf(report.from)} → {nameOf(r.accountId)}</span>
                   {' '}({report.mode}): added {r.added.length}, updated {r.updated.length}
                   {r.removed.length > 0 && <span className="text-[var(--color-down)]">, removed {r.removed.length} ({r.removed.join(', ')})</span>}
                   {' '}— now watching {r.total}.
