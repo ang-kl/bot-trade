@@ -153,6 +153,15 @@ const TARGET_STATE_KEY = 'targetless_position_alerts_json'
 const LAST_AUDIT_KEY = 'protection_audit_last_json'
 
 /**
+ * Each account is audited against its OWN broker snapshot, so each needs its
+ * own record — a single global key would mean whichever account ran last
+ * silently overwrote the rest, and the panel would report one account's book
+ * as if it were the whole one.
+ */
+const auditKeyFor = (accountId) =>
+  (accountId == null || accountId === '' ? LAST_AUDIT_KEY : `acct:${accountId}:${LAST_AUDIT_KEY}`)
+
+/**
  * Run the audit, record it, and alert on anything newly unprotected.
  *
  * Never throws: a protection AUDIT that can crash the loop would remove more
@@ -160,6 +169,7 @@ const LAST_AUDIT_KEY = 'protection_audit_last_json'
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
   nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
+  accountId = null,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
@@ -224,9 +234,10 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
 
     // ¶D·2 — the audit must never simply go quiet. See recordAuditUnavailable.
     try {
-      setState(db, LAST_AUDIT_KEY, JSON.stringify({
+      setState(db, auditKeyFor(accountId), JSON.stringify({
         at: new Date(nowMs).toISOString(),
         ok: true,
+        accountId: accountId == null ? null : String(accountId),
         checked: audit.checked,
         unmatched: audit.unmatched,
         naked: audit.naked.length,
@@ -264,11 +275,12 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
  * Record that the audit could not run this cycle, and why.
  * Called from the loop when broker truth never arrived.
  */
-export function recordAuditUnavailable(db, reason, { nowMs = Date.now() } = {}) {
+export function recordAuditUnavailable(db, reason, { nowMs = Date.now(), accountId = null } = {}) {
+  const key = auditKeyFor(accountId)
   let prev = {}
-  try { prev = JSON.parse(getState(db, LAST_AUDIT_KEY) || '{}') } catch { prev = {} }
+  try { prev = JSON.parse(getState(db, key) || '{}') } catch { prev = {} }
   try {
-    setState(db, LAST_AUDIT_KEY, JSON.stringify({
+    setState(db, key, JSON.stringify({
       // The last SUCCESSFUL check is preserved verbatim — that is the state
       // the reader needs, and overwriting it with the failure would destroy
       // the only thing worth reporting during an outage.
@@ -281,6 +293,44 @@ export function recordAuditUnavailable(db, reason, { nowMs = Date.now() } = {}) 
   } catch { /* non-fatal */ }
 }
 
+/** Sum every per-account audit record into one whole-book view. */
+function mergeAccountAudits(db) {
+  let rows = []
+  try {
+    rows = db.prepare(
+      `SELECT key, value FROM agent_state
+        WHERE key = ? OR key LIKE 'acct:%:' || ?`
+    ).all(LAST_AUDIT_KEY, LAST_AUDIT_KEY)
+  } catch { return {} }
+
+  const parsed = []
+  for (const r of rows) {
+    try { const v = JSON.parse(r.value || '{}'); if (v && typeof v === 'object') parsed.push(v) } catch { /* skip junk */ }
+  }
+  if (!parsed.length) return {}
+  const ran = parsed.filter(p => p.ok === true && p.at)
+  if (!ran.length) {
+    // Nothing has completed anywhere — surface the most recent failure so the
+    // reason is visible rather than a bare "never run".
+    const failed = parsed.filter(p => p.lastAttemptAt).sort((a, b) => String(b.lastAttemptAt).localeCompare(String(a.lastAttemptAt)))
+    return failed[0] || parsed[0]
+  }
+  const sum = (k) => ran.reduce((n, p) => n + (Number(p[k]) || 0), 0)
+  const oldest = ran.map(p => p.at).sort()[0]
+  const stillFailing = parsed.find(p => p.lastAttemptOk === false)
+  return {
+    at: oldest, ok: true,
+    accounts: ran.length,
+    checked: sum('checked'), unmatched: sum('unmatched'),
+    naked: sum('naked'), targetless: sum('targetless'), phantom: sum('phantom'),
+    ...(stillFailing ? {
+      lastAttemptAt: stillFailing.lastAttemptAt,
+      lastAttemptOk: false,
+      lastAttemptError: stillFailing.lastAttemptError,
+    } : {}),
+  }
+}
+
 /**
  * The last known protection state, with its age and whether it is stale.
  * Never returns an empty/blank answer — see the header above.
@@ -288,9 +338,17 @@ export function recordAuditUnavailable(db, reason, { nowMs = Date.now() } = {}) 
  * @param {number} expectedSec  how often the audit is expected to run
  *   (reconcile is every 3rd loop, so the caller passes loopSec × 3)
  */
-export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900, staleFactor = 3 } = {}) {
+export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900, staleFactor = 3, accountId = null } = {}) {
   let last = {}
-  try { last = JSON.parse(getState(db, LAST_AUDIT_KEY) || '{}') } catch { last = {} }
+  if (accountId != null) {
+    try { last = JSON.parse(getState(db, auditKeyFor(accountId)) || '{}') } catch { last = {} }
+  } else {
+    // No account asked for: report the WHOLE book by summing every account's
+    // record. Age is taken from the OLDEST of them, because a portfolio is
+    // only as freshly verified as its stalest account — reporting the newest
+    // would let one healthy account mask five unchecked ones.
+    last = mergeAccountAudits(db)
+  }
 
   const at = Date.parse(last.at || '')
   const hasRun = Number.isFinite(at)
@@ -313,9 +371,27 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
       last.targetless ? `${last.targetless} with no take profit` : null,
       last.phantom ? `${last.phantom} stop disagreement${last.phantom > 1 ? 's' : ''}` : null,
     ].filter(Boolean)
-    const body = found.length
-      ? `${last.checked} position(s) checked — ${found.join(', ')}`
-      : `${last.checked} position(s) checked, all protected`
+
+    // UNMATCHED IS NOT "FINE". A row the broker snapshot never mentioned was
+    // not verified — it was skipped. Saying "all protected" while every row
+    // went unmatched is the precise false reassurance this module exists to
+    // prevent, and it is what staging reported on 2026-07-29 03:19:
+    // "4 position(s) checked, all protected" when all four were unmatched
+    // because the snapshot belonged to a different account.
+    const checked = Number(last.checked) || 0
+    const unmatched = Number(last.unmatched) || 0
+    const verified = Math.max(0, checked - unmatched)
+
+    let body
+    if (checked > 0 && verified === 0) {
+      body = `${checked} position(s) open but NONE could be checked against broker truth — nothing is verified`
+    } else if (found.length) {
+      body = `${verified} of ${checked} position(s) verified — ${found.join(', ')}`
+    } else {
+      body = unmatched > 0
+        ? `${verified} of ${checked} position(s) verified, all protected — ${unmatched} could not be matched to broker truth`
+        : `${checked} position(s) checked, all protected`
+    }
     const age = `${mins} min ago`
     summary = attemptFailed
       // The whole point: say what is known AND that it is no longer being
@@ -327,6 +403,8 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
   return {
     hasRun,
     ok: last.ok === true,
+    // How many accounts this figure covers, when it is a whole-book read.
+    accounts: last.accounts ?? null,
     at: hasRun ? last.at : null,
     ageSec,
     stale,
