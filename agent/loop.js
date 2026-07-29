@@ -783,6 +783,22 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     })
     if (!gate.ok) {
       log(`Stage gate: ${sym} blocked — ${gate.reason}`)
+      // 2026-07-29: this was a stdout line and NOTHING else. It is the most
+      // common reason a signal never trades — on staging it silently blocked
+      // every dispatch for a full day (vwap_trend / donchian_breakout /
+      // fib_confluence all proposing with auto_trade:true while their trade
+      // cell was off) — and because it recorded nothing, `risk_events` and
+      // `decision_log` were both EMPTY, which reads as "the bot considered
+      // nothing" rather than "the bot considered plenty and this gate said
+      // no". Every other gate on this path already leaves a row; this one
+      // now does too.
+      try {
+        const { recordDecision } = await import('./services/decision-log.js')
+        recordDecision(db, {
+          symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+          stage: 'stage_matrix', decision: 'skip', reason: gate.reason,
+        })
+      } catch { /* provenance never blocks */ }
       synth.auto_trade = false
     }
   }
@@ -826,20 +842,21 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const isSwing = ttl > 480 && ttl <= 10080
     const isMidTerm = ttl > 10080
 
-    if (isScalp && styles.scalp === false) {
-      log(`Style filter: ${sym} blocked — scalp trading disabled (TTL ${ttl}m)`)
-      synth.auto_trade = false
-    }
-    if (isDay && styles.day === false) {
-      log(`Style filter: ${sym} blocked — day trading disabled (TTL ${ttl}m)`)
-      synth.auto_trade = false
-    }
-    if (isSwing && styles.swing === false) {
-      log(`Style filter: ${sym} blocked — swing trading disabled (TTL ${ttl}m)`)
-      synth.auto_trade = false
-    }
-    if (isMidTerm && styles.mid_term === false) {
-      log(`Style filter: ${sym} blocked — mid-term trading disabled (TTL ${ttl}m)`)
+    // One classification, one branch — the four separate ifs could each fire
+    // independently and log twice for one decision. TTL buckets are disjoint,
+    // so naming the bucket once is both simpler and honest about what was
+    // actually decided.
+    const style = isScalp ? 'scalp' : isDay ? 'day' : isSwing ? 'swing' : isMidTerm ? 'mid_term' : null
+    if (style && styles[style] === false) {
+      log(`Style filter: ${sym} blocked — ${style.replace('_', '-')} trading disabled (TTL ${ttl}m)`)
+      // Same omission as the stage gate above: silent in the DB until now.
+      try {
+        const { recordDecision } = await import('./services/decision-log.js')
+        recordDecision(db, {
+          symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+          stage: 'style_filter', decision: 'skip', reason: `${style}_disabled ttl=${ttl}m`,
+        })
+      } catch { /* provenance never blocks */ }
       synth.auto_trade = false
     }
   }
