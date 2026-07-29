@@ -250,3 +250,133 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
 
   return { clusters, byPath, worst: clusters[0] || null }
 }
+
+// ---------------------------------------------------------------------------
+// OPEN duplicates (owner, 2026-07-29). findDuplicateTrades above only looks at
+// CLOSED trades — it correctly reported two historical pairs (JPN225, AUDUSD)
+// worth $53.41 of double-counted P&L, and was completely blind to a LIVE pair
+// sitting in the book: 0003.HK trade ids 327/328, identical side, entry 6.94,
+// stop 6.994, and the same opened_at TO THE SECOND.
+//
+// Detecting duplicates only once they close is detecting them after the money
+// is gone. An open duplicate is double the intended exposure on that symbol
+// RIGHT NOW, and it is the shape behind the 4x USDIDR incident.
+//
+// Two independent signals, deliberately kept separate because they fail in
+// different ways:
+//
+//   sameSecond  — same symbol+side+entry AND the same opened_at second. Two
+//                 genuinely separate decisions essentially never land in the
+//                 same second at the same price; the reconciler adopting one
+//                 broker position twice does exactly that.
+//   samePositionId — two open rows carrying one ctrader_position_id. One
+//                 broker position must map to exactly one open row, so this
+//                 is near-certain rather than merely suspicious. It catches
+//                 the case where entry prices differ slightly (partial fills)
+//                 and the sameSecond key would miss it.
+//
+// Read-only. It reports; it never closes or deletes a position — deciding
+// which leg of a real duplicate to close is the owner's call, and getting it
+// wrong doubles the damage instead of fixing it.
+// ---------------------------------------------------------------------------
+/**
+ * trades.ctrader_position_id is TEXT. A numeric bind lands as "234049511.0",
+ * which compares unequal to the broker's "234049511" everywhere downstream.
+ * Normalise on read so this audit groups correctly whichever way a row was
+ * written — and see the note in findOpenDuplicates about reporting it.
+ */
+export function normalisePositionId(v) {
+  if (v == null) return null
+  const s = String(v).trim()
+  if (!s) return null
+  return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s
+}
+
+export function findOpenDuplicates(db) {
+  let rows = []
+  try {
+    rows = db.prepare(`
+      SELECT mp.id, mp.trade_id, mp.symbol, mp.side, mp.entry_price, mp.current_sl,
+             mp.current_tp, mp.account_id, mp.source, mp.strategy,
+             t.opened_at, t.ctrader_position_id, t.volume
+      FROM monitored_positions mp
+      LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.status = 'active'
+    `).all()
+  } catch { return { groups: [], count: 0 } }
+
+  const group = (keyFn, kind) => {
+    const by = new Map()
+    for (const r of rows) {
+      const k = keyFn(r)
+      if (k == null) continue
+      if (!by.has(k)) by.set(k, [])
+      by.get(k).push(r)
+    }
+    return [...by.values()].filter(g => g.length > 1).map(g => ({ kind, rows: g }))
+  }
+
+  const sameSecond = group(
+    // SCOPED TO THE ACCOUNT. This system runs several accounts, and copying
+    // one trade across them produces the same symbol, side, price and second
+    // on each — legitimately. Without account_id in the key those legs merge
+    // into one "duplicate" reported under the first row's account, which is
+    // both a false alarm and wrong about whose exposure it is. A false alarm
+    // trains the owner to ignore the audit, which is the same outcome as not
+    // having it. (A legacy NULL account groups with other NULLs, as before.)
+    (r) => (r.opened_at && r.entry_price != null
+      ? [r.account_id ?? '', r.symbol, r.side, r.entry_price, r.opened_at].join('|') : null),
+    'same_second_same_price',
+  )
+  const samePos = group(
+    // NOT scoped by account, deliberately: a broker position id identifies one
+    // position at the broker. The same id under two account rows is a
+    // bookkeeping fault however it arose, so scoping would hide it.
+    (r) => normalisePositionId(r.ctrader_position_id),
+    'same_broker_position_id',
+  )
+
+  // A row already reported by the stronger signal is not reported twice.
+  // Subtract those rows from the weaker group rather than keeping the whole
+  // group when any one row survives — otherwise three same-second rows, two of
+  // which share a broker id, get reported as a 2-row group AND a 3-row group,
+  // double-counting the shared legs and overstating the extra exposure.
+  const seen = new Set(samePos.flatMap(g => g.rows.map(r => r.id)))
+  const merged = [
+    ...samePos,
+    ...sameSecond
+      .map(g => ({ ...g, rows: g.rows.filter(r => !seen.has(r.id)) }))
+      // One leftover row is not a duplicate of anything.
+      .filter(g => g.rows.length > 1),
+  ]
+
+  const groups = merged.map(({ kind, rows: g }) => ({
+    kind,
+    symbol: g[0].symbol,
+    side: g[0].side,
+    entryPrice: g[0].entry_price,
+    accountId: g[0].account_id,
+    strategy: g[0].strategy || null,
+    source: g[0].source || null,
+    openedAt: g[0].opened_at || null,
+    count: g.length,
+    positionIds: g.map(r => r.id),
+    tradeIds: g.map(r => r.trade_id),
+    // Normalised to strings. trades.ctrader_position_id is a TEXT column, and
+    // binding a JS NUMBER to it stores "234049511.0" — which never matches the
+    // broker's "234049511" on any later lookup. Reporting the raw value would
+    // pass that corruption straight through to whoever acts on this audit.
+    brokerPositionIds: [...new Set(g.map(r => normalisePositionId(r.ctrader_position_id)).filter(Boolean))],
+    // The exposure this is doubling. Reported as the EXTRA legs beyond the
+    // first, because one of them is presumably the position the owner meant
+    // to have.
+    extraLegs: g.length - 1,
+    extraVolume: g.slice(1).reduce((s, r) => s + (Number(r.volume) || 0), 0),
+    // Stated plainly so a reader does not have to infer the severity.
+    note: kind === 'same_broker_position_id'
+      ? 'one broker position is recorded as more than one open row — near-certain bookkeeping duplicate'
+      : 'same symbol, side, entry price and opened_at second — two separate decisions essentially never do this',
+  })).sort((a, b) => b.count - a.count)
+
+  return { groups, count: groups.length }
+}

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
+import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
@@ -18,7 +19,7 @@ import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
-import { postmortemStats } from '../services/loss-postmortem.js'
+import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 
 /**
@@ -514,7 +515,17 @@ export default function stateRouter(db) {
     try {
       stats = postmortemStats(db)
     } catch { /* table missing on a very old DB — stats stay empty */ }
-    res.json({ rows, stats })
+    // ¶D·4 — "I didn't see the lesson learnt!", twelve minutes after a NAS100
+    // short lost $1,013.08. There could not be one yet: a verdict needs 5 bars
+    // of aftermath, which on a 10-minute chart is fifty minutes away. This
+    // route only ever returned trades that already HAD a lesson, so one still
+    // in its waiting period was simply absent — and absent reads as "nothing
+    // was learned", not "not yet". Now it says which, and when.
+    let pending = { rows: [], waiting: 0, ineligible: 0 }
+    try {
+      pending = pendingLessons(db)
+    } catch { /* never block the lessons themselves on the pending list */ }
+    res.json({ rows, stats, pending })
   })
   function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 
@@ -528,6 +539,41 @@ export default function stateRouter(db) {
     try {
       const { findDuplicateTrades } = await import('../services/trade-integrity.js')
       res.json(findDuplicateTrades(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/open-duplicates — the same audit as /duplicate-trades, but on
+  // positions that are STILL OPEN. The closed-only version correctly reported
+  // two historical pairs and was completely blind to a live 0003.HK pair
+  // sitting in the book. Detecting a duplicate only once it closes is
+  // detecting it after the money is gone.
+  router.get('/open-duplicates', async (_req, res) => {
+    try {
+      const { findOpenDuplicates } = await import('../services/trade-integrity.js')
+      res.json(findOpenDuplicates(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/protection-audit — the last known answer to "is every open
+  // position actually protected?", ALWAYS with its age.
+  //
+  // ¶D·2. During the 2026-07-29 broker outage the panel read "Position
+  // protection audit — idle", which is indistinguishable from "checked
+  // everything, all clear". A safety check that goes silent exactly when the
+  // system is degraded is worse than one that was never built, because the
+  // silence reads as reassurance. This route never blanks: it reports the last
+  // completed audit, how old it is, and whether it is still being confirmed.
+  router.get('/protection-audit', async (_req, res) => {
+    try {
+      const { lastProtectionAudit } = await import('../services/naked-position-guard.js')
+      // Reconcile — and so the audit — runs every 3rd loop.
+      const loopMin = Number(getState(db, 'loop_interval_min'))
+      const expectedSec = (Number.isFinite(loopMin) && loopMin >= 1 ? loopMin : 5) * 60 * 3
+      res.json(lastProtectionAudit(db, { expectedSec }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -799,7 +845,14 @@ export default function stateRouter(db) {
       )
       .all()
 
-    res.json({ trades: rows })
+    // ¶D·3 — decode the label here so every reader gets the same words.
+    // The owner, on a NAS100 short that lost $1,013.08: "I don't know was
+    // strategy used." The trade carried AP|v1|FIB|HI|SYD|10m — every fact
+    // needed to answer that was recorded, and rendered as a code. Attribution
+    // that has to be decoded by hand is not attribution.
+    res.json({
+      trades: rows.map(r => ({ ...r, label_decoded: describeLabel(r.label_raw).text })),
+    })
   })
 
   // -----------------------------------------------------------------------

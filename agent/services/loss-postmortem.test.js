@@ -307,3 +307,127 @@ test('sweep persists the flat lesson fields', async () => {
   // ago, 1h timeframe), so the honest tight-hold caveat prefixes it.
   assert.match(pm.lesson, /^Stopped within 1 bar\(s\) of entry.*Widen stop/)
 })
+
+// pendingLessons ----------------------------------------------------------
+//
+// ¶D·4. The owner, twelve minutes after a NAS100 short lost $1,013.08: "I
+// didn't see the lesson learnt!" There could not be one yet — a verdict needs
+// 5 bars of aftermath, and on a 10-minute chart that is fifty minutes away.
+// The sweep was correct; the SCREEN was silent, and silence read as "nothing
+// was learned from this".
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { pendingLessons } from './loss-postmortem.js'
+
+const pendDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pending-')), 'agent.db'))
+const NOW = Date.parse('2026-07-29T00:00:00Z')
+const sqliteAt = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19)
+
+function closedTrade(db, { minsAgo = 12, tf = '10m', pnl = -1013.08, symbol = 'NAS100', entry = 23000, exit = 23100 } = {}) {
+  db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, exit_price, net_pnl,
+              opened_at, closed_at, label_timeframe, label_strategy)
+              VALUES (?, 'SELL', 'closed', ?, ?, ?, ?, ?, ?, 'fib_618_fade')`)
+    .run(symbol, entry, exit, pnl, sqliteAt(NOW - (minsAgo + 12) * 60_000), sqliteAt(NOW - minsAgo * 60_000), tf)
+  return db.prepare('SELECT last_insert_rowid() AS id').get().id
+}
+
+test('THE NAS100 CASE: 12 minutes after close on a 10m chart, the lesson is PENDING not absent', () => {
+  const db = pendDb()
+  closedTrade(db)
+  const { rows, waiting } = pendingLessons(db, { now: NOW })
+  assert.equal(waiting, 1)
+  assert.equal(rows[0].state, 'waiting')
+  assert.equal(rows[0].barsSoFarEstimate, 1)
+  assert.equal(rows[0].barsRequired, 5)
+  assert.match(rows[0].note, /lesson pending — needs 5 bars after close/)
+  assert.match(rows[0].note, /10m chart/)
+  // The owner asked at 12 min; the answer arrives at 50 min. Say so.
+  assert.match(rows[0].note, /~38 min away/)
+})
+
+test('once the aftermath has passed it is DUE, not waiting', () => {
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 60 })   // 6 bars' worth on a 10m chart
+  const { rows, waiting } = pendingLessons(db, { now: NOW })
+  assert.equal(waiting, 0)
+  assert.equal(rows[0].state, 'due')
+  assert.match(rows[0].note, /next sweep classifies this once the market has actually printed/)
+})
+
+test('DUE never promises the sweep will classify it — elapsed time is not bars', () => {
+  // Codex review, #477: a trade closed on a Friday evening accrues a whole
+  // weekend of wall clock and not one bar. classifyLoss counts REAL bars and
+  // keeps waiting. Promising the next sweep would replace the old blank with
+  // a new lie, so every count and time here is named an estimate.
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 60 })
+  const r = pendingLessons(db, { now: NOW }).rows[0]
+  assert.ok(!/will classify this$/.test(r.note))
+  assert.match(r.note, /once the market has actually printed that many bars/)
+  assert.ok('barsSoFarEstimate' in r, 'the field name must say it is an estimate')
+  assert.ok('readyAtEstimate' in r)
+  assert.ok(!('barsSoFar' in r), 'a bare bar COUNT would be a claim this cannot make')
+})
+
+test('a waiting estimate is conditioned on the market staying open', () => {
+  const db = pendDb()
+  closedTrade(db)
+  assert.match(pendingLessons(db, { now: NOW }).rows[0].note, /if the market stays open/)
+})
+
+test('the timeframe drives the wait — an H1 trade waits five hours', () => {
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 60, tf: 'H1' })
+  const r = pendingLessons(db, { now: NOW }).rows[0]
+  assert.equal(r.state, 'waiting')
+  assert.equal(r.barsSoFarEstimate, 1)
+  assert.match(r.note, /~240 min away/)
+})
+
+test('a trade that will NEVER get a lesson says so instead of waiting forever', () => {
+  const db = pendDb()
+  // Closed exactly flat: the sweep's own eligibility test excludes it.
+  closedTrade(db, { pnl: 0, exit: null })
+  const { rows, waiting, ineligible } = pendingLessons(db, { now: NOW })
+  assert.equal(waiting, 0)
+  assert.equal(ineligible, 1)
+  assert.equal(rows[0].state, 'ineligible')
+  assert.match(rows[0].note, /closed exactly flat/)
+  assert.equal(rows[0].readyAtEstimate, null, 'promising a time it will never arrive is worse than the blank')
+})
+
+test('a trade that already HAS a lesson is not listed as pending', () => {
+  const db = pendDb()
+  const id = closedTrade(db)
+  db.prepare('INSERT INTO trade_postmortems (trade_id, symbol, classification) VALUES (?, ?, ?)')
+    .run(id, 'NAS100', 'thesis_wrong')
+  assert.equal(pendingLessons(db, { now: NOW }).rows.length, 0)
+})
+
+test('an empty book is a clean empty answer', () => {
+  assert.deepEqual(pendingLessons(pendDb(), { now: NOW }), { rows: [], waiting: 0, ineligible: 0 })
+})
+
+test('pendingLessons mirrors the sweep — it never promises a lesson the sweep will skip', async () => {
+  // If these two disagree, a trade sits in "pending" forever and the panel
+  // lies in a new way instead of the old one.
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 600 })                       // eligible, due
+  closedTrade(db, { minsAgo: 600, pnl: 0, exit: null })   // ineligible
+  const pending = pendingLessons(db, { now: NOW })
+  assert.equal(pending.rows.filter(r => r.state === 'due').length, 1)
+
+  // The sweep, given bars around each trade's own close, classifies exactly
+  // the eligible one. Bars must be anchored at THAT close — the sweep reads
+  // aftermath relative to the trade, not to the current clock.
+  const closedMs = NOW - 600 * 60_000
+  const barMs = 600_000
+  const bars = Array.from({ length: 60 }, (_, i) => {
+    const t = closedMs - 40 * barMs + i * barMs
+    return { t, o: 23100, h: 23150, l: 23050, c: 23100, v: 100 }
+  })
+  const res = await runLossPostmortems(db, async () => bars, { now: NOW })
+  assert.equal(res.classified, 1, 'the sweep picked up exactly the trade pendingLessons called due')
+})

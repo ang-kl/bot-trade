@@ -157,7 +157,13 @@ test('a WIN carries the context too — this is not a loss-only path', async () 
 // This is the test that would catch the specific mistake the SELECT invites.
 test('every carried column is actually named in the postmortem SELECT', () => {
   const src = fs.readFileSync(new URL('./loss-postmortem.js', import.meta.url), 'utf8')
-  const select = src.slice(src.indexOf('SELECT t.id'), src.indexOf('FROM trades t'))
+  // Anchor on the marker comment inside the SWEEP's select list, not on the
+  // first "SELECT t.id" in the file — loss-postmortem.js now holds more than
+  // one query over `trades t` (pendingLessons), and a positional anchor would
+  // silently start guarding whichever one happens to come first.
+  const marker = src.indexOf('-- VOL-GATE entry context')
+  assert.ok(marker > 0, 'the sweep SELECT lost its anchor comment — re-point this guard')
+  const select = src.slice(marker, src.indexOf('FROM trades t', marker))
   for (const c of [
     'entry_vol_regime', 'entry_vol_percentile', 'position_size_ratio_applied',
     'stop_loss_expanded_pips', 'vol_volume_divergence_flag',

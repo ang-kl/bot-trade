@@ -125,6 +125,72 @@ export function classifyVolRegime(db, symbol, { currentAtr = null, days = HISTOR
   }
 }
 
+/**
+ * D5 — the same LOW/NORMAL/HIGH verdict, computed from BARS at a point in time.
+ *
+ * WHY THIS EXISTS SEPARATELY. classifyVolRegime reads `atr_history`, which
+ * holds TODAY's trailing year. A backtest asking it about a bar from eight
+ * months ago would be handed a distribution built from data that bar's trader
+ * could not have seen — textbook lookahead, and it would flatter the gate
+ * precisely where the gate is supposed to be judged. So the backtest derives
+ * the distribution from the bars it has already walked past, and nothing else.
+ *
+ * WHAT IS AND IS NOT THE SAME. The BANDS are identical — this calls the same
+ * `percentileRank` and `bandFor`, so a percentile means here exactly what it
+ * means live. The SAMPLE is not: live ranks a 14-day ATR against 252 daily
+ * readings, while a backtest on H1 bars ranks a 14-BAR ATR against the
+ * trailing `lookback` bars. On an hourly series that is a shorter, faster
+ * distribution than the live one. Results from this are evidence about the
+ * gate's SHAPE — does widening stops in high vol help or hurt — not a
+ * prediction of live percentiles. Anyone reading a backtest number as the live
+ * number is reading it wrong, which is why it is written here rather than
+ * implied.
+ *
+ * @param {Array} bars    ascending OHLC
+ * @param {number} endIdx index of the bar being decided on (inclusive)
+ * @returns the same shape classifyVolRegime returns, minus the DB-only fields
+ */
+export function classifyVolFromBars(bars, endIdx, {
+  period = ATR_PERIOD, lookback = HISTORY_DAYS, minSamples = MIN_DAYS_FOR_VERDICT,
+} = {}) {
+  const none = {
+    regime: 'NORMAL', percentile: null, currentAtr: null, sampleDays: 0,
+    insufficientHistory: true, characterRegime: null, characterTrendDir: null,
+    note: 'no usable bars — treated as NORMAL',
+  }
+  if (!Array.isArray(bars) || endIdx == null || endIdx < period) return none
+
+  // Every ATR reading strictly at or before endIdx. Nothing after it is even
+  // read, so lookahead is structurally impossible rather than merely avoided.
+  const first = Math.max(period, endIdx - lookback + 1)
+  const sample = []
+  for (let i = first; i <= endIdx; i++) {
+    const a = meanAtr(bars, period, i)
+    if (Number.isFinite(a) && a > 0) sample.push(a)
+  }
+  if (!sample.length) return none
+
+  const atr = sample[sample.length - 1]
+  const percentile = percentileRank(atr, sample)
+  const tooThin = sample.length < minSamples
+
+  return {
+    // Same rule as the live path: too little history → NORMAL, flag it, and
+    // withhold the percentile so nothing downstream acts on a coarse number.
+    regime: tooThin ? 'NORMAL' : bandFor(percentile),
+    percentile: tooThin ? null : percentile,
+    currentAtr: atr,
+    sampleDays: sample.length,
+    insufficientHistory: sample.length < lookback,
+    // Character is regime.js's DB-backed label; a backtest has no regimes
+    // table, and inventing one here would be the second classifier the
+    // single-owner rule exists to prevent.
+    characterRegime: null,
+    characterTrendDir: null,
+    note: tooThin ? `only ${sample.length} bar-ATR samples — treated as NORMAL, percentile withheld` : '',
+  }
+}
+
 /** One UTC day key for a bar timestamp. */
 const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10)
 

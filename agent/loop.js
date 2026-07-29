@@ -142,6 +142,25 @@ export function resetCircuitBreaker() {
   consecutiveErrors = 0
 }
 
+/**
+ * ¶D·2 — the protection audit could not run this cycle. Record why, and beat
+ * the controller as FAILED rather than not at all.
+ *
+ * During the 2026-07-29 broker outage the panel read "Position protection
+ * audit — idle", which is what a controller that has never run looks like and
+ * reads as a resting state. It was neither resting nor fine: nothing was
+ * checking whether open positions still had stops, at precisely the moment
+ * execution was degraded. A not-beat is silence; a failed beat is a fact.
+ */
+async function noteProtectionAuditBlocked(db, reason) {
+  try {
+    const { recordAuditUnavailable } = await import('./services/naked-position-guard.js')
+    recordAuditUnavailable(db, reason)
+    const { beat } = await import('./services/heartbeat.js')
+    beat(db, 'protection_audit', { ok: false, error: reason })
+  } catch { /* a bookkeeping failure must never break the loop */ }
+}
+
 // Lazy singleton — only the monitor/weekend position checks call the LLM now;
 // the scan/analyze pipeline is deterministic (fib-strategy.js). Provider is
 // OpenAI when OPENAI_API_KEY is set (owner's primary key), else Anthropic —
@@ -1728,7 +1747,7 @@ async function runLoop(db) {
           try {
             const { runProtectionAudit } = await import('./services/naked-position-guard.js')
             const openRows = db.prepare(
-              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id
+              `SELECT id, trade_id, symbol, ctrader_position_id, current_sl, account_id, source
                FROM monitored_positions WHERE status = 'active' AND ctrader_position_id IS NOT NULL`
             ).all()
             const brokerSl = positions.map(p => ({
@@ -1741,8 +1760,8 @@ async function runLoop(db) {
               notify = (await import('./services/telegram.js')).sendMessage
             }
             const prot = await runProtectionAudit(db, openRows, brokerSl, { sendMessage: notify })
-            if (prot.naked.length || prot.phantom.length) {
-              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
+            if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
+              log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
             }
             const { beat: beatProt } = await import('./services/heartbeat.js')
             beatProt(db, 'protection_audit')
@@ -2005,9 +2024,18 @@ async function runLoop(db) {
               }
             }
           } catch { /* registry optional on old DBs */ }
+        } else {
+          // No credentials — the audit cannot run, and saying nothing would
+          // read on screen as "checked, all clear". ¶D·2.
+          await noteProtectionAuditBlocked(db, 'broker credentials not configured')
         }
       } catch (err) {
         log('Reconcile phase error:', err.message)
+        // The 2026-07-29 case: the broker was unreachable, so the protection
+        // audit never ran and the panel read "idle". Record the gap so the
+        // last known state can be reported WITH the fact that it is no longer
+        // being confirmed, instead of a blank.
+        await noteProtectionAuditBlocked(db, `reconcile failed: ${err.message}`)
       }
     }
 
@@ -2435,6 +2463,53 @@ async function runLoop(db) {
       } catch (err) {
         log(`Market-hours refresh failed (non-fatal): ${err.message}`)
         await hbeat(db, 'hours_refresh', false, err.message)
+      }
+
+      // D6 — daily ATR baseline refresh (vol-gate spec §2: "recompute the
+      // rolling window daily, not per-signal").
+      //
+      // Without this the atr_history table stays EMPTY, classifyVolRegime can
+      // never place a symbol in its own volatility distribution, and the whole
+      // volatility gate is inert while looking installed — the worst kind of
+      // dead feature, because every downstream reading says NORMAL and nobody
+      // can tell that from a real verdict.
+      //
+      // Once a day (every ~288 five-min loops), and once shortly after boot
+      // while the table is empty so a fresh deploy self-seeds instead of
+      // waiting a day. Daily bars are HISTORICAL requests — capped by cTrader
+      // at 5/s, paced to 4/s by ctrader-ws.js's shared bucket — so this is
+      // deliberately a once-a-day sweep. Doing it per-signal is exactly the
+      // 2026-07-28 throttling incident.
+      try {
+        const creds = getCtraderCreds(db)
+        const haveAtr = db.prepare('SELECT COUNT(*) AS n FROM atr_history').get().n
+        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 11 || haveAtr === 0)) {
+          phase('ATR baseline refresh')
+          const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
+          const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+          const symbols = JSON.parse(getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json') || '[]')
+          const atrFetch = async (sym, count) => {
+            const sid = symbolMap[String(sym).toUpperCase()]
+            if (!sid) throw new Error(`symbolId unknown for ${sym}`)
+            const byTf = await wsGetTrendbarsBatch(
+              creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
+              sid, ['D1'], count, 20_000, 0)
+            return byTf.D1 || []
+          }
+          const r = await runBudgetedSubPhase(db, 'atr_refresh',
+            () => refreshAtrHistory(db, symbols, atrFetch), SUB_PHASE_BUDGET_MS * 2)
+          if (r && !r.timedOut) {
+            // Name the misses. A symbol silently absent from atr_history reads
+            // downstream as "normal volatility", which is a verdict it never
+            // earned.
+            log(`ATR baseline: ${r.updated}/${r.symbols} symbols refreshed${r.failed ? `, ${r.failed} fetch failure(s)` : ''}${r.skipped?.length ? `, ${r.skipped.length} skipped (too little history)` : ''}`)
+            try { pruneAtrHistory(db) } catch { /* pruning is housekeeping */ }
+          }
+          await hbeat(db, 'atr_refresh')
+        }
+      } catch (err) {
+        log(`ATR baseline refresh failed (non-fatal): ${err.message}`)
+        await hbeat(db, 'atr_refresh', false, err.message)
       }
 
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
