@@ -1,9 +1,16 @@
-// ActiveAccountHeader — WHICH account everything below belongs to.
+// ActiveAccountHeader — WHICH account everything below belongs to, and
+// whether it is actually working.
 //
 // Owner (2026-07-29): "At the side Bar, above the OVERVIEW state the
 // Account · {DEMO 5203012} I am viewing now. Account # in Blue text if
 // trading now, Bright Grey is stop trading. Below the Account # is the
 // Balance: USD/SGD/EUR ###,###.## now."
+//
+// Owner (2026-07-30): "if I off any of these [Scan, Analyze, Autotrade] for
+// that account, the side bar for that account should shows red, red, red dots
+// (2px) beside the balance in the side bar. And if the account is selected,
+// the heading text of the side bar will be 'All off' / 'Scan off' /
+// 'Analyze & Autotrade off' etc. in 8 font size."
 //
 // Every figure on Performance, Desk, Trade and Risk is scoped to one account,
 // and until now the only clue was a highlighted row further down the nav. The
@@ -13,8 +20,18 @@
 //
 // Colour carries the trading state, per the owner's spec: accent/blue while
 // autotrade is armed, bright grey while it is not.
+//
+// HONEST LIMIT — scan/analyze/autotrade are still three GLOBAL flags in
+// agent_state (scan_enabled / analyze_enabled / autotrade_enabled); no
+// per-account pause exists yet (that is task #124, "per-account control:
+// mode enforcement, pause disposition"). This header only ever renders the
+// SELECTED account, so for the account you are viewing the global flags ARE
+// its flags and the dots are truthful. They would NOT be truthful printed
+// against every row of a multi-account list, which is exactly why they are
+// not — see AccountSwitcher.
 import { useEffect, useState } from 'react'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { PHASES, offSummary } from '../lib/account-phases.js'
 
 // Same session cache AccountSwitcher fills — reading it here costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip on every mount.
@@ -25,7 +42,7 @@ const POLL_MS = 30_000
 // which account is selected and whether it is trading.
 function useActiveAccount() {
   const [acct, setAcct] = useState(null)      // { accountId, traderLogin, isLive, balance }
-  const [armed, setArmed] = useState(null)    // autotradeEnabled — null until known
+  const [phases, setPhases] = useState(null)  // { scan, analyze, autotrade } — null until known
   const [ccy, setCcy] = useState(null)        // deposit currency, when the broker has told us
 
   // The account roster comes from the switcher's cache (same tab, already
@@ -47,7 +64,11 @@ function useActiveAccount() {
   useEffect(() => {
     if (!agentConfigured()) return
     const load = () => {
-      agentGet('/state/health').then(h => setArmed(h?.autotradeEnabled === true)).catch(() => {})
+      agentGet('/state/health').then(h => setPhases({
+        scan: h?.scanEnabled === true,
+        analyze: h?.analyzeEnabled === true,
+        autotrade: h?.autotradeEnabled === true,
+      })).catch(() => {})
       // Deposit currency lives on the cached broker snapshot's positions.
       // No positions → no currency → show the number bare rather than guess.
       agentGet('/state/broker-cache').then(bc => {
@@ -60,7 +81,32 @@ function useActiveAccount() {
     return () => clearInterval(id)
   }, [])
 
-  return { acct, armed, ccy }
+  return { acct, phases, armed: phases ? phases.autotrade : null, ccy }
+}
+
+/**
+ * Three 2px dots, one per phase, red when that phase is off. Sized exactly as
+ * the owner asked — small enough to read as a status light rather than a
+ * badge — with the meaning in the tooltip since 2px cannot carry a label.
+ */
+function PhaseDots({ phases, className = '' }) {
+  if (!phases) return null
+  return (
+    <span className={`inline-flex items-center gap-[2px] ${className}`}>
+      {PHASES.map(p => {
+        const on = phases[p.key] === true
+        return (
+          <span
+            key={p.key}
+            aria-label={`${p.label} ${on ? 'on' : 'off'}`}
+            title={`${p.label} is ${on ? 'ON' : 'OFF'}`}
+            className="h-[2px] w-[2px] rounded-full"
+            style={{ background: on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}
+          />
+        )
+      })}
+    </span>
+  )
 }
 
 /**
@@ -69,7 +115,7 @@ function useActiveAccount() {
  * scrolling"). Same colour rule: accent while trading, grey while not.
  */
 export function ActiveAccountHeaderCompact() {
-  const { acct, armed, ccy } = useActiveAccount()
+  const { acct, phases, armed, ccy } = useActiveAccount()
   if (!acct) return null
   const trading = armed === true
   return (
@@ -83,19 +129,31 @@ export function ActiveAccountHeaderCompact() {
           {ccy ? `${ccy} ` : ''}{Number(acct.balance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
         </span>
       )}
+      <PhaseDots phases={phases} className="ml-1 align-middle" />
     </span>
   )
 }
 
 export default function ActiveAccountHeader() {
-  const { acct, armed, ccy } = useActiveAccount()
+  const { acct, phases, armed, ccy } = useActiveAccount()
   if (!acct) return null
 
   const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
   const trading = armed === true
+  const summary = offSummary(phases)
   return (
     <div className="mb-4 px-3">
-      <div className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</div>
+      <div className="flex items-baseline justify-between gap-1">
+        <span className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
+        {summary && (
+          <span
+            className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
+            title="Scan finds candidates, Analyze judges them, Autotrade sends the order. Anything off stops the pipeline at that point."
+          >
+            {summary}
+          </span>
+        )}
+      </div>
       <div
         className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
         title={armed == null
@@ -104,10 +162,13 @@ export default function ActiveAccountHeader() {
       >
         {label}
       </div>
-      <div className="text-[9px] text-[var(--color-text-sub)] tabular-nums">
-        Balance: {acct.balance == null
-          ? '—'
-          : `${ccy ? `${ccy} ` : ''}${Number(acct.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+      <div className="flex items-center gap-1 text-[9px] text-[var(--color-text-sub)] tabular-nums">
+        <span>
+          Balance: {acct.balance == null
+            ? '—'
+            : `${ccy ? `${ccy} ` : ''}${Number(acct.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        </span>
+        <PhaseDots phases={phases} />
       </div>
     </div>
   )
