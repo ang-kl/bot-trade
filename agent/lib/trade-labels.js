@@ -147,6 +147,121 @@ export function parseLabel(label) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ¶D·3 — HUMAN-READABLE DECODE
+//
+// The owner, on a NAS100 short that lost $1,013.08: "I don't know was strategy
+// used." The trade carried a complete, correct label — AP|v1|FIB|HI|SYD|10m —
+// which says autopilot v1, Fib 61.8% fade, high conviction, Sydney session,
+// 10-minute timeframe. Every fact needed to answer the question was recorded
+// and then shown as a code nobody can read at a glance.
+//
+// Attribution that requires decoding by hand is not attribution. parseLabel
+// already returns the keys; this turns them into words, and — importantly —
+// names what is MISSING rather than dropping it, so "regime not recorded" is
+// visible instead of silently absent.
+//
+// Display names for registry strategies MIRROR STRATEGY_REGISTRY. This module
+// cannot import strategies.js (that module pulls in every strategy
+// implementation and this one is a leaf used by the browser too), so a test
+// asserts the two agree and fails if either drifts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const STRATEGY_DISPLAY = {
+  // Mirrors of STRATEGY_REGISTRY names (agent/services/strategies.js).
+  fib_618_fade: 'Fib 61.8% fade',
+  cup_handle: 'Cup & Handle',
+  inv_cup_handle: 'Inverted Cup & Handle',
+  ema_pullback: 'EMA trend-pullback',
+  donchian_breakout: 'Range breakout',
+  rsi_meanrev: 'RSI mean-reversion',
+  vwap_trend: 'VWAP trend-pullback',
+  vp_value: 'Volume-profile rotation',
+  rsi2_reversion: 'RSI-2 reversion (high win)',
+  fib_confluence: 'Fib confluence zone',
+  // Free-text buckets that predate the registry — no registry entry to mirror.
+  trend: 'Trend',
+  meanrev: 'Mean reversion',
+  breakout: 'Breakout',
+  scalp: 'Scalp',
+  swing: 'Swing',
+  news: 'News',
+  reversal: 'Reversal',
+  other: 'Other (unrecognised strategy key)',
+}
+
+const SOURCE_DISPLAY = {
+  autopilot: 'Autopilot',
+  copilot: 'Copilot',
+  manual: 'Placed by hand in cTrader',
+}
+
+const CONVICTION_DISPLAY = { high: 'high conviction', medium: 'medium conviction', low: 'low conviction' }
+const REGIME_DISPLAY = {
+  trending: 'trending market', ranging: 'ranging market',
+  volatile: 'volatile market', quiet: 'quiet market',
+}
+
+/**
+ * Turn a stored label into something a person can read.
+ *
+ * @returns {{raw:string|null, structured:boolean, text:string, fields:Array}}
+ *   structured — true when the label is one of ours (pipe-delimited, source
+ *                recognised). Free-text broker labels are reported as-is
+ *                rather than being forced into a shape they never had.
+ *   text       — one line, e.g. "Autopilot v1 · Fib 61.8% fade · high
+ *                conviction · Sydney session · 10m timeframe · regime not
+ *                recorded"
+ *   fields     — [{ key, code, label, value, missing }] for table rendering
+ */
+export function describeLabel(label) {
+  const raw = label == null || label === '' ? null : String(label)
+  if (!raw) {
+    return { raw: null, structured: false, text: 'no label recorded — this trade carries no attribution', fields: [] }
+  }
+
+  const p = parseLabel(raw)
+  const codes = raw.split('|').map(s => s.trim())
+  const code = (i) => (codes[i] && codes[i] !== '-' ? codes[i] : null)
+
+  // Not one of ours: a hand-placed cTrader label, a legacy "abot-auto", a
+  // "vpo:" tag. Say what it is instead of pretending to decode it.
+  if (!p.source) {
+    return {
+      raw, structured: false,
+      text: `unstructured label "${raw}" — not written by this bot's encoder`,
+      fields: [{ key: 'raw', code: raw, label: 'Label', value: raw, missing: false }],
+    }
+  }
+
+  const fields = [
+    { key: 'source', code: code(0), label: 'Placed by', value: SOURCE_DISPLAY[p.source] || p.source },
+    { key: 'version', code: code(1), label: 'Encoder', value: p.version },
+    { key: 'strategy', code: code(2), label: 'Strategy', value: p.strategy ? (STRATEGY_DISPLAY[p.strategy] || p.strategy) : null },
+    { key: 'conviction', code: code(3), label: 'Conviction', value: p.conviction ? CONVICTION_DISPLAY[p.conviction] : null },
+    { key: 'session', code: code(4), label: 'Session', value: p.session },
+    { key: 'timeframe', code: code(5), label: 'Timeframe', value: p.timeframe },
+    { key: 'regime', code: code(6), label: 'Regime at entry', value: p.regime ? REGIME_DISPLAY[p.regime] : null },
+  ].map(f => ({ ...f, missing: f.value == null }))
+
+  // A code that is present but unrecognised is NOT the same as an absent one —
+  // it means the vocabulary is out of date, which is a real defect to see.
+  const say = (f, present, absent) => (f.value != null ? present(f.value) : (f.code ? `${f.label.toLowerCase()} "${f.code}" not recognised` : absent))
+  const by = fields[0], ver = fields[1], strat = fields[2]
+  const conv = fields[3], sess = fields[4], tf = fields[5], reg = fields[6]
+
+  const text = [
+    ver.value ? `${by.value} ${ver.value}` : by.value,
+    say(strat, v => v, 'strategy not recorded'),
+    say(conv, v => v, 'conviction not recorded'),
+    say(sess, v => `${v} session`, 'session not recorded'),
+    say(tf, v => `${v} timeframe`, 'timeframe not recorded'),
+    say(reg, v => v, 'regime not recorded'),
+  ].join(' · ')
+
+  return { raw, structured: true, text, fields }
+}
+
 /**
  * Is this label one of ours (i.e. placed via autopilot or copilot)?
  * Returns true when the source field parses to a known value.

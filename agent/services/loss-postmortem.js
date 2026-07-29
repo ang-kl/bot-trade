@@ -277,6 +277,100 @@ export function sqliteMs(s) {
   return Date.parse(String(s).includes('T') ? s : String(s).replace(' ', 'T') + 'Z')
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ¶D·4 — "I didn't see the lesson learnt!"
+//
+// The owner, twelve minutes after a NAS100 short lost $1,013.08. There was no
+// lesson because there COULD not be one yet: a verdict on what the market did
+// after the exit needs MIN_AFTER_BARS (5) bars of aftermath, and on a 10-minute
+// chart that is fifty minutes away. The sweep was working exactly as designed.
+//
+// But /state/postmortems only returns trades that already HAVE a postmortem
+// row, so a trade still in its waiting period is simply absent — and absent
+// reads as "nothing was learned from this", not "not yet". The fix is to say
+// so: list what is pending, why, and when it will be ready.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Closed trades with no lesson yet, and the reason for each.
+ *
+ * Pure read. Mirrors the sweep's own eligibility rules so the two never
+ * disagree about what is in the queue — a "pending" trade the sweep will
+ * never pick up would be a worse lie than the blank it replaces.
+ *
+ * @returns {{rows:Array, waiting:number, ineligible:number}}
+ *   rows[].state — 'waiting' (aftermath still accumulating) | 'due' (enough
+ *   bars have passed; the next sweep should classify it) | 'ineligible'
+ *   (no outcome can be derived — it will never get a lesson).
+ */
+export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS } = {}) {
+  let rows = []
+  try {
+    rows = db.prepare(`
+      SELECT t.id, t.symbol, t.side, t.net_pnl, t.exit_price, t.entry_price,
+             t.closed_at, t.close_reason, t.account_id,
+             COALESCE(t.label_strategy, t.strategy) AS strategy,
+             t.label_timeframe AS timeframe
+        FROM trades t
+        LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
+       WHERE t.status = 'closed' AND pm.id IS NULL
+         AND t.closed_at >= datetime('now', ?)
+       ORDER BY t.closed_at DESC LIMIT ?
+    `).all(`-${windowDays} days`, limit)
+  } catch { return { rows: [], waiting: 0, ineligible: 0 } }
+
+  const out = []
+  for (const t of rows) {
+    const closedMs = sqliteMs(t.closed_at)
+    if (!Number.isFinite(closedMs)) continue
+
+    // Same eligibility test the sweep uses. A trade that fails it will never
+    // produce a lesson, and saying "pending" about it would be a false promise.
+    const eligible = (t.net_pnl != null && Number(t.net_pnl) !== 0)
+      || (t.net_pnl == null && t.exit_price != null && t.entry_price != null)
+
+    const tf = t.timeframe || '1h'
+    const barMs = tfMs(tf) || 3_600_000
+    const needMs = minAfterBars * barMs
+    const elapsedMs = Math.max(0, now - closedMs)
+    const barsSoFar = Math.floor(elapsedMs / barMs)
+    const readyAtMs = closedMs + needMs
+    const remainMin = Math.max(0, Math.ceil((readyAtMs - now) / 60_000))
+
+    const base = {
+      tradeId: t.id, symbol: t.symbol, side: t.side, strategy: t.strategy || null,
+      timeframe: tf, closedAt: t.closed_at, accountId: t.account_id ?? null,
+      barsSoFar, barsRequired: minAfterBars,
+      readyAt: new Date(readyAtMs).toISOString(),
+    }
+
+    if (!eligible) {
+      out.push({
+        ...base, state: 'ineligible', readyAt: null,
+        note: t.net_pnl != null && Number(t.net_pnl) === 0
+          // Worth naming: a flat trade is not a bug, and it will never appear
+          // in the lesson list no matter how long anyone waits.
+          ? 'closed exactly flat — there is no outcome to learn from'
+          : 'no realised P&L and no exit price — the outcome cannot be determined',
+      })
+      continue
+    }
+
+    out.push(barsSoFar >= minAfterBars
+      ? { ...base, state: 'due', note: `enough aftermath (${barsSoFar}/${minAfterBars} bars) — the next sweep will classify this` }
+      : {
+        ...base, state: 'waiting',
+        note: `lesson pending — needs ${minAfterBars} bars after close to see what the market did, ${barsSoFar} so far on the ${tf} chart (~${remainMin} min away)`,
+      })
+  }
+
+  return {
+    rows: out,
+    waiting: out.filter(r => r.state === 'waiting').length,
+    ineligible: out.filter(r => r.state === 'ineligible').length,
+  }
+}
+
 /**
  * Sweep: classify closed trades — LOSSES and WINS — that have no postmortem
  * yet, over a 90-day window (owner: "run one PR to learn all past and fill it

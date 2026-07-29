@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
+import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
@@ -18,7 +19,7 @@ import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView } from '../services/stage-matrix.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
-import { postmortemStats } from '../services/loss-postmortem.js'
+import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
 
 /**
@@ -514,7 +515,17 @@ export default function stateRouter(db) {
     try {
       stats = postmortemStats(db)
     } catch { /* table missing on a very old DB — stats stay empty */ }
-    res.json({ rows, stats })
+    // ¶D·4 — "I didn't see the lesson learnt!", twelve minutes after a NAS100
+    // short lost $1,013.08. There could not be one yet: a verdict needs 5 bars
+    // of aftermath, which on a 10-minute chart is fifty minutes away. This
+    // route only ever returned trades that already HAD a lesson, so one still
+    // in its waiting period was simply absent — and absent reads as "nothing
+    // was learned", not "not yet". Now it says which, and when.
+    let pending = { rows: [], waiting: 0, ineligible: 0 }
+    try {
+      pending = pendingLessons(db)
+    } catch { /* never block the lessons themselves on the pending list */ }
+    res.json({ rows, stats, pending })
   })
   function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 
@@ -834,7 +845,14 @@ export default function stateRouter(db) {
       )
       .all()
 
-    res.json({ trades: rows })
+    // ¶D·3 — decode the label here so every reader gets the same words.
+    // The owner, on a NAS100 short that lost $1,013.08: "I don't know was
+    // strategy used." The trade carried AP|v1|FIB|HI|SYD|10m — every fact
+    // needed to answer that was recorded, and rendered as a code. Attribution
+    // that has to be decoded by hand is not attribution.
+    res.json({
+      trades: rows.map(r => ({ ...r, label_decoded: describeLabel(r.label_raw).text })),
+    })
   })
 
   // -----------------------------------------------------------------------
