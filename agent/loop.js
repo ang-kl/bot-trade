@@ -142,6 +142,25 @@ export function resetCircuitBreaker() {
   consecutiveErrors = 0
 }
 
+/**
+ * ¶D·2 — the protection audit could not run this cycle. Record why, and beat
+ * the controller as FAILED rather than not at all.
+ *
+ * During the 2026-07-29 broker outage the panel read "Position protection
+ * audit — idle", which is what a controller that has never run looks like and
+ * reads as a resting state. It was neither resting nor fine: nothing was
+ * checking whether open positions still had stops, at precisely the moment
+ * execution was degraded. A not-beat is silence; a failed beat is a fact.
+ */
+async function noteProtectionAuditBlocked(db, reason) {
+  try {
+    const { recordAuditUnavailable } = await import('./services/naked-position-guard.js')
+    recordAuditUnavailable(db, reason)
+    const { beat } = await import('./services/heartbeat.js')
+    beat(db, 'protection_audit', { ok: false, error: reason })
+  } catch { /* a bookkeeping failure must never break the loop */ }
+}
+
 // Lazy singleton — only the monitor/weekend position checks call the LLM now;
 // the scan/analyze pipeline is deterministic (fib-strategy.js). Provider is
 // OpenAI when OPENAI_API_KEY is set (owner's primary key), else Anthropic —
@@ -2005,9 +2024,18 @@ async function runLoop(db) {
               }
             }
           } catch { /* registry optional on old DBs */ }
+        } else {
+          // No credentials — the audit cannot run, and saying nothing would
+          // read on screen as "checked, all clear". ¶D·2.
+          await noteProtectionAuditBlocked(db, 'broker credentials not configured')
         }
       } catch (err) {
         log('Reconcile phase error:', err.message)
+        // The 2026-07-29 case: the broker was unreachable, so the protection
+        // audit never ran and the panel read "idle". Record the gap so the
+        // last known state can be reported WITH the fact that it is no longer
+        // being confirmed, instead of a blank.
+        await noteProtectionAuditBlocked(db, `reconcile failed: ${err.message}`)
       }
     }
 

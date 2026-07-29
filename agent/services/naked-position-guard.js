@@ -150,6 +150,7 @@ export function dueForAlert(findings, lastAlertMap, nowMs, muteMs = MUTE_MS) {
 
 const STATE_KEY = 'naked_position_alerts_json'
 const TARGET_STATE_KEY = 'targetless_position_alerts_json'
+const LAST_AUDIT_KEY = 'protection_audit_last_json'
 
 /**
  * Run the audit, record it, and alert on anything newly unprotected.
@@ -221,11 +222,122 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       setState(db, TARGET_STATE_KEY, JSON.stringify(lastTargetAlerts))
     } catch { /* non-fatal */ }
 
+    // ¶D·2 — the audit must never simply go quiet. See recordAuditUnavailable.
+    try {
+      setState(db, LAST_AUDIT_KEY, JSON.stringify({
+        at: new Date(nowMs).toISOString(),
+        ok: true,
+        checked: audit.checked,
+        unmatched: audit.unmatched,
+        naked: audit.naked.length,
+        targetless: audit.targetless.length,
+        phantom: audit.phantom.length,
+      }))
+    } catch { /* non-fatal */ }
+
     return { ...audit, alerted: due.length, targetAlerted: targetDue.length }
   } catch (err) {
     return {
       naked: [], targetless: [], phantom: [], checked: 0, unmatched: 0,
       alerted: 0, targetAlerted: 0, error: err.message,
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ¶D·2 — "Position protection audit — idle."
+//
+// That is what the owner saw during the 2026-07-29 broker outage, and it is
+// the wrong thing to see. The audit lives inside the reconcile phase and only
+// runs once broker truth is in hand; when the broker was unreachable it did
+// not run, so it reported nothing — which on screen is indistinguishable from
+// "checked everything, all clear". A safety check that goes silent exactly
+// when the system is degraded is worse than one that was never built, because
+// the silence reads as reassurance.
+//
+// So: every outcome is recorded, including "could not check", and the reader
+// always gets the LAST KNOWN state with its AGE attached. Old news labelled as
+// old news is honest. A blank is not.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Record that the audit could not run this cycle, and why.
+ * Called from the loop when broker truth never arrived.
+ */
+export function recordAuditUnavailable(db, reason, { nowMs = Date.now() } = {}) {
+  let prev = {}
+  try { prev = JSON.parse(getState(db, LAST_AUDIT_KEY) || '{}') } catch { prev = {} }
+  try {
+    setState(db, LAST_AUDIT_KEY, JSON.stringify({
+      // The last SUCCESSFUL check is preserved verbatim — that is the state
+      // the reader needs, and overwriting it with the failure would destroy
+      // the only thing worth reporting during an outage.
+      ...(prev.ok ? prev : { ...prev, at: prev.at ?? null }),
+      ok: prev.ok === true,
+      lastAttemptAt: new Date(nowMs).toISOString(),
+      lastAttemptOk: false,
+      lastAttemptError: String(reason || 'unknown').slice(0, 300),
+    }))
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * The last known protection state, with its age and whether it is stale.
+ * Never returns an empty/blank answer — see the header above.
+ *
+ * @param {number} expectedSec  how often the audit is expected to run
+ *   (reconcile is every 3rd loop, so the caller passes loopSec × 3)
+ */
+export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900, staleFactor = 3 } = {}) {
+  let last = {}
+  try { last = JSON.parse(getState(db, LAST_AUDIT_KEY) || '{}') } catch { last = {} }
+
+  const at = Date.parse(last.at || '')
+  const hasRun = Number.isFinite(at)
+  const ageSec = hasRun ? Math.max(0, Math.round((nowMs - at) / 1000)) : null
+  const stale = !hasRun || ageSec > expectedSec * staleFactor
+
+  const attemptFailed = last.lastAttemptOk === false
+  const mins = ageSec == null ? null : Math.round(ageSec / 60)
+
+  let summary
+  if (!hasRun) {
+    // The critical case. NOT "idle" — idle sounds like a resting state, and
+    // this one means no position has ever been verified as protected.
+    summary = attemptFailed
+      ? `never completed — last attempt failed: ${last.lastAttemptError}`
+      : 'never run — no open position has been verified as protected'
+  } else {
+    const found = [
+      last.naked ? `${last.naked} with NO stop` : null,
+      last.targetless ? `${last.targetless} with no take profit` : null,
+      last.phantom ? `${last.phantom} stop disagreement${last.phantom > 1 ? 's' : ''}` : null,
+    ].filter(Boolean)
+    const body = found.length
+      ? `${last.checked} position(s) checked — ${found.join(', ')}`
+      : `${last.checked} position(s) checked, all protected`
+    const age = `${mins} min ago`
+    summary = attemptFailed
+      // The whole point: say what is known AND that it is no longer being
+      // confirmed, in one line, rather than showing nothing.
+      ? `${body} (as of ${age}) — NOT CONFIRMED SINCE: ${last.lastAttemptError}`
+      : `${body} (${age})`
+  }
+
+  return {
+    hasRun,
+    ok: last.ok === true,
+    at: hasRun ? last.at : null,
+    ageSec,
+    stale,
+    checked: last.checked ?? null,
+    naked: last.naked ?? null,
+    targetless: last.targetless ?? null,
+    phantom: last.phantom ?? null,
+    unmatched: last.unmatched ?? null,
+    lastAttemptAt: last.lastAttemptAt ?? null,
+    lastAttemptOk: last.lastAttemptOk ?? null,
+    lastAttemptError: last.lastAttemptError ?? null,
+    summary,
   }
 }

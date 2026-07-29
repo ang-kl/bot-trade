@@ -12,7 +12,10 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { initDB, getState } from '../db.js'
-import { auditProtection, dueForAlert, runProtectionAudit } from './naked-position-guard.js'
+import {
+  auditProtection, dueForAlert, runProtectionAudit,
+  lastProtectionAudit, recordAuditUnavailable,
+} from './naked-position-guard.js'
 
 const tmpDb = () => initDB(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'naked-')), 'agent.db'))
 const row = (o) => ({ id: 1, trade_id: 10, symbol: 'ETHUSD', ctrader_position_id: '555', current_sl: null, account_id: '43097342', ...o })
@@ -182,6 +185,115 @@ test('the targetless mute map also forgets positions that are no longer open', a
   assert.match(getState(db, 'targetless_position_alerts_json'), /555/)
   await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], { nowMs: 2000, sendMessage: async () => {} })
   assert.equal(getState(db, 'targetless_position_alerts_json'), '{}')
+})
+
+// ---------------------------------------------------------------------------
+// ¶D·2 — "Position protection audit — idle."
+//
+// What the owner saw during the 2026-07-29 broker outage. The audit runs
+// inside the reconcile phase on broker truth; with the broker unreachable it
+// did not run, so it said nothing — which on screen is indistinguishable from
+// "checked everything, all clear". These tests pin the rule that it must never
+// go blank: the last known state is always reported, with its age, and with
+// the fact that it is no longer being confirmed.
+// ---------------------------------------------------------------------------
+
+const T0 = Date.parse('2026-07-29T00:00:00Z')
+
+test('a completed audit is remembered with its numbers', async () => {
+  const db = tmpDb()
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], {
+    nowMs: T0, sendMessage: async () => {},
+  })
+  const last = lastProtectionAudit(db, { nowMs: T0 + 60_000 })
+  assert.equal(last.hasRun, true)
+  assert.equal(last.ok, true)
+  assert.equal(last.checked, 1)
+  assert.equal(last.naked, 0)
+  assert.equal(last.ageSec, 60)
+  assert.equal(last.stale, false)
+  assert.match(last.summary, /1 position\(s\) checked, all protected \(1 min ago\)/)
+})
+
+test('THE OUTAGE: a blocked audit keeps the last known state and says it is unconfirmed', async () => {
+  const db = tmpDb()
+  // A good audit at T0 …
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], {
+    nowMs: T0, sendMessage: async () => {},
+  })
+  // … then the broker goes away for 40 minutes.
+  recordAuditUnavailable(db, 'reconcile failed: fetch failed', { nowMs: T0 + 40 * 60_000 })
+
+  const last = lastProtectionAudit(db, { nowMs: T0 + 40 * 60_000 })
+  // The numbers from the last real check MUST survive — they are the only
+  // thing worth reporting during an outage.
+  assert.equal(last.checked, 1)
+  assert.equal(last.naked, 0)
+  assert.equal(last.ageSec, 2400)
+  assert.equal(last.lastAttemptOk, false)
+  assert.match(last.lastAttemptError, /fetch failed/)
+  // One line that carries BOTH the known state and the fact it is stale.
+  assert.match(last.summary, /all protected \(as of 40 min ago\)/)
+  assert.match(last.summary, /NOT CONFIRMED SINCE/)
+})
+
+test('an outage does not overwrite the findings with zeros', async () => {
+  const db = tmpDb()
+  await runProtectionAudit(db, [row()], [{ positionId: '555', stopLoss: null }], { nowMs: T0, sendMessage: async () => {} })
+  recordAuditUnavailable(db, 'broker unreachable', { nowMs: T0 + 60_000 })
+  const last = lastProtectionAudit(db, { nowMs: T0 + 60_000 })
+  assert.equal(last.naked, 1, 'a position was unprotected and still is — that must not be erased by an outage')
+  assert.match(last.summary, /1 with NO stop/)
+})
+
+test('NEVER RUN does not read as idle', () => {
+  // "idle" sounds like a resting state. It means no open position has ever
+  // been verified as protected, which is the most alarming state there is.
+  const last = lastProtectionAudit(tmpDb(), { nowMs: T0 })
+  assert.equal(last.hasRun, false)
+  assert.equal(last.stale, true, 'never having run is the stalest possible state')
+  assert.equal(last.ageSec, null)
+  assert.match(last.summary, /never run/)
+  assert.ok(!/idle/i.test(last.summary))
+})
+
+test('never run AND the attempt failed says so', () => {
+  const db = tmpDb()
+  recordAuditUnavailable(db, 'broker credentials not configured', { nowMs: T0 })
+  const last = lastProtectionAudit(db, { nowMs: T0 })
+  assert.equal(last.hasRun, false)
+  assert.match(last.summary, /never completed/)
+  assert.match(last.summary, /credentials not configured/)
+})
+
+test('staleness follows the cadence the audit is expected to run at', () => {
+  const db = tmpDb()
+  runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], {
+    nowMs: T0, sendMessage: async () => {},
+  })
+  // Reconcile is every 3rd loop: 15 min at a 5-min loop, stale after 3× that.
+  const opts = { expectedSec: 900 }
+  assert.equal(lastProtectionAudit(db, { ...opts, nowMs: T0 + 40 * 60_000 }).stale, false)
+  assert.equal(lastProtectionAudit(db, { ...opts, nowMs: T0 + 50 * 60_000 }).stale, true)
+})
+
+test('a recovered audit clears the unconfirmed marker', async () => {
+  const db = tmpDb()
+  recordAuditUnavailable(db, 'broker unreachable', { nowMs: T0 })
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700, takeProfit: 1600 }], {
+    nowMs: T0 + 60_000, sendMessage: async () => {},
+  })
+  const last = lastProtectionAudit(db, { nowMs: T0 + 60_000 })
+  assert.equal(last.lastAttemptOk, null, 'the outage marker is gone once a real check succeeds')
+  assert.ok(!/NOT CONFIRMED/.test(last.summary))
+})
+
+test('corrupt stored state degrades to "never run", not a crash', () => {
+  const db = tmpDb()
+  db.prepare("INSERT INTO agent_state (key, value) VALUES ('protection_audit_last_json', '{not json')").run()
+  const last = lastProtectionAudit(db, { nowMs: T0 })
+  assert.equal(last.hasRun, false)
+  assert.match(last.summary, /never run/)
 })
 
 test('the audit never attaches a target itself', () => {

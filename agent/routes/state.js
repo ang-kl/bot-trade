@@ -547,6 +547,27 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/protection-audit — the last known answer to "is every open
+  // position actually protected?", ALWAYS with its age.
+  //
+  // ¶D·2. During the 2026-07-29 broker outage the panel read "Position
+  // protection audit — idle", which is indistinguishable from "checked
+  // everything, all clear". A safety check that goes silent exactly when the
+  // system is degraded is worse than one that was never built, because the
+  // silence reads as reassurance. This route never blanks: it reports the last
+  // completed audit, how old it is, and whether it is still being confirmed.
+  router.get('/protection-audit', async (_req, res) => {
+    try {
+      const { lastProtectionAudit } = await import('../services/naked-position-guard.js')
+      // Reconcile — and so the audit — runs every 3rd loop.
+      const loopMin = Number(getState(db, 'loop_interval_min'))
+      const expectedSec = (Number.isFinite(loopMin) && loopMin >= 1 ? loopMin : 5) * 60 * 3
+      res.json(lastProtectionAudit(db, { expectedSec }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/symbol-clusters — 2+ DISTINCT fills on one account+symbol
   // inside a window (owner: "double or triple trading symbols for past EU and
   // NY sessions"). /state/duplicate-trades only sees identical-value records;
