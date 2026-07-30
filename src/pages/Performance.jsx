@@ -14,6 +14,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
+import { selectedAccountId as appSelectedAccountId } from '../lib/selected-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
@@ -1072,8 +1073,28 @@ export default function Performance() {
   const [ledger, setLedger] = useState(null)
   const [accounts, setAccounts] = useState([])
   const [selectedAccountId, setSelectedAccountId] = useState(null)
-  const [acct, setAcct] = useState('all') // filter: 'all' | account_id
+  // Filter: 'all' | account_id. It STARTS on the account the app is showing.
+  //
+  // Owner (2026-07-30): "when i change the account the rest of the page tables
+  // and cards in the performance page should refresh." They were switching
+  // account in the header — and this page's own filter sat on 'all', so every
+  // scoped fetch asked for `?account=all` and returned byte-identical data. The
+  // switch fired, the reload ran, the numbers did not move, because nothing on
+  // the page was ever asking about the switched-to account. `accounts.account_id`
+  // is TEXT, so the id is carried as a STRING throughout (scopedClosed compares
+  // with String()); the sessionStorage cache holds it as a number.
+  const [acct, setAcct] = useState(() => {
+    const id = appSelectedAccountId()
+    return id == null ? 'all' : String(id)
+  })
   const [allTrades, setAllTrades] = useState([])
+  // Portfolio-wide closed trades, fetched alongside the scoped set. The
+  // per-account cards and the two "× account" gradients are CROSS-account by
+  // definition: fed the scoped set they showed every other account's day P&L as
+  // a confident 0.00 — a wrong number, not a missing one. Identical to
+  // `allTrades` while the filter is 'all', so it costs a second query only when
+  // one account is selected.
+  const [portfolioTrades, setPortfolioTrades] = useState([])
   const [events, setEvents] = useState([])
   // Written post-mortems, for the debrief card. Best-effort: an agent without
   // the route, or a DB with none written, leaves this empty and the card says
@@ -1108,12 +1129,15 @@ export default function Performance() {
         agentGet(`/state/trades${q}`).catch(() => null),
         agentGet(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
-        agentGet('/state/postmortems?limit=200').catch(() => null),
+        agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       setLedger(led)
       setAccounts(ac?.accounts || [])
       setSelectedAccountId(ac?.selectedAccountId || null)
       setAllTrades(t?.rows || t?.trades || [])
+      // With 'all' the scoped fetch above already IS the portfolio; the
+      // cross-account fetch below only runs when one account is selected.
+      if (acct === 'all') setPortfolioTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
       setPositions(p?.rows || p?.positions || [])
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
@@ -1123,14 +1147,19 @@ export default function Performance() {
       // registry row. risk-full supplies the real daily-loss config + the
       // selected account's broker equity.
       const accRows = ac?.accounts || []
-      const [perAcct, rf] = await Promise.all([
+      const [perAcct, rf, pfolio] = await Promise.all([
         Promise.all(accRows.map(a =>
           agentGet(`/state/perf-ledger?account=${encodeURIComponent(a.account_id)}`)
             .then(l => [a.account_id, l]).catch(() => null))),
         agentGet('/state/risk-full').catch(() => null),
+        // Cross-account sections (per-account cards, the two "× account"
+        // gradients) need every account's closed trades, not the selected
+        // account's. Runs in this second wave so it never delays the first paint.
+        acct === 'all' ? Promise.resolve(null) : agentGet('/state/trades?account=all').catch(() => null),
       ])
       setLedgers(Object.fromEntries(perAcct.filter(Boolean)))
       setRiskFull(rf)
+      if (pfolio) setPortfolioTrades(pfolio.rows || pfolio.trades || [])
       setLoadedAt(Date.now())
       setError('')
     } catch (e) { setError(e.message) }
@@ -1156,10 +1185,12 @@ export default function Performance() {
     if (r2) setEvents(r2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
     if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, legacyRows: p2?.legacyRows ?? 0 }) }
-    const pm2 = swrPeek('/state/postmortems?limit=200')
+    const pm2 = swrPeek(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`)
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = swrPeek('/state/risk-full')
     if (rf2) setRiskFull(rf2)
+    const pf2 = acct === 'all' ? t2 : swrPeek('/state/trades?account=all')
+    if (pf2) setPortfolioTrades(pf2.rows || pf2.trades || [])
     if (led || t2) setLoadedAt(Date.now())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -1171,8 +1202,21 @@ export default function Performance() {
   }, [load])
 
   // An account switch must not wait out this page's poll interval (see
-  // src/lib/selected-account.js — it was up to 70s with the server cache).
-  const switchingTo = useAccountSwitch(load)
+  // src/lib/selected-account.js — it was up to 70s with the server cache), and
+  // it must MOVE this page's scope, not just re-fetch the old one.
+  //
+  // 'All Accounts' is a deliberate choice, so a header switch does not overrule
+  // it — the portfolio view stays portfolio-wide and simply reloads (risk-full
+  // and the per-account cards do follow the selection). Any other value is
+  // replaced, and the `[load]` effect below re-fetches on the new scope by
+  // itself; calling load() here as well would fire an extra request for the
+  // account the owner just left.
+  const onSwitch = useCallback((ev) => {
+    const to = ev?.to == null ? null : String(ev.to)
+    if (to && acct !== 'all' && to !== acct) { setAcct(to); return undefined }
+    return load()
+  }, [acct, load])
+  const switchingTo = useAccountSwitch(onSwitch)
 
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
@@ -1312,7 +1356,12 @@ export default function Performance() {
   // floating exist only for the broker-selected account (risk-full margin).
   const acctCards = useMemo(() => {
     const anchor = dayAnchorMs(loadedAt)
-    const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
+    // PORTFOLIO trades, not the scoped set: this grid has one card PER ACCOUNT,
+    // so reading it from the filtered rows made every other account's day P&L,
+    // gross win and gross loss render as 0.00 — a stated figure that was simply
+    // false, and worse than a dash. bal/n30 always came from each account's own
+    // ledger, which is why only the day columns were affected.
+    const closed = portfolioTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
     const dailyLossPct = riskFull?.risk?.effective?.dailyLossPct ?? null
     // WHAT IS ACTUALLY IN PLAY — not every row in the registry.
     //
@@ -1371,7 +1420,33 @@ export default function Performance() {
         usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
-  }, [accounts, ledgers, riskFull, allTrades, loadedAt, selectedAccountId, positions])
+  }, [accounts, ledgers, riskFull, portfolioTrades, loadedAt, selectedAccountId, positions])
+
+  // The Data-feed card's cash / margin / equity — WHOSE, stated.
+  //
+  // /state/risk-full answers only about the BROKER-CONNECTED account: it reads
+  // ctrader_account_id and that account's broker snapshot, and takes no
+  // ?account=. Rendered unconditionally, it was the one card on this page that
+  // could not change when the filter moved — the same three figures under every
+  // account's name. There is no honest substitute for another account's live
+  // margin (nothing streams it), so it is a dash and the card says why; the
+  // balance does exist, in that account's own ledger. Same convention acctCards
+  // already uses for per-card equity.
+  const feed = useMemo(() => {
+    const sel = selectedAccountId == null ? null : String(selectedAccountId)
+    const isSel = acct === 'all' ? true : acct === sel
+    const live = isSel ? riskFull?.margin ?? null : null
+    return {
+      balance: isSel ? riskFull?.account?.balance ?? null : ledgers[acct]?.balance ?? null,
+      freeMargin: live?.freeMargin ?? null,
+      equity: live?.equity ?? null,
+      note: acct === 'all'
+        ? `cash, margin and equity are the broker-connected account${sel ? ` · ${sel}` : ''} — the only one with a live session`
+        : isSel
+          ? 'broker-connected account — live margin and equity'
+          : 'not the broker-connected account: balance comes from its own ledger; live margin and equity are not streamed for it',
+    }
+  }, [acct, selectedAccountId, riskFull, ledgers])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions
@@ -1657,7 +1732,11 @@ export default function Performance() {
     // card used to carry its own stock-aware copy while the rest of the page
     // filed equities under Indices — the "Stocks −$953 here, Indices −$404
     // there" contradiction. One classifier now serves every lens.
-    const rows = allTrades
+    // PORTFOLIO trades: the account dimension IS this table. Fed the scoped set
+    // it silently became a one-column chart of the selected account compared
+    // with itself — no error, no gap, just a cross-account comparison quietly
+    // reduced to nothing. The heading and the sub-line both say so.
+    const rows = portfolioTrades
       .filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
       .map(t2 => ({
         t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol),
@@ -1777,7 +1856,7 @@ export default function Performance() {
       tWideSub: subtotal(build(wDefs, wideCols)),
       aSub: subtotal(build(aDefs, assetCols)),
     }
-  }, [allTrades, accounts, windows, loadedAt])
+  }, [portfolioTrades, accounts, windows, loadedAt])
 
   // Owner (2026-07-25): "redo the All-time tiles & equity table from the
   // ground up." It was nine loose boxes in a wrapping row — no grouping, no
@@ -2092,9 +2171,10 @@ export default function Performance() {
             />
             <BalanceInOut />
             <DataFeed
-              balance={riskFull?.account?.balance ?? null}
-              freeMargin={riskFull?.margin?.freeMargin ?? null}
-              equity={riskFull?.margin?.equity ?? null}
+              balance={feed.balance}
+              freeMargin={feed.freeMargin}
+              equity={feed.equity}
+              scopeNote={feed.note}
               openCount={positions.length}
               dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
               equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}
@@ -2289,7 +2369,11 @@ export default function Performance() {
               </button>
             )
           })}
-          <span style={{ fontSize: 9, color: P_MU }}>filters every table below · fc = 30D forecast pace</span>
+          {/* Says what it actually does. The account cards above and the two
+              "× account" gradients compare accounts to each other, so they stay
+              portfolio-wide — a filter that collapsed them to one column would
+              not be filtering them, it would be emptying them. */}
+          <span style={{ fontSize: 9, color: P_MU }}>filters every table below · the account cards and the two &ldquo;× account&rdquo; gradients stay portfolio-wide · fc = 30D forecast pace</span>
         </div>
 
         {/* The core: timeframe ledger. Three-lens model — time rows here,
@@ -2424,9 +2508,10 @@ export default function Performance() {
         <div id="sec-balance"><BalanceInOut /></div>
         <div id="sec-datafeed">
           <DataFeed
-            balance={riskFull?.account?.balance ?? null}
-            freeMargin={riskFull?.margin?.freeMargin ?? null}
-            equity={riskFull?.margin?.equity ?? null}
+            balance={feed.balance}
+            freeMargin={feed.freeMargin}
+            equity={feed.equity}
+            scopeNote={feed.note}
             openCount={positions.length}
             dailyLossPct={riskFull?.risk?.effective?.dailyLossPct ?? null}
             equityStopArmed={riskFull?.risk?.effective?.equityStopPct != null}

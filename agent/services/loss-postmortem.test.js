@@ -431,3 +431,65 @@ test('pendingLessons mirrors the sweep — it never promises a lesson the sweep 
   const res = await runLossPostmortems(db, async () => bars, { now: NOW })
   assert.equal(res.classified, 1, 'the sweep picked up exactly the trade pendingLessons called due')
 })
+
+// ---------------------------------------------------------------------------
+// WHOSE lessons (owner 2026-07-30: "when i change the account the rest of the
+// page tables and cards in the performance page should refresh"). The debrief
+// card read an unscoped route, so one account's lessons appeared under every
+// account's name — the same mix-up lib/account-scope.js was written for.
+// ---------------------------------------------------------------------------
+
+function tradeOn(db, accountId, symbol) {
+  db.prepare(`INSERT INTO trades (symbol, side, status, entry_price, exit_price, net_pnl,
+              opened_at, closed_at, label_timeframe, label_strategy, account_id)
+              VALUES (?, 'SELL', 'closed', 100, 101, -50, ?, ?, '10m', 'fib_618_fade', ?)`)
+    .run(symbol, sqliteAt(NOW - 700 * 60_000), sqliteAt(NOW - 600 * 60_000), accountId)
+  return db.prepare('SELECT last_insert_rowid() AS id').get().id
+}
+
+test('postmortemStats scopes to one account through the trade it belongs to', () => {
+  const db = pendDb()
+  const a = tradeOn(db, '111', 'EURUSD')
+  const b = tradeOn(db, '222', 'GBPUSD')
+  const ins = db.prepare('INSERT INTO trade_postmortems (trade_id, symbol, strategy, classification) VALUES (?, ?, ?, ?)')
+  ins.run(a, 'EURUSD', 'alpha', 'stop_hunt')
+  ins.run(b, 'GBPUSD', 'beta', 'thesis_wrong')
+
+  // Unscoped: the portfolio, as before.
+  assert.equal(postmortemStats(db).length, 2)
+  // Scoped: only the account asked about.
+  assert.deepEqual(postmortemStats(db, 30, { accountId: '111' }),
+    [{ strategy: 'alpha', classification: 'stop_hunt', n: 1 }])
+  assert.deepEqual(postmortemStats(db, 30, { accountId: '222' }),
+    [{ strategy: 'beta', classification: 'thesis_wrong', n: 1 }])
+})
+
+test('postmortemStats: an UNSTAMPED trade counts for every account, not one', () => {
+  const db = pendDb()
+  // Legacy rows predate M1's account_id, so they belong to no account. The
+  // convention (lib/account-scope.js) includes them everywhere rather than
+  // crediting them to whichever account happens to be selected — and a NULL
+  // row cannot leak one account's history into another's view.
+  //
+  // A DANGLING trade_id is not testable here and does not need to be:
+  // trade_postmortems.trade_id carries a FOREIGN KEY to trades, so the route's
+  // `t.id IS NULL` branch is defence against a schema that does not exist.
+  const legacy = tradeOn(db, null, 'XAUUSD')
+  db.prepare('INSERT INTO trade_postmortems (trade_id, symbol, strategy, classification) VALUES (?, ?, ?, ?)')
+    .run(legacy, 'XAUUSD', 'unattributed', 'chop')
+  for (const id of ['111', '222']) {
+    assert.deepEqual(postmortemStats(db, 30, { accountId: id }),
+      [{ strategy: 'unattributed', classification: 'chop', n: 1 }], id)
+  }
+})
+
+test('pendingLessons scopes the wait-list to one account', () => {
+  const db = pendDb()
+  tradeOn(db, '111', 'EURUSD')
+  tradeOn(db, '222', 'GBPUSD')
+  assert.equal(pendingLessons(db, { now: NOW }).rows.length, 2, 'unscoped is unchanged')
+  const one = pendingLessons(db, { now: NOW, accountId: '111' })
+  assert.equal(one.rows.length, 1)
+  assert.equal(one.rows[0].symbol, 'EURUSD')
+  assert.equal(one.rows[0].accountId, '111')
+})
