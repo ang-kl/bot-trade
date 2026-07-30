@@ -10,6 +10,7 @@
 // shadow. Collect-forward: durations never recorded render "—".
 import { useMemo, useRef, useState } from 'react'
 import { sideLabelUpper } from '../lib/side.js'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -251,7 +252,10 @@ export default function WorkflowAudit({ allTrades, postmortems }) {
               <span style={{ fontSize: 11, fontWeight: 800 }}>{t.sym}</span>
               <span style={{ fontSize: 9, color: t.sideCol }}>{t.sd}</span>
             </span>
-            <span style={{ fontSize: 9, color: SB, textTransform: 'capitalize' }}>{t.strat}</span>
+            {/* Same acronym fix. '\u2014' (no strategy recorded) passes through
+                strategyLabel unchanged, so an unattributed trade still reads as a
+                dash rather than being dressed up as a strategy name. */}
+            <span style={{ fontSize: 9, color: SB }} title={t.strat}>{strategyLabel(t.strat)}</span>
             <span style={{ fontSize: 11, fontWeight: 800, color: t.labCol }}>{t.lab}</span>
             <span style={{ fontSize: 11, fontWeight: 800, color: t.brCol }}>{t.br}</span>
             {/* Stepper padding tightened 12/10 → 9/9 (PDF review: "plentiful

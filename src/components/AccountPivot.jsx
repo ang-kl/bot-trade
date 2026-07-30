@@ -6,6 +6,7 @@
 // agent/lib/sessions.js isSymbolMarketOpen — real broker-hours logic, not a
 // guess) — so this table can't drift from what's actually open.
 import Card from './common/Card.jsx'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -47,7 +48,9 @@ export default function AccountPivot({ acct }) {
           <tbody>
             {[...rows.entries()].map(([strategy, r]) => (
               <tr key={strategy} className="border-t border-[var(--glass-edge)]">
-                <td className="py-1 pr-3 capitalize">{strategy}</td>
+                {/* Same acronym fix as the forecast-vs-actual table: this column
+                    is the strategy KEY, and `capitalize` cannot spell VWAP. */}
+                <td className="py-1 pr-3" title={strategy}>{strategyLabel(strategy)}</td>
                 <td className="py-1 pr-3 tabular-nums">{r.open.count} pos · {fmtMoney(r.open.pnl)}</td>
                 <td className="py-1 tabular-nums">{r.closed.count} pos · {fmtMoney(r.closed.pnl)}</td>
               </tr>

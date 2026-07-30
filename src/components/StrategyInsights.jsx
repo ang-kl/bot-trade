@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
+import { strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from './common/Skeleton.jsx'
 
 function fmtMoney(n) {
@@ -66,7 +67,11 @@ export default function StrategyInsights() {
             <tbody>
               {rows.map(r => (
                 <tr key={r.strategy} className="border-t border-[var(--glass-edge)]">
-                  <td className="py-1 pr-3 capitalize">{r.strategy}</td>
+                  {/* strategyLabel, NOT `capitalize`: CSS capitalises the first
+                      letter of each word and cannot know RSI or VWAP is an acronym,
+                      which is how this column came to read "Rsi2_reversion". The
+                      raw key stays in the title for anyone matching it to a log. */}
+                  <td className="py-1 pr-3" title={r.strategy}>{strategyLabel(r.strategy)}</td>
                   <td className="py-1 pr-3 tabular-nums">{r.trades}</td>
                   <td className="py-1 pr-3 tabular-nums">{r.wins} / {r.losses}</td>
                   <td className="py-1 pr-3 tabular-nums">{pct(r.winRatePct)}</td>
