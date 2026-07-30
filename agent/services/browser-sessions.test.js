@@ -10,7 +10,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, getState, setState } from '../db.js'
 import {
-  publicSessionId, maskSessionId, maskIp, parseUserAgent, describeSession,
+  publicSessionId, maskSessionId, maskIp, parseUserAgent, describeSession, recordHeartbeat,
   connectionState, sessionsView, revokeSession, touchSession, pruneSessions,
   THRESHOLDS,
 } from './browser-sessions.js'
@@ -44,13 +44,29 @@ test('no raw token is ever written to the metadata blob', () => {
   assert.ok(!raw.includes(TOKEN_A), 'the token must not appear in browser_sessions')
 })
 
-test('no raw token, IP or internal id leaks into the view', () => {
+test('no raw token leaks into the view; the IP is published in full', () => {
   const db = freshDb()
   touchSession(db, TOKEN_A, { ua: UA_CHROME, ip: '203.0.113.7' })
   const json = JSON.stringify(sessionsView(db, { currentToken: TOKEN_A }))
   assert.ok(!json.includes(TOKEN_A))
-  assert.ok(!json.includes('203.0.113.7'), 'the full IP must be masked')
-  assert.ok(json.includes('203.0.113.x'))
+  // Owner override 2026-07-31 ("I need IP Address and location for past
+  // window"): the brief's default masking is lifted for this authenticated,
+  // owner-only panel. The raw token stays out; the IP is deliberately in.
+  assert.ok(json.includes('203.0.113.7'))
+})
+
+test('a gone session keeps its stamped IP and location (owner: past window)', () => {
+  const db = freshDb()
+  // Heartbeat stamps tz + coarse loc onto the row while the session lives...
+  touchSession(db, TOKEN_A, { ua: UA_CHROME, ip: '203.0.113.7' })
+  recordHeartbeat(db, TOKEN_A, { tz: 'Asia/Singapore', loc: '1.35,103.82' })
+  // ...then the token expires: no live tabs, no auth entry — a "Gone" row.
+  const view = sessionsView(db, { currentToken: null, nowMs: Date.now() + 366 * 86_400_000 })
+  const row = view.sessions[0]
+  assert.equal(row.state === 'disconnected' || row.state === 'stale', true)
+  assert.equal(row.ip, '203.0.113.7')
+  assert.equal(row.country, 'SG')
+  assert.equal(row.loc, '1.35,103.82')
 })
 
 test('parseUserAgent: recognises what it can and never guesses', () => {
@@ -251,7 +267,10 @@ test('the master secret is reported as un-revokable rather than given a button',
   touchSession(db, TOKEN_A, { ua: UA_CHROME })
   const view = sessionsView(db, { currentToken: null, isMaster: true })
   assert.equal(view.currentIsMaster, true)
-  assert.match(view.masterNote, /rotate AGENT_SECRET/)
+  // Owner 2026-07-31: the note must NOT name the credential — telling every
+  // viewer which env var to hunt for was an information leak, not help.
+  assert.doesNotMatch(view.masterNote, /AGENT_SECRET/)
+  assert.match(view.masterNote, /not a per-device session/)
   assert.equal(view.currentSessionId, null)
   // With no current session identified, nothing is marked current — and so
   // self-protection cannot be sidestepped by claiming to be someone else.

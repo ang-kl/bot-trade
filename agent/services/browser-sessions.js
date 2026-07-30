@@ -50,6 +50,7 @@
 
 import { createHash } from 'node:crypto'
 import { getState, setState } from '../db.js'
+import { countryFromTz } from './client-presence.js'
 
 const META_KEY = 'browser_sessions'
 const AUTH_KEY = 'device_sessions'
@@ -158,7 +159,7 @@ const TOUCH_THROTTLE_MS = 5_000
  *
  * Server timestamps only — "Do not rely only on a client-side flag" (brief).
  */
-export function touchSession(db, token, { ua, ip, appBuild, nowMs = Date.now() } = {}) {
+export function touchSession(db, token, { ua, ip, appBuild, tz, loc, nowMs = Date.now() } = {}) {
   const id = publicSessionId(token)
   if (!id) return null
   const last = lastTouchAt.get(id) || 0
@@ -189,6 +190,12 @@ export function touchSession(db, token, { ua, ip, appBuild, nowMs = Date.now() }
       ua: String(ua || '').slice(0, 200) || null,
       ip: String(ip || '').slice(0, 64) || null,
       appBuild: appBuild ? String(appBuild).slice(0, 40) : null,
+      // Owner (2026-07-31): "I need IP Address and location for past window."
+      // Location is stored ON the session row, not derived from live tabs at
+      // read time — a Gone session has no live tabs, which is exactly when the
+      // owner wants to know where it was.
+      tz: tz ? String(tz).slice(0, 64) : null,
+      loc: loc ? String(loc).slice(0, 64) : null,
     }
   } else {
     meta[id] = {
@@ -200,6 +207,8 @@ export function touchSession(db, token, { ua, ip, appBuild, nowMs = Date.now() }
       ...(ua ? { ...parseUserAgent(ua), ua: String(ua).slice(0, 200) } : {}),
       ...(ip ? { ip: String(ip).slice(0, 64) } : {}),
       ...(appBuild ? { appBuild: String(appBuild).slice(0, 40) } : {}),
+      ...(tz ? { tz: String(tz).slice(0, 64) } : {}),
+      ...(loc ? { loc: String(loc).slice(0, 64) } : {}),
     }
   }
   writeMeta(db, meta)
@@ -217,13 +226,17 @@ export function touchSession(db, token, { ua, ip, appBuild, nowMs = Date.now() }
  * it. The route tests caught it. A heartbeat is evidence of a live session on
  * its own; it should not need a second witness.
  */
-export function recordHeartbeat(db, token, { ua, ip, nowMs = Date.now() } = {}) {
+export function recordHeartbeat(db, token, { ua, ip, tz, loc, nowMs = Date.now() } = {}) {
   const id = publicSessionId(token)
   if (!id) return null
-  if (!readMeta(db)[id]) touchSession(db, token, { ua, ip, nowMs })
+  if (!readMeta(db)[id]) touchSession(db, token, { ua, ip, tz, loc, nowMs })
   const meta = readMeta(db)
   if (!meta[id]) return id
-  meta[id] = { ...meta[id], lastHeartbeatAt: nowMs, lastAcknowledgementAt: nowMs }
+  meta[id] = {
+    ...meta[id], lastHeartbeatAt: nowMs, lastAcknowledgementAt: nowMs,
+    ...(tz ? { tz: String(tz).slice(0, 64) } : {}),
+    ...(loc ? { loc: String(loc).slice(0, 64) } : {}),
+  }
   writeMeta(db, meta)
   return id
 }
@@ -260,7 +273,7 @@ const STATE_RANK = { active: 0, idle: 1, stale: 2, disconnected: 3, revoked: 4 }
  *                      session can report the tabs open under it.
  * @param masterTiers   set true when currentToken is the master secret.
  */
-export function sessionsView(db, { currentToken = null, presence = null, isMaster = false, nowMs = Date.now() } = {}) {
+export function sessionsView(db, { currentToken = null, presence = null, isMaster = false, callerUa = null, callerIp = null, nowMs = Date.now() } = {}) {
   const meta = readMeta(db)
   const auth = readAuth(db)
   const currentId = publicSessionId(currentToken)
@@ -321,9 +334,16 @@ export function sessionsView(db, { currentToken = null, presence = null, isMaste
       revocationReason: s.revocationReason ?? null,
       openTabs: tabs.length,
       pages: [...new Set(tabs.map(t => t.page).filter(Boolean))],
-      country: tabs[0]?.country ?? null,
-      // Masked — "Remote IP, masked unless operationally necessary" (brief).
-      ip: maskIp(s.ip),
+      // Live tabs first, then the location stamped on the row itself — the
+      // stored copy is what a Gone/revoked session still has.
+      country: tabs[0]?.country ?? (s.tz ? countryFromTz(s.tz) : null),
+      timezone: s.tz ?? tabs[0]?.tz ?? null,
+      loc: s.loc ?? null,
+      // FULL IP. The brief said "masked unless operationally necessary"; the
+      // owner ruled it necessary (2026-07-31: "I need IP Address and location
+      // for past window"). This panel is behind authentication and shows the
+      // owner their own devices. maskIp stays exported for anything public.
+      ip: s.ip || null,
     }
   })
 
@@ -349,12 +369,32 @@ export function sessionsView(db, { currentToken = null, presence = null, isMaste
     serverTime: new Date(nowMs).toISOString(),
     thresholds: { ...THRESHOLDS },
     currentSessionId: currentId,
-    // The master secret has no device identity. Say so plainly instead of
-    // showing a Disconnect button that would sign out every device at once.
+    // The master credential has no device identity. Say so plainly instead of
+    // showing a Disconnect button that would sign out every device at once —
+    // but WITHOUT naming the credential (owner, 2026-07-31: "Why tell people
+    // about the AGENT_SECRET"). Naming the env var told any shoulder-surfer
+    // exactly which secret to go looking for; the panel only needs to explain
+    // why there is no Disconnect button here.
     currentIsMaster: !!isMaster,
     masterNote: isMaster
-      ? 'This browser is authenticated with the master AGENT_SECRET, which is not a per-device session. It cannot be revoked from here — rotate AGENT_SECRET to invalidate it.'
+      ? 'This browser is signed in with the primary operator credential, not a per-device session, so there is no session record to disconnect from this panel.'
       : null,
+    // THIS DEVICE facts for a master caller, so the panel is not empty
+    // (owner: "missing information"). Built from THIS request — ua/ip are what
+    // the server actually sees, which is the only honest source.
+    masterCaller: isMaster ? (() => {
+      const d = parseUserAgent(callerUa)
+      const mTabs = (presence?.tabs || []).filter(t => !t.sid)
+      return {
+        label: describeSession(d),
+        deviceType: d.deviceType,
+        ip: String(callerIp || '').slice(0, 64) || null,
+        country: mTabs[0]?.country ?? (mTabs[0]?.tz ? countryFromTz(mTabs[0].tz) : null),
+        timezone: mTabs[0]?.tz ?? null,
+        openTabs: mTabs.length,
+        transport: 'polling',
+      }
+    })() : null,
     sessions: rows,
   }
 }

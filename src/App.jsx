@@ -41,7 +41,7 @@ function CockpitHost() {
   )
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import { getAgentConn, agentConfigured, sendClientPing } from './lib/agent-api.js'
+import { getAgentConn, agentConfigured, sendClientPing, ensureBrowserLocation } from './lib/agent-api.js'
 // Owner (2026-07-28): "can you not load the other pages first except the
 // performance" — Performance is the landing page and stays in the main
 // bundle; every other page is code-split and only downloads (and only
@@ -129,6 +129,10 @@ function AgentDownBanner() {
         // sent even when hidden so the agent's roster distinguishes
         // visible tabs (full polling) from background ones (polls paused).
         sendClientPing(window.location.pathname).catch(() => {})
+        // Owner 2026-07-31: ask the browser for location on load when we
+        // don't already have it. One prompt ever — grant and refusal are
+        // both cached (see agent-api.js).
+        ensureBrowserLocation()
       } catch {
         if (dead) return
         setFails(n => n + 1)

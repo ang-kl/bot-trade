@@ -925,7 +925,10 @@ export default function stateRouter(db) {
       // browser clock").
       const reqIp = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim()
       try {
-        recordHeartbeat(db, bearer, { ua: req.headers['user-agent'], ip: reqIp })
+        // tz + loc ride the heartbeat so the location is stamped ON the
+        // session row and survives after the browser is gone (owner:
+        // "I need IP Address and location for past window").
+        recordHeartbeat(db, bearer, { ua: req.headers['user-agent'], ip: reqIp, tz: req.query.tz, loc: req.query.loc })
       } catch { /* never fail a heartbeat on bookkeeping */ }
       res.json(registerClientPing({
         tab: req.query.tab, tz: req.query.tz, page: req.query.page,
@@ -966,6 +969,10 @@ export default function stateRouter(db) {
         currentToken: isMaster ? null : bearer,
         isMaster,
         presence: clientSummary(),
+        // For the master caller's THIS DEVICE row — what the server sees on
+        // THIS request, the only honest source for it.
+        callerUa: req.headers['user-agent'],
+        callerIp: String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim(),
       }))
     } catch (err) {
       res.status(500).json({ error: err.message })
