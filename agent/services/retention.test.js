@@ -76,7 +76,9 @@ test('null horizons disable the sweep entirely', () => {
   insertPostmortem(db, id, 3000)
   setState(db, 'retention_json', JSON.stringify({ tradesDays: null, postmortemsDays: null }))
   const r = pruneTradeHistory(db)
-  assert.deepEqual(r, { trades: 0, postmortems: 0, orphanPostmortems: 0 })
+  // keptReferenced joins the shape — a disabled sweep spares nothing because it
+  // never looks, which is different from sparing something deliberately.
+  assert.deepEqual(r, { trades: 0, postmortems: 0, orphanPostmortems: 0, keptReferenced: 0 })
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trades`).get().n, 1)
 })
 
@@ -88,4 +90,94 @@ test('pruning an old trade orphans its postmortem → same pass sweeps it', () =
   assert.equal(r.trades, 1)
   assert.equal(r.orphanPostmortems, 1)
   assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trade_postmortems`).get().n, 0)
+})
+
+// ---------------------------------------------------------------------------
+// A trade referenced by monitored_positions cannot be deleted, and trying used
+// to take the WHOLE sweep down.
+//
+// db.js:556 sets PRAGMA foreign_keys = ON, and monitored_positions.trade_id is
+// `REFERENCES trades(id)` with no ON DELETE clause, so NO ACTION applies. The
+// sweep deletes in ONE bulk statement, so a single referenced row raised
+// "FOREIGN KEY constraint failed" and rolled the statement back — pruning
+// nothing at all, including every unreferenced trade that was legitimately due.
+//
+// That is the real failure mode: not an orphaned row (the FK prevents that) but
+// retention silently ceasing to work. monitored_positions rows are kept after
+// they close, so any closed trade that ever had one is a permanent blocker, and
+// on a real database that is most of them.
+// ---------------------------------------------------------------------------
+
+function insertMonitored(db, tradeId, status = 'active') {
+  return db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, status) VALUES ('Corn', ?, ?)`
+  ).run(tradeId, status).lastInsertRowid
+}
+
+test('a referenced trade is spared, and the OTHER due trades are still pruned', () => {
+  const db = freshDB()
+  const referenced = insertTrade(db, { symbol: 'Corn', closedDaysAgo: 800 })
+  const unreferenced = insertTrade(db, { symbol: 'EURUSD', closedDaysAgo: 800 })
+  insertMonitored(db, referenced)
+
+  const r = pruneTradeHistory(db)
+  assert.equal(r.trades, 1, 'the unreferenced trade was pruned — the sweep did NOT abort')
+  assert.equal(r.keptReferenced, 1, 'and the spared one is reported, not silently skipped')
+  assert.ok(db.prepare(`SELECT id FROM trades WHERE id = ?`).get(referenced))
+  assert.equal(db.prepare(`SELECT id FROM trades WHERE id = ?`).get(unreferenced), undefined)
+})
+
+test('the pre-fix behaviour, demonstrated: an unguarded bulk delete throws and removes NOTHING', () => {
+  // Kept as a test rather than a comment because the claim "one row breaks the
+  // whole sweep" is the entire justification for the exclusion, and it is the
+  // sort of claim that is easy to assert and wrong.
+  const db = freshDB()
+  const referenced = insertTrade(db, { symbol: 'Corn', closedDaysAgo: 800 })
+  const unreferenced = insertTrade(db, { symbol: 'EURUSD', closedDaysAgo: 800 })
+  insertMonitored(db, referenced)
+
+  assert.equal(db.pragma('foreign_keys', { simple: true }), 1, 'FKs are ON — that is what makes this fatal')
+  assert.throws(
+    () => db.prepare(`DELETE FROM trades WHERE status = 'closed'`).run(),
+    /FOREIGN KEY constraint failed/,
+  )
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trades`).get().n, 2,
+    'neither row went — the due-and-unreferenced trade was collateral damage')
+
+  // The guarded sweep gets the one it can.
+  const r = pruneTradeHistory(db)
+  assert.equal(r.trades, 1)
+  assert.ok(db.prepare(`SELECT id FROM trades WHERE id = ?`).get(referenced))
+  assert.equal(db.prepare(`SELECT id FROM trades WHERE id = ?`).get(unreferenced), undefined)
+})
+
+test('a CLOSED monitored row protects its trade too — the FK does not care about status', () => {
+  const db = freshDB()
+  const tid = insertTrade(db, { symbol: 'Corn', closedDaysAgo: 800 })
+  insertMonitored(db, tid, 'closed')
+  const r = pruneTradeHistory(db)
+  assert.equal(r.trades, 0)
+  assert.equal(r.keptReferenced, 1)
+  assert.ok(db.prepare(`SELECT id FROM trades WHERE id = ?`).get(tid))
+})
+
+test('a kept parent keeps its postmortem — parent and child use the same predicate', () => {
+  const db = freshDB()
+  const tid = insertTrade(db, { symbol: 'Corn', closedDaysAgo: 800 })
+  insertPostmortem(db, tid, 800)
+  insertMonitored(db, tid)
+  setState(db, 'retention_json', JSON.stringify({ postmortemsDays: null }))
+  const r = pruneTradeHistory(db)
+  assert.equal(r.trades, 0)
+  assert.equal(r.orphanPostmortems, 0, 'the forensics stayed with the ledger row that was kept')
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM trade_postmortems`).get().n, 1)
+})
+
+test('keptReferenced is 0 when nothing is referenced, and the sweep is unchanged', () => {
+  const db = freshDB()
+  insertTrade(db, { closedDaysAgo: 800 })
+  insertTrade(db, { closedDaysAgo: 10 })
+  const r = pruneTradeHistory(db)
+  assert.equal(r.trades, 1)
+  assert.equal(r.keptReferenced, 0)
 })
