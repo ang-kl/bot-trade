@@ -20,7 +20,7 @@ const POLL_MS = 30_000
 // ONE shared poll for the whole app, not one per mounting component. Three
 // consumers on 30s timers each would triple the request rate and let the
 // sidebar and the page line show different numbers between ticks.
-let shared = { acct: null, phases: null, ccy: null }
+let shared = { acct: null, phasesView: null, phasesSig: '', ccy: null }
 let started = false
 const listeners = new Set()
 
@@ -92,15 +92,32 @@ function start() {
         emit()
       }
     }).catch(() => {})
-    agentGet('/state/health').then(h => {
-      const next = {
-        scan: h?.scanEnabled === true,
-        analyze: h?.analyzeEnabled === true,
-        autotrade: h?.autotradeEnabled === true,
+    // PER-ACCOUNT phases, not the global flags. /state/health still reports the
+    // three master flags, and reading those here was correct only while they
+    // were the whole truth. Since the per-account switches exist an account can
+    // have autotrade off while the master is on, and dots drawn from the master
+    // would show the selected account as armed when it is not — the precise
+    // kind of decorative status that made the owner ask whether the switches
+    // were wired at all. `master` is kept as the fallback for an account the
+    // registry does not know (or before the roster resolves).
+    agentGet('/state/account-phases').then(v => {
+      if (!v?.master) return
+      const byId = {}
+      for (const a of v.accounts || []) {
+        byId[String(a.accountId)] = {
+          scan: a.effective?.scan === true,
+          analyze: a.effective?.analyze === true,
+          autotrade: a.effective?.autotrade === true,
+        }
       }
-      const p = shared.phases
-      if (!p || p.scan !== next.scan || p.analyze !== next.analyze || p.autotrade !== next.autotrade) {
-        shared.phases = next
+      const next = { master: { ...v.master }, byId }
+      // Cheap deep compare: this object is a handful of booleans per account,
+      // and an unchanged poll must not cause a render (the whole point of the
+      // "only repaint what changed" pass).
+      const sig = JSON.stringify(next)
+      if (sig !== shared.phasesSig) {
+        shared.phasesSig = sig
+        shared.phasesView = next
         emit()
       }
     }).catch(() => {})
@@ -136,12 +153,29 @@ const getSnapshot = () => snapshot
  */
 export function useActiveAccount() {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  // The SELECTED account's effective phases, falling back to the master flags
+  // for an account the registry has not answered for yet. Derived here rather
+  // than stored so the snapshot identity stays stable when nothing changed.
+  const view = state.phasesView
+  const phases = !view
+    ? null
+    : (view.byId[String(state.acct?.accountId)] || view.master)
   return {
     acct: state.acct,
-    phases: state.phases,
-    armed: state.phases ? state.phases.autotrade : null,
+    phases,
+    armed: phases ? phases.autotrade : null,
     ccy: state.ccy,
   }
+}
+
+/**
+ * EVERY account's effective phases, from the same poll — for lists that draw a
+ * row per account (the sidebar switcher). Returns null until the first answer.
+ *
+ * @returns {{master: object, byId: Record<string, {scan:boolean,analyze:boolean,autotrade:boolean}>}|null}
+ */
+export function useAccountPhases() {
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).phasesView
 }
 
 /** The account's balance, formatted with its own currency. Never a bare "$". */

@@ -913,16 +913,23 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
       // The master flag is already checked upstream at the synth level; this is
       // the per-account override, and effectivePhases keeps the master an AND so
       // a per-account ON can never defeat a global OFF.
+      //
+      // ALL THREE phases gate here, in pipeline order. Scan and analyze are
+      // shared work done once per cycle, so switching either off for one
+      // account cannot un-scan the symbol — but it must still stop the account
+      // acting on a stage it is switched out of, otherwise "Scan off" on that
+      // account would sit above a trade the account just took.
       const phases = effectivePhases(db, acct.accountId)
-      if (!phases.autotrade) {
-        log(`Autotrade gate: ${sym} skipped on ${acct.accountId} — autotrade off (${phases.source.autotrade})`)
+      const offPhase = ['scan', 'analyze', 'autotrade'].find(p => !phases[p])
+      if (offPhase) {
+        log(`Phase gate: ${sym} skipped on ${acct.accountId} — ${offPhase} off (${phases.source[offPhase]})`)
         try {
           const { recordDecision } = await import('./services/decision-log.js')
           recordDecision(db, {
             accountId: String(acct.accountId),
             symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
-            stage: 'account_autotrade', decision: 'skip',
-            reason: `autotrade is off for this account (${phases.source.autotrade})`,
+            stage: `account_${offPhase}`, decision: 'skip',
+            reason: `${offPhase} is off for this account (${phases.source[offPhase]})`,
           })
         } catch { /* provenance never blocks */ }
         continue
@@ -2278,6 +2285,14 @@ async function runLoop(db) {
 
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
+    // Per-account phase switches, aggregated: scan and analyze are ONE piece of
+    // shared work per cycle, so the only honest saving is to stop entirely when
+    // no account the loop would dispatch to still wants the result. With no
+    // overrides set (the default) these are both true and nothing changes.
+    const { phaseWanted } = await import('./services/account-phases.js')
+    const rosterIds = getAutopilotAccounts(db).map(a => String(a.accountId))
+    const scanWanted = phaseWanted(db, 'scan', rosterIds)
+    const analyzeWanted = phaseWanted(db, 'analyze', rosterIds)
     const client = getAnthropicClient()
 
     // Daily token budget — reporting only. Scan/analyze are deterministic
@@ -2316,6 +2331,8 @@ async function runLoop(db) {
         log('No enabled symbols configured')
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
+      } else if (!scanWanted) {
+        log(`Scan off on every trading account (${rosterIds.join(', ')}) — skipping; nothing would use the result`)
       } else {
         if (marketClosed) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
@@ -2475,7 +2492,10 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (analyzeEnabled && scanResult.hot.length > 0) {
+    if (analyzeEnabled && !analyzeWanted && scanResult.hot.length > 0) {
+      log(`Analyze off on every trading account (${rosterIds.join(', ')}) — skipping ${scanResult.hot.length} hot symbol(s)`)
+    }
+    if (analyzeEnabled && analyzeWanted && scanResult.hot.length > 0) {
       // Best-first slot allocation: with concurrent positions capped (owner set
       // 25), the few candidates dispatched each cycle must be the STRONGEST
       // signals, not whichever scanned first — otherwise mediocre setups fill

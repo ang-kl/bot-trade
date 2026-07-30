@@ -18,6 +18,7 @@ import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
+import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
@@ -1270,6 +1271,9 @@ export default function Tune() {
               </span>
             </div>
             </Card>
+            {/* Owner: "put below the master switch a card to show which
+                account's switch status and on/off here". */}
+            <AccountPhaseSwitches />
             <Card id="sec-pipe-strategy" className="w3-hover-shadow">
               <SectionTitle>What may trade</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>

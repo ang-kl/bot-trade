@@ -2699,6 +2699,66 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/account-phases — Scan / Analyze / Autotrade for ONE account.
+  //
+  // Body: { accountId, scan?, analyze?, autotrade? } where each phase is
+  //   true  → force on for this account (still subject to the master)
+  //   false → off for this account only
+  //   null  → clear the override, inherit the master again
+  // Omitted keys are left alone, so the UI can send one switch at a time.
+  //
+  // Owner: "scan/analyze/autotrade should be in all account. I don't want all
+  // accounts to be traded by this bot-trade in the same way."
+  //
+  // THE ACCOUNT MUST EXIST IN THE REGISTRY. A typo'd id would otherwise write
+  // an override key that nothing ever reads — a switch that reports itself off
+  // while the real account keeps trading, which is the precise failure this
+  // feature exists to end.
+  //
+  // The master is unchanged by this route and remains an absolute veto: a
+  // per-account `true` cannot arm anything while the global switch is off.
+  // -----------------------------------------------------------------------
+  router.post('/account-phases', async (req, res) => {
+    try {
+      const b = req.body || {}
+      const accountId = b.accountId != null ? String(b.accountId) : ''
+      if (!accountId) return res.status(400).json({ error: 'accountId is required' })
+      const row = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(accountId)
+      if (!row) return res.status(404).json({ error: `unknown account ${accountId}` })
+
+      const { PHASES, setAccountPhases, effectivePhases, masterPhases } =
+        await import('../services/account-phases.js')
+      // Reject junk loudly here even though the service ignores it — a client
+      // sending 'on'/'1' should learn it did nothing, not be told ok.
+      for (const p of PHASES) {
+        if (!(p in b)) continue
+        if (b[p] !== true && b[p] !== false && b[p] !== null) {
+          return res.status(400).json({ error: `${p} must be true, false or null (null = inherit)` })
+        }
+      }
+      const patch = {}
+      for (const p of PHASES) if (p in b) patch[p] = b[p]
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: 'nothing to set — send scan, analyze and/or autotrade' })
+      }
+
+      const result = setAccountPhases(db, accountId, patch)
+      const master = masterPhases(db)
+      const effective = effectivePhases(db, accountId, master)
+      const words = Object.entries(result.set)
+        .map(([p, v]) => `${p}=${v === null ? 'inherit' : v ? 'on' : 'OFF'}`).join(' ')
+      // S/A/T, not the first letter of each name — analyze and autotrade would
+      // both print 'a' and the log line would be unreadable.
+      const initials = { scan: 'S', analyze: 'A', autotrade: 'T' }
+      console.log(`[actions] Account phases ${accountId}: ${words} → effective ` +
+        PHASES.map(p => `${initials[p]}${effective[p] ? '+' : '-'}`).join(' '))
+      res.json({ ok: true, accountId, set: result.set, master, effective })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/pause-position/:id — pause Monitor checks for one position
   // -----------------------------------------------------------------------
   router.post('/pause-position/:id', (req, res) => {

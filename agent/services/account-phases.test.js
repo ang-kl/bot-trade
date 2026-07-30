@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { initDB, setState } from '../db.js'
 import {
   PHASES, acctPhaseKey, masterPhases, accountOverrides,
-  effectivePhases, setAccountPhases, phasesView,
+  effectivePhases, setAccountPhases, phasesView, phaseWanted,
 } from './account-phases.js'
 
 function db_() {
@@ -113,6 +113,44 @@ test('the key namespace matches the acct: convention the loop already uses', () 
   assert.equal(acctPhaseKey('46130058', 'autotrade'), 'acct:46130058:autotrade_enabled')
   assert.equal(acctPhaseKey('46130058', 'scan'), 'acct:46130058:scan_enabled')
   assert.equal(acctPhaseKey('46130058', 'analyze'), 'acct:46130058:analyze_enabled')
+})
+
+test('phaseWanted: one account off does NOT stop the shared scan', () => {
+  const db = db_()
+  armAll(db)
+  setAccountPhases(db, '46130058', { scan: false })
+  // The other account still needs the scan, so the work must still happen —
+  // scan is one shared pass, not per-account work that can be skipped in part.
+  assert.equal(phaseWanted(db, 'scan', ['46130058', '42993489']), true)
+})
+
+test('phaseWanted: nobody wants it ⇒ stop paying for it', () => {
+  const db = db_()
+  armAll(db)
+  setAccountPhases(db, '46130058', { scan: false })
+  setAccountPhases(db, '42993489', { scan: false })
+  assert.equal(phaseWanted(db, 'scan', ['46130058', '42993489']), false)
+  // ...and the other phases are unaffected by a scan decision.
+  assert.equal(phaseWanted(db, 'analyze', ['46130058', '42993489']), true)
+  assert.equal(phaseWanted(db, 'autotrade', ['46130058', '42993489']), true)
+})
+
+test('phaseWanted: an EMPTY roster means "unknown", never "nobody"', () => {
+  const db = db_()
+  armAll(db)
+  // A registry that failed to load must not silently stop the pipeline, so an
+  // empty or missing roster keeps the pre-switch behaviour.
+  assert.equal(phaseWanted(db, 'scan', []), true)
+  assert.equal(phaseWanted(db, 'scan', null), true)
+  assert.equal(phaseWanted(db, 'scan', undefined), true)
+})
+
+test('phaseWanted: master off answers false whatever the accounts say', () => {
+  const db = db_()
+  armAll(db)
+  setAccountPhases(db, '46130058', { scan: true })
+  setState(db, 'scan_enabled', 'false')
+  assert.equal(phaseWanted(db, 'scan', ['46130058']), false)
 })
 
 test('phasesView reports every registry row, master, overrides and effective', () => {

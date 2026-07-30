@@ -116,6 +116,29 @@ export function setAccountPhases(db, accountId, patch = {}) {
 }
 
 /**
+ * Would ANY of these accounts use this phase's output?
+ *
+ * Scan and analyze are done ONCE PER CYCLE for the whole system, not per
+ * account (loop.js:2269 scans the shared symbol universe; only dispatch fans
+ * out). So switching scan off for one of three accounts cannot save any scan
+ * work — the other two still need it. What it CAN do is stop the work entirely
+ * once no account wants it, which is the owner's actual concern ("I am serious
+ * about avoiding unnecessary effort and expenses in trading").
+ *
+ * An empty roster returns TRUE deliberately: no roster knowledge is not the
+ * same as "nobody wants it", and a registry that failed to load must not
+ * silently stop the pipeline.
+ *
+ * @param {string[]} accountIds the accounts the loop would actually dispatch to
+ */
+export function phaseWanted(db, phase, accountIds) {
+  const m = masterPhases(db)
+  if (!m[phase]) return false
+  if (!Array.isArray(accountIds) || accountIds.length === 0) return true
+  return accountIds.some(id => effectivePhases(db, id, m)[phase])
+}
+
+/**
  * The whole picture for a status panel: the master, plus every registry
  * account's overrides and effective state.
  *
