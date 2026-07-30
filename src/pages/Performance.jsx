@@ -2042,16 +2042,14 @@ export default function Performance() {
             ))}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
-              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
-                  to correct me on exactly this reading, which is evidence the
-                  heading alone is ambiguous — every symbol is in these rows,
-                  including the ones that trade through the FX close. Said in
-                  words rather than left to be inferred from the title. */}
-              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
+                {/* Phone copy of the same card — it must not keep saying FX day
+                    open when the desktop one no longer does (owner, 2026-07-31).
+                    Both read the same `today`, which is now on rollingWin. */}
+                <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+                <span style={{ fontSize: 9, color: P_MU }}>latest 24 one-hour windows · newest first</span>
                 <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
               </div>
-              <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
+              <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
             </div>
             {[{ key: 'float', title: 'Open positions — floating', rows: openSplit.floating, tot: openSplit.floatTot, border: P_GBD, titleCol: P_MU },
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
