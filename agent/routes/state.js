@@ -539,9 +539,29 @@ export default function stateRouter(db) {
     try {
       const { loadLastAssessment, PROPOSABLE } = await import('../services/risk-reassess.js')
       const { availableProviders } = await import('../lib/llm-provider.js')
+      const { chooseModel, tierTable, ANTHROPIC_MODEL_CHOICES } = await import('../lib/model-router.js')
+      // A risk reassessment is the doc's `financial_analysis` — the REASONING
+      // tier. Suggesting it (rather than silently using it) keeps the owner's
+      // typed choice authoritative while defaulting to the right tier.
+      const suggested = chooseModel({ type: 'risk_reassess' })
+      // The OpenAI options ARE this agent's three configured tiers, so the
+      // dropdown offers exactly the models the operator set on Railway rather
+      // than a hardcoded list that would drift out of date. Duplicates are
+      // collapsed (an unconfigured PREMIUM/REASONING resolves to the DEFAULT
+      // model, and offering the same id three times is noise).
+      const tiers = tierTable()
+      const seen = new Set()
+      const openaiOptions = []
+      for (const [tier, r] of Object.entries(tiers)) {
+        if (seen.has(r.model)) continue
+        seen.add(r.model)
+        openaiOptions.push({ model: r.model, tier, source: r.source })
+      }
       res.json({
         last: loadLastAssessment(db),
         providers: availableProviders(),
+        suggestedModel: { openai: suggested.model, tier: suggested.tier },
+        modelOptions: { openai: openaiOptions, anthropic: ANTHROPIC_MODEL_CHOICES },
         proposable: Object.fromEntries(
           Object.entries(PROPOSABLE).map(([k, v]) => [k, { label: v.label, min: v.min, max: v.max, kind: v.kind }])
         ),

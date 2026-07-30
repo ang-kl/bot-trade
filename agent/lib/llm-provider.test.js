@@ -10,13 +10,31 @@ import {
 } from './llm-provider.js'
 
 test('provider selection: OpenAI when its key is set, else Anthropic', () => {
-  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x' }), { provider: 'openai', model: 'gpt-5.6-luna' })
-  // OPENAI_DEFAULT_MODEL is the standardised env var (owner set this on Railway)
-  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
-  // legacy OPENAI_MODEL still works as a fallback
-  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'gpt-4o' }), { provider: 'openai', model: 'gpt-4o' })
-  // OPENAI_DEFAULT_MODEL wins when both are set (it's the standard)
-  assert.deepEqual(llmProviderInfo({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'legacy', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
+  // The OpenAI model now comes from the tier router (lib/model-router.js), so
+  // these assert provider + model and ignore the extra tier/source fields.
+  const openai = (env, task) => {
+    const i = llmProviderInfo(env, task)
+    return { provider: i.provider, model: i.model }
+  }
+  // Nothing configured → the router's cheap built-in. NOT an expensive id:
+  // principle 3 of the routing doc.
+  assert.deepEqual(openai({ OPENAI_API_KEY: 'sk-x' }), { provider: 'openai', model: 'gpt-5-nano' })
+  // OPENAI_MODEL_DEFAULT is the standardised name (owner renamed it 2026-07-30).
+  assert.deepEqual(openai({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL_DEFAULT: 'gpt-5-nano' }), { provider: 'openai', model: 'gpt-5-nano' })
+  // The PREVIOUS name still works, so the rename cannot silently change which
+  // model reviews positions on a box where only the old var is set.
+  assert.deepEqual(openai({ OPENAI_API_KEY: 'sk-x', OPENAI_DEFAULT_MODEL: 'gpt-5.6-luna' }), { provider: 'openai', model: 'gpt-5.6-luna' })
+  // ...and the oldest name too.
+  assert.deepEqual(openai({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'gpt-4o' }), { provider: 'openai', model: 'gpt-4o' })
+  // New name wins over both.
+  assert.deepEqual(
+    openai({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL: 'oldest', OPENAI_DEFAULT_MODEL: 'old', OPENAI_MODEL_DEFAULT: 'gpt-5-nano' }),
+    { provider: 'openai', model: 'gpt-5-nano' })
+  // A task on a higher tier picks that tier's var.
+  assert.deepEqual(
+    openai({ OPENAI_API_KEY: 'sk-x', OPENAI_MODEL_DEFAULT: 'gpt-5-nano', OPENAI_MODEL_REASONING: 'gpt-5.6' }, { type: 'risk_reassess' }),
+    { provider: 'openai', model: 'gpt-5.6' })
+  // Anthropic is NOT tiered — those three vars name OpenAI models.
   assert.deepEqual(llmProviderInfo({ CLAUDE_API_KEY: 'k' }), { provider: 'anthropic', model: 'claude-sonnet-4-5' })
   assert.deepEqual(llmProviderInfo({ ANTHROPIC_MODEL: 'claude-haiku-4-5' }), { provider: 'anthropic', model: 'claude-haiku-4-5' })
 })
@@ -61,8 +79,32 @@ test('OpenAI client: messages.create round-trips through a fake fetch', async ()
   const resp = await client.messages.create({ model: 'claude-sonnet-4-5', max_tokens: 128, messages: [{ role: 'user', content: 'q' }] })
   assert.equal(resp.content[0].text, 'ok')
   assert.equal(calls[0].url, 'https://api.openai.com/v1/chat/completions')
-  assert.equal(calls[0].body.model, 'gpt-5.6-luna') // the OpenAI default, NOT the claude id
+  // The router's cheap built-in, NOT the claude id the caller passed. The
+  // built-in changed from 'gpt-5.6-luna' to the doc's cheapest tier when the
+  // router landed — principle 3: never default to the expensive model.
+  assert.equal(calls[0].body.model, 'gpt-5-nano')
   assert.equal(calls[0].auth, 'Bearer sk-test')
+})
+
+test('a task type selects the tier the client is built on', async () => {
+  const calls = []
+  const fakeFetch = async (url, opts) => {
+    calls.push(JSON.parse(opts.body))
+    return { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }], model: 'x' }) }
+  }
+  const env = {
+    OPENAI_API_KEY: 'sk-test',
+    OPENAI_MODEL_DEFAULT: 'gpt-5-nano',
+    OPENAI_MODEL_REASONING: 'gpt-5.6',
+  }
+  const cheap = createLLMClient(env, { fetch: fakeFetch, task: { type: 'position_monitor' } })
+  const dear = createLLMClient(env, { fetch: fakeFetch, task: { type: 'risk_reassess' } })
+  assert.equal(cheap.tier, 'DEFAULT')
+  assert.equal(dear.tier, 'REASONING')
+  await cheap.messages.create({ max_tokens: 8, messages: [{ role: 'user', content: 'q' }] })
+  await dear.messages.create({ max_tokens: 8, messages: [{ role: 'user', content: 'q' }] })
+  assert.equal(calls[0].model, 'gpt-5-nano')
+  assert.equal(calls[1].model, 'gpt-5.6')
 })
 
 test('OpenAI client surfaces API errors', async () => {

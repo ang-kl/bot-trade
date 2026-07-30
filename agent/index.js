@@ -8,6 +8,8 @@ import { initDB, getState, setState } from './db.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
+import { llmProviderInfo } from './lib/llm-provider.js';
+import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { readRecentErrors } from './services/error-log.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
@@ -380,14 +382,19 @@ app.get('/health', (_req, res) => {
   // actually live on this service (else the LLM monitor falls back to Anthropic
   // and errors on a dry credit balance).
   const commit = (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || '').slice(0, 7) || null
-  const llmProvider = process.env.OPENAI_API_KEY
-    ? `openai:${process.env.OPENAI_DEFAULT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6-luna'}`
-    : `anthropic:${process.env.CLAUDE_MODEL || 'claude-sonnet-4-5'}`
+  // Reported through the SAME router the calls use, so /health can never claim
+  // a model the agent is not actually calling. llmTiers lists all three so the
+  // rename (OPENAI_DEFAULT_MODEL → OPENAI_MODEL_DEFAULT) and the two new tiers
+  // are verifiable from outside without shell access to the box.
+  const llmInfo = llmProviderInfo(process.env)
+  const llmProvider = `${llmInfo.provider}:${llmInfo.model}`
+  const llmTiers = process.env.OPENAI_API_KEY ? tierTable(process.env) : null
 
   res.json({
     status,
     version: APP_VERSION,
     commit,
+    llmTiers,
     llmProvider,
     uptime: process.uptime(),
     loopCount: Number(getState(db, 'loop_count') || 0),

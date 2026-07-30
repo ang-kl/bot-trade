@@ -29,80 +29,48 @@
 // its flags and the dots are truthful. They would NOT be truthful printed
 // against every row of a multi-account list, which is exactly why they are
 // not — see AccountSwitcher.
-import { useEffect, useState } from 'react'
-import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import { PHASES, offSummary } from '../lib/account-phases.js'
+import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
 
 // Same session cache AccountSwitcher fills — reading it here costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip on every mount.
 const CACHE = 'accounts_cache_v1'
 const POLL_MS = 30_000
 
-// Shared reader so the sidebar block and the touch-header chip agree about
-// which account is selected and whether it is trading.
-function useActiveAccount() {
-  const [acct, setAcct] = useState(null)      // { accountId, traderLogin, isLive, balance }
-  const [phases, setPhases] = useState(null)  // { scan, analyze, autotrade } — null until known
-  const [ccy, setCcy] = useState(null)        // deposit currency, when the broker has told us
-
-  // The account roster comes from the switcher's cache (same tab, already
-  // fetched). Re-read on an interval so a switch made in the switcher shows
-  // up here without a page reload.
-  useEffect(() => {
-    const read = () => {
-      try {
-        const c = JSON.parse(sessionStorage.getItem(CACHE))
-        const sel = c?.accounts?.find(a => a.accountId === c.selectedAccountId)
-        if (sel) setAcct(sel)
-      } catch { /* private mode / bad JSON — stay blank */ }
-    }
-    read()
-    const id = setInterval(read, 2_000)
-    return () => clearInterval(id)
-  }, [])
-
-  useEffect(() => {
-    if (!agentConfigured()) return
-    const load = () => {
-      agentGet('/state/health').then(h => setPhases({
-        scan: h?.scanEnabled === true,
-        analyze: h?.analyzeEnabled === true,
-        autotrade: h?.autotradeEnabled === true,
-      })).catch(() => {})
-      // Deposit currency lives on the cached broker snapshot's positions.
-      // No positions → no currency → show the number bare rather than guess.
-      agentGet('/state/broker-cache').then(bc => {
-        const dep = bc?.snapshot?.account?.positions?.find(p => p.depositCcy)?.depositCcy
-        if (dep) setCcy(dep)
-      }).catch(() => {})
-    }
-    load()
-    const id = setInterval(load, POLL_MS)
-    return () => clearInterval(id)
-  }, [])
-
-  return { acct, phases, armed: phases ? phases.autotrade : null, ccy }
-}
-
 /**
- * Three 2px dots, one per phase, red when that phase is off. Sized exactly as
- * the owner asked — small enough to read as a status light rather than a
- * badge — with the meaning in the tooltip since 2px cannot carry a label.
+ * Three traffic lights, one per phase: blue on, red off.
+ *
+ * SIZE OVERRIDES THE 2px SPEC, and the owner is the reason. They asked for 2px
+ * dots, then reported "I cannot see the traffic lights of the 3 independent
+ * Scan/Analyze/Autotrade." A 2px dot is about one device pixel after this app's
+ * 1.1 zoom — smaller than the anti-aliasing around it, so it renders as a
+ * smudge or as nothing at all. These are 6px with a ring: still a status light
+ * rather than a badge, but actually visible. The initial (S / A / T) rides
+ * alongside so the three are distinguishable without a hover, which a bare dot
+ * can never be on a touch screen.
  */
-function PhaseDots({ phases, className = '' }) {
+function PhaseDots({ phases, className = '', letters = true }) {
   if (!phases) return null
   return (
-    <span className={`inline-flex items-center gap-[2px] ${className}`}>
+    <span className={`inline-flex items-center gap-[3px] ${className}`}>
       {PHASES.map(p => {
         const on = phases[p.key] === true
+        const colour = on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)'
         return (
           <span
             key={p.key}
             aria-label={`${p.label} ${on ? 'on' : 'off'}`}
             title={`${p.label} is ${on ? 'ON' : 'OFF'}`}
-            className="h-[2px] w-[2px] rounded-full"
-            style={{ background: on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}
-          />
+            className="inline-flex items-center gap-[1px] text-[8px] font-bold leading-none"
+            style={{ color: colour }}
+          >
+            <span
+              aria-hidden="true"
+              className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
+              style={{ background: colour, boxShadow: `0 0 0 1px ${colour}` }}
+            />
+            {letters && p.label[0]}
+          </span>
         )
       })}
     </span>
@@ -126,10 +94,10 @@ export function ActiveAccountHeaderCompact() {
       {acct.isLive ? 'LIVE' : 'DEMO'} {acct.traderLogin ?? acct.accountId}
       {acct.balance != null && (
         <span className="ml-1 font-normal text-[var(--color-text-sub)]">
-          {ccy ? `${ccy} ` : ''}{Number(acct.balance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          {formatBalance(acct.balance, ccy, { decimals: 0 })}
         </span>
       )}
-      <PhaseDots phases={phases} className="ml-1 align-middle" />
+      <PhaseDots phases={phases} className="ml-1 align-middle" letters={false} />
     </span>
   )
 }
@@ -162,12 +130,10 @@ export default function ActiveAccountHeader() {
       >
         {label}
       </div>
-      <div className="flex items-center gap-1 text-[9px] text-[var(--color-text-sub)] tabular-nums">
-        <span>
-          Balance: {acct.balance == null
-            ? '—'
-            : `${ccy ? `${ccy} ` : ''}${Number(acct.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-        </span>
+      {/* Owner: "remove the word 'Balance' under the Account name" — the
+          currency code and the number already say what it is. */}
+      <div className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
+        <span>{formatBalance(acct.balance, ccy)}</span>
         <PhaseDots phases={phases} />
       </div>
     </div>

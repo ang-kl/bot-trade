@@ -5,7 +5,7 @@
 // watch (entries + risk gate are deterministic). Owner set OPENAI_API_KEY as
 // the primary key, so this factory picks the provider by which key is present:
 //
-//   OPENAI_API_KEY set  → OpenAI  (default model gpt-5.6-luna, or OPENAI_MODEL)
+//   OPENAI_API_KEY set  → OpenAI  (model from the tier router, see below)
 //   else                → Anthropic (CLAUDE_API_KEY, default claude-sonnet-4-5
 //                                    or ANTHROPIC_MODEL)
 //
@@ -16,21 +16,38 @@
 // ---------------------------------------------------------------------------
 
 import Anthropic from '@anthropic-ai/sdk'
+import { chooseModel } from './model-router.js'
 
-// Built-in fallback if no env var is set (2026-07-21, owner-chosen). The
-// canonical env var to override it is OPENAI_DEFAULT_MODEL (standardised name);
-// legacy OPENAI_MODEL is still accepted. If the API rejects the id (400 invalid
-// model), fix it on Railway by setting OPENAI_DEFAULT_MODEL — no redeploy.
-const OPENAI_FALLBACK_MODEL = 'gpt-5.6-luna'
+// The OpenAI model id now comes from the TIER ROUTER (lib/model-router.js),
+// which implements llm_ai_doc/AI_Model_Router_Instruction.md:
+//
+//   OPENAI_MODEL_DEFAULT    cheapest — the great majority of calls
+//   OPENAI_MODEL_PREMIUM    moderate reasoning / better writing
+//   OPENAI_MODEL_REASONING  rare, high-value, genuinely hard
+//
+// OPENAI_MODEL_DEFAULT renamed FROM OPENAI_DEFAULT_MODEL (owner, 2026-07-30).
+// The old name and the older OPENAI_MODEL are still read as fallbacks — see the
+// header of model-router.js for why a silent fall-through to a built-in would
+// be worse than a fallback chain on a live trading agent.
+//
+// A caller that knows its task passes it (`{ task: { type: 'risk_reassess' } }`)
+// and gets that task's tier. A caller that does not gets the DEFAULT tier,
+// which is principle 1: cheapest unless there is a reason.
 const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-4-5'
 
-/** Which provider/model will be used, given the current env. Pure. */
-export function llmProviderInfo(env = process.env) {
+/**
+ * Which provider/model will be used, given the current env. Pure.
+ *
+ * @param {Record<string,string|undefined>} [env]
+ * @param {{type?: string}} [task] optional task; omitted ⇒ the DEFAULT tier
+ */
+export function llmProviderInfo(env = process.env, task = undefined) {
   if (env.OPENAI_API_KEY) {
-    // OPENAI_DEFAULT_MODEL is the standardised env var (owner set this on
-    // Railway); legacy OPENAI_MODEL kept as a fallback; then the built-in.
-    return { provider: 'openai', model: env.OPENAI_DEFAULT_MODEL || env.OPENAI_MODEL || OPENAI_FALLBACK_MODEL }
+    const r = chooseModel(task || {}, env)
+    return { provider: 'openai', model: r.model, tier: r.tier, modelSource: r.source }
   }
+  // Anthropic ids are NOT tiered here: the three vars name OpenAI models, and
+  // pointing an Anthropic request at "gpt-5-nano" would just 404.
   return { provider: 'anthropic', model: env.ANTHROPIC_MODEL || ANTHROPIC_DEFAULT_MODEL }
 }
 
@@ -165,9 +182,14 @@ export function availableProviders(env = process.env) {
  * OPENAI_API_KEY is present; otherwise the Anthropic SDK client.
  */
 export function createLLMClient(env = process.env, deps = {}) {
-  const info = llmProviderInfo(env)
+  // deps.task lets a call site declare what it is doing, so the router can
+  // price it. Omitted ⇒ DEFAULT tier.
+  const info = llmProviderInfo(env, deps.task)
   if (info.provider === 'openai') {
-    return openaiClient(env.OPENAI_API_KEY, info.model, deps.fetch, deps.timeoutMs)
+    const c = openaiClient(env.OPENAI_API_KEY, info.model, deps.fetch, deps.timeoutMs)
+    c.tier = info.tier
+    c.modelSource = info.modelSource
+    return c
   }
   // Explicit bound (the SDK's own default is 10 minutes) — same reasoning as
   // the OpenAI path's AbortController above: this call sits inside D4's

@@ -58,6 +58,7 @@ const Connect = lazy(() => import('./pages/Connect.jsx'))
 import AccountSwitcher from './components/AccountSwitcher.jsx'
 import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/ActiveAccountHeader.jsx'
 import MobileTabBar from './components/MobileTabBar.jsx'
+import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import TabsPanel from './components/common/TabsPanel.jsx'
 import { useTheme } from './lib/theme.js'
@@ -302,6 +303,15 @@ export default function App() {
         <CockpitHost />
 
         <main className="px-4 py-3 pb-[calc(env(safe-area-inset-bottom,0px)+68px)] lg:pr-6 lg:pb-[calc(var(--footer-h)+12px)] max-w-[1720px]">
+          {/* WHICH account is this page about, and what is its balance — on
+              every page, mounted once here rather than per page. Owner
+              (2026-07-30): "i needed an account number in every webpage below
+              the page title text to know which account I am using and what is
+              the balance in 1 font size smaller than the page title." Only
+              three pages render an <h1> at all, so a per-page insertion would
+              have missed most of them; see PageAccountLine.jsx. */}
+          <PageAccountLine />
+
           {/* Lazy routes need a Suspense boundary — a light skeleton line,
               not a spinner wall, while a page chunk downloads. */}
           <Suspense fallback={<div className="p-6 text-[9px] text-[var(--color-text-sub)]">loading page…</div>}>

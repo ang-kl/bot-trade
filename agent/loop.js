@@ -165,12 +165,18 @@ async function noteProtectionAuditBlocked(db, reason) {
 // the scan/analyze pipeline is deterministic (fib-strategy.js). Provider is
 // OpenAI when OPENAI_API_KEY is set (owner's primary key), else Anthropic —
 // same messages.create shape either way (see lib/llm-provider.js).
-let _anthropicClient = null
-function getAnthropicClient() {
-  if (!_anthropicClient) {
-    _anthropicClient = createLLMClient()
+// One client per TASK TIER, not one client overall: the model id is baked into
+// the client at construction (the OpenAI wrapper closes over it), so a single
+// shared client cannot serve two tiers. Both users of this cache — the position
+// monitor and the weekend watch — sit on the DEFAULT tier, which is deliberate
+// and argued in model-router.js: they are the highest-volume LLM calls in the
+// system and they are a fallback opinion, not the decision.
+const _llmClients = new Map()
+function getAnthropicClient(taskType = 'position_monitor') {
+  if (!_llmClients.has(taskType)) {
+    _llmClients.set(taskType, createLLMClient(process.env, { task: { type: taskType } }))
   }
-  return _anthropicClient
+  return _llmClients.get(taskType)
 }
 
 // Count monitor/weekend LLM usage against the daily budget and stamp the
@@ -2818,7 +2824,10 @@ async function runLoop(db) {
         // D4b: bounded-concurrency, not one-position-at-a-time — see
         // monitorOneWeekendPosition/runWeekendWatchPhase above
         // (docs/d4-loop-block-fix-plan.md).
-        await runBudgetedSubPhase(db, 'weekend_watch', () => runWeekendWatchPhase(db, s, weekendPositions, client), SUB_PHASE_BUDGET_MS * 2)
+        // Its own tiered client: weekend_watch and position_monitor both sit on
+        // the DEFAULT tier today, but sharing one client would silently pin
+        // this phase to the monitor's model if either task were ever re-tiered.
+        await runBudgetedSubPhase(db, 'weekend_watch', () => runWeekendWatchPhase(db, s, weekendPositions, getAnthropicClient('weekend_watch')), SUB_PHASE_BUDGET_MS * 2)
       }
 
       // ---------------------------------------------------------------------
