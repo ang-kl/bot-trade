@@ -3652,15 +3652,32 @@ export default function actionsRouter(db) {
   })
 
   // POST /actions/risk-reassess-apply — apply SELECTED proposals from the last
-  // reassessment. Body: { keys: string[] }. Anything not in the stored
-  // proposal set, or not proposable, is refused rather than guessed at.
+  // reassessment. Body: { keys: string[], at: string }. Anything not in the
+  // stored proposal set, or not proposable, is refused rather than guessed at.
+  //
+  // `at` BINDS THE REQUEST TO THE ASSESSMENT THE OWNER ACTUALLY READ. Without
+  // it the request carried only key names, so if a second run completed in
+  // another tab (or from another device) between rendering the proposals and
+  // clicking Apply, this route would look up the NEWER assessment and apply
+  // *its* values under the same key names — different numbers than the ones
+  // reviewed and ticked, silently, on the money limits. Caught in review on
+  // PR #499. A mismatch is a 409: re-read the current proposals and decide
+  // again, rather than have a stale intent resolved against fresh values.
   router.post('/risk-reassess-apply', async (req, res) => {
     try {
       const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(String) : []
       if (keys.length === 0) return res.status(400).json({ error: 'keys[] is required' })
+      const at = String(req.body?.at || '')
+      if (!at) return res.status(400).json({ error: 'at (the assessment timestamp being applied) is required' })
       const { loadLastAssessment, markApplied, PROPOSABLE } = await import('../services/risk-reassess.js')
       const last = loadLastAssessment(db)
       if (!last) return res.status(400).json({ error: 'no reassessment has been run yet' })
+      if (last.at !== at) {
+        return res.status(409).json({
+          error: 'this assessment has been superseded by a newer run — reload the proposals and choose again',
+          displayed: at, current: last.at,
+        })
+      }
       const byKey = new Map(last.proposals.map(p => [p.key, p]))
       const patch = {}
       const refused = []

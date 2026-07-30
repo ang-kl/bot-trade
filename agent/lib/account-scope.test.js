@@ -48,7 +48,10 @@ test('requestedAccount survives a fresh DB with nothing selected', () => {
 test('accountWhere filters on a real account and not otherwise', () => {
   const on = accountWhere({ accountId: '46130058', all: false }, 'mp.account_id')
   assert.equal(on.active, true)
-  assert.equal(on.where, 'mp.account_id = ?')
+  // NULL rows ride along, matching risk.js / perf-ledger.js / reconciler.js.
+  // Excluding them made the Performance page stop reconciling with its own
+  // ledger (PR #499 review).
+  assert.equal(on.where, '(mp.account_id = ? OR mp.account_id IS NULL)')
   assert.deepEqual(on.params, ['46130058'])
 
   // all → no filter, so a route can interpolate unconditionally.
@@ -74,17 +77,21 @@ test('a scoped positions query returns ONE account — the whole point', () => {
   const rows = db.prepare(
     `SELECT symbol FROM monitored_positions WHERE status = 'active' AND ${scoped.where}`
   ).all(...scoped.params)
-  assert.deepEqual(rows.map(r => r.symbol).sort(), ['BTCUSD', 'US2000'])
+  // This account's rows, plus the unattributable legacy row — same policy as
+  // every other account-scoped query in the codebase.
+  assert.deepEqual(rows.map(r => r.symbol).sort(), ['BTCUSD', 'OLDROW', 'US2000'])
 
-  // The other account's position must NOT appear — this is the bug the owner
-  // hit: every page showed every account's positions identically.
+  // THE POINT: the OTHER account's position must not appear. This is the bug
+  // the owner hit — every page showed every account's positions identically.
+  // A NULL row belongs to no account, so including it leaks nothing; a row
+  // stamped 46979908 does.
   assert.ok(!rows.some(r => r.symbol === 'SOLUSD'))
 
   // Unscoped still sees everything, for ?account=all.
   const all = db.prepare(`SELECT symbol FROM monitored_positions WHERE status = 'active'`).all()
   assert.equal(all.length, 4)
 
-  // The NULL row is hidden but COUNTED, never silently dropped.
+  // The NULL row is INCLUDED and counted, so the count can be stated.
   assert.equal(countUnattributed(db, 'monitored_positions', "status = 'active'"), 1)
 })
 

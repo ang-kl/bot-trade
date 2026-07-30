@@ -368,14 +368,16 @@ export default function stateRouter(db) {
     // accountId travels WITH the rows so the UI can name whose positions these
     // are beside the table (owner: "I still cannot know which account I am
     // trading in the page — can you state on the beside of the 'Open
-    // positions' table"). unattributed says how many active rows were hidden
-    // for carrying no account_id, so pre-M1 rows never vanish silently.
+    // positions' table"). legacyRows says how many of these rows carry no
+    // account_id — they are INCLUDED, matching the convention used by risk.js
+    // and buildPerfLedger, and counted so the count can be stated rather than
+    // left as a silent assumption.
     res.json({
       positions: enriched,
       snapshotAt: snapAt,
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
-      unattributed: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
+      legacyRows: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
     })
   })
 
@@ -1086,7 +1088,7 @@ export default function stateRouter(db) {
       trades: rows.map(r => ({ ...r, label_decoded: describeLabel(r.label_raw).text })),
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
-      unattributed: acct.active
+      legacyRows: acct.active
         ? countUnattributed(db, 'trades', "status IN ('closed','rejected')")
         : 0,
     })
@@ -1239,7 +1241,7 @@ export default function stateRouter(db) {
         rows,
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
-        unattributed: acct.active ? countUnattributed(db, 'pending_orders') : 0,
+        legacyRows: acct.active ? countUnattributed(db, 'pending_orders') : 0,
       })
     } catch (e) {
       res.json({ rows: [], error: e.message })
@@ -1266,7 +1268,7 @@ export default function stateRouter(db) {
       rows,
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
-      unattributed: acct.active ? countUnattributed(db, 'risk_events') : 0,
+      legacyRows: acct.active ? countUnattributed(db, 'risk_events') : 0,
     })
   })
 

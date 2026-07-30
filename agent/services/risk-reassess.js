@@ -87,19 +87,37 @@ export function clampProposal(key, raw) {
   return { value: clampedValue, clamped: clampedValue !== n }
 }
 
-/** Closed-trade statistics the model needs to reason about size. Pure SQL. */
+/**
+ * Closed-trade statistics the model needs to reason about size.
+ *
+ * P&L LIVES IN net_pnl, NOT pnl_usd. The first version of this query used
+ * `pnl_usd`, which does not exist on the trades table (db.js declares
+ * `gross_pnl` and `net_pnl`) — so it threw on every real database, the broad
+ * catch below swallowed it, and every Re-Risk prompt was told "closed trades:
+ * 0". The model would then have sized the account's money limits from no
+ * evidence at all while appearing to have read its record. Caught in review on
+ * PR #499; the original test masked it by creating its own table WITH a
+ * pnl_usd column, so the test now builds the real schema instead.
+ *
+ * net_pnl is the honest figure (after commission and swap); gross_pnl is the
+ * fallback for older rows that only carry the gross number.
+ */
 export function tradeStats(db, accountId = null) {
   try {
-    const where = accountId != null ? 'AND account_id = ?' : ''
+    // Same NULL-row convention as the rest of the codebase (risk.js:61,
+    // perf-ledger.js:130, reconciler.js:530): a row with no account_id belongs
+    // to no account and is counted for whichever one is being asked about.
+    const where = accountId != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
     const params = accountId != null ? [String(accountId)] : []
     const row = db.prepare(
       `SELECT COUNT(*) AS n,
-              SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-              AVG(CASE WHEN pnl_usd > 0 THEN pnl_usd END) AS avgWin,
-              AVG(CASE WHEN pnl_usd < 0 THEN pnl_usd END) AS avgLoss,
-              MIN(pnl_usd) AS worst,
-              SUM(pnl_usd) AS net
-         FROM trades WHERE status = 'closed' AND pnl_usd IS NOT NULL ${where}`
+              SUM(CASE WHEN COALESCE(net_pnl, gross_pnl) > 0 THEN 1 ELSE 0 END) AS wins,
+              AVG(CASE WHEN COALESCE(net_pnl, gross_pnl) > 0 THEN COALESCE(net_pnl, gross_pnl) END) AS avgWin,
+              AVG(CASE WHEN COALESCE(net_pnl, gross_pnl) < 0 THEN COALESCE(net_pnl, gross_pnl) END) AS avgLoss,
+              MIN(COALESCE(net_pnl, gross_pnl)) AS worst,
+              SUM(COALESCE(net_pnl, gross_pnl)) AS net
+         FROM trades
+        WHERE status = 'closed' AND COALESCE(net_pnl, gross_pnl) IS NOT NULL ${where}`
     ).get(...params) || {}
     const n = Number(row.n) || 0
     return {
@@ -128,7 +146,7 @@ export function buildContext(db, { accountId = null, includeWatchlist = false } 
   const leverage = getAccountLeverage(db, config, accountId)
   let openPositions = 0
   try {
-    const w = accountId != null ? 'AND account_id = ?' : ''
+    const w = accountId != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
     const p = accountId != null ? [String(accountId)] : []
     openPositions = db.prepare(
       `SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active' ${w}`

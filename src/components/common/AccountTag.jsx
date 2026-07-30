@@ -15,12 +15,14 @@
 import { accountLabel, selectedAccountId } from '../../lib/selected-account.js'
 
 /**
- * @param {{accountId?: string|number|null, unattributed?: number, className?: string}} props
+ * @param {{accountId?: string|number|null, legacyRows?: number, className?: string}} props
  *   accountId — from the route payload (`'all'` for a portfolio read). Falls
  *   back to the client's selected account when the route did not say.
- *   unattributed — rows the route hid for carrying no account_id.
+ *   legacyRows — rows INCLUDED here that carry no account_id, so they count for
+ *   every account rather than any one of them. Shown because a number that
+ *   includes unattributable rows should say so.
  */
-export default function AccountTag({ accountId, unattributed = 0, className = '' }) {
+export default function AccountTag({ accountId, legacyRows = 0, className = '' }) {
   const id = accountId ?? selectedAccountId()
   if (id == null) return null
   const all = String(id) === 'all'
@@ -35,12 +37,12 @@ export default function AccountTag({ accountId, unattributed = 0, className = ''
         : 'Every row in this table belongs to this account'}
     >
       {label}
-      {unattributed > 0 && (
+      {legacyRows > 0 && (
         <span
           className="text-[var(--color-warning-text)]"
-          title={`${unattributed} row(s) carry no account and are not shown here — they predate account stamping. Use the portfolio view to see them.`}
+          title={`Includes ${legacyRows} row(s) that carry no account — they predate account stamping, so they count for every account rather than any one of them.`}
         >
-          +{unattributed}?
+          +{legacyRows}?
         </span>
       )}
     </span>

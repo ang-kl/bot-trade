@@ -19,11 +19,23 @@
 // explicitly, which is the difference between a portfolio view and an
 // accident.
 //
-// NULL account_id rows are NOT silently folded into whichever account is
-// selected. They predate stamping (or were written by a global pass), so
-// attributing them would be a guess with money attached. They are excluded
-// from a scoped read and COUNTED, so a route can report "3 unattributed rows
-// hidden" rather than quietly dropping them.
+// NULL account_id rows are INCLUDED, following the convention every other
+// account-scoped query in this codebase already uses —
+// `(account_id = ? OR account_id IS NULL)` at risk.js:61, perf-ledger.js:130,
+// reconciler.js:530, lessons-tuner.js:90, pnl-backfill.js:87.
+//
+// The first version of this file EXCLUDED them, on the reasoning that an
+// unattributable row should not be credited to whichever account happens to be
+// selected. That reasoning is defensible in isolation and wrong in context:
+// buildPerfLedger includes those rows, so excluding them here made the
+// Performance page stop reconciling with itself — a ledger carrying the legacy
+// P&L beside Today/session tables that omitted it. Caught in review on PR #499.
+// One convention, applied everywhere, beats two defensible ones.
+//
+// Such rows are still COUNTED and reported (`legacyRows`), because "these
+// numbers include N rows we cannot attribute" is worth saying out loud. A NULL
+// row belongs to no account, so including it cannot leak one account's trades
+// into another's view — which is the failure this module exists to fix.
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
@@ -64,12 +76,17 @@ export function accountWhere(scope, column = 'account_id') {
   if (!scope || scope.all || scope.accountId == null) {
     return { where: '', params: [], active: false }
   }
-  return { where: `${column} = ?`, params: [String(scope.accountId)], active: true }
+  return {
+    where: `(${column} = ? OR ${column} IS NULL)`,
+    params: [String(scope.accountId)],
+    active: true,
+  }
 }
 
 /**
- * How many rows a scoped read hid because they carry no account_id. Counted,
- * never inferred — the point is to be able to SAY the number.
+ * How many rows in a scoped read carry no account_id, and so are counted for
+ * every account rather than any one of them. Counted, never inferred — the
+ * point is to be able to SAY the number.
  *
  * Best effort: a missing table or column reports 0 rather than throwing into
  * a read route.

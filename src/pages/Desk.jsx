@@ -160,7 +160,7 @@ export default function Desk() {
   // Whose positions the route says these are, + rows it hid for having no
   // account_id. /state/positions is account-scoped server-side now, so Desk
   // needs no query param — it gets the selected account by default.
-  const [posScope, setPosScope] = useState({ accountId: null, unattributed: 0 })
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const [events, setEvents] = useState([])
   const [armed, setArmed] = useState(null)
   const [config, setConfig] = useState(null)
@@ -303,7 +303,7 @@ export default function Desk() {
       const rows = s.lastResults?.scans || []
       setScans(rows)
       setPositions(p.rows || p.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, unattributed: p?.unattributed ?? 0 })
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
@@ -488,7 +488,7 @@ export default function Desk() {
       <Section
         id="openpnl"
         title="Open trades — floating P&L"
-        tag={<AccountTag accountId={posScope.accountId} unattributed={posScope.unattributed} />}
+        tag={<AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />}
         summary={(() => {
           const openPositions = broker?.positions || []
           if (openPositions.length === 0) return 'flat'

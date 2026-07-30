@@ -1088,7 +1088,7 @@ export default function Performance() {
   const [loadedAt, setLoadedAt] = useState(() => Date.now())
   // Whose positions the route says these are (owner: state the account beside
   // the Open positions table).
-  const [posScope, setPosScope] = useState({ accountId: null, unattributed: 0 })
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
@@ -1114,7 +1114,7 @@ export default function Performance() {
       setAllTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
       setPositions(p?.rows || p?.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, unattributed: p?.unattributed ?? 0 })
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setPostmortems(pm?.rows || pm?.postmortems || [])
       // Per-account ledgers feed the accounts detail row (balance, day P&L
       // scope, 30D forecast pace) — small server-side aggregations, one per
@@ -1153,7 +1153,7 @@ export default function Performance() {
     const r2 = swrPeek(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`)
     if (r2) setEvents(r2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
-    if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, unattributed: p2?.unattributed ?? 0 }) }
+    if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, legacyRows: p2?.legacyRows ?? 0 }) }
     const pm2 = swrPeek('/state/postmortems?limit=200')
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = swrPeek('/state/risk-full')
@@ -1878,7 +1878,7 @@ export default function Performance() {
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
-                  <AccountTag accountId={posScope.accountId} unattributed={t2.key === 'float' ? posScope.unattributed : 0} />
+                  <AccountTag accountId={posScope.accountId} legacyRows={t2.key === 'float' ? posScope.legacyRows : 0} />
                   <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
                 </div>
                 {t2.key === 'closed' && <span style={{ fontSize: 9, color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}

@@ -107,7 +107,10 @@ export default function RiskReassess({ onChanged }) {
     if (keys.length === 0) return
     setBusy('apply'); setError('')
     try {
-      await agentPost('/actions/risk-reassess-apply', { keys })
+      // `at` binds this apply to the assessment ON SCREEN. If another tab ran a
+      // fresh assessment since this one rendered, the agent 409s instead of
+      // applying the newer run's numbers under the same key names.
+      await agentPost('/actions/risk-reassess-apply', { keys, at: last.at })
       load()
       onChanged?.()
     } catch (e) { setError(e.message) } finally { setBusy('') }

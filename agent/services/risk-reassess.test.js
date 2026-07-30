@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import Database from 'better-sqlite3'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { initDB, setState } from '../db.js'
 import {
   PROPOSABLE, clampProposal, parseAssessment, buildPrompt, buildContext,
   runReassessment, loadLastAssessment, markApplied,
@@ -91,17 +94,27 @@ test('the prompt carries no credentials', () => {
 
 // --- end to end, with a fake model ----------------------------------------
 
+// THE REAL SCHEMA, via initDB — not a hand-written table.
+//
+// The first version of this file created its own `trades` table with a
+// `pnl_usd` column. That column does not exist in production (db.js declares
+// gross_pnl and net_pnl), so tradeStats threw on every real database, the broad
+// catch reported "0 closed trades", and the test passed anyway because it had
+// invented the column the code was querying. A test that builds its own schema
+// cannot catch a schema mismatch. This one uses initDB against a temp file, so
+// the query runs against exactly the columns the agent has.
 function seedDb() {
-  const db = new Database(':memory:')
-  db.exec(`
-    CREATE TABLE agent_state (key TEXT PRIMARY KEY, value TEXT);
-    CREATE TABLE trades (id INTEGER PRIMARY KEY, status TEXT, pnl_usd REAL, account_id TEXT);
-    CREATE TABLE monitored_positions (id INTEGER PRIMARY KEY, status TEXT, account_id TEXT);
-  `)
-  db.prepare('INSERT INTO agent_state (key, value) VALUES (?, ?)').run('account_balance_usd', '1000')
-  db.prepare('INSERT INTO agent_state (key, value) VALUES (?, ?)').run('watchlist_json', '["BTCUSD","EURUSD","XAUUSD"]')
-  const t = db.prepare('INSERT INTO trades (status, pnl_usd, account_id) VALUES (?, ?, ?)')
-  t.run('closed', 40, '46130058'); t.run('closed', -60, '46130058'); t.run('closed', -1013, '46130058')
+  const dir = mkdtempSync(join(tmpdir(), 'risk-reassess-'))
+  const db = initDB(join(dir, 'test.db'))
+  setState(db, 'account_balance_usd', '1000')
+  setState(db, 'watchlist_json', '["BTCUSD","EURUSD","XAUUSD"]')
+  const t = db.prepare(
+    `INSERT INTO trades (symbol, side, status, net_pnl, gross_pnl, account_id)
+     VALUES (?, 'BUY', 'closed', ?, ?, ?)`
+  )
+  t.run('EURUSD', 40, 42, '46130058')
+  t.run('GBPUSD', -60, -58, '46130058')
+  t.run('NAS100', -1013, -1010, '46130058')
   return db
 }
 
@@ -118,6 +131,7 @@ test('runReassessment stores a PROPOSAL and applies nothing', async () => {
     summary: 'Cut size.', warnings: [],
     proposals: [{ key: 'perTradeRiskPct', value: 0.01, reason: 'thin sample' }],
   })
+  const configBefore = db.prepare("SELECT value FROM agent_state WHERE key='risk_config_json'").get()?.value ?? null
   const result = await runReassessment(db,
     { provider: 'openai', model: 'gpt-5.6-luna', includeWatchlist: true, accountId: '46130058' },
     { createClient: fakeModel(answer), now: () => new Date('2026-07-30T00:30:00Z') })
@@ -127,8 +141,10 @@ test('runReassessment stores a PROPOSAL and applies nothing', async () => {
   assert.equal(result.includeWatchlist, true)
   assert.equal(result.applied, false)
   assert.equal(result.proposals.length, 1)
-  // The crucial assertion: risk_config_json is UNTOUCHED by a reassessment.
-  assert.equal(db.prepare("SELECT value FROM agent_state WHERE key='risk_config_json'").get(), undefined)
+  // The crucial assertion: a reassessment does not change the risk config.
+  // (The real schema seeds a risk_config_json row, so compare the VALUE — an
+  // absence check would pass for the wrong reason.)
+  assert.equal(configBefore, db.prepare("SELECT value FROM agent_state WHERE key='risk_config_json'").get()?.value ?? null)
   // ...and it is readable back for the "last run" panel.
   assert.equal(loadLastAssessment(db).at, result.at)
 })
@@ -145,6 +161,7 @@ test('a run without the watchlist reports zero symbols', async () => {
 test('an unknown balance refuses to run rather than guess one', async () => {
   const db = seedDb()
   db.prepare("DELETE FROM agent_state WHERE key='account_balance_usd'").run()
+  db.prepare("DELETE FROM agent_state WHERE key LIKE 'acct:%account_balance_usd'").run()
   await assert.rejects(
     () => runReassessment(db, { provider: 'openai', model: 'm' },
       { createClient: fakeModel('{"summary":"s","proposals":[]}') }),
