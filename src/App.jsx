@@ -164,7 +164,6 @@ function navLinkClasses(isActive) {
 
 export default function App() {
   const { theme, setTheme } = useTheme()
-  const [footerOpen, setFooterOpen] = useState(false)
   // The desktop footer wraps to two lines on narrow desktops (measured: ~39px
   // at 1440x900, ~58px at 1280x800), so its height cannot be hardcoded — and
   // the sidebar has to stop exactly above it or the two overlap, which is the
@@ -252,36 +251,11 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          {/* SIDEBAR FOOTER — a real footer, not a bottom-margin trick.
-              Owner (2026-07-30): "I previously requested that the web-app
-              settings currently displayed in the left navigation panel be
-              relocated to the footer section of that navigation panel. Do not
-              place these controls inside the floating action button - FAB. The
-              settings should remain persistently accessible at the bottom of the
-              left sidebar without obscuring the main navigation or page content."
-
-              WHAT WAS WRONG. The settings were the last child of the SAME
-              overflow-y-auto container as the nav, so they scrolled away with it
-              — "persistently accessible" was not achievable by position alone.
-              And the earlier fix for "I still cannot see the active web setting"
-              was pb-[10vh], which pushed them down by a tenth of the VIEWPORT:
-              it made the scroll container taller, which on a short window pushed
-              them further out of reach. That is treated here instead of padded
-              around: the panel no longer scrolls, the nav scrolls INSIDE it, and
-              this footer is a shrink-0 sibling pinned below.
-
-              A border-top rather than a gap does the separating, so no vertical
-              space is spent on emptiness — the owner's screenshot showed a
-              cramped sidebar, and 10vh of padding was part of why. */}
-          <div className="shrink-0 mt-2 pt-2 border-t border-[var(--glass-edge)] flex flex-col gap-1.5">
-            <TabsPanel />
-            <button
-              type="button"
-              onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-              title={`Theme: ${theme} — click to cycle system / light / dark`}
-              className="w-full glass-inset rounded-[10px] px-3 py-2 text-[var(--fs-caption)] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
-            >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
-          </div>
+          {/* The web-app settings are NOT here. Owner (2026-07-30): "move the
+              setting which now on the left navigation bar to the footer."
+              They live in the page footer below, so the sidebar spends all of
+              its width and height on navigation — which is what the cramped
+              screenshot was about. */}
         </div>
       </aside>
 
@@ -364,40 +338,38 @@ export default function App() {
             sticky sidebar; page content scrolls underneath the translucent
             glass-bar material. main's bottom padding above keeps real
             content from ending up permanently hidden under it. */}
-        <footer ref={footerRef} className="glass-fixed hidden lg:flex fixed bottom-0 inset-x-0 lg:left-52 z-40 px-4 py-2.5 text-[9px] text-[var(--color-text-sub)] flex-wrap gap-x-4 gap-y-1">
-          {/* Owner (2026-07-30): "why i still have [the strategy blurb] in the
-              footer". The footer WAS already fixed — it never scrolled — but
-              it was still spending three lines of permanent chrome on prose
-              that is read once. Two things stay visible because they are
-              operational: the build stamp (the only thing that can prove WHICH
-              code is deployed) and the risk line. The rest moves behind the
-              disclosure, same as it already does inside the touch More sheet. */}
+        <footer ref={footerRef} className="glass-fixed hidden lg:flex fixed bottom-0 inset-x-0 lg:left-52 z-40 px-4 py-2 text-[var(--fs-caption)] text-[var(--color-text-sub)] flex-wrap items-center gap-x-3 gap-y-1">
+          {/* THE WEB-APP SETTINGS LIVE HERE (owner 2026-07-30: "move the setting
+              which now on the left navigation bar to the footer"). The footer is
+              already fixed and already spans the content width, so the controls
+              are permanently reachable without spending any sidebar width — and
+              the sidebar gets its full height back for navigation.
+
+              The build stamp stays: it is the only thing that can prove WHICH
+              code is deployed. The risk disclaimer and the strategy blurb are
+              gone at the owner's instruction ("remove all the precautious
+              text") — this is their own private desk, and a warning they wrote
+              to themselves was costing a line of permanent chrome. */}
           <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
-          <span>trading involves risk — demo first, never money you can&apos;t lose</span>
+          <span className="h-3 w-px bg-[var(--glass-edge)]" aria-hidden="true" />
+          <TabsPanel />
           <button
             type="button"
-            onClick={() => setFooterOpen(v => !v)}
-            aria-expanded={footerOpen}
-            className="underline underline-offset-2 cursor-pointer text-[var(--color-text-sub)]"
-          >{footerOpen ? 'less' : 'how it trades'}</button>
-          {/* Keep this line TRUE: 5 registry strategies armed per-stage in
-              Tune; entries/risk gate are deterministic, but the position
-              monitor has an LLM fallback — never claim "no LLM" outright. */}
-          {footerOpen && (
-            <span className="basis-full">5 strategies (fib 61.8% fade default) · armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor fallback</span>
-          )}
+            onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+            title={`Theme: ${theme} — click to cycle system / light / dark`}
+            className="glass-inset rounded-[8px] px-2 py-1 text-[var(--fs-caption)] cursor-pointer hover:shadow-[var(--glow-accent)]"
+          >{THEME_ICON[theme] || '◐'} {theme}</button>
         </footer>
 
         {/* Bottom tab bar — touch only. Always mounted, never conditionally
             hidden on navigation (HIG). Carries the footer copy and the theme
             control inside its More sheet so neither costs vertical space on
             a phone. */}
+        {/* Same trim as the desktop footer (owner: "remove all the precautious
+            text"). The build stamp is kept because it is the only proof of
+            WHICH code is running. */}
         <MobileTabBar
-          footerNote={<>
-            bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__} · 5 strategies (fib 61.8% fade default),
-            armed per stage in Tune · entries &amp; risk gate deterministic — LLM only as position-monitor
-            fallback · trading involves risk — demo first, never money you can&apos;t lose
-          </>}
+          footerNote={<>bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</>}
           themeButton={
             <button
               type="button"
