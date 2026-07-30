@@ -24,6 +24,7 @@ import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
 import { dateTimeParts, nextOpenLabel, priceDp, toMs } from '../lib/std-trade-rows.js'
 import { stratShort } from '../lib/strategy-labels.js'
+import { isLong, sideLabel } from '../lib/side.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 
 // Sort accessors per column key. null/undefined always sorts LAST in either
@@ -220,7 +221,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
           <tbody>
             {slice.map(r => {
               const w = r.at ? dateTimeParts(r.at) : null
-              const long = r.side === 'BUY'
+              // Shared side vocabulary — `=== 'BUY'` printed every DB row
+              // ('long'/'short') as "Short", including outright longs.
+              const long = isLong(r.side)
               const mh = marketHours?.[String(r.symbol || '').toUpperCase()]
               // Progress read: in profit → remaining distance to each TP
               // ladder level (nearest, 2nd, 3rd); in loss → distance left
@@ -279,8 +282,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                       {r.reason || '—'}
                     </td>
                     <td className="py-1 pr-3"><Badge tone={r.source.tone}>{r.source.text}</Badge></td>
-                    <td className={`py-1 pr-3 ${long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
-                      {r.side ? (long ? 'Long' : 'Short') : '—'}
+                    <td className={`py-1 pr-3 ${long === null ? 'text-[var(--color-text-sub)]' : long ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                      {/* An unrecognised side prints '—', not "Short". */}
+                      {sideLabel(r.side) ?? '—'}
                     </td>
                     <td className="py-1 pr-3 text-right whitespace-nowrap">{r.qtyText ?? num(r.qty)}</td>
                     <td className="py-1 pr-3 text-right whitespace-nowrap">{num(r.entry)}{ccyTag(r.ccy)}</td>

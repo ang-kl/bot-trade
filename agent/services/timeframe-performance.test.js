@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { timeframePerformance, WINDOWS } from './timeframe-performance.js'
+import { DEFAULT_AUTOTRADE_TIMEFRAMES } from '../lib/timeframes.js'
 
 function mkDb(timeframes = ['4h', '1d']) {
   const db = initDB(':memory:')
@@ -102,8 +103,13 @@ test('open trades and ISO-with-T timestamps are handled', () => {
   assert.equal(out.rows[0].cells['2h'].outcome, 'win')
 })
 
-test('missing autotrade_timeframes state falls back to defaults', () => {
+test('missing autotrade_timeframes state falls back to THE shared default', () => {
   const db = initDB(':memory:')
   const out = timeframePerformance(db)
-  assert.deepEqual(out.rows.map(r => r.timeframe), ['4h', '1d'])
+  // Reads the constant rather than repeating a literal. This test used to pin
+  // ['4h','1d'] by hand, which meant the owner changing the default (2026-07-30:
+  // "1w 3d 1d 12h 8h 4h 1h 30m 15m 10m 5m 2m") failed a test that was only ever
+  // asserting "the fallback is used" — the list itself is pinned once, in
+  // agent/lib/timeframes.default.test.js.
+  assert.deepEqual(out.rows.map(r => r.timeframe), [...DEFAULT_AUTOTRADE_TIMEFRAMES])
 })

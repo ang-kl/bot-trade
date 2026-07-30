@@ -9,6 +9,7 @@
 // special-text · --gl/--gbd/--gsh→--color-surface/--color-border/--glass-
 // shadow. Collect-forward: durations never recorded render "—".
 import { useMemo, useRef, useState } from 'react'
+import { sideLabelUpper } from '../lib/side.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -84,8 +85,8 @@ function shape(trades, pmByTrade) {
       const d = closedMs != null ? new Date(closedMs) : null
       return {
         id: t.id, kind, sym: t.symbol,
-        side: String(t.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT',
-        sd: (String(t.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT') + (t.volume != null ? ` ${t.volume} lots` : ''),
+        side: sideLabelUpper(t.side) ?? '—',
+        sd: (sideLabelUpper(t.side) ?? '—') + (t.volume != null ? ` ${t.volume} lots` : ''),
         strat: t.label_strategy || t.strategy || '—',
         when: d ? `${d.getUTCDate()} ${MO[d.getUTCMonth()]} ${openedMs != null ? ft(openedMs) : '—'}→${ft(closedMs)}` : '—',
         pnl: Number(t.net_pnl), close, note,

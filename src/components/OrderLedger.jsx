@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { orderStrategy, orderTimeframe, orderStatusLabel, orderTriggerPrice, orderTpSlDistance, orderPendingMs, fmtDuration, expiresLabel, isoWeek } from '../lib/order-ledger-rows.js'
 import { dateTimeParts } from '../lib/std-trade-rows.js'
+import { isLong } from '../lib/side.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
 
@@ -82,7 +83,7 @@ function Row({ o, gone, action = null }) {
 }
 
 function QueuedRow({ q, onDone }) {
-  const long = String(q.side).toUpperCase() === 'BUY'
+  const long = isLong(q.side)
   const [busy, setBusy] = useState(false)
   const toTp = q.limit_price != null && q.tp != null ? Math.abs(Number(q.tp) - Number(q.limit_price)) : null
   const toSl = q.limit_price != null && q.sl != null ? Math.abs(Number(q.limit_price) - Number(q.sl)) : null

@@ -31,6 +31,7 @@ import { recordError } from './services/error-log.js'
 import { startLagMonitor, sampleLag } from './services/event-loop-lag.js'
 import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
+import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
@@ -744,14 +745,9 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
   // caps and equity stop still veto — scope decides what is
   // CONSIDERED, the gates decide what EXECUTES.
   if (synth.auto_trade && (getState(db, 'autotrade_scope') || 'all') === 'armed') {
-    let allowedTfs = ['4h', '1d']
-    const tfJson = getState(db, 'autotrade_timeframes')
-    if (tfJson) {
-      try {
-        const parsedTfs = JSON.parse(tfJson)
-        if (Array.isArray(parsedTfs) && parsedTfs.length > 0) allowedTfs = parsedTfs
-      } catch { /* keep default */ }
-    }
+    // One shared reader and one shared default (lib/timeframes.js) — four
+    // modules used to carry their own ['4h','1d'] literal.
+    const allowedTfs = armedTimeframes(db, getState)
     if (!allowedTfs.includes(synth.timeframe)) {
       log(`Timeframe gate: ${sym} blocked — ${synth.timeframe} not in autotrade_timeframes [${allowedTfs.join(',')}]`)
       synth.auto_trade = false

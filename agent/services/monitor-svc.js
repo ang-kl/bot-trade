@@ -100,6 +100,25 @@ export async function runMonitorCheck(client, position) {
     .trim()
 
   const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '')
+  // AN EMPTY COMPLETION IS A DIAGNOSIS, NOT A PARSE ERROR. JSON.parse('')
+  // throws "Unexpected end of JSON input", which is what the LLM-monitor badge
+  // showed for 21 consecutive failures on 2026-07-30 — a string that names
+  // neither the model nor the cause, so it read as corrupt output when the
+  // actual cause was a reasoning model spending its whole completion budget on
+  // reasoning and returning no text at all (see lib/llm-provider.js).
+  // finish_reason distinguishes "cut off" from "had nothing to say"; both are
+  // reported with the model and the token usage so the next failure is one
+  // glance rather than an afternoon.
+  if (!clean) {
+    const u = resp?.usage || {}
+    throw new Error(
+      `LLM returned no text (model=${resp?.model || requested}, ` +
+      `finish_reason=${resp?.finishReason ?? 'unknown'}, ` +
+      `output_tokens=${u.output_tokens ?? '?'}, reasoning_tokens=${u.reasoning_tokens ?? '?'}, ` +
+      `asked max_tokens=${MAX_TOKENS})` +
+      (resp?.finishReason === 'length' ? ' — completion budget exhausted before any visible output' : '')
+    )
+  }
   const parsed = JSON.parse(clean)
 
   // HARD GUARD — never act blind. Without a live price the model cannot know

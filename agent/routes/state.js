@@ -10,6 +10,7 @@ import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { stateEpoch } from '../lib/state-cache.js'
+import { armedTimeframes } from '../lib/timeframes.js'
 import { requestedAccount, accountWhere, countUnattributed } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
@@ -1471,14 +1472,7 @@ export default function stateRouter(db) {
   // (mirrors the default in loop.js's timeframe gate)
   // -----------------------------------------------------------------------
   router.get('/autotrade-timeframes', (_req, res) => {
-    let timeframes = ['4h', '1d']
-    const json = getState(db, 'autotrade_timeframes')
-    if (json) {
-      try {
-        const parsed = JSON.parse(json)
-        if (Array.isArray(parsed) && parsed.length > 0) timeframes = parsed
-      } catch { /* keep default */ }
-    }
+    const timeframes = armedTimeframes(db, getState)
     let matrix = null
     try { matrix = JSON.parse(getState(db, 'autotrade_matrix_json') || 'null') } catch { /* null */ }
     res.json({ timeframes, matrix })

@@ -32,6 +32,7 @@
 // verdict on skill.
 import { useMemo, useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
+import { isLong, sideLabelUpper } from '../lib/side.js'
 
 const UP = 'var(--color-up)', DN = 'var(--color-down)'
 const ACC = 'var(--color-accent)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -94,7 +95,7 @@ function classify(t) {
     if (isTp(reason)) {
       // Did it stop at the planned level, or run past it?
       const ran = Number.isFinite(tp) && Number.isFinite(x)
-        && (t.side === 'BUY' ? x > tp * 1.0005 : x < tp * 0.9995)
+        && (isLong(t.side) === true ? x > tp * 1.0005 : x < tp * 0.9995)
       return ran
         ? { bucket: 'ran past TP', onPlan: true, note: 'exit beyond the planned target — trail or extension, not the original plan' }
         : { bucket: 'TP as planned', onPlan: true, note: 'target hit at the planned level' }
@@ -168,7 +169,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
         return {
           id: `${t.id ?? t.ctrader_position_id ?? t.symbol}-${t.ms}`,
           sym: String(t.symbol || '').toUpperCase(),
-          side: String(t.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT',
+          side: sideLabelUpper(t.side) ?? '—',
           pnl: Number(t.net_pnl),
           hm: new Date(t.ms).toISOString().slice(11, 16),
           strat: t.label_strategy || t.strategy || null,

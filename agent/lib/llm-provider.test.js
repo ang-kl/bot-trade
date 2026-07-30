@@ -7,6 +7,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   llmProviderInfo, toOpenAIBody, fromOpenAIResponse, createLLMClient,
+  REASONING_HEADROOM, MIN_COMPLETION_TOKENS,
 } from './llm-provider.js'
 
 test('provider selection: OpenAI when its key is set, else Anthropic', () => {
@@ -45,11 +46,30 @@ test('toOpenAIBody: system + flattened content, emits max_completion_tokens', ()
     'gpt-4o-mini'
   )
   // gpt-5.x rejects max_tokens; the body must carry max_completion_tokens instead.
-  assert.deepEqual(body, {
-    model: 'gpt-4o-mini', max_completion_tokens: 200,
-    messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }],
-  })
+  assert.equal(body.model, 'gpt-4o-mini')
+  assert.deepEqual(body.messages, [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }])
   assert.equal(body.max_tokens, undefined)
+})
+
+test('THE ASK IS AN OUTPUT BUDGET — reasoning gets its own allowance on top', () => {
+  // On a reasoning model max_completion_tokens bounds REASONING + OUTPUT. Passing
+  // the caller's 768 straight through let the model spend all of it thinking and
+  // return content:'' with finish_reason 'length' — which is how the LLM position
+  // monitor died 21 checks in a row on 2026-07-30, reported only as
+  // "Unexpected end of JSON input".
+  assert.equal(toOpenAIBody({ max_tokens: 768, messages: [] }, 'm').max_completion_tokens,
+    Math.max(MIN_COMPLETION_TOKENS, 768 * REASONING_HEADROOM))
+  assert.ok(toOpenAIBody({ max_tokens: 768, messages: [] }, 'm').max_completion_tokens > 768,
+    'the budget must exceed what the caller asked for as OUTPUT')
+})
+
+test('a small ask still gets the floor, and a missing ask does not send NaN', () => {
+  assert.equal(toOpenAIBody({ max_tokens: 200, messages: [] }, 'm').max_completion_tokens, MIN_COMPLETION_TOKENS)
+  for (const bad of [undefined, null, 0, -5, 'lots']) {
+    const v = toOpenAIBody({ max_tokens: bad, messages: [] }, 'm').max_completion_tokens
+    assert.equal(v, MIN_COMPLETION_TOKENS, `max_tokens=${bad}`)
+    assert.ok(Number.isFinite(v))
+  }
 })
 
 test('toOpenAIBody flattens Anthropic block content to text', () => {
@@ -64,7 +84,21 @@ test('fromOpenAIResponse maps to the Anthropic shape', () => {
     model: 'gpt-4o-mini',
   }, 'gpt-4o-mini')
   assert.deepEqual(r.content, [{ type: 'text', text: '{"action":"HOLD"}' }])
-  assert.deepEqual(r.usage, { input_tokens: 10, output_tokens: 5 })
+  assert.equal(r.usage.input_tokens, 10)
+  assert.equal(r.usage.output_tokens, 5)
+})
+
+test('finish_reason and reasoning tokens ride along — an empty text is otherwise undiagnosable', () => {
+  // '' alone cannot distinguish "nothing to say" from "cut off mid-thought",
+  // and those need different fixes. monitor-svc names both in its error.
+  const r = fromOpenAIResponse({
+    choices: [{ message: { content: '' }, finish_reason: 'length' }],
+    usage: { prompt_tokens: 900, completion_tokens: 768, completion_tokens_details: { reasoning_tokens: 768 } },
+    model: 'gpt-5-nano',
+  }, 'gpt-5-nano')
+  assert.equal(r.content[0].text, '')
+  assert.equal(r.finishReason, 'length')
+  assert.equal(r.usage.reasoning_tokens, 768)
 })
 
 test('OpenAI client: messages.create round-trips through a fake fetch', async () => {

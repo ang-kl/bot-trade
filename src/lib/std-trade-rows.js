@@ -2,6 +2,7 @@
 // (src/components/StdTradeTable.jsx). Lives outside the component file so
 // react-refresh stays happy and non-React code can import the helpers.
 import { notionalUsd, usdLossPerLot } from '../../agent/lib/contracts.js'
+import { sideDir } from './side.js'
 
 // SQLite/ISO datetimes are UTC (sometimes without a zone marker); broker
 // snapshots may pass epoch-ms numbers. Normalise both.
@@ -61,7 +62,13 @@ function levelMoney(symbol, side, lots, entry, level, ref, rates) {
   const l = Number(level)
   const q = Number(lots)
   if (!Number.isFinite(e) || !Number.isFinite(l) || !Number.isFinite(q) || q === 0) return null
-  const dir = String(side || '').toUpperCase() === 'BUY' ? 1 : -1
+  // DIRECTION VIA THE SHARED VOCABULARY. This was `=== 'BUY' ? 1 : -1`, which
+  // read the DB's 'long' as a SHORT and inverted the sign on every long held in
+  // monitored_positions — the owner's "Stop-Loss shows a positive dollar"
+  // report. An unknown side returns null money rather than a confidently
+  // wrong sign: without direction, this number has no meaning.
+  const dir = sideDir(side)
+  if (dir == null) return null
   // usdLossPerLot takes the magnitude; the direction decides the sign.
   const perLot = usdLossPerLot(symbol, l - e, Number.isFinite(Number(ref)) ? Number(ref) : e, rates)
   if (!Number.isFinite(perLot)) return null
