@@ -70,7 +70,12 @@ test('cpp placeOrder: pushes /connect once, then POST /order with bearer auth', 
   assert.equal(requests[1].method, 'POST')
   assert.equal(requests[1].url, '/order')
   assert.equal(requests[1].auth, 'Bearer sekret')
-  assert.deepEqual(JSON.parse(requests[1].body), payload)
+  // The body is the payload PLUS the account, stamped by exec-engine's
+  // withAccount(). Phase 2: the sidecar's own primary-account default
+  // (engine.cpp:276-280) must be unreachable from Node, because it silently
+  // mis-routed every exit on a non-primary account. See
+  // agent/multi-account-routing.characterisation.test.js.
+  assert.deepEqual(JSON.parse(requests[1].body), { ...payload, ctidTraderAccountId: 123 })
 })
 
 test('cpp amendPosition: POST /amend with args passthrough', async () => {
@@ -79,7 +84,8 @@ test('cpp amendPosition: POST /amend with args passthrough', async () => {
   assert.equal(requests[0].method, 'POST')
   assert.equal(requests[0].url, '/amend')
   assert.equal(requests[0].auth, 'Bearer sekret')
-  assert.deepEqual(JSON.parse(requests[0].body), args)
+  // args + the stamped account — see the /order test above.
+  assert.deepEqual(JSON.parse(requests[0].body), { ...args, ctidTraderAccountId: 123 })
 })
 
 test('cpp closePosition: POST /close with args passthrough', async () => {
@@ -87,7 +93,8 @@ test('cpp closePosition: POST /close with args passthrough', async () => {
   await closePosition(CREDS, args)
   assert.equal(requests[0].method, 'POST')
   assert.equal(requests[0].url, '/close')
-  assert.deepEqual(JSON.parse(requests[0].body), args)
+  // args + the stamped account — see the /order test above.
+  assert.deepEqual(JSON.parse(requests[0].body), { ...args, ctidTraderAccountId: 123 })
 })
 
 test('cpp cancelOrder: POST /cancel with bearer auth, accountId + orderId body', async () => {

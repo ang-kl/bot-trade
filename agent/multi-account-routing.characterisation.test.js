@@ -1,16 +1,20 @@
 // node --test agent/multi-account-routing.characterisation.test.js
 //
-// PHASE 1 — characterisation of the multi-account order path. Owner-approved
-// 2026-07-30 ("3. Phase 1"), scoped to TESTS ONLY: nothing here changes
-// behaviour, and the gate this file forms is the prerequisite for the Phase-2
-// routing work.
+// PHASES 1 AND 2 — the multi-account order path. Owner-approved 2026-07-30.
 //
-// WHAT A CHARACTERISATION TEST IS, AND IS NOT. Each assertion below records what
-// the code does TODAY so that a later change is visible rather than silent. An
-// assertion is not an endorsement — several of these pin behaviour that is
-// wrong, and they say so at the assertion. When Phase 2 stamps the account on
-// every exec call, the tests marked HOLE are the ones expected to change, and
-// changing them is the proof the fix landed.
+// Phase 1 wrote these tests to record a defect: exits carried no account, so the
+// C++ sidecar filled in its own primary, and on every non-primary account
+// positions opened and were then never managed. Phase 2 fixed it, in
+// exec-engine's withAccount(), after the owner chose "refuse" over "default".
+//
+// THE TESTS THAT RECORDED THE DEFECT ARE STILL HERE, FLIPPED. Each one is now
+// titled FIXED and asserts the opposite of what it used to assert — the calls
+// that read "resolvedBy: primary, account: A" read "resolvedBy: explicit,
+// account: B", and each still states what it used to do. Keeping the pair
+// visible is the point: it is the difference between "the tests pass" and "the
+// tests changed in exactly the way the fix predicted". Tests 11 and 12 are NOT
+// flipped, because the C++ behaviour they record is unchanged and the
+// sidecar-side refusal work depends on it.
 //
 // WHY A FAKE BROKER RATHER THAN MORE READING. Every claim made about
 // multi-account safety up to now came from reading code. The specific question
@@ -28,6 +32,7 @@ import { startFakeBroker } from './test-support/fake-broker.js'
 import {
   placeOrder, amendPosition, closePosition, cancelOrder, reconcile,
   invalidateSidecarSession, pushSidecarSession, pingSidecar, setFallbackReporter,
+  resolveOrderAccount,
 } from './lib/exec-engine.js'
 import { mayFallbackToJs } from './lib/exec-fallback.js'
 
@@ -64,6 +69,20 @@ const ENTRY = {
 }
 
 /**
+ * Plant a filled position on `acct`, using THAT account's own credentials.
+ *
+ * The tests used to plant with `placeOrder(creds(A), {ctidTraderAccountId: B})`
+ * — one set of credentials driving two accounts. That shortcut is now refused by
+ * design (see the guard_account_mismatch test): credentials naming one account
+ * and a payload naming another is a caller confusion, and production has no such
+ * caller. So the helper does what the real code does — one account's creds per
+ * account's order.
+ */
+async function plantOn(acct, extra = {}) {
+  return placeOrder(creds(acct), { ...ENTRY, ...extra })
+}
+
+/**
  * Every test gets a fresh broker AND a cleared session memo. `lastPushedKey` is
  * module-level state in exec-engine.js, so a test that forgot this would
  * inherit the previous test's session and prove nothing.
@@ -90,12 +109,13 @@ async function withBroker(fn, brokerOpts) {
 // 1. THE PATHS THAT ARE ALREADY CORRECT — entries and reads stamp the account.
 // ---------------------------------------------------------------------------
 
-test('an entry payload that stamps ctidTraderAccountId lands on THAT account', async () => {
+test('an entry lands on the account its credentials name, not on the session primary', async () => {
   // loop.js:418 builds the autotrade payload with an explicit
-  // ctidTraderAccountId, and this is what that buys: the fill lands on B even
-  // though A is the session primary.
+  // ctidTraderAccountId, and exec-engine now guarantees one is present either
+  // way. This is what that buys: the fill lands on B even though A is primary.
   await withBroker(async (broker) => {
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
+    await reconcile(creds(A)) // A is the first push, so A is the primary
+    await plantOn(B)
     assert.equal(broker.primary, A, 'A is the primary — the roster led with it')
     const call = broker.lastCall('order')
     assert.equal(call.account, B)
@@ -109,7 +129,7 @@ test('cancelOrder stamps the account itself, so it routes correctly with no help
   // exec-engine.js:323 puts ctidTraderAccountId in the /cancel body from
   // creds.accountId. One of only two write paths that does.
   await withBroker(async (broker) => {
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(A) })
+    await plantOn(A)
     await cancelOrder(creds(B), { orderId: 555 })
     const call = broker.lastCall('cancel')
     assert.equal(call.account, B)
@@ -119,8 +139,8 @@ test('cancelOrder stamps the account itself, so it routes correctly with no help
 
 test('reconcile stamps the account itself and returns only that account\'s positions', async () => {
   await withBroker(async (broker) => {
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(A) })
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
+    await plantOn(A)
+    await plantOn(B)
     const snapA = await reconcile(creds(A))
     const snapB = await reconcile(creds(B))
     assert.equal(snapA.position.length, 1)
@@ -141,75 +161,135 @@ test('reconcile stamps the account itself and returns only that account\'s posit
 })
 
 // ---------------------------------------------------------------------------
-// 2. HOLE — the exit paths send no account id, so the broker fills in the
-//    session primary. Twelve call sites are affected; see the list at the end
-//    of this file.
+// 2. WAS THE HOLE, NOW THE FIX — the exit paths still send no account id, but
+//    exec-engine's withAccount() stamps it from creds before the request leaves
+//    Node, so the sidecar's primary-account default is never reached.
+//
+//    These four tests were the ones that recorded the defect. They are flipped
+//    rather than deleted: the assertion that used to read "resolvedBy: primary,
+//    account: A" now reads "resolvedBy: explicit, account: B", and each one
+//    still says what it used to do. That contrast IS the proof the fix landed,
+//    and it is why the file is worth keeping under this name.
 // ---------------------------------------------------------------------------
 
-test('HOLE: closePosition sends no account id, so the broker resolves it from the primary', async () => {
+test('FIXED: closePosition stamps the account from creds, so an exit for B reaches B', async () => {
   await withBroker(async (broker) => {
-    // A position genuinely on B, placed the way the autotrade path does it.
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
+    // Establish A as the session primary, then open a position genuinely on B.
+    await reconcile(creds(A))
+    await plantOn(B)
     const [pidOnB] = broker.positionIds(B)
 
-    // Now close it the way profit-keeper.js:324 does — positionId and volume,
-    // no account. The creds say B. The broker is told nothing.
-    await assert.rejects(
-      closePosition(creds(B), { positionId: pidOnB, volume: 100_000 }),
-      (err) => {
-        // cTrader position ids are per-account, so the close cannot find its
-        // position on A and says so. loop.js matches this exact substring.
-        assert.match(err.message, /POSITION_NOT_FOUND/)
-        return true
-      },
-    )
+    // Closed the way profit-keeper.js:324 does — positionId and volume, no
+    // account. That call site is UNCHANGED; the delegator now supplies the
+    // account. Before the fix this failed with POSITION_NOT_FOUND against A,
+    // and B's position stayed open.
+    const out = await closePosition(creds(B), { positionId: pidOnB, volume: 100_000 })
+    assert.equal(out.ok, true)
 
     const call = broker.lastCall('close')
-    assert.equal(call.resolvedBy, 'primary', 'the caller named no account, so the broker guessed')
-    assert.equal(call.account, A, 'and it guessed A — the session primary — not B, which the creds named')
-    assert.deepEqual(broker.positionIds(B), [pidOnB], 'B\'s position is STILL OPEN: the exit did not happen')
+    assert.equal(call.resolvedBy, 'explicit', 'the broker was told the account; it did not have to guess')
+    assert.equal(call.account, B, 'and it acted on B, which is what the credentials named')
+    assert.equal(call.body.ctidTraderAccountId, Number(B), 'the id is in the wire body')
+    assert.deepEqual(broker.positionIds(B), [], 'B\'s position is closed — the exit actually happened')
+    assert.equal(broker.primary, A, 'and the primary is still A, which no longer matters')
   })
 })
 
-test('HOLE: amendPosition has the same gap — a stop-loss move aimed at B is applied against A', async () => {
+test('FIXED: amendPosition stamps too — a stop-loss move aimed at B is applied on B', async () => {
   await withBroker(async (broker) => {
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B), stopLoss: 1.0 })
+    await reconcile(creds(A))
+    await plantOn(B, { stopLoss: 1.0 })
     const [pidOnB] = broker.positionIds(B)
-    await assert.rejects(
-      // profit-keeper.js:355 / loss-guardian.js:203 / trade-guard.js:155.
-      amendPosition(creds(B), { positionId: pidOnB, stopLoss: 1.5 }),
-      (err) => { assert.match(err.message, /POSITION_NOT_FOUND/); return true },
-    )
-    assert.equal(broker.lastCall('amend').account, A)
-    assert.equal(broker.positions(B)[0].stopLoss, 1.0, 'the protective stop was never moved')
+    // profit-keeper.js:355 / loss-guardian.js:203 / trade-guard.js:155, unchanged.
+    await amendPosition(creds(B), { positionId: pidOnB, stopLoss: 1.5 })
+    assert.equal(broker.lastCall('amend').account, B)
+    assert.equal(broker.positions(B)[0].stopLoss, 1.5, 'the protective stop moved, on the right account')
   })
 })
 
-test('HOLE: when the primary IS the intended account the exit works — which is why this hides', async () => {
-  // The same code, the same missing field, and a clean pass. The defect is
-  // invisible on a single-account desk and invisible on the primary account of
-  // a multi-account desk. It only appears on the accounts nobody is watching.
+test('FIXED: the primary account no longer decides anything for an exit', async () => {
+  // The test that used to be titled "when the primary IS the intended account
+  // the exit works — which is why this hides". It hid because the outcome
+  // depended on the primary. Now both accounts behave identically, which is the
+  // property that makes the bug unable to come back quietly.
   await withBroker(async (broker) => {
-    await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(A) })
-    const [pidOnA] = broker.positionIds(A)
-    const out = await closePosition(creds(A), { positionId: pidOnA, volume: 100_000 })
-    assert.equal(out.ok, true)
-    assert.equal(broker.lastCall('close').resolvedBy, 'primary', 'still guessed — it just guessed right')
-    assert.deepEqual(broker.positionIds(A), [])
+    for (const acct of [A, B]) {
+      await plantOn(acct)
+      const [pid] = broker.positionIds(acct)
+      const out = await closePosition(creds(acct), { positionId: pid, volume: 100_000 })
+      assert.equal(out.ok, true, `close on ${acct} should succeed`)
+      assert.equal(broker.lastCall('close').resolvedBy, 'explicit')
+      assert.equal(broker.lastCall('close').account, acct)
+      assert.deepEqual(broker.positionIds(acct), [])
+    }
   })
 })
 
+test('FIXED: a contradictory account is refused rather than resolved one way or the other', async () => {
+  // If the payload names one account and the credentials name another, somebody
+  // is confused about which account this operation belongs to. Picking either
+  // one risks acting on the wrong account's money, so the delegator refuses and
+  // nothing reaches the broker. No current caller can trigger this — every one
+  // derives both from the same id — so this exists to catch the next caller.
+  await withBroker(async (broker) => {
+    await reconcile(creds(A))
+    const before = broker.calls.length
+    for (const call of [
+      () => placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) === parseInt(A) ? 1 : parseInt(B) }),
+      () => closePosition(creds(A), { positionId: 1, volume: 1, ctidTraderAccountId: parseInt(B) }),
+      () => amendPosition(creds(A), { positionId: 1, stopLoss: 1, ctidTraderAccountId: parseInt(B) }),
+    ]) {
+      await assert.rejects(call(), (err) => {
+        assert.match(err.message, /guard_account_mismatch/)
+        assert.match(err.message, /refusing to guess/)
+        return true
+      })
+    }
+    assert.equal(broker.calls.length, before, 'not one of the three reached the broker')
+  })
+})
+
+test('FIXED: an operation with no account anywhere is refused, not handed to the broker to pick', async () => {
+  await withBroker(async (broker) => {
+    await reconcile(creds(A))
+    const before = broker.calls.length
+    const noAcct = { ...creds(A), accountId: null }
+    await assert.rejects(
+      closePosition(noAcct, { positionId: 1, volume: 1 }),
+      (err) => { assert.match(err.message, /guard_no_account/); return true },
+    )
+    assert.equal(broker.calls.length, before)
+  })
+})
+
+test('FIXED: resolveOrderAccount\'s verdicts, as a pure function', () => {
+  assert.deepEqual(resolveOrderAccount({ accountId: '4001' }, {}), { ok: true, accountId: 4001 })
+  assert.deepEqual(resolveOrderAccount({ accountId: '4001' }, { ctidTraderAccountId: 4001 }), { ok: true, accountId: 4001 })
+  // A payload-only account is honoured — cancelOrder and the entry paths rely
+  // on agreement, not on the payload being empty.
+  assert.deepEqual(resolveOrderAccount({}, { ctidTraderAccountId: '4002' }), { ok: true, accountId: 4002 })
+  assert.equal(resolveOrderAccount({ accountId: '4001' }, { ctidTraderAccountId: 4002 }).ok, false)
+  assert.equal(resolveOrderAccount({}, {}).ok, false)
+  assert.equal(resolveOrderAccount(null, null).ok, false)
+  // Empty string is "absent", not account 0 — Number('') is 0, which would have
+  // been a silent route to a nonexistent account.
+  assert.equal(resolveOrderAccount({ accountId: '' }, {}).ok, false)
+  assert.equal(resolveOrderAccount({ accountId: '4001' }, { ctidTraderAccountId: '' }).accountId, 4001)
+})
+
 // ---------------------------------------------------------------------------
-// 3. HOLE — the session memo SORTS the roster, which erases the ordering that
-//    decides the primary. This is the mechanism that makes §2 permanent.
+// 3. THE SESSION MEMO — it used to SORT the roster, which erased the ordering
+//    that decides the primary. Now it does not. Note what this does and does not
+//    buy: §2's stamping is what fixes routing; this only stops the memo asserting
+//    that two sessions with different primaries are the same session.
 // ---------------------------------------------------------------------------
 
-test('HOLE: the memo key sorts the roster, so switching the primary account does NOT re-push /connect', async () => {
+test('FIXED: the memo key keeps roster ORDER, so a change of primary re-pushes /connect', async () => {
   await withBroker(async (broker) => {
     // ctrader-creds.js:46 deliberately leads the roster with the primary:
     //   accountIds = [primary, ...rows.filter(id => id !== primary)]
-    // ensureSidecarSession then keys the memo on [...accountIds].sort() — so
-    // [A,B] and [B,A] produce the SAME key and the second push never happens.
+    // ensureSidecarSession used to key on [...accountIds].sort(), so [A,B] and
+    // [B,A] produced the SAME key and the second push never happened.
     assert.deepEqual(creds(A).accountIds, [A, B])
     assert.deepEqual(creds(B).accountIds, [B, A])
 
@@ -218,8 +298,12 @@ test('HOLE: the memo key sorts the roster, so switching the primary account does
     assert.equal(broker.primary, A)
 
     await reconcile(creds(B))
-    assert.equal(broker.connectCount, 1, 'no second /connect: the sorted roster made the key identical')
-    assert.equal(broker.primary, A, 'so the primary is still A, even though these creds named B')
+    assert.equal(broker.connectCount, 2, 'the key differs now, so the session change is not swallowed')
+    // The primary STILL does not move, because engine.cpp takes its sameSession
+    // branch — see the next test. That is exactly why the stamping in §2, not
+    // this, is the fix.
+    assert.equal(broker.primary, A)
+    assert.deepEqual(broker.roster, [A, B])
   })
 })
 
@@ -245,40 +329,49 @@ test('a re-push with a DIFFERENT accountId does not move the primary — the sid
   })
 })
 
-test('HOLE: the primary is frozen for the life of the session, so unstamped exits have ONE destination', async () => {
-  // The severe form of §2. It is not "which call site ran last" — once a
-  // session is live, nothing short of a token change, a host change or a
-  // reconnect can move the primary. Every unstamped close and amend, for every
-  // account, for as long as that session lasts, resolves to the account that
-  // happened to be named on the FIRST push.
+test('FIXED: the primary is still frozen — and that no longer harms anything', async () => {
+  // The C++ behaviour is UNCHANGED and still surprising: once a session is live,
+  // nothing short of a token change, a host change or a reconnect moves
+  // accountIds_.front(). This test keeps recording that, because it is the fact
+  // the sidecar-side refusal work depends on. What changed is that it no longer
+  // has consequences, because no operation reaches the default any more.
   await withBroker(async (broker) => {
-    // First push of the session names A. That decision is now permanent.
     await reconcile(creds(A))
     assert.equal(broker.primary, A)
 
-    // Entries on B work, because they stamp the account.
     await placeOrder(credsNoRoster(B), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
     const [pidOnB] = broker.positionIds(B)
-    assert.equal(broker.primary, A, 'B trading did not make B the primary')
+    assert.equal(broker.primary, A, 'B trading did not make B the primary — still true')
 
-    // Every unstamped exit for that position now fails, and keeps failing.
-    for (const attempt of [1, 2, 3]) {
-      await assert.rejects(
-        closePosition(creds(B), { positionId: pidOnB, volume: 100_000 }),
-        (err) => { assert.match(err.message, /POSITION_NOT_FOUND/); return true },
-        `attempt ${attempt} should still fail — retrying cannot fix a routing bug`,
-      )
-    }
-    assert.equal(broker.callsFor('close').length, 3)
-    assert.ok(broker.callsFor('close').every(c => c.account === A && c.resolvedBy === 'primary'))
-    assert.deepEqual(broker.positionIds(B), [pidOnB], 'B\'s position is open after three close attempts')
-
-    // Only a genuinely new session moves it — here, a token refresh.
-    await reconcile({ ...creds(B), accessToken: 'token-2' })
-    assert.equal(broker.primary, B, 'a fresh session re-elects the primary from the pushed accountId')
-    const out = await closePosition({ ...creds(B), accessToken: 'token-2' }, { positionId: pidOnB, volume: 100_000 })
-    assert.equal(out.ok, true, 'and now the very same unstamped close works')
+    // The exit that used to fail three times in a row now succeeds first time.
+    const out = await closePosition(creds(B), { positionId: pidOnB, volume: 100_000 })
+    assert.equal(out.ok, true)
+    assert.equal(broker.lastCall('close').account, B)
+    assert.equal(broker.lastCall('close').resolvedBy, 'explicit')
     assert.deepEqual(broker.positionIds(B), [])
+    assert.equal(broker.primary, A, 'the primary is untouched and irrelevant')
+  })
+})
+
+test('FIXED: NOTHING reaching the broker resolves by primary any more — the sweep', async () => {
+  // The property, stated once over the whole surface rather than per operation.
+  // If a future change reintroduces an unstamped write, this fails even if the
+  // per-operation tests above were edited to match the regression.
+  await withBroker(async (broker) => {
+    await reconcile(creds(A))     // A becomes the primary…
+    broker.reset()                // …and is dropped from the log, so only B's ops are judged
+    await placeOrder(creds(B), { ...ENTRY })                       // entry, no explicit id in the payload
+    const [pid] = broker.positionIds(B)
+    await amendPosition(creds(B), { positionId: pid, stopLoss: 1.5 })
+    await cancelOrder(creds(B), { orderId: 77 })
+    await reconcile(creds(B))
+    await closePosition(creds(B), { positionId: pid, volume: 100_000 })
+
+    const acting = broker.calls.filter(c => c.op !== 'connect')
+    assert.ok(acting.length >= 5, 'all five operations were exercised')
+    const guessed = acting.filter(c => c.resolvedBy === 'primary')
+    assert.deepEqual(guessed, [], 'no operation may reach the broker without naming its account')
+    assert.ok(acting.every(c => c.account === B), 'and every one acted on B')
   })
 })
 
@@ -397,7 +490,7 @@ test('two accounts in flight at once do not contaminate each other\'s ledger', a
     await broker.arrived('order')
 
     // B's order is submitted and answered while A's reply is still parked.
-    const second = await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
+    const second = await plantOn(B)
     assert.equal(second.position.ctidTraderAccountId, Number(B))
 
     broker.release('order')
@@ -420,7 +513,7 @@ test('a broker reject reaches the caller verbatim, per account', async () => {
     await reconcile(creds(A))
     broker.failNext('order', { status: 422, body: 'order rejected: MARKET_CLOSED' })
     await assert.rejects(
-      placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) }),
+      plantOn(B),
       (err) => {
         assert.match(err.message, /order rejected/)
         assert.match(err.message, /MARKET_CLOSED/)
@@ -430,21 +523,38 @@ test('a broker reject reaches the caller verbatim, per account', async () => {
     assert.equal(broker.positionIds(B).length, 0)
     // The scripted failure was consumed, so the retry behaves normally — a
     // reject must not poison the account.
-    const ok = await placeOrder(creds(A), { ...ENTRY, ctidTraderAccountId: parseInt(B) })
+    const ok = await plantOn(B)
     assert.equal(ok.ok, true)
     assert.equal(broker.positionIds(B).length, 1)
   })
 })
 
 test('an operation on an account outside the authorised roster is refused, not silently retargeted', async () => {
+  // This used to drive the case with creds(A) and a payload naming B. That is now
+  // refused by Node before it reaches the network (see the guard_account_mismatch
+  // test), so there are two independent layers and this one has to be driven
+  // directly at the broker to be exercised at all:
+  //
+  //   layer 1, Node — the account is always named, and a contradiction is refused
+  //   layer 2, broker — an op naming an UNauthorised account is refused
+  //
+  // Layer 2 still matters. It is what makes "the account was named but the
+  // session never authorised it" a loud failure instead of a retarget, and every
+  // other test here leans on the fake modelling it faithfully. So it is probed
+  // with a raw request that bypasses exec-engine on purpose.
   await withBroker(async (broker) => {
     await reconcile(creds(A, { roster: [A] })) // only A authorised
     assert.deepEqual(broker.roster, [A])
-    await assert.rejects(
-      placeOrder(creds(A, { roster: [A] }), { ...ENTRY, ctidTraderAccountId: parseInt(B) }),
-      (err) => { assert.match(err.message, /NOT_AUTHORIZED/); return true },
-    )
+
+    const res = await fetch(`${broker.url}/order`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer sekret' },
+      body: JSON.stringify({ ...ENTRY, ctidTraderAccountId: parseInt(B) }),
+    })
+    assert.equal(res.status, 422)
+    assert.match(await res.text(), /NOT_AUTHORIZED/)
     assert.equal(broker.positionIds(A).length, 0, 'and it did NOT fall back to the primary')
+    assert.equal(broker.positionIds(B).length, 0, 'nor did it open on the unauthorised account')
   })
 }, { concurrency: false })
 
