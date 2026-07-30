@@ -15,6 +15,7 @@ import AccountTag from '../components/common/AccountTag.jsx'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
+import AccountEngineering from '../components/AccountEngineering.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -75,6 +76,7 @@ const DESK_SECTIONS = [
   { id: 'sec-order-ledger', label: 'Set-order ledger' },
   { id: 'sec-closed7d', label: 'Closed at the broker' },
   { id: 'sec-risk', label: 'Risk decisions' },
+  { id: 'sec-acct-engineering', label: 'Account engineering' },
   { id: 'sec-controllers', label: 'Controllers' },
   { id: 'sec-llmspend', label: 'LLM spend' },
   { id: 'sec-alphadecay', label: 'Edge health' },
@@ -870,6 +872,12 @@ export default function Desk() {
           Full history on the <Link to="/trade" className="text-[var(--color-accent)] underline">Trade</Link> tab.
         </p>
       </Section>
+
+      {/* Per-account engineering status (owner: "The desk page should display
+          the underlying engineering status for each account you are trading or
+          not trading"). Sits beside Controllers on purpose: that panel is
+          health per CONTROLLER, this one is health per ACCOUNT. */}
+      <AccountEngineering />
 
       {/* Controllers — heartbeat reliability: every background controller's
           last beat, plus the C++ exec engine's probed liveness. A stalled
