@@ -204,6 +204,47 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
 }
 
 /**
+ * Does the sidecar's authorised-account roster still match the registry's?
+ *
+ * WHY THIS EXISTS (2026-07-30). The owner disabled account 46979908 in the
+ * registry. Node correctly stopped dispatching to it — and the sidecar went on
+ * reporting it as authorised, through two full loop cycles. Neither half was
+ * broken:
+ *
+ *   · `ensureSidecarSession` DOES include the roster in its memo key
+ *     (exec-engine.js:112), so a shrunk roster is a new key.
+ *   · the sidecar DOES rebuild its roster from scratch on /connect
+ *     (cpp-exec/src/engine.cpp:95 clears accountIds_ before refilling).
+ *
+ * The gap is that nothing CALLS the push. ensureSidecarSession runs only on
+ * exec paths — order, amend, close, cancel, reconcile — so with autotrade off
+ * and no orders flowing, a roster change is never communicated. "Disabled"
+ * then means "not dispatched" while the sidecar retains live authorisation to
+ * trade that account, and those are not the same thing. This probe already runs
+ * every ~30s, so it is the right place to notice.
+ *
+ * Set comparison, not array equality: order and duplicates are not meaningful,
+ * and ids arrive as numbers from the sidecar and strings from the registry.
+ *
+ * @param {Array<string|number>|null|undefined} sidecarAccounts  from GET /health
+ * @param {Array<string|number>|null|undefined} credsAccountIds  from getCtraderCreds
+ * @returns {{drifted: boolean, extra: string[], missing: string[]}}
+ *   `extra` = authorised at the sidecar but NOT enabled in the registry — the
+ *   direction that matters, because it is authorisation the owner revoked.
+ */
+export function rosterDrift(sidecarAccounts, credsAccountIds) {
+  const norm = (a) => new Set((Array.isArray(a) ? a : []).map(x => String(x)).filter(Boolean))
+  const have = norm(sidecarAccounts)
+  const want = norm(credsAccountIds)
+  // Nothing to compare against — a creds roster we could not build must never
+  // be read as "the sidecar should have no accounts".
+  if (want.size === 0) return { drifted: false, extra: [], missing: [] }
+  const extra = [...have].filter(id => !want.has(id)).sort()
+  const missing = [...want].filter(id => !have.has(id)).sort()
+  return { drifted: extra.length > 0 || missing.length > 0, extra, missing }
+}
+
+/**
  * Active liveness probe of the C++ exec engine: polls the sidecar's
  * GET /health and records the result as the cpp_exec heartbeat. No-op (and
  * no cpp_exec row → 'idle') when EXEC_ENGINE isn't cpp.
@@ -242,7 +283,32 @@ export async function probeCppExec(db, deps = {}) {
         if (pushed) error += ' — credentials re-pushed, session should return shortly'
       } catch { /* creds not ready or sidecar went away — next probe retries */ }
     }
-  } else if (ok && r.connected === true && r.lastReconcileAt == null) {
+  } else if (ok && r.connected === true) {
+    // Connected — now check the roster actually matches what is ENABLED.
+    // Re-pushed rather than merely reported: leaving the sidecar authorised for
+    // an account the owner disabled is the kind of divergence that only shows
+    // up when something trades on it.
+    try {
+      const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+      const creds = getCtraderCreds(db)
+      const drift = rosterDrift(r.accounts, creds.accountIds)
+      // No `creds.ready` check here on purpose: pushSidecarSession already
+      // returns false for not-ready creds and pushes nothing, so duplicating
+      // that policy would just give it two places to drift out of step. Same
+      // shape as the credential-less self-heal path above.
+      if (drift.drifted && exec.pushSidecarSession) {
+        const pushed = await exec.pushSidecarSession(creds)
+        if (pushed) {
+          console.warn(
+            `[heartbeat] cpp roster drift corrected — sidecar had ${JSON.stringify(r.accounts)}, ` +
+            `registry enables ${JSON.stringify(creds.accountIds)}` +
+            (drift.extra.length ? ` (revoked: ${drift.extra.join(', ')})` : '') +
+            (drift.missing.length ? ` (added: ${drift.missing.join(', ')})` : ''))
+        }
+      }
+    } catch { /* creds not ready or sidecar went away — next probe retries */ }
+  }
+  if (ok && r.connected === true && r.lastReconcileAt == null) {
     ok = false
     error = 'connected but no reconcile pass has completed yet'
   } else if (ok && r.lastReconcileAt != null && nowMs - Number(r.lastReconcileAt) > STALE_RECONCILE_MS) {

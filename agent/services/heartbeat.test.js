@@ -8,7 +8,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
-  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, _resetBootStateForTests,
+  CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift,
+  _resetBootStateForTests,
 } from './heartbeat.js'
 
 const T0 = new Date('2026-07-17T12:00:00Z')
@@ -218,4 +219,98 @@ test('deploy grace window: one restart notice, silent recoveries, real stalls al
   const ev3 = checkHeartbeats(db, { now: plus(2000 + 400 + 3000), notify, loopSec: 300, bootMs })
   assert.ok(ev3.some(e => e.event === 'stalled'))
   assert.ok(alerts.some(a => /STALLED/.test(a)))
+})
+
+// --- roster drift (2026-07-30) ---------------------------------------------
+
+test('rosterDrift: set comparison, and the direction that matters', () => {
+  // Same set, different order/types → no drift.
+  assert.equal(rosterDrift([46130058, 46979908], ['46979908', '46130058']).drifted, false)
+
+  // Sidecar authorised for an account the registry no longer enables. This is
+  // the real case: the owner disabled 46979908 and the sidecar kept it.
+  const d = rosterDrift([46130058, 46979908], ['46130058'])
+  assert.equal(d.drifted, true)
+  assert.deepEqual(d.extra, ['46979908'], 'extra = authorisation the owner revoked')
+  assert.deepEqual(d.missing, [])
+
+  // Newly enabled account not yet pushed.
+  const d2 = rosterDrift([46130058], ['46130058', '43097342'])
+  assert.equal(d2.drifted, true)
+  assert.deepEqual(d2.missing, ['43097342'])
+  assert.deepEqual(d2.extra, [])
+})
+
+test('rosterDrift: an unknown creds roster is NOT read as "should be empty"', () => {
+  // getCtraderCreds returns accountIds: null on a DB with no accounts table.
+  // Treating that as "the sidecar should hold nothing" would push an empty
+  // roster and de-authorise a working session.
+  for (const want of [null, undefined, []]) {
+    assert.equal(rosterDrift([46130058, 46979908], want).drifted, false, String(want))
+  }
+  // A sidecar reporting nothing while the registry enables one IS drift.
+  assert.equal(rosterDrift([], ['46130058']).drifted, true)
+  assert.equal(rosterDrift(null, ['46130058']).drifted, true)
+})
+
+test('probeCppExec: a connected sidecar with a stale roster is re-pushed', async () => {
+  // The gap this closes: ensureSidecarSession only runs on exec paths (order/
+  // amend/close/cancel/reconcile), so with autotrade off a disabled account
+  // stayed authorised at the sidecar indefinitely. Observed live on staging.
+  const db = initDB(':memory:')
+  db.exec(`CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY, is_live INTEGER, enabled INTEGER, mode TEXT)`)
+  db.prepare('INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,?,?,?)')
+    .run('46130058', 0, 1, 'active')
+  setState(db, 'ctrader_account_id', '46130058')
+  setState(db, 'ctrader_is_live', 'false')
+  setState(db, 'ctrader_access_token', 'tok')
+
+  let pushedWith = null
+  const exec = {
+    execEngineMode: () => 'cpp',
+    // Sidecar still holds the DISABLED account.
+    pingSidecar: async () => ({
+      ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+      accounts: [46130058, 46979908], lastReconcileAt: T0.getTime(),
+    }),
+    pushSidecarSession: async (creds) => { pushedWith = creds; return true },
+  }
+  const r = await probeCppExec(db, { exec, now: T0 })
+  // The heartbeat stays GREEN: the engine is healthy and the drift self-heals.
+  assert.equal(r.ok, true)
+  assert.ok(pushedWith, 'a drifted roster forces a re-push')
+  assert.deepEqual(pushedWith.accountIds, ['46130058'], 'pushes the ENABLED roster')
+
+  // Matching roster → no push at all.
+  pushedWith = null
+  exec.pingSidecar = async () => ({
+    ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+    accounts: [46130058], lastReconcileAt: T0.getTime(),
+  })
+  await probeCppExec(db, { exec, now: T0 })
+  assert.equal(pushedWith, null, 'no drift, no push')
+})
+
+test('probeCppExec: roster drift does not mask a stalled reconcile', async () => {
+  const db = initDB(':memory:')
+  db.exec(`CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY, is_live INTEGER, enabled INTEGER, mode TEXT)`)
+  db.prepare('INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,?,?,?)')
+    .run('46130058', 0, 1, 'active')
+  setState(db, 'ctrader_account_id', '46130058')
+  setState(db, 'ctrader_is_live', 'false')
+  setState(db, 'ctrader_access_token', 'tok')
+  const exec = {
+    execEngineMode: () => 'cpp',
+    pingSidecar: async () => ({
+      ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+      accounts: [46130058, 46979908],
+      lastReconcileAt: T0.getTime() - 20 * 60_000,   // 20m stale
+    }),
+    pushSidecarSession: async () => true,
+  }
+  const r = await probeCppExec(db, { exec, now: T0 })
+  assert.equal(r.ok, false, 'a stale reconcile still fails the heartbeat')
+  assert.match(r.error, /engine loop looks stalled/)
 })
