@@ -639,6 +639,13 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/postmortems', (req, res) => {
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30))
+    // WHOSE lessons. This route answered about every account at once, so the
+    // Performance page's debrief card showed the same rows no matter which
+    // account was selected — the identical failure lib/account-scope.js was
+    // written for, in the one section that had been missed. trade_postmortems
+    // has no account_id, so the scope rides on the trade it belongs to.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 't.account_id')
     let rows = [], stats = []
     try {
       // Trade-Lesson field spec (owner) asks for Lot / TP1 / TP2 /
@@ -659,15 +666,15 @@ export default function stateRouter(db) {
          FROM trade_postmortems pm
          LEFT JOIN trades t ON t.id = pm.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
-         WHERE t.id IS NULL OR t.status <> 'rejected'
+         WHERE (t.id IS NULL OR t.status <> 'rejected')${acct.active ? ` AND ${acct.where}` : ''}
          ORDER BY pm.id DESC LIMIT ?`
-      ).all(limit)
+      ).all(...acct.params, limit)
     } catch { /* table appears on first boot after migration */ }
     try {
       rows = rows.map(r => ({ ...r, bars: safeParse(r.bars_json), bars_json: undefined }))
     } catch { /* keep raw rows */ }
     try {
-      stats = postmortemStats(db)
+      stats = postmortemStats(db, 30, { accountId: acct.active ? scope.accountId : null })
     } catch { /* table missing on a very old DB — stats stay empty */ }
     // ¶D·4 — "I didn't see the lesson learnt!", twelve minutes after a NAS100
     // short lost $1,013.08. There could not be one yet: a verdict needs 5 bars
@@ -677,9 +684,13 @@ export default function stateRouter(db) {
     // was learned", not "not yet". Now it says which, and when.
     let pending = { rows: [], waiting: 0, ineligible: 0 }
     try {
-      pending = pendingLessons(db)
+      pending = pendingLessons(db, { accountId: acct.active ? scope.accountId : null })
     } catch { /* never block the lessons themselves on the pending list */ }
-    res.json({ rows, stats, pending })
+    res.json({
+      rows, stats, pending,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+    })
   })
   function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
 

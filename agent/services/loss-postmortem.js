@@ -313,9 +313,13 @@ export function sqliteMs(s) {
  *   time has passed) | 'ineligible' (no outcome can be derived — it will
  *   never get a lesson).
  */
-export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS } = {}) {
+export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS, accountId = null } = {}) {
   let rows = []
   try {
+    // `accountId` scopes the wait-list to one account: a lesson still pending on
+    // ANOTHER account's trade is not information about this one, and reading it
+    // as such is the same mix-up that made every page show identical positions.
+    const acct = accountId == null ? '' : 'AND (t.account_id = ? OR t.account_id IS NULL)'
     rows = db.prepare(`
       SELECT t.id, t.symbol, t.side, t.net_pnl, t.exit_price, t.entry_price,
              t.closed_at, t.close_reason, t.account_id,
@@ -325,8 +329,9 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
         LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
        WHERE t.status = 'closed' AND pm.id IS NULL
          AND t.closed_at >= datetime('now', ?)
+         ${acct}
        ORDER BY t.closed_at DESC LIMIT ?
-    `).all(`-${windowDays} days`, limit)
+    `).all(...[`-${windowDays} days`, ...(accountId == null ? [] : [String(accountId)]), limit])
   } catch { return { rows: [], waiting: 0, ineligible: 0 } }
 
   // Best-effort: an unmapped or exotic symbol simply reports null rather than
@@ -548,13 +553,32 @@ export async function runLossPostmortems(db, fetchBars, { maxPerCycle = 6, now =
   return { examined: rows.length, classified, waiting }
 }
 
-/** Per-strategy aggregation of loss classes — the "learning" readout. */
-export function postmortemStats(db, windowDays = 30) {
+/**
+ * Per-strategy aggregation of loss classes — the "learning" readout.
+ *
+ * `accountId` scopes it to one account. trade_postmortems carries no account_id
+ * of its own, so the scope comes from the TRADE it belongs to — which also means
+ * a postmortem whose trade row is gone counts for no account rather than for
+ * whichever one happens to be selected. NULL-account trades are included, the
+ * same convention as lib/account-scope.js and every other scoped read here.
+ */
+export function postmortemStats(db, windowDays = 30, { accountId = null } = {}) {
+  if (accountId == null) {
+    return db.prepare(`
+      SELECT COALESCE(strategy, 'unlabelled') AS strategy, classification, COUNT(*) AS n
+      FROM trade_postmortems
+      WHERE created_at >= datetime('now', ?)
+      GROUP BY COALESCE(strategy, 'unlabelled'), classification
+      ORDER BY strategy, n DESC
+    `).all(`-${windowDays} days`)
+  }
   return db.prepare(`
-    SELECT COALESCE(strategy, 'unlabelled') AS strategy, classification, COUNT(*) AS n
-    FROM trade_postmortems
-    WHERE created_at >= datetime('now', ?)
-    GROUP BY COALESCE(strategy, 'unlabelled'), classification
+    SELECT COALESCE(pm.strategy, 'unlabelled') AS strategy, pm.classification, COUNT(*) AS n
+    FROM trade_postmortems pm
+    LEFT JOIN trades t ON t.id = pm.trade_id
+    WHERE pm.created_at >= datetime('now', ?)
+      AND (t.account_id = ? OR t.account_id IS NULL)
+    GROUP BY COALESCE(pm.strategy, 'unlabelled'), pm.classification
     ORDER BY strategy, n DESC
-  `).all(`-${windowDays} days`)
+  `).all(`-${windowDays} days`, String(accountId))
 }

@@ -292,7 +292,13 @@ export function BalanceInOut({ inModal = false }) {
 }
 
 /** Real values where the APIs provide them; '—' where not collected. */
-export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock, inModal = false }) {
+/**
+ * `scopeNote` says WHOSE cash/margin/equity these are. The three figures come
+ * from the broker session, which exists for one account at a time, so on a
+ * multi-account desk the card has to name the account rather than let the
+ * reader assume it follows the page's filter.
+ */
+export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, clock, scopeNote = null, inModal = false }) {
   const box = { border: `1px solid ${EDG}`, borderRadius: 10, padding: '7px 10px', display: 'flex', flexDirection: 'column', gap: 3 }
   const chip = { fontSize: 9, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: ACS, border: `1px solid ${GBD}` }
   const money = (v) => (v == null ? '—' : '$' + Math.round(v).toLocaleString('en-US'))
@@ -303,8 +309,8 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
         <span style={{ fontSize: 9, color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
         {!inModal && (
           <SectionTools id="data-feed" title="Data feed — core universal essentials"
-            data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet }]}
-            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} clock={clock} inModal />} />
+            data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
+            render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} clock={clock} scopeNote={scopeNote} inModal />} />
         )}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 8 }}>
@@ -320,6 +326,7 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
           <span style={{ fontSize: 11, fontWeight: 800 }}>Account &amp; portfolio state</span>
           <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>Live cash, available margin, open positions, unrealized P&amp;L</span>
           <span style={{ fontSize: 9, color: MU, fontVariantNumeric: 'tabular-nums' }}>cash {money(balance)} · margin avail {money(freeMargin)}</span>
+          {scopeNote && <span style={{ fontSize: 9, color: SB, lineHeight: 1.4 }}>{scopeNote}</span>}
           <span style={{ fontSize: 9, color: MU, fontVariantNumeric: 'tabular-nums' }}>{openCount} open · unrealized <span style={{ fontWeight: 800, color: equity != null && balance != null ? (equity - balance >= 0 ? UP : DN) : MU }}>{equity != null && balance != null ? signed(equity - balance) : '—'}</span></span>
         </div>
         <div style={box}>
