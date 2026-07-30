@@ -14,6 +14,7 @@ import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-a
 import { stratShort } from '../lib/strategy-labels.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
+import { rankVerdict, visibleRows, tallyVerdicts } from '../lib/backtest-rows.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
@@ -572,10 +573,19 @@ const BT_COLS = [
   { key: 'wfPositive', label: 'WF', title: 'Walk-forward: the same rule over 4 sequential quarters of the data — filled blue = profitable segment, filled red = losing, hollow = no trades. The edge should repeat, not appear once.' },
 ]
 
+// Verdict as a sortable quantity, best first when descending. An errored row has
+// no verdict, so it sinks to the bottom like any other missing metric. The order
+// itself lives in lib/backtest-rows.js with its tests.
+function verdictRank(r) {
+  if (r?.error) return null
+  return rankVerdict(verdictFor(r)?.state)
+}
+
 function sortBtRows(entries, { col, dir }) {
   const sign = dir === 'desc' ? -1 : 1
   const val = ([tf, r]) => {
     if (col === 'tf') return tfMs(tf)
+    if (col === 'verdict') return verdictRank(r)
     if (col === 'profitFactor') return r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? Infinity : null)
     const v = Number(r[col])
     return Number.isFinite(v) ? v : null
@@ -829,6 +839,44 @@ export default function Tune() {
     const next = new Set(prev)
     if (next.has(k)) next.delete(k); else next.add(k)
     try { sessionStorage.setItem('bt_force_v1', JSON.stringify([...next])) } catch { /* quota — skip */ }
+    return next
+  })
+  // Set "arm anyway" for a whole symbol at once — the header checkbox. `on`
+  // decides the direction explicitly rather than per-row toggling, so a mixed
+  // column resolves to all-on / all-off instead of inverting each row.
+  const setForceMany = (keys, on) => setBtForce(prev => {
+    const next = new Set(prev)
+    for (const k of keys) { if (on) next.add(k); else next.delete(k) }
+    try { sessionStorage.setItem('bt_force_v1', JSON.stringify([...next])) } catch { /* quota — skip */ }
+    return next
+  })
+  // VIEW filter over the verdict column (owner: "allow me to sort per column and
+  // filter (Go, No-Go, Go(Thin))"). Deliberately SEPARATE from "Add to Activate"
+  // above: this hides rows from the table and changes nothing about what gets
+  // armed. Conflating the two would mean scrolling a row out of sight could
+  // silently arm or disarm it, which is the last thing this table should do.
+  const [btVerdictFilter, setBtVerdictFilter] = useState(() => {
+    try {
+      const raw = JSON.parse(sessionStorage.getItem('bt_verdict_filter_v1'))
+      return new Set(Array.isArray(raw) && raw.length ? raw : ['go', 'thin', 'nogo'])
+    } catch { return new Set(['go', 'thin', 'nogo']) }
+  })
+  const toggleVerdictFilter = (v) => setBtVerdictFilter(prev => {
+    const next = new Set(prev)
+    if (next.has(v)) next.delete(v); else next.add(v)
+    // Never let the filter empty itself — an empty table reads as "the backtest
+    // found nothing", which is a different and much worse statement.
+    if (next.size === 0) return prev
+    try { sessionStorage.setItem('bt_verdict_filter_v1', JSON.stringify([...next])) } catch { /* quota — skip */ }
+    return next
+  })
+  // Which symbols are expanded. NOT persisted: the owner asked for collapsed by
+  // default ("default collapse the row"), and a remembered open set would make
+  // that true only on a first visit.
+  const [btOpenSyms, setBtOpenSyms] = useState(() => new Set())
+  const toggleSymOpen = (sym) => setBtOpenSyms(prev => {
+    const next = new Set(prev)
+    if (next.has(sym)) next.delete(sym); else next.add(sym)
     return next
   })
   const [status, setStatus] = useState('')
@@ -2778,32 +2826,236 @@ export default function Tune() {
                 </div>
               )}
             </div>
-            {bt?.report?.html && (
-              <div className="mt-3">
-                <Button
-                  size="sm" variant="secondary"
-                  onClick={() => {
-                    const url = URL.createObjectURL(new Blob([bt.report.html], { type: 'text/html' }))
-                    const a = document.createElement('a')
-                    a.href = url
-                    a.download = bt.report.filename
-                    a.click()
-                    URL.revokeObjectURL(url)
-                  }}
-                >
-                  Download report ({bt.report.filename})
-                </Button>
-              </div>
-            )}
-
             {bt?.symbols && (
-              <div className="mt-3 space-y-4">
-                {Object.entries(bt.symbols).map(([sym, sr]) => (
+              <div className="mt-3 space-y-3">
+                {/* CONTROLS AT THE TOP (owner 2026-07-30: "I have to scroll down
+                    to the bottom sometimes can bring up the button as it is at the
+                    bottom edge of the brower which frustrate me very much"). The
+                    Download-report button, the Add-to-Activate class picker and the
+                    arm buttons used to sit BELOW every per-symbol table, so with a
+                    dozen symbols the primary actions were a long scroll away and
+                    landed right on the viewport edge. They are now one bar above
+                    the tables, in the order the work happens: choose what to arm,
+                    then arm it, then read the evidence below. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {bt?.report?.html && (
+                    <Button
+                      size="sm" variant="secondary"
+                      onClick={() => {
+                        const url = URL.createObjectURL(new Blob([bt.report.html], { type: 'text/html' }))
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = bt.report.filename
+                        a.click()
+                        URL.revokeObjectURL(url)
+                      }}
+                    >
+                      Download report ({bt.report.filename})
+                    </Button>
+                  )}
+                  {/* Verdict-class picker (owner spec): choose WHICH classes
+                      flow into Activate — one tap instead of per-row ticks.
+                      Owner asked for it BESIDE the download button, so it is a
+                      sibling in the same wrapping row rather than its own line;
+                      it keeps its own radiogroup role so the four options stay
+                      one control to a screen reader. */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-[9px]" role="radiogroup" aria-label="Which verdicts to arm">
+                    <span className="text-[var(--color-text-sub)] font-semibold">Add to Activate:</span>
+                    {[
+                      ['go', 'Go only'],
+                      ['go+thin', 'Go + Go (thin)'],
+                      ['thin', 'Go (thin) only'],
+                      ['all', 'All incl. No-Go (<½ blue)'],
+                    ].map(([v, lbl]) => (
+                      <button
+                        key={v} type="button" role="radio" aria-checked={btArmClass === v}
+                        onClick={() => pickArmClass(v)}
+                        className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                      >{lbl}</button>
+                    ))}
+                    {btArmClass === 'all' && (
+                      <span className="text-[var(--color-warning-text)] font-semibold">No-Go rows failed the evidence bar — arming them trades against your own backtest.</span>
+                    )}
+                    {btArmClass === 'thin' && (
+                      <span className="text-[var(--color-text-sub)]">thin = positive edge, unproven sample.</span>
+                    )}
+                  </div>
+                </div>
+                {/* "the following line" the owner asked to come up with it: the
+                    arm / apply buttons, and the warning that stands in for them
+                    when nothing passed. */}
+                  {armTfs.length === 0 && (() => {
+                    const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
+                    return (
+                      <p className="text-[9px] font-semibold text-[var(--color-warning-text)]">
+                        {anyThin
+                          ? 'No timeframe fully passed — but some show a positive edge on too few trades (GO thin). Keep the bot in demo to accumulate evidence, re-run later as more bars build up — or tick "arm anyway" on a row to proceed at your own risk.'
+                          : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, wait for more data, or tick "arm anyway" on a row to proceed at your own risk.'}
+                      </p>
+                    )
+                  })()}
+                  {armTfs.length > 0 && config?.autotrade_enabled && (() => {
+                    // Already armed — but if the checked selection differs from
+                    // what's currently armed, offer to push the new set. The old
+                    // static "already ACTIVE" text left ticked checkboxes with
+                    // no button to act on them.
+                    const same = matrixEq(armMatrix, armedMatrix)
+                    if (same) {
+                      return <p className="text-[9px] font-semibold">Quant trading is ACTIVE, armed per instrument: {matrixSummary}. Your current selection matches — nothing to apply.</p>
+                    }
+                    return (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button onClick={async () => {
+                          const forcedNote = forcedTfs.length
+                            ? ` NOTE: some rows did NOT fully pass — you are overriding those verdicts.`
+                            : ''
+                          if (!window.confirm(`Apply per-instrument arming: ${matrixSummary}?${forcedNote} Autotrade stays ON — each symbol will only trade its own armed timeframes.`)) return
+                          try {
+                            await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
+                            const benchmarks = {}
+                            for (const [sym2, tfs2] of Object.entries(armMatrix)) {
+                              for (const tf2 of tfs2) {
+                                const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
+                                if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
+                              }
+                            }
+                            agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
+                            setTimeframes(armTfs)
+                            await load()
+                            flash(`Armed per instrument: ${matrixSummary} — autotrade stays ON.`)
+                          } catch (err) { setError(err.message) }
+                        }}>Apply selection: {Object.keys(armMatrix).length} instrument{Object.keys(armMatrix).length === 1 ? '' : 's'}</Button>
+                        <span className="text-[9px] text-[var(--color-text-sub)]">
+                          will arm {matrixSummary || 'nothing'} — currently armed: {armedMatrix ? Object.entries(armedMatrix).map(([s2, t2]) => `${s2} (${t2.join(', ')})`).join(' · ') : `${[...timeframes].sort(byTfDesc).join(' + ')} (all watchlist symbols)`}
+                        </span>
+                      </div>
+                    )
+                  })()}
+                  {armTfs.length > 0 && !config?.autotrade_enabled && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button onClick={async () => {
+                        const forcedNote = forcedTfs.length
+                          ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
+                          : ''
+                        if (!window.confirm(`Arm the bot on ${armTfs.join(' + ')}?${forcedNote} This turns ON Scan, Analyze and Autotrade in one go — the bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. Turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
+                        try {
+                          // One tap arms the WHOLE pipeline — an armed-but-blind
+                          // bot (autotrade on, scan off) was a real support case.
+                          await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
+                          const benchmarks = {}
+                          for (const [sym2, tfs2] of Object.entries(armMatrix)) {
+                            for (const tf2 of tfs2) {
+                              const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
+                              if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
+                            }
+                          }
+                          agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
+                          if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
+                          if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
+                          await agentPost('/actions/autotrade-toggle', { on: true })
+                          setTimeframes(armTfs)
+                          await load()
+                          flash(`Bot fully ARMED on ${armTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
+                        } catch (err) { setError(err.message) }
+                      }}>Arm the bot: {matrixSummary || armTfs.join(' + ')} (everything in one tap)</Button>
+                      <span className="text-[9px] text-[var(--color-text-sub)]">
+                        {forcedTfs.length
+                          ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
+                          : 'turns on Scan + Analyze + Autotrade and arms the GO timeframes'}
+                      </span>
+                    </div>
+                  )}
+                  {/* Touch-fill runs proved the resting-limit entry — offer to arm
+                      LIVE pending orders for the fully-GO combos only. */}
+                  {bt?.entryMode === 'touch' && pendingGoCount > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          if (!window.confirm(`Arm PENDING orders (resting limit orders at the fib 61.8% level) for: ${pendingGoSummary}? The bot will park REAL limit orders at the broker for these combos only.`)) return
+                          try {
+                            await agentPost('/actions/pending-mode', { on: true, matrix: pendingGoMatrix })
+                            await load()
+                            flash(`Pending orders ARMED: ${pendingGoSummary}`)
+                          } catch (err) { setError(err.message) }
+                        }}
+                      >Arm pending orders ({pendingGoCount} GO combo{pendingGoCount === 1 ? '' : 's'})</Button>
+                      <span className="text-[9px] text-[var(--color-text-sub)]">
+                        full-GO rows only — resting limits will appear as Pending orders in cTrader
+                      </span>
+                    </div>
+                  )}
+
+                {/* VIEW controls. Separate row, and separate concept, from the
+                    arming controls above: these change what is on SCREEN and
+                    nothing about what is armed. Sorting and filtering an arming
+                    decision would mean a row scrolled out of sight could quietly
+                    stop being armed. */}
+                <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+                  <span className="text-[var(--color-text-sub)] font-semibold">Show verdicts:</span>
+                  {[['go', 'Go'], ['thin', 'Go (thin)'], ['nogo', 'No-Go']].map(([v, lbl]) => {
+                    const on = btVerdictFilter.has(v)
+                    return (
+                      <button
+                        key={v} type="button" role="checkbox" aria-checked={on}
+                        onClick={() => toggleVerdictFilter(v)}
+                        title={on ? `Hide ${lbl} rows` : `Show ${lbl} rows`}
+                        className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                      >{lbl}</button>
+                    )
+                  })}
+                  <span className="text-[var(--color-text-sub)]">view only — hiding a row never changes what is armed</span>
+                  <span className="ml-auto flex gap-1.5">
+                    <button
+                      type="button" onClick={() => setBtOpenSyms(new Set(Object.keys(bt.symbols)))}
+                      className="rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
+                    >Expand all</button>
+                    <button
+                      type="button" onClick={() => setBtOpenSyms(new Set())}
+                      className="rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
+                    >Collapse all</button>
+                  </span>
+                </div>
+                {Object.entries(bt.symbols).map(([sym, sr]) => {
+                  const all = sr.results ? Object.entries(sr.results) : []
+                  // The filter hides rows; it does not reclassify them. An errored
+                  // row has no verdict to filter on, so it is always shown — a
+                  // silent failure is worse than a row that does not match.
+                  const shown = sortBtRows(
+                    visibleRows(all, { allowed: btVerdictFilter, stateOf }),
+                    btSort,
+                  )
+                  const open = btOpenSyms.has(sym)
+                  // Tallies come from `all`, never from `shown`: the summary on a
+                  // collapsed row has to describe the backtest, not the filter.
+                  const tally = tallyVerdicts(all, stateOf)
+                  // Rows whose per-row "arm anyway" tick exists — GO rows never
+                  // need one, so the header checkbox governs exactly these.
+                  const forceable = shown.filter(([, r]) => !r.error && verdictFor(r)?.state !== 'go').map(([tf]) => `${sym}|${tf}`)
+                  const forcedN = forceable.filter(k => btForce.has(k)).length
+                  return (
                   <div key={sym}>
-                    <h3 className="text-[11px] font-bold mb-1">{sym}</h3>
+                    <button
+                      type="button"
+                      onClick={() => toggleSymOpen(sym)}
+                      aria-expanded={open}
+                      className="w-full flex flex-wrap items-center gap-2 text-left mb-1 cursor-pointer min-h-[28px]"
+                    >
+                      <span className="text-[11px] font-bold">{open ? '\u25be' : '\u25b8'} {sym}</span>
+                      <span className="text-[9px] text-[var(--color-text-sub)]">
+                        {sr.error
+                          ? 'run failed'
+                          : `${all.length} timeframe${all.length === 1 ? '' : 's'} · ${tally.go} Go · ${tally.thin} Go (thin) · ${tally.nogo} No-Go`}
+                        {!sr.error && shown.length !== all.length ? ` · ${shown.length} shown by the filter` : ''}
+                        {forcedN > 0 ? ` · ${forcedN} armed anyway` : ''}
+                      </span>
+                    </button>
                     {sr.error
                       ? <p className="text-[9px] text-[var(--color-warning-text)]">{sr.error}</p>
-                      : (
+                      : open && (
+                        shown.length === 0
+                          ? <p className="text-[9px] text-[var(--color-text-sub)]">Every timeframe for {sym} is hidden by the verdict filter — {all.length} row{all.length === 1 ? '' : 's'} still exist and are still armed per your selection above.</p>
+                          : (
                         <div className="overflow-x-auto">
                           <table className="std-cols w-full text-[9px]">
                             <thead>
@@ -2814,14 +3066,39 @@ export default function Tune() {
                                     title={c.title || `Sort by ${c.label}`}
                                     onClick={() => setBtSort(s => ({ col: c.key, dir: s.col === c.key && s.dir === 'desc' ? 'asc' : 'desc' }))}
                                   >
-                                    {c.label}{btSort.col === c.key ? (btSort.dir === 'desc' ? ' ▾' : ' ▴') : ''}
+                                    {c.label}{btSort.col === c.key ? (btSort.dir === 'desc' ? ' \u25be' : ' \u25b4') : ''}
                                   </th>
                                 ))}
-                                <th>Verdict</th>
+                                {/* Verdict header: sortable like every other column,
+                                    plus the select-all for this symbol's "arm anyway"
+                                    ticks. The checkbox governs only the rows CURRENTLY
+                                    SHOWN that could carry a tick, which is why the
+                                    label counts them out loud. */}
+                                <th className="py-1 whitespace-nowrap">
+                                  <span className="flex items-center gap-1.5">
+                                    {forceable.length > 0 && (
+                                      <input
+                                        type="checkbox"
+                                        aria-label={`Arm anyway: all ${forceable.length} non-Go row(s) shown for ${sym}`}
+                                        title={`Tick every non-Go row shown for ${sym} (${forcedN}/${forceable.length} ticked). Overrides the verdict on each \u2014 at your own risk.`}
+                                        checked={forcedN === forceable.length}
+                                        ref={(el) => { if (el) el.indeterminate = forcedN > 0 && forcedN < forceable.length }}
+                                        onChange={() => setForceMany(forceable, forcedN !== forceable.length)}
+                                      />
+                                    )}
+                                    <span
+                                      className="cursor-pointer select-none"
+                                      title="Sort by verdict"
+                                      onClick={() => setBtSort(s => ({ col: 'verdict', dir: s.col === 'verdict' && s.dir === 'desc' ? 'asc' : 'desc' }))}
+                                    >
+                                      Verdict{btSort.col === 'verdict' ? (btSort.dir === 'desc' ? ' \u25be' : ' \u25b4') : ''}
+                                    </span>
+                                  </span>
+                                </th>
                               </tr>
                             </thead>
                             <tbody>
-                              {sortBtRows(Object.entries(sr.results), btSort).map(([tf, r]) => {
+                              {shown.map(([tf, r]) => {
                                 // PF is null when no trade lost — display ∞, and let
                                 // the highlight treat it as excellent, not missing.
                                 const pfShown = r.profitFactor ?? (r.trades > 0 && r.losses === 0 ? '∞' : '—')
@@ -2885,9 +3162,10 @@ export default function Tune() {
                             </tbody>
                           </table>
                         </div>
-                      )}
+                      ))}
                   </div>
-                ))}
+                  )
+                })}
                 <p className="text-[9px] text-[var(--color-text-sub)]">
                   {(() => {
                     const cells = Object.values(bt.symbols).reduce((n, s2) => n + (s2.results ? Object.keys(s2.results).length : 0), 0)
@@ -2895,130 +3173,6 @@ export default function Tune() {
                   })()}
                   Tap any verdict for the evidence behind it. GO = ≥10 trades, profit factor ≥1.1, positive total. GO (thin) = the edge is positive but there aren't enough trades to trust it — 1,000 bars is ~5.5 months of 4h but only ~10 days of 15m, so slow timeframes often can't reach 10 trades in the window; that's "unproven", not "bad". Tick "arm anyway" on any row to include it in Activate at your own risk. DD p95 = worst-case drawdown across 1,000 reshuffles of the same trades; CVaR = average of the worst 5% of trades. RSI filter setting (Pipeline tab) is applied.
                 </p>
-                {/* Verdict-class picker (owner spec): choose WHICH classes
-                    flow into Activate — one tap instead of per-row ticks. */}
-                <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[9px]" role="radiogroup" aria-label="Which verdicts to arm">
-                  <span className="text-[var(--color-text-sub)] font-semibold">Add to Activate:</span>
-                  {[
-                    ['go', 'Go only'],
-                    ['go+thin', 'Go + Go (thin)'],
-                    ['thin', 'Go (thin) only'],
-                    ['all', 'All incl. No-Go (<½ blue)'],
-                  ].map(([v, lbl]) => (
-                    <button
-                      key={v} type="button" role="radio" aria-checked={btArmClass === v}
-                      onClick={() => pickArmClass(v)}
-                      className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                    >{lbl}</button>
-                  ))}
-                  {btArmClass === 'all' && (
-                    <span className="text-[var(--color-warning-text)] font-semibold">No-Go rows failed the evidence bar — arming them trades against your own backtest.</span>
-                  )}
-                  {btArmClass === 'thin' && (
-                    <span className="text-[var(--color-text-sub)]">thin = positive edge, unproven sample.</span>
-                  )}
-                </div>
-                {armTfs.length === 0 && (() => {
-                  const anyThin = Object.values(bt.symbols).some(s => s.results && Object.values(s.results).some(r => verdictFor(r)?.state === 'thin'))
-                  return (
-                    <p className="text-[9px] font-semibold text-[var(--color-warning-text)]">
-                      {anyThin
-                        ? 'No timeframe fully passed — but some show a positive edge on too few trades (GO thin). Keep the bot in demo to accumulate evidence, re-run later as more bars build up — or tick "arm anyway" on a row to proceed at your own risk.'
-                        : 'No timeframe passed on any symbol — do NOT arm autotrade. Adjust the watchlist, wait for more data, or tick "arm anyway" on a row to proceed at your own risk.'}
-                    </p>
-                  )
-                })()}
-                {armTfs.length > 0 && config?.autotrade_enabled && (() => {
-                  // Already armed — but if the checked selection differs from
-                  // what's currently armed, offer to push the new set. The old
-                  // static "already ACTIVE" text left ticked checkboxes with
-                  // no button to act on them.
-                  const same = matrixEq(armMatrix, armedMatrix)
-                  if (same) {
-                    return <p className="text-[9px] font-semibold">Quant trading is ACTIVE, armed per instrument: {matrixSummary}. Your current selection matches — nothing to apply.</p>
-                  }
-                  return (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button onClick={async () => {
-                        const forcedNote = forcedTfs.length
-                          ? ` NOTE: some rows did NOT fully pass — you are overriding those verdicts.`
-                          : ''
-                        if (!window.confirm(`Apply per-instrument arming: ${matrixSummary}?${forcedNote} Autotrade stays ON — each symbol will only trade its own armed timeframes.`)) return
-                        try {
-                          await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
-                          const benchmarks = {}
-                          for (const [sym2, tfs2] of Object.entries(armMatrix)) {
-                            for (const tf2 of tfs2) {
-                              const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
-                              if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
-                            }
-                          }
-                          agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
-                          setTimeframes(armTfs)
-                          await load()
-                          flash(`Armed per instrument: ${matrixSummary} — autotrade stays ON.`)
-                        } catch (err) { setError(err.message) }
-                      }}>Apply selection: {Object.keys(armMatrix).length} instrument{Object.keys(armMatrix).length === 1 ? '' : 's'}</Button>
-                      <span className="text-[9px] text-[var(--color-text-sub)]">
-                        will arm {matrixSummary || 'nothing'} — currently armed: {armedMatrix ? Object.entries(armedMatrix).map(([s2, t2]) => `${s2} (${t2.join(', ')})`).join(' · ') : `${[...timeframes].sort(byTfDesc).join(' + ')} (all watchlist symbols)`}
-                      </span>
-                    </div>
-                  )
-                })()}
-                {armTfs.length > 0 && !config?.autotrade_enabled && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button onClick={async () => {
-                      const forcedNote = forcedTfs.length
-                        ? ` NOTE: ${forcedTfs.join(' + ')} did NOT fully pass — you are overriding the verdict.`
-                        : ''
-                      if (!window.confirm(`Arm the bot on ${armTfs.join(' + ')}?${forcedNote} This turns ON Scan, Analyze and Autotrade in one go — the bot will place REAL orders on the linked account whenever a fib signal on these timeframes passes the risk gate. Turn it off any time with the Autotrade toggle on Pipeline or Kill-all on Trade.`)) return
-                      try {
-                        // One tap arms the WHOLE pipeline — an armed-but-blind
-                        // bot (autotrade on, scan off) was a real support case.
-                        await agentPost('/actions/autotrade-timeframes', { timeframes: armTfs, matrix: armMatrix })
-                        const benchmarks = {}
-                        for (const [sym2, tfs2] of Object.entries(armMatrix)) {
-                          for (const tf2 of tfs2) {
-                            const r2 = bt?.symbols?.[sym2]?.results?.[tf2]
-                            if (r2 && !r2.error) benchmarks[`${sym2}|${tf2}`] = { profitFactor: r2.profitFactor ?? null, expectancyPct: r2.expectancyPct ?? null, trades: r2.trades ?? 0 }
-                          }
-                        }
-                        agentPost('/actions/arm-benchmarks', { benchmarks }).catch(() => {})
-                        if (!config?.scan_enabled) await agentPost('/actions/scan-toggle', { on: true })
-                        if (!config?.analyze_enabled) await agentPost('/actions/analyze-toggle', { on: true })
-                        await agentPost('/actions/autotrade-toggle', { on: true })
-                        setTimeframes(armTfs)
-                        await load()
-                        flash(`Bot fully ARMED on ${armTfs.join(' + ')} — Scan + Analyze + Autotrade all ON. Telegram will ping on every trade.`)
-                      } catch (err) { setError(err.message) }
-                    }}>Arm the bot: {matrixSummary || armTfs.join(' + ')} (everything in one tap)</Button>
-                    <span className="text-[9px] text-[var(--color-text-sub)]">
-                      {forcedTfs.length
-                        ? `turns on Scan + Analyze + Autotrade — GO timeframes + your overrides (${forcedTfs.join(', ')})`
-                        : 'turns on Scan + Analyze + Autotrade and arms the GO timeframes'}
-                    </span>
-                  </div>
-                )}
-                {/* Touch-fill runs proved the resting-limit entry — offer to arm
-                    LIVE pending orders for the fully-GO combos only. */}
-                {bt?.entryMode === 'touch' && pendingGoCount > 0 && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={async () => {
-                        if (!window.confirm(`Arm PENDING orders (resting limit orders at the fib 61.8% level) for: ${pendingGoSummary}? The bot will park REAL limit orders at the broker for these combos only.`)) return
-                        try {
-                          await agentPost('/actions/pending-mode', { on: true, matrix: pendingGoMatrix })
-                          await load()
-                          flash(`Pending orders ARMED: ${pendingGoSummary}`)
-                        } catch (err) { setError(err.message) }
-                      }}
-                    >Arm pending orders ({pendingGoCount} GO combo{pendingGoCount === 1 ? '' : 's'})</Button>
-                    <span className="text-[9px] text-[var(--color-text-sub)]">
-                      full-GO rows only — resting limits will appear as Pending orders in cTrader
-                    </span>
-                  </div>
-                )}
               </div>
             )}
             {btError && <div className="mt-2 text-[9px] text-[var(--color-warning-text)]">{btError}</div>}
