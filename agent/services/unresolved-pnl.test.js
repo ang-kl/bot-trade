@@ -175,3 +175,48 @@ test('the defaults ship blocking on, at 15 minutes', () => {
   assert.equal(DEFAULT_GLOBAL_GUARDS.blockOnUnknownPnl, true)
   assert.equal(DEFAULT_GLOBAL_GUARDS.unknownPnlGraceMin, 15)
 })
+
+// ---------------------------------------------------------------------------
+// OBSERVABILITY (2026-07-30). The veto's REACH is deliberately unchanged — the
+// owner's brief forbids weakening it — but a desk it stops must now say which
+// data stopped it. One orphan row halting seven accounts with no on-screen
+// reason is what produced "I don't see any trades".
+// ---------------------------------------------------------------------------
+
+test('unattributed rows are counted separately', () => {
+  const db = mkDb()
+  db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, opened_at, closed_at, status, net_pnl, account_id)
+     VALUES ('EURUSD','BUY',1.1,0.02,datetime('now','-1 day'),datetime('now','-60 minutes'),'closed',NULL,NULL)`
+  ).run()
+  closeTrade(db, { pnl: null, accountId: '111', minutesAgo: 60 })
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { accountId: '111' })
+  assert.equal(r.count, 2, 'both the orphan and the account row block')
+  assert.equal(r.unattributedCount, 1, 'and the orphan is identified')
+})
+
+test('a fully attributed blocker reports zero orphans', () => {
+  const db = mkDb()
+  closeTrade(db, { pnl: null, accountId: '111', minutesAgo: 60 })
+  assert.equal(unresolvedPnlSince(db, EPOCH_ANCHOR, { accountId: '111' }).unattributedCount, 0)
+})
+
+test('the reason names the orphan rows and what to do about them', () => {
+  const v = unknownPnlBlocks({ count: 3, unattributedCount: 1, oldestClosedAt: '2026-07-30 02:00:00' }, { scope: 'account' })
+  assert.equal(v.block, true)
+  assert.match(v.reason, /1 of them have NO account_id/)
+  assert.match(v.reason, /why every account is affected/)
+  assert.match(v.reason, /attribute or backfill/)
+})
+
+test('with no orphans the reason stays clean — no confusing clause', () => {
+  const v = unknownPnlBlocks({ count: 2, unattributedCount: 0 }, { scope: 'account' })
+  assert.ok(!/account_id/.test(v.reason))
+})
+
+test('a failed lookup still blocks and reports no orphan count', () => {
+  const r = unresolvedPnlSince({ prepare() { throw new Error('no such table') } }, EPOCH_ANCHOR, { accountId: '111' })
+  assert.equal(r.count, -1)
+  assert.equal(r.unattributedCount, 0)
+  assert.equal(unknownPnlBlocks(r).block, true)
+})
