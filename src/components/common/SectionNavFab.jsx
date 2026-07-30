@@ -23,7 +23,7 @@ export default function SectionNavFab({ sections, onSelect }) {
         <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
           {sections.map(s => (
             <button key={s.id} type="button" onClick={() => jump(s.id)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: 400, color: 'var(--color-text)', background: 'transparent', border: 'none', borderRadius: 8, padding: '5px 10px' }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: 400, color: 'var(--color-text)', background: 'transparent', border: 'none', borderRadius: 8, padding: '5px 10px' }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--glass-bg)' }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
               {s.label}
@@ -33,7 +33,7 @@ export default function SectionNavFab({ sections, onSelect }) {
       )}
       <button type="button" onClick={() => setOpen(v => !v)} aria-label="Jump to section" title="Jump to section"
         className="glass-fixed"
-        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-d18)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {open ? '×' : '☰'}
       </button>
     </div>
