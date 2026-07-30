@@ -29,6 +29,16 @@ export const MODEL_PRICES = {
   'gpt-4o': { input: 2.5, output: 10 },
   'gpt-4.1-mini': { input: 0.4, output: 1.6 },
   'gpt-4.1': { input: 2, output: 8 },
+  // NOT LISTED, deliberately: gpt-5.x, the family actually in use
+  // (OPENAI_DEFAULT_MODEL=gpt-5.6-luna). Its per-million rates are not
+  // verified here, so it resolves to FALLBACK_PRICE — the Opus tier — and the
+  // spend figure for those calls reads HIGH rather than wrong-cheap. Add real
+  // entries once the published rates are confirmed; do not guess them, because
+  // this table feeds a dollar number the owner reads as fact.
+  //
+  // Note on matching: priceFor takes the FIRST key the model id starts with,
+  // so more specific ids must be inserted before their prefixes (see
+  // 'gpt-4o-mini' above 'gpt-4o').
 }
 const FALLBACK_PRICE = { input: 5, output: 25 } // conservative: Opus tier
 

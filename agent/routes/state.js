@@ -10,6 +10,7 @@ import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { stateEpoch } from '../lib/state-cache.js'
+import { requestedAccount, accountWhere, countUnattributed } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
@@ -300,7 +301,14 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/positions — active monitored positions
   // -----------------------------------------------------------------------
-  router.get('/positions', async (_req, res) => {
+  // SCOPED (owner 2026-07-30: "All the live positions in performance, trade,
+  // monitor, desk are the same when i switch account. this is serious"). This
+  // query used to be `WHERE mp.status = 'active'` and nothing else, so it
+  // returned every enabled account's positions and switching accounts changed
+  // nothing on screen. `?account=all` opts back into the portfolio view.
+  router.get('/positions', async (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'mp.account_id')
     // Volume + broker fill time + ctrader_position_id live on the linked
     // trades row — joined in so the Open positions table can show Qty, the
     // real opened time, AND match the live-broker enrichment map (P&L, ccy,
@@ -314,9 +322,10 @@ export default function stateRouter(db) {
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
          LEFT JOIN analyses a ON a.id = t.analysis_id
-         WHERE mp.status = 'active' ORDER BY mp.created_at DESC`
+         WHERE mp.status = 'active'${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY mp.created_at DESC`
       )
-      .all()
+      .all(...acct.params)
 
     // Owner (2026-07-24, Friday evening): open trades were stuck over a
     // market closure the UI never surfaced — every open position now carries
@@ -356,7 +365,18 @@ export default function stateRouter(db) {
       }
     })
 
-    res.json({ positions: enriched, snapshotAt: snapAt })
+    // accountId travels WITH the rows so the UI can name whose positions these
+    // are beside the table (owner: "I still cannot know which account I am
+    // trading in the page — can you state on the beside of the 'Open
+    // positions' table"). unattributed says how many active rows were hidden
+    // for carrying no account_id, so pre-M1 rows never vanish silently.
+    res.json({
+      positions: enriched,
+      snapshotAt: snapAt,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      unattributed: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -403,15 +423,19 @@ export default function stateRouter(db) {
   // gone). Owner: "keep records of these" — resting entry orders fill even when
   // the bot's switches are OFF, so they get a durable record with lifecycle.
   // -----------------------------------------------------------------------
-  router.get('/orders', (_req, res) => {
+  router.get('/orders', (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
+    const and = acct.active ? ` AND ${acct.where}` : ''
     let working = [], recentlyGone = [], queued = []
     try {
       working = db.prepare(
-        `SELECT * FROM broker_orders WHERE status = 'working' ORDER BY last_seen DESC`
-      ).all()
+        `SELECT * FROM broker_orders WHERE status = 'working'${and} ORDER BY last_seen DESC`
+      ).all(...acct.params)
       recentlyGone = db.prepare(
-        `SELECT * FROM broker_orders WHERE status = 'gone' AND gone_at >= datetime('now', '-24 hours') ORDER BY gone_at DESC LIMIT 100`
-      ).all()
+        `SELECT * FROM broker_orders WHERE status = 'gone' AND gone_at >= datetime('now', '-24 hours')${and}
+         ORDER BY gone_at DESC LIMIT 100`
+      ).all(...acct.params)
     } catch { /* table may not exist on a very old DB */ }
     // BOT-SIDE queues (owner: "there are many but you keep waiting" — these
     // exist before anything rests at the broker, so the ledger must show
@@ -421,10 +445,10 @@ export default function stateRouter(db) {
     //  · pending_signals — signals queued for market open / conditions
     try {
       const po = db.prepare(
-        `SELECT * FROM pending_orders WHERE status = 'working'
+        `SELECT * FROM pending_orders WHERE status = 'working'${and}
            AND (order_id IS NULL OR order_id NOT IN (SELECT order_id FROM broker_orders WHERE status = 'working'))
          ORDER BY id DESC LIMIT 100`
-      ).all()
+      ).all(...acct.params)
       queued.push(...po.map(o => ({
         id: o.id, kind: 'closed_market_limit', symbol: o.symbol, side: o.dir > 0 ? 'BUY' : 'SELL',
         order_type: 'LIMIT', volume: o.volume, limit_price: o.level, sl: o.sl, tp: o.tp,
@@ -434,8 +458,8 @@ export default function stateRouter(db) {
     } catch { /* table optional */ }
     try {
       const ps = db.prepare(
-        `SELECT * FROM pending_signals WHERE status = 'pending' ORDER BY id DESC LIMIT 100`
-      ).all()
+        `SELECT * FROM pending_signals WHERE status = 'pending'${and} ORDER BY id DESC LIMIT 100`
+      ).all(...acct.params)
       queued.push(...ps.map(s => ({
         id: s.id, kind: 'queued_signal', symbol: s.symbol,
         side: /long|buy/i.test(s.bias || '') ? 'BUY' : 'SELL',
@@ -443,7 +467,11 @@ export default function stateRouter(db) {
         queued_at: s.queued_at, expires_at: s.expires_at, note: s.market_reason,
       })))
     } catch { /* table optional */ }
-    res.json({ working, recentlyGone, queued, workingCount: working.length })
+    res.json({
+      working, recentlyGone, queued, workingCount: working.length,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1019,12 +1047,15 @@ export default function stateRouter(db) {
 
   // GET /state/trades — trade journal (last 100 closed)
   // -----------------------------------------------------------------------
-  router.get('/trades', (_req, res) => {
+  router.get('/trades', (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const rows = db
       .prepare(
-        "SELECT * FROM trades WHERE status IN ('closed', 'rejected') ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT 100"
+        `SELECT * FROM trades WHERE status IN ('closed', 'rejected')${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT 100`
       )
-      .all()
+      .all(...acct.params)
 
     // ¶D·3 — decode the label here so every reader gets the same words.
     // The owner, on a NAS100 short that lost $1,013.08: "I don't know was
@@ -1033,6 +1064,11 @@ export default function stateRouter(db) {
     // that has to be decoded by hand is not attribution.
     res.json({
       trades: rows.map(r => ({ ...r, label_decoded: describeLabel(r.label_raw).text })),
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      unattributed: acct.active
+        ? countUnattributed(db, 'trades', "status IN ('closed','rejected')")
+        : 0,
     })
   })
 
@@ -1172,12 +1208,19 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/pending-orders — resting-limit-order lifecycle rows
   // -----------------------------------------------------------------------
-  router.get('/pending-orders', (_req, res) => {
+  router.get('/pending-orders', (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     try {
       const rows = db.prepare(
-        `SELECT * FROM pending_orders ORDER BY id DESC LIMIT 50`
-      ).all()
-      res.json({ rows })
+        `SELECT * FROM pending_orders${acct.active ? ` WHERE ${acct.where}` : ''} ORDER BY id DESC LIMIT 50`
+      ).all(...acct.params)
+      res.json({
+        rows,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        unattributed: acct.active ? countUnattributed(db, 'pending_orders') : 0,
+      })
     } catch (e) {
       res.json({ rows: [], error: e.message })
     }
@@ -1189,14 +1232,22 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/risk-events', (req, res) => {
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10)))
-    const rows = req.query.symbol
-      ? db.prepare(
-          `SELECT * FROM risk_events WHERE symbol = ? ORDER BY created_at DESC LIMIT ?`
-        ).all(String(req.query.symbol).toUpperCase(), limit)
-      : db.prepare(
-          `SELECT * FROM risk_events ORDER BY created_at DESC LIMIT ?`
-        ).all(limit)
-    res.json({ rows })
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
+    const clauses = []
+    const params = []
+    if (req.query.symbol) { clauses.push('symbol = ?'); params.push(String(req.query.symbol).toUpperCase()) }
+    if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
+    const rows = db.prepare(
+      `SELECT * FROM risk_events${clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''}
+       ORDER BY created_at DESC LIMIT ?`
+    ).all(...params, limit)
+    res.json({
+      rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      unattributed: acct.active ? countUnattributed(db, 'risk_events') : 0,
+    })
   })
 
   // -----------------------------------------------------------------------

@@ -3,6 +3,21 @@
 
 import { getSessionContext } from '../lib/sessions.js'
 
+// Fallback model id, used ONLY when the client does not declare its own.
+//
+// Owner (2026-07-30): "why 'claude-sonnet-4-5' to position_monitor, i have
+// openai as priority." The ROUTING was already correct — createLLMClient
+// returns the OpenAI client whenever OPENAI_API_KEY is set, and toOpenAIBody
+// deliberately ignores the model id the caller passes because OpenAI uses its
+// own configured model. What was wrong was the REPORTING: runMonitorCheck
+// returned this constant as `model` regardless of which provider actually ran,
+// so every OpenAI monitor call was logged to the spend ledger as
+// claude-sonnet-4-5 — and priced at Anthropic's $3/$15 per-million rates
+// instead of the OpenAI model's. The label lied and the cost was wrong.
+//
+// Now the request carries `client.model` (both clients declare it) and the
+// result reports the model the RESPONSE came back with, falling back to the
+// requested id only if the provider did not say.
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5'
 const MAX_TOKENS = 768
 
@@ -71,8 +86,9 @@ export async function runMonitorCheck(client, position) {
   const sessionContext = getSessionContext()
   const prompt = buildMonitorPrompt(position, sessionContext)
 
+  const requested = client?.model || MODEL
   const resp = await client.messages.create({
-    model: MODEL,
+    model: requested,
     max_tokens: MAX_TOKENS,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -108,6 +124,7 @@ export async function runMonitorCheck(client, position) {
     thesis_status: parsed.thesis_status,
     urgency: parsed.urgency,
     usage: resp.usage || null,
-    model: MODEL,
+    // The model that ACTUALLY answered — never a hardcoded provider default.
+    model: resp?.model || requested,
   }
 }

@@ -15,6 +15,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
+import AccountTag from '../components/common/AccountTag.jsx'
 import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -1085,16 +1086,26 @@ export default function Performance() {
   // memos stay pure (react-hooks/purity forbids Date.now() inside useMemo);
   // the 60s refresh keeps it current enough for day-window maths.
   const [loadedAt, setLoadedAt] = useState(() => Date.now())
+  // Whose positions the route says these are (owner: state the account beside
+  // the Open positions table).
+  const [posScope, setPosScope] = useState({ accountId: null, unattributed: 0 })
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — set it up on Connect.'); return }
     try {
+      // ONE account for the whole page. The ledger already honoured `acct`;
+      // trades, risk events and positions did not, so the page mixed one
+      // account's ledger with every account's positions (owner: "All the live
+      // positions in performance, trade, monitor, desk are the same when i
+      // switch account"). `?account=` is now threaded through all four —
+      // 'all' means the portfolio view, explicitly.
+      const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
       const [led, ac, t, r, p, pm] = await Promise.all([
         agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
         agentGet('/state/accounts').catch(() => null),
-        agentGet('/state/trades').catch(() => null),
-        agentGet('/state/risk-events?limit=200').catch(() => null),
-        agentGet('/state/positions').catch(() => null),
+        agentGet(`/state/trades${q}`).catch(() => null),
+        agentGet(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
+        agentGet(`/state/positions${q}`).catch(() => null),
         agentGet('/state/postmortems?limit=200').catch(() => null),
       ])
       setLedger(led)
@@ -1103,6 +1114,7 @@ export default function Performance() {
       setAllTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
       setPositions(p?.rows || p?.positions || [])
+      setPosScope({ accountId: p?.accountId ?? null, unattributed: p?.unattributed ?? 0 })
       setPostmortems(pm?.rows || pm?.postmortems || [])
       // Per-account ledgers feed the accounts detail row (balance, day P&L
       // scope, 30D forecast pace) — small server-side aggregations, one per
@@ -1132,12 +1144,16 @@ export default function Performance() {
     if (led) setLedger(led)
     const ac = swrPeek('/state/accounts')
     if (ac) { setAccounts(ac.accounts || []); setSelectedAccountId(ac.selectedAccountId || null) }
-    const t2 = swrPeek('/state/trades')
+    // These keys MUST match the URLs `load` fetches, or the instant-paint layer
+    // misses — and worse, an old unscoped key would repaint every account's
+    // rows over the scoped ones.
+    const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
+    const t2 = swrPeek(`/state/trades${q}`)
     if (t2) setAllTrades(t2.rows || t2.trades || [])
-    const r2 = swrPeek('/state/risk-events?limit=200')
+    const r2 = swrPeek(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`)
     if (r2) setEvents(r2.rows || [])
-    const p2 = swrPeek('/state/positions')
-    if (p2) setPositions(p2.rows || p2.positions || [])
+    const p2 = swrPeek(`/state/positions${q}`)
+    if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, unattributed: p2?.unattributed ?? 0 }) }
     const pm2 = swrPeek('/state/postmortems?limit=200')
     if (pm2) setPostmortems(pm2.rows || pm2.postmortems || [])
     const rf2 = swrPeek('/state/risk-full')
@@ -1862,6 +1878,7 @@ export default function Performance() {
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <AccountTag accountId={posScope.accountId} unattributed={t2.key === 'float' ? posScope.unattributed : 0} />
                   <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
                 </div>
                 {t2.key === 'closed' && <span style={{ fontSize: 9, color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
