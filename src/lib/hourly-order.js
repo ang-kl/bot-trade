@@ -62,6 +62,20 @@ export function rollingHourWindows(nowMs, count = 24) {
 }
 
 /**
+ * The whole period the card covers: exactly the union of the 24 windows.
+ *
+ * Owner's acceptance test: "The hourly rows and Closed Trades section must
+ * cover precisely the same period. Their closed-trade counts and totals must
+ * reconcile." The only way to guarantee that is for both to read their bounds
+ * from here rather than each computing its own — two expressions that agree
+ * today drift the moment one is edited.
+ */
+export function rollingWindow(nowMs, count = 24) {
+  const w = rollingHourWindows(nowMs, count)
+  return w.length ? { from: w[0].from, to: w[w.length - 1].to } : { from: nowMs, to: nowMs }
+}
+
+/**
  * Newest first, with `isLive` on the row whose window ends now.
  *
  * @param {Array} rows  windows WITH balances already carried, oldest first

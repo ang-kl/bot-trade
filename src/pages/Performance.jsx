@@ -17,7 +17,7 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { selectedAccountId as appSelectedAccountId } from '../lib/selected-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
-import { rollingHourWindows, displayOrder, totalFloating } from '../lib/hourly-order.js'
+import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
@@ -1261,10 +1261,25 @@ export default function Performance() {
     return { from: anchor, to: loadedAt, weekend: false, label: null }
   }, [loadedAt])
 
-  // Today since the FX day roll — the design's "Today" number, plus the
-  // TP/SL split the prototype's meta line shows (evidence: close_reason).
+  // ROLLING 24 HOURS (owner ruling, 2026-07-31): "The entire card must
+  // represent one consistent rolling 24-hour period. Do not leave the card
+  // title or Closed Trades section anchored to the 5 PM New York FX day."
+  //
+  // [anchorNow - 24h, anchorNow) — the exact union of the 24 hourly windows
+  // below, so the hourly rows and the Closed Trades list cover precisely the
+  // same period and their counts reconcile. Half-open at both ends: a trade
+  // closing on a boundary belongs to one row and one row only.
+  //
+  // `todayWin` survives for the SEPARATE "Today by market session" card lower
+  // down, which is still an FX-day view and which this ruling does not touch.
+  // Bounds come from rollingWindow(), the same helper the hourly rows are
+  // built from, so the two cannot drift apart under a later edit.
+  const rollingWin = useMemo(() => rollingWindow(hourNow, 24), [hourNow])
+
+  // The card's headline number, over the rolling window, plus the TP/SL split
+  // the prototype's meta line shows (evidence: close_reason).
   const today = useMemo(() => {
-    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= todayWin.from && ms < todayWin.to })
+    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= rollingWin.from && ms < rollingWin.to })
     const wins = rows.filter(t2 => Number(t2.net_pnl) > 0)
     const isTp = (r) => /\btp\b|take.?profit|target|bank|partial|scale/.test(String(r || '').toLowerCase())
     const isSl = (r) => /\bsl\b|stop.?loss|stopped|stop hit/.test(String(r || '').toLowerCase())
@@ -1274,7 +1289,7 @@ export default function Performance() {
       tp: rows.filter(t2 => isTp(t2.close_reason) && !isSl(t2.close_reason)).length,
       sl: rows.filter(t2 => isSl(t2.close_reason) && !isTp(t2.close_reason)).length,
     }
-  }, [scopedClosed, todayWin])
+  }, [scopedClosed, rollingWin])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
   // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
@@ -1635,7 +1650,9 @@ export default function Performance() {
   // sum of the P&L column always equals `today.net`. Newest close first,
   // because the thing you just felt is the thing you look for.
   const todayTrades = useMemo(() => shapedTrades
-    .filter(t2 => t2.t >= todayWin.from && t2.t < todayWin.to)
+    // Same window as the hourly rows above — this is the reconciliation the
+    // owner's acceptance test checks: sum(hourly closedN) === todayTrades.length.
+    .filter(t2 => t2.t >= rollingWin.from && t2.t < rollingWin.to)
     .sort((a, b) => b.t - a.t)
     .map(t2 => {
       const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
@@ -1652,7 +1669,7 @@ export default function Performance() {
           t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
         ].filter(Boolean).join(' · '),
       }
-    }), [shapedTrades, todayWin])
+    }), [shapedTrades, rollingWin])
 
   const fxBands = useMemo(() => {
     const wk = shapedTrades.filter(t2 => t2.t >= loadedAt - 7 * D)
@@ -2269,16 +2286,18 @@ export default function Performance() {
               the table's 420px min-width, so nothing is ever cut off. */}
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
-              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
-                  to correct me on exactly this reading, which is evidence the
-                  heading alone is ambiguous — every symbol is in these rows,
-                  including the ones that trade through the FX close. Said in
-                  words rather than left to be inferred from the title. */}
-              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
-              <SectionTools id="today" title="24 hours · FX day open (5pm NY)" data={{ hourly: todayHourly, closedTrades: todayTrades }}
-                toText={() => ['24 hours · FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
-                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
+              <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+              {/* Owner ruling 2026-07-31. The old heading named the FX day open
+                  as the anchor, and had to be footnoted ("every symbol · the FX
+                  day open is only where the window starts") because the title
+                  alone read as a scope. A rolling window needs no such footnote:
+                  the period is simply the last 24 hours, ending now. */}
+              <span style={{ fontSize: 9, color: P_MU }}>latest 24 one-hour windows · newest first</span>
+              <SectionTools id="today" title="Rolling 24 hours" data={{ hourly: todayHourly, closedTrades: todayTrades }}
+                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
+                  // The copied text carries the same label the row shows — the
+                  // END of the window, in SGT over UTC — not the window start.
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
@@ -2286,8 +2305,7 @@ export default function Performance() {
             <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
               {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
-            {todayWin.label && <span style={{ fontSize: 9, color: P_WRN }}>{todayWin.label}</span>}
+            <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}

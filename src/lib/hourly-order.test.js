@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rollingHourWindows, displayOrder, nextTickBoundary, totalFloating } from './hourly-order.js'
+import { rollingHourWindows, rollingWindow, displayOrder, nextTickBoundary, totalFloating } from './hourly-order.js'
 import { hourLabel, dateFlags, localDayKey } from './hour-label.js'
 
 const H = 60 * 60 * 1000
@@ -201,6 +201,72 @@ describe('pagination across all 24 rows', () => {
     expect(pages[0][6].showDate).toBe(true)      // 11:45 PM (30 Jul), page 1
     expect(pages[0][0].showDate).toBe(false)
     expect(pages[2].at(-1).showDate).toBe(true)  // the oldest row, page 3
+  })
+})
+
+describe("the owner's reconciliation ruling — one window for the whole card", () => {
+  // "The hourly rows and Closed Trades section must cover precisely the same
+  // period. Their closed-trade counts and totals must reconcile."
+  const rows = build(EXAMPLE)
+  const win = rollingWindow(EXAMPLE)
+
+  it('the card window is exactly the union of the 24 hourly windows', () => {
+    expect(win.from).toBe(EXAMPLE - 24 * H)
+    expect(win.to).toBe(EXAMPLE)
+    expect(win.from).toBe(Math.min(...rows.map(r => r.from)))
+    expect(win.to).toBe(Math.max(...rows.map(r => r.to)))
+  })
+
+  it('the 24 intervals are contiguous — no gaps, no overlaps', () => {
+    const oldestFirst = [...rows].reverse()
+    for (let i = 1; i < oldestFirst.length; i++) {
+      expect(oldestFirst[i].from).toBe(oldestFirst[i - 1].to)
+    }
+  })
+
+  it('every trade in the card window lands in exactly one hourly row', () => {
+    // Boundary-heavy sample: on the edges, one millisecond either side, the
+    // first and last instants of the period, and one outside each end.
+    const stamps = [
+      win.from, win.from + 1, win.from - 1,
+      EXAMPLE - 12 * H, EXAMPLE - 12 * H - 1,
+      win.to - 1, win.to, win.to + 1,
+    ]
+    for (const t of stamps) {
+      const hits = rows.filter(r => t >= r.from && t < r.to)
+      const inCardWindow = t >= win.from && t < win.to
+      expect(hits).toHaveLength(inCardWindow ? 1 : 0)
+    }
+  })
+
+  it('summing the hourly buckets equals the card-window count', () => {
+    // A trade every 17 minutes across three days — far more than the window
+    // holds, so this also proves nothing outside the period leaks in.
+    const trades = []
+    for (let t = EXAMPLE - 48 * H; t <= EXAMPLE + 12 * H; t += 17 * 60_000) trades.push(t)
+
+    const perRow = rows.map(r => trades.filter(t => t >= r.from && t < r.to).length)
+    const inWindow = trades.filter(t => t >= win.from && t < win.to).length
+
+    expect(perRow.reduce((a, b) => a + b, 0)).toBe(inWindow)
+    expect(inWindow).toBeGreaterThan(0)
+    // And nothing was double-counted: each row's slice is disjoint.
+    expect(new Set(rows.flatMap(r => trades.filter(t => t >= r.from && t < r.to))).size).toBe(inWindow)
+  })
+
+  it('the acceptance-test period is 30 Jul 05:45 SGT inclusive to 31 Jul 05:45 SGT exclusive', () => {
+    expect(hourLabel(win.from).local).toBe('5:45 AM')
+    expect(localDayKey(win.from)).toBe('2026-07-30')
+    expect(hourLabel(win.to).local).toBe('5:45 AM')
+    expect(localDayKey(win.to)).toBe('2026-07-31')
+    // The oldest ROW is labelled 6:45 AM — its window STARTS at 5:45, and the
+    // label is the end. That is the distinction the owner spelled out.
+    expect(hourLabel(rows[23].at).local).toBe('6:45 AM')
+    expect(rows[23].from).toBe(win.from)
+  })
+
+  it('degenerates safely rather than inventing a period', () => {
+    expect(rollingWindow(EXAMPLE, 0)).toEqual({ from: EXAMPLE, to: EXAMPLE })
   })
 })
 
