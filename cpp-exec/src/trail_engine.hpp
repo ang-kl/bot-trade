@@ -77,4 +77,6 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<long long> amendsOk_{0};
   std::atomic<long long> amendsFailed_{0};
+  // Specs the last configure() refused for naming no account — see configure().
+  std::atomic<long long> specsDroppedNoAccount_{0};
 };

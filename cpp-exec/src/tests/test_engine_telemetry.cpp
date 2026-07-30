@@ -25,6 +25,8 @@ static jsn::Value bracketedMarketOrder() {
   o.set("volume", 100.0);
   o.set("relativeStopLoss", 50000.0);
   o.set("relativeTakeProfit", 50000.0);
+  // Required since PHASE 2 — an order with no account never reaches the socket.
+  o.set("ctidTraderAccountId", 4002.0);
   return o;
 }
 
@@ -50,6 +52,10 @@ static void test_reject_logs_telemetry() {
   naked.set("orderType", std::string("MARKET"));
   naked.set("symbolId", 7.0);
   naked.set("volume", 50.0);
+  // The account is required since PHASE 2 (owner, 2026-07-30) — without it the
+  // guard refuses with guard_no_account and this test would be asserting the
+  // wrong rejection. Naming it keeps the NAKED-order path the thing under test.
+  naked.set("ctidTraderAccountId", 4002.0);
   EngineResult r = engine.placeOrder(naked);
   assert(!r.ok);
 
@@ -61,6 +67,35 @@ static void test_reject_logs_telemetry() {
   assert(records[0].volume == 50.0);
   assert(records[0].verdict == 0);
   assert(records[0].reason_code == 3); // guard_naked_order
+  std::remove(path.c_str());
+}
+
+// PHASE 2: an order that names no account is refused, and the refusal is
+// telemetered under its own reason code — so a regression shows up in the
+// offline binary log, not only in stderr.
+static void test_missing_account_logs_telemetry() {
+  const std::string path = tmpPath();
+  Telemetry telemetry(64, path);
+  ExecEngine engine;
+  engine.setTelemetry(&telemetry);
+
+  jsn::Value noAcct{jsn::Object{}};
+  noAcct.set("orderType", std::string("MARKET"));
+  noAcct.set("symbolId", 9.0);
+  noAcct.set("volume", 25.0);
+  noAcct.set("relativeStopLoss", 50000.0);
+  noAcct.set("relativeTakeProfit", 50000.0);
+  EngineResult r = engine.placeOrder(noAcct);
+  assert(!r.ok);
+  assert(r.body.get("errorCode").asString().find("guard_no_account") != std::string::npos);
+
+  telemetry.flush();
+  auto records = readBack(path);
+  assert(records.size() == 1);
+  assert(records[0].kind == TK_ORDER_REJECT);
+  assert(records[0].symbol_id == 9);
+  assert(records[0].verdict == 0);
+  assert(records[0].reason_code == 10); // guard_no_account
   std::remove(path.c_str());
 }
 
@@ -102,6 +137,7 @@ static void test_no_telemetry_is_a_safe_noop() {
 
 int main() {
   test_reject_logs_telemetry();
+  test_missing_account_logs_telemetry();
   test_submit_then_result_logs_telemetry();
   test_no_telemetry_is_a_safe_noop();
   std::puts("test_engine_telemetry: all assertions passed");

@@ -25,6 +25,27 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
     return { false, "guard_bad_payload: order must be a JSON object" };
   }
 
+  // PHASE 2, owner's decision 2026-07-30: "C++ sidecar refuse an unstamped
+  // operation." This engine used to FILL IN a missing ctidTraderAccountId from
+  // accountIds_.front() (engine.cpp's old withAccountId). That default is why
+  // exits on non-primary accounts silently went to the wrong account for so
+  // long: the primary is elected once per broker session and then frozen, so
+  // every unstamped close and amend had exactly one destination regardless of
+  // which account the caller meant. Refusing turns that from a silent mis-route
+  // into a loud failure on the first attempt.
+  //
+  // Checked here rather than only at the call site so it is atomic with the rest
+  // of the guard and lands in the same telemetry record as every other refusal.
+  //
+  // By the time this ships, Node stamps the account on every write
+  // (agent/lib/exec-engine.js withAccount, merged first and deliberately
+  // deployed first), so there should be nothing left to refuse — this is a
+  // tripwire, not a behaviour change.
+  const jsn::Value& acct = payload.get("ctidTraderAccountId");
+  if (!acct.isNumber() || acct.asNumber(0) <= 0) {
+    return { false, "guard_no_account: order does not name a ctidTraderAccountId — refusing to choose an account on the caller's behalf" };
+  }
+
   // Order type: default MARKET when unspecified (matches the app's market path).
   const jsn::Value& ot = payload.get("orderType");
   const std::string type = ot.isString() ? ot.asString() : "MARKET";

@@ -13,7 +13,45 @@ TrailSpec longSpec() {
   s.dir = 1;
   s.trailDist = 0.0010; // 10 pips on a 5-digit pair
   s.digits = 5;
+  // Required since PHASE 2 (owner, 2026-07-30): configure() now DROPS a spec
+  // that names no account, because amendPosition refuses an unstamped payload.
+  // A helper without this would silently make every configure() test a no-op.
+  s.accountId = 4002;
   return s;
+}
+
+// PHASE 2: a spec with no account is refused at ingest, not at amend time.
+//
+// workerLoop is the only caller of ExecEngine::amendPosition inside the sidecar,
+// and amendPosition now refuses a payload with no ctidTraderAccountId. An
+// un-accounted spec left in the map would therefore sit there ratcheting nothing
+// while amendsFailed_ climbed — a SILENT stop-loss failure, the worst shape this
+// file could fail in. Dropping it at ingest makes the lost coverage visible.
+void testConfigureDropsSpecsWithNoAccount() {
+  TrailSpec ok = longSpec();
+  TrailSpec bad = longSpec();
+  bad.accountId = 0;
+
+  TrailEngine te;
+  te.configure({ { 11, ok }, { 22, bad } });
+  assert(te.tracked() == 1);
+  const std::string st = te.statusJson();
+  assert(st.find("\"positionId\":11") != std::string::npos);
+  assert(st.find("\"positionId\":22") == std::string::npos);
+  // Reported, not merely absent — a count of zero would look like full coverage.
+  assert(st.find("\"specsDroppedNoAccount\":1") != std::string::npos);
+
+  // A negative id is just as unusable as zero.
+  TrailSpec neg = longSpec();
+  neg.accountId = -4002;
+  te.configure({ { 33, neg } });
+  assert(te.tracked() == 0);
+  assert(te.statusJson().find("\"specsDroppedNoAccount\":1") != std::string::npos);
+
+  // And a clean push clears the counter, so it reflects the LAST configure.
+  te.configure({ { 44, ok } });
+  assert(te.tracked() == 1);
+  assert(te.statusJson().find("\"specsDroppedNoAccount\":0") != std::string::npos);
 }
 
 void testLongRatchet() {
@@ -94,6 +132,7 @@ int main() {
   testNeverThroughMarket();
   testConfigureKeepsLocalProgress();
   testSymbolIdsDedupe();
+  testConfigureDropsSpecsWithNoAccount();
   std::puts("test_trail_engine: OK");
   return 0;
 }

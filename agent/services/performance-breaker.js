@@ -59,6 +59,55 @@ export const DEFAULT_PERFORMANCE_BREAKER = {
   autoDisarm: false,
 }
 
+/**
+ * ONE-TIME: make the owner's 2026-07-30 "autoDisarm — leave it OFF" actually
+ * take effect on an instance that stored `true` before they said it.
+ *
+ * WHY THIS IS NEEDED, AND WHY THE #509 CHANGE ALONE WAS NOT ENOUGH. #509 flipped
+ * DEFAULT_PERFORMANCE_BREAKER.autoDisarm to false. But loadPerformanceBreakerConfig
+ * only falls back to the default when the key is ABSENT — a stored
+ * performance_breaker_json carrying `autoDisarm: true` from the owner's
+ * 2026-07-20 arming still wins, and on 2026-07-30 the owner's desk had autotrade
+ * off on every account with the master flag written false. This breaker is one of
+ * the few things that writes that MASTER flag (:131), which is an absolute veto
+ * over every per-account switch. So the instruction was given, the default was
+ * changed, and the behaviour did not change. That gap was mine.
+ *
+ * WHAT IT DOES. Removes the stored `autoDisarm` key so the config inherits the
+ * documented default (now false). Everything else in the stored config —
+ * window, minTrades, pfThreshold, on — is preserved untouched.
+ *
+ * WHAT IT DOES NOT DO. It does not re-arm autotrade; restoring trading is the
+ * owner's call, and this only stops the breaker disarming it again. It does not
+ * pin autoDisarm off for ever either: after this runs, setting it from Tune
+ * stores an explicit value that is honoured normally. Guarded by a state flag,
+ * so it runs exactly once and a later deliberate `true` is never undone.
+ */
+export function migrateAutoDisarmOff(db) {
+  const FLAG = 'pb_autodisarm_off_v1'
+  if (getState(db, FLAG)) return { migrated: false, reason: 'already run' }
+  let parsed = null
+  try { parsed = JSON.parse(getState(db, 'performance_breaker_json') || 'null') } catch {
+    setState(db, FLAG, new Date().toISOString())
+    return { migrated: false, reason: 'stored config unreadable — nothing to strip' }
+  }
+  setState(db, FLAG, new Date().toISOString())
+  if (!parsed || typeof parsed !== 'object' || parsed.autoDisarm === undefined) {
+    return { migrated: false, reason: 'no stored autoDisarm — the default already applies' }
+  }
+  const had = parsed.autoDisarm
+  const { autoDisarm: _dropped, ...rest } = parsed
+  setState(db, 'performance_breaker_json', JSON.stringify(rest))
+  try {
+    db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+      .run('PB_AUTODISARM_OFF', '/migration', JSON.stringify({
+        was: had, now: DEFAULT_PERFORMANCE_BREAKER.autoDisarm,
+        note: "owner 2026-07-30 'autoDisarm - leave it OFF'; #509 changed only the default, a stored true still won",
+      }).slice(0, 2000))
+  } catch { /* audit best-effort */ }
+  return { migrated: true, was: had }
+}
+
 export function loadPerformanceBreakerConfig(db) {
   try {
     const parsed = JSON.parse(getState(db, 'performance_breaker_json') || 'null')

@@ -306,16 +306,35 @@ export async function runProfitKeeper(db, creds, deps = {}) {
       if (decision.newPeak !== (r.peak_profit_usd || 0)) updPeak.run(decision.newPeak, r.id)
       if (decision.trail && !decision.action?.close) {
         const s = String(r.side || '').toUpperCase()
-        trailSpecs.push({
-          positionId: parseInt(r.position_id),
-          ctidTraderAccountId: Number(creds.accountId) || undefined,
-          symbolId: td.symbolId,
-          dir: s === 'LONG' || s === 'BUY' ? 1 : -1,
-          trailDistance: decision.trail.distance,
-          peakPrice: decision.trail.peakPrice,
-          currentSl: bp.stopLoss ?? r.current_sl ?? null,
-          digits: meta.digits,
-        })
+        // The account is REQUIRED on a trail spec now, not best-effort.
+        //
+        // This used to be `Number(creds.accountId) || undefined`, which sent no
+        // account whenever accountId was absent or unparseable. The C++ trail
+        // engine then attached none, and ExecEngine::amendPosition filled one in
+        // from its frozen primary — so a stop-loss ratchet for one account could
+        // be applied against another. amendPosition now refuses an unstamped
+        // payload (owner's decision, 2026-07-30), and TrailEngine::configure
+        // drops specs that name no account, so a spec without one would silently
+        // stop being ratcheted. Skipping it here instead keeps the reason at the
+        // place that can explain it; the keeper's own 3s ratchet still covers
+        // the position either way.
+        // NOT `continue` — that would skip this position's own close/amend
+        // action below. Only the tick-level trail spec is withheld.
+        const acct = Number(creds.accountId)
+        if (!Number.isFinite(acct) || acct <= 0) {
+          summary.errors.push(`${r.symbol}: trail spec skipped — credentials name no usable account (${String(creds.accountId)}); the keeper's own ratchet still applies`)
+        } else {
+          trailSpecs.push({
+            positionId: parseInt(r.position_id),
+            ctidTraderAccountId: acct,
+            symbolId: td.symbolId,
+            dir: s === 'LONG' || s === 'BUY' ? 1 : -1,
+            trailDistance: decision.trail.distance,
+            peakPrice: decision.trail.peakPrice,
+            currentSl: bp.stopLoss ?? r.current_sl ?? null,
+            digits: meta.digits,
+          })
+        }
       }
       if (!decision.action) continue
 

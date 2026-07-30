@@ -72,6 +72,14 @@ public:
 
   size_t strategyCount() const { return strategies_.size(); }
 
+  // The account this tier trades on. PHASE 2 (owner, 2026-07-30): the sidecar
+  // refuses an order that names no account, so this tier must be TOLD which one
+  // rather than inheriting whichever account happened to be pushed first. Set
+  // from POST /vpo-config; zero means "not configured", and tryFire then refuses
+  // to fire and counts it, exactly as it already does for missing sizing.
+  void setAccountId(long long id) { accountId_.store(id, std::memory_order_relaxed); }
+  long long accountId() const { return accountId_.load(std::memory_order_relaxed); }
+
   // What this tier actually did. Audit F-L4-04: tryFire used to discard the
   // EngineResult entirely — `(void)result` — so a fill, a broker rejection
   // and a transport error were one indistinguishable non-event, and the only
@@ -87,6 +95,7 @@ public:
     uint64_t rejected = 0;    // broker answered with an error frame
     uint64_t failed = 0;      // transport/guard failure, no broker verdict
     uint64_t noSizing = 0;    // refused: volumeResolver gave nothing usable
+    uint64_t noAccount = 0;   // refused: no account configured to trade on
     long long lastFireAtMs = 0;
     std::string lastDetail;   // key + verdict of the most recent attempt
   };
@@ -108,6 +117,7 @@ private:
   std::vector<std::unique_ptr<StrategyModule>> strategies_;
   std::thread recomputeThread_;
   std::atomic<bool> running_{false};
+  std::atomic<long long> accountId_{0};
 
   // Written on the tick thread, read by the HTTP thread. A short mutex, not
   // atomics: lastDetail is a string, and the whole block should be read as

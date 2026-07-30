@@ -50,6 +50,7 @@ static void test_onTick_fires_on_touch_and_rearms_to_idle() {
   auto volumeResolver = [&](const vpo::StrategyModule&) { return volumeToReturn; };
 
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -72,6 +73,7 @@ static void test_onTick_ignores_other_symbols() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -87,6 +89,7 @@ static void test_onTick_refuses_to_fire_without_resolvable_volume() {
   // Sizing unavailable — this is the "risk.js hasn't answered yet" case.
   auto volumeResolver = [](const vpo::StrategyModule&) { return -1.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -104,6 +107,7 @@ static void test_sell_side_fires_on_bid_rising_to_trigger() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "GBPUSD", "15m", 7);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -127,6 +131,7 @@ static void test_outcomes_start_empty_and_count_a_failed_submit() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -156,6 +161,7 @@ static void test_sizing_refusal_is_counted_apart_from_a_submit() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return -1.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -177,6 +183,7 @@ static void test_a_tick_that_does_not_touch_counts_nothing() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -192,6 +199,7 @@ static void test_status_json_reports_the_counters() {
   auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
   auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
   vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  dispatcher.setAccountId(4002); // PHASE 2: an unconfigured account is a refusal
   auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
   vpo::StrategyModule* raw = strategy.get();
   dispatcher.registerStrategy(std::move(strategy));
@@ -212,6 +220,48 @@ static void test_status_json_reports_the_counters() {
   assert(fired.find("vwap_trend") != std::string::npos);
 }
 
+// PHASE 2: with no account configured, an armed strategy whose trigger is
+// crossed REFUSES to fire and says so, rather than placing on whatever account
+// the engine's frozen primary happens to be. Counted separately from a sizing
+// refusal so "armed all day, never traded" has a readable cause.
+static void test_no_account_refuses_to_fire_and_is_counted() {
+  ExecEngine engine;
+  auto barProvider = [](const std::string&, const std::string&) { return std::vector<Bar>{}; };
+  auto volumeResolver = [](const vpo::StrategyModule&) { return 1000.0; };
+  vpo::VpoDispatcher dispatcher(engine, barProvider, volumeResolver, "4h", "15m");
+  // deliberately NOT setAccountId(...)
+  assert(dispatcher.accountId() == 0);
+  auto strategy = std::make_unique<vpo::VwapTrendStrategy>("vwap_trend", "EURUSD", "15m", 42);
+  vpo::StrategyModule* raw = strategy.get();
+  dispatcher.registerStrategy(std::move(strategy));
+
+  forceArm(*raw, 1.1000, Side::Buy);
+  dispatcher.onTick(42, 1.0999, 1.1000);
+
+  const auto o = dispatcher.outcomes();
+  assert(o.triggered == 1);
+  assert(o.noAccount == 1);
+  // Distinct from every other outcome: it never reached the engine at all.
+  assert(o.placed == 0);
+  assert(o.failed == 0);
+  assert(o.rejected == 0);
+  assert(o.noSizing == 0);
+  assert(o.lastDetail.find("no_account") != std::string::npos);
+  assert(dispatcher.statusJson().find("\"noAccount\":1") != std::string::npos);
+  assert(dispatcher.statusJson().find("\"accountId\":0") != std::string::npos);
+
+  // Configuring it makes the same setup reach the engine — which then fails
+  // NOT_CONNECTED here, proving the refusal was the ONLY thing in the way.
+  dispatcher.setAccountId(4002);
+  assert(dispatcher.accountId() == 4002);
+  forceArm(*raw, 1.1000, Side::Buy);
+  dispatcher.onTick(42, 1.0999, 1.1000);
+  const auto o2 = dispatcher.outcomes();
+  assert(o2.triggered == 2);
+  assert(o2.noAccount == 1);   // unchanged
+  assert(o2.failed == 1);      // reached the engine this time
+}
+
 int main() {
   test_relative_points_scales_and_snaps_to_symbol_precision();
   test_onTick_fires_on_touch_and_rearms_to_idle();
@@ -222,6 +272,7 @@ int main() {
   test_sizing_refusal_is_counted_apart_from_a_submit();
   test_a_tick_that_does_not_touch_counts_nothing();
   test_status_json_reports_the_counters();
+  test_no_account_refuses_to_fire_and_is_counted();
   std::puts("test_vpo_dispatcher: all assertions passed");
   return 0;
 }

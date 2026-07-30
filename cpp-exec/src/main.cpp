@@ -494,7 +494,12 @@ int main(int argc, char** argv) {
   // timer (see agent/services/vpo-feeder.js) — this binary never fetches
   // bars or computes sizing itself. Safe to call whether or not VPO is
   // enabled/running (a no-op store nobody reads yet).
-  server.route("POST", "/vpo-config", [&vpoStore](const HttpRequest& req) -> HttpResponse {
+  // PHASE 2: /vpo-config also carries the account this tier trades on. The
+  // sidecar refuses an order that names no account, so the VPO tier has to be
+  // TOLD which one — it must not inherit the engine's frozen primary. Absent or
+  // non-positive leaves it unconfigured, and the dispatcher then refuses to fire
+  // and counts it (see VpoDispatcher::tryFire / GET /vpo-status noAccount).
+  server.route("POST", "/vpo-config", [&vpoStore, &vpoDispatcher](const HttpRequest& req) -> HttpResponse {
     auto parsed = jsn::parse(req.body);
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
@@ -518,10 +523,21 @@ int main(int argc, char** argv) {
       vpoStore.setVolume(key, entry.get("volume").asNumber(-1));
       volsUpdated++;
     }
+    long long acctSet = 0;
+    if (vpoDispatcher) {
+      const jsn::Value& acct = v.get("ctidTraderAccountId");
+      if (acct.isNumber() && acct.asNumber(0) > 0) {
+        acctSet = static_cast<long long>(acct.asNumber(0));
+        vpoDispatcher->setAccountId(acctSet);
+      } else {
+        acctSet = vpoDispatcher->accountId(); // unchanged; report what stands
+      }
+    }
     jsn::Value out{jsn::Object{}};
     out.set("ok", true);
     out.set("barsUpdated", barsUpdated);
     out.set("volumesUpdated", volsUpdated);
+    out.set("accountId", static_cast<double>(acctSet));
     return {200, jsn::dump(out)};
   });
 

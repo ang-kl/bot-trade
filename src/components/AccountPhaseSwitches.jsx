@@ -25,7 +25,7 @@
 // · The master is an absolute veto. A per-account ON cannot arm anything while
 //   the switch above is off, so those switches are disabled rather than
 //   offering a click that would silently do nothing.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Card from './common/Card.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
@@ -71,12 +71,28 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
 }
 
 /**
- * @param {{master?: {scan?: boolean, analyze?: boolean, autotrade?: boolean}}} props
+ * @param {{master?: {scan?: boolean, analyze?: boolean, autotrade?: boolean},
+ *          onMasterTruth?: (m: {scan: boolean, analyze: boolean, autotrade: boolean}) => void}} props
  *   `master` is the PAGE's live copy of the three global flags (Tune's own
  *   `config`). Passing it in is what keeps this card honest when the master is
  *   toggled above: see the refetch below.
+ *
+ *   `onMasterTruth` is the REVERSE direction, and it exists because of a real
+ *   incident. 2026-07-30: the owner reported "the AutoTrade broke for every
+ *   accounts even though the master switch is on in the pipeline page", with a
+ *   screenshot showing the master Autotrade chip ON and every account's T OFF.
+ *   Both cards read the same state key, so they cannot really disagree —
+ *   effectivePhases is `master && (override ?? true)`, so an account with NO
+ *   override reading OFF proves the SERVER's master was off. The master chip was
+ *   showing a value that had gone stale: Tune's sync poll skips while the tab is
+ *   backgrounded (pageAsleep), so a background disarm — the performance breaker
+ *   writes that master flag — could leave the chip lying indefinitely.
+ *
+ *   This card always renders from the server's answer, so it already holds the
+ *   truth. Handing it back up lets the page correct itself instead of showing
+ *   the owner two contradictory cards and letting them trust the wrong one.
  */
-export default function AccountPhaseSwitches({ master = null }) {
+export default function AccountPhaseSwitches({ master = null, onMasterTruth = null }) {
   const [view, setView] = useState(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
@@ -85,8 +101,15 @@ export default function AccountPhaseSwitches({ master = null }) {
   // Fetch on mount and after each write — no polling. The owner asked for
   // "precision" refreshes ("there is a lot of moving text for the webpage"),
   // and a card of switches has no reason to repaint on a timer.
+  const truthRef = useRef(null)
+  truthRef.current = onMasterTruth
   const load = useCallback(() => agentGet('/state/account-phases')
-    .then(v => { setView(v); setErr('') })
+    .then(v => {
+      setView(v); setErr('')
+      // Via a ref so the caller need not memoise the handler to avoid an
+      // effect loop — load() is in a dependency list.
+      if (v?.master) { try { truthRef.current?.(v.master) } catch { /* never break the card */ } }
+    })
     .catch(e => setErr(e.message)), [])
   useEffect(() => { load() }, [load])
 
