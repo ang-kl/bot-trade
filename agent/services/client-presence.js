@@ -69,11 +69,16 @@ function sweep(nowMs) {
 }
 
 /** Register one heartbeat (or a close beacon). Returns the live summary. */
-export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip } = {}, nowMs = Date.now()) {
+export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip, sid } = {}, nowMs = Date.now()) {
   if (tab) {
     const id = String(tab).slice(0, 64)
     const prev = tabs.get(id)
     tabs.set(id, {
+      // Which authenticated browser session this tab belongs to. DERIVED
+      // SERVER-SIDE from the request's own bearer token by the route — never
+      // taken from a client field, because the session list's whole security
+      // model is that the server decides who is who.
+      sid: sid || prev?.sid || null,
       tz: String(tz || prev?.tz || 'unknown').slice(0, 64),
       page: String(page || prev?.page || '/').slice(0, 128),
       hidden: hidden === true || hidden === 'true' || hidden === '1',
@@ -98,6 +103,25 @@ export function registerClientPing({ tab, tz, page, hidden, idle, closed, ua, ip
   return summary
 }
 
+/**
+ * Mark every tab belonging to a revoked session as closed, and return how
+ * many were affected (browser-sessions.js reports this as
+ * `queuedItemsCancelled`).
+ *
+ * This is the ONLY server-side ephemeral state a browser session owns — there
+ * are no per-session job queues or event-replay buffers on the browser path,
+ * so nothing else needs draining. The rows are marked closed rather than
+ * deleted so the roster can still show when the session went.
+ */
+export function dropTabsForSession(sessionId, nowMs = Date.now()) {
+  if (!sessionId) return 0
+  let n = 0
+  for (const t of tabs.values()) {
+    if (t.sid === sessionId && !t.closedAt) { t.closedAt = nowMs; n++ }
+  }
+  return n
+}
+
 /** Roster: open tabs (freshest first) + recent closures + counts/timezones. */
 export function clientSummary(nowMs = Date.now()) {
   sweep(nowMs)
@@ -105,7 +129,7 @@ export function clientSummary(nowMs = Date.now()) {
   const open = all.filter(t => !t.closedAt).sort((a, b) => b.at - a.at)
   const closed = all.filter(t => t.closedAt).sort((a, b) => b.closedAt - a.closedAt)
   const shape = (t) => ({
-    id: t.id, tz: t.tz, country: countryFromTz(t.tz), ip: t.ip || null, page: t.page,
+    id: t.id, sid: t.sid || null, tz: t.tz, country: countryFromTz(t.tz), ip: t.ip || null, page: t.page,
     status: t.closedAt ? 'closed' : t.idle ? 'idle' : t.hidden ? 'background' : 'active',
     openedAt: new Date(t.openedAt).toISOString(),
     lastSeenAt: new Date(t.at).toISOString(),

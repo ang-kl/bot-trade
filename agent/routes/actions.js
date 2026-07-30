@@ -4192,5 +4192,68 @@ export default function actionsRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/sessions/:sessionId/revoke — disconnect ANOTHER browser
+  // session (instr/footer_issue.md).
+  //
+  // Sits in /actions/* on purpose: that namespace is write-tier under the D12
+  // two-tier auth, so a read-only device token cannot revoke anything.
+  //
+  // The rules the brief is emphatic about, and where each is enforced:
+  //   * self-revocation is impossible          → revokeSession(), 409
+  //   * the current session is identified from the server's own view of the
+  //     request, never a client flag           → actorToken below
+  //   * idempotent                             → 'already' maps to 200
+  //   * rate limited                           → REVOKE_WINDOW below
+  //   * audit logged, including rejected self-revokes → audit() in the service
+  //   * success only after the server has acted → we answer from the result
+  // -----------------------------------------------------------------------
+  const revokeHits = []
+  const REVOKE_WINDOW_MS = 60_000
+  const REVOKE_MAX = 10
+  router.post('/sessions/:sessionId/revoke', async (req, res) => {
+    try {
+      const now = Date.now()
+      while (revokeHits.length && now - revokeHits[0] > REVOKE_WINDOW_MS) revokeHits.shift()
+      if (revokeHits.length >= REVOKE_MAX) {
+        return res.status(429).json({ error: 'Too many revocation attempts — wait a minute' })
+      }
+      revokeHits.push(now)
+
+      const { revokeSession } = await import('../services/browser-sessions.js')
+      const { dropTabsForSession } = await import('../services/client-presence.js')
+      const bearer = String(req.headers.authorization || '').startsWith('Bearer ')
+        ? String(req.headers.authorization).slice(7)
+        : ''
+      // The master secret is not a device session, so it has no id to compare
+      // against — but it must still not be able to sidestep self-protection by
+      // revoking whatever session it happens to be riding. Passing the bearer
+      // through unchanged means the hash comparison in revokeSession() does
+      // the right thing either way.
+      const result = revokeSession(db, {
+        sessionId: req.params.sessionId,
+        actorToken: bearer,
+        reason: String(req.body?.reason || 'user_requested').slice(0, 120),
+        dropTabs: dropTabsForSession,
+      })
+
+      if (result.code === 'self') {
+        // 409 Conflict, exactly as specified — "Return HTTP 409 or another
+        // suitable conflict response if a direct self-revoke request reaches
+        // the server."
+        return res.status(409).json({
+          error: 'This is the session you are using — it cannot disconnect itself.',
+          code: 'self_revoke_forbidden',
+        })
+      }
+      if (result.code === 'not_found') {
+        return res.status(404).json({ error: 'No such session', code: 'not_found' })
+      }
+      res.json(result)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   return router
 }

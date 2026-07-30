@@ -50,7 +50,9 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   const respCache = new Map() // originalUrl → { body, etag, at }
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report'])
+  // /sessions is excluded too: it reports a live "seen 3s ago" age, and a 10s
+  // shared cache would make that figure a stale claim about a security state.
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -808,11 +810,60 @@ export default function stateRouter(db) {
   router.get('/client-ping', async (req, res) => {
     try {
       const { registerClientPing } = await import('../services/client-presence.js')
+      const { publicSessionId, recordHeartbeat } = await import('../services/browser-sessions.js')
+      // Which session does this tab belong to? DERIVED from the request's own
+      // bearer token, never from a query parameter — the session list's whole
+      // security model is that the server decides who is who.
+      const bearer = String(req.headers.authorization || '').startsWith('Bearer ')
+        ? String(req.headers.authorization).slice(7)
+        : ''
+      const sid = publicSessionId(bearer)
+      // Server-authoritative heartbeat stamp (the brief: "Implement a
+      // server-authoritative heartbeat rather than relying only on the
+      // browser clock").
+      const reqIp = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim()
+      try {
+        recordHeartbeat(db, bearer, { ua: req.headers['user-agent'], ip: reqIp })
+      } catch { /* never fail a heartbeat on bookkeeping */ }
       res.json(registerClientPing({
         tab: req.query.tab, tz: req.query.tz, page: req.query.page,
         hidden: req.query.hidden, idle: req.query.idle, closed: req.query.closed,
+        sid,
         ua: req.headers['user-agent'],
-        ip: String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim(),
+        ip: reqIp,
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/sessions — the authenticated browser sessions on this account
+  // (instr/footer_issue.md: "Returns the current authenticated user's
+  // sessions with safe display fields only").
+  //
+  // The current session is identified from THIS request's bearer token,
+  // server-side. A client-provided isCurrent flag is never read, because the
+  // whole point of the endpoint is that a stale or hostile page must not be
+  // able to talk the server into revoking the wrong thing.
+  //
+  // Never cached: it reports a live last-seen age, and the 10s /state/* cache
+  // would make "seen 3s ago" a stale claim.
+  router.get('/sessions', async (req, res) => {
+    try {
+      const { sessionsView } = await import('../services/browser-sessions.js')
+      const { clientSummary } = await import('../services/client-presence.js')
+      const bearer = String(req.headers.authorization || '').startsWith('Bearer ')
+        ? String(req.headers.authorization).slice(7)
+        : ''
+      // Is this the master secret rather than a device session? The view says
+      // so plainly instead of offering a Disconnect that would sign out every
+      // device at once.
+      const isMaster = !!bearer && (bearer === process.env.AGENT_SECRET || bearer === process.env.AGENT_SECRET_READ)
+      res.json(sessionsView(db, {
+        currentToken: isMaster ? null : bearer,
+        isMaster,
+        presence: clientSummary(),
       }))
     } catch (err) {
       res.status(500).json({ error: err.message })
