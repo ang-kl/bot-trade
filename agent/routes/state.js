@@ -539,9 +539,15 @@ export default function stateRouter(db) {
     try {
       const { loadLastAssessment, PROPOSABLE } = await import('../services/risk-reassess.js')
       const { availableProviders } = await import('../lib/llm-provider.js')
+      const { chooseModel } = await import('../lib/model-router.js')
+      // A risk reassessment is the doc's `financial_analysis` — the REASONING
+      // tier. Suggesting it (rather than silently using it) keeps the owner's
+      // typed choice authoritative while defaulting to the right tier.
+      const suggested = chooseModel({ type: 'risk_reassess' })
       res.json({
         last: loadLastAssessment(db),
         providers: availableProviders(),
+        suggestedModel: { openai: suggested.model, tier: suggested.tier },
         proposable: Object.fromEntries(
           Object.entries(PROPOSABLE).map(([k, v]) => [k, { label: v.label, min: v.min, max: v.max, kind: v.kind }])
         ),

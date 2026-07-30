@@ -62,8 +62,12 @@ node --test "agent/**/*.test.js"           # agent test suite
 |---|---|---|
 | `AGENT_SECRET` | agent | Bearer auth between UI and agent (required) — full tier: authorizes every route, including orders/closes/config writes |
 | `AGENT_SECRET_READ` | agent | Optional (D12, 2026-07-27): a second, lower-privilege bearer token that only authorizes `GET` (read-only/dashboard) routes — never an order, amend, close, or config write. Unset by default; every route behaves exactly as before until this is set. Safer to embed in a public build (`VITE_AGENT_SECRET_READ`) than the full secret, since a leak only exposes account data, not control. |
-| `CLAUDE_API_KEY` | agent + Vercel | Claude API — position monitor / weekend checks only |
-| `ANTHROPIC_MODEL` | agent | Optional model override for those checks |
+| `CLAUDE_API_KEY` | agent + Vercel | Claude API — position monitor / weekend checks, and the Risk page's Re-Risk when Claude is chosen |
+| `ANTHROPIC_MODEL` | agent | Optional Claude model override. NOT tiered — the three `OPENAI_MODEL_*` vars below name OpenAI models |
+| `OPENAI_API_KEY` | agent | OpenAI API. When set, OpenAI is the primary provider for every automatic LLM call |
+| `OPENAI_MODEL_DEFAULT` | agent | **Cheapest tier — the great majority of calls.** Position monitor, weekend watch, screener search. Renamed from `OPENAI_DEFAULT_MODEL` (2026-07-30); the old name and the older `OPENAI_MODEL` are still read as fallbacks, in that order, so a box with only the old var keeps calling the model it already called. Unset everywhere ⇒ `gpt-5-nano` |
+| `OPENAI_MODEL_PREMIUM` | agent | Moderate reasoning / better writing. Unset ⇒ falls back to the DEFAULT tier, never up to a costlier guess |
+| `OPENAI_MODEL_REASONING` | agent | Rare, high-value, genuinely hard: the Risk page's Re-Risk (financial analysis). Unset ⇒ falls back to DEFAULT |
 | `CTRADER_CLIENT_ID` / `CTRADER_CLIENT_SECRET` | agent + Vercel | Spotware Connect OAuth2 app |
 | `EXEC_ENGINE` / `EXEC_URL` / `EXEC_SECRET` | agent | `cpp` routes orders through the C++ sidecar at `EXEC_URL` |
 | `VITE_AGENT_URL` | Vercel (build) | Default agent connection (overridable per-browser on Connect) |
@@ -72,6 +76,30 @@ node --test "agent/**/*.test.js"           # agent test suite
 | `DB_PATH` / `PORT` / `FRONTEND_URL` | agent | SQLite path (**set to a mounted volume in production** — `/data/agent.db`), listen port, CORS origin |
 
 Access token + account ID are pushed at runtime via the Connect tab and stored in the agent's SQLite DB.
+
+### Model tiers
+
+Routing lives in `agent/lib/model-router.js` and implements
+[`llm_ai_doc/AI_Model_Router_Instruction.md`](llm_ai_doc/AI_Model_Router_Instruction.md):
+default to the cheapest model, escalate only when the task needs it, never
+default to the most expensive one, and keep the routing in code rather than in
+env vars.
+
+| Task | Tier |
+|---|---|
+| `position_monitor`, `weekend_watch` | DEFAULT — the highest-volume calls in the system, and a fallback opinion: entries and the risk gate are deterministic and the stop/target already sit at the broker |
+| `screener_search` | DEFAULT — matching a query against a known symbol list |
+| `summarise`, `rewrite`, `email`, `trade_lesson` | PREMIUM |
+| `risk_reassess`, `financial_analysis`, `coding`, `architecture` | REASONING |
+
+A caller may force the reasoning tier with any of `requiresMultipleSteps`,
+`hasLargeCodebase`, `hasManyDocuments`, `userRequestedExpertMode`. Nothing
+escalates on a heuristic — a flag has to be set deliberately, because a router
+that quietly escalates spend defeats the point.
+
+`GET /health` reports `llmProvider` and `llmTiers` (each tier's resolved model
+**and which env var supplied it**), so the active configuration is verifiable
+without shell access.
 
 ## Accessibility — non-negotiable
 

@@ -75,6 +75,11 @@ export default function RiskReassess({ onChanged }) {
   const last = data?.last || null
   const proposable = data?.proposable || {}
   const available = data?.providers || {}
+  // The agent's REASONING-tier model, per the model router — a risk
+  // reassessment is `financial_analysis` in llm_ai_doc/AI_Model_Router_
+  // Instruction.md. Offered as the placeholder/prefill; the typed value still
+  // wins, because the owner asked to choose the model by name.
+  const suggested = data?.suggestedModel?.openai || null
 
   // Fresh proposals start unticked. Deliberate: ticking them for the owner
   // would make Apply a single click on values a model chose.
@@ -162,7 +167,10 @@ export default function RiskReassess({ onChanged }) {
                   key={p.id}
                   type="button"
                   disabled={!has}
-                  onClick={() => { setProvider(p.id); if (!model) setModel(p.placeholder) }}
+                  onClick={() => {
+                    setProvider(p.id)
+                    if (!model) setModel(p.id === 'openai' ? (suggested || p.placeholder) : p.placeholder)
+                  }}
                   title={has ? `Use ${p.label}` : `No API key for ${p.label} is set on the agent`}
                   className={`rounded-[4px] border px-2 py-0.5 text-[9px] font-semibold disabled:opacity-40 ${
                     on
@@ -177,7 +185,9 @@ export default function RiskReassess({ onChanged }) {
             <Input
               value={model}
               onChange={e => setModel(e.target.value)}
-              placeholder={PROVIDERS.find(p => p.id === provider)?.placeholder}
+              placeholder={provider === 'openai'
+                ? (suggested || PROVIDERS.find(p => p.id === provider)?.placeholder)
+                : PROVIDERS.find(p => p.id === provider)?.placeholder}
               className="w-48"
               aria-label="model name"
             />
@@ -189,6 +199,10 @@ export default function RiskReassess({ onChanged }) {
           <div className="text-[9px] text-[var(--color-text-sub)]">
             Type the model name exactly as the provider spells it — it is sent through as typed, so a
             wrong id comes back as the provider&apos;s own error rather than a silent substitution.
+            {suggested && provider === 'openai' && (
+              <> The suggestion is this agent&apos;s <strong>{data?.suggestedModel?.tier?.toLowerCase()}</strong>{' '}
+              tier (<code>OPENAI_MODEL_REASONING</code>) — a risk reassessment is a financial-analysis task.</>
+            )}
           </div>
         </div>
       )}

@@ -1301,7 +1301,9 @@ export default function actionsRouter(db) {
 
       const { createLLMClient } = await import('../lib/llm-provider.js')
       const { searchScreenerSymbols } = await import('../services/screener-search.js')
-      const llmClient = createLLMClient()
+      // Matching a plain-language query against a known symbol list is the
+      // doc's "search"/"extraction" shape — cheapest tier.
+      const llmClient = createLLMClient(process.env, { task: { type: 'screener_search' } })
       const result = await searchScreenerSymbols(llmClient, query, universe, { history })
       res.json({ ok: true, ...result })
     } catch (err) {

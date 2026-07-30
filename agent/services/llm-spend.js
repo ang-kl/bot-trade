@@ -29,8 +29,8 @@ export const MODEL_PRICES = {
   'gpt-4o': { input: 2.5, output: 10 },
   'gpt-4.1-mini': { input: 0.4, output: 1.6 },
   'gpt-4.1': { input: 2, output: 8 },
-  // NOT LISTED, deliberately: gpt-5.x, the family actually in use
-  // (OPENAI_DEFAULT_MODEL=gpt-5.6-luna). Its per-million rates are not
+  // NOT LISTED, deliberately: the gpt-5.x family the tier router now names
+  // (OPENAI_MODEL_DEFAULT / _PREMIUM / _REASONING). Their per-million rates are not
   // verified here, so it resolves to FALLBACK_PRICE — the Opus tier — and the
   // spend figure for those calls reads HIGH rather than wrong-cheap. Add real
   // entries once the published rates are confirmed; do not guess them, because
