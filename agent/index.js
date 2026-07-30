@@ -179,6 +179,24 @@ if (rsi2Seed.seeded) {
   console.log(`[boot] RSI-2 GO seed applied — strategy armed: ${rsi2Seed.addedStrategy}, combos: ${rsi2Seed.addedCombos?.length ?? 0}${rsi2Seed.note ? ` (${rsi2Seed.note})` : ''}`)
 }
 
+// One-time: execute the owner's 2026-07-30 "autoDisarm - leave it OFF" against
+// data that predates it. #509 changed only the DEFAULT, and
+// loadPerformanceBreakerConfig honours a PRESENT stored key — so an instance
+// that stored `autoDisarm: true` when the owner armed it on 2026-07-20 kept
+// auto-disarming, and this breaker writes the MASTER autotrade flag, which is an
+// absolute veto over every per-account switch. Strips the stored key so the
+// documented default applies; preserves every other stored field; guarded by a
+// state flag so a later deliberate `true` is never undone.
+try {
+  const { migrateAutoDisarmOff } = await import('./services/performance-breaker.js')
+  const pbMig = migrateAutoDisarmOff(db)
+  if (pbMig.migrated) {
+    console.log(`[boot] performance-breaker autoDisarm migration applied — stored ${pbMig.was} removed, default (off) now applies`)
+  }
+} catch (e) {
+  console.warn('[boot] performance-breaker autoDisarm migration failed (non-fatal):', e.message)
+}
+
 // One-time: turn ON the Strategy Autopilot in full-auto (owner opted in) so it
 // auto-backtests the watchlist on the session-adaptive cadence and arms only
 // PF≥1.7/win≥60%/≥25-trade combos, disarming NO-GO ones — including on the live

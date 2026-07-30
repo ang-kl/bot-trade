@@ -1278,11 +1278,30 @@ export default function Tune() {
                 kept showing the state it loaded with (owner: "per switch not
                 updated once master-switch is set"). The card still renders from
                 the SERVER's answer; the prop is only the change signal. */}
-            <AccountPhaseSwitches master={config ? {
-              scan: !!config.scan_enabled,
-              analyze: !!config.analyze_enabled,
-              autotrade: !!config.autotrade_enabled,
-            } : null} />
+            <AccountPhaseSwitches
+              master={config ? {
+                scan: !!config.scan_enabled,
+                analyze: !!config.analyze_enabled,
+                autotrade: !!config.autotrade_enabled,
+              } : null}
+              /* The card fetches the SERVER's master flags, so it is the honest
+                 copy. Correcting `config` from it closes the gap that had the
+                 owner reading a green Autotrade chip while every account's T was
+                 off (2026-07-30) — the sync poll below skips a backgrounded tab,
+                 so a background disarm could leave the chip stale for as long as
+                 the tab stayed hidden. Only writes when a value actually
+                 differs, so it can never loop. */
+              onMasterTruth={(m) => setConfig(c => {
+                if (!c) return c
+                const next = {
+                  scan_enabled: !!m.scan,
+                  analyze_enabled: !!m.analyze,
+                  autotrade_enabled: !!m.autotrade,
+                }
+                const drifted = Object.entries(next).some(([k, v]) => !!c[k] !== v)
+                return drifted ? { ...c, ...next } : c
+              })}
+            />
             <Card id="sec-pipe-strategy" className="w3-hover-shadow">
               <SectionTitle>What may trade</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>
