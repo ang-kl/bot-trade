@@ -820,6 +820,24 @@ export function initDB(dbPath) {
     ['confluence_tool_count',       'INTEGER'],
     ['confluence_conflict_flagged', 'INTEGER'],
     ['vol_gate_mode',               'TEXT'],     // 'log_only' | 'live' — which mode produced the row
+    // UNKNOWABLE, as distinct from UNKNOWN (owner's decision 2026-07-30,
+    // "option 2"). A closed trade with net_pnl NULL makes the daily-loss sum
+    // untrustworthy, so services/unresolved-pnl.js blocks new entries on it —
+    // fail-closed, deliberately, and not to be weakened. But that veto has no
+    // expiry, and pnl-backfill can only repair a row while the close is still
+    // inside the broker's deal-history window. Once it falls out, the row can
+    // NEVER fill: the owner's log showed 77 such rows with the backfill parked
+    // on its 6-hour rung attempting zero accounts. A fail-closed brake plus a
+    // permanently unfillable input is a closed loop that stops trading for ever.
+    //
+    // These three columns record that a row is unfillable AS A FINDING, with
+    // evidence and a timestamp, so the veto can tell "the backfill has not got
+    // to it yet" (keep blocking) from "the broker has no record and never will"
+    // (stop blocking, and say so loudly). Nothing about the P&L is invented —
+    // net_pnl stays NULL, because it is genuinely unknown.
+    ['pnl_unresolvable',            'INTEGER DEFAULT 0'],
+    ['pnl_unresolvable_reason',     'TEXT'],
+    ['pnl_unresolvable_at',         'TEXT'],
   ]) {
     if (!tColsVol.has(col)) db.exec(`ALTER TABLE trades ADD COLUMN ${col} ${type}`);
   }

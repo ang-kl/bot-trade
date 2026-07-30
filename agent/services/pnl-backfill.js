@@ -225,3 +225,21 @@ export function noteBackfillAttempt(accountId, result, now = Date.now()) {
 
 /** Test/ops hook — forget all pacing state. */
 export function resetBackfillPacing() { attempts.clear() }
+
+/**
+ * Accounts this process has driven to the TOP backoff rung — i.e. the backfill
+ * has tried repeatedly and never filled anything.
+ *
+ * This is the "we tried and gave up" half of the evidence
+ * services/mark-unresolvable.js requires before it will call a row's P&L
+ * unknowable. Exported rather than inferred, because the alternative is guessing
+ * from a log line, and a wrong "we gave up" would stop the veto blocking a row
+ * that could still have been repaired.
+ *
+ * In-memory, like the ladder itself: a redeploy clears it, and the right bias
+ * after a restart is to retry rather than write anything off.
+ */
+export function exhaustedAccounts() {
+  const top = BACKOFF_MS.length - 1
+  return [...attempts.entries()].filter(([, a]) => a.n >= top).map(([id]) => id)
+}

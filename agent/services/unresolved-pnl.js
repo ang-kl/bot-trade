@@ -77,6 +77,40 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
   const grace = Number.isFinite(Number(graceMin)) && Number(graceMin) >= 0
     ? Number(graceMin)
     : DEFAULT_UNKNOWN_PNL_GRACE_MIN
+  // UNKNOWN vs UNKNOWABLE (owner's decision 2026-07-30, "option 2").
+  //
+  // `pnl_unresolvable = 1` marks a row the broker has no deal history for and
+  // never will — see db.js's column comment and mark-unresolvable.js for the
+  // evidence rule. Those rows are EXCLUDED from `n`, the blocking count, and
+  // counted separately in `unresolvable` so the reason string can still name
+  // them.
+  //
+  // THIS IS NOT A WEAKENING OF THE VETO, and the distinction matters because the
+  // owner's brief forbids weakening it in as many words. The veto exists because
+  // a NULL net_pnl makes the daily-loss sum untrustworthy while the backfill
+  // might still repair it. Once the close has fallen out of the broker's
+  // deal-history window the row can never be repaired, so blocking on it is not
+  // caution — it is a permanent halt with no path back. The owner's log showed 77
+  // such rows with the backfill parked on its 6-hour rung attempting zero
+  // accounts. What is removed here is a stop with no release, not a stop.
+  //
+  // net_pnl stays NULL on those rows. Nothing is computed, estimated or invented,
+  // so the daily-loss sum is still built only from figures the broker gave us —
+  // it just no longer waits for figures that are never coming.
+  // IS THE COLUMN THERE? A fail-closed veto must never start blocking because of
+  // a SCHEMA gap. Referencing pnl_unresolvable unconditionally made every query
+  // throw on a database that predates it, and the catch below reads a failed
+  // query as "the day's losses are unknown" — so a missing column would have
+  // halted trading everywhere. Found by risk.test.js, which builds its own
+  // trades table: 53 approvals turned into vetoes. Absent column simply means no
+  // row has been written off yet, which is the pre-migration truth.
+  let hasUnresolvable = false
+  try {
+    hasUnresolvable = db.prepare('PRAGMA table_info(trades)').all()
+      .some(c => c.name === 'pnl_unresolvable')
+  } catch { hasUnresolvable = false }
+  const notWrittenOff = hasUnresolvable ? 'AND COALESCE(pnl_unresolvable, 0) = 0' : ''
+
   const sql = `
     SELECT COUNT(*) AS n,
            MIN(closed_at) AS oldest,
@@ -84,6 +118,19 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
       FROM trades
     WHERE status = 'closed'
       AND net_pnl IS NULL
+      ${notWrittenOff}
+      AND REPLACE(closed_at, 'T', ' ') >= ?
+      AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
+      ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
+  `
+  // Same window and scope, but the rows we have STOPPED blocking on — reported
+  // so "trading resumed" is never silent about what it stopped waiting for.
+  const unresolvableSql = `
+    SELECT COUNT(*) AS n
+      FROM trades
+    WHERE status = 'closed'
+      AND net_pnl IS NULL
+      AND COALESCE(pnl_unresolvable, 0) = 1
       AND REPLACE(closed_at, 'T', ' ') >= ?
       AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
       ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
@@ -92,12 +139,15 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
     ? [dayStartSql, `-${grace} minutes`]
     : [dayStartSql, `-${grace} minutes`, acct]
   let row = null
+  let unres = null
   try {
     row = db.prepare(sql).get(...params)
+    // Only when the column exists — see the note above.
+    unres = hasUnresolvable ? db.prepare(unresolvableSql).get(...params) : { n: 0 }
   } catch {
     // A query that cannot run tells us nothing about the day's losses, which
     // is exactly the state this module refuses to read as "zero".
-    return { count: -1, oldestClosedAt: null, unattributedCount: 0 }
+    return { count: -1, oldestClosedAt: null, unattributedCount: 0, unresolvableCount: 0 }
   }
   return {
     count: row?.n || 0,
@@ -106,6 +156,10 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
     // desk can say WHICH data is holding it, rather than the owner discovering
     // "I don't see any trades" and having to guess.
     unattributedCount: Number(row?.unattributed) || 0,
+    // Rows in the same window we have STOPPED blocking on because the broker has
+    // no deal history for them and never will. Not part of `count`; surfaced so
+    // the decision is visible rather than implied by trading simply resuming.
+    unresolvableCount: Number(unres?.n) || 0,
   }
 }
 
