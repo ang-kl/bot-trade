@@ -11,14 +11,18 @@
 // edge over a rolling window, the same profit-factor/expectancy numbers the
 // Desk Performance panel already shows.
 //
-// THIS PARAGRAPH WAS STALE AND IS CORRECTED (2026-07-30). It used to read
-// "autoDisarm defaults OFF — the alert fires, the owner decides". That was true
-// when written and stopped being true on 2026-07-20, when the owner armed
-// auto-disarm after a 0.15 profit factor and a −$2019 net; see the note on the
-// constant below, which is the live decision. Two readers were misled by the
-// old wording, including me — the default is ON, on purpose.
+// AUTO-DISARM IS OFF (owner, 2026-07-30: "autoDisarm - leave it OFF"). The
+// breaker ALERTS and does not stop trading by itself. Read the note on the
+// constant below before changing that — it records why the owner reversed their
+// own 2026-07-20 decision to arm it, and what is given up by leaving it off.
 //
-// What auto-disarm still does NOT do, and must not: it writes the MASTER
+// This paragraph has been wrong twice, in both directions, because it duplicated
+// a fact that lives 20 lines away. If you change the constant, change this line
+// in the same edit or delete it — a header that describes the default is only
+// useful while it is true.
+//
+// What auto-disarm does when it IS armed, and what it must not do: it writes the
+// MASTER
 // `autotrade_enabled` flag, which account-phases treats as an absolute veto
 // over every per-account switch. That is intentional for a portfolio-wide edge
 // failure (the stat is computed across all closed trades, so the finding is
@@ -35,12 +39,24 @@ export const DEFAULT_PERFORMANCE_BREAKER = {
   window: 20,         // rolling window of closed trades
   minTrades: 15,      // don't judge an edge on a handful of trades
   pfThreshold: 0.8,   // profit factor below this over the window = trouble
-  // Owner armed this 2026-07-20 after PF hit 0.15 (Net −$2019): auto-disarm
-  // ON. The trigger only fires below a 0.8 profit factor over 15+ trades —
-  // "clearly bleeding" territory — so stopping new entries there and waiting
-  // for a human is the right default now, not a per-account opt-in. Toggle
-  // back off in Tune if you'd rather it only alerts.
-  autoDisarm: true,
+  // OFF, by the owner's instruction on 2026-07-30: "autoDisarm - leave it OFF".
+  //
+  // This REVERSES their own 2026-07-20 decision, which armed it after PF hit
+  // 0.15 (net −$2019) and whose reasoning was: the trigger only fires below a
+  // 0.8 profit factor over 15+ trades, so stopping there and waiting for a
+  // human is the right default. That reasoning still stands on its own terms —
+  // it is being overridden deliberately, not corrected.
+  //
+  // The change was asked and answered twice, the second time AFTER I corrected
+  // my own mis-description of this constant as a stray bug (it was not; the
+  // stale line-16 comment was the error). So this is an informed reversal.
+  //
+  // WHAT IS LOST: a structurally bleeding edge will no longer stop new entries
+  // by itself. The 🚨 alert still fires every time the threshold is crossed, and
+  // it names the profit factor, win rate, expectancy and net — so the signal is
+  // intact and only the automatic action is gone. Re-arm from Tune, or set
+  // autoDisarm: true here, if a weak window should pause trading again.
+  autoDisarm: false,
 }
 
 export function loadPerformanceBreakerConfig(db) {

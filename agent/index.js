@@ -9,6 +9,10 @@ import { touchSession } from './services/browser-sessions.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
+// randomInt comes from node:crypto, NOT from the global `crypto`. The global is
+// WebCrypto, which carries getRandomValues and randomUUID but has no randomInt —
+// calling it there is a TypeError, and it would have thrown on the login path.
+import { randomInt } from 'node:crypto';
 import { llmProviderInfo } from './lib/llm-provider.js';
 import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
@@ -322,7 +326,16 @@ app.post('/auth/telegram/request', async (_req, res) => {
     if (Date.now() - lastCodeRequestAt < 30_000) {
       return res.status(429).json({ error: 'A code was just sent — check Telegram (new code possible in 30s)' })
     }
-    const code = String(Math.floor(100000 + Math.random() * 900000))
+    // NOT Math.random(). It is not a CSPRNG — V8 seeds it from a source an
+    // attacker can influence and its output is predictable from observed values,
+    // so a login code built from it is guessable in a way a 6-digit space
+    // already makes tight. Finding P1-5, validated 2026-07-30. randomInt is
+    // rejection-sampled over the crypto pool, so the distribution stays uniform
+    // across the full 100000-999999 range (a plain `% 900000` would not).
+    //
+    // The session token minted on success already used getRandomValues; this was
+    // the one weak link, and it was the link an attacker would actually attack.
+    const code = String(randomInt(100000, 1000000))
     setState(db, 'login_code', code)
     setState(db, 'login_code_expires', String(Date.now() + 5 * 60_000))
     lastCodeRequestAt = Date.now()
@@ -360,10 +373,52 @@ app.get('/icon.png', (_req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// Health endpoint (public)
+// Health endpoint — PUBLIC LIVENESS, AUTHENTICATED DETAIL
+//
+// S-0, owner-approved 2026-07-30 ("put clients / dbPathAbsolute / recentErrors
+// behind auth on /health"), pulled ahead of the Safe Implementation Prompt's
+// PHASE-8 because it was exposed on a public URL and touches nothing in the
+// trading path. Finding P1-6, validated in
+// docs/safe-implementation-first-response-2026-07-30.md.
+//
+// WHAT WAS LEAKING. This handler skips auth (see authMiddleware) and returned
+// the whole payload to anyone. That included:
+//   * `clients` — the browser-presence roster, whose rows carry `ip` per tab
+//     (services/client-presence.js). An anonymous GET returned the OWNER'S
+//     BROWSER IP ADDRESSES. That is the severe one.
+//   * `dbPath` / `dbPathAbsolute` — the container filesystem layout.
+//   * `recentErrors` / `lastError` — internal error strings.
+//   * `memoryMB`, `loopPhaseMs`, `loopPhaseLag`, `loopCpuProfile`,
+//     `historicalRate`, `llmTiers` — internal timing and provider detail.
+//
+// WHAT STAYS PUBLIC, and why exactly this much. Two consumers need an
+// unauthenticated 200:
+//   * Railway's healthcheck, which only reads the status code.
+//   * src/App.jsx's AgentDownBanner, which fetches /health with NO bearer and
+//     only tests `res.ok` — it must keep working, because it is the owner's
+//     "the agent is unreachable" alarm and breaking it would trade a small
+//     information leak for a blind spot on the whole agent being down.
+// So the public shape is liveness only: status, version, commit, uptime. The
+// commit is already printed in the web app's own build stamp, so withholding it
+// here would protect nothing.
+//
+// Everything else requires the bearer. `authenticated: false` is included in the
+// public body on purpose — a caller that expected the full payload gets a
+// positive signal that it needs a token, rather than silently reading a dozen
+// missing fields as nulls.
 // ---------------------------------------------------------------------------
 
-app.get('/health', (_req, res) => {
+app.get('/health', (req, res) => {
+  // Same classification the middleware uses. Any recognised tier — including
+  // the read-only one — may see the detail; none of it moves money.
+  const bearer = String(req.headers.authorization || '').startsWith('Bearer ')
+    ? String(req.headers.authorization).slice(7)
+    : ''
+  const authed = classifyToken(bearer, {
+    agentSecret: AGENT_SECRET,
+    agentSecretRead: AGENT_SECRET_READ,
+    isValidSession,
+  }) != null
   // dbSize used to default to 0 when statSync threw — which is how a soak
   // digest came to report "dbSize 0" and conclude the database was being wiped
   // on every redeploy, when in fact the file simply was not at the path this
@@ -413,10 +468,24 @@ app.get('/health', (_req, res) => {
   const llmProvider = `${llmInfo.provider}:${llmInfo.model}`
   const llmTiers = process.env.OPENAI_API_KEY ? tierTable(process.env) : null
 
+  // The public liveness subset. Deliberately built FIRST and returned early, so
+  // there is no path where a new field is added below and silently becomes
+  // public by omission — the default for anything new is authenticated.
+  if (!authed) {
+    return res.json({
+      status,
+      version: APP_VERSION,
+      commit,
+      uptime: process.uptime(),
+      authenticated: false,
+    })
+  }
+
   res.json({
     status,
     version: APP_VERSION,
     commit,
+    authenticated: true,
     llmTiers,
     llmProvider,
     uptime: process.uptime(),
