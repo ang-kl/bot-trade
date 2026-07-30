@@ -17,6 +17,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.jsx'
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
+import RiskReassess from '../components/RiskReassess.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -136,6 +137,7 @@ function SectionTitle({ children, badge }) {
 }
 
 const RISK_SECTIONS = [
+  { id: 'sec-rerisk', label: 'Reset / Re-Risk' },
   { id: 'sec-account', label: 'Account snapshot' },
   { id: 'sec-protection', label: 'Position protection' },
   { id: 'sec-acct-risk', label: 'Account risk config' },
@@ -268,6 +270,13 @@ export default function Risk() {
         {saving && <Badge tone="info">saving {saving}…</Badge>}
       </div>
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+
+      {/* ---- Reset / Re-Risk / Re-Risk + Watchlist (owner 2026-07-30) ------
+          At the very top, above every field, because these three act on ALL
+          of them. `load` is handed over so a reset or an applied proposal
+          repaints the fields below from the agent rather than leaving the form
+          showing the values that were just replaced. */}
+      <RiskReassess onChanged={load} />
 
       {/* ---- Live impact strip (migrated from Tune > Risk, UI-6) ----------
           Percentages are the units the gate uses, but they are not the units

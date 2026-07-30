@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
+import AccountTag from '../components/common/AccountTag.jsx'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -80,7 +81,7 @@ const DESK_SECTIONS = [
   { id: 'sec-whynotrades', label: 'Why no trades?' },
 ]
 
-function Section({ id, title, summary, defaultOpen = true, children }) {
+function Section({ id, title, summary, tag = null, defaultOpen = true, children }) {
   const KEY = `desk_open_${id}`
   const [open, setOpen] = useState(() => {
     try { const v = localStorage.getItem(KEY); return v == null ? defaultOpen : v === '1' } catch { return defaultOpen }
@@ -95,6 +96,8 @@ function Section({ id, title, summary, defaultOpen = true, children }) {
       <button type="button" onClick={toggle} aria-expanded={open} className="w-full flex items-center gap-1.5 text-left cursor-pointer">
         <span aria-hidden="true" className="w-3 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
         <h2 className="t-h3">{title}</h2>
+        {/* Owner: state the account beside the table, not only in the sidebar. */}
+        {tag}
         {summary && <span className="ml-auto text-[9px] text-[var(--color-text-sub)] truncate">{summary}</span>}
       </button>
       {open && <div className="mt-1.5">{children}</div>}
@@ -154,6 +157,10 @@ export default function Desk() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
   const [positions, setPositions] = useState([])   // bot-tracked rows (chart lines)
+  // Whose positions the route says these are, + rows it hid for having no
+  // account_id. /state/positions is account-scoped server-side now, so Desk
+  // needs no query param — it gets the selected account by default.
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const [events, setEvents] = useState([])
   const [armed, setArmed] = useState(null)
   const [config, setConfig] = useState(null)
@@ -296,6 +303,7 @@ export default function Desk() {
       const rows = s.lastResults?.scans || []
       setScans(rows)
       setPositions(p.rows || p.positions || [])
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
@@ -480,6 +488,7 @@ export default function Desk() {
       <Section
         id="openpnl"
         title="Open trades — floating P&L"
+        tag={<AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />}
         summary={(() => {
           const openPositions = broker?.positions || []
           if (openPositions.length === 0) return 'flat'

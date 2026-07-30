@@ -3606,6 +3606,105 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/risk-reassess — "Re-Risk". Ask a CHOSEN LLM to re-derive the
+  // risk limits for the selected account, from its balance and its actual
+  // closed-trade record, optionally with its watchlist in mind.
+  //
+  // Body: { provider: 'openai'|'anthropic', model: string,
+  //         includeWatchlist?: boolean }
+  //
+  // PROPOSES ONLY — nothing is written to risk_config_json here. See the note
+  // at the top of services/risk-reassess.js: these are the money limits, and
+  // one hallucinated decimal would be enforced faithfully by the risk gate.
+  // The Risk page applies whatever the owner accepts via /actions/risk-config.
+  // -----------------------------------------------------------------------
+  router.post('/risk-reassess', async (req, res) => {
+    try {
+      const { provider, model, includeWatchlist } = req.body || {}
+      if (!['openai', 'anthropic'].includes(String(provider))) {
+        return res.status(400).json({ error: "provider must be 'openai' or 'anthropic'" })
+      }
+      if (!String(model || '').trim()) {
+        return res.status(400).json({ error: 'model is required — type the model name' })
+      }
+      const { runReassessment } = await import('../services/risk-reassess.js')
+      const accountId = getState(db, 'ctrader_account_id') || null
+      const result = await runReassessment(db, {
+        provider: String(provider),
+        model: String(model).trim(),
+        includeWatchlist: includeWatchlist === true,
+        accountId,
+      })
+      // Audit trail: WHICH model was asked, with what scope, and how many
+      // changes it proposed. The proposals themselves live in agent_state.
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'RISK_REASSESS', '/risk-reassess', JSON.stringify({
+            provider: result.provider, model: result.model,
+            includeWatchlist: result.includeWatchlist, watchlistCount: result.watchlistCount,
+            proposals: result.proposals.length, accountId: result.accountId,
+          }))
+      } catch { /* the assessment itself is stored; a missing log line is not fatal */ }
+      res.json({ ok: true, result })
+    } catch (err) {
+      res.status(502).json({ error: err.message })
+    }
+  })
+
+  // POST /actions/risk-reassess-apply — apply SELECTED proposals from the last
+  // reassessment. Body: { keys: string[], at: string }. Anything not in the
+  // stored proposal set, or not proposable, is refused rather than guessed at.
+  //
+  // `at` BINDS THE REQUEST TO THE ASSESSMENT THE OWNER ACTUALLY READ. Without
+  // it the request carried only key names, so if a second run completed in
+  // another tab (or from another device) between rendering the proposals and
+  // clicking Apply, this route would look up the NEWER assessment and apply
+  // *its* values under the same key names — different numbers than the ones
+  // reviewed and ticked, silently, on the money limits. Caught in review on
+  // PR #499. A mismatch is a 409: re-read the current proposals and decide
+  // again, rather than have a stale intent resolved against fresh values.
+  router.post('/risk-reassess-apply', async (req, res) => {
+    try {
+      const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(String) : []
+      if (keys.length === 0) return res.status(400).json({ error: 'keys[] is required' })
+      const at = String(req.body?.at || '')
+      if (!at) return res.status(400).json({ error: 'at (the assessment timestamp being applied) is required' })
+      const { loadLastAssessment, markApplied, PROPOSABLE } = await import('../services/risk-reassess.js')
+      const last = loadLastAssessment(db)
+      if (!last) return res.status(400).json({ error: 'no reassessment has been run yet' })
+      if (last.at !== at) {
+        return res.status(409).json({
+          error: 'this assessment has been superseded by a newer run — reload the proposals and choose again',
+          displayed: at, current: last.at,
+        })
+      }
+      const byKey = new Map(last.proposals.map(p => [p.key, p]))
+      const patch = {}
+      const refused = []
+      for (const k of keys) {
+        if (!(k in PROPOSABLE)) { refused.push({ key: k, why: 'not a proposable setting' }); continue }
+        const p = byKey.get(k)
+        if (!p) { refused.push({ key: k, why: 'not part of the last assessment' }); continue }
+        patch[k] = p.proposed
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: 'nothing applicable', refused })
+      }
+      const current = loadRiskConfig(db)
+      setState(db, 'risk_config_json', JSON.stringify({ ...current, ...patch }))
+      markApplied(db, Object.keys(patch))
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'RISK_REASSESS_APPLY', '/risk-reassess-apply', JSON.stringify({ patch, refused }))
+      } catch { /* non-fatal */ }
+      console.log('[actions] risk reassessment applied:', patch)
+      res.json({ ok: true, applied: patch, refused, effective: loadRiskConfig(db) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/balance — set account balance (USD) and optionally leverage.
   // Body: { balance?: number, leverage?: number } or { clear: true }.
   // Leverage is e.g. 200 for 1:200, 1000 for 1:1000.

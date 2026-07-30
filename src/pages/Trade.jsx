@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
+import AccountTag from '../components/common/AccountTag.jsx'
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
@@ -379,6 +380,10 @@ export default function Trade() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
   const [positions, setPositions] = useState([])
+  // Which account the positions payload says these rows belong to, plus how
+  // many active rows it hid for carrying no account_id. Owner: "I still cannot
+  // know which account I am trading in the page."
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
   const [trades, setTrades] = useState([])
   const [riskEvents, setRiskEvents] = useState([])
   const [account, setAccount] = useState(null)   // risk-config derived: balance, leverage
@@ -443,6 +448,7 @@ export default function Trade() {
       // duplicate `key={symbol}` rows in the list below (Codex review).
       setScans(s.lastResults?.scans || [])
       setPositions(p.rows || p.positions || [])
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])
       setAccount(rc?.derived || null)
@@ -674,7 +680,10 @@ export default function Trade() {
 
       {/* Open positions */}
       <Card id="sec-positions">
-        <h2 className="t-h3 mb-2">Open positions ({positions.length})</h2>
+        <h2 className="t-h3 mb-2 flex items-center gap-2">
+          <span>Open positions ({positions.length})</span>
+          <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
+        </h2>
         {positions.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">Flat.</div>}
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
