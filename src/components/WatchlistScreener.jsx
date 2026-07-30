@@ -19,6 +19,8 @@ import { Fragment, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
 import { screenerAdvice } from '../lib/screener-advice.js'
+import DoneCue from './common/DoneCue.jsx'
+import { useDoneCue } from '../lib/use-done-cue.js'
 
 function SortHeader({ label, col, sort, onSort, className = '' }) {
   const active = sort.col === col
@@ -34,6 +36,7 @@ function SortHeader({ label, col, sort, onSort, className = '' }) {
 export default function WatchlistScreener({ title = 'Defense stocks', curated, allSymbols, symbols, scanInfo, regimeBy, onAdd, onRemove, onRemoveMany }) {
   const [sort, setSort] = useState({ col: 'symbol', dir: 'asc' })
   const [selected, setSelected] = useState(() => new Set())
+  const [done, setDone] = useDoneCue()
   const [expanded, setExpanded] = useState(null)
   // Owner 2026-07-28: symbols ALREADY on the watchlist clutter the "find
   // new ones" job (the added defence stocks kept re-listing) — hidden by
@@ -104,6 +107,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
     <div>
       <div className="flex flex-wrap items-center gap-2 mb-1.5 text-[9px]">
         <span className="text-[var(--color-text-sub)]">{visible.length} shown · {selected.size} selected</span>
+        <DoneCue message={done && `${done} — done`} />
         {hiddenCount > 0 && hideOnList && (
           <button type="button" className="text-[var(--color-accent)] cursor-pointer hover:underline"
             onClick={() => setHideOnList(false)}>show {hiddenCount} already on the watchlist</button>
@@ -113,7 +117,16 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
             onClick={() => setHideOnList(true)}>hide the ones already added</button>
         )}
         {selToAdd.length > 0 && (
-          <Button size="sm" variant="subtle" onClick={() => { onAdd?.(selToAdd); setSelected(new Set()) }}>
+          <Button size="sm" variant="subtle" onClick={() => {
+            const n = selToAdd.length
+            onAdd?.(selToAdd)
+            setSelected(new Set())
+            // Owner: "Same effect for watchlist checkbox." The ticks already
+            // cleared here; what was missing was any sign the add HAPPENED —
+            // rows that were selected simply stopped being selected, which is
+            // what a misclick looks like too.
+            setDone(`Added ${n} symbol${n === 1 ? '' : 's'}`)
+          }}>
             Add {selToAdd.length} to watchlist
           </Button>
         )}
@@ -122,7 +135,12 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
           // each closed over the same render-time watchlist array, so
           // whichever save landed last silently restored the others. One
           // batched call, one save.
-          <Button size="sm" variant="ghost" onClick={() => { onRemoveMany?.(selToRemove); setSelected(new Set()) }}>
+          <Button size="sm" variant="ghost" onClick={() => {
+            const n = selToRemove.length
+            onRemoveMany?.(selToRemove)
+            setSelected(new Set())
+            setDone(`Removed ${n} symbol${n === 1 ? '' : 's'}`)
+          }}>
             Remove {selToRemove.length} from watchlist
           </Button>
         )}

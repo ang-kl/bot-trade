@@ -18,8 +18,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import Button from './common/Button.jsx'
-import Input from './common/Input.jsx'
 import Badge from './common/Badge.jsx'
+import DoneCue from './common/DoneCue.jsx'
+import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 
 const PROVIDERS = [
@@ -55,6 +56,10 @@ export default function RiskReassess({ onChanged }) {
   const [provider, setProvider] = useState('openai')
   const [model, setModel] = useState('')
   const [picked, setPicked] = useState(() => new Set())
+  // Transient confirmation. Owner: "Apply 13 selected > if done, show 'done'
+  // visual cue and reset the checkboxes." An action whose only feedback is the
+  // numbers quietly changing somewhere else reads as "did that work?".
+  const [done, setDone] = useDoneCue()
 
   const load = useCallback(() => {
     if (!agentConfigured()) return
@@ -80,6 +85,12 @@ export default function RiskReassess({ onChanged }) {
   // Instruction.md. Offered as the placeholder/prefill; the typed value still
   // wins, because the owner asked to choose the model by name.
   const suggested = data?.suggestedModel?.openai || null
+  const suggestedTier = data?.suggestedModel?.tier || null
+  // OpenAI options come from the agent's configured tiers; Claude's are the
+  // curated list in model-router.js. Both are labelled with what they are.
+  const options = provider === 'openai'
+    ? (data?.modelOptions?.openai || [])
+    : (data?.modelOptions?.anthropic || []).map(o => ({ model: o.model, tier: o.label }))
 
   // Fresh proposals start unticked. Deliberate: ticking them for the owner
   // would make Apply a single click on values a model chose.
@@ -90,13 +101,15 @@ export default function RiskReassess({ onChanged }) {
     setBusy('reset'); setError('')
     try {
       await agentPost('/actions/risk-config', { reset: true })
+      setDone('Reset to defaults')
+      setPicked(new Set())
       onChanged?.()
     } catch (e) { setError(e.message) } finally { setBusy('') }
   }
 
   const run = async () => {
     if (!ask) return
-    setBusy('run'); setError('')
+    setBusy('run'); setError(''); setDone('')
     try {
       try { localStorage.setItem(PREF, JSON.stringify({ provider, model })) } catch { /* private mode */ }
       const r = await agentPost('/actions/risk-reassess', {
@@ -110,12 +123,16 @@ export default function RiskReassess({ onChanged }) {
   const apply = async () => {
     const keys = [...picked]
     if (keys.length === 0) return
-    setBusy('apply'); setError('')
+    setBusy('apply'); setError(''); setDone('')
     try {
       // `at` binds this apply to the assessment ON SCREEN. If another tab ran a
       // fresh assessment since this one rendered, the agent 409s instead of
       // applying the newer run's numbers under the same key names.
       await agentPost('/actions/risk-reassess-apply', { keys, at: last.at })
+      // Confirm, then clear the ticks: they have been spent, and leaving them
+      // ticked invites a second identical apply.
+      setDone(`Applied ${keys.length} setting${keys.length === 1 ? '' : 's'}`)
+      setPicked(new Set())
       load()
       onChanged?.()
     } catch (e) { setError(e.message) } finally { setBusy('') }
@@ -134,14 +151,14 @@ export default function RiskReassess({ onChanged }) {
           {busy === 'reset' ? 'Resetting…' : 'Reset'}
         </Button>
         <Button
-          onClick={() => { setAsk({ includeWatchlist: false }); setError('') }}
+          onClick={() => { setAsk({ includeWatchlist: false }); setError(''); if (!model && suggested) setModel(suggested) }}
           disabled={!!busy}
           title="Ask an LLM to re-derive the limits from the account balance and its closed-trade record. Instruments are NOT considered."
         >
           Re-Risk
         </Button>
         <Button
-          onClick={() => { setAsk({ includeWatchlist: true }); setError('') }}
+          onClick={() => { setAsk({ includeWatchlist: true }); setError(''); if (!model && suggested) setModel(suggested) }}
           disabled={!!busy}
           title="Same, but the account's watchlist is part of the assessment — how many instruments, how correlated, which asset classes."
         >
@@ -152,58 +169,55 @@ export default function RiskReassess({ onChanged }) {
         </span>
       </div>
 
-      {/* ---- the provider/model prompt ------------------------------------ */}
+      {/* ---- the provider/model prompt: ONE dense row --------------------
+          Owner: "i have given the list in the earlier .MD file for OPENAI. use
+          dropdown for both MODEL and be UI dense." Both are <select>s now, and
+          the OpenAI list is this agent's OWN three configured tiers (served by
+          /state/risk-reassess from the model router) rather than a hardcoded
+          list that would drift from what is set on Railway. */}
       {ask && (
-        <div className="rounded-[6px] border border-[var(--color-border)] p-2 space-y-2">
-          <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">
-            {ask.includeWatchlist ? 'Re-Risk + Watchlist' : 'Re-Risk'} — choose the model
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {PROVIDERS.map(p => {
-              const on = provider === p.id
-              const has = available[p.id] !== false
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  disabled={!has}
-                  onClick={() => {
-                    setProvider(p.id)
-                    if (!model) setModel(p.id === 'openai' ? (suggested || p.placeholder) : p.placeholder)
-                  }}
-                  title={has ? `Use ${p.label}` : `No API key for ${p.label} is set on the agent`}
-                  className={`rounded-[4px] border px-2 py-0.5 text-[9px] font-semibold disabled:opacity-40 ${
-                    on
-                      ? 'border-[var(--color-state-on-border)] bg-[var(--color-state-on-bg)] text-[var(--color-state-on-text)]'
-                      : 'border-[var(--color-border)] text-[var(--color-text-sub)]'
-                  }`}
-                >
-                  {p.label}{has ? '' : ' (no key)'}
-                </button>
-              )
-            })}
-            <Input
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              placeholder={provider === 'openai'
-                ? (suggested || PROVIDERS.find(p => p.id === provider)?.placeholder)
-                : PROVIDERS.find(p => p.id === provider)?.placeholder}
-              className="w-48"
-              aria-label="model name"
-            />
-            <Button onClick={run} disabled={!!busy || !model.trim()}>
-              {busy === 'run' ? 'Assessing…' : 'Run assessment'}
-            </Button>
-            <Button onClick={() => setAsk(null)} disabled={!!busy}>Cancel</Button>
-          </div>
-          <div className="text-[9px] text-[var(--color-text-sub)]">
-            Type the model name exactly as the provider spells it — it is sent through as typed, so a
-            wrong id comes back as the provider&apos;s own error rather than a silent substitution.
-            {suggested && provider === 'openai' && (
-              <> The suggestion is this agent&apos;s <strong>{data?.suggestedModel?.tier?.toLowerCase()}</strong>{' '}
-              tier (<code>OPENAI_MODEL_REASONING</code>) — a risk reassessment is a financial-analysis task.</>
-            )}
-          </div>
+        <div className="flex flex-wrap items-center gap-1.5 rounded-[6px] border
+                        border-[var(--color-border)] px-2 py-1">
+          <span className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">
+            {ask.includeWatchlist ? 'Re-Risk + Watchlist' : 'Re-Risk'}
+          </span>
+          <select
+            value={provider}
+            onChange={e => { setProvider(e.target.value); setModel('') }}
+            aria-label="LLM provider"
+            className="rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)]
+                       px-1 py-0.5 text-[9px] font-semibold text-[var(--color-text)]"
+          >
+            {PROVIDERS.map(p => (
+              <option key={p.id} value={p.id} disabled={available[p.id] === false}>
+                {p.label}{available[p.id] === false ? ' (no key)' : ''}
+              </option>
+            ))}
+          </select>
+          <select
+            value={model}
+            onChange={e => setModel(e.target.value)}
+            aria-label="model"
+            className="rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)]
+                       px-1 py-0.5 text-[9px] font-semibold tabular-nums text-[var(--color-text)]"
+          >
+            <option value="">choose a model…</option>
+            {options.map(o => (
+              <option key={o.model} value={o.model}>
+                {o.model}{o.tier ? ` · ${o.tier.toLowerCase()}` : ''}
+              </option>
+            ))}
+          </select>
+          <Button onClick={run} disabled={!!busy || !model}>
+            {busy === 'run' ? 'Assessing…' : 'Run'}
+          </Button>
+          <Button onClick={() => setAsk(null)} disabled={!!busy}>Cancel</Button>
+          <span className="text-[8px] text-[var(--color-text-sub)]">
+            {ask.includeWatchlist
+              ? 'watchlist composition included'
+              : 'balance + record only, no instruments'}
+            {suggestedTier ? ` · suggested tier: ${suggestedTier.toLowerCase()}` : ''}
+          </span>
         </div>
       )}
 
@@ -213,6 +227,10 @@ export default function RiskReassess({ onChanged }) {
           {error}
         </div>
       )}
+
+      {/* One shared cue component across the app — see DoneCue.jsx for why it
+          is blue rather than green or accent. */}
+      <DoneCue message={done && `${done} — done`} />
 
       {/* ---- last run ------------------------------------------------------ */}
       {!last && !ask && (

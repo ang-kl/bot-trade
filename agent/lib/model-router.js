@@ -152,3 +152,18 @@ export function chooseModel(task = {}, env = process.env) {
   const r = resolveTier(tier, env)
   return { ...r, escalated, taskType: type }
 }
+
+/**
+ * Claude ids offered in the Risk page's model dropdown.
+ *
+ * A short curated list, NOT a live catalogue: this agent has no endpoint that
+ * enumerates Anthropic models, so anything more would be invented. The field is
+ * still free-form on the wire — the route sends whatever the owner picks or
+ * types straight through, and a wrong id comes back as the provider's own error
+ * rather than a silent substitution.
+ */
+export const ANTHROPIC_MODEL_CHOICES = [
+  { model: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+  { model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  { model: 'claude-opus-4-5', label: 'Opus 4.5' },
+]
