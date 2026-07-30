@@ -140,7 +140,15 @@ export default function TabsPanel() {
           </div>
         )
       })}
-      <div className="pt-1 flex items-center gap-1 text-[7px] text-[var(--color-text-sub)]">
+      {/* THE HORIZONTAL SCROLLBAR IN THE OWNER'S SCREENSHOT WAS THIS ROW.
+          Six children — a label, four choices and an info glyph — in a
+          non-wrapping flex inside a ~192px sidebar column. It could not fit, so
+          the browser gave the whole sidebar a horizontal scrollbar, which then
+          ate a line of the vertical space too (owner: "The horizontal scrollbar
+          consumes limited navigation space"). flex-wrap lets it become two short
+          lines instead, and the 7px text goes up to the caption token — 7px is
+          what "Some labels and controls are difficult to read" was about. */}
+      <div className="pt-1 flex items-center flex-wrap gap-x-1 gap-y-1 text-[var(--fs-caption)] text-[var(--color-text-sub)]">
         <span>sleep after</span>
         {IDLE_CHOICES.map(c => (
           <button key={c.min} type="button"
@@ -150,7 +158,7 @@ export default function TabsPanel() {
               : 'border-[var(--glass-edge)]'}`}
           >{c.label}</button>
         ))}
-        <span className="ml-auto" title="A sleeping tab stops all polling (zero load) and wakes on any click/key — browsers don't allow a website to close your tabs outright.">ⓘ</span>
+        <span title="A sleeping tab stops all polling (zero load) and wakes on any click/key — browsers don't allow a website to close your tabs outright.">ⓘ</span>
       </div>
       </div>}
     </div>

@@ -225,8 +225,8 @@ export default function App() {
           wraps to two lines on narrow desktops, so a hardcoded number would
           be wrong on exactly the screens the owner uses). */}
       <aside className="hidden lg:flex lg:flex-col lg:w-56 lg:shrink-0 lg:h-[var(--sidebar-h)] lg:sticky lg:top-0 p-4">
-        <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-y-auto">
-          <div className="flex items-baseline gap-2 mb-4">
+        <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-hidden">
+          <div className="shrink-0 flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-3">
             <span className="text-[15px] font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
             <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
             <LlmMonitorStatus />
@@ -236,8 +236,8 @@ export default function App() {
               It sits ABOVE the first nav group because every number on every
               page below belongs to this account — reading Performance without
               knowing whose Performance it is has bitten before. */}
-          <ActiveAccountHeader />
-          <nav className="flex flex-col gap-4" id="main-content">
+          <div className="shrink-0"><ActiveAccountHeader /></div>
+          <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>
                 <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
@@ -252,21 +252,34 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          {/* Owner 2026-07-28: "I still cannot see the active web setting,
-              can you make the setting card 10% spacing gap from the bottom."
-              mt-auto parked this block flush against the panel's bottom edge,
-              which sits at the viewport bottom — so the sleep-after row and
-              the theme button below it disappeared behind the OS taskbar and
-              browser chrome. 10vh (10% of the VIEWPORT height) is the gap;
-              a percentage padding would have resolved against the sidebar's
-              224px WIDTH, giving ~22px, which is not what was asked for. */}
-          <div className="mt-auto pb-[10vh]">
+          {/* SIDEBAR FOOTER — a real footer, not a bottom-margin trick.
+              Owner (2026-07-30): "I previously requested that the web-app
+              settings currently displayed in the left navigation panel be
+              relocated to the footer section of that navigation panel. Do not
+              place these controls inside the floating action button - FAB. The
+              settings should remain persistently accessible at the bottom of the
+              left sidebar without obscuring the main navigation or page content."
+
+              WHAT WAS WRONG. The settings were the last child of the SAME
+              overflow-y-auto container as the nav, so they scrolled away with it
+              — "persistently accessible" was not achievable by position alone.
+              And the earlier fix for "I still cannot see the active web setting"
+              was pb-[10vh], which pushed them down by a tenth of the VIEWPORT:
+              it made the scroll container taller, which on a short window pushed
+              them further out of reach. That is treated here instead of padded
+              around: the panel no longer scrolls, the nav scrolls INSIDE it, and
+              this footer is a shrink-0 sibling pinned below.
+
+              A border-top rather than a gap does the separating, so no vertical
+              space is spent on emptiness — the owner's screenshot showed a
+              cramped sidebar, and 10vh of padding was part of why. */}
+          <div className="shrink-0 mt-2 pt-2 border-t border-[var(--glass-edge)] flex flex-col gap-1.5">
             <TabsPanel />
             <button
               type="button"
               onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-              title={`Theme: ${theme}`}
-              className="w-full glass-inset rounded-[10px] px-3 py-2 text-[9px] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
+              title={`Theme: ${theme} — click to cycle system / light / dark`}
+              className="w-full glass-inset rounded-[10px] px-3 py-2 text-[var(--fs-caption)] cursor-pointer hover:shadow-[var(--glow-accent)] text-left"
             >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
           </div>
         </div>

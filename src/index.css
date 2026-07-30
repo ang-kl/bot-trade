@@ -48,6 +48,36 @@
  */
 
 :root {
+  /* -------------------------------------------------------------------------
+     TYPE SCALE, in rem (owner 2026-07-30 UI/UX brief §1.5-1.6).
+     "Use an accessible, responsive type system based on the browser's usual
+     root size of 16px, expressed primarily with `rem` units so that user font
+     preferences and zoom settings are respected."
+
+     rem, not px, is the whole point: a reader who sets a larger default font
+     size, or zooms to 200% (WCAG 2.2 Resize Text, 1.4.4), moves every one of
+     these together. A hard-coded px value ignores them both.
+
+     WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app has
+     several hundred `text-[9px]` literals across 40+ components, tuned over
+     many rounds against the owner's own "dense desk, 9px tables, OCD about
+     uniform field sizes" instructions. Swapping them blind would be a
+     several-thousand-line change with no way to tell a deliberate density
+     choice from an accident. So the scale lands as tokens FIRST, is adopted by
+     the chrome being rebuilt now (the sidebar and its new footer), and the
+     remaining call sites are migrated behind the measurements in
+     scripts/responsive-audit.mjs rather than by guesswork.
+
+     The floor is deliberately 0.6875rem (11px at a 16px root) rather than the
+     app's current 7-8px: 7px was unreadable, and it is what produced the
+     owner's "Some labels and controls are difficult to read".
+     ------------------------------------------------------------------------- */
+  --fs-caption:       0.6875rem; /* 11px @16 — smallest permitted label */
+  --fs-secondary:     0.8125rem; /* 13px */
+  --fs-body:          1rem;      /* 16px — the base */
+  --fs-heading-sm:    1.125rem;  /* 18px */
+  --fs-heading-md:    1.25rem;   /* 20px */
+
   --zoom: 1;
   /* Overwritten live by App's footer ResizeObserver; the default keeps the
      sidebar sane before the first measurement. */
