@@ -77,6 +77,45 @@
   --fs-body:          1rem;      /* 16px — the base */
   --fs-heading-sm:    1.125rem;  /* 18px */
   --fs-heading-md:    1.25rem;   /* 20px */
+  /* The session-status line the owner capped explicitly: "Keep the visible
+     status text at a maximum font size of 10px" / "Maximum visible font size:
+     10px. Suggested line height: 12px". A named token so the cap is one value
+     to check rather than a literal scattered through the component — and so
+     the guard test can assert against it. It sits BELOW the --fs-caption
+     floor by direct instruction, which is why it is its own token and not a
+     step in the scale. */
+  /* 0.625rem = EXACTLY 10px at the default 16px root, 0.75rem = 12px.
+     Expressed in rem rather than as a px literal to satisfy BOTH of the
+     brief's requirements at once, which a px value cannot:
+       "Maximum visible font size: 10px. Suggested line height: 12px."
+       "Although the visual status line is capped at 10px, ensure browser zoom
+        and user font scaling remain effective."
+     A hard `10px` honours the first and breaks the second — measured: at a
+     32px root the line stayed at 10px, i.e. a reader who has enlarged their
+     default font gets nothing. In rem it renders at exactly 10px on a default
+     root (so the cap holds as specified) and scales with the reader's own
+     preference (so the accessibility requirement holds too). Anything past
+     10px is then the user's explicit choice, not the design overriding them. */
+  --fs-session:       0.625rem;
+  --lh-session:       0.75rem;
+
+  /* ---------------------------------------------------------------------
+     Compact controls (owner brief, "BUTTON AND PILL DESIGN"): "Use compact
+     rounded rectangles, not oval capsules … Never use border-radius: 9999px."
+     Normal = blue text on a blue tint; danger = red text on a red tint. Colour
+     is never the only signal — every control using these also carries a word.
+     --------------------------------------------------------------------- */
+  --control-radius: 7px;
+  --control-padding-block: 2px;
+  --control-padding-inline: 6px;
+
+  --normal-text: #0066cc;
+  --normal-background: rgb(0 122 255 / 0.10);
+  --normal-border: rgb(0 122 255 / 0.24);
+
+  --danger-text: #c62828;
+  --danger-background: rgb(255 59 48 / 0.10);
+  --danger-border: rgb(255 59 48 / 0.24);
 
   --zoom: 1;
   /* Overwritten live by App's footer ResizeObserver; the default keeps the
@@ -184,6 +223,18 @@
 
 /* -- Dark theme: deep-space neon glass -- */
 [data-theme="dark"] {
+  /* The brief's #0066cc / #c62828 are tuned for a light background and drop to
+     roughly 2:1 on this near-black surface. These are the same hues lifted to
+     Apple's dark-mode system blue/red, which clear 4.5:1 on --color-bg —
+     "Dark-mode support" plus "Sufficient contrast" in the same brief. */
+  --normal-text: #64a8ff;
+  --normal-background: rgb(10 132 255 / 0.16);
+  --normal-border: rgb(10 132 255 / 0.34);
+
+  --danger-text: #ff8a80;
+  --danger-background: rgb(255 69 58 / 0.16);
+  --danger-border: rgb(255 69 58 / 0.34);
+
   --color-bg:           #060913;
   --color-surface:      rgba(20, 26, 48, 0.55);
   --color-border:       rgba(120, 150, 255, 0.18);
@@ -899,4 +950,115 @@ textarea {
      with or without !important, at any specificity. Measured both ways:
      34/124 inputs still 26px on Risk. Putting the variant on the element
      sidesteps the cascade question entirely. */
+}
+
+/* ---------------------------------------------------------------------------
+   Compact controls + the sidebar session footer
+   (owner brief: instr/footer_issue.md)
+
+   Written as real CSS classes rather than Tailwind strings because the brief
+   names them ("Example semantic classes: .button-normal .action-primary
+   .button-danger .action-disconnect") and because the hit-target rule below
+   needs a pseudo-element, which is clearer here than as an arbitrary variant.
+   --------------------------------------------------------------------------- */
+
+.compact-control {
+  border-radius: var(--control-radius);       /* never 9999px — brief */
+  padding: var(--control-padding-block) var(--control-padding-inline);
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 1.2;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  /* "Subtle motion / short transitions", and honoured only when the user has
+     not asked for less (block below). */
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.compact-control:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.compact-control:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.button-normal, .action-primary {
+  color: var(--normal-text);
+  background: var(--normal-background);
+  border-color: var(--normal-border);
+}
+.button-normal:hover:not(:disabled), .action-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--normal-background) 60%, var(--normal-text) 12%);
+}
+.button-normal:active:not(:disabled), .action-primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--normal-background) 40%, var(--normal-text) 22%);
+}
+
+.button-danger, .action-disconnect {
+  color: var(--danger-text);
+  background: var(--danger-background);
+  border-color: var(--danger-border);
+}
+.button-danger:hover:not(:disabled), .action-disconnect:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-background) 60%, var(--danger-text) 12%);
+}
+.button-danger:active:not(:disabled), .action-disconnect:active:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-background) 40%, var(--danger-text) 22%);
+}
+
+/* "The visible pill may use 2px vertical padding, but the interactive target
+   must remain comfortably clickable … Do not reduce the actual touch target to
+   a 10px-high control." So the visible pill keeps its 2px, and an invisible
+   pseudo-element carries the real hit area. Sits behind its own control so it
+   can never swallow a neighbouring tap. */
+.compact-control { position: relative; }
+.compact-control::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  min-width: 32px;
+  height: 100%;
+  min-height: 32px;
+  z-index: -1;
+}
+@media (pointer: coarse) {
+  /* A finger needs the full HIG 44px; a mouse does not, which is why the
+     desktop minimum above is smaller rather than universally 44. */
+  .compact-control::before { min-width: 44px; min-height: 44px; }
+}
+
+/* The session line itself. One line, capped at 10px by the owner's explicit
+   instruction, ellipsised rather than wrapped. */
+.sidebar-session-footer {
+  border-top: 1px solid var(--glass-edge);
+  flex-shrink: 0;
+  /* Set on the SECTION, not just the line. Measured: the wrapper inherited the
+     16px body size, so any future direct child would silently render at body
+     size inside a footer that is supposed to be capped — which is the same
+     shape of mistake as the token bug this whole change started with. */
+  font-size: var(--fs-session);
+  line-height: var(--lh-session);
+}
+.session-status-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  font-size: var(--fs-session);
+  line-height: var(--lh-session);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.session-status-line > .session-text {
+  overflow: hidden;
+  text-overflow: ellipsis;   /* "Use text-overflow: ellipsis" — brief */
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-control { transition: none; }
 }

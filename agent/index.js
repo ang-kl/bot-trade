@@ -5,6 +5,7 @@ import { resolve, dirname, isAbsolute } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { initDB, getState, setState } from './db.js';
+import { touchSession } from './services/browser-sessions.js';
 import { installProcessDiagnostics, startHeartbeatLog } from './lib/diagnostics.js';
 import * as clientPresence from './services/client-presence.js';
 import { classifyToken, tierAuthorizes } from './lib/auth-tiers.js';
@@ -267,6 +268,28 @@ function authMiddleware(req, res, next) {
     const why = !token ? 'no token' : tier === 'read' ? `read-tier token on a write route ${token.slice(0, 10)}…` : `stale/unknown token ${token.slice(0, 10)}…`;
     console.warn(`[auth] 401 ${req.method} ${req.path} — ${why}`);
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // THIS is where a revoked session stops. `isValidSession` reads
+  // `device_sessions`, and revocation deletes the raw token from it, so the
+  // very next request from a revoked browser 401s above — before any route,
+  // cache or queue runs. No client-side "disconnected" flag is trusted, and
+  // the block survives a restart because the deletion is a durable write.
+  //
+  // Everything past this point is authenticated, so it is the honest place to
+  // stamp server-authoritative last-activity for the session list. Throttled
+  // inside touchSession (5s) so the hot path stays a Map lookup.
+  // A device session is a 'full'-tier token that is NOT one of the env
+  // secrets — classifyToken deliberately collapses both into 'full', so the
+  // distinction has to be made here rather than read off the tier.
+  const isDeviceSession = tier === 'full' && token !== AGENT_SECRET;
+  if (isDeviceSession) {
+    try {
+      touchSession(db, token, {
+        ua: req.headers['user-agent'],
+        ip: String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim(),
+      })
+    } catch { /* session bookkeeping must never reject an authorized request */ }
   }
 
   next();

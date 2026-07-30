@@ -60,7 +60,7 @@ import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/Ac
 import MobileTabBar from './components/MobileTabBar.jsx'
 import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
-import TabsPanel from './components/common/TabsPanel.jsx'
+import SessionFooter from './components/SessionFooter.jsx'
 import { useTheme } from './lib/theme.js'
 import { Toaster } from 'sonner'
 
@@ -164,45 +164,35 @@ function navLinkClasses(isActive) {
 
 export default function App() {
   const { theme, setTheme } = useTheme()
-  // The desktop footer wraps to two lines on narrow desktops (measured: ~39px
-  // at 1440x900, ~58px at 1280x800), so its height cannot be hardcoded — and
-  // the sidebar has to stop exactly above it or the two overlap, which is the
-  // bug the owner reported. Measure it and publish --footer-h.
-  const footerRef = useRef(null)
+  // THERE IS NO PAGE-WIDE FOOTER ANY MORE (owner brief, instr/footer_issue.md:
+  // "Replace the present large page-wide footer with a compact, single-line
+  // session-status control … Do not create a second page-wide footer"). The
+  // session line and the theme control live at the bottom of the sidebar; the
+  // build stamp moved into the session popover, where it is one of the
+  // reported session facts rather than permanent chrome.
+  //
+  // So --footer-h is 0 and the sidebar is simply viewport-tall. The ONE thing
+  // still worth measuring is the zoom factor: index.css applies `zoom: 1.1` to
+  // html above 1153px, and under zoom a CSS `100dvh` resolves in LAYOUT pixels
+  // — i.e. 10% taller than the window — which is what used to run the sidebar
+  // panel off the bottom of the screen. Publishing an already-converted height
+  // sidesteps it. Doing the same arithmetic in a Tailwind calc() does not: a
+  // var() fallback contains a comma and silently fails to compile the utility
+  // (verified against the built CSS).
   useEffect(() => {
-    const el = footerRef.current
-    if (!el) return undefined
-    // Two measurements, both necessary.
-    //
-    // The footer WRAPS on narrow desktops (~39px at 1440x900, ~58px at
-    // 1280x800), so its height cannot be hardcoded — that is why this is a
-    // ResizeObserver and not a constant.
-    //
-    // And index.css applies `zoom: 1.1` to html above 1153px. Under zoom,
-    // getBoundingClientRect reports VISUAL pixels while CSS lengths resolve
-    // in LAYOUT pixels, so `100dvh` inside the zoomed document is 10% taller
-    // than the window. That is precisely what ran the sidebar panel under the
-    // fixed footer — measured at 1440x900: panel bottom 930px, footer top
-    // 861px. Deriving the factor and publishing an already-converted height
-    // sidesteps the whole trap; doing this in a Tailwind calc() does not,
-    // because a var() FALLBACK contains a comma and silently fails to
-    // compile the utility (verified against the built CSS).
     const apply = () => {
       const root = document.documentElement
-      // Read the factor off the element itself. Deriving it from
-      // innerWidth / clientWidth does NOT work: Chromium reports
-      // clientWidth already in visual pixels, so the ratio comes back 1 and
-      // the correction silently does nothing (measured).
+      // The factor must be read off computed style. Deriving it from
+      // innerWidth / clientWidth does NOT work — Chromium reports clientWidth
+      // already in visual pixels, so the ratio comes back 1 and the correction
+      // silently does nothing (measured).
       const zoom = parseFloat(getComputedStyle(root).zoom) || 1
-      const footerVisual = el.getBoundingClientRect().height
-      root.style.setProperty('--footer-h', `${Math.ceil(footerVisual)}px`)
-      root.style.setProperty('--sidebar-h', `${Math.floor(Math.max(0, window.innerHeight - footerVisual) / zoom)}px`)
+      root.style.setProperty('--footer-h', '0px')
+      root.style.setProperty('--sidebar-h', `${Math.floor(window.innerHeight / zoom)}px`)
     }
     apply()
-    const ro = new ResizeObserver(apply)
-    ro.observe(el)
     window.addEventListener('resize', apply)
-    return () => { ro.disconnect(); window.removeEventListener('resize', apply) }
+    return () => window.removeEventListener('resize', apply)
   }, [])
 
   return (
@@ -251,11 +241,30 @@ export default function App() {
             ))}
             <AccountSwitcher />
           </nav>
-          {/* The web-app settings are NOT here. Owner (2026-07-30): "move the
-              setting which now on the left navigation bar to the footer."
-              They live in the page footer below, so the sidebar spends all of
-              its width and height on navigation — which is what the cramped
-              screenshot was about. */}
+          {/* THE SIDEBAR FOOTER (owner brief: "Move this control into the
+              bottom of the left navigation panel", "Keep the sidebar footer
+              visible while the main content scrolls", "Add a subtle top
+              divider", "Do not use large shadows").
+              It is a shrink-0 sibling of the scrolling <nav>, so the nav
+              scrolls independently and this stays put — no fixed positioning,
+              so it cannot overlap the strategy table the way the old
+              page-wide footer did. */}
+          <div className="shrink-0">
+            <SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
+            {/* The theme control is the one other piece of web-app chrome that
+                has to stay reachable. It sits beside the session line as an
+                icon-width compact rounded rectangle (never a capsule), so the
+                footer is still ONE visible line. */}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
+                title={`Theme: ${theme} — click to cycle system / light / dark`}
+                aria-label={`Theme: ${theme}. Click to cycle system, light, dark.`}
+                className="compact-control button-normal text-(length:--fs-session)"
+              >{THEME_ICON[theme] || '◐'} {theme}</button>
+            </div>
+          </div>
         </div>
       </aside>
 
@@ -321,55 +330,25 @@ export default function App() {
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
           </Suspense>
-          {/* Small screens have no sidebar, so the tab roster above is
-              lg-only — which made the click-to-expand detail unreachable on
-              exactly the touch devices it was built for (Codex review).
-              Mounted here at the end of the page content for < lg, where it
-              scrolls into reach instead of fighting the fixed footer. */}
-          <div className="lg:hidden mt-4">
-            <TabsPanel />
-          </div>
         </main>
-        {/* Owner (2026-07-24): "I cannot see the footer in this HD notebook,
-            dynamically adjust up the footer... allow there for both the
-            side bar and footer and ensure scrolling is behind it like
-            Liquid Glass" — fixed to the viewport bottom (not page-flow end)
-            so it's always visible on short screens; lg:left-56 clears the
-            sticky sidebar; page content scrolls underneath the translucent
-            glass-bar material. main's bottom padding above keeps real
-            content from ending up permanently hidden under it. */}
-        <footer ref={footerRef} className="glass-fixed hidden lg:flex fixed bottom-0 inset-x-0 lg:left-52 z-40 px-4 py-2 text-[var(--fs-caption)] text-[var(--color-text-sub)] flex-wrap items-center gap-x-3 gap-y-1">
-          {/* THE WEB-APP SETTINGS LIVE HERE (owner 2026-07-30: "move the setting
-              which now on the left navigation bar to the footer"). The footer is
-              already fixed and already spans the content width, so the controls
-              are permanently reachable without spending any sidebar width — and
-              the sidebar gets its full height back for navigation.
-
-              The build stamp stays: it is the only thing that can prove WHICH
-              code is deployed. The risk disclaimer and the strategy blurb are
-              gone at the owner's instruction ("remove all the precautious
-              text") — this is their own private desk, and a warning they wrote
-              to themselves was costing a line of permanent chrome. */}
-          <span title="Version · git commit this build was made from — compare with the latest commit on main to confirm the deploy is current">bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</span>
-          <span className="h-3 w-px bg-[var(--glass-edge)]" aria-hidden="true" />
-          <TabsPanel />
-          <button
-            type="button"
-            onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-            title={`Theme: ${theme} — click to cycle system / light / dark`}
-            className="glass-inset rounded-[8px] px-2 py-1 text-[var(--fs-caption)] cursor-pointer hover:shadow-[var(--glow-accent)]"
-          >{THEME_ICON[theme] || '◐'} {theme}</button>
-        </footer>
+        {/* NO PAGE-WIDE FOOTER. It used to live here, fixed to the viewport
+            bottom across the whole content width, carrying the build stamp, the
+            tab roster and the theme control. The owner's brief removes it
+            outright ("Replace the present large page-wide footer … Do not
+            create a second page-wide footer"), and the screenshot showed why:
+            fixed chrome at that width sat over the strategy table. Its contents
+            now live in the sidebar footer above and in the session popover. */}
 
         {/* Bottom tab bar — touch only. Always mounted, never conditionally
             hidden on navigation (HIG). Carries the footer copy and the theme
             control inside its More sheet so neither costs vertical space on
             a phone. */}
-        {/* Same trim as the desktop footer (owner: "remove all the precautious
-            text"). The build stamp is kept because it is the only proof of
-            WHICH code is running. */}
+        {/* Narrow screens have no sidebar, so per the brief the session control
+            moves "into the navigation drawer … near the bottom of the drawer",
+            which on this app is the More sheet. Same component, same popover,
+            same protections — not a reduced phone variant. */}
         <MobileTabBar
-          footerNote={<>bot-trade v{__APP_VERSION__} · build {__GIT_COMMIT__}</>}
+          footerNote={<SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />}
           themeButton={
             <button
               type="button"
