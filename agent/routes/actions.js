@@ -13,6 +13,7 @@ import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { describeBracketGap } from '../lib/bracket-advice.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
@@ -4042,7 +4043,14 @@ export default function actionsRouter(db) {
         // proposal and answer in the same shape as every other veto here.
         if (!/^guard_/.test(err.message)) throw err
         persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
-        return res.json({ ok: false, vetoed: true, reason: err.message })
+        // Owner 2026-07-31: name the symbol and the missing leg rather than
+        // returning a bare guard_* string. `needsInput` tells the caller which
+        // field to ask for; it is advice, never an automatic fill.
+        const needsInput = describeBracketGap(err.message, {
+          symbol: analysis.symbol, side, entry, sl, tp: tp1, digits: volMeta.digits,
+          strategy: analysis.strategy, minRR: loadRiskConfig(db).minRR,
+        })
+        return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
       }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
@@ -4173,7 +4181,11 @@ export default function actionsRouter(db) {
       } catch (err) {
         if (!/^guard_/.test(err.message)) throw err
         persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
-        return res.json({ ok: false, vetoed: true, reason: err.message })
+        const needsInput = describeBracketGap(err.message, {
+          symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
+          strategy: 'manual', minRR: loadRiskConfig(db).minRR,
+        })
+        return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
       }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
