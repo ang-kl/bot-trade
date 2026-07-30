@@ -24,6 +24,7 @@ import Badge from '../components/common/Badge.jsx'
 import ReportChart from '../components/ReportChart.jsx'
 import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
+import PerfAccountScope from '../components/PerfAccountScope.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
@@ -1358,6 +1359,11 @@ export default function Performance() {
       return {
         id: a.account_id,
         dormantButHeld,
+        // Carried as a FIELD, not inferred from the name string: the ALL-accounts
+        // summary counts live vs demo, and parsing "Demo · 5203012" to find that
+        // out would break the first time the label changed. (It shipped reading
+        // 0 live · 0 demo for exactly this reason.)
+        isLive: a.is_live === 1,
         name: `${a.is_live ? 'Live' : 'Demo'} · ${a.trader_login || a.account_id}${dormantButHeld ? ' · OFF' : ''}`,
         ccy: a.base_currency || '—',
         bal, day, gw, gl, n30, cap, used, equity, live,
@@ -2120,7 +2126,17 @@ export default function Performance() {
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
           </div>
-          <AcctCardsGrid acctCards={acctCards} />
+          {/* SCOPE-AWARE cards (owner 2026-07-30): the read-only grid became a
+              single-selection control with ALL ACCOUNTS · SUMMARY first and
+              selected by default, plus an always-visible scope line. Selecting
+              a card re-renders only this section's detail panel — the rest of
+              the page, its filters and its scroll position are untouched. */}
+          <PerfAccountScope
+            acctCards={acctCards}
+            palette={{ P_GL, P_GBD, P_MU, P_SB, P_UP, P_DN, P_ACC, P_EDG, P_WRN }}
+            money={money}
+            signed={signed}
+          />
           </div>
         )}
 

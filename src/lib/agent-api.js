@@ -250,8 +250,44 @@ if (typeof window !== 'undefined') {
   }
 }
 export const pageIdle = () => Date.now() - lastActivityAt > getIdleMinutes() * 60_000
-/** Polls should skip when the tab is hidden OR asleep. */
-export const pageAsleep = () => pageHidden() || pageIdle()
+
+// ---------------------------------------------------------------------------
+// MANUAL PAUSE (owner 2026-07-30): "Have a capable to pause
+// webpage-client-sided-spool/update at the Account details as a button."
+//
+// Deliberately folded into pageAsleep() rather than given its own gate. Every
+// poll loop in the app already calls pageAsleep() before doing work, so one
+// extra term here pauses ALL of them at once — a separate flag would have to be
+// threaded through a dozen components, and the one that got missed would keep
+// polling while the UI claimed to be paused.
+//
+// Client-side only: this stops THIS BROWSER from asking. The agent keeps
+// trading, keeps reconciling and keeps its stops at the broker — pausing a
+// screen is not pausing the bot, and the UI says so on the control.
+//
+// localStorage, so it survives navigation between pages (a pause that forgot
+// itself on the next route would be worse than no pause), and per-device like
+// tab_idle_minutes.
+const PAUSE_KEY = 'poll_paused'
+const pauseListeners = new Set()
+
+export function isPollPaused() {
+  try { return localStorage.getItem(PAUSE_KEY) === 'true' } catch { return false }
+}
+export function setPollPaused(on) {
+  try { localStorage.setItem(PAUSE_KEY, on ? 'true' : 'false') } catch { /* private mode */ }
+  for (const l of pauseListeners) {
+    try { l() } catch { /* one bad subscriber must not stop the rest */ }
+  }
+}
+/** Subscribe to pause changes; returns an unsubscribe. For useSyncExternalStore. */
+export function subscribePollPaused(cb) {
+  pauseListeners.add(cb)
+  return () => pauseListeners.delete(cb)
+}
+
+/** Polls should skip when the tab is hidden, asleep, or manually paused. */
+export const pageAsleep = () => pageHidden() || pageIdle() || isPollPaused()
 
 function tabId() {
   try {

@@ -29,7 +29,9 @@
 // reads /state/account-phases and returns that account's EFFECTIVE phases, with
 // the master as the fallback for an account the registry has not answered for.
 // The switches themselves live on Tune › Pipeline (AccountPhaseSwitches).
+import { useSyncExternalStore } from 'react'
 import { offSummary } from '../lib/account-phases.js'
+import { isPollPaused, setPollPaused, subscribePollPaused } from '../lib/agent-api.js'
 import PhaseDots from './common/PhaseDots.jsx'
 import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
 
@@ -65,38 +67,83 @@ export function ActiveAccountHeaderCompact() {
 
 export default function ActiveAccountHeader() {
   const { acct, phases, armed, ccy } = useActiveAccount()
+  // The manual poll pause. Subscribed rather than read once, so the ring
+  // appears the instant it is toggled — including from another component.
+  const paused = useSyncExternalStore(subscribePollPaused, isPollPaused, isPollPaused)
   if (!acct) return null
 
   const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
   const trading = armed === true
   const summary = offSummary(phases)
   return (
+    // THE ACCOUNT BLOCK IS THE PAUSE BUTTON (owner 2026-07-30: "Have a capable
+    // to pause webpage-client-sided-spool/update at the Account details as a
+    // button (don't create another button)"). No new control was added — the
+    // block that already tells you which account you are on now also stops this
+    // browser asking for updates about it.
+    //
+    // Active: no border, so the resting state is exactly what it was.
+    // Paused: a red ring with the word "pause" centred ON the ring's bottom
+    // edge — the negative-space label the owner drew, made with a bg-coloured
+    // inline span sitting over the border line rather than an SVG or a gap hack.
+    //
+    // WHAT IT DOES NOT DO, said on the control itself: this is client-side
+    // only. The agent keeps trading, keeps reconciling, and every stop and
+    // target stays at the broker. A paused screen is not a paused bot, and that
+    // must never be ambiguous on a screen that arms real orders.
     <div className="mb-4 px-3">
-      <div className="flex items-baseline justify-between gap-1">
-        <span className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
-        {summary && (
+      <button
+        type="button"
+        aria-pressed={paused}
+        onClick={() => setPollPaused(!paused)}
+        title={paused
+          ? 'Page updates are PAUSED — this browser has stopped polling the agent. The bot keeps trading and every stop stays at the broker. Tap to resume.'
+          : 'Page updates are live. Tap to pause this browser\'s polling (the bot keeps trading either way).'}
+        className={`relative block w-full cursor-pointer rounded-[8px] px-1.5 py-1 text-left transition-colors
+                    ${paused
+                      ? 'border border-[var(--color-down)]'
+                      : 'border border-transparent hover:bg-[var(--color-accent-soft)]'}`}
+      >
+        <div className="flex items-baseline justify-between gap-1">
+          <span className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
+          {summary && (
+            <span
+              className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
+              title="Scan finds candidates, Analyze judges them, Autotrade sends the order. Anything off stops the pipeline at that point."
+            >
+              {summary}
+            </span>
+          )}
+        </div>
+        <div
+          className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
+          title={armed == null
+            ? 'checking whether autotrade is armed…'
+            : trading ? 'autotrade is ARMED — the bot is trading this account' : 'autotrade is OFF — the bot is not opening new trades on this account'}
+        >
+          {label}
+        </div>
+        {/* Owner: "remove the word 'Balance' under the Account name" — the
+            currency code and the number already say what it is. */}
+        <div className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
+          <span>{formatBalance(acct.balance, ccy)}</span>
+          <PhaseDots phases={phases} />
+        </div>
+        {paused && (
+          // Owner: "a tiny 3 px smaller font size at the bottom centre of the
+          // border ring state 'pause'". Sized against the block's PRIMARY text
+          // (11px) rather than its smallest (9px), which would have put this at
+          // 6px — below every other label in the app and unreadable at the very
+          // moment it matters. 8px is the existing floor and still visibly
+          // smaller, which is what the instruction was for.
           <span
-            className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
-            title="Scan finds candidates, Analyze judges them, Autotrade sends the order. Anything off stops the pipeline at that point."
+            className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 bg-[var(--color-bg)] px-1
+                       text-[8px] font-semibold uppercase tracking-wide leading-none text-[var(--color-down)]"
           >
-            {summary}
+            pause
           </span>
         )}
-      </div>
-      <div
-        className={`text-[11px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
-        title={armed == null
-          ? 'checking whether autotrade is armed…'
-          : trading ? 'autotrade is ARMED — the bot is trading this account' : 'autotrade is OFF — the bot is not opening new trades on this account'}
-      >
-        {label}
-      </div>
-      {/* Owner: "remove the word 'Balance' under the Account name" — the
-          currency code and the number already say what it is. */}
-      <div className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
-        <span>{formatBalance(acct.balance, ccy)}</span>
-        <PhaseDots phases={phases} />
-      </div>
+      </button>
     </div>
   )
 }
