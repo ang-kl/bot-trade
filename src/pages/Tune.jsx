@@ -525,7 +525,7 @@ function VerdictBadge({ r }) {
         <Badge tone={tone}>{v.label}</Badge>
       </button>
       {open && (
-        <span className="glass-panel absolute right-0 top-full z-30 mt-1 w-72 rounded-[12px] p-3 shadow-xl block text-left">
+        <span className="glass-panel pos-absolute is-menu absolute right-0 top-full z-30 mt-1 w-72 rounded-[12px] p-3 shadow-xl block text-left">
           <span className="block text-[9px] font-semibold mb-1">Why {v.label}?</span>
           {v.checks.map((c, i) => (
             <span key={i} className={`block text-[9px] py-0.5 ${c.ok ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
@@ -1453,22 +1453,42 @@ export default function Tune() {
                 hint="How often the whole loop runs — scan, analyze, dispatch, monitor. Applies from the next cycle, no restart."
                 recommend="5 minutes. Faster = more broker calls (still free); slower = later entries." />
             </div>
+            {/* Owner (2026-07-30): "horrible pill buttons". Three problems, all
+                fixed here, and two of them were not cosmetic:
+
+                1. `uppercase` rendered these as 1M / 2M / 3M. In THIS app's own
+                   timeframe vocabulary — stated two paragraphs below in the Add
+                   dropdown — "M = month". So the control for a ONE-MINUTE
+                   position check was labelled as one MONTH. The lowercase m is
+                   load-bearing, so the transform is gone and `normal-case`
+                   pins it against inherited casing.
+                2. Unselected used --color-down, i.e. the app's semantic RED for
+                   down / short / negative. Three red buttons beside one accent
+                   button reads as an alarm, not as a choice. Unselected is now
+                   simply neutral.
+                3. Selected vs unselected also swapped weight AND casing, so the
+                   row changed shape as you clicked. Now only tint changes.
+
+                role="radio" needs a radiogroup parent to be valid ARIA — it had
+                none, so screen readers got four orphan radios. */}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px]">
-              <span className="font-semibold">Position monitor:</span>
-              {[1, 2, 3, 5].map(m => (
-                <button
-                  key={m} type="button" role="radio" aria-checked={(config?.monitor_interval_min ?? 1) === m}
-                  onClick={() => run(async () => {
-                    await agentPost('/actions/monitor-interval', { minutes: m })
-                    setConfig(c => ({ ...c, monitor_interval_min: m }))
-                  }, `Position monitor every ${m}m (volume-scaled)`)}
-                  className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[4px] py-[3px] ${
-                    (config?.monitor_interval_min ?? 1) === m
-                      ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[9px] font-normal capitalize'
-                      : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
-                  }`}
-                >{m}m</button>
-              ))}
+              <span className="font-semibold" id="mon-cadence-label">Position monitor:</span>
+              <span role="radiogroup" aria-labelledby="mon-cadence-label" className="inline-flex flex-wrap items-center gap-1">
+                {[1, 2, 3, 5].map(m => (
+                  <button
+                    key={m} type="button" role="radio" aria-checked={(config?.monitor_interval_min ?? 1) === m}
+                    onClick={() => run(async () => {
+                      await agentPost('/actions/monitor-interval', { minutes: m })
+                      setConfig(c => ({ ...c, monitor_interval_min: m }))
+                    }, `Position monitor every ${m}m (volume-scaled)`)}
+                    className={`compact-control normal-case text-[9px] ${
+                      (config?.monitor_interval_min ?? 1) === m
+                        ? 'button-normal'
+                        : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)]'
+                    }`}
+                  >{m}m</button>
+                ))}
+              </span>
               <span className="text-[9px] text-[var(--color-text-sub)]">
                 base cadence per OPEN position (scan stays 5m) — busy market checks at base speed, average 2×, quiet 3×; broker-side SL/TP covers every tick in between
               </span>
@@ -1525,27 +1545,41 @@ export default function Tune() {
               <div className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
                 Autotrade timeframes — add or remove any the broker supports (1m → 1 month). Scans and backtests follow this list:
               </div>
-              <div className="flex flex-wrap gap-1.5 items-center">
+              {/* THE PILLS THE OWNER CALLED HORRIBLE. They were
+                  `rounded-[20px]` — an oval capsule — solid accent brown, white
+                  text, 36px tall, holding 9px text. Eight of them made a row of
+                  fat brown lozenges twice the height of their own content, and
+                  they contradict the owner's own written rule from the same
+                  brief: "Do not create oval capsule buttons. Use compact
+                  rounded rectangles… Never use border-radius: 9999px."
+
+                  Now: compact-control (7px radius, 2px/6px padding, real hit
+                  target via a pseudo-element so the visual can be small without
+                  the tap target being small) with the blue-on-blue-tint
+                  "normal" treatment the brief specifies. The remove ✕ is a
+                  danger-tinted control only on hover, so a row of chips is not
+                  a row of red. */}
+              <div className="flex flex-wrap gap-1 items-center">
                 {[...timeframes].sort(byTfDesc).map(tf => (
                   <span
                     key={tf}
-                    className="inline-flex items-center gap-1.5 rounded-[20px] bg-[var(--color-accent)] text-white px-3 py-1 text-[9px] font-semibold min-h-[36px]"
+                    className="compact-control button-normal inline-flex items-center gap-1 text-[9px] normal-case"
                   >
                     {tf}
                     <button
                       type="button" aria-label={`Remove ${tf}`}
                       onClick={() => toggleTimeframe(tf)}
-                      className="cursor-pointer rounded-full hover:bg-white/25 w-5 h-5 leading-none"
-                    >×</button>
+                      className="cursor-pointer leading-none px-0.5 rounded-[3px] text-[var(--normal-text)] hover:bg-[var(--danger-background)] hover:text-[var(--danger-text)]"
+                    >✕</button>
                   </span>
                 ))}
                 <span className="relative">
                   <button
                     type="button" onClick={() => setTfMenu(o => !o)} aria-expanded={tfMenu}
-                    className="rounded-[20px] border border-dashed border-[var(--color-border)] px-3 py-1 text-[9px] font-semibold min-h-[36px] cursor-pointer text-[var(--color-text-sub)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+                    className="compact-control is-dashed text-[9px] normal-case text-[var(--color-text-sub)] hover:text-[var(--color-text)]"
                   >+ Add timeframe</button>
                   {tfMenu && (
-                    <span className="glass-panel absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
+                    <span className="glass-panel pos-absolute is-menu absolute left-0 top-full z-30 mt-1 w-56 rounded-[12px] p-1.5 shadow-xl block max-h-80 overflow-y-auto">
                       <span className="flex gap-1 p-1">
                         <Input
                           value={tfDraft} onChange={e => setTfDraft(e.target.value)}
@@ -2551,10 +2585,15 @@ export default function Tune() {
                           if (next.has(sym)) next.delete(sym); else next.add(sym)
                           return next
                         })}
-                        className={`rounded-[20px] border px-2 py-0.5 text-[9px] font-semibold cursor-pointer min-h-[28px] ${
+                        // Same capsule defect as the timeframe chips above, on
+                        // the same page — converted in the same pass. The
+                        // line-through on an excluded symbol stays: that is the
+                        // non-colour signal for "skipped", so state is not
+                        // carried by tint alone.
+                        className={`compact-control text-[9px] normal-case ${
                           on
-                            ? 'bg-[var(--color-accent)] text-white border-transparent'
-                            : 'bg-[var(--color-bg)] text-[var(--color-text-sub)] border-[var(--color-border)] line-through'
+                            ? 'button-normal'
+                            : 'text-[var(--color-text-sub)] line-through'
                         }`}
                       >{sym}</button>
                     )

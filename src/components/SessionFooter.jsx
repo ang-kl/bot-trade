@@ -248,15 +248,15 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
       ref={ref}
       role="dialog"
       aria-labelledby={titleId}
-      // position:fixed is INLINE on purpose. `glass-panel` is an unlayered
-      // rule in index.css that sets `position: relative`, and the cascade ranks
-      // unlayered styles above ALL of Tailwind's layered utilities — so the
-      // `fixed` class silently lost and the dialog was laid out in flow inside
-      // the sidebar (measured: position computed to `relative`). An inline
-      // style is the one thing that outranks it without another !important
-      // fight. Same trap as the input-height note at the end of index.css.
-      style={{ position: 'fixed' }}
-      className="glass-panel z-50 w-[min(22rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-[12px] p-3 text-(length:--fs-caption)"
+      // `pos-fixed` alongside `fixed` is not redundant: `glass-panel` is an
+      // unlayered rule setting `position: relative`, and unlayered styles
+      // outrank ALL of Tailwind's layered utilities, so the `fixed` class alone
+      // silently lost (measured: position computed to `relative`, and the
+      // dialog was laid out in flow inside the sidebar). See the note on
+      // .glass-panel.pos-fixed in index.css — the same trap bit Tune's
+      // timeframe dropdown, so it now has one documented fix rather than an
+      // inline style here and something else there.
+      className="glass-panel pos-fixed fixed z-50 w-[min(22rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-[12px] p-3 text-(length:--fs-caption)"
     >
       <div className="flex items-baseline gap-2 mb-2">
         <h2 id={titleId} className="text-(length:--fs-secondary) font-semibold">Browser sessions</h2>

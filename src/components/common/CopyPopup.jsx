@@ -21,6 +21,42 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
   }, [onClose])
 
   const content = tab === 'json' && json != null ? json : tab === 'html' && html != null ? html : text
+
+  // Owner (2026-07-30): "and download". The popup could show three formats and
+  // copy them, but there was no way to KEEP one — and the clipboard is the
+  // wrong place for a 30-day ledger you want to open in a spreadsheet later.
+  // Download saves whatever tab is showing, with the matching extension and
+  // MIME type, so the file opens in the right application rather than as
+  // untyped text.
+  const FILE = {
+    text: { ext: 'txt', mime: 'text/plain' },
+    json: { ext: 'json', mime: 'application/json' },
+    html: { ext: 'html', mime: 'text/html' },
+  }
+  /** bot-trade · Cadence and coverage → bot-trade-cadence-and-coverage */
+  const slug = (s) => String(s || 'section')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'section'
+  const doDownload = () => {
+    const { ext, mime } = FILE[tab] || FILE.text
+    // The timestamp comes from the browser at click time, not from render —
+    // two downloads of the same card must not collide on one filename.
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const url = URL.createObjectURL(new Blob([content], { type: `${mime};charset=utf-8` }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `bot-trade-${slug(title)}-${stamp}.${ext}`
+    // Must be in the document for the click to be honoured in Firefox.
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    // Revoke on the next tick — revoking synchronously can cancel the download
+    // in Chromium before it has read the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   const doCopy = async () => {
     try {
       // The HTML tab writes BOTH flavours, so pasting into Excel/Word/Docs
@@ -61,6 +97,8 @@ export default function CopyPopup({ title, text, json = null, html = null, onClo
             {json != null && tabBtn('json', 'JSON')}
             {html != null && tabBtn('html', 'HTML')}
             <button type="button" style={{ ...btn, fontWeight: 700 }} onClick={doCopy}>{copied ? '✓ Copied' : 'Copy'}</button>
+            <button type="button" style={{ ...btn, fontWeight: 700 }} onClick={doDownload}
+              title={`Save this ${tab.toUpperCase()} view as a file`}>↓ Download</button>
             <button type="button" title="Close (Esc)" aria-label="Close" style={btn} onClick={onClose}>✕</button>
           </span>
         </div>

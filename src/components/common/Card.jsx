@@ -50,7 +50,18 @@ export default function Card({
   const openCopy = () => {
     const el = ref.current
     if (!el) return
-    const domText = (el.innerText || '').replace(/\n{3,}/g, '\n\n').trim()
+    // innerText picks up the card's OWN chrome glyphs — the ▾/▸ collapse caret
+    // and the ⧉ copy button both sit inside the card, so every export used to
+    // open with two lines of meaningless symbols. That was tolerable in a
+    // clipboard paste and is not in a saved .txt/.json file, so the control
+    // glyphs are dropped here. Only the glyphs: no text is removed.
+    const CHROME_GLYPHS = /^[▾▸⧉↓✕]$/
+    const domText = (el.innerText || '')
+      .split('\n')
+      .filter(l => !CHROME_GLYPHS.test(l.trim()))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
     const title = copyTitle || headingOf(el) || 'Section'
     const text = toText ? toText(data) : domText
     // Owner (2026-07-25): every copy feature offers Text, JSON AND HTML, and

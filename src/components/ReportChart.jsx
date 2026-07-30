@@ -253,7 +253,7 @@ export default function ReportChart({ allTrades, events }) {
             )}
           </svg>
           {hv && (
-            <div className="pointer-events-none absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-[9px] leading-5"
+            <div className="pointer-events-none absolute pos-absolute top-1 glass-panel rounded-[10px] px-3 py-1.5 text-[9px] leading-5"
               style={{ left: `${Math.min(74, Math.max(2, (geom.X(hv.t) / W) * 100))}%` }}>
               <div>{shortDate(hv.t)}</div>
               <div>equity <span className="tabular-nums">{fmtN(hv.equity)}</span></div>

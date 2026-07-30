@@ -968,7 +968,19 @@ textarea {
   white-space: nowrap;
   font-weight: 500;
   line-height: 1.2;
-  border: 1px solid transparent;
+  /* NOT `border: 1px solid transparent`. That shorthand is unlayered, so it
+     beat every Tailwind border utility on a .compact-control — measured: the
+     "+ Add timeframe" button's `border-dashed border-[var(--color-border)]`
+     resolved to `solid` + `transparent`, i.e. no visible outline at all, which
+     is why the button looked borderless in the owner's screenshot.
+     Splitting the longhands and defaulting the colour to currentColor means a
+     control with no variant class gets a visible outline in its own text
+     colour, while .button-normal / .button-danger still set theirs explicitly.
+     Dashed is opted into with .is-dashed below, for the same reason
+     .glass-panel needs .pos-absolute. */
+  border-width: 1px;
+  border-style: solid;
+  border-color: currentColor;
   background: transparent;
   cursor: pointer;
   /* "Subtle motion / short transitions", and honoured only when the user has
@@ -980,6 +992,8 @@ textarea {
   outline-offset: 2px;
 }
 .compact-control:disabled { opacity: 0.45; cursor: not-allowed; }
+/* "Add …"-style affordances: a dashed outline reads as "not a value yet". */
+.compact-control.is-dashed { border-style: dashed; }
 
 .button-normal, .action-primary {
   color: var(--normal-text);
@@ -1062,3 +1076,42 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .compact-control { transition: none; }
 }
+
+/* ---------------------------------------------------------------------------
+   POSITION OVERRIDES FOR .glass-panel — a cascade trap, found twice in one day.
+
+   `.glass-panel` sets `position: relative` (it needs a positioning context for
+   its ::before specular sheen). That rule is UNLAYERED, and the cascade ranks
+   unlayered styles above ALL of Tailwind's layered utilities — so writing
+   `class="glass-panel absolute"` silently yields `position: relative`.
+
+   Measured consequences, both real and both shipped:
+     * Tune's "+ Add timeframe" dropdown stayed IN FLOW as a 210px-tall flex
+       item, so opening it pushed the timeframe chips onto another row and grew
+       the card by 215px. That is the layout jump in the owner's screenshot.
+     * The session popover was positioned against the sidebar instead of the
+       viewport (resolved to left: -159px, off-screen).
+
+   These two classes are declared here, AFTER .glass-panel and at higher
+   specificity, so they win without !important and without relayering the whole
+   glass system — which would change how every utility interacts with every
+   glass surface on pages that arm real money.
+
+   Use `pos-absolute` / `pos-fixed` ALONGSIDE the Tailwind class (keep the
+   Tailwind one: it is what a reader greps for, and it still carries the
+   inset/top/left utilities).
+   --------------------------------------------------------------------------- */
+.glass-panel.pos-absolute { position: absolute; }
+.glass-panel.pos-fixed    { position: fixed; }
+
+/* A MENU needs an opaque backing. `.glass-panel`'s translucent glass is right
+   for a surface that sits on the page background, and wrong for a dropdown that
+   floats over a dense data table — measured on Tune: the timeframe list was
+   rendered on top of the timeframe-performance table and both were legible at
+   once, i.e. neither was. Backdrop blur cannot fix that; only opacity can.
+   Declared here for the same specificity reason as the position pair. */
+.glass-panel.is-menu {
+  background: var(--color-bg);
+  background-blend-mode: normal;
+}
+.glass-panel.is-menu::before { content: none; }   /* no sheen over list rows */

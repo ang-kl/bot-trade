@@ -85,7 +85,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
         <span aria-hidden="true" className={`text-[9px] text-[var(--color-text-sub)] transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
       </button>
       {open && (
-        <div role="listbox" className="glass-panel absolute z-30 mt-1 w-full rounded-[12px] p-1.5 shadow-xl">
+        <div role="listbox" className="glass-panel pos-absolute is-menu absolute z-30 mt-1 w-full rounded-[12px] p-1.5 shadow-xl">
           {options.map(([v, text]) => {
             const active = Number(v) === num
             return (
