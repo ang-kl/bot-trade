@@ -6,7 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { initDB, setState } from '../db.js'
+import { initDB, setState, getState } from '../db.js'
 import {
   CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift,
   _resetBootStateForTests,
@@ -250,7 +250,13 @@ test('rosterDrift: an unknown creds roster is NOT read as "should be empty"', ()
   }
   // A sidecar reporting nothing while the registry enables one IS drift.
   assert.equal(rosterDrift([], ['46130058']).drifted, true)
-  assert.equal(rosterDrift(null, ['46130058']).drifted, true)
+  // ...but a sidecar that reported NOTHING AT ALL is unknown, not empty. This
+  // line used to assert `null` drifted too, conflating the two — and that
+  // assertion is what let the real bug live: pingSidecar was dropping the
+  // `accounts` field entirely, so production passed `undefined` here on every
+  // probe and got `drifted: true` forever. See the dedicated tests below.
+  assert.equal(rosterDrift(null, ['46130058']).drifted, false)
+  assert.equal(rosterDrift(null, ['46130058']).unknown, true)
 })
 
 test('probeCppExec: a connected sidecar with a stale roster is re-pushed', async () => {
@@ -313,4 +319,58 @@ test('probeCppExec: roster drift does not mask a stalled reconcile', async () =>
   const r = await probeCppExec(db, { exec, now: T0 })
   assert.equal(r.ok, false, 'a stale reconcile still fails the heartbeat')
   assert.match(r.error, /engine loop looks stalled/)
+})
+
+test('rosterDrift: an UNREPORTED roster is unknown, not empty', () => {
+  // This is the bug that made the drift check a no-op dressed as a check. While
+  // pingSidecar was dropping `accounts`, undefined normalised to the empty set,
+  // so `missing` was the whole registry and drift was true on EVERY probe —
+  // re-pushing the session every ~2 minutes and never once detecting the
+  // revoked-authorisation direction.
+  for (const nothing of [undefined, null]) {
+    const d = rosterDrift(nothing, ['46130058'])
+    assert.equal(d.drifted, false, `sidecarAccounts=${nothing}`)
+    assert.equal(d.unknown, true)
+    assert.deepEqual(d.missing, [])
+    assert.deepEqual(d.extra, [])
+  }
+})
+
+test('rosterDrift: an EMPTY roster is real information and DOES drift', () => {
+  // "I hold nothing" differs from "I did not say" — the sidecar reporting []
+  // while the registry enables an account is exactly the case a re-push fixes.
+  const d = rosterDrift([], ['46130058'])
+  assert.equal(d.drifted, true)
+  assert.deepEqual(d.missing, ['46130058'])
+  assert.deepEqual(d.extra, [])
+})
+
+test('rosterDrift: a REVOKED account shows up as extra', () => {
+  // The direction that matters: still authorised at the sidecar after the owner
+  // disabled it. Unreachable in production until pingSidecar surfaced accounts.
+  const d = rosterDrift([46130058, 46979908], ['46130058'])
+  assert.equal(d.drifted, true)
+  assert.deepEqual(d.extra, ['46979908'])
+  assert.deepEqual(d.missing, [])
+})
+
+test('probeCppExec persists the roster for the read path', async () => {
+  // /state/account-engineering must never call the sidecar itself — an external
+  // HTTP hop inside a cached GET is how read routes get slow. The probe already
+  // runs every ~2 min, so it records what it saw.
+  const db = initDB(':memory:')
+  const exec = {
+    execEngineMode: () => 'cpp',
+    pingSidecar: async () => ({
+      ok: true, mode: 'cpp', connected: true, hasCredentials: true,
+      lastReconcileAt: T0.getTime() - 30_000, accounts: [46130058],
+    }),
+    pushSidecarSession: async () => false,
+  }
+  await probeCppExec(db, { exec, now: T0 })
+  const saved = JSON.parse(getState(db, 'cpp_exec_health_json'))
+  assert.deepEqual(saved.accounts, ['46130058'], 'ids normalised to strings for the UI')
+  assert.equal(saved.connected, true)
+  assert.equal(saved.ok, true)
+  assert.equal(saved.at, T0.toISOString())
 })

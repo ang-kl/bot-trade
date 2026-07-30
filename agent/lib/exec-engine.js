@@ -168,6 +168,19 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
       connected: body?.connected ?? null,
       hasCredentials: body?.hasCredentials ?? null,
       lastReconcileAt: body?.lastReconcileAt ?? null,
+      // THE AUTHORISED ROSTER, which this function used to drop on the floor.
+      // The sidecar has always reported it (cpp-exec/src/main.cpp GET /health
+      // → "accounts"), but building the return object field-by-field silently
+      // omitted it, so heartbeat.js's rosterDrift(r.accounts, …) compared
+      // against `undefined` on every probe: `missing` was always the whole
+      // registry, drift was ALWAYS true, the session was re-pushed every ~2
+      // minutes, and `extra` — authorisation the owner revoked, the direction
+      // that actually matters — could never fire at all. The drift check
+      // appeared to work only because an unconditional re-push does converge
+      // the roster.
+      // null means "the sidecar did not tell us", which is NOT the same as
+      // "the sidecar has no accounts" — rosterDrift now honours that difference.
+      accounts: Array.isArray(body?.accounts) ? body.accounts : null,
       ...(res.ok ? {} : { error: `health ${res.status}` }),
     }
   } catch (e) {

@@ -21,7 +21,7 @@
 // Railway's restart/healthcheck domain, documented in CPP-ROADMAP.md.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { getState, setState } from '../db.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -234,6 +234,14 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
  */
 export function rosterDrift(sidecarAccounts, credsAccountIds) {
   const norm = (a) => new Set((Array.isArray(a) ? a : []).map(x => String(x)).filter(Boolean))
+  // AN UNREPORTED ROSTER IS UNKNOWN, NOT EMPTY — the same rule already applied
+  // to the creds side below, and its absence here cost real behaviour. While
+  // pingSidecar was dropping `accounts` (see exec-engine.js), `undefined`
+  // normalised to the empty set, so `missing` was the entire registry and drift
+  // was true on EVERY probe: an unconditional re-push dressed up as a check,
+  // with the revoked-authorisation direction dead. `[]` is different and still
+  // counts as drift — the sidecar saying "I hold nothing" is real information.
+  if (sidecarAccounts == null) return { drifted: false, extra: [], missing: [], unknown: true }
   const have = norm(sidecarAccounts)
   const want = norm(credsAccountIds)
   // Nothing to compare against — a creds roster we could not build must never
@@ -316,5 +324,22 @@ export async function probeCppExec(db, deps = {}) {
     error = `last reconcile ${Math.round((nowMs - Number(r.lastReconcileAt)) / 60_000)}m ago — engine loop looks stalled`
   }
   beat(db, 'cpp_exec', { ok, error, ...(deps.now ? { now: deps.now } : {}) })
+  // Persist what the probe learned so a READ route never has to call the
+  // sidecar itself. This probe already runs every ~2 minutes; making
+  // /state/account-engineering re-fetch /health on every page load would put an
+  // external HTTP hop inside a cached GET, which is exactly the shape of the
+  // slow read routes already on the backlog. Stamped with the observation time
+  // so the UI can say "as of 2 min ago" instead of implying it is live.
+  try {
+    setState(db, 'cpp_exec_health_json', JSON.stringify({
+      accounts: Array.isArray(r.accounts) ? r.accounts.map(String) : null,
+      connected: r.connected ?? null,
+      hasCredentials: r.hasCredentials ?? null,
+      lastReconcileAt: r.lastReconcileAt ?? null,
+      ok,
+      error: error || null,
+      at: new Date(nowMs).toISOString(),
+    }))
+  } catch { /* status reporting must never break the probe */ }
   return { ...r, ok, ...(error ? { error } : {}) }
 }

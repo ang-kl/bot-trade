@@ -859,6 +859,29 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/account-engineering — what the machine is actually doing for
+  // each account: enabled, mode, effective Scan/Analyze/Autotrade, whether the
+  // C++ sidecar is authorised for it, open positions, last reconcile, last
+  // pipeline decision.
+  //
+  // Owner: "The desk page should display the underlying engineering status for
+  // each account you are trading or not trading … I am serious about avoiding
+  // unnecessary effort and expenses."
+  //
+  // One route so the browser does not fan out across six endpoints — and it
+  // reads only the DB: the sidecar roster comes from what probeCppExec already
+  // persisted, never from an HTTP hop inside a cached GET.
+  // -----------------------------------------------------------------------
+  router.get('/account-engineering', async (_req, res) => {
+    try {
+      const { engineeringView } = await import('../services/account-engineering.js')
+      res.json(engineeringView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/watchlists — every account's watchlist, plus the diff between
   // any two (?source=&destination=).
   //

@@ -323,3 +323,67 @@ test('js cancelOrder delegates positionally to wsCancelOrder', async () => {
   await assert.rejects(p, (err) => /ECONNREFUSED|ETIMEDOUT|socket|closed|handshake|connect/i.test(err.message) || /ECONNREFUSED|ETIMEDOUT/.test(err.code || ''))
   assert.equal(requests.length, 0)
 })
+
+// ---------------------------------------------------------------------------
+// THE ROSTER pingSidecar USED TO DROP.
+//
+// The sidecar has always reported its authorised accounts on GET /health, but
+// pingSidecar built its return object field-by-field and never copied them. So
+// heartbeat.js's rosterDrift(r.accounts, …) compared against `undefined` on
+// every single probe: `missing` was always the whole registry, drift was ALWAYS
+// true, the broker session was re-pushed every ~2 minutes, and `extra` —
+// authorisation the owner REVOKED, the direction that actually matters — could
+// never fire at all. The drift check looked like it worked only because an
+// unconditional re-push does converge the roster.
+//
+// The existing heartbeat tests could not catch this: they stub pingSidecar with
+// an `accounts` key, i.e. they fake the very field production was missing. This
+// test drives the REAL function against a fake fetch, which is the only place
+// the omission was visible.
+// ---------------------------------------------------------------------------
+test('pingSidecar surfaces the authorised roster from /health', async () => {
+  const prevEngine = process.env.EXEC_ENGINE
+  const prevUrl = process.env.EXEC_URL
+  const prevFetch = globalThis.fetch
+  process.env.EXEC_ENGINE = 'cpp'
+  process.env.EXEC_URL = 'http://sidecar.test'
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      ok: true, connected: true, hasCredentials: true,
+      lastReconcileAt: 1785386613987,
+      accounts: [46130058, 46979908],
+    }),
+  })
+  try {
+    const { pingSidecar } = await import('./exec-engine.js')
+    const r = await pingSidecar()
+    assert.deepEqual(r.accounts, [46130058, 46979908])
+    assert.equal(r.connected, true)
+    assert.equal(r.ok, true)
+  } finally {
+    globalThis.fetch = prevFetch
+    if (prevEngine === undefined) delete process.env.EXEC_ENGINE; else process.env.EXEC_ENGINE = prevEngine
+    if (prevUrl === undefined) delete process.env.EXEC_URL; else process.env.EXEC_URL = prevUrl
+  }
+})
+
+test('pingSidecar reports a MISSING roster as null, not as an empty roster', async () => {
+  // An old sidecar that does not report `accounts` must read as "unknown", so
+  // rosterDrift stays quiet instead of concluding the sidecar holds nothing.
+  const prevEngine = process.env.EXEC_ENGINE
+  const prevUrl = process.env.EXEC_URL
+  const prevFetch = globalThis.fetch
+  process.env.EXEC_ENGINE = 'cpp'
+  process.env.EXEC_URL = 'http://sidecar.test'
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, connected: true }) })
+  try {
+    const { pingSidecar } = await import('./exec-engine.js')
+    const r = await pingSidecar()
+    assert.equal(r.accounts, null)
+  } finally {
+    globalThis.fetch = prevFetch
+    if (prevEngine === undefined) delete process.env.EXEC_ENGINE; else process.env.EXEC_ENGINE = prevEngine
+    if (prevUrl === undefined) delete process.env.EXEC_URL; else process.env.EXEC_URL = prevUrl
+  }
+})
