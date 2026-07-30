@@ -172,9 +172,26 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
  *
  * @returns {{block:boolean, reason?:string}}
  */
-export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCount = 0 }, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
-  if (enabled === false) return { block: false }
-  if (count === 0) return { block: false }
+export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCount = 0, unresolvableCount = 0 }, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
+  // WRITTEN-OFF ROWS ARE NAMED, WHEREVER THE ANSWER LANDS.
+  //
+  // #513 claimed that excluding unresolvable rows from the blocking count meant
+  // "trading resuming is never silent about what it stopped waiting for". That
+  // claim was not true as shipped: unresolvableCount was computed, handed to
+  // this function, and then dropped on the floor — this signature did not even
+  // destructure it. The only place a reason is ever produced is a VETO, so in
+  // the one case that matters most (rows written off, veto therefore lifted,
+  // trading resumes) nothing was said at all. Found auditing my own change.
+  //
+  // `note` rides on BOTH outcomes, so a caller can record it whether or not the
+  // gate blocked. It is deliberately not part of `reason`: a reason is why
+  // something was refused, and this is a fact about what is no longer being
+  // waited on.
+  const writtenOff = Number(unresolvableCount) > 0
+    ? `${unresolvableCount} closed trade(s) in this window are marked unresolvable — the broker has no deal history for them, so they are no longer waited on and their P&L is permanently unknown, not zero`
+    : null
+  if (enabled === false) return { block: false, ...(writtenOff ? { note: writtenOff } : {}) }
+  if (count === 0) return { block: false, ...(writtenOff ? { note: writtenOff } : {}) }
   if (count < 0) {
     return { block: true, reason: `unknown_daily_pnl (${scope}): the closed-trade P&L lookup failed — the day's loss total cannot be trusted, so no new entries` }
   }
@@ -191,5 +208,6 @@ export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCou
       + `${oldestClosedAt ? ` (oldest ${oldestClosedAt})` : ''}`
       + ` — the daily-loss total would under-count them as zero, so no new entries until the broker deal history fills them in`
       + orphanNote,
+    ...(writtenOff ? { note: writtenOff } : {}),
   }
 }
