@@ -18,6 +18,7 @@ import { selectedAccountId as appSelectedAccountId } from '../lib/selected-accou
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
+import { useHourTick } from '../lib/use-hour-tick.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -1218,6 +1219,12 @@ export default function Performance() {
   }, [acct, load])
   const switchingTo = useAccountSwitch(onSwitch)
 
+  // A clock that ticks once per hour, on the hour — the 24-hour table's row
+  // order and NOW marker are the only things on this page that must follow the
+  // wall clock rather than the data poll. One timer aimed at the next exact
+  // hour, never a short interval; see lib/use-hour-tick.js.
+  const hourNow = useHourTick()
+
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
   const scopedClosed = useMemo(() => {
@@ -1292,11 +1299,20 @@ export default function Performance() {
       closeBal = ob
     }
 
-    // UI-2 — newest hour first, live hour marked. The reverse happens AFTER
-    // the carry above, which must run oldest-to-newest; see hourly-order.js
-    // for why reversing before it would invert every balance on the page.
-    return orderHourlyForDisplay(withBal, loadedAt)
-  }, [scopedClosed, todayWin, ledger, loadedAt])
+    // UI-2 second pass — the LIVE hour first, past hours below it, hours still
+    // to come at the bottom. The reordering happens AFTER the carry above,
+    // which must run oldest-to-newest; see hourly-order.js for why touching the
+    // order before it would invert every balance on the page.
+    //
+    // `hourNow`, not `loadedAt`: the row order and the NOW marker follow the
+    // WALL CLOCK, so they move the moment the hour changes instead of waiting
+    // for the next 60s fetch (owner: "currently is static"). The figures still
+    // come from the poll — only the ordering is on the clock.
+    return orderHourlyForDisplay(withBal, hourNow)
+    // `loadedAt` is deliberately NOT a dependency any more: it was only ever
+    // here to supply "now", and now comes from the clock. The figures still
+    // refresh, through scopedClosed and ledger.
+  }, [scopedClosed, todayWin, ledger, hourNow])
 
   // UI-2 — floating P&L for the LIVE hour. Summed across every open position
   // regardless of which sub-table it renders in (market-open, market-closed,
@@ -1992,6 +2008,12 @@ export default function Performance() {
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
+              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
+                  to correct me on exactly this reading, which is evidence the
+                  heading alone is ambiguous — every symbol is in these rows,
+                  including the ones that trade through the FX close. Said in
+                  words rather than left to be inferred from the title. */}
+              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
                 <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
               </div>
               <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
@@ -2230,6 +2252,12 @@ export default function Performance() {
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
+              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
+                  to correct me on exactly this reading, which is evidence the
+                  heading alone is ambiguous — every symbol is in these rows,
+                  including the ones that trade through the FX close. Said in
+                  words rather than left to be inferred from the title. */}
+              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
               <SectionTools id="today" title="24 hours · FX day open (5pm NY)" data={{ hourly: todayHourly, closedTrades: todayTrades }}
                 toText={() => ['24 hours · FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
                   ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
