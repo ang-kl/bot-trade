@@ -2954,53 +2954,110 @@ async function runLoop(db) {
       }
 
       // ---------------------------------------------------------------------
-      // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions.
-      // risk.js's dailyLossPct only vetoes NEW trades; this closes everything
-      // and disarms autotrade when today's realized PnL breaches the cap.
-      // Fires at most once per FX day (17:00 NY roll — owner sign-off
-      // 2026-07-24, same anchor as the risk gate's daily-loss check).
+      // 4b. EQUITY STOP — daily max-drawdown circuit for OPEN positions,
+      // PER ACCOUNT. risk.js's dailyLossPct only vetoes NEW trades; this
+      // closes an account's positions and disarms THAT account when its own
+      // realised P&L breaches its own cap. Fires at most once per FX day per
+      // account (17:00 NY roll — owner sign-off 2026-07-24, same anchor as
+      // the risk gate's daily-loss check).
+      //
+      // WHY PER ACCOUNT (owner, 2026-07-30, asked and answered explicitly).
+      // The previous version compared a cap sized from the SELECTED account's
+      // balance against a loss summed across EVERY account, then set the
+      // MASTER `autotrade_enabled` flag off. Since account-phases computes
+      // `effective = master AND (override ?? master)`, master OFF is an
+      // absolute veto — so every per-account Autotrade switch the owner had
+      // set was silently overridden the moment any single account had a bad
+      // day. That is the "autotrade drops from the accounts" they reported.
+      // Portfolio-wide protection is NOT lost: it lives in global-guards.js
+      // (5A portfolio halt / portfolio daily-loss cap), which this had been
+      // duplicating badly. See services/equity-stop.js for the full note.
       // ---------------------------------------------------------------------
       try {
         phase('equity stop')
         const riskCfg = loadRiskConfig(db)
         const stopPct = riskCfg.equityStopPct ?? riskCfg.dailyLossPct
-        const balance = getAccountBalance(db)
-        const cap = balance != null ? balance * stopPct : riskCfg.dailyLossLimit
         const { fxDayStartSql, fxDayOpenMs } = await import('./services/risk.js')
-        // Format-proof comparison — same REAL BUG as the risk gate's daily
-        // loss check (found 2026-07-24): closeTradeRow stores closed_at as
-        // "YYYY-MM-DD HH:MM:SS" (space) which sorts BEFORE the ISO 'T'
-        // form, so production-closed trades were invisible to this equity
-        // stop. REPLACE normalizes both formats before comparing.
-        const todayPnl = db
-          .prepare(`SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?`)
-          .get(fxDayStartSql())?.pnl || 0
-        const trippedAtMs = Date.parse(getState(db, 'equity_stop_tripped_at') || '')
-        const alreadyTripped = Number.isFinite(trippedAtMs) && trippedAtMs >= fxDayOpenMs()
-        const botPositions = s.selectActivePositions.all('active').filter(p => p.source !== 'external')
+        const es = await import('./services/equity-stop.js')
+        const dayStart = fxDayStartSql()
+        const dayOpen = fxDayOpenMs()
+        // Every position this bot owns, grouped by the account it belongs to.
+        // `source !== 'external'` keeps hands off positions the bot did not open.
+        const byAccount = new Map()
+        for (const p of s.selectActivePositions.all('active')) {
+          if (p.source === 'external') continue
+          const key = p.account_id == null ? null : String(p.account_id)
+          if (!byAccount.has(key)) byAccount.set(key, [])
+          byAccount.get(key).push(p)
+        }
 
-        if (!alreadyTripped && todayPnl <= -Math.abs(cap) && botPositions.length > 0) {
-          setState(db, 'equity_stop_tripped_at', new Date().toISOString())
-          setState(db, 'autotrade_enabled', 'false')
-          log(`EQUITY STOP: today's PnL ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} — closing ${botPositions.length} position(s), autotrade disarmed`)
-          for (const pos of botPositions) {
+        for (const [acctId, positions] of byAccount) {
+          // A position with no account_id cannot be attributed, so it cannot be
+          // judged against any one account's cap. Skipping it is deliberate:
+          // charging it to every account is precisely the bug being removed.
+          // It is still covered by the portfolio layer and by its own SL/TP.
+          if (acctId == null) {
+            log(`Equity stop: ${positions.length} position(s) have no account_id — not attributable to any cap, left to the portfolio guards`)
+            continue
+          }
+          if (es.alreadyTrippedToday(db, acctId, dayOpen)) continue
+
+          const { pnl, unknownCount } = es.accountPnlToday(db, acctId, dayStart)
+          const verdict = es.evaluateAccount({
+            pnl,
+            balance: getAccountBalance(db, acctId),
+            stopPct,
+            fallbackLimit: riskCfg.dailyLossLimit,
+            openPositions: positions.length,
+            unknownCount,
+          })
+          if (!verdict.breach) continue
+
+          // Disarm THIS account only, via its per-account override. The master
+          // flag is never touched here — the panic button stays the owner's.
+          const key = es.disarmAccount(db, acctId)
+          log(`EQUITY STOP ${acctId}: ${verdict.reason} — closing ${positions.length} position(s), ${key}=false (master untouched)`)
+
+          let closed = 0
+          for (const pos of positions) {
             try {
               const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: 'equity_stop_daily_drawdown' }, 'equity_stop')
+              closed++
               s.updatePositionCheck.run(
                 'EQUITY_STOP',
-                `daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)} | ${outcome.error || outcome.summary || outcome.reason || 'closed'}`,
+                `${verdict.reason} | ${outcome.error || outcome.summary || outcome.reason || 'closed'}`,
                 new Date().toISOString(),
                 'broken',
                 pos.id
               )
             } catch (err) {
-              log(`Equity stop close failed for ${pos.symbol}:`, err.message)
+              log(`Equity stop close failed for ${pos.symbol} on ${acctId}:`, err.message)
             }
           }
+
+          // MAKE IT VISIBLE. The owner's complaint was not just that trading
+          // stopped, it was that nothing on screen said why — the old version
+          // only wrote to stdout. action_log for the ops journal, decision_log
+          // for the per-account feed, Telegram for the push, all naming the
+          // account.
+          es.recordDisarm(db, { accountId: acctId, reason: verdict.reason, pnl: verdict.pnl, cap: verdict.cap, positionsClosed: closed })
+          try {
+            // Imported here, not at module scope — decision-log is loaded
+            // lazily at every other call site in this file for the same reason
+            // (keeps the loop's cold-start import graph small).
+            const { recordDecision } = await import('./services/decision-log.js')
+            recordDecision(db, {
+              accountId: acctId,
+              stage: 'equity_stop',
+              decision: 'halt',
+              reason: verdict.reason,
+              detail: { pnl: verdict.pnl, cap: verdict.cap, positionsClosed: closed, unknownCount },
+            })
+          } catch { /* the decision feed must not block the stop */ }
           if (process.env.TELEGRAM_BOT_TOKEN) {
             try {
               const { sendMessage } = await import('./services/telegram.js')
-              await sendMessage(`🛑 EQUITY STOP: daily loss ${todayPnl.toFixed(2)} breached cap ${cap.toFixed(2)}. All positions closed, autotrade DISARMED.`)
+              await sendMessage(`🛑 EQUITY STOP on account ${acctId}: daily loss ${verdict.pnl.toFixed(2)} breached its cap ${Math.abs(verdict.cap).toFixed(2)}. ${closed} position(s) closed. Autotrade DISARMED FOR THIS ACCOUNT ONLY — other accounts keep their own switches.`)
             } catch { /* non-fatal */ }
           }
         }

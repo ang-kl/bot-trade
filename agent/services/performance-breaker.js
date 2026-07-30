@@ -11,10 +11,21 @@
 // edge over a rolling window, the same profit-factor/expectancy numbers the
 // Desk Performance panel already shows.
 //
-// Deliberately alert-first: auto-disarming autotrade on an aggregate stat is
-// a bigger claim than a single day's $ drawdown or one strategy's streak, so
-// autoDisarm defaults OFF — the alert fires, the owner decides, unless they
-// explicitly arm the auto-disarm toggle in Tune.
+// THIS PARAGRAPH WAS STALE AND IS CORRECTED (2026-07-30). It used to read
+// "autoDisarm defaults OFF — the alert fires, the owner decides". That was true
+// when written and stopped being true on 2026-07-20, when the owner armed
+// auto-disarm after a 0.15 profit factor and a −$2019 net; see the note on the
+// constant below, which is the live decision. Two readers were misled by the
+// old wording, including me — the default is ON, on purpose.
+//
+// What auto-disarm still does NOT do, and must not: it writes the MASTER
+// `autotrade_enabled` flag, which account-phases treats as an absolute veto
+// over every per-account switch. That is intentional for a portfolio-wide edge
+// failure (the stat is computed across all closed trades, so the finding is
+// portfolio-wide), and it is deliberately NOT how the per-account equity stop
+// behaves — that one disarms only its own account. If you want a weak edge to
+// stop only some accounts, the breaker needs per-account stats first; it does
+// not have them, so a global disarm is the only honest scope for it today.
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
@@ -41,7 +52,19 @@ export function loadPerformanceBreakerConfig(db) {
         window: Math.min(200, Math.max(5, Math.round(Number(parsed.window) || DEFAULT_PERFORMANCE_BREAKER.window))),
         minTrades: Math.min(200, Math.max(5, Math.round(Number(parsed.minTrades) || DEFAULT_PERFORMANCE_BREAKER.minTrades))),
         pfThreshold: Math.min(2, Math.max(0.1, Number(parsed.pfThreshold) || DEFAULT_PERFORMANCE_BREAKER.pfThreshold)),
-        autoDisarm: parsed.autoDisarm === true,
+        // NOT `parsed.autoDisarm === true`. That silently flipped the owner's
+        // armed auto-disarm to OFF for two cases that both happen in practice:
+        // a config saved from Tune whose payload simply omits the key, and a
+        // value that arrived as the STRING "true" from a form. Either way an
+        // unrelated settings save could quietly stand down a protection the
+        // owner deliberately armed on 2026-07-20 — the opposite direction from
+        // the "autotrade drops" complaint, and just as wrong.
+        //
+        // An ABSENT key now inherits the documented default; a present key is
+        // honoured, including the string forms a JSON form produces.
+        autoDisarm: parsed.autoDisarm === undefined || parsed.autoDisarm === null
+          ? DEFAULT_PERFORMANCE_BREAKER.autoDisarm
+          : parsed.autoDisarm === true || parsed.autoDisarm === 'true' || parsed.autoDisarm === 1,
       }
     }
   } catch { /* corrupt — defaults */ }
