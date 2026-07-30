@@ -52,7 +52,15 @@ export default function stateRouter(db) {
   const STATE_CACHE_MS = Math.max(1000, Number(process.env.STATE_CACHE_MS || 10_000))
   // /sessions is excluded too: it reports a live "seen 3s ago" age, and a 10s
   // shared cache would make that figure a stale claim about a security state.
-  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions'])
+  // /unresolvable-plan is excluded because its answer depends on IN-MEMORY
+  // process state (pnl-backfill's backoff ladder, via exhaustedAccounts()) that
+  // no write touches — so stateEpoch() never bumps for it and the cache would
+  // happily serve a superseded plan. A backfill attempt landing, or a restart
+  // clearing the ladder, changes the answer with no write at all. Caught by its
+  // own test: after resetting the pacing the route still reported the previous
+  // candidate. A ten-second-stale list is tolerable on a dashboard; on the page
+  // someone reads before writing off money data it is not.
+  const NO_CACHE = new Set(['/client-ping', '/backtest-report', '/sessions', '/unresolvable-plan'])
   // Single-flight (incident 2026-07-28 ~03:10 UTC): after a redeploy every
   // open tab cold-missed the cache at once, and each miss ran its OWN full
   // synchronous aggregation (perf-ledger etc.) on the event loop — reads
@@ -693,6 +701,89 @@ export default function stateRouter(db) {
     })
   })
   function safeParse(s) { try { return JSON.parse(s || 'null') } catch { return null } }
+
+  // -----------------------------------------------------------------------
+  // GET /state/unresolvable-plan — the dry run for the unknown-P&L write-off,
+  // as something the owner can actually LOOK AT.
+  //
+  // #513 shipped the machinery and told the owner to "see the dry-run plan
+  // against your own rows first" — then gave them a JS call they have no way to
+  // make: nothing invokes sweepUnresolvable, there is no route, and there is no
+  // Node REPL against production. The safety step the whole design rested on was
+  // not performable. That gap was mine.
+  //
+  // THIS ROUTE CANNOT WRITE, structurally rather than by promise. It calls
+  // findUnresolvableCandidates, which is a bare SELECT — NOT sweepUnresolvable
+  // with dryRun:true, because a boolean that a future edit (or a query param)
+  // could flip is a weaker guarantee than never importing the writing function
+  // at all. Marking rows unresolvable stays a deliberate act, not a page load.
+  //
+  // `hasExitPrice` is the field to read first: those rows could have a REAL
+  // figure computed rather than being written off, and if there are many of
+  // them the honest answer is to compute, not to stop waiting.
+  // -----------------------------------------------------------------------
+  router.get('/unresolvable-plan', async (req, res) => {
+    try {
+      const { findUnresolvableCandidates, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =
+        await import('../services/mark-unresolvable.js')
+      const { exhaustedAccounts } = await import('../services/pnl-backfill.js')
+      const { unresolvedPnlSince } = await import('../services/unresolved-pnl.js')
+      const { fxDayStartSql } = await import('../services/risk.js')
+
+      const raw = Number(req.query.horizonDays)
+      // Bounded, and a floor of 1 day: a zero/negative horizon would list every
+      // unfilled row including this minute's closes, which is the opposite of
+      // the age evidence the rule requires.
+      const horizonDays = Number.isFinite(raw) && raw > 0
+        ? Math.min(365, Math.max(1, Math.round(raw)))
+        : DEFAULT_UNRESOLVABLE_HORIZON_DAYS
+
+      // The "we tried and gave up" half of the evidence. In-memory on the
+      // running agent, so a freshly restarted process reports none — which
+      // correctly yields an EMPTY plan rather than a confident write-off list.
+      const exhausted = exhaustedAccounts()
+      const plan = findUnresolvableCandidates(db, { horizonDays, exhaustedAccounts: exhausted })
+
+      // What the veto is doing right now, so the plan is read in context: how
+      // many rows still BLOCK versus how many have already been written off.
+      let blocking = null
+      try {
+        blocking = unresolvedPnlSince(db, fxDayStartSql(), { accountId: null })
+      } catch { /* context only — never fail the plan on it */ }
+
+      res.json({
+        ok: true,
+        readOnly: true,
+        horizonDays,
+        exhaustedAccounts: exhausted,
+        // Stated out loud: an empty list here is usually "the backfill has not
+        // given up on anything", not "there is nothing stuck".
+        note: exhausted.length === 0
+          ? 'pnl-backfill has not exhausted its retries on any account (it resets on any successful fill, and its state is in-memory so a restart clears it). Nothing qualifies as unknowable yet — this is not the same as nothing being stuck.'
+          : `pnl-backfill has given up on ${exhausted.length} account(s); rows below are older than ${horizonDays} days on those accounts.`,
+        found: plan.length,
+        // hasExitPrice first in the mind of the reader: those rows deserve a
+        // computed figure rather than a write-off.
+        withExitPrice: plan.filter(c => c.exit_price != null).length,
+        plan: plan.map(c => ({
+          id: c.id,
+          symbol: c.symbol,
+          side: c.side,
+          accountId: c.account_id,
+          closedAt: c.closed_at,
+          hasExitPrice: c.exit_price != null,
+        })),
+        blocking: blocking && {
+          stillBlocking: blocking.count,
+          alreadyWrittenOff: blocking.unresolvableCount ?? 0,
+          oldestClosedAt: blocking.oldestClosedAt ?? null,
+          unattributedCount: blocking.unattributedCount ?? 0,
+        },
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
 
   // -----------------------------------------------------------------------
   // GET /state/duplicate-trades — read-only audit (owner spotted 7 identical
