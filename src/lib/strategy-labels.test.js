@@ -10,7 +10,7 @@
 // The second copy is now gone — veto-words.js imports this one. This test
 // closes the remaining hole: a strategy added to the registry with no label.
 import { describe, it, expect } from 'vitest'
-import { STRAT_SHORT, stratShort } from './strategy-labels.js'
+import { STRAT_SHORT, stratShort, STRAT_NAME, strategyLabel } from './strategy-labels.js'
 import { STRATEGY_REGISTRY } from '../../agent/services/strategies.js'
 
 describe('strategy labels', () => {
@@ -38,5 +38,82 @@ describe('strategy labels', () => {
     expect(stratShort('some_future_strategy')).toBe('some_future_strategy')
     expect(stratShort(null)).toBe(null)
     expect(stratShort('')).toBe(null)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FULL names (owner 2026-07-30): "the abbreviatons and acryomns not proper
+// capitalised". CSS `text-transform: capitalize` cannot know RSI is an
+// acronym — it produced "Rsi2_reversion" — so the mapping has to be explicit,
+// and it has to stay in step with the registry.
+// ---------------------------------------------------------------------------
+describe('strategy full names', () => {
+  it('covers every strategy in the registry', () => {
+    const missing = STRATEGY_REGISTRY.map(s => s.key).filter(k => !STRAT_NAME[k])
+    expect(missing, `add these to STRAT_NAME or they render a humanised key: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('has no name pointing at a strategy the registry does not have', () => {
+    const keys = new Set(STRATEGY_REGISTRY.map(s => s.key))
+    const orphans = Object.keys(STRAT_NAME).filter(k => !keys.has(k))
+    expect(orphans).toEqual([])
+  })
+
+  it('spells the acronyms the way the registry does', () => {
+    // The whole point of the change: these are the strings CSS got wrong.
+    expect(strategyLabel('rsi2_reversion')).toBe('RSI-2 reversion')
+    expect(strategyLabel('vwap_trend')).toBe('VWAP trend-pullback')
+    expect(strategyLabel('fvg_retrace')).toBe('FVG retrace')
+    expect(strategyLabel('ema_pullback')).toBe('EMA trend-pullback')
+    expect(strategyLabel('rsi_meanrev')).toBe('RSI mean-reversion')
+    // And none of them still carries an underscore.
+    for (const k of Object.keys(STRAT_NAME)) expect(strategyLabel(k)).not.toMatch(/_/)
+  })
+
+  it('names the non-strategy buckets the API can emit', () => {
+    // strategy-insights.js COALESCEs an unlabelled trade to this literal.
+    expect(strategyLabel('manual / external')).toBe('Manual / external')
+    expect(strategyLabel('unlabelled')).toBe('Unlabelled')
+  })
+
+  it('humanises an unmapped key instead of showing snake_case or a blank', () => {
+    // A strategy added to the registry without a name must stay identifiable —
+    // degrading to an empty cell would hide it entirely.
+    expect(strategyLabel('some_future_strategy')).toBe('Some Future Strategy')
+    expect(strategyLabel('atr_squeeze')).toBe('ATR Squeeze')
+    expect(strategyLabel('macd_cross')).toBe('MACD Cross')
+  })
+
+  it('keeps an acronym fused to digits shouting', () => {
+    expect(strategyLabel('rsi2')).toBe('RSI2')
+    expect(strategyLabel('ema200_pullback')).toBe('EMA200 Pullback')
+    // Not an acronym — must not be upper-cased just because digits follow.
+    expect(strategyLabel('range40')).toBe('Range40')
+  })
+
+  it('does not shout ordinary three-letter words', () => {
+    // A "three letters = acronym" rule would have produced "DAY" and "GAP".
+    expect(strategyLabel('day_break')).toBe('Day Break')
+    expect(strategyLabel('gap_fill')).toBe('Gap Fill')
+  })
+
+  it('null and empty stay null so a caller can render a dash', () => {
+    expect(strategyLabel(null)).toBe(null)
+    expect(strategyLabel(undefined)).toBe(null)
+    expect(strategyLabel('')).toBe(null)
+  })
+
+  it('is not fooled by inherited Object properties', () => {
+    expect(strategyLabel('constructor')).toBe('Constructor')
+    expect(strategyLabel('toString')).toBe('ToString')
+  })
+
+  it('passes a dash straight through', () => {
+    // WorkflowAudit's row builder falls back to an em dash when no strategy was
+    // recorded. It must stay a dash: dressing "no attribution" up as a strategy
+    // name would be an invented fact in the one column that answers "which rule
+    // placed this trade". Both dash forms, since only one is a split separator.
+    expect(strategyLabel('\u2014')).toBe('\u2014')
+    expect(strategyLabel('-')).toBe('-')
   })
 })
