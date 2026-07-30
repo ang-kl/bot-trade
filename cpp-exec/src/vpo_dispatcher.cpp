@@ -115,7 +115,25 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     return true;
   }
 
+  // PHASE 2: this tier must be told which account to trade. The sidecar refuses
+  // an unstamped order, so firing without one would place nothing at all — and
+  // the previous behaviour (the engine filling in its frozen primary) is exactly
+  // the silent mis-route being removed. Refuse and COUNT it, the same shape this
+  // function already uses for unavailable sizing: a tier that arms all day and
+  // never fires is broken in a way silence hides.
+  const long long acct = accountId_.load(std::memory_order_relaxed);
+  if (acct <= 0) {
+    {
+      std::lock_guard<std::mutex> lk(outcomesMtx_);
+      outcomes_.noAccount++;
+    }
+    recordOutcome(s, "no_account", "no ctidTraderAccountId configured — POST /vpo-config must name one");
+    s.resetAfterFire();
+    return true;
+  }
+
   jsn::Value payload{jsn::Object{}};
+  payload.set("ctidTraderAccountId", acct);
   payload.set("symbolId", static_cast<long long>(o.symbolId));
   payload.set("tradeSide", side == Side::Buy ? std::string("BUY") : std::string("SELL"));
   payload.set("orderType", std::string("MARKET"));
@@ -173,6 +191,10 @@ std::string VpoDispatcher::statusJson() const {
   v.set("rejected", static_cast<double>(o.rejected));
   v.set("failed", static_cast<double>(o.failed));
   v.set("noSizing", static_cast<double>(o.noSizing));
+  // Non-zero means this tier armed, triggered, and then could not fire because
+  // no account is configured — visible in /vpo-status instead of only in stderr.
+  v.set("noAccount", static_cast<double>(o.noAccount));
+  v.set("accountId", static_cast<double>(accountId_.load(std::memory_order_relaxed)));
   v.set("lastFireAt", o.lastFireAtMs > 0 ? jsn::Value(static_cast<double>(o.lastFireAtMs))
                                          : jsn::Value(nullptr));
   v.set("lastDetail", o.lastDetail.empty() ? jsn::Value(nullptr) : jsn::Value(o.lastDetail));

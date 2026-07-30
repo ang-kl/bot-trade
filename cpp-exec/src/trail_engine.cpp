@@ -44,7 +44,23 @@ double trailDecide(TrailSpec& s, double bid, double ask) {
 void TrailEngine::configure(const std::vector<std::pair<long long, TrailSpec>>& specs) {
   std::lock_guard<std::mutex> lk(mtx_);
   std::map<long long, TrailSpec> next;
+  long long dropped = 0;
   for (const auto& [id, incoming] : specs) {
+    // PHASE 2: a spec that does not name its account is REJECTED HERE, at
+    // ingest, rather than being discovered when its amend is refused.
+    //
+    // This engine is the one caller of ExecEngine::amendPosition inside the
+    // sidecar, and workerLoop only attached ctidTraderAccountId when
+    // accountId > 0. Now that amendPosition refuses an unstamped payload, an
+    // un-accounted spec would sit in the map ratcheting nothing while
+    // amendsFailed_ climbed — a silent stop-loss failure, which is the worst
+    // shape this file could fail in. Dropping it at ingest makes the loss of
+    // coverage immediate and visible in statusJson, and the profit keeper's own
+    // 3s ratchet remains the documented fallback either way.
+    if (incoming.accountId <= 0) {
+      ++dropped;
+      continue;
+    }
     TrailSpec s = incoming;
     auto it = byPosition_.find(id);
     if (it != byPosition_.end()) {
@@ -63,6 +79,12 @@ void TrailEngine::configure(const std::vector<std::pair<long long, TrailSpec>>& 
     next[id] = s;
   }
   byPosition_.swap(next);
+  specsDroppedNoAccount_.store(dropped, std::memory_order_relaxed);
+  if (dropped > 0) {
+    logLine(std::to_string(dropped) +
+            " spec(s) dropped — no ctidTraderAccountId, so their SL cannot be "
+            "ratcheted here (the keeper's own ratchet still applies)");
+  }
 }
 
 void TrailEngine::onTick(long long symbolId, double bid, double ask) {
@@ -96,6 +118,9 @@ std::string TrailEngine::statusJson() {
   v.set("tracked", static_cast<double>(byPosition_.size()));
   v.set("amendsOk", static_cast<double>(amendsOk_.load()));
   v.set("amendsFailed", static_cast<double>(amendsFailed_.load()));
+  // Visible loss of coverage: specs the last configure() refused because they
+  // named no account. Non-zero means some positions are NOT being ratcheted here.
+  v.set("specsDroppedNoAccount", static_cast<double>(specsDroppedNoAccount_.load()));
   jsn::Array rows;
   for (const auto& [id, s] : byPosition_) {
     jsn::Value r{jsn::Object{}};
@@ -139,7 +164,11 @@ void TrailEngine::workerLoop(ExecEngine& engine) {
     jsn::Value payload{jsn::Object{}};
     payload.set("positionId", posId);
     payload.set("stopLoss", snap.pendingSl);
-    if (snap.accountId > 0) payload.set("ctidTraderAccountId", snap.accountId);
+    // UNCONDITIONAL. configure() refuses any spec with accountId <= 0, so every
+    // stored spec names its account. It used to be `if (accountId > 0)`, which is
+    // exactly how an unstamped amend would sneak back in if that invariant ever
+    // slipped — amendPosition would then refuse it, silently stopping the ratchet.
+    payload.set("ctidTraderAccountId", snap.accountId);
     auto r = engine.amendPosition(payload);
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = byPosition_.find(posId);

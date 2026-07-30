@@ -183,8 +183,20 @@ export async function runVpoFeeder(db, deps = {}) {
   }
 
   if (!barsOut.length && !volumesOut.length) return { skipped: 'nothing resolved this pass' }
-  await push({ bars: barsOut, volumes: volumesOut })
-  return { ok: true, bars: barsOut.length, volumes: volumesOut.length }
+
+  // PHASE 2 (owner, 2026-07-30): the sidecar refuses an order that names no
+  // account, so the C++ VPO tier has to be TOLD which one to trade on. It used
+  // to inherit whatever the engine's primary happened to be — and that primary
+  // is elected once per broker session and then frozen, so on a multi-account
+  // desk the VPO tier could trade the wrong account entirely. Pushed with the
+  // bars because /vpo-config is the only channel this tier configures itself
+  // from; when it is absent or unusable the dispatcher refuses to fire and
+  // counts it under /vpo-status noAccount, rather than guessing.
+  const acct = Number(creds?.accountId)
+  const payload = { bars: barsOut, volumes: volumesOut }
+  if (Number.isFinite(acct) && acct > 0) payload.ctidTraderAccountId = acct
+  await push(payload)
+  return { ok: true, bars: barsOut.length, volumes: volumesOut.length, accountId: payload.ctidTraderAccountId ?? null }
 }
 
 /** Runs the feeder on an interval until stopped. Mirrors guardian.js's startX(db, ...) shape. */

@@ -28,6 +28,7 @@ static int32_t classifyReasonCode(const std::string& reason) {
     { "guard_naked_order", 3 },
     { "guard_no_target", 4 },
     { "guard_volume_cap", 5 },
+    { "guard_no_account", 10 },
     { "NOT_CONNECTED", 6 },
     { "SEND_FAILED", 7 },
     { "DISCONNECTED", 8 },
@@ -273,11 +274,34 @@ bool ExecEngine::connectAndAuth() {
   return true;
 }
 
-static jsn::Value withAccountId(const jsn::Value& payload, long long accountId) {
-  jsn::Value p = payload.isObject() ? payload : jsn::Value{jsn::Object{}};
-  if (p.get("ctidTraderAccountId").isNull()) p.set("ctidTraderAccountId", accountId);
-  return p;
+// PHASE 2, owner's decision 2026-07-30: "C++ sidecar refuse an unstamped
+// operation."
+//
+// THIS REPLACES withAccountId(), which used to fill a missing
+// ctidTraderAccountId from primaryAccountLocked(). That default is the whole
+// mechanism behind exits landing on the wrong account: setCredentials'
+// sameSession branch never reorders accountIds_, so the primary is elected once
+// per broker session and then frozen, and every unstamped close/amend therefore
+// had ONE destination no matter which account the caller meant. On any
+// non-primary account, positions opened and were then never managed —
+// POSITION_NOT_FOUND on every stop ratchet, giveback close, loss cap, time cap
+// and weekend bank, each logging and carrying on by design.
+//
+// Refusing converts that from silent mis-routing into an immediate, loud failure.
+// Node now stamps the account on every write (agent/lib/exec-engine.js
+// withAccount), merged and deployed BEFORE this, so in practice there is nothing
+// left to refuse: this is a tripwire against regression, not a behaviour change.
+//
+// reconcileLocked is unaffected — it always set the id explicitly.
+static bool hasAccountId(const jsn::Value& payload) {
+  if (!payload.isObject()) return false;
+  const jsn::Value& v = payload.get("ctidTraderAccountId");
+  return v.isNumber() && v.asNumber(0) > 0;
 }
+
+static const char* kNoAccountDesc =
+    "operation does not name a ctidTraderAccountId — refusing to choose an "
+    "account on the caller's behalf";
 
 EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
   // Telemetry fields read once regardless of outcome — symbolId/volume are
@@ -313,9 +337,9 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
                      volume, price, 1, 0});
   }
   std::lock_guard lk(mtx_);
-  EngineResult r = request(pt::NEW_ORDER_REQ,
-                          withAccountId(payload, primaryAccountLocked()),
-                          pt::EXECUTION_EVENT);
+  // The account is NOT filled in — validateOrder above has already refused a
+  // payload that does not name one (guard_no_account).
+  EngineResult r = request(pt::NEW_ORDER_REQ, payload, pt::EXECUTION_EVENT);
   if (telemetry_) {
     const std::string reason = r.ok ? "" : r.body.get("errorCode").asString();
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_RESULT, symbolId,
@@ -325,24 +349,21 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
 }
 
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
+  if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   std::lock_guard lk(mtx_);
-  return request(pt::AMEND_POSITION_SLTP_REQ,
-                 withAccountId(payload, primaryAccountLocked()),
-                 pt::EXECUTION_EVENT, 15000);
+  return request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000);
 }
 
 EngineResult ExecEngine::closePosition(const jsn::Value& payload) {
+  if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   std::lock_guard lk(mtx_);
-  return request(pt::CLOSE_POSITION_REQ,
-                 withAccountId(payload, primaryAccountLocked()),
-                 pt::EXECUTION_EVENT);
+  return request(pt::CLOSE_POSITION_REQ, payload, pt::EXECUTION_EVENT);
 }
 
 EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
+  if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
   std::lock_guard lk(mtx_);
-  return request(pt::CANCEL_ORDER_REQ,
-                 withAccountId(payload, primaryAccountLocked()),
-                 pt::EXECUTION_EVENT);
+  return request(pt::CANCEL_ORDER_REQ, payload, pt::EXECUTION_EVENT);
 }
 
 EngineResult ExecEngine::reconcileLocked(long long accountId) {
