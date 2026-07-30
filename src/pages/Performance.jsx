@@ -17,6 +17,7 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
+import { isLong, sideLabelUpper } from '../lib/side.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1378,8 +1379,8 @@ export default function Performance() {
       const pct = (v) => (Number.isFinite(e) && e !== 0 && Number.isFinite(v) ? (Math.abs(e - v) / e * 100).toFixed(1) + '%' : '—')
       return {
         id: p2.id, sym: p2.symbol,
-        side: String(p2.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT',
-        sideCol: String(p2.side || '').toUpperCase() === 'BUY' ? P_UP : P_DN,
+        side: (sideLabelUpper(p2.side) ?? '—'),
+        sideCol: isLong(p2.side) ? P_UP : P_DN,
         lots: p2.volume != null ? String(p2.volume) : '—',
         entry: Number.isFinite(e) ? String(e) : '—', strat: p2.strategy || '—',
         sld: pct(sl), tpd: pct(tp),
@@ -1506,7 +1507,7 @@ export default function Performance() {
         t: tEnd, pnl: Number(t2.net_pnl), sym: String(t2.symbol || '').toUpperCase(),
         strat: t2.label_strategy || t2.strategy || null, rr, tpHit, slHit,
         part: /partial|scale/.test(String(t2.close_reason || '').toLowerCase()),
-        side: String(t2.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT',
+        side: (sideLabelUpper(t2.side) ?? '—'),
         lots: t2.volume != null ? String(t2.volume) : '—',
         openedAt, durMin: t2.hold_duration_ms != null ? Math.round(t2.hold_duration_ms / 60000) : (openedAt != null && tEnd != null ? Math.round((tEnd - openedAt) / 60000) : null),
         rvO: t2.rvol_open ?? null, vwO: t2.vwap_side_open ?? null, obv: t2.obv_open ?? null,

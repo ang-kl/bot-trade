@@ -18,6 +18,7 @@ import Button from './common/Button.jsx'
 import PositionChart from './PositionChart.jsx'
 import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
+import { sideDir } from '../lib/side.js'
 
 // Purpose-named tabs (owner: "how do I change with such window layout" — the
 // old Modify/Protect labels didn't say WHERE to change size vs the stop/target).
@@ -99,7 +100,7 @@ export default function PositionManager({ p, onDone }) {
   const [tab, setTab] = useState('Modify')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const dir = p.side === 'BUY' ? 1 : -1
+  const dir = sideDir(p.side) ?? 1
 
   // Protect state — native SL/TP prefilled from the broker snapshot.
   const [slOn, setSlOn] = useState(p.sl != null)

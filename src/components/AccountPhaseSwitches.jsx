@@ -70,19 +70,37 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
   )
 }
 
-export default function AccountPhaseSwitches() {
+/**
+ * @param {{master?: {scan?: boolean, analyze?: boolean, autotrade?: boolean}}} props
+ *   `master` is the PAGE's live copy of the three global flags (Tune's own
+ *   `config`). Passing it in is what keeps this card honest when the master is
+ *   toggled above: see the refetch below.
+ */
+export default function AccountPhaseSwitches({ master = null }) {
   const [view, setView] = useState(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
   const [done, showDone] = useDoneCue()
 
-  // Fetch on mount and after each write only — no polling. The owner asked for
+  // Fetch on mount and after each write — no polling. The owner asked for
   // "precision" refreshes ("there is a lot of moving text for the webpage"),
   // and a card of switches has no reason to repaint on a timer.
   const load = useCallback(() => agentGet('/state/account-phases')
     .then(v => { setView(v); setErr('') })
     .catch(e => setErr(e.message)), [])
   useEffect(() => { load() }, [load])
+
+  // ...BUT A MASTER TOGGLE IS ALSO A CHANGE TO THIS CARD, and on first ship it
+  // was not. Owner, minutes after the feature landed: "per switch not updated
+  // once master-switch is set" — they turned master Autotrade ON above and
+  // every T here stayed greyed out, because the card had fetched while the
+  // master was off and nothing told it otherwise. "No polling" is right;
+  // "never refetch" was wrong. Keyed on the three flags' VALUES, so this fires
+  // exactly when one of them flips and never on an unrelated re-render.
+  const masterKey = master
+    ? `${master.scan === true}|${master.analyze === true}|${master.autotrade === true}`
+    : ''
+  useEffect(() => { if (masterKey) load() }, [masterKey, load])
 
   const set = async (acct, phaseKey, on) => {
     // Arming REAL orders on an account gets the same confirmation the master

@@ -20,6 +20,7 @@ import { readTradableUnion } from './watchlists.js'
 import { verdictFor } from '../lib/backtest-report.js'
 import { backtestRemote } from '../lib/exec-engine.js'
 import { tfMs } from '../lib/timeframes.js'
+import { armedTimeframes } from '../lib/timeframes.js'
 import { backtestStageStrategies } from './stage-matrix.js'
 import { getActiveSessions } from '../lib/sessions.js'
 
@@ -187,8 +188,7 @@ async function evaluateAll(db, creds, deps) {
   // Union across enabled accounts — the nightly sweep evaluates strategies
   // for every symbol somebody trades, not just the shared list's.
   try { watch = readTradableUnion(db).filter(w => w.enabled !== false).map(w => w.symbol) } catch { /* empty */ }
-  let tfs = ['4h', '1d']
-  try { const t = JSON.parse(getState(db, 'autotrade_timeframes') || '[]'); if (t.length) tfs = t } catch { /* default */ }
+  const tfs = armedTimeframes(db, getState)
   const map = getSymbolMap(db)
 
   // Stage matrix "Back Test" column: the owner picks which strategies the

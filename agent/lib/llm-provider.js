@@ -61,7 +61,26 @@ export function llmProviderInfo(env = process.env, task = undefined) {
  * 400 ("Unsupported parameter: 'max_tokens' ... Use 'max_completion_tokens'
  * instead"), which was silently killing every monitor check. We emit
  * `max_completion_tokens` — the parameter these models require.
+ *
+ * REASONING HEADROOM, and it is not a nicety. On a reasoning model
+ * `max_completion_tokens` bounds REASONING TOKENS PLUS VISIBLE OUTPUT, not just
+ * the output. An Anthropic caller asking for 768 output tokens is asking for 768
+ * tokens of ANSWER; handed straight through, the model can spend all 768
+ * thinking and return `content: ''` with `finish_reason: 'length'`. The caller
+ * then sees an empty string, and monitor-svc's JSON.parse('') throws
+ * "Unexpected end of JSON input" — which is what happened on staging on
+ * 2026-07-30: the LLM position monitor died 21 checks in a row, starting right
+ * when the model router moved position_monitor onto an OpenAI reasoning model.
+ * The failure was invisible in the reason string: nothing said "budget".
+ *
+ * So the caller's number is treated as an OUTPUT budget and the reasoning gets
+ * its own allowance on top. The multiplier is deliberately generous — output
+ * tokens are cheap next to a position going unmonitored — and the floor keeps
+ * a small ask (a 200-token classification) from starving.
  */
+export const REASONING_HEADROOM = 6
+export const MIN_COMPLETION_TOKENS = 4096
+
 export function toOpenAIBody({ max_tokens, system, messages }, model) {
   const oai = []
   if (system) oai.push({ role: 'system', content: system })
@@ -71,17 +90,30 @@ export function toOpenAIBody({ max_tokens, system, messages }, model) {
       : (Array.isArray(m.content) ? m.content.map(c => c?.text || '').join('') : '')
     oai.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content })
   }
-  return { model, max_completion_tokens: max_tokens, messages: oai }
+  const asked = Number(max_tokens)
+  const budget = Number.isFinite(asked) && asked > 0
+    ? Math.max(MIN_COMPLETION_TOKENS, Math.ceil(asked * REASONING_HEADROOM))
+    : MIN_COMPLETION_TOKENS
+  return { model, max_completion_tokens: budget, messages: oai }
 }
 
-/** Map an OpenAI chat.completions response to the Anthropic response shape. Pure. */
+/**
+ * Map an OpenAI chat.completions response to the Anthropic response shape. Pure.
+ *
+ * `finishReason` and `reasoningTokens` ride along because an empty `text` is
+ * ambiguous without them — "the model had nothing to say" and "the model was cut
+ * off mid-thought" need different fixes, and the caller cannot tell them apart
+ * from `''`. See monitor-svc.js, which now names both in its error.
+ */
 export function fromOpenAIResponse(data, fallbackModel) {
   const text = data?.choices?.[0]?.message?.content || ''
   return {
     content: [{ type: 'text', text }],
+    finishReason: data?.choices?.[0]?.finish_reason ?? null,
     usage: {
       input_tokens: data?.usage?.prompt_tokens ?? null,
       output_tokens: data?.usage?.completion_tokens ?? null,
+      reasoning_tokens: data?.usage?.completion_tokens_details?.reasoning_tokens ?? null,
     },
     model: data?.model || fallbackModel,
   }

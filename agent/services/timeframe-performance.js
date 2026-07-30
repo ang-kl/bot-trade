@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { armedTimeframes } from '../lib/timeframes.js'
 
 export const WINDOWS = [
   { key: '2h', mod: '-2 hours' },
@@ -19,11 +20,7 @@ export const WINDOWS = [
 ]
 
 export function timeframePerformance(db) {
-  let armed = ['4h', '1d']
-  try {
-    const parsed = JSON.parse(getState(db, 'autotrade_timeframes') || 'null')
-    if (Array.isArray(parsed) && parsed.length > 0) armed = parsed
-  } catch { /* keep default */ }
+  const armed = armedTimeframes(db, getState)
 
   // closed_at is written both as "YYYY-MM-DD HH:MM:SS" (SQL datetime('now'))
   // and as ISO-with-T in older rows — datetime() normalises either form so

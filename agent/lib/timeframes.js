@@ -47,6 +47,44 @@ const MAX_MS = 12 * UNIT_MS.mo // sanity ceiling: one year
  * @returns {{label: string, ms: number} | null} canonical label + duration,
  *   or null when unreadable. Native inputs return the native label.
  */
+/**
+ * The Pipeline's default timeframe set, longest first.
+ *
+ * Owner (2026-07-30): "The timeframe for Pipeline - default are, and we should
+ * use these. 1w 3d 1d 12h 8h 4h 1h 30m 15m 10m 5m 2m."
+ *
+ * Ten are native broker periods; `3d` synthesises from 1d×3 and `8h` from 4h×2
+ * (exact integer factors, so no partial bars — see fetchPlan/aggregateBars).
+ *
+ * WHAT THIS ACTUALLY GATES, so the width is not mistaken for a loosened limit:
+ * it is the allow-list consulted ONLY when `autotrade_scope === 'armed'`
+ * (loop.js timeframe gate). The default scope is 'all', where every scanned
+ * timeframe is already eligible and this list is not read. The risk gate,
+ * stage matrix, market hours, position caps and equity stop veto every order
+ * either way.
+ *
+ * Previously four separate modules each carried their own `['4h', '1d']`
+ * literal, which is how a "default" ends up meaning four different things.
+ * This is the one copy.
+ */
+export const DEFAULT_AUTOTRADE_TIMEFRAMES = Object.freeze([
+  '1w', '3d', '1d', '12h', '8h', '4h', '1h', '30m', '15m', '10m', '5m', '2m',
+])
+
+/**
+ * The stored list, or the default when nothing is stored / the value is junk.
+ * One reader so every consumer agrees on both the list AND the fallback.
+ *
+ * @param {(db: any, key: string) => string|null} getState
+ */
+export function armedTimeframes(db, getState) {
+  try {
+    const parsed = JSON.parse(getState(db, 'autotrade_timeframes') || 'null')
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed
+  } catch { /* fall through to the default */ }
+  return [...DEFAULT_AUTOTRADE_TIMEFRAMES]
+}
+
 export function parseTimeframe(input) {
   if (typeof input !== 'string') return null
   const text = input.trim()

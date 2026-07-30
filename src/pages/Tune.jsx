@@ -1272,8 +1272,17 @@ export default function Tune() {
             </div>
             </Card>
             {/* Owner: "put below the master switch a card to show which
-                account's switch status and on/off here". */}
-            <AccountPhaseSwitches />
+                account's switch status and on/off here".
+                `master` is passed so the card refetches the moment one of the
+                three master switches above is toggled — without it the card
+                kept showing the state it loaded with (owner: "per switch not
+                updated once master-switch is set"). The card still renders from
+                the SERVER's answer; the prop is only the change signal. */}
+            <AccountPhaseSwitches master={config ? {
+              scan: !!config.scan_enabled,
+              analyze: !!config.analyze_enabled,
+              autotrade: !!config.autotrade_enabled,
+            } : null} />
             <Card id="sec-pipe-strategy" className="w3-hover-shadow">
               <SectionTitle>What may trade</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>

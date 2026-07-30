@@ -13,6 +13,7 @@
 //  - data feed panel: real values where the APIs provide them, '—' else.
 import { useState } from 'react'
 import SectionTools from './common/SectionTools.jsx'
+import { sideLabelUpper } from '../lib/side.js'
 
 const ACC = 'var(--color-accent)', UP = 'var(--color-up)', DN = 'var(--color-down)'
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
@@ -137,7 +138,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
     id: q, title: QTXT[q][0], txt: QTXT[q][1],
     rows: qsum[q].map(p => ({
       sym: p.symbol,
-      sd: `${String(p.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT'} ${p.volume ?? '—'}`,
+      sd: `${sideLabelUpper(p.side) ?? '—'} ${p.volume ?? '—'}`,
       acct: p.account_id != null ? `·${String(p.account_id).slice(-3)}` : '—',
       pnl: '—', // live P&L not streamed to this page — never simulated
     })),
@@ -228,7 +229,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
           <span style={{ fontSize: 11, fontWeight: 800 }}>No plotted group ({unclassified.length})</span>
           {unclassified.map((p, pi) => (
             <span key={`${p.symbol}-${pi}`} style={{ fontSize: 9, color: SB, fontVariantNumeric: 'tabular-nums' }}>
-              {p.symbol} {String(p.side || '').toUpperCase() === 'BUY' ? 'LONG' : 'SHORT'} {p.volume ?? '—'}
+              {p.symbol} {sideLabelUpper(p.side) ?? '—'} {p.volume ?? '—'}
             </span>
           ))}
           <span style={{ fontSize: 9, color: MU }}>— these symbols aren&apos;t in any asset group plotted above, so no growth/inflation coordinate exists for them; they are never assigned a quadrant by guesswork</span>

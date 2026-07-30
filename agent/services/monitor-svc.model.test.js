@@ -57,3 +57,63 @@ test('a client with no declared model still works (Anthropic default path)', asy
   assert.equal(out.model, 'claude-sonnet-4-5')
   assert.ok(client.seen.model, 'a model id was still sent')
 })
+
+// ---------------------------------------------------------------------------
+// AN EMPTY COMPLETION MUST DIAGNOSE ITSELF.
+//
+// Staging, 2026-07-30: the LLM position monitor failed 21 checks in a row and
+// the only thing the badge could say was "Unexpected end of JSON input" — the
+// message JSON.parse('') produces. It names neither the model nor the cause, so
+// it read as corrupt output when the real cause was a reasoning model spending
+// its entire completion budget on reasoning and returning no text.
+// ---------------------------------------------------------------------------
+function emptyClient({ finishReason = 'length', reasoning = 768 } = {}) {
+  return {
+    model: 'gpt-5-nano',
+    messages: {
+      async create() {
+        return {
+          content: [{ type: 'text', text: '' }],
+          finishReason,
+          usage: { input_tokens: 900, output_tokens: 768, reasoning_tokens: reasoning },
+          model: 'gpt-5-nano',
+        }
+      },
+    },
+  }
+}
+
+test('an empty completion names the model, the finish reason and the tokens', async () => {
+  await assert.rejects(
+    () => runMonitorCheck(emptyClient(), POSITION),
+    (err) => {
+      assert.doesNotMatch(err.message, /Unexpected end of JSON input/,
+        'the bare parse error is exactly what made this undiagnosable')
+      assert.match(err.message, /no text/i)
+      assert.match(err.message, /gpt-5-nano/)
+      assert.match(err.message, /finish_reason=length/)
+      assert.match(err.message, /reasoning_tokens=768/)
+      assert.match(err.message, /budget exhausted/i, 'finish_reason length names the cause outright')
+      return true
+    }
+  )
+})
+
+test('an empty completion for ANOTHER reason still reports, without blaming the budget', async () => {
+  await assert.rejects(
+    () => runMonitorCheck(emptyClient({ finishReason: 'stop', reasoning: 0 }), POSITION),
+    (err) => {
+      assert.match(err.message, /finish_reason=stop/)
+      assert.doesNotMatch(err.message, /budget exhausted/i)
+      return true
+    }
+  )
+})
+
+test('whitespace-only output counts as empty — it parses to nothing either way', async () => {
+  const client = {
+    model: 'gpt-5-nano',
+    messages: { async create() { return { content: [{ type: 'text', text: '   \n' }], finishReason: 'stop', usage: {} } } },
+  }
+  await assert.rejects(() => runMonitorCheck(client, POSITION), /no text/i)
+})
