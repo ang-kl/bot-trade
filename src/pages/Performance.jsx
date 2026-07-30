@@ -1815,7 +1815,15 @@ export default function Performance() {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 9, fontWeight: 700, color: P_ACC, border: `1px solid ${P_ACC}`, borderRadius: 999, padding: '2px 8px' }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: P_ACC, animation: 'perf-pulse 1.6s infinite' }} />LIVE
         </span>
-        <SessionClock />
+        {/* Owner (2026-07-30, iPhone screenshot): the session strip appeared
+            TWICE on a phone — once here (no responsive guard) and once inside
+            the min-[700px]:hidden mobile "Now" screen below. The mobile port
+            added its copy without hiding this one. Under 700px this instance
+            yields to the mobile one; `contents` keeps its spans direct flex
+            children of the header row exactly as before. */}
+        <span className="hidden min-[700px]:contents" data-once="perf-session-clock">
+          <SessionClock />
+        </span>
       </div>
 
       {error && <Card><p className="text-[9px] font-semibold text-[var(--color-down)]">{error}</p></Card>}
@@ -1838,7 +1846,7 @@ export default function Performance() {
 
         {screen === 'now' && (
           <>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }} data-once="perf-session-clock">
               <SessionClock />
             </div>
             {acctCards.map(a => (

@@ -47,7 +47,12 @@ if (!LIVE) {
 let failed = 0
 
 for (const r of ROUTES) {
-  for (const w of (LIVE ? [1024] : [1024, 820, 390])) {
+  // LIVE used to run only at 1024. That is precisely the blind spot that let a
+  // DUPLICATED session strip ship to the owner's iPhone (2026-07-30): the
+  // duplicate only exists below 700px AND only renders once data is present, so
+  // the desktop-only live pass and the data-less phone pass each missed it from
+  // opposite sides. Live now covers the same widths as layout mode.
+  for (const w of (LIVE ? [1024, 820, 390] : [1024, 820, 390])) {
     const p = await ctx.newPage()
     const errs = []
     p.on('pageerror', e => errs.push(String(e.message).slice(0, 110)))
@@ -70,6 +75,50 @@ for (const r of ROUTES) {
           wide.push((el.tagName + '.' + String(el.className || '').split(' ').slice(0, 2).join('.')).slice(0, 58))
         }
       }
+      // DUPLICATE-RENDER CONTRACT. Any component that must appear at most once
+      // per page carries data-once="<name>"; more than one VISIBLE element with
+      // the same name is a bug. Visibility matters: a responsive pair where one
+      // side is hidden is correct, two painted copies is the iPhone defect.
+      // This is an explicit contract rather than a text-similarity heuristic —
+      // table rows legitimately repeat, so a heuristic would be all noise.
+      //
+      // VISIBILITY IS NOT getBoundingClientRect HERE. The first version of this
+      // check filtered on a non-zero rect and silently detected nothing — a
+      // `display: contents` wrapper has NO box of its own, so its rect is
+      // always 0x0 even while its children paint. Verified by restoring the
+      // duplicate on purpose: the check reported clean. checkVisibility() is
+      // the right question ("is this rendered, considering CSS"), with a
+      // descendant-rect fallback for engines that lack it.
+      // NOT checkVisibility(): Chromium returns FALSE for a `display: contents`
+      // element because it generates no box of its own — even while its
+      // children paint normally. Measured directly, both copies present and
+      // one reported cv:false. Two wrong attempts here, both caught only by
+      // deliberately restoring the duplicate and demanding the check fail:
+      //   1. filter on a non-zero rect        → contents wrapper is 0x0
+      //   2. gate on checkVisibility()        → contents wrapper is "invisible"
+      // What "visible" actually means for this contract is "does this subtree
+      // paint": display:none and visibility:hidden are definitive, everything
+      // else asks the box, then the descendants.
+      const isShown = (el) => {
+        const st = getComputedStyle(el)
+        if (st.display === 'none' || st.visibility === 'hidden') return false
+        const own = el.getBoundingClientRect()
+        if (own.width > 0 && own.height > 0) return true
+        for (const d of el.querySelectorAll('*')) {
+          const r3 = d.getBoundingClientRect()
+          if (r3.width > 0 && r3.height > 0) return true
+        }
+        return false
+      }
+      const onceSeen = {}
+      for (const el of document.querySelectorAll('[data-once]')) {
+        if (!isShown(el)) continue
+        const k = el.getAttribute('data-once')
+        onceSeen[k] = (onceSeen[k] || 0) + 1
+      }
+      const dupes = Object.entries(onceSeen).filter(([, n]) => n > 1)
+        .map(([k, n]) => `${k}x${n}`)
+
       // Effective TAP height = the visual box, or the ::after halo when one
       // is painted. Measuring only the box would score the fix as a no-op.
       let small = 0, total = 0
@@ -87,19 +136,29 @@ for (const r of ROUTES) {
         const f = parseFloat(getComputedStyle(el).fontSize)
         if (f > 0 && f < minPx) minPx = f
       }
-      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx }
-    }).catch(() => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0 }))
+      return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes }
+    }).catch(() => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [] }))
     // bodyLen is the blank-page canary: a crashed React tree still renders the
     // skip-link and nothing else, which is ~20 characters.
     const bodyLen = await p.evaluate(() => document.body.innerText.trim().length).catch(() => 0)
-    if (errs.length || bodyLen < 200) failed++
+    // A duplicated singleton is a FAILURE, not a footnote — same rule the
+    // page-error case already follows, and for the same reason: the owner
+    // found it before the tooling did.
+    const dupes = m.dupes || []
+    // bodyLen is only meaningful in LIVE mode — layout mode aborts every
+    // off-host request, so a data-driven page renders near-empty BY DESIGN and
+    // failing on it would make the layout pass permanently red.
+    if (errs.length || dupes.length || (LIVE && bodyLen < 200)) failed++
     console.log(`${r} @${w} ov=${m.ov} touch<44=${m.small}/${m.total} minFont=${m.minPx} bodyLen=${bodyLen}`
-      + `${errs.length ? ' ERR: ' + errs[0] : ''}${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`)
+      + `${errs.length ? ' ERR: ' + errs[0] : ''}${dupes.length ? ' DUP: ' + dupes.join(',') : ''}`
+      + `${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`)
     await p.close()
   }
 }
 await b.close()
-if (LIVE && failed) {
-  console.error(`\nFAILED: ${failed} route/width combination(s) threw or rendered blank.`)
+// Duplicate renders and page errors fail in BOTH modes; the blank-page canary
+// only means something in live mode (layout mode renders empty by design).
+if (failed) {
+  console.error(`\nFAILED: ${failed} route/width combination(s) threw, duplicated a singleton, or rendered blank.`)
   process.exit(1)
 }

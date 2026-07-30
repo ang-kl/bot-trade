@@ -10,6 +10,7 @@
 // (react-refresh/only-export-components).
 import { useSyncExternalStore } from 'react'
 import { agentGet, agentConfigured } from './agent-api.js'
+import { writeSelection } from './selected-account.js'
 
 // The same sessionStorage key AccountSwitcher fills — reading it costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip per mount.
@@ -57,6 +58,40 @@ function start() {
 
   const load = () => {
     if (!agentConfigured()) return
+    // SERVER TRUTH for which account is selected. The sessionStorage cache is
+    // an instant-paint hint written by the UI's own switch paths — but a
+    // switch can happen in Connect, another tab, or Telegram, and the owner
+    // caught the header showing the OLD account after a Connect switch
+    // (2026-07-30 screenshot). /state/accounts is the registry's answer, so
+    // the header converges on the truth within one poll even when no UI code
+    // wrote the cache. Reconciling INTO the cache (via writeSelection) also
+    // fires the page-reload notifier, so every polling page repaints too.
+    agentGet('/state/accounts').then(r => {
+      const sid = r?.selectedAccountId != null ? Number(r.selectedAccountId) : null
+      if (sid == null) return
+      writeSelection(sid)
+      const cached = readCache()
+      if (cached && Number(cached.accountId) === sid) {
+        if (cached.accountId !== shared.acct?.accountId || cached.balance !== shared.acct?.balance) {
+          shared.acct = cached; emit()
+        }
+        return
+      }
+      // Selected account is not in the roster cache (fresh browser, or the
+      // switch happened elsewhere before the roster loaded). The registry row
+      // still names it — label it honestly with balance unknown rather than
+      // keep showing the PREVIOUS account's name and money.
+      const row = (r.accounts || []).find(a => Number(a.account_id) === sid)
+      if (row && shared.acct?.accountId !== sid) {
+        shared.acct = {
+          accountId: sid,
+          traderLogin: row.trader_login ?? null,
+          isLive: row.is_live === 1,
+          balance: null,
+        }
+        emit()
+      }
+    }).catch(() => {})
     agentGet('/state/health').then(h => {
       const next = {
         scan: h?.scanEnabled === true,

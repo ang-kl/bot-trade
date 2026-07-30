@@ -9,6 +9,7 @@ import Button from '../components/common/Button.jsx'
 import Input from '../components/common/Input.jsx'
 import WatchlistCompare from '../components/watchlist/WatchlistCompare.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
+import { writeSelection } from '../lib/selected-account.js'
 
 const CONNECT_SECTIONS = [
   { id: 'sec-agent', label: 'Agent backend' },
@@ -142,6 +143,12 @@ export default function Connect() {
     setLinking(true)
     try {
       const r = await agentPost('/actions/ctrader-select-account', { accountId: a.accountId, isLive: a.isLive, traderLogin: a.traderLogin ?? null })
+      // Tell the rest of the app (owner 2026-07-30: "I selected a different
+      // account in connect, your header doesn't reflect"). This was the only
+      // switch path that never wrote the shared cache, so the header, sidebar
+      // and every polling page kept showing the previous account until a full
+      // reload. One shared write point now serves both switch paths.
+      writeSelection(a.accountId)
       setLinked(r)
       setSymbolCount(r.symbolsMapped)
       setToken('')

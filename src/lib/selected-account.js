@@ -61,6 +61,32 @@ export function accountLabel(id) {
   return `${a.isLive ? 'LIVE' : 'DEMO'} ${a.traderLogin ?? a.accountId}`
 }
 
+/**
+ * Record a switch made by ANY code path — Connect, the switcher, or a poll
+ * that noticed the server's selection moved.
+ *
+ * Owner (2026-07-30, screenshot): "I selected a different account in connect,
+ * your header doesn't reflect." The header module's own comment claimed
+ * watching sessionStorage catches switches made from the Connect page. That
+ * was false: watching the cache only catches switches that WRITE the cache,
+ * and Connect never did — only AccountSwitcher's load() wrote it. This is the
+ * single write point both paths now share, so "the cache is the signal" is
+ * finally a true statement instead of a hopeful comment.
+ */
+export function writeSelection(accountId) {
+  const id = accountId == null ? null : Number(accountId)
+  if (id == null || Number.isNaN(id)) return
+  try {
+    const c = readCache() || { accounts: [], selectedAccountId: null }
+    if (Number(c.selectedAccountId) === id) return
+    c.selectedAccountId = id
+    sessionStorage.setItem(CACHE, JSON.stringify(c))
+  } catch { /* private mode — the server poll still corrects the header */ }
+  // The 1s watcher would catch this anyway; ticking now makes the switch
+  // visible immediately instead of up to a second later.
+  tick()
+}
+
 function tick() {
   const id = readCache()?.selectedAccountId ?? null
   if (id == null) return
