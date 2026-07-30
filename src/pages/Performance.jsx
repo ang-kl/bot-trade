@@ -17,8 +17,9 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { selectedAccountId as appSelectedAccountId } from '../lib/selected-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
-import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
-import { useHourTick } from '../lib/use-hour-tick.js'
+import { rollingHourWindows, displayOrder, totalFloating } from '../lib/hourly-order.js'
+import { hourLabel, dateFlags } from '../lib/hour-label.js'
+import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -698,32 +699,46 @@ function Weekend24Body({ rows }) {
 // across a 24 hours (1hr timeframe) the Open balance, P/L, Close balance,
 // trades, close trades") — one row per elapsed hour since FX day open, so
 // the card always has structure even before the first close of the day.
-const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
+// Hour widened from 54px for the two-line SGT/UTC label — the other five
+// columns keep their exact widths, alignment and formatting (owner: "do not
+// alter their values, business logic, widths, alignment or formatting").
+// minWidth moves by the same 34px so the horizontal scroll floor is unchanged
+// in effect; the table still fits a Telegram Mini App width by scrolling, as
+// it did before.
+const TODAY_HOURLY_COLS = '88px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
 function TodayHourlyBody({ rows, floatingNow = null }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
-      <div ref={animRef} style={{ minWidth: 420 }}>
+      <div ref={animRef} style={{ minWidth: 454 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-          <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
+          <span>Hour (SGT)</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
-        {rows.map(r => (
-          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', opacity: r.pending ? 0.45 : 1 }}>
-            {/* Hour in the VIEWER'S local timezone; the FX-day UTC hour rides
-                beside it 2pt smaller (owner 2026-07-28: "use user's tz with
-                bracket (FX UTC timezone) in tiny font size"). */}
-            <span style={{ fontSize: 9, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined }}>
-              {new Date(r.from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
-              <span style={{ fontSize: 7, marginLeft: 3 }}>({new Date(r.from).toISOString().slice(11, 16)} UTC)</span>
-              {r.isLive && <span style={{ fontSize: 6, marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
+        {rows.map((r) => {
+          const L = hourLabel(r.at)
+          return (
+          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
+            {/* Owner spec 2026-07-31: SGT on top (h:mm AM/PM), UTC directly
+                beneath 2px smaller, and the local date in brackets on the first
+                row of an earlier day and on the oldest row. The label is the
+                END of the row's hour — the 6:20 row is the hour that finished
+                at 6:20 — which is what makes the live minute meaningful on
+                every row instead of decorative. */}
+            <span style={{ fontSize: 9, lineHeight: 1.15, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined, display: 'block' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                {L.local}
+                {r.showDate && <span style={{ fontSize: 7, marginLeft: 3 }}>({L.date})</span>}
+                {r.isLive && <span style={{ fontSize: 6, marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
+              </span>
+              <span style={{ display: 'block', fontSize: 7, color: P_MU, fontWeight: 400 }}>{L.utc}</span>
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.openBal != null ? money(r.openBal) : '—'}</span>
+            <span style={{ fontSize: 9, color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
             {/* Realized P&L from closes in this hour. On the LIVE hour the
                 floating figure rides alongside in brackets — it is unrealized
                 and belongs to no single hour, so it is never summed into
                 `net` and never touches the balance columns. */}
             <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
-              {!r.pending && r.closedN ? signed(r.net) : '—'}
+              {r.closedN ? signed(r.net) : '—'}
               {r.isLive && floatingNow != null && (
                 <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
                   style={{ fontSize: 7, marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
@@ -731,11 +746,11 @@ function TodayHourlyBody({ rows, floatingNow = null }) {
                 </span>
               )}
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.closeBal != null ? money(r.closeBal) : '—'}</span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.openedN) || '—'}</span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.closedN) || '—'}</span>
+            <span style={{ fontSize: 9, color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
+            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{r.openedN || '—'}</span>
+            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{r.closedN || '—'}</span>
           </div>
-        ))}
+        )})}
       </div>
     </div>
   )
@@ -1223,7 +1238,7 @@ export default function Performance() {
   // order and NOW marker are the only things on this page that must follow the
   // wall clock rather than the data poll. One timer aimed at the next exact
   // hour, never a short interval; see lib/use-hour-tick.js.
-  const hourNow = useHourTick()
+  const hourNow = useTableClock()
 
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
@@ -1270,25 +1285,24 @@ export default function Performance() {
   // still shows a real (flat) balance line instead of nothing at all.
   const todayHourly = useMemo(() => {
     const curBal = ledger?.balance ?? null
-    const H = 60 * 60 * 1000
-    // Owner (2026-07-28): "where are the 24 hours... even market close you
-    // have bitcoin" — the loop used to stop at `now`, so an hour into the FX
-    // day the table held 2 rows and looked broken. Always emit the full 24
-    // slots of the FX day; hours still in the future are marked `pending`
-    // and render dashed instead of being silently absent.
-    const slots = []
-    for (let from = todayWin.from; from < todayWin.from + 24 * H; from += H) {
-      slots.push({ from, to: from + H, pending: !todayWin.weekend && from >= todayWin.to })
-    }
+    // ROLLING WINDOW (owner, 2026-07-31): 24 windows of [t−1h, t) ending at the
+    // captured clock time, newest first, the live minute preserved in every
+    // row. This replaces the FX-day slots — including their dashed `pending`
+    // future rows, which a rolling window cannot have: every row is history.
+    // See hourly-order.js for why the labels were allowed to move the buckets.
+    const slots = rollingHourWindows(hourNow, 24)
     const withStats = slots.map(s => {
       const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
       const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
       return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
     })
-    // Carry back from the CURRENT stamped balance — anything closed after
-    // the window's end (weekend crypto closes when the window is Friday)
-    // is subtracted first so Friday's close balance stays honest.
-    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= todayWin.to ? n + Number(t2.net_pnl) : n }, 0)
+    // Carry back from the CURRENT stamped balance — anything closed after the
+    // newest window's end is subtracted first. With a rolling window that end
+    // is `now`, so this is normally zero; it stays because a close stamped a
+    // few seconds ahead (clock skew between the broker and this box) would
+    // otherwise be counted twice into the top row's open balance.
+    const newestTo = slots.length ? slots[slots.length - 1].to : hourNow
+    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= newestTo ? n + Number(t2.net_pnl) : n }, 0)
     let closeBal = curBal != null ? Number((curBal - netAfter).toFixed(2)) : null
     const withBal = []
     for (let i = withStats.length - 1; i >= 0; i--) {
@@ -1299,20 +1313,24 @@ export default function Performance() {
       closeBal = ob
     }
 
-    // UI-2 second pass — the LIVE hour first, past hours below it, hours still
-    // to come at the bottom. The reordering happens AFTER the carry above,
+    // Newest first for reading. The reversal happens AFTER the carry above,
     // which must run oldest-to-newest; see hourly-order.js for why touching the
     // order before it would invert every balance on the page.
     //
-    // `hourNow`, not `loadedAt`: the row order and the NOW marker follow the
-    // WALL CLOCK, so they move the moment the hour changes instead of waiting
-    // for the next 60s fetch (owner: "currently is static"). The figures still
-    // come from the poll — only the ordering is on the clock.
-    return orderHourlyForDisplay(withBal, hourNow)
-    // `loadedAt` is deliberately NOT a dependency any more: it was only ever
-    // here to supply "now", and now comes from the clock. The figures still
-    // refresh, through scopedClosed and ledger.
-  }, [scopedClosed, todayWin, ledger, hourNow])
+    // `hourNow`, not `loadedAt`: the labels, the buckets and the NOW marker all
+    // follow the WALL CLOCK, so they move on the tick instead of waiting for
+    // the next fetch (owner: "currently is static"). The figures still come
+    // from the poll — only the window is on the clock.
+    // The bracketed date rides ON the row, not alongside it: PagedRows hands
+    // each page a slice, so a parallel flags array would silently pair page 2's
+    // rows with page 1's flags.
+    const shown = displayOrder(withBal)
+    const flags = dateFlags(shown)
+    return shown.map((r, i) => ({ ...r, showDate: flags[i] }))
+    // `loadedAt` is deliberately NOT a dependency: it was only ever here to
+    // supply "now", and now comes from the clock. The figures still refresh,
+    // through scopedClosed and ledger.
+  }, [scopedClosed, ledger, hourNow])
 
   // UI-2 — floating P&L for the LIVE hour. Summed across every open position
   // regardless of which sub-table it renders in (market-open, market-closed,

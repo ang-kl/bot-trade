@@ -1,73 +1,97 @@
-// UI-2 — how the 24-hour table is ordered, and which row is "now".
+// How the 24-hour table's rows are built and ordered.
 //
-// Extracted from Performance.jsx so it can be tested exactly rather than
-// eyeballed. The two rules it encodes are easy to get subtly wrong:
+// ROLLING WINDOW (owner, 2026-07-31): "now is 6:20 AM (trading in the block of
+// 10 minutes) the next refresh is 6:30 AM." The table is a rolling past-24-
+// hours timeline anchored on the wall clock, not on the FX day.
 //
-//   1. The BALANCE CARRY must run oldest → newest. It walks backwards from
-//      the current stamped balance, so every row's openBal depends on the row
-//      after it. Reversing the source array before the carry inverts every
-//      balance on the page — a bug that looks like plausible numbers.
+// WHAT CHANGED AND WHY IT MATTERS. Until now the 24 slots were the FX day
+// (17:00 NY → 17:00 NY), hour-aligned, with the hours still to come rendered
+// dashed. Row labels were therefore always on the hour. The owner asked for the
+// live minute to survive into every row — 6:20, 5:20, 4:20 — which only tells
+// the truth if the BUCKETS move with the labels. So the windows are now
+// [t−1h, t) for t = now, now−1h, … now−23h, and a row's label is the END of its
+// own window: the 6:20 row is the hour that finished at 6:20.
 //
-//   2. The DISPLAY leads with the CURRENT hour, because that is the row you
-//      look at first. So the reordering happens after the carry, and only
-//      for display.
+// The owner was asked directly whether the numbers or the labels should give,
+// and chose the labels — the figures in every column are computed by the same
+// formulas as before, over shifted inputs. Expect the per-row numbers to differ
+// from the FX-day version; that is the point, not a regression.
 //
-// Keeping those two facts in one tested function is the point.
+// SCOPE, also the owner's call: the hourly table alone moves to the rolling
+// window. The "Closed Trades" list under it and the card title stay on the FX
+// day. The two therefore cover different spans and their totals will not
+// reconcile. That was put to the owner as the cost of the smaller change and
+// accepted.
 //
-// UI-2 SECOND PASS (owner, 2026-07-30): "you should always show the current
-// time as the top row and the past hour below it, currently is static."
+// TWO RULES THAT SURVIVE FROM THE FX-DAY VERSION:
 //
-// A plain reverse was not enough, and the reason is the FX day. The 24 slots
-// span one FX day (17:00 NY → 17:00 NY), so reversing puts the LAST hour of
-// that day on top — and for most of the day that hour has not happened yet.
-// Mid-afternoon the top rows were dashed future hours and the live hour sat
-// seven rows down. Reversed is not the same as "now first".
+//   1. The BALANCE CARRY must run oldest → newest. It walks backwards from the
+//      current stamped balance, so every row's openBal depends on the row after
+//      it. Reversing the source array before the carry inverts every balance on
+//      the page — a bug that looks like plausible numbers. rollingHourWindows
+//      therefore returns OLDEST FIRST, and the reversal happens afterwards.
 //
-// The order is therefore: the live hour, then the past descending, then the
-// hours still to come. Future rows are kept rather than dropped — the owner
-// asked for all 24 ("where are the 24 hours") — but they belong below the
-// history, not above it.
+//   2. The DISPLAY leads with the newest row, because that is the row you look
+//      at first. With a rolling window that is a plain reverse: there are no
+//      future rows to sort below the history any more, and exactly one row is
+//      live — the newest, always.
+
+const H = 60 * 60 * 1000
 
 /**
- * Mark the in-progress hour and order the rows for reading: NOW first.
+ * The rolling windows behind the 24 rows, OLDEST FIRST (what the carry needs).
  *
- * @param {Array<{from:number,to:number}>} rows  slots WITH balances already
- *   carried, oldest first — the order the carry requires.
- * @param {number} nowMs
- * @returns {Array} live hour first, then past hours newest→oldest, then the
- *   hours still to come soonest-first; `isLive` set on the current hour.
+ * Every window is derived independently from the same captured `nowMs`; nothing
+ * accumulates, so no row can drift from rounding.
+ *
+ * @param {number} nowMs  captured once per refresh — not re-read per row
+ * @param {number} count  how many hourly rows (24)
+ * @returns {Array<{from:number,to:number,at:number}>} `at` is the label instant
+ *   and equals `to`: the 6:20 row is the hour that ENDED at 6:20.
  */
-export function orderHourlyForDisplay(rows, nowMs) {
-  if (!Array.isArray(rows) || !rows.length) return []
-  const out = rows.map(r => ({ ...r, isLive: false }))
-  // Exactly one row can be live: slots are contiguous and half-open [from,to).
-  const i = out.findIndex(r => nowMs >= r.from && nowMs < r.to)
-  // No live hour at all — a COMPLETED FX day, which is what the weekend view
-  // shows. Every row is history, so plain newest-first is the whole answer and
-  // there is no "now" to lead with.
-  if (i < 0) return out.reverse()
-  out[i].isLive = true
-  return [
-    out[i],
-    ...out.slice(0, i).reverse(),   // the past, most recent first
-    ...out.slice(i + 1),            // still to come, soonest first
-  ]
+export function rollingHourWindows(nowMs, count = 24) {
+  if (!Number.isFinite(nowMs) || !Number.isInteger(count) || count < 1) return []
+  const out = []
+  // i counts back from the newest; unshift builds oldest-first without ever
+  // mutating nowMs.
+  for (let i = 0; i < count; i++) {
+    const at = nowMs - i * H
+    out.unshift({ from: at - H, to: at, at })
+  }
+  return out
 }
 
 /**
- * When the hour on the wall clock next changes.
+ * Newest first, with `isLive` on the row whose window ends now.
  *
- * Split out and tested because the whole point of the owner's complaint was
- * that the table did not track the clock, and a UI that re-sorts on a short
- * timer is the wrong fix — it churns rows and drifts text between hours. This
- * gives a caller the ONE instant at which the ordering above can change.
+ * @param {Array} rows  windows WITH balances already carried, oldest first
+ */
+export function displayOrder(rows) {
+  if (!Array.isArray(rows) || !rows.length) return []
+  return rows
+    .map((r, i) => ({ ...r, isLive: i === rows.length - 1 }))
+    .reverse()
+}
+
+/**
+ * When the table's clock next ticks.
+ *
+ * Owner's cadence: "now is 6:20 AM … the next refresh is 6:30 AM" — every ten
+ * minutes, aligned to the wall clock rather than to whenever the page happened
+ * to load, so two tabs open side by side relabel together.
+ *
+ * A short timer was the wrong fix for the HOUR-aligned table (it churned rows
+ * for no gain, because the order could only change on the hour). With rolling
+ * minute-anchored windows the labels and the buckets genuinely move between
+ * ticks, so the tick is what keeps the table honest rather than noise.
  *
  * @param {number} nowMs
- * @returns {number} ms timestamp of the next exact hour, strictly after nowMs.
+ * @param {number} stepMs  tick cadence (default 10 minutes)
+ * @returns {number} the next aligned instant, strictly after nowMs.
  */
-export function nextHourBoundary(nowMs) {
-  const H = 60 * 60 * 1000
-  return Math.floor(nowMs / H) * H + H
+export function nextTickBoundary(nowMs, stepMs = 10 * 60 * 1000) {
+  const step = Number.isFinite(stepMs) && stepMs > 0 ? stepMs : 10 * 60 * 1000
+  return Math.floor(nowMs / step) * step + step
 }
 
 /**
