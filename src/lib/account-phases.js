@@ -14,10 +14,14 @@
  * them, autotrade sends the order. Order matters in the summary text: it reads
  * as the pipeline, so "Scan off" tells you nothing downstream is even fed.
  */
+// `initial` is NOT label[0]: Analyze and Autotrade both start with A, so
+// deriving it from the label printed two identical letters next to each other
+// and the dots became unreadable — the exact problem the letters were added to
+// solve. T is for Trade.
 export const PHASES = [
-  { key: 'scan', label: 'Scan' },
-  { key: 'analyze', label: 'Analyze' },
-  { key: 'autotrade', label: 'Autotrade' },
+  { key: 'scan', label: 'Scan', initial: 'S' },
+  { key: 'analyze', label: 'Analyze', initial: 'A' },
+  { key: 'autotrade', label: 'Autotrade', initial: 'T' },
 ]
 
 /**

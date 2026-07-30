@@ -11,7 +11,7 @@
     "test:watch": "vitest",
     "check:no-green": "bash scripts/check-no-green.sh",
     "serial": "node scripts/count-interactions.js --serial",
-    "audit:ui": "node scripts/responsive-audit.mjs",
+    "audit:ui": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect",
     "audit:ui:live": "node scripts/responsive-audit.mjs /performance,/desk,/trade,/accounts,/tune,/risk,/connect --live"
   },
   "dependencies": {
@@ -37,7 +37,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
-    "playwright": "^1.61.1",
+    "playwright": "^1.62.0",
     "vite": "^8.0.1",
     "vitest": "^3.0.0"
   },

@@ -836,6 +836,28 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/account-phases — Scan / Analyze / Autotrade per account.
+  //
+  // Owner asked three times for per-account switches. This is the read side:
+  // the master flags, plus every registry account's override (true / false /
+  // null = inherit) and what it therefore may ACTUALLY do.
+  //
+  // `effective.source` is the field that makes the UI honest — it says whether
+  // a phase is off because the MASTER is off (so a per-account switch would
+  // change nothing) or because this ACCOUNT is switched off. Without it the
+  // owner would flip a switch that cannot take effect and reasonably conclude
+  // the switches are fake again.
+  // -----------------------------------------------------------------------
+  router.get('/account-phases', async (_req, res) => {
+    try {
+      const { phasesView } = await import('../services/account-phases.js')
+      res.json(phasesView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/watchlists — every account's watchlist, plus the diff between
   // any two (?source=&destination=).
   //

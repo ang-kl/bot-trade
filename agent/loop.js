@@ -897,7 +897,44 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const { accountMayTrade, symbolAllowsStrategy } = await import('./services/watchlists.js')
     const { enabledStrategies } = await import('./services/strategies.js')
     const globalArmed = enabledStrategies(db, getState).map(s => s.key)
+    const { effectivePhases } = await import('./services/account-phases.js')
     for (const acct of apAccounts) {
+      // PER-ACCOUNT AUTOTRADE GATE — the enforcement point for the owner's
+      // independent switches. Without this the switches would be decorative:
+      // the UI would show autotrade OFF for an account and the loop would keep
+      // sending it orders.
+      //
+      // Placed FIRST in the per-account body on purpose. Everything below —
+      // the watchlist gate, the strategy gate, sizing, the risk gate — is work
+      // done in order to build an order for THIS account, and an account that
+      // may not trade should not pay for any of it (owner: "I am serious about
+      // avoiding unnecessary effort and expenses").
+      //
+      // The master flag is already checked upstream at the synth level; this is
+      // the per-account override, and effectivePhases keeps the master an AND so
+      // a per-account ON can never defeat a global OFF.
+      //
+      // ALL THREE phases gate here, in pipeline order. Scan and analyze are
+      // shared work done once per cycle, so switching either off for one
+      // account cannot un-scan the symbol — but it must still stop the account
+      // acting on a stage it is switched out of, otherwise "Scan off" on that
+      // account would sit above a trade the account just took.
+      const phases = effectivePhases(db, acct.accountId)
+      const offPhase = ['scan', 'analyze', 'autotrade'].find(p => !phases[p])
+      if (offPhase) {
+        log(`Phase gate: ${sym} skipped on ${acct.accountId} — ${offPhase} off (${phases.source[offPhase]})`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: `account_${offPhase}`, decision: 'skip',
+            reason: `${offPhase} is off for this account (${phases.source[offPhase]})`,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+
       // PER-ACCOUNT MEMBERSHIP GATE. The scan universe is the union of every
       // enabled account's watchlist, so a symbol reaching here may belong to
       // only some of them. Until an account owns a list this resolves to the
@@ -2248,6 +2285,14 @@ async function runLoop(db) {
 
     const scanEnabled = getState(db, 'scan_enabled') !== 'false'
     const analyzeEnabled = getState(db, 'analyze_enabled') !== 'false'
+    // Per-account phase switches, aggregated: scan and analyze are ONE piece of
+    // shared work per cycle, so the only honest saving is to stop entirely when
+    // no account the loop would dispatch to still wants the result. With no
+    // overrides set (the default) these are both true and nothing changes.
+    const { phaseWanted } = await import('./services/account-phases.js')
+    const rosterIds = getAutopilotAccounts(db).map(a => String(a.accountId))
+    const scanWanted = phaseWanted(db, 'scan', rosterIds)
+    const analyzeWanted = phaseWanted(db, 'analyze', rosterIds)
     const client = getAnthropicClient()
 
     // Daily token budget — reporting only. Scan/analyze are deterministic
@@ -2286,6 +2331,8 @@ async function runLoop(db) {
         log('No enabled symbols configured')
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
+      } else if (!scanWanted) {
+        log(`Scan off on every trading account (${rosterIds.join(', ')}) — skipping; nothing would use the result`)
       } else {
         if (marketClosed) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
@@ -2445,7 +2492,10 @@ async function runLoop(db) {
     // -----------------------------------------------------------------------
     // 2. ANALYZE PHASE — deep analysis for hot symbols (max 3 per cycle)
     // -----------------------------------------------------------------------
-    if (analyzeEnabled && scanResult.hot.length > 0) {
+    if (analyzeEnabled && !analyzeWanted && scanResult.hot.length > 0) {
+      log(`Analyze off on every trading account (${rosterIds.join(', ')}) — skipping ${scanResult.hot.length} hot symbol(s)`)
+    }
+    if (analyzeEnabled && analyzeWanted && scanResult.hot.length > 0) {
       // Best-first slot allocation: with concurrent positions capped (owner set
       // 25), the few candidates dispatched each cycle must be the STRONGEST
       // signals, not whichever scanned first — otherwise mediocre setups fill

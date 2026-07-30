@@ -10,6 +10,7 @@
 // (react-refresh/only-export-components).
 import { useSyncExternalStore } from 'react'
 import { agentGet, agentConfigured } from './agent-api.js'
+import { writeSelection } from './selected-account.js'
 
 // The same sessionStorage key AccountSwitcher fills — reading it costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip per mount.
@@ -19,7 +20,7 @@ const POLL_MS = 30_000
 // ONE shared poll for the whole app, not one per mounting component. Three
 // consumers on 30s timers each would triple the request rate and let the
 // sidebar and the page line show different numbers between ticks.
-let shared = { acct: null, phases: null, ccy: null }
+let shared = { acct: null, phasesView: null, phasesSig: '', ccy: null }
 let started = false
 const listeners = new Set()
 
@@ -57,15 +58,66 @@ function start() {
 
   const load = () => {
     if (!agentConfigured()) return
-    agentGet('/state/health').then(h => {
-      const next = {
-        scan: h?.scanEnabled === true,
-        analyze: h?.analyzeEnabled === true,
-        autotrade: h?.autotradeEnabled === true,
+    // SERVER TRUTH for which account is selected. The sessionStorage cache is
+    // an instant-paint hint written by the UI's own switch paths — but a
+    // switch can happen in Connect, another tab, or Telegram, and the owner
+    // caught the header showing the OLD account after a Connect switch
+    // (2026-07-30 screenshot). /state/accounts is the registry's answer, so
+    // the header converges on the truth within one poll even when no UI code
+    // wrote the cache. Reconciling INTO the cache (via writeSelection) also
+    // fires the page-reload notifier, so every polling page repaints too.
+    agentGet('/state/accounts').then(r => {
+      const sid = r?.selectedAccountId != null ? Number(r.selectedAccountId) : null
+      if (sid == null) return
+      writeSelection(sid)
+      const cached = readCache()
+      if (cached && Number(cached.accountId) === sid) {
+        if (cached.accountId !== shared.acct?.accountId || cached.balance !== shared.acct?.balance) {
+          shared.acct = cached; emit()
+        }
+        return
       }
-      const p = shared.phases
-      if (!p || p.scan !== next.scan || p.analyze !== next.analyze || p.autotrade !== next.autotrade) {
-        shared.phases = next
+      // Selected account is not in the roster cache (fresh browser, or the
+      // switch happened elsewhere before the roster loaded). The registry row
+      // still names it — label it honestly with balance unknown rather than
+      // keep showing the PREVIOUS account's name and money.
+      const row = (r.accounts || []).find(a => Number(a.account_id) === sid)
+      if (row && shared.acct?.accountId !== sid) {
+        shared.acct = {
+          accountId: sid,
+          traderLogin: row.trader_login ?? null,
+          isLive: row.is_live === 1,
+          balance: null,
+        }
+        emit()
+      }
+    }).catch(() => {})
+    // PER-ACCOUNT phases, not the global flags. /state/health still reports the
+    // three master flags, and reading those here was correct only while they
+    // were the whole truth. Since the per-account switches exist an account can
+    // have autotrade off while the master is on, and dots drawn from the master
+    // would show the selected account as armed when it is not — the precise
+    // kind of decorative status that made the owner ask whether the switches
+    // were wired at all. `master` is kept as the fallback for an account the
+    // registry does not know (or before the roster resolves).
+    agentGet('/state/account-phases').then(v => {
+      if (!v?.master) return
+      const byId = {}
+      for (const a of v.accounts || []) {
+        byId[String(a.accountId)] = {
+          scan: a.effective?.scan === true,
+          analyze: a.effective?.analyze === true,
+          autotrade: a.effective?.autotrade === true,
+        }
+      }
+      const next = { master: { ...v.master }, byId }
+      // Cheap deep compare: this object is a handful of booleans per account,
+      // and an unchanged poll must not cause a render (the whole point of the
+      // "only repaint what changed" pass).
+      const sig = JSON.stringify(next)
+      if (sig !== shared.phasesSig) {
+        shared.phasesSig = sig
+        shared.phasesView = next
         emit()
       }
     }).catch(() => {})
@@ -101,12 +153,29 @@ const getSnapshot = () => snapshot
  */
 export function useActiveAccount() {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  // The SELECTED account's effective phases, falling back to the master flags
+  // for an account the registry has not answered for yet. Derived here rather
+  // than stored so the snapshot identity stays stable when nothing changed.
+  const view = state.phasesView
+  const phases = !view
+    ? null
+    : (view.byId[String(state.acct?.accountId)] || view.master)
   return {
     acct: state.acct,
-    phases: state.phases,
-    armed: state.phases ? state.phases.autotrade : null,
+    phases,
+    armed: phases ? phases.autotrade : null,
     ccy: state.ccy,
   }
+}
+
+/**
+ * EVERY account's effective phases, from the same poll — for lists that draw a
+ * row per account (the sidebar switcher). Returns null until the first answer.
+ *
+ * @returns {{master: object, byId: Record<string, {scan:boolean,analyze:boolean,autotrade:boolean}>}|null}
+ */
+export function useAccountPhases() {
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot).phasesView
 }
 
 /** The account's balance, formatted with its own currency. Never a bare "$". */

@@ -21,61 +21,22 @@
 // Colour carries the trading state, per the owner's spec: accent/blue while
 // autotrade is armed, bright grey while it is not.
 //
-// HONEST LIMIT — scan/analyze/autotrade are still three GLOBAL flags in
-// agent_state (scan_enabled / analyze_enabled / autotrade_enabled); no
-// per-account pause exists yet (that is task #124, "per-account control:
-// mode enforcement, pause disposition"). This header only ever renders the
-// SELECTED account, so for the account you are viewing the global flags ARE
-// its flags and the dots are truthful. They would NOT be truthful printed
-// against every row of a multi-account list, which is exactly why they are
-// not — see AccountSwitcher.
-import { PHASES, offSummary } from '../lib/account-phases.js'
+// The dots are now the SELECTED ACCOUNT'S OWN state, not the global flags.
+// Until the per-account switches shipped they could only be the three master
+// flags in agent_state, which happened to be truthful because this header
+// renders exactly one account — and stopped being truthful the moment an
+// account could have autotrade off under a master that is on. useActiveAccount
+// reads /state/account-phases and returns that account's EFFECTIVE phases, with
+// the master as the fallback for an account the registry has not answered for.
+// The switches themselves live on Tune › Pipeline (AccountPhaseSwitches).
+import { offSummary } from '../lib/account-phases.js'
+import PhaseDots from './common/PhaseDots.jsx'
 import { useActiveAccount, formatBalance } from '../lib/use-active-account.js'
 
 // Same session cache AccountSwitcher fills — reading it here costs nothing
 // and avoids a second /actions/ctrader-accounts round-trip on every mount.
 const CACHE = 'accounts_cache_v1'
 const POLL_MS = 30_000
-
-/**
- * Three traffic lights, one per phase: blue on, red off.
- *
- * SIZE OVERRIDES THE 2px SPEC, and the owner is the reason. They asked for 2px
- * dots, then reported "I cannot see the traffic lights of the 3 independent
- * Scan/Analyze/Autotrade." A 2px dot is about one device pixel after this app's
- * 1.1 zoom — smaller than the anti-aliasing around it, so it renders as a
- * smudge or as nothing at all. These are 6px with a ring: still a status light
- * rather than a badge, but actually visible. The initial (S / A / T) rides
- * alongside so the three are distinguishable without a hover, which a bare dot
- * can never be on a touch screen.
- */
-function PhaseDots({ phases, className = '', letters = true }) {
-  if (!phases) return null
-  return (
-    <span className={`inline-flex items-center gap-[3px] ${className}`}>
-      {PHASES.map(p => {
-        const on = phases[p.key] === true
-        const colour = on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)'
-        return (
-          <span
-            key={p.key}
-            aria-label={`${p.label} ${on ? 'on' : 'off'}`}
-            title={`${p.label} is ${on ? 'ON' : 'OFF'}`}
-            className="inline-flex items-center gap-[1px] text-[8px] font-bold leading-none"
-            style={{ color: colour }}
-          >
-            <span
-              aria-hidden="true"
-              className="inline-block h-[6px] w-[6px] shrink-0 rounded-full"
-              style={{ background: colour, boxShadow: `0 0 0 1px ${colour}` }}
-            />
-            {letters && p.label[0]}
-          </span>
-        )
-      })}
-    </span>
-  )
-}
 
 /**
  * Compact chip for the touch header — the same fact in one line, because a

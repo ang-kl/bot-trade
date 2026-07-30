@@ -3,6 +3,8 @@
 // typed confirmation) — no trip back to the Connect page needed.
 import { useEffect, useState, useCallback } from 'react'
 import { agentPost, agentConfigured } from '../lib/agent-api.js'
+import PhaseDots from './common/PhaseDots.jsx'
+import { useAccountPhases } from '../lib/use-active-account.js'
 
 const CACHE = 'accounts_cache_v1'
 
@@ -12,6 +14,11 @@ export default function AccountSwitcher() {
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // Each row's OWN Scan/Analyze/Autotrade state. Free — the shared account poll
+  // already fetches it — and only truthful per row since the per-account
+  // switches shipped; before that these were three global flags and a dot beside
+  // account B would have been showing account A's state.
+  const phaseView = useAccountPhases()
 
   const load = useCallback(async () => {
     if (!agentConfigured()) return
@@ -64,8 +71,15 @@ export default function AccountSwitcher() {
                 <span>{a.traderLogin ?? a.accountId}</span>
                 {active && <span aria-hidden="true" className="ml-auto text-[var(--color-accent)]">●</span>}
               </span>
-              <span className="block text-[9px] text-[var(--color-text-sub)] tabular-nums">
-                {busy ? 'switching…' : a.balance != null ? `$${Number(a.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+              <span className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
+                <span>{busy ? 'switching…' : a.balance != null ? `$${Number(a.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</span>
+                {/* Owner: "red, red, red dots beside the balance in the side
+                    bar" — for THAT account, which is why they are here on the
+                    row and not only on the selected-account header. */}
+                <PhaseDots
+                  phases={phaseView?.byId?.[String(a.accountId)]}
+                  who={`${a.isLive ? 'LIVE' : 'demo'} ${a.traderLogin ?? a.accountId}`}
+                />
               </span>
             </button>
           )
