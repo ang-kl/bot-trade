@@ -90,6 +90,8 @@ export function evaluateGlobalGuards(db, guards = null) {
       graceMin: g.unknownPnlGraceMin,
     })
     checks.portfolio_unresolved_pnl_trades = unresolved.count
+    // Same reason as the per-account layer: recorded whether or not it blocked.
+    checks.portfolio_unresolvable_pnl_trades = unresolved.unresolvableCount ?? 0
     const unknown = unknownPnlBlocks(unresolved, {
       enabled: g.blockOnUnknownPnl,
       graceMin: g.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,

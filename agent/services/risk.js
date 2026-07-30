@@ -710,6 +710,11 @@ export function evaluateTrade(db, proposal, configOverride) {
     graceMin: config.unknownPnlGraceMin,
   })
   checks.unresolved_pnl_trades = unresolved.count
+  // Written-off rows land in checks_json on EVERY evaluation, blocked or not.
+  // The reason string only exists on a veto, so without this the one case that
+  // matters most — rows written off, veto lifted, trading resumes — left no
+  // record anywhere. risk_events keeps it permanently.
+  checks.unresolvable_pnl_trades = unresolved.unresolvableCount ?? 0
   const unknownVerdict = unknownPnlBlocks(unresolved, {
     enabled: config.blockOnUnknownPnl,
     graceMin: config.unknownPnlGraceMin ?? DEFAULT_UNKNOWN_PNL_GRACE_MIN,

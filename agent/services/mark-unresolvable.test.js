@@ -130,3 +130,64 @@ test('a still-blocking row and an unresolvable row coexist — the veto keeps wo
   assert.equal(v.unresolvableCount, 1)
   assert.equal(unknownPnlBlocks(v, { graceMin: 0 }).block, true)
 })
+
+// ---------------------------------------------------------------------------
+// AUDIT FINDING, 2026-07-30, against my own #513. That PR claimed excluding
+// unresolvable rows from the blocking count meant "trading resuming is never
+// silent about what it stopped waiting for". It was not true as shipped:
+// unresolvableCount was computed, passed to unknownPnlBlocks, and dropped —
+// the signature did not destructure it, and a reason string only exists on a
+// VETO. So in the exact case that matters (rows written off, veto lifted,
+// trading resumes) nothing was said anywhere.
+// ---------------------------------------------------------------------------
+
+test('a lifted veto SAYS what it stopped waiting for', () => {
+  const db = initDB(':memory:')
+  closedNoPnl(db, { daysAgo: 30 })
+  const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
+  sweepUnresolvable(db, { exhaustedAccounts: [ACCT], dryRun: false })
+
+  const after = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  const verdict = unknownPnlBlocks(after)
+  assert.equal(verdict.block, false, 'the veto is lifted')
+  // ...and it is not silent about why it is now allowed to be.
+  assert.match(verdict.note, /1 closed trade\(s\).*unresolvable/)
+  assert.match(verdict.note, /permanently unknown, not zero/)
+})
+
+test('a STILL-blocking veto names the written-off rows alongside the blocking ones', () => {
+  const db = initDB(':memory:')
+  closedNoPnl(db, { daysAgo: 30 })                 // will be written off
+  const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
+  sweepUnresolvable(db, { exhaustedAccounts: [ACCT], dryRun: false })
+  closedNoPnl(db, { daysAgo: 20 })                 // still blocking, still fillable
+
+  const both = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  assert.equal(both.count, 1)
+  assert.equal(both.unresolvableCount, 1)
+  const verdict = unknownPnlBlocks(both)
+  assert.equal(verdict.block, true)
+  // The reason stays about the refusal; the note carries the other fact.
+  assert.match(verdict.reason, /1 closed trade\(s\) today have no realised P&L/)
+  assert.match(verdict.note, /unresolvable/)
+})
+
+test('no note at all when nothing has been written off — never a phantom reassurance', () => {
+  const db = initDB(':memory:')
+  closedNoPnl(db, { daysAgo: 30 })
+  const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
+  const v = unknownPnlBlocks(unresolvedPnlSince(db, dayStart, { accountId: ACCT }))
+  assert.equal(v.block, true)
+  assert.equal(v.note, undefined)
+  // Same for the clean case and for the disabled case.
+  assert.equal(unknownPnlBlocks({ count: 0 }).note, undefined)
+  assert.equal(unknownPnlBlocks({ count: 5, unresolvableCount: 0 }, { enabled: false }).note, undefined)
+})
+
+test('the note survives even when the veto is switched OFF entirely', () => {
+  // blockOnUnknownPnl=false returns early. A row the broker will never explain
+  // is still worth saying out loud, whatever the veto is set to.
+  const v = unknownPnlBlocks({ count: 3, unresolvableCount: 2 }, { enabled: false })
+  assert.equal(v.block, false)
+  assert.match(v.note, /2 closed trade\(s\)/)
+})
