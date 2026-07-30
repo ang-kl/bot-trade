@@ -1312,7 +1312,33 @@ export default function Performance() {
     const anchor = dayAnchorMs(loadedAt)
     const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
     const dailyLossPct = riskFull?.risk?.effective?.dailyLossPct ?? null
-    return accounts.map(a => {
+    // WHAT IS ACTUALLY IN PLAY — not every row in the registry.
+    //
+    // Owner (2026-07-30, screenshot): "i only select 3 trading-account but
+    // performance still shows five." This mapped `accounts` straight from
+    // /state/accounts, which returns EVERY registry row including disabled
+    // ones — so a LIVE account the owner had deliberately disabled sat at the
+    // top of the page with a loss-cap bar, reading as if it were in play.
+    //
+    // The rule is "armed OR holding risk", not "enabled":
+    //   · enabled            → the bot may trade it, show it;
+    //   · open positions     → real exposure, show it even when disabled,
+    //                          because hiding live risk is far worse than an
+    //                          extra card (a disabled account still has its
+    //                          positions monitored — they are not abandoned);
+    //   · closed today       → it contributed to today's P&L, so omitting it
+    //                          would make the day's totals not reconcile.
+    // Everything else is dormant and only adds noise.
+    const withOpen = new Set(positions.map(p2 => String(p2.account_id ?? '')))
+    const withToday = new Set(
+      closed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= anchor })
+        .map(t2 => String(t2.account_id ?? ''))
+    )
+    const inPlay = accounts.filter(a => {
+      const id = String(a.account_id)
+      return a.enabled === 1 || withOpen.has(id) || withToday.has(id)
+    })
+    return inPlay.map(a => {
       const led = ledgers[a.account_id]
       const bal = led?.balance ?? null
       const rows = closed.filter(t2 => String(t2.account_id ?? '') === a.account_id && (() => { const ms = closedMs(t2); return ms != null && ms >= anchor })())
@@ -1325,16 +1351,20 @@ export default function Performance() {
       const isSel = a.account_id === selectedAccountId
       const equity = isSel ? riskFull?.margin?.equity ?? null : null
       const live = isSel && equity != null && bal != null ? equity - bal : null
+      // A card shown DESPITE being disabled is labelled, so "why is this here"
+      // never needs asking: it is here because it still carries risk.
+      const dormantButHeld = a.enabled !== 1
       return {
         id: a.account_id,
-        name: `${a.is_live ? 'Live' : 'Demo'} · ${a.trader_login || a.account_id}`,
+        dormantButHeld,
+        name: `${a.is_live ? 'Live' : 'Demo'} · ${a.trader_login || a.account_id}${dormantButHeld ? ' · OFF' : ''}`,
         ccy: a.base_currency || '—',
         bal, day, gw, gl, n30, cap, used, equity, live,
         hasToday: rows.length > 0,
         usedCol: used == null ? P_MU : used > 66 ? P_DN : used > 33 ? P_WRN : P_ACC,
       }
     })
-  }, [accounts, ledgers, riskFull, allTrades, loadedAt, selectedAccountId])
+  }, [accounts, ledgers, riskFull, allTrades, loadedAt, selectedAccountId, positions])
 
   // Open positions split by MARKET STATE (owner 2026-07-24: open trades sat
   // stuck through a Friday close the UI never surfaced). /state/positions

@@ -897,7 +897,37 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const { accountMayTrade, symbolAllowsStrategy } = await import('./services/watchlists.js')
     const { enabledStrategies } = await import('./services/strategies.js')
     const globalArmed = enabledStrategies(db, getState).map(s => s.key)
+    const { effectivePhases } = await import('./services/account-phases.js')
     for (const acct of apAccounts) {
+      // PER-ACCOUNT AUTOTRADE GATE — the enforcement point for the owner's
+      // independent switches. Without this the switches would be decorative:
+      // the UI would show autotrade OFF for an account and the loop would keep
+      // sending it orders.
+      //
+      // Placed FIRST in the per-account body on purpose. Everything below —
+      // the watchlist gate, the strategy gate, sizing, the risk gate — is work
+      // done in order to build an order for THIS account, and an account that
+      // may not trade should not pay for any of it (owner: "I am serious about
+      // avoiding unnecessary effort and expenses").
+      //
+      // The master flag is already checked upstream at the synth level; this is
+      // the per-account override, and effectivePhases keeps the master an AND so
+      // a per-account ON can never defeat a global OFF.
+      const phases = effectivePhases(db, acct.accountId)
+      if (!phases.autotrade) {
+        log(`Autotrade gate: ${sym} skipped on ${acct.accountId} — autotrade off (${phases.source.autotrade})`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'account_autotrade', decision: 'skip',
+            reason: `autotrade is off for this account (${phases.source.autotrade})`,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+
       // PER-ACCOUNT MEMBERSHIP GATE. The scan universe is the union of every
       // enabled account's watchlist, so a symbol reaching here may belong to
       // only some of them. Until an account owns a list this resolves to the
