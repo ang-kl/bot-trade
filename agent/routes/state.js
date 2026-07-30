@@ -529,6 +529,26 @@ export default function stateRouter(db) {
   // group that agrees, its best member, and the symbols that group would
   // rather not open separately. Read only; runs the same pure function the
   // loop runs, against the latest stored scan.
+  // GET /state/risk-reassess — the last "Re-Risk" result, plus which providers
+  // this agent actually has a key for (so the UI can disable a choice that
+  // cannot work instead of failing after the click). Owner: "Result below the
+  // re-risk include last date/time of re-risk (watchlist symbol number)".
+  router.get('/risk-reassess', async (_req, res) => {
+    try {
+      const { loadLastAssessment, PROPOSABLE } = await import('../services/risk-reassess.js')
+      const { availableProviders } = await import('../lib/llm-provider.js')
+      res.json({
+        last: loadLastAssessment(db),
+        providers: availableProviders(),
+        proposable: Object.fromEntries(
+          Object.entries(PROPOSABLE).map(([k, v]) => [k, { label: v.label, min: v.min, max: v.max, kind: v.kind }])
+        ),
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/cluster-conviction', async (_req, res) => {
     try {
       const { clusterConviction, loadClusterConvictionConfig } = await import('../services/cluster-conviction.js')

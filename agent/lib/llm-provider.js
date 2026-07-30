@@ -118,6 +118,49 @@ function openaiClient(apiKey, model, fetchImpl = fetch, timeoutMs = LLM_TIMEOUT_
 }
 
 /**
+ * Build a client for an EXPLICITLY chosen provider + model, ignoring which
+ * key happens to be primary.
+ *
+ * createLLMClient below picks the provider from the environment, which is
+ * right for the automatic paths (position monitor, weekend watch) — nobody is
+ * there to choose. The Risk page's Re-Risk buttons are the opposite case: the
+ * owner picks the provider and types the model name, so the choice must
+ * override the env precedence rather than be second-guessed by it.
+ *
+ * Throws when the chosen provider has no API key configured, because the
+ * honest answer to "assess with Claude" on a box that has no Claude key is an
+ * error, not a silent substitution with the other provider's model.
+ *
+ * @param {'openai'|'anthropic'} provider
+ * @param {string} model  the model id, as typed
+ */
+export function createLLMClientFor(provider, model, env = process.env, deps = {}) {
+  const id = String(model || '').trim()
+  if (!id) throw new Error('a model name is required')
+  if (provider === 'openai') {
+    if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set on the agent — cannot use OpenAI')
+    return openaiClient(env.OPENAI_API_KEY, id, deps.fetch, deps.timeoutMs)
+  }
+  if (provider === 'anthropic') {
+    const key = env.CLAUDE_API_KEY || env.ANTHROPIC_API_KEY
+    if (!key) throw new Error('CLAUDE_API_KEY is not set on the agent — cannot use Claude')
+    const client = new Anthropic({ apiKey: key, timeout: deps.timeoutMs ?? LLM_TIMEOUT_MS })
+    client.provider = 'anthropic'
+    client.model = id
+    return client
+  }
+  throw new Error(`unknown provider '${provider}' — expected 'openai' or 'anthropic'`)
+}
+
+/** Which providers this agent actually has a key for. Pure; no secrets leak. */
+export function availableProviders(env = process.env) {
+  return {
+    openai: !!env.OPENAI_API_KEY,
+    anthropic: !!(env.CLAUDE_API_KEY || env.ANTHROPIC_API_KEY),
+  }
+}
+
+/**
  * Build the LLM client for the active provider. OpenAI is primary when
  * OPENAI_API_KEY is present; otherwise the Anthropic SDK client.
  */
