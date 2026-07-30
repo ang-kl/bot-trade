@@ -107,8 +107,22 @@ async function ensureSidecarSession(creds) {
   // same token is an incremental AccountAuth server-side — no reconnect —
   // so the memo key only needs to cover the (host, token, account) triple.
   // creds.accountIds (optional) pre-authorizes a whole roster in one push.
+  //
+  // THE ROSTER IS NO LONGER SORTED HERE. It used to be, and that discarded the
+  // one piece of information the order carries: ctrader-creds.js:46 builds
+  // `[primary, ...others]` on purpose, and engine.cpp resolves an unstamped
+  // operation to accountIds_.front(). Sorting made `[A,B]` and `[B,A]` hash
+  // identically, so the memo asserted two sessions with DIFFERENT primaries
+  // were the same session.
+  //
+  // Be clear about what this line does and does not fix. It does not fix
+  // routing — withAccount() below does that, by making the sidecar's default
+  // unreachable from Node. What it fixes is the memo telling us something
+  // untrue about the session we hold. The cost is an extra /connect when the
+  // primary changes; engine.cpp takes its sameSession branch for that push, so
+  // it is one cheap HTTP call and no reconnect.
   const roster = Array.isArray(creds.accountIds) && creds.accountIds.length
-    ? [...creds.accountIds].sort().join(',')
+    ? creds.accountIds.join(',')
     : String(creds.accountId)
   const key = `${creds.host}|${roster}|${creds.accessToken}`
   if (key === lastPushedKey) return
@@ -267,11 +281,71 @@ export function validateExecGuard(orderPayload, guard) {
   return { ok: true }
 }
 
+// ---------------------------------------------------------------------------
+// ACCOUNT STAMPING — Phase 2, owner-approved 2026-07-30.
+//
+// THE BUG THIS CLOSES (characterised in agent/multi-account-routing.
+// characterisation.test.js, written up in docs/multi-account-exit-routing-
+// 2026-07-30.md). Twelve exit call sites pass a positionId and nothing else, so
+// engine.cpp:276-280 filled in ctidTraderAccountId from its own primary — and
+// the primary is elected once per broker session and then frozen, because
+// setCredentials' sameSession branch only appends ids and never reorders them.
+// The effect was that on every account except the primary, positions opened
+// normally and were then never managed: the stop ratchet, the giveback close,
+// the loss cap, the time cap and the weekend bank all failed with
+// POSITION_NOT_FOUND, each one logging and carrying on by design.
+//
+// WHY HERE AND NOT AT THE CALL SITES. Twelve sites is twelve chances to forget,
+// and the thirteenth caller has not been written yet. Every one of them already
+// hands us `creds`, so the account is available at the chokepoint. Stamping here
+// makes the sidecar's default UNREACHABLE from Node, which is the property worth
+// having — not "all current callers happen to be correct".
+//
+// A MISMATCH IS AN ERROR, NOT A PREFERENCE. If a payload names one account and
+// the credentials name another, someone is confused about which account this
+// operation belongs to, and guessing either way risks acting on the wrong one.
+// Every caller today derives both from the same id (loop.js:418,
+// pending-orders.js:332, closed-market-limits.js:217 all pass creds.accountId),
+// so this cannot fire on current code — it is here to catch the next caller.
+//
+// The JS/ws path was never affected: wsClosePosition and friends build the
+// payload from their `accountId` argument and ignore any id in `args`. Stamping
+// at the delegator is harmless there and keeps one rule for both engines.
+// ---------------------------------------------------------------------------
+
+/** The account this operation belongs to, or an error explaining why we can't tell. */
+export function resolveOrderAccount(creds, payload) {
+  const fromCreds = creds?.accountId == null || creds.accountId === '' ? null : Number(creds.accountId)
+  const raw = payload?.ctidTraderAccountId
+  const fromPayload = raw == null || raw === '' ? null : Number(raw)
+
+  if (fromPayload != null && Number.isFinite(fromPayload)) {
+    if (fromCreds != null && Number.isFinite(fromCreds) && fromCreds !== fromPayload) {
+      return { ok: false, reason: `guard_account_mismatch: payload names account ${fromPayload} but the credentials name ${fromCreds} — refusing to guess which one this belongs to` }
+    }
+    return { ok: true, accountId: fromPayload }
+  }
+  if (fromCreds == null || !Number.isFinite(fromCreds)) {
+    return { ok: false, reason: 'guard_no_account: neither the payload nor the credentials name an account — refusing to let the broker pick one' }
+  }
+  return { ok: true, accountId: fromCreds }
+}
+
+/** payload + an explicit ctidTraderAccountId. Throws rather than send an ambiguous write. */
+function withAccount(creds, payload) {
+  const r = resolveOrderAccount(creds, payload)
+  if (!r.ok) throw new Error(r.reason)
+  return { ...(payload && typeof payload === 'object' ? payload : {}), ctidTraderAccountId: r.accountId }
+}
+
 export async function placeOrder(creds, orderPayload) {
   const g = validateExecGuard(orderPayload, creds?.execGuard)
   if (!g.ok) throw new Error(g.reason)
   const v = validateOrderBracket(orderPayload)
   if (!v.ok) throw new Error(v.reason)
+  // Throws on an unresolvable or contradictory account, BEFORE the guard-passed
+  // order can reach either engine.
+  orderPayload = withAccount(creds, orderPayload)
   if (execEngineMode() === 'cpp') {
     return withFallback('order',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/order', orderPayload) },
@@ -292,6 +366,7 @@ export async function setExecGuard(creds, cfg) {
 }
 
 export async function amendPosition(creds, args) {
+  args = withAccount(creds, args)
   if (execEngineMode() === 'cpp') {
     return withFallback('amend',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/amend', args) },
@@ -305,6 +380,7 @@ export async function amendPosition(creds, args) {
 }
 
 export async function closePosition(creds, args) {
+  args = withAccount(creds, args)
   if (execEngineMode() === 'cpp') {
     return withFallback('close',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/close', args) },
@@ -318,9 +394,14 @@ export async function closePosition(creds, args) {
 }
 
 export async function cancelOrder(creds, { orderId }) {
+  // cancelOrder always built its own body from creds.accountId and so was never
+  // part of the exit gap — but it goes through the same helper now, so there is
+  // exactly one rule about where an account comes from and one error to read
+  // when it cannot be determined.
+  const acct = withAccount(creds, { orderId })
   if (execEngineMode() === 'cpp') {
     return withFallback('cancel',
-      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/cancel', { ctidTraderAccountId: parseInt(creds.accountId), orderId }) },
+      async () => { await ensureSidecarSession(creds); return sidecar('POST', '/cancel', acct) },
       async () => {
         const m = await ws()
         return m.wsCancelOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, { orderId })

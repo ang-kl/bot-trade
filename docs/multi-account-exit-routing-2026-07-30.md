@@ -1,8 +1,21 @@
 # Exits on non-primary accounts do not reach their account
 
-**Date:** 2026-07-30 · **Status:** found and pinned by tests; **NOT fixed** ·
-**Severity:** high, live-money · **Found by:** Phase 1 (owner-approved
-characterisation work, tests only)
+**Date:** 2026-07-30 · **Severity:** high, live-money · **Found by:** Phase 1
+(owner-approved characterisation work, tests only)
+
+**Status: FIXED IN NODE (Phase 2, part 1). The C++ half is still to come.**
+`agent/lib/exec-engine.js` now stamps `ctidTraderAccountId` from `creds` on every
+write before it leaves the process, so the sidecar's primary-account default is
+unreachable from Node, and a payload that contradicts its credentials is refused
+outright. The owner chose **refuse over default** for the sidecar itself
+(2026-07-30), so `cpp-exec` will be changed to reject an unstamped operation
+rather than fill one in — **but only after this Node change is deployed.** The two
+services deploy independently, so a sidecar that refuses while Node still sends
+unstamped requests would break every exit in the window between the two deploys.
+Node first is the only safe order.
+
+The sections below describe the defect as found. They are kept in the past tense
+rather than deleted, because the C++ work needs the mechanism on record.
 
 ## The one-paragraph version
 
@@ -127,24 +140,51 @@ ambiguous failure.
   succeeding and every subsequent close/amend on the same position failing with
   `POSITION_NOT_FOUND`.
 
-## The fix, for Phase 2 — not applied here
+## The fix — Node half, applied
 
-Stamp the account at the chokepoint rather than at twelve call sites:
-`placeOrder`, `amendPosition` and `closePosition` in `agent/lib/exec-engine.js`
-already receive `creds`, so each can default
-`ctidTraderAccountId` from `creds.accountId` exactly the way `cancelOrder`
-already does at line 323. That is one edit per function, it cannot be forgotten
-by a new caller, and it makes the sidecar's `withAccountId` default unreachable
-from Node.
+Stamped at the chokepoint rather than at twelve call sites. `placeOrder`,
+`amendPosition`, `closePosition` and `cancelOrder` in `agent/lib/exec-engine.js`
+all receive `creds`, so `withAccount()` supplies `ctidTraderAccountId` there,
+once, for all of them. **Every one of the nine exit call sites is unchanged** —
+that is the point of fixing it at the chokepoint: twelve sites is twelve chances
+to forget, and the thirteenth caller has not been written yet.
 
-Two things to do alongside it:
+`resolveOrderAccount(creds, payload)` decides, and refuses rather than guess:
 
-1. **Drop the `.sort()` from the memo key**, or key on the primary explicitly.
-   Sorting a list whose order is load-bearing is the bug that hid this one.
-2. **Decide what an unstamped operation should do in the sidecar.** Defaulting to
-   the primary is a silent mis-route. Refusing it outright would have surfaced
-   this on the first non-primary exit. That is a C++ behaviour change and needs
-   the owner's call.
+| Case | Verdict |
+| --- | --- |
+| payload silent, creds name an account | stamp it |
+| both name the same account | stamp it |
+| payload only (entry paths, `cancelOrder`) | honour the payload |
+| **they disagree** | `guard_account_mismatch` — refuse |
+| **neither names one** | `guard_no_account` — refuse |
 
-Neither is in this PR. Phase 1 was scoped to tests, and the value of stopping
-here is that the fix now has a failing-test target rather than an argument.
+A mismatch cannot fire on current code: `loop.js:418`,
+`pending-orders.js:332` and `closed-market-limits.js:217` all derive the payload
+account from `creds.accountId`. It is there for the next caller. An empty string
+counts as absent, not as account 0 — `Number('')` is `0`, which would otherwise
+have been a silent route to an account that does not exist.
+
+Also done: **the `.sort()` is gone from the memo key.** Be precise about what
+that buys, because it is easy to overstate. It does *not* fix routing — the
+stamping does. What it fixes is the memo asserting that two sessions with
+different primaries are the same session, which is what made the mis-route
+permanent instead of transient. The cost is one extra `/connect` when the
+primary changes, and `engine.cpp` takes its `sameSession` branch for that push,
+so there is no reconnect.
+
+## Still to do — the C++ half
+
+The owner chose **refuse over default** (2026-07-30): the sidecar should reject
+an operation that names no account rather than filling one in. That closes the
+hole from the other side, and turns a future regression into a loud failure on
+the first exit instead of a silent one on every non-primary account.
+
+**It must ship after the Node change is deployed, not with it.** The two services
+deploy independently, so a sidecar that refuses while Node still sends unstamped
+requests would break every exit for the length of that window. Node first is the
+only ordering that is safe at every intermediate state.
+
+When it lands, `withAccountId` (engine.cpp:276-280) becomes a validation rather
+than a default, on all four write routes, and `order_guard` gains the verdict so
+the refusal is atomic with the rest of the guard.
