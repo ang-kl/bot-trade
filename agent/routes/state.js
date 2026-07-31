@@ -1075,7 +1075,22 @@ export default function stateRouter(db) {
   router.get('/account-phases', async (_req, res) => {
     try {
       const { phasesView } = await import('../services/account-phases.js')
-      res.json(phasesView(db))
+      const view = phasesView(db)
+      // Connectivity per account, from the sidecar's authorized roster (the
+      // same fail-open source the sweeps gate on): 'active' when the broker
+      // session holds the account, 'disconnected' when the session is up
+      // WITHOUT it, 'unknown' when the roster itself is unknown (js mode /
+      // health blip) — unknown is stated, never guessed either way.
+      try {
+        const { sidecarRoster } = await import('../lib/exec-engine.js')
+        const roster = await sidecarRoster()
+        for (const a of view.accounts) {
+          a.connectivity = roster == null ? 'unknown' : roster.includes(String(a.accountId)) ? 'active' : 'disconnected'
+        }
+      } catch {
+        for (const a of view.accounts) a.connectivity = 'unknown'
+      }
+      res.json(view)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

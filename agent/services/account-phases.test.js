@@ -169,3 +169,30 @@ test('phasesView reports every registry row, master, overrides and effective', (
   const demo = v.accounts.find(a => a.accountId === '46130058')
   assert.equal(demo.effective.autotrade, true, 'unaffected by the other account')
 })
+
+test('phasesView carries balance, open/pending counts and never charges NULL rows to an account', () => {
+  const db = db_()
+  armAll(db)
+  // Per-account balance stamp (the loop writes this on reconcile).
+  setState(db, 'acct:46130058:account_balance_usd', '52085.06')
+  // Two attributed open positions, one NULL legacy row, one other-account row.
+  const mp = db.prepare("INSERT INTO monitored_positions (symbol, side, entry_price, account_id, status) VALUES (?,?,?,?,'active')")
+  mp.run('EURUSD', 'long', 1.1, '46130058')
+  mp.run('GBPUSD', 'long', 1.27, '46130058')
+  mp.run('USDJPY', 'long', 155, null)
+  mp.run('XAUUSD', 'short', 2400, '42993489')
+  // One working pending order attributed, one already-filled one that must not count.
+  const po = db.prepare("INSERT INTO pending_orders (symbol, status, account_id) VALUES (?,?,?)")
+  po.run('NATGAS', 'working', '46130058')
+  po.run('WHEAT', 'filled', '46130058')
+
+  const v = phasesView(db)
+  const a = v.accounts.find(x => x.accountId === '46130058')
+  assert.equal(a.balance, 52085.06)
+  assert.equal(a.openPositions, 2, 'NULL and other-account rows must not be charged here')
+  assert.equal(a.pendingOrders, 1, 'only working orders count')
+  const b = v.accounts.find(x => x.accountId === '42993489')
+  assert.equal(b.balance, null, 'never reconciled = unknown, not zero')
+  assert.equal(b.openPositions, 1)
+  assert.equal(b.pendingOrders, 0)
+})
