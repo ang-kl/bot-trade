@@ -57,6 +57,68 @@ export function thinTicks(ticks, rails = [], minGap = TAPE_MIN_GAP) {
   return kept
 }
 
+// PHASE 8b — the real tweak journal, mapped from the snapshot's position_events.
+//
+// Every field is the writer's own record. `kind` gets a human label where one
+// exists and is otherwise shown verbatim (an unknown kind must still be
+// readable, not silently dropped). The detail line is assembled ONLY from
+// stored parts — from→to, reason, source — so a sparse event yields a short
+// line rather than a padded one. OHLC is '—': the chart's bars are not resolved
+// at each event's timestamp, and borrowing the demo candle would be a fiction
+// dressed as broker truth.
+const KIND_LABEL = {
+  sl_moved: 'SL moved',
+  tp_moved: 'TP moved',
+  trail_tightened: 'Trail tightened',
+  trail_armed: 'Trail armed',
+  scale_out: 'Scale-out',
+  close: 'Closed',
+  closed_market_limit: 'Closed-market limit order',
+  position_added: 'Position added to',
+  position_reversed: 'Position reversed',
+  strategy: 'Strategy label set',
+}
+const KIND_COL = {
+  sl_moved: 'var(--wrn)',
+  trail_tightened: 'var(--vio)',
+  trail_armed: 'var(--vio)',
+  tp_moved: 'var(--acc)',
+  scale_out: 'var(--acc)',
+  close: 'var(--dn)',
+  position_reversed: 'var(--dn)',
+}
+
+export function journalFromEvents(events, keys) {
+  const num = v => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v))
+  return events.map((e, i) => {
+    const key = keys[i] || String(i + 1)
+    const iso = String(e.at ?? '')
+    // The writer stamps ISO-ish UTC; slice rather than re-zone, so the journal
+    // shows the time the event was RECORDED under, not a converted guess.
+    const day = iso.length >= 10 ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '—'
+    const hm = iso.length >= 16 ? iso.slice(11, 16) : '—'
+    const kind = String(e.kind ?? '')
+    const from = e.from ?? e.from_value, to = e.to ?? e.to_value
+    const parts = []
+    if (from != null && to != null) parts.push(`${from} → ${to}`)
+    else if (to != null) parts.push(`→ ${to}`)
+    if (e.reason) parts.push(String(e.reason))
+    if (e.source) parts.push(`by ${e.source}`)
+    const r = num(e.rAt ?? e.r_at)
+    return {
+      key,
+      when: `${day} ${hm}`, day, hm,
+      k: KIND_LABEL[kind] || kind || 'event',
+      d: parts.join(' · ') || 'no detail recorded',
+      col: KIND_COL[kind] || 'var(--sb)',
+      // No bar is resolved at this event's time — these stay honestly empty.
+      o: '—', h: '—', l: '—', c: '—', ohlcCol: 'var(--mu)',
+      rng: 'bar at event not resolved',
+      rAt: r == null ? 'R at event not recorded' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}R at event`,
+    }
+  })
+}
+
 export function cockpitFrame(store, tick, opts = {}) {
   // session axis (task-prompt §8 — see PR open questions): 'open'|'pre'|'post'|'closed'|'halted'
   const session = opts.session || { state: 'open', exchange: 'HKEX', opensInMins: null }
@@ -176,12 +238,25 @@ export function cockpitFrame(store, tick, opts = {}) {
       rng: ((h - l) / rUnit).toFixed(2) + 'R range',
       rAt: (((c - entry) / rUnit >= 0 ? '+' : '') + ((c - entry) / rUnit).toFixed(2)) + 'R at tweak' }
   }
-  const journal = store.tweaks.map((tw, i2) => {
+  const demoJournal = store.tweaks.map((tw, i2) => {
     const key = KEYS[i2], b = barOHLC(tw.i)
     const parts = tw.when.split(' ')
     return { key, when: tw.when, day: parts[0], hm: parts[1], k: tw.k, d: tw.d, col: tw.col,
       o: b.o, h: b.h, l: b.l, c: b.c, ohlcCol: b.col, rng: b.rng, rAt: b.rAt }
   })
+  // PHASE 8b (owner, 31-07): "the tweak journal should be clear of mock data."
+  // The server has served the REAL journal since Phase 4 — position_events, the
+  // same rows the profit keeper, the loop's broker actions, the manual routes
+  // and the C++ trail poll write. A bound snapshot uses them and nothing else:
+  // no invented OHLC bar (the route serves bars for the CHART, but no bar is
+  // resolved at each event's timestamp — those columns read '—' rather than
+  // borrow the demo candle), no invented R, no marker on the demo flight path.
+  const realJournal = snap ? journalFromEvents(Array.isArray(snap.journal) ? snap.journal : [], KEYS) : null
+  const journal = realJournal ?? demoJournal
+  // Chart markers: only the demo path can carry the demo markers. Real events
+  // have real timestamps, and the flown path is still generated — placing them
+  // on it would be a fabricated position, which is exactly what the prompt bans.
+  const tweakMarks = snap ? [] : tweaks
   const volRaw = combined.map((p, i) => {
     const dir = i ? p - combined[i - 1] : .01
     return { dir, v: .5 + Math.abs(dir) * 30 + Math.abs(Math.sin(i * 1.7)) * 1.3 + Math.abs(Math.sin(i * .41)) * .8 }
@@ -518,7 +593,8 @@ export function cockpitFrame(store, tick, opts = {}) {
   const alerts = []
   if (real) {
     const live = ['price', 'P&L', 'entry/SL/TP', 'R', 'market state']
-    const demo = ['chart', 'volume profile', 'journal']
+    const demo = ['chart', 'volume profile']
+    if (snap) live.push('journal'); else demo.push('journal')
     // With a full snapshot bound, traffic / armed actions / invalidation /
     // engine rates come from (or honestly say unknown per) the served body —
     // they are no longer flagged demo. Without one they still are.
@@ -529,6 +605,16 @@ export function cockpitFrame(store, tick, opts = {}) {
     alerts.push({ t: ft(0), k: 'DEMO DATA', d: 'live: ' + live.join(', ') + ' · demo: ' + demo.join(', '), col: 'var(--wrn)' })
   }
   if (snap) {
+    // PHASE 9 — the intention explanation, in the existing ADVISORIES list (no
+    // new card: the prompt forbids inventing layout). It is the DETERMINISTIC
+    // sentence set by default, with its evidence ids intact; when the optional
+    // model explanation is enabled AND a validated answer exists for this
+    // evidence revision, the server hands that one over instead and the row
+    // says which it is. Nothing here can call a model.
+    const ex = snap.intention?.explanation
+    if (ex?.text) {
+      alerts.push({ t: ex.mode === 'model' ? 'model' : 'rules', k: 'WHY', d: ex.text, col: 'var(--sb)' })
+    }
     // The server's own advisories (freshness, account-scope, phase status) —
     // appended verbatim; they carry no timestamp of their own.
     for (const a of (Array.isArray(snap.advisories) ? snap.advisories : [])) {
@@ -557,7 +643,7 @@ export function cockpitFrame(store, tick, opts = {}) {
     // reads as broker truth (PR open question Q3).
     demoPanels: real
       ? (snap
-          ? ['MFD chart & EMAs', 'volume profile', 'tweak journal']
+          ? ['MFD chart & EMAs', 'volume profile']
           : ['MFD chart & EMAs', 'volume profile', 'tweak journal', 'correlated traffic', 'RVOL / spread / latency', 'MFE / MAE', 'armed actions'])
       : null,
     review, session, sessOpensIn, marketClosed,
@@ -588,7 +674,7 @@ export function cockpitFrame(store, tick, opts = {}) {
       + ' · SL ' + f2(sl) + ' / TP ' + f2(tp),
     // '—' when a snapshot is bound but correlation is unknown: an unmeasured
     // count is not zero (the prompt's missing-is-UNKNOWN rule).
-    legs, traffic, nSame: snap && !corr ? '—' : String(nSame), nDiv: snap && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks, journal, wx,
+    legs, traffic, nSame: snap && !corr ? '—' : String(nSame), nDiv: snap && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks: tweakMarks, journal, wx,
     yAxis, xAxis, vwapPath, vpBars, vaTop, vaH, pocTop, yMinor, xMinor, resBands, xLabels, volBars, ema9Path, ema20Path, ema50Path,
     fuel: Math.round(fuelW) + '%',
     acctBal: usd(balance), acctEq: usd(balance + pnlUsd), capAbs: usd(dailyCap), capUsed: '−' + usd(usedAbs), capLeft: usd(dailyCap - usedAbs),

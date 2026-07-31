@@ -24,6 +24,7 @@ import { fxDayStartSql, loadRiskConfig } from './risk.js'
 import { buildIntention } from './cockpit-intention.js'
 import { buildCorrelation } from './cockpit-correlation.js'
 import { buildEnvironment } from './cockpit-environment.js'
+import { cachedExplanation, explanationEnabled } from './cockpit-explain.js'
 
 const SCHEMA_VERSION = 1
 
@@ -155,7 +156,18 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
       intention: (() => {
         // PHASE 5 — deterministic intention from the same state the managers
         // run on. Any read failure degrades to UNKNOWN, never a fabrication.
-        try { return buildIntention(db, row, live, liveAt, meta.revision, nowMs) } catch { return UNKNOWN }
+        let out
+        try { out = buildIntention(db, row, live, liveAt, meta.revision, nowMs) } catch { return UNKNOWN }
+        // PHASE 9 — the OPTIONAL model explanation, cache-only on this read
+        // path: if a model answer exists for THIS evidence revision it is
+        // served, otherwise the deterministic text stands. No network call can
+        // happen here, so a snapshot fetch can never wait on (or be broken by)
+        // a model.
+        try {
+          const hit = cachedExplanation(db, meta.revision)
+          if (hit && explanationEnabled(db)) out.explanation = { ...hit, cached: true }
+        } catch { /* deterministic explanation stands */ }
+        return out
       })(),
       journal: buildJournal(db, row, rowAccount),
       correlation: (() => {
@@ -168,7 +180,7 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
       })(),
       fleet: UNKNOWN,
       advisories: [
-        { kind: 'phase', detail: 'phase-7: identity, position, account, execution, journal, intention, correlation and environment are live/derived (bars+indicators fill in the route); fleet remains UNKNOWN until the frontend adapter phase' },
+        { kind: 'phase', detail: 'phase-9: identity, position, account, execution, journal, intention, correlation and environment are live/derived (bars+indicators fill in the route); the intention explanation is deterministic unless a validated model answer is cached for this evidence revision; fleet remains UNKNOWN' },
         ...(snapAccount != null && !snapIsThisAccount
           ? [{ kind: 'account-scope', detail: `broker snapshot cache belongs to account ${snapAccount.accountId} — not used for this position's account/live facts` }]
           : []),

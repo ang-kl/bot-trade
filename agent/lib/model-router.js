@@ -104,6 +104,10 @@ export const TASK_TIERS = {
   screener_search: 'DEFAULT',      // symbol-name matching against a known list
   position_monitor: 'DEFAULT',     // see note above
   weekend_watch: 'DEFAULT',        // same shape as position_monitor
+  // Paraphrasing an already-validated evidence bundle into one plain-English
+  // paragraph. It adds no facts and decides nothing, so it belongs on the
+  // cheapest tier — principle 1.
+  cockpit_explanation: 'DEFAULT',
 
   // --- moderate reasoning / better writing ---------------------------------
   summarise: 'PREMIUM',

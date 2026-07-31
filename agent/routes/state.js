@@ -380,6 +380,30 @@ export default function stateRouter(db) {
     }
   })
 
+  // POST /state/position/:id/cockpit/explain — PHASE 9: generate the OPTIONAL
+  // model explanation for this position's CURRENT evidence revision.
+  //
+  // Deliberately a separate, explicit call rather than part of the snapshot:
+  // the snapshot is a read path that repaints, and the prompt forbids calling a
+  // model on a tick. This route is the only place a model is contacted, it is
+  // idempotent per revision (cached), and it can only ever return an
+  // explanation — with the flag off, no key, a bad answer or a network failure
+  // it returns the deterministic text and says why in `reason`. It writes no
+  // order state of any kind.
+  router.post('/position/:id/cockpit/explain', async (req, res) => {
+    try {
+      const { cockpitSnapshot } = await import('../services/cockpit-snapshot.js')
+      const scope = requestedAccount(db, req)
+      const out = cockpitSnapshot(db, req.params.id, scope)
+      if (out.status !== 200) return res.status(out.status).json(out.body)
+      const { generateExplanation } = await import('../services/cockpit-explain.js')
+      const explanation = await generateExplanation(db, out.body, { force: req.body?.force === true })
+      res.json({ explanation, revision: out.body.meta.revision })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/positions', async (req, res) => {
     const scope = requestedAccount(db, req)
     const acct = accountWhere(scope, 'mp.account_id')
