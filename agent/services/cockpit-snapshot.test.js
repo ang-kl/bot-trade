@@ -77,7 +77,9 @@ test('everything the shell cannot vouch for is UNKNOWN, never a default', () => 
   const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
   // intention left this list in Phase 5 — it derives from local DB state and
   // is 'derived' even without a broker cache (its unknowns are per-field).
-  for (const k of ['account', 'bars', 'indicators', 'execution', 'correlation', 'environment', 'fleet']) {
+  // environment left this list in Phase 7 — it derives from local caches and
+  // is 'derived' with per-section honesty statuses even on an empty DB.
+  for (const k of ['account', 'bars', 'indicators', 'execution', 'correlation', 'fleet']) {
     assert.equal(out.body[k].status, 'unknown', `${k} must be unknown in the shell`)
   }
   assert.deepEqual(out.body.journal, [])

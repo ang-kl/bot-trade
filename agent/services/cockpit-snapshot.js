@@ -23,6 +23,7 @@ import { getState } from '../db.js'
 import { fxDayStartSql, loadRiskConfig } from './risk.js'
 import { buildIntention } from './cockpit-intention.js'
 import { buildCorrelation } from './cockpit-correlation.js'
+import { buildEnvironment } from './cockpit-environment.js'
 
 const SCHEMA_VERSION = 1
 
@@ -161,10 +162,13 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
         // PHASE 6 — live matrix + curated clusters, scoped to this account.
         try { return buildCorrelation(db, row, rowAccount ?? scope.accountId, nowMs) } catch { return UNKNOWN }
       })(),
-      environment: UNKNOWN,
+      environment: (() => {
+        // PHASE 7 — session/regime/news status from the app's own caches.
+        try { return buildEnvironment(db, row.symbol, nowMs) } catch { return UNKNOWN }
+      })(),
       fleet: UNKNOWN,
       advisories: [
-        { kind: 'phase', detail: 'phase-6: identity, position, account, execution, journal, intention and correlation are live/derived (bars+indicators fill in the route); environment and fleet remain UNKNOWN by design' },
+        { kind: 'phase', detail: 'phase-7: identity, position, account, execution, journal, intention, correlation and environment are live/derived (bars+indicators fill in the route); fleet remains UNKNOWN until the frontend adapter phase' },
         ...(snapAccount != null && !snapIsThisAccount
           ? [{ kind: 'account-scope', detail: `broker snapshot cache belongs to account ${snapAccount.accountId} — not used for this position's account/live facts` }]
           : []),
