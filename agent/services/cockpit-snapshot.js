@@ -21,6 +21,7 @@
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
 import { fxDayStartSql, loadRiskConfig } from './risk.js'
+import { buildIntention } from './cockpit-intention.js'
 
 const SCHEMA_VERSION = 1
 
@@ -53,7 +54,9 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
 
   const row = db.prepare(
     `SELECT mp.*, t.volume AS volume, t.opened_at AS opened_at,
-            t.ctrader_position_id AS ctrader_position_id
+            t.ctrader_position_id AS ctrader_position_id,
+            t.strategy AS trade_strategy, t.conviction AS conviction,
+            t.analysis_id AS analysis_id
        FROM monitored_positions mp
        LEFT JOIN trades t ON t.id = mp.trade_id
       WHERE mp.id = ?`
@@ -99,7 +102,9 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
     schemaVersion: SCHEMA_VERSION,
     // Revision: identity + the facts that can change. Later phases fold their
     // sections in; callers cache explanations by this value.
-    revision: `${id}:${row.current_sl}:${row.current_tp}:${row.status}:${lastJournalId(db, row)}:${liveAt ?? 'nolive'}`,
+    // PHASE 5 folds last_check_at in: a new monitor review changes the
+    // intention block, so cached explanations must invalidate on it too.
+    revision: `${id}:${row.current_sl}:${row.current_tp}:${row.status}:${lastJournalId(db, row)}:${row.last_check_at ?? 'nocheck'}:${liveAt ?? 'nolive'}`,
     fetchedAt: new Date(nowMs).toISOString(),
     accountId: rowAccount ?? String(scope.accountId ?? ''),
     dbPositionId: id,
@@ -145,13 +150,17 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
       bars: UNKNOWN,
       indicators: UNKNOWN,
       execution: buildExecution(db, row, live, liveAt),
-      intention: UNKNOWN,
+      intention: (() => {
+        // PHASE 5 — deterministic intention from the same state the managers
+        // run on. Any read failure degrades to UNKNOWN, never a fabrication.
+        try { return buildIntention(db, row, live, liveAt, meta.revision, nowMs) } catch { return UNKNOWN }
+      })(),
       journal: buildJournal(db, row, rowAccount),
       correlation: UNKNOWN,
       environment: UNKNOWN,
       fleet: UNKNOWN,
       advisories: [
-        { kind: 'phase', detail: 'phase-4: identity, position, account, execution and journal are live/derived (bars+indicators fill in the route); intention, correlation, environment and fleet remain UNKNOWN by design' },
+        { kind: 'phase', detail: 'phase-5: identity, position, account, execution, journal and intention are live/derived (bars+indicators fill in the route); correlation, environment and fleet remain UNKNOWN by design' },
         ...(snapAccount != null && !snapIsThisAccount
           ? [{ kind: 'account-scope', detail: `broker snapshot cache belongs to account ${snapAccount.accountId} — not used for this position's account/live facts` }]
           : []),
