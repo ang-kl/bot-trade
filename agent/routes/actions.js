@@ -3750,8 +3750,14 @@ export default function actionsRouter(db) {
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ error: 'nothing applicable', refused })
       }
-      const current = loadRiskConfig(db)
-      setState(db, 'risk_config_json', JSON.stringify({ ...current, ...patch }))
+      // Merge into the RAW overrides, not the effective config: spreading
+      // loadRiskConfig() here materialised every DEFAULT as an override, so
+      // one apply turned all ~27 settings permanently "overridden" (the
+      // default-dot marks went wrong, and future default changes could never
+      // reach this install).
+      let rawOverrides = {}
+      try { rawOverrides = JSON.parse(getState(db, 'risk_config_json') || '{}') || {} } catch { rawOverrides = {} }
+      setState(db, 'risk_config_json', JSON.stringify({ ...rawOverrides, ...patch }))
       markApplied(db, Object.keys(patch))
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
