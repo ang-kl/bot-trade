@@ -724,6 +724,18 @@ export default function Tune() {
     } catch { return 'pipeline' }
   })
   const pickTab = (id) => { setTab(id); try { sessionStorage.setItem('tune_tab', id) } catch { /* quota — skip */ } }
+  // ?focus=switches deep link (sidebar S·A·T dots → the switch area): scroll
+  // the master-switches card into view once the pipeline tab has rendered.
+  useEffect(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get('focus') !== 'switches') return
+    } catch { return }
+    if (tab !== 'pipeline') return
+    const t = setTimeout(() => {
+      document.getElementById('sec-pipe-master')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 120)
+    return () => clearTimeout(t)
+  }, [tab])
   // ?arm=<strategyKey> deep-link (Desk Edge-health → arm a strategy). Read once.
   const [armTarget] = useState(() => {
     try { return new URLSearchParams(window.location.search).get('arm') } catch { return null }

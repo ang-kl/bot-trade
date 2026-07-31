@@ -894,6 +894,16 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     const { enabledStrategies } = await import('./services/strategies.js')
     const globalArmed = enabledStrategies(db, getState).map(s => s.key)
     const { effectivePhases } = await import('./services/account-phases.js')
+    // Connectivity gate input, fetched ONCE per dispatch: the sidecar's
+    // authorized roster. An enabled account the broker session has not
+    // authorized cannot receive an order — strategize/size/risk-gate work for
+    // it is guaranteed waste, and the submit would only fail downstream.
+    // null = unknown (js mode, health blip) → no account is skipped for it.
+    let sidecarAccounts = null
+    try {
+      const { sidecarRoster } = await import('./lib/exec-engine.js')
+      sidecarAccounts = await sidecarRoster()
+    } catch { /* unknown — fail open */ }
     for (const acct of apAccounts) {
       // PER-ACCOUNT AUTOTRADE GATE — the enforcement point for the owner's
       // independent switches. Without this the switches would be decorative:
@@ -926,6 +936,24 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
             symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
             stage: `account_${offPhase}`, decision: 'skip',
             reason: `${offPhase} is off for this account (${phases.source[offPhase]})`,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+
+      // CONNECTIVITY GATE — an account the sidecar has not authorized gets no
+      // order built for it this cycle. Skips are recorded, and the account
+      // rejoins automatically the moment the roster reports it again (the
+      // heartbeat's roster-drift re-push is the recovery mechanism).
+      if (sidecarAccounts && !sidecarAccounts.includes(String(acct.accountId))) {
+        log(`Connectivity gate: ${sym} skipped on ${acct.accountId} — account not in the sidecar's authorized roster`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'account_probe', decision: 'skip',
+            reason: 'enabled in registry but not in the sidecar authorized roster — no order built until it reconnects',
           })
         } catch { /* provenance never blocks */ }
         continue
@@ -2008,6 +2036,21 @@ async function runLoop(db) {
                 if (same.length) targets = [...new Set([String(accountId), ...same])]
               } catch { /* registry unavailable — selected account only, as before */ }
 
+              // Only probe accounts the sidecar's session has actually
+              // authorized: a disconnected account's deal-history fetch can
+              // only time out. Roster null = unknown → probe all, as before.
+              try {
+                const { sidecarRoster } = await import('./lib/exec-engine.js')
+                const roster = await sidecarRoster()
+                if (roster) {
+                  const off = targets.filter(a => !roster.includes(String(a)))
+                  if (off.length) {
+                    targets = targets.filter(a => roster.includes(String(a)))
+                    log(`P&L backfill: skipping ${off.length} account(s) not in the sidecar's authorized roster [${off.join(', ')}]`)
+                  }
+                }
+              } catch { /* roster probe failed — probe all, as before */ }
+
               let filled = 0
               let skipped = 0
               for (const acct of targets) {
@@ -2195,8 +2238,33 @@ async function runLoop(db) {
           // account must not take down the others' reconciliation.
           try {
             const { getEnabledAccounts, setAccountState } = await import('./services/account-registry.js')
-            const others = getEnabledAccounts(db).filter(a =>
+            let others = getEnabledAccounts(db).filter(a =>
               String(a.account_id) !== String(accountId) && (a.is_live === 1) === isLive)
+            // Gate on the sidecar's authorized roster: an enabled account the
+            // broker session has NOT authorized (auth refused, dropped, or the
+            // owner unticked it in cTrader) cannot be reconciled — probing it
+            // buys a timeout per account per cycle and nothing else. Roster
+            // null = unknown → probe all, exactly as before this gate.
+            try {
+              const { sidecarRoster } = await import('./lib/exec-engine.js')
+              const roster = await sidecarRoster()
+              if (roster) {
+                const off = others.filter(a => !roster.includes(String(a.account_id)))
+                if (off.length) {
+                  others = others.filter(a => roster.includes(String(a.account_id)))
+                  log(`Reconcile: skipping ${off.length} enabled account(s) not in the sidecar's authorized roster [${off.map(a => a.account_id).join(', ')}]`)
+                  try {
+                    const { recordDecision } = await import('./services/decision-log.js')
+                    for (const a of off) {
+                      recordDecision(db, {
+                        accountId: String(a.account_id), stage: 'account_probe', decision: 'skip',
+                        reason: 'enabled in registry but not in the sidecar authorized roster — reconcile sweep skipped until it reconnects',
+                      })
+                    }
+                  } catch { /* decision log is best-effort */ }
+                }
+              }
+            } catch { /* roster probe failed — probe all, as before */ }
             for (const acc of others) {
               try {
                 const rd = await execReconcile({ host, clientId, clientSecret, accessToken, accountId: acc.account_id })

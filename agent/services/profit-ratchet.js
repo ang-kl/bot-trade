@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 import { getAccountBalance } from './risk.js'
 
 export const DEFAULT_PROFIT_RATCHET = {
@@ -125,7 +126,10 @@ export async function runProfitRatchet(db, creds, deps = {}) {
     st.lastTriggerAt = new Date(nowMs).toISOString()
 
     // Entries off — same disarm the equity stop uses; re-arming is manual.
-    setState(db, 'autotrade_enabled', 'false')
+    setPhaseFlag(db, 'autotrade_enabled', 'false', {
+      actor: 'profit_ratchet',
+      reason: `equity $${equity.toFixed(2)} fell to the ratchet floor $${st.floor.toFixed(2)} (high-water $${st.hwm.toFixed(2)})`,
+    })
 
     if (cfg.floorAction === 'flatten') {
       const rows = db.prepare(

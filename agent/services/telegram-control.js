@@ -27,6 +27,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { getState, setState } from '../db.js'
 import { loadGlobalGuards, evaluateGlobalGuards } from './global-guards.js'
+import { setPhaseFlag } from './phase-audit.js'
 
 const TG_API = 'https://api.telegram.org'
 
@@ -314,12 +315,12 @@ export async function pollTelegramCommands(db, deps = {}) {
       if (cmd === '/status') {
         reply = fmtStatus(db)
       } else if (cmd === '/pause') {
-        setState(db, 'scan_enabled', 'false')
-        setState(db, 'autotrade_enabled', 'false')
+        setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'telegram', via: '/pause' })
+        setPhaseFlag(db, 'autotrade_enabled', 'false', { actor: 'telegram', via: '/pause' })
         reply = '⏸ Paused — scan + autotrade OFF. Broker-side pending orders remain and expire on their own. /resume to restart.'
       } else if (cmd === '/resume') {
-        setState(db, 'scan_enabled', 'true')
-        setState(db, 'autotrade_enabled', 'true')
+        setPhaseFlag(db, 'scan_enabled', 'true', { actor: 'telegram', via: '/resume' })
+        setPhaseFlag(db, 'autotrade_enabled', 'true', { actor: 'telegram', via: '/resume' })
         reply = '▶️ Resumed — scan + autotrade ON.'
       } else if (cmd === '/pending') {
         const rows = db.prepare("SELECT symbol, timeframe, level, expires_at FROM pending_orders WHERE status = 'working'").all()
@@ -327,8 +328,8 @@ export async function pollTelegramCommands(db, deps = {}) {
           ? rows.map(r => `⏳ ${r.symbol} ${r.timeframe} @ ${r.level} (expires ${r.expires_at}Z)`).join('\n')
           : 'No working pending orders.'
       } else if (cmd === '/killall') {
-        setState(db, 'scan_enabled', 'false')
-        setState(db, 'autotrade_enabled', 'false')
+        setPhaseFlag(db, 'scan_enabled', 'false', { actor: 'telegram', via: '/killall' })
+        setPhaseFlag(db, 'autotrade_enabled', 'false', { actor: 'telegram', via: '/killall' })
         let cancelled = 0
         const rows = db.prepare("SELECT id, symbol, order_id FROM pending_orders WHERE status = 'working'").all()
         if (rows.length && deps.cancelOrder && deps.creds?.ready) {

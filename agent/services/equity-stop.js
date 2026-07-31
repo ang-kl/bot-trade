@@ -50,6 +50,7 @@
 
 import { getState, setState } from '../db.js'
 import { acctPhaseKey } from './account-phases.js'
+import { setPhaseFlag } from './phase-audit.js'
 
 /** Per-account trip marker, so one account tripping cannot silence another. */
 export const trippedKey = (accountId) => `acct:${accountId}:equity_stop_tripped_at`
@@ -146,7 +147,11 @@ export function recordDisarm(db, { accountId, reason, pnl, cap, positionsClosed 
  */
 export function disarmAccount(db, accountId, nowIso = new Date().toISOString()) {
   const key = acctPhaseKey(accountId, 'autotrade')
-  setState(db, key, 'false')
+  setPhaseFlag(db, key, 'false', {
+    actor: 'equity_stop',
+    reason: 'daily equity stop tripped for this account',
+    accountId: String(accountId),
+  })
   setState(db, trippedKey(accountId), nowIso)
   return key
 }

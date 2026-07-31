@@ -1255,6 +1255,21 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/phase-audit — the S.A.T. / controller audit trail (owner,
+  // 2026-07-31, after the second unexplained all-accounts autotrade drop):
+  // every pipeline-switch flip with from/to/actor/via/reason, and every
+  // controller stall/recovery, newest first.
+  // -----------------------------------------------------------------------
+  router.get('/phase-audit', async (req, res) => {
+    try {
+      const { recentPhaseAudit } = await import('../services/phase-audit.js')
+      res.json({ audit: recentPhaseAudit(db, { limit: req.query.limit ? Number(req.query.limit) : 100 }) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/weekend-loss-flags — losing positions flagged ahead of a
   // long market closure (weekend-loss-flag.js). Reads the sweep's own
   // one-shot `wl_flagged_*` markers, which self-expire once the closure

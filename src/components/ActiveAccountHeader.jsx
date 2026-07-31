@@ -30,6 +30,7 @@
 // the master as the fallback for an account the registry has not answered for.
 // The switches themselves live on Tune › Pipeline (AccountPhaseSwitches).
 import { useSyncExternalStore } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { offSummary } from '../lib/account-phases.js'
 import { isPollPaused, setPollPaused, subscribePollPaused } from '../lib/agent-api.js'
 import PhaseDots from './common/PhaseDots.jsx'
@@ -67,6 +68,10 @@ export function ActiveAccountHeaderCompact() {
 
 export default function ActiveAccountHeader() {
   const { acct, phases, armed, ccy } = useActiveAccount()
+  const navigate = useNavigate()
+  // Navigate-only, deliberately: the jump lands on the switches page where
+  // toggling has context; ?focus=switches scrolls the card into view there.
+  const goSwitches = () => navigate('/tune?tab=pipeline&focus=switches')
   // The manual poll pause. Subscribed rather than read once, so the ring
   // appears the instant it is toggled — including from another component.
   const paused = useSyncExternalStore(subscribePollPaused, isPollPaused, isPollPaused)
@@ -127,7 +132,30 @@ export default function ActiveAccountHeader() {
             currency code and the number already say what it is. */}
         <div className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
           <span>{formatBalance(acct.balance, ccy)}</span>
-          <PhaseDots phases={phases} />
+          {/* Owner (2026-07-31, approved from § 3,972·B): the S·A·T dots are a
+              TINY NAVIGATE-ONLY button — an invisible border around the status
+              that jumps to the switches themselves (Tune › Pipeline). It never
+              toggles anything: flipping a pipeline switch from a 2px target
+              would be an accident machine, and the flip belongs on the page
+              that shows its consequences. A span with role=link because the
+              whole Account block is already a real <button> (the poll-pause) —
+              nesting buttons is invalid HTML; stopPropagation keeps a jump
+              from also toggling the pause. */}
+          <span
+            role="link"
+            tabIndex={0}
+            aria-label="Open the S·A·T pipeline switches for this account (Tune › Pipeline)"
+            title="Open the pipeline switches (Tune › Pipeline)"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); goSwitches() }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); goSwitches() }
+            }}
+            className="cursor-pointer rounded-[5px] border border-transparent px-0.5 py-px
+                       hover:border-[var(--color-border)]
+                       focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
+          >
+            <PhaseDots phases={phases} />
+          </span>
         </div>
         {paused && (
           // Owner: "a tiny 3 px smaller font size at the bottom centre of the
