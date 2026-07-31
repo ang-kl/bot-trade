@@ -204,6 +204,32 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
   }
 }
 
+// Which accounts the sidecar's broker session has actually AUTHORIZED right
+// now — the connectivity truth the per-account sweeps gate on. With five
+// enabled registry rows and one account failing AccountAuth, the sweeps used
+// to probe the dead account every cycle anyway and eat a timeout + error per
+// loop; the roster lets them skip it honestly until it reappears.
+//
+// Semantics are deliberately fail-OPEN:
+//   - cpp mode, healthy sidecar → the roster array (as strings)
+//   - cpp mode, sidecar unreachable / roster not reported → null = UNKNOWN —
+//     callers must probe as before, because "the health endpoint blipped"
+//     must never silently stop reconciling every account
+//   - js mode → null: every broker call opens its own socket, so there is no
+//     persistent session for an account to be disconnected FROM
+const rosterCache = { at: 0, accounts: null }
+export async function sidecarRoster({ ttlMs = 20_000, timeoutMs = 4_000 } = {}) {
+  if (execEngineMode() !== 'cpp') return null
+  const now = Date.now()
+  if (now - rosterCache.at < ttlMs) return rosterCache.accounts
+  const h = await pingSidecar({ timeoutMs })
+  rosterCache.at = now
+  rosterCache.accounts = h.ok && h.connected === true && Array.isArray(h.accounts)
+    ? h.accounts.map(String)
+    : null
+  return rosterCache.accounts
+}
+
 // P10: read-back of the C++ tick-level ratchet (GET /trail-status) so Node
 // can journal each ratchet as a position_event — the sidecar itself must
 // never write the DB directly. js mode / a disabled trail engine both
