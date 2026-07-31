@@ -17,18 +17,40 @@ export function boundPosition(positionId) {
   return positionId == null ? null : bound.get(String(positionId)) || null
 }
 
-export function openCockpit(positionId, { replace = false } = {}) {
+// PHASE 1 (cockpit live-wiring prompt): the URL used to carry only the broker
+// position id, with account/db/trade identity in the in-memory Map above — so
+// a RELOAD kept the least durable id and lost every durable one. The deep link
+// now carries all four; the identity object rides alongside the legacy
+// positional arg so every existing call site keeps working unchanged.
+export function openCockpit(positionId, { replace = false, accountId = null, dbPositionId = null, tradeId = null } = {}) {
   const url = new URL(window.location.href)
   url.searchParams.set('trade', String(positionId))
+  // Only stamped when known — an absent param stays honestly absent rather
+  // than becoming the string "null" a reload would then trust.
+  if (accountId != null) url.searchParams.set('tacct', String(accountId))
+  if (dbPositionId != null) url.searchParams.set('tdb', String(dbPositionId))
+  if (tradeId != null) url.searchParams.set('ttr', String(tradeId))
   if (replace) window.history.replaceState({ tc: 1 }, '', url)
   else window.history.pushState({ tc: 1 }, '', url)
   window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/** The identity a deep link carries, for the cockpit's own fetch. */
+export function urlIdentity() {
+  const q = new URL(window.location.href).searchParams
+  return {
+    brokerPositionId: q.get('trade'),
+    accountId: q.get('tacct'),
+    dbPositionId: q.get('tdb'),
+    tradeId: q.get('ttr'),
+  }
 }
 
 export function closeCockpit() {
   const url = new URL(window.location.href)
   if (url.searchParams.has('trade')) window.history.back()
 }
+// (identity params ride and die with ?trade= via history navigation)
 
 export function toast(msg) {
   const el = document.createElement('div')
