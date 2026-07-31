@@ -18,6 +18,7 @@ import { rankVerdict, visibleRows, tallyVerdicts } from '../lib/backtest-rows.js
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
+import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
@@ -756,6 +757,18 @@ export default function Tune() {
   const [btSessionFilter, setBtSessionFilter] = useState(false)
   const [btTouchFill, setBtTouchFill] = useState(false)
   const [btStrategy, setBtStrategy] = useState('fib_618_fade')
+  // Task #158 (owner): "Backtest should be wired to selected strategies,
+  // include one more call 'All Strategies'." A run is now a QUEUE of strategy
+  // keys executed ONE AT A TIME — the agent holds a single backtest slot per
+  // kind (backtest-job.js) and a second start while one runs is a 409, so
+  // sequential is the only honest way to test several. `btStrategy` stays the
+  // key whose results the table is SHOWING; the queue below is what runs.
+  const [btQueue, setBtQueue] = useState([])          // keys still to run
+  const [btRunningKey, setBtRunningKey] = useState(null)
+  const [btRuns, setBtRuns] = useState(() => {        // key → finished result
+    try { return JSON.parse(sessionStorage.getItem('backtest_runs_v1') || '{}') } catch { return {} }
+  })
+  const [btQueueTotal, setBtQueueTotal] = useState(0)
   const [screener, setScreener] = useState(null)     // cup-screener results
   const [screenerBusy, setScreenerBusy] = useState(false)
   const [fvgFilter, setFvgFilter] = useState(false)
@@ -1133,35 +1146,74 @@ export default function Tune() {
   // The backtest runs as a BACKGROUND JOB on the agent: POST starts it and
   // returns a ticket; results wait server-side in /state/backtest-job.
   // Leaving this page mid-run no longer loses them — come back any time.
-  const runBacktest = async () => {
+  /** Every strategy the registry offers, in its own order. */
+  const btAllStrategies = (config?.strategies?.length ? config.strategies : [{ key: 'fib_618_fade', name: 'Fib fade' }])
+
+  /** Post ONE strategy's run. Shared by the single run and the queue. */
+  const postBacktest = async (strategy) => {
+    await agentPost('/actions/backtest', {
+      symbols: btSymbols,
+      // Test exactly what Pipeline arms — one source of truth for timeframes.
+      timeframes,
+      bars: 1000,
+      rsiFilter: mxBtFilter('rsi'),
+      vwapFilter: mxBtFilter('vwap'),
+      sessionFilter: btSessionFilter,
+      strategy,
+      // Touch-fill is a fib-only simulation — never let it ride along with
+      // another strategy in an all-strategies sweep.
+      entryMode: btTouchFill && strategy === 'fib_618_fade' ? 'touch' : 'close',
+      fvgFilter: mxBtFilter('fvg'),
+    })
+  }
+
+  /**
+   * Run the given strategy keys, in order, one at a time.
+   *
+   * The agent runs ONE backtest at a time by design, so this fires the first
+   * and lets the poll effect start each next one as the previous finishes.
+   * Every finished run is kept under its own key — the table shows one
+   * strategy at a time, and nothing overwrites another strategy's numbers.
+   */
+  const runBacktestQueue = async (keys) => {
     if (btSymbols.length === 0) { setBtError('No symbols selected — enable some on the Watchlist tab.'); return }
+    if (!keys.length) { setBtError('No strategies selected — tick at least one.'); return }
     setBtRunning(true)
     setBtError('')
     setBt(null)
+    setBtRuns({})
+    try { sessionStorage.removeItem('backtest_runs_v1') } catch { /* quota — skip */ }
+    setBtQueueTotal(keys.length)
+    setBtQueue(keys.slice(1))
+    setBtRunningKey(keys[0])
+    setBtStrategy(keys[0])
     try {
-      await agentPost('/actions/backtest', {
-        symbols: btSymbols,
-        // Test exactly what Pipeline arms — one source of truth for timeframes.
-        timeframes,
-        bars: 1000,
-        rsiFilter: mxBtFilter('rsi'),
-        vwapFilter: mxBtFilter('vwap'),
-        sessionFilter: btSessionFilter,
-        strategy: btStrategy,
-        entryMode: btTouchFill ? 'touch' : 'close',
-        fvgFilter: mxBtFilter('fvg'),
-      })
+      await postBacktest(keys[0])
       // btRunning stays true — the poll effect below collects the results.
     } catch (e) {
       // 409 = a run is already in flight; keep polling instead of erroring.
-      if (!/already running/i.test(e.message)) { setBtError(e.message); setBtRunning(false) }
+      if (!/already running/i.test(e.message)) {
+        setBtError(e.message); setBtRunning(false); setBtQueue([]); setBtRunningKey(null)
+      }
     }
   }
+
+  const runBacktest = () => runBacktestQueue([btStrategy])
+  const runAllStrategies = () => runBacktestQueue(btAllStrategies.map(s => s.key))
 
   // Poll the job while the Backtest tab is open. Applies a finished job's
   // results exactly once (keyed by job id) so revisits pick up runs that
   // completed while the page was elsewhere.
   const btAppliedJobRef = useRef(null)
+  // The poll effect is bound to [tab], so it would close over a stale queue.
+  // A ref keeps "what is still to run" readable from inside it.
+  //
+  // Deliberate: the effect also closes over the SYMBOL/filter settings from the
+  // render that started the sweep, so every strategy in one sweep is tested
+  // against the same inputs. Changing the watchlist mid-sweep must not make
+  // strategy 7 incomparable with strategy 1.
+  const queueRef = useRef([])
+  useEffect(() => { queueRef.current = btQueue }, [btQueue])
   useEffect(() => {
     if (tab !== 'backtest' || !agentConfigured()) return undefined
     let alive = true
@@ -1169,21 +1221,62 @@ export default function Tune() {
       try {
         const j = await agentGet('/state/backtest-job')
         if (!alive || !j?.job) return
-        if (j.job.status === 'running') { setBtRunning(true); return }
-        setBtRunning(false)
-        if (btAppliedJobRef.current === j.job.id) return
+        if (j.job.status === 'running') { setBtRunning(true); setBtRunningKey(j.job.params?.strategy ?? null); return }
+        if (btAppliedJobRef.current === j.job.id) { if (!queueRef.current.length) setBtRunning(false); return }
         btAppliedJobRef.current = j.job.id
-        if (j.job.status === 'error') { setBtError(j.job.error || 'backtest failed'); return }
-        if (j.result) {
+        // Which strategy THIS job ran — from the job's own params, not from a
+        // local guess, so a reload mid-sweep still files the result correctly.
+        const ranKey = j.job.params?.strategy ?? null
+        const step = advanceSweep({
+          ranKey,
+          result: j.job.status === 'error' ? null : j.result,
+          error: j.job.status === 'error' ? (j.job.error || 'backtest failed') : null,
+          queue: queueRef.current,
+        })
+        if (step.error) {
+          // One strategy failing does not abandon the rest of the sweep; the
+          // error names which one, and the queue moves on.
+          setBtError(step.error)
+        } else if (j.result) {
           setBt(j.result)
           setBtError('')
+          if (ranKey) {
+            setBtRuns(prev => {
+              const next = { ...prev, [ranKey]: j.result }
+              try { sessionStorage.setItem('backtest_runs_v1', JSON.stringify(next)) } catch { /* quota — skip */ }
+              return next
+            })
+            setBtStrategy(ranKey)
+          }
           try { sessionStorage.setItem('backtest_cache_v2', JSON.stringify(j.result)) } catch { /* quota — skip */ }
+        }
+        // Start the next strategy in the sweep, if any. Sequential by
+        // necessity: the agent holds ONE backtest slot and answers 409 to a
+        // second start.
+        if (!step.done) {
+          const nextKey = step.nextKey
+          setBtQueue(step.remaining)
+          setBtRunningKey(nextKey)
+          setBtRunning(true)
+          try { await postBacktest(nextKey) } catch (e) {
+            if (!/already running/i.test(e.message)) {
+              setBtError(e.message); setBtRunning(false); setBtQueue([]); setBtRunningKey(null)
+            }
+          }
+        } else {
+          setBtRunning(false)
+          setBtRunningKey(null)
         }
       } catch { /* transient — next tick retries */ }
     }
     tick()
     const iv = setInterval(tick, 4000)
     return () => { alive = false; clearInterval(iv) }
+    // postBacktest is intentionally NOT a dependency: re-binding this poller
+    // on every settings keystroke would restart the interval mid-sweep, and a
+    // sweep must keep testing every strategy against the inputs it started
+    // with or the strategies are not comparable with each other.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
   // Same collection loop for the C&H screener job (Watchlist tab).
@@ -2742,23 +2835,44 @@ export default function Tune() {
                 })()}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" onClick={runBacktest} disabled={btRunning}>
-                    {btRunning ? `Testing ${btSymbols.length} symbol${btSymbols.length > 1 ? 's' : ''}…` : `Run backtest (${btSymbols.length})`}
+                    {sweepLabel({ running: btRunning, total: btQueueTotal, remaining: btQueue.length, runningKey: btRunningKey, symbolCount: btSymbols.length })}
+                  </Button>
+                  {/* Task #158 (owner): "one more call 'All Strategies'". Every
+                      registry strategy, in registry order, one after another —
+                      the agent runs a single backtest at a time, so the sweep
+                      is sequential by necessity, not by preference. */}
+                  <Button size="sm" variant="subtle" onClick={runAllStrategies} disabled={btRunning}
+                    title={`Test all ${btAllStrategies.length} strategies one after another against the same ${btSymbols.length} symbol(s), timeframes and filters. Each finished strategy stays selectable below.`}>
+                    All strategies ({btAllStrategies.length})
                   </Button>
                   <span className="flex items-center gap-1 text-[9px]" role="radiogroup" aria-label="Backtest strategy">
                     {/* Pills come from the registry (config.strategies); the
-                        fib fallback keeps the tab usable before config loads. */}
-                    {(config?.strategies?.length ? config.strategies : [{ key: 'fib_618_fade', name: 'Fib fade' }]).map(({ key: val, name: lbl }) => (
-                      <button
-                        key={val} type="button" role="radio" aria-checked={btStrategy === val}
-                        onClick={() => {
-                          setBtStrategy(val)
-                          // touch-fill is a fib-only simulation — clear it so a
-                          // stale tick can't ride along with another strategy
-                          if (val !== 'fib_618_fade') setBtTouchFill(false)
-                        }}
-                        className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
-                      >{lbl}</button>
-                    ))}
+                        fib fallback keeps the tab usable before config loads.
+                        A pill both PICKS what a single run tests and SHOWS
+                        that strategy's finished results — a ✓ marks the ones
+                        this sweep has already produced numbers for. */}
+                    {btAllStrategies.map(({ key: val, name: lbl }) => {
+                      const st = pillState(val, { runs: btRuns, runningKey: btRunning ? btRunningKey : null, queue: btQueue })
+                      const done = st === 'done'
+                      const running = st === 'running'
+                      const queued = st === 'queued'
+                      return (
+                        <button
+                          key={val} type="button" role="radio" aria-checked={btStrategy === val}
+                          title={running ? 'running now' : done ? 'finished — click to show these results' : queued ? 'queued in this sweep' : 'click to select for a single run'}
+                          onClick={() => {
+                            setBtStrategy(val)
+                            // A finished strategy's numbers are shown as-is;
+                            // nothing is re-run by looking at them.
+                            if (btRuns[val]) setBt(btRuns[val])
+                            // touch-fill is a fib-only simulation — clear it so a
+                            // stale tick can't ride along with another strategy
+                            if (val !== 'fib_618_fade') setBtTouchFill(false)
+                          }}
+                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                        >{running ? '⟳ ' : done ? '✓ ' : queued ? '· ' : ''}{lbl}</button>
+                      )
+                    })}
                   </span>
                   <label className="flex items-center gap-1.5 text-[9px] cursor-pointer min-h-[36px]" title="Fib fade only: simulate a resting LIMIT order at the 61.8% level instead of a market order after a close in the zone. Fills on any touch of the level; cancelled when price closes beyond the stop first or the zone expires. A/B this against the default before asking for live pending orders.">
                     <input type="checkbox" checked={btTouchFill} onChange={e => setBtTouchFill(e.target.checked)} disabled={btStrategy !== 'fib_618_fade'} />

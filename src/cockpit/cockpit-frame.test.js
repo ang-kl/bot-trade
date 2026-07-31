@@ -125,6 +125,60 @@ describe('cockpitFrame with a bound snapshot', () => {
   })
 })
 
+describe('PHASE 9 — the intention explanation rides in ADVISORIES', () => {
+  it('shows the deterministic sentence with its evidence ids, marked rules', () => {
+    const v = cockpitFrame({}, 0, { real: { ...realBase, snapshot: { ...snapshot,
+      intention: { ...snapshot.intention, explanation: { text: 'Holding LONG EURUSD. [mp:7:sl]', mode: 'deterministic' } } } } })
+    const why = v.alerts.find(a => a.k === 'WHY')
+    expect(why.d).toBe('Holding LONG EURUSD. [mp:7:sl]')
+    expect(why.t).toBe('rules')
+  })
+
+  it('marks a served model explanation as such, and shows none when there is none', () => {
+    const v = cockpitFrame({}, 0, { real: { ...realBase, snapshot: { ...snapshot,
+      intention: { ...snapshot.intention, explanation: { text: 'The bot is holding.', mode: 'model' } } } } })
+    expect(v.alerts.find(a => a.k === 'WHY').t).toBe('model')
+    expect(frame().alerts.some(a => a.k === 'WHY')).toBe(false)
+  })
+})
+
+describe('PHASE 8b — the tweak journal is position_events, not the demo list', () => {
+  const withJournal = journal => cockpitFrame({}, 0, { real: { ...realBase, snapshot: { ...snapshot, journal } } })
+
+  it('maps real events verbatim and never invents a bar or an R', () => {
+    const v = withJournal([
+      { id: 4, at: '2026-07-30T09:12:44Z', kind: 'sl_moved', from: '1.0900', to: '1.1000', rAt: 0.82, reason: 'breakeven after +0.8R', source: 'profit_keeper' },
+      { id: 9, at: '2026-07-31T02:05:00Z', kind: 'trail_tightened', from: null, to: '1.1030', rAt: null, reason: null, source: 'cpp_trail_engine' },
+    ])
+    expect(v.journal).toHaveLength(2)
+    expect(v.journal[0].k).toBe('SL moved')
+    expect(v.journal[0].day).toBe('30/07')
+    expect(v.journal[0].hm).toBe('09:12')
+    expect(v.journal[0].d).toBe('1.0900 → 1.1000 · breakeven after +0.8R · by profit_keeper')
+    expect(v.journal[0].rAt).toBe('+0.82R at event')
+    // No bar is resolved at the event's time → empty, not a generated candle.
+    expect([v.journal[0].o, v.journal[0].h, v.journal[0].l, v.journal[0].c]).toEqual(['—', '—', '—', '—'])
+    // A sparse event says less rather than filling in.
+    expect(v.journal[1].d).toBe('→ 1.1030 · by cpp_trail_engine')
+    expect(v.journal[1].rAt).toBe('R at event not recorded')
+    // None of the reference rows survive.
+    expect(v.journal.some(j => j.k === 'Scale-out 50%')).toBe(false)
+  })
+
+  it('an empty journal is empty — the demo six never reappear', () => {
+    const v = withJournal([])
+    expect(v.journal).toEqual([])
+    expect(v.tweaks).toEqual([])
+    expect(v.demoPanels).not.toContain('tweak journal')
+    expect(v.alerts.find(a => a.k === 'DEMO DATA').d).not.toMatch(/demo:.*journal/)
+  })
+
+  it('an unknown event kind is shown verbatim, not dropped', () => {
+    const v = withJournal([{ id: 1, at: '2026-07-31T02:05:00Z', kind: 'hedge_opened', to: '0.5', source: 'manual' }])
+    expect(v.journal[0].k).toBe('hedge_opened')
+  })
+})
+
 describe('cockpitFrame without a snapshot (demo route)', () => {
   it('keeps the reference demo panels byte-for-byte in spirit', () => {
     const v = cockpitFrame({}, 0, {})

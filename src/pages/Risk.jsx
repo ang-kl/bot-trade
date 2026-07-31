@@ -153,6 +153,12 @@ export default function Risk() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState('')
+  // PERSISTENT save proof (owner, twice: "I ALREADY applied, why doesn't it
+  // …", "i feel not saved but actually is"). The only feedback this page had
+  // was a 0.24-second scale pulse on the button — gone before you look up, and
+  // indistinguishable from nothing happening. Tune has carried a stamped
+  // "✓ Saved at HH:MM:SS" line for exactly this reason; Risk now does too.
+  const [savedAt, setSavedAt] = useState(null) // { section, at }
   // Local editable copies — saved per section.
   const [risk, setRisk] = useState({})
   const [acct, setAcct] = useState({ balance: null, leverage: null })
@@ -193,7 +199,14 @@ export default function Risk() {
 
   const save = async (section, fn) => {
     setSaving(section)
-    try { await fn(); await load() } catch (e) { setError(e.message) } finally { setSaving('') }
+    try {
+      await fn()
+      await load()
+      // Stamped only after the reload, so the line means "the agent has it and
+      // this page has re-read it", not "the request left the browser".
+      setSavedAt({ section, at: new Date() })
+      setError('')
+    } catch (e) { setError(e.message) } finally { setSaving('') }
   }
   const saveRisk = (keys) => save('risk', () => {
     const body = {}
@@ -269,6 +282,11 @@ export default function Risk() {
         <span className="text-[9px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
         {saving && <Badge tone="info">saving {saving}…</Badge>}
       </div>
+      {savedAt && !saving && (
+        <div className="text-[9px] text-[var(--color-text-sub)]" aria-live="polite">
+          ✓ Saved {savedAt.section} at {savedAt.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — the fields below were re-read from the agent after saving, so what you see is what it holds.
+        </div>
+      )}
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 
       {/* ---- Reset / Re-Risk / Re-Risk + Watchlist (owner 2026-07-30) ------
