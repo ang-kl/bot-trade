@@ -429,11 +429,31 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
       </div>
     </div>)
 
-  const journalRisk = (
-    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'grid', gridTemplateColumns: cfg.jr, gap: '0 12px', minHeight: 0 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Chip fs={fs} hue="vio">TWEAK JOURNAL</Chip><Info fs={fs} tip="Every manual or trailing-rule adjustment made to this trade since entry, in order." /></div>
-        <div style={{ flex: 1, minHeight: 0, maxHeight: variant === 'iphone' ? 210 : 150, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
+  // Owner (2026-07-31): every info panel gets a collapse triangle so a section
+  // you are not reading right now costs one header row, not its whole body —
+  // "use triangle (collapse/expand) within row" — while texture/colours/fonts
+  // stay exactly as they were. State is per section key; all open by default.
+  const [shut, setShut] = useState({})
+  const flip = k => setShut(s => ({ ...s, [k]: !s[k] }))
+  const sectHead = ({ k, hue, label, tip, right }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <button type="button" aria-label={`${shut[k] ? 'Expand' : 'Collapse'} ${label}`} aria-expanded={!shut[k]} onClick={() => flip(k)}
+        style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(8.5), color: 'var(--mu)', background: 'transparent', border: 'none', padding: '0 1px', transform: shut[k] ? 'none' : 'rotate(90deg)', transition: 'transform .15s' }}>▸</button>
+      <Chip fs={fs} hue={hue}>{label}</Chip>
+      <Info fs={fs} tip={tip} />
+      {right}
+    </div>)
+
+  // (2a) The Tweak Journal is its OWN card now, sized to the PFD column — it
+  // used to span the full shell at 3fr with four narrow columns of content,
+  // which is exactly the "takes the whole length but so little space needed"
+  // the owner called out. On desktop it rides UNDER the PFD, filling the dead
+  // space beside the taller MFD column.
+  const journalCard = (
+    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', minWidth: 0, ...(variant === 'desktop' ? { flex: '1 1 auto', minHeight: 0 } : {}) }}>
+      {sectHead({ k: "jr", hue: "vio", label: "TWEAK JOURNAL", tip: "Every manual or trailing-rule adjustment made to this trade since entry, in order." })}
+      {!shut.jr && (
+        <div style={{ flex: 1, minHeight: 0, maxHeight: variant === 'iphone' ? 210 : variant === 'desktop' ? undefined : 150, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
           {(v?.journal ?? []).map(j => {
             const open = openKeys.includes(j.key)
             return (
@@ -459,10 +479,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
               </div>)
           })}
           {v && !v.journal.length && <span style={{ fontSize: 9, color: 'var(--mu)' }}>no tweaks yet</span>}
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Chip fs={fs} hue="wrn">RISK BUDGET{review ? ' · at close' : ''}</Chip><Info fs={fs} tip="Cockpit fuel gauge: how much of today's loss-cap is left. Empty = bot closes everything and disarms for the day." /></div>
+        </div>)}
+    </div>)
+
+  const riskCard = (
+    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+      {sectHead({ k: "rb", hue: "wrn", label: `RISK BUDGET${review ? ' · at close' : ''}`, tip: "Cockpit fuel gauge: how much of today's loss-cap is left. Empty = bot closes everything and disarms for the day." })}
+      {!shut.rb && <>
         <div style={{ height: 10, borderRadius: 5, background: 'var(--edg)', overflow: 'hidden' }}><div id="ei-fuel" style={{ height: 10, width: '100%', background: 'linear-gradient(90deg,var(--dn),var(--wrn),var(--acc))', borderRadius: 5 }} /></div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0 6px', fontSize: fs(10.5), fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
           <span style={{ color: 'var(--mu)' }}>Lot size</span><span style={{ color: 'var(--tx)' }}>{v?.lots} · {v?.shares} sh</span>
@@ -486,15 +509,16 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ color: 'var(--mu)' }}>Used today</span><span style={{ color: 'var(--dn)' }}>{v?.capUsed}</span>
           <span style={{ color: 'var(--mu)' }}>Remaining</span><span style={{ color: 'var(--acc)' }}>{v?.capLeft} · {v?.fuel}</span>
         </div>
-      </div>
+      </>}
     </div>)
 
-  const strips = (
-    <>
-      <div style={{ display: 'grid', gridTemplateColumns: variant === 'iphone' ? '1fr' : '1fr 512px', gap: 6, alignItems: 'start' }}>
-        <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Chip fs={fs} hue="wrn">ADVISORIES</Chip><Info fs={fs} tip="Live bot notices: cautions, warnings, and fills — newest first." /></div>
-          <div style={{ maxHeight: variant === 'iphone' ? 150 : 64, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
+  // (2b) Each panel is its own collapsible card; advisory row text scrolls
+  // sideways inside its own cell instead of forcing the panel wide.
+  const advisoriesCard = (
+    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+      {sectHead({ k: "adv", hue: "wrn", label: "ADVISORIES", tip: "Live bot notices: cautions, warnings, and fills — newest first." })}
+      {!shut.adv && (
+        <div style={{ maxHeight: variant === 'iphone' ? 150 : 96, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
             {tradeId != null && !position && <div style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>DEMO DATA</span>
@@ -507,41 +531,46 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
               <div key={i} style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
                 <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>{a.t}</span>
                 <span style={{ fontSize: fs(10.5), color: a.col }}>{a.k}</span>
-                <span style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.d}</span>
+                {/* Long text scrolls INSIDE its own cell (owner: "scroll the
+                    row text") — the panel never widens for one long line. */}
+                <span title={a.d} style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'none' }}>{a.d}</span>
               </div>))}
             {v && !v.alerts.length && <span style={{ fontSize: 9, color: 'var(--mu)' }}>no advisories</span>}
-          </div>
-        </div>
-        <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Chip fs={fs} hue="acc">{review ? 'ACTIONS TAKEN' : 'ARMED ACTIONS'}</Chip><Info fs={fs} tip="Autopilot: actions the bot will take on its own — no input needed unless you override in Manage." /></div>
-          {(v?.autopilot ?? []).map((a, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', minWidth: 0, lineHeight: 1.45, ...(cfg.touch ? { minHeight: 22 } : {}) }}>
-              <span style={{ fontSize: fs(10.5), color: a.col, flex: 'none' }}>{a.k}</span>
-              <span style={{ fontSize: fs(10.5), color: 'var(--tx)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.v}</span>
-              <div style={{ width: 40, height: 3, background: 'var(--edg)', borderRadius: 2, flex: 'none' }}><div style={{ width: a.prog + '%', height: 3, background: a.progCol, borderRadius: 2 }} /></div>
-              <span style={{ fontSize: fs(10.5), color: marketClosed ? 'var(--mu)' : 'var(--sb)', flex: 'none' }}>{review ? 'fired · hit' : a.d}</span>
-            </div>))}
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '2px 4px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}><Chip fs={fs} hue="vio">{review ? 'WHAT ENDED IT' : 'INVALIDATION WATCH'}</Chip>
-          <Info fs={fs} big tip="Go-around: the conditions that would make the bot abort this trade's thesis and exit — like a pilot aborting a landing. All clear = the setup that got you in still holds." />
-          <span style={{ marginLeft: 'auto', fontSize: fs(11.5), color: v?.gaCol }}>{v?.gaNote}</span></div>
-        <div style={{ display: 'grid', gridTemplateColumns: cfg.inv, gap: '0 10px' }}>
+        </div>)}
+    </div>)
+
+  const armedCard = (
+    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+      {sectHead({ k: "aa", hue: "acc", label: review ? 'ACTIONS TAKEN' : 'ARMED ACTIONS', tip: "Autopilot: actions the bot will take on its own — no input needed unless you override in Manage." })}
+      {!shut.aa && (v?.autopilot ?? []).map((a, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 6, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', minWidth: 0, lineHeight: 1.45, ...(cfg.touch ? { minHeight: 22 } : {}) }}>
+          <span style={{ fontSize: fs(10.5), color: a.col, flex: 'none' }}>{a.k}</span>
+          <span title={a.v} style={{ fontSize: fs(10.5), color: 'var(--tx)', flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'none' }}>{a.v}</span>
+          <div style={{ width: 40, height: 3, background: 'var(--edg)', borderRadius: 2, flex: 'none' }}><div style={{ width: a.prog + '%', height: 3, background: a.progCol, borderRadius: 2 }} /></div>
+          <span style={{ fontSize: fs(10.5), color: marketClosed ? 'var(--mu)' : 'var(--sb)', flex: 'none' }}>{review ? 'fired · hit' : a.d}</span>
+        </div>))}
+    </div>)
+
+  const invalidationCard = (
+    <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+      {sectHead({ k: "inv", hue: "vio", label: review ? 'WHAT ENDED IT' : 'INVALIDATION WATCH', tip: "Go-around: the conditions that would make the bot abort this trade's thesis and exit — like a pilot aborting a landing. All clear = the setup that got you in still holds.", right: <span style={{ marginLeft: 'auto', fontSize: fs(10.5), color: v?.gaCol, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v?.gaNote}</span> })}
+      {!shut.inv && (
+        <div style={{ display: 'grid', gridTemplateColumns: variant === 'desktop' ? '1fr' : cfg.inv, gap: '0 10px' }}>
           {(v?.goaround ?? []).map((g, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, fontVariantNumeric: 'tabular-nums', minWidth: 0, lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: g.okCol, flex: 'none' }}>{g.mark}</span>
-              <span style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', flex: 1 }}>{g.k}</span>
+              <span style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', flex: 1, minWidth: 0, overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'none' }}>{g.k}</span>
               <span style={{ fontSize: fs(10.5), color: g.okCol, flex: 'none' }}>{g.now}</span>
               <Info fs={fs} tip={g.f} />
             </div>))}
-        </div>
-      </div>
-      <div style={{ ...card, borderRadius: 16, padding: '6px 12px', display: 'flex', gap: 5, alignItems: 'center', ...(variant === 'desktop' ? { overflowX: 'auto', scrollbarWidth: 'thin' } : { flexWrap: 'wrap' }) }}>
-        <Chip fs={fs} hue="mu">FLEET</Chip>
-        <span style={{ fontSize: fs(9.5), color: v?.fleetIsReal ? 'var(--sb)' : 'var(--mu)', whiteSpace: 'nowrap' }}>{v?.fleetLabel ?? ''}</span>
-        <Info fs={fs} big tip="Your other open positions, each shown as R (profit/loss in risk units). Scale spans −2R…+2R with a tick every 0.5R; amber centre line = entry. Click to switch this cockpit to that symbol." />
-        {(v?.fleet ?? []).map((f, i) => (
+        </div>)}
+    </div>)
+
+  const fleetCard = (
+    <div style={{ ...card, borderRadius: 16, padding: '4px 12px', display: 'flex', gap: 5, alignItems: 'center', ...(variant === 'desktop' ? { overflowX: 'auto', scrollbarWidth: 'thin' } : { flexWrap: 'wrap' }) }}>
+      {sectHead({ k: "fl", hue: "mu", label: "FLEET", tip: "Your other open positions, each shown as R (profit/loss in risk units). Scale spans −2R…+2R with a tick every 0.5R; amber centre line = entry. Click to switch this cockpit to that symbol." })}
+      <span style={{ fontSize: fs(9.5), color: v?.fleetIsReal ? 'var(--sb)' : 'var(--mu)', whiteSpace: 'nowrap' }}>{v?.fleetLabel ?? ''}</span>
+      {!shut.fl && (v?.fleet ?? []).map((f, i) => (
           <div key={i} className="tc-fleet-chip" role="button" tabIndex={0} title={`${f.sym} · ${f.r}R — scale −2R … +2R, tick every 0.5R, amber = entry (0R). Click to switch cockpit (mock)`}
             style={{ cursor: 'pointer', flex: 'none', display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${f.bd}`, background: f.bg, borderRadius: 8, padding: cfg.touch ? '13px 9px' : '3px 9px', ...touchPad }}>
             <span style={{ fontSize: fs(10.5) }}>{f.sym}</span>
@@ -551,8 +580,23 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             </div>
             <span style={{ fontSize: fs(10.5), fontVariantNumeric: 'tabular-nums', color: f.col }}>{f.r}R</span>
           </div>))}
+    </div>)
+
+  // (2b) Desktop: the five info panels sit in one balanced band — Risk Budget
+  // (tall/narrow) | Armed Actions + Invalidation stacked | Advisories — with
+  // Fleet as a slim strip below. No panel spans the shell for a handful of
+  // rows any more. Touch variants keep the single-column stack their tab
+  // layout expects.
+  const strips = variant === 'desktop'
+    ? <>
+      <div style={{ display: 'grid', gridTemplateColumns: '0.95fr 1.15fr 1.1fr', gap: 5, alignItems: 'start' }}>
+        {riskCard}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>{armedCard}{invalidationCard}</div>
+        {advisoriesCard}
       </div>
-    </>)
+      {fleetCard}
+    </>
+    : <>{riskCard}{advisoriesCard}{armedCard}{invalidationCard}{fleetCard}</>
 
   const tabBar = cfg.tabs && (
     <div style={{ display: 'flex', marginBottom: -1, zIndex: 2, position: 'relative' }}>
@@ -586,8 +630,11 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   // sets zoom:1.1 on <html>, and vh units ignore zoom, so a 92vh cap actually
   // rendered ~101% of the real viewport. Percentages resolve against the
   // backdrop's definite height and stay correct at any zoom.
+  // Owner (2026-07-31): "i need window to be reduce by 15%" — 65vw → 55vw with
+  // the min/max bounds shrunk to match; the panel band rework above is what
+  // makes the content fit the smaller shell without squashing.
   const shellStyle = variant === 'desktop'
-    ? { width: '65vw', height: 'auto', minWidth: 1100, maxWidth: 1600, maxHeight: '92%' }
+    ? { width: '55vw', height: 'auto', minWidth: 960, maxWidth: 1360, maxHeight: '92%' }
     : { width: cfg.shellW, maxWidth: '100vw', height: 'auto', maxHeight: '92%' }
 
   // Owner (2026-07-26): close buttons at the four corners plus one at the
@@ -612,7 +659,9 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         background: 'var(--gls)', border: '1px solid var(--gbd)', borderRadius: '50%', padding: 0 }}>✕</button>
   ))
 
-  const shared = <>{journalRisk}{strips}</>
+  // Touch variants keep the journal in the shared stack (the phone's LOG tab
+  // is where it lives there); on desktop it moved up beside the PFD.
+  const shared = <>{variant === 'desktop' ? null : journalCard}{strips}</>
   return (
     <div className="tc-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose?.() }}>
       <div ref={rootRef} tabIndex={-1} className="tc-root" data-theme={theme} role="dialog" aria-modal="true"
@@ -621,11 +670,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           ...(phoneShrink ? { transform: 'scale(0.8)', transformOrigin: 'center center' } : {}) }}>
         {rulers}
         {borderCloses}
-        <div className="tc-col" style={{ position: 'relative', zIndex: 1, boxSizing: 'border-box', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        <div className="tc-col" style={{ position: 'relative', zIndex: 1, boxSizing: 'border-box', flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: cfg.shellPad, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {header}
           {!cfg.tabs && (
-            <div style={{ display: 'grid', gridTemplateColumns: cfg.grid, gap: 6, alignItems: 'stretch' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>{pfdCard}</div>
+            // (2a) The journal fills the dead space UNDER the PFD (the MFD
+            // column is the taller of the two) at the PFD column's width.
+            <div style={{ display: 'grid', gridTemplateColumns: cfg.grid, gap: 5, alignItems: 'stretch' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>{pfdCard}{journalCard}</div>
               {mfdCard}
             </div>)}
           {cfg.tabs && (
