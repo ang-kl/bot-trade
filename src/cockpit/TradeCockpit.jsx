@@ -359,9 +359,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             <rect x="28" y="160" width="424" height="18" fill="rgba(255,77,109,.08)" />
             <rect x="28" y="30" width="424" height="2" fill="var(--acc)" opacity=".55" />
             <rect x="28" y="16" width="424" height="14" fill="rgba(79,140,255,.07)" />
-            <ellipse id="wx1" cx="336" cy="132" rx="26" ry="15" fill="rgba(255,196,102,.16)" />
-            <ellipse id="wx2" cx="344" cy="132" rx="11" ry="7" fill="rgba(255,77,109,.28)" />
-            <line x1="336" y1="147" x2="336" y2="152" stroke="var(--wrn)" strokeWidth=".75" opacity=".6" />
+            {/* WX cell only when the view-model carries an actual relevant
+                event (news-gate window) — no ellipse for a clear sky. */}
+            {v.wx && <>
+              <ellipse id="wx1" cx="336" cy="132" rx="26" ry="15" fill="rgba(255,196,102,.16)" />
+              <ellipse id="wx2" cx="344" cy="132" rx="11" ry="7" fill="rgba(255,77,109,.28)" />
+              <line x1="336" y1="147" x2="336" y2="152" stroke="var(--wrn)" strokeWidth=".75" opacity=".6" />
+            </>}
             <path d={v.ema50Path} fill="none" stroke="#8b8578" strokeWidth="1.2" strokeDasharray="1 3" />
             <path d={v.ema20Path} fill="none" stroke="#a855f7" strokeWidth="1.2" strokeDasharray="7 3" />
             <path d={v.ema9Path} fill="none" stroke="#14b8a6" strokeWidth="1.4" />
@@ -404,7 +408,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ position: 'absolute', left: '8.7%', top: '74%', transform: 'translateY(-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--wrn)', whiteSpace: 'nowrap' }}>ENTRY</span>
           <span style={{ position: 'absolute', left: '63%', top: '58.6%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.4px', color: 'var(--sb)', whiteSpace: 'nowrap' }}>WPT · SCALE-OUT</span>
           <span style={{ position: 'absolute', left: '91.3%', top: '32%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.6px', color: 'var(--up)', whiteSpace: 'nowrap' }}>TP</span>
-          <span style={{ position: 'absolute', left: '73%', top: '73.5%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.4px', color: 'var(--wrn)', whiteSpace: 'nowrap' }}>WX · HK CPI 14:30</span>
+          {v?.wx && <span style={{ position: 'absolute', left: '73%', top: '73.5%', transform: 'translate(-50%,-50%)', fontSize: 7.5, fontWeight: 600, letterSpacing: '.4px', color: 'var(--wrn)', whiteSpace: 'nowrap' }}>{v.wx.label}</span>}
           {v?.tweaks.map(tw => <span key={tw.key} className="tw-key" data-key={tw.key} title={tw.tip} style={{ position: 'absolute', left: tw.lpc + '%', top: tw.tpc + '%', transform: 'translate(-50%,-50%)', fontSize: 5, fontWeight: 600, color: 'var(--bg)', pointerEvents: 'auto', cursor: 'pointer', lineHeight: 1 }}
             onMouseEnter={() => setHi(tw.key, true)} onMouseLeave={() => setHi(null, false)}>{tw.key}</span>)}
           {v?.traffic.map((tr, i) => <span key={i} className="tc-tfc-label" style={{ position: 'absolute', left: tr.lpc + '%', top: tr.tpc + '%', transform: `translate(${tr.dx},${tr.dy})`, fontSize: fs(8.5), color: tr.col, background: 'var(--gls)', borderRadius: 2, padding: cfg.touch ? '14px 2px' : '0 2px', whiteSpace: 'nowrap', pointerEvents: 'auto' }}>{tr.sym}</span>)}
