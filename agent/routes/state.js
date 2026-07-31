@@ -332,6 +332,16 @@ export default function stateRouter(db) {
       const { cockpitSnapshot } = await import('../services/cockpit-snapshot.js')
       const scope = requestedAccount(db, req)
       const out = cockpitSnapshot(db, req.params.id, scope)
+      // PHASE 2: market state from the cached symbol-hours schedule — the same
+      // helper /state/positions uses. Best effort; an unknown stays null.
+      if (out.status === 200) {
+        try {
+          const { isSymbolOpenCached } = await import('../services/symbol-hours.js')
+          const o = isSymbolOpenCached(db, out.body.position.symbol)
+          out.body.position.marketOpen = !!o.open
+          out.body.position.marketSource = o.source || null
+        } catch { /* stays null */ }
+      }
       res.status(out.status).json(out.body)
     } catch (err) {
       res.status(500).json({ error: err.message })

@@ -20,6 +20,7 @@
 // other account's data.
 // ---------------------------------------------------------------------------
 import { getState } from '../db.js'
+import { fxDayStartSql, loadRiskConfig } from './risk.js'
 
 const SCHEMA_VERSION = 1
 
@@ -73,14 +74,26 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
   // is a status, not a zero.
   let live = null
   let liveAt = null
+  let snapAccount = null
   try {
     const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
     liveAt = snap?.fetchedAt ?? null
+    snapAccount = snap?.account ?? null
     if (row.ctrader_position_id != null) {
       live = (snap?.account?.positions || [])
         .find(p => String(p?.positionId) === String(row.ctrader_position_id)) || null
     }
   } catch { live = null }
+
+  // PHASE 2 — the cache is the SELECTED account's snapshot (one cache, by
+  // design, until per-account snapshots arrive). If it belongs to a different
+  // account than this request, using it would hand account A's balance to a
+  // cockpit showing account B — so it is discarded for BOTH the account block
+  // and the per-position live enrichment, with an advisory saying why.
+  const snapIsThisAccount = snapAccount != null &&
+    (snapAccount.accountId == null ||
+      String(snapAccount.accountId) === String(rowAccount ?? scope.accountId))
+  if (!snapIsThisAccount) { live = null }
 
   const meta = {
     schemaVersion: SCHEMA_VERSION,
@@ -110,6 +123,8 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
     pnl: live?.pnl ?? live?.netPnl ?? null,
     pnlCurrency: live?.currency ?? null,
     openedAt: row.opened_at ?? null,
+    // Filled by the route wrapper below when the cached symbol-hours helper is
+    // available — null (unknown) when it is not, never a guess.
     marketOpen: null,
     marketSource: null,
     mfeR: row.mfe_r ?? null,
@@ -126,20 +141,117 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
     body: {
       meta,
       position,
-      account: UNKNOWN,
+      account: buildAccount(db, snapIsThisAccount ? snapAccount : null, liveAt, rowAccount ?? scope.accountId),
       bars: UNKNOWN,
       indicators: UNKNOWN,
-      execution: UNKNOWN,
+      execution: buildExecution(db, row, live, liveAt),
       intention: UNKNOWN,
       journal: [],
       correlation: UNKNOWN,
       environment: UNKNOWN,
       fleet: UNKNOWN,
       advisories: [
-        { kind: 'phase', detail: 'phase-1 shell: identity and position facts only — all other sections are UNKNOWN by design' },
+        { kind: 'phase', detail: 'phase-2: identity, position, account and execution are live/derived; bars, indicators, intention, journal, correlation, environment and fleet remain UNKNOWN by design' },
+        ...(snapAccount != null && !snapIsThisAccount
+          ? [{ kind: 'account-scope', detail: `broker snapshot cache belongs to account ${snapAccount.accountId} — not used for this position's account/live facts` }]
+          : []),
         ...(live ? [] : [{ kind: 'staleness', detail: 'no broker snapshot row for this position — price/P&L unknown' }]),
       ],
       provenance: { position: position.source, brokerSnapshotAt: liveAt },
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 2 builders — account and execution, from facts the app already holds.
+// ---------------------------------------------------------------------------
+
+/**
+ * The account block: broker health from the snapshot cache, the daily-loss
+ * RULE from risk config, and the day's realized usage from the trades table.
+ *
+ * `snapAccount` is null when the cache is missing OR belongs to a different
+ * account — both yield status 'unknown' for the broker figures rather than
+ * another account's balance. The loss-cap fields are RULE + DERIVED and can
+ * be stated even then, but only when the balance they need exists.
+ */
+function buildAccount(db, snapAccount, liveAt, accountId) {
+  const h = snapAccount?.health ?? null
+  const balance = h?.balance ?? null
+
+  // Daily loss cap = dailyLossPct × balance (the same formula the risk gate
+  // uses), anchored to the FX day open per the owner-approved #91 move.
+  let dailyLossCap = null
+  let dailyLossUsed = null
+  try {
+    const pct = loadRiskConfig(db)?.dailyLossPct
+    if (balance != null && Number.isFinite(pct) && pct > 0) dailyLossCap = balance * pct
+    const anchor = fxDayStartSql()
+    const rows = db.prepare(
+      `SELECT COALESCE(SUM(net_pnl), 0) AS net FROM trades
+        WHERE status = 'closed' AND net_pnl IS NOT NULL
+          AND closed_at >= ?
+          AND (account_id = ? OR account_id IS NULL)`
+    ).get(anchor, accountId == null ? null : String(accountId))
+    // "Used" is adverse-only: a profitable day has used none of the cap.
+    dailyLossUsed = Math.max(0, -Number(rows?.net ?? 0))
+  } catch { /* stays null / unknown */ }
+
+  return {
+    currency: snapAccount?.currency ?? null,
+    balance,
+    equity: h?.equity ?? null,
+    usedMargin: h?.usedMargin ?? null,
+    freeMargin: h?.freeMargin ?? null,
+    dailyLossCap,
+    dailyLossUsed,
+    source: snapAccount ? 'broker-snapshot-cache + risk-config' : 'risk-config-only',
+    asOf: snapAccount ? liveAt : null,
+    status: snapAccount ? 'live' : 'unknown',
+  }
+}
+
+/**
+ * The execution block. spreadNow is DERIVED from the cached bid/ask;
+ * spreadBacktest comes from the trade's own entry forensics when the
+ * collect-forward capture recorded them; latency has NO authoritative source
+ * in this app (loop-phase lag measures the agent's event loop, not the broker
+ * round-trip) and is therefore UNKNOWN rather than a proxy dressed as a fact.
+ */
+function buildExecution(db, row, live, liveAt) {
+  const facts = []
+  let spreadNow = null
+  if (live?.bid != null && live?.ask != null && live.ask >= live.bid) {
+    spreadNow = Number((live.ask - live.bid).toPrecision(6))
+    facts.push({ id: 'spread-now', detail: `ask ${live.ask} − bid ${live.bid} from the broker snapshot cache`, asOf: liveAt })
+  }
+
+  // Entry-time forensics captured by the Perf Ledger collect-forward work —
+  // read from the trade row, never recomputed after the fact.
+  let slippageAtEntry = null
+  let spreadAtEntry = null
+  try {
+    if (row.trade_id != null) {
+      const t = db.prepare('SELECT slippage_price, spread_at_entry FROM trades WHERE id = ?').get(row.trade_id)
+      slippageAtEntry = t?.slippage_price ?? null
+      spreadAtEntry = t?.spread_at_entry ?? null
+      if (slippageAtEntry != null) facts.push({ id: 'slippage-entry', detail: 'signed, adverse-positive, price units — captured at fill time' })
+    }
+  } catch { /* columns exist since Perf Ledger PR A; stays null on any read issue */ }
+
+  const spreadRatio = spreadNow != null && spreadAtEntry != null && spreadAtEntry > 0
+    ? Number((spreadNow / spreadAtEntry).toPrecision(4))
+    : null
+  if (spreadRatio != null) facts.push({ id: 'spread-ratio', detail: 'spreadNow ÷ spread_at_entry (the entry capture is the baseline; no backtest spread series exists)' })
+
+  return {
+    spreadNow,
+    spreadBacktest: null,          // no backtest spread series exists — UNKNOWN, per the prompt
+    spreadRatio,
+    latencyMs: null,               // no authoritative broker-latency metric exists — UNKNOWN
+    slippageAtEntry,
+    spreadAtEntry,
+    status: spreadNow != null || slippageAtEntry != null ? 'partial' : 'unknown',
+    facts,
   }
 }
