@@ -311,12 +311,53 @@ export function onClientSummary(cb) {
   return () => summaryListeners.delete(cb)
 }
 
+// ---------------------------------------------------------------------------
+// BROWSER LOCATION (owner, 2026-07-31: "ask for location if you don't have
+// from the browser when loaded"). One permission prompt, once: the answer —
+// coarse coordinates or the refusal — is cached in localStorage so the owner
+// is never nagged on every load. Coordinates are rounded to 2 decimals
+// (~1 km): enough to answer "was that browser in Singapore or somewhere
+// else", which is the security question this panel exists for, without
+// logging a street address into agent_state.
+//
+// No Google Places / geocoding API involved (owner asked): the coords come
+// from the browser's own geolocation service, the country from the reported
+// IANA timezone, both free and key-less. A place NAME for the coords would
+// need a reverse-geocoding call — the seam is here if ever wanted.
+// ---------------------------------------------------------------------------
+const LOC_KEY = 'browser_loc'          // "1.35,103.82" once granted
+const LOC_DENIED_KEY = 'browser_loc_denied'
+
+export function cachedBrowserLoc() {
+  try { return localStorage.getItem(LOC_KEY) || null } catch { return null }
+}
+
+/** Prompt once for coarse location; cache grant or refusal. */
+export function ensureBrowserLocation() {
+  try {
+    if (cachedBrowserLoc() || localStorage.getItem(LOC_DENIED_KEY) === 'true') return
+    if (!navigator.geolocation) return
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        try {
+          const v = `${pos.coords.latitude.toFixed(2)},${pos.coords.longitude.toFixed(2)}`
+          localStorage.setItem(LOC_KEY, v)
+        } catch { /* private mode */ }
+      },
+      () => { try { localStorage.setItem(LOC_DENIED_KEY, 'true') } catch { /* private mode */ } },
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 3_600_000 },
+    )
+  } catch { /* geolocation unavailable */ }
+}
+
 /** One presence heartbeat: tab id, timezone, page, visibility, idle state. */
 export async function sendClientPing(page, { closed = false } = {}) {
   const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'unknown' } })()
+  const loc = cachedBrowserLoc()
   const q = new URLSearchParams({
     tab: tabId(), tz, page: page || '/',
     hidden: String(pageHidden()), idle: String(pageIdle()), closed: String(closed),
+    ...(loc ? { loc } : {}),
   })
   if (closed) {
     // pagehide: a normal fetch is killed with the page — keepalive survives.

@@ -97,6 +97,23 @@
      preference (so the accessibility requirement holds too). Anything past
      10px is then the user's explicit choice, not the design overriding them. */
   --fs-session:       0.625rem;
+
+  /* Dense desk type scale (M3 audit item 2, owner-approved 2026-07-31).
+     M3's own floor is 11px Label Small; this desk deliberately runs denser
+     (the owner's briefs cap several controls at 10px). What the audit fixed
+     is not the VALUES but the fact that ~300 inline styles carried raw
+     numerals — the scale now lives in one list, and a future size change is
+     one edit here instead of a sweep. Pixel units on purpose: these sizes
+     were chosen against the owner's screens as fixed px and must not breathe
+     with the responsive rem base the --fs-* tokens above ride on. */
+  --fs-d6:  6px;
+  --fs-d7:  7px;
+  --fs-d8:  8px;
+  --fs-d9:  9px;
+  --fs-d10: 10px;
+  --fs-d11: 11px;
+  --fs-d12: 12px;
+  --fs-d18: 18px;
   --lh-session:       0.75rem;
 
   /* ---------------------------------------------------------------------
@@ -1038,9 +1055,11 @@ textarea {
   z-index: -1;
 }
 @media (pointer: coarse) {
-  /* A finger needs the full HIG 44px; a mouse does not, which is why the
-     desktop minimum above is smaller rather than universally 44. */
-  .compact-control::before { min-width: 44px; min-height: 44px; }
+  /* 36px by the owner's explicit choice (M3 audit item 3, 2026-07-31).
+     For the record: M3 specifies 48dp and Apple's HIG 44pt — 36 is below
+     both, chosen for this desk's density. The desktop minimum above stays
+     32; the visible pill is unchanged either way. */
+  .compact-control::before { min-width: 36px; min-height: 36px; }
 }
 
 /* The session line itself. One line, capped at 10px by the owner's explicit

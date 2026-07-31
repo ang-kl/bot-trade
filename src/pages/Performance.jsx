@@ -17,8 +17,9 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { selectedAccountId as appSelectedAccountId } from '../lib/selected-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
-import { orderHourlyForDisplay, totalFloating } from '../lib/hourly-order.js'
-import { useHourTick } from '../lib/use-hour-tick.js'
+import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
+import { hourLabel, dateFlags } from '../lib/hour-label.js'
+import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
@@ -148,13 +149,13 @@ function SessionClock() {
           return (
             <span key={s.name}
               title={`${p(s.from)}:00–${p(s.to)}:00 UTC${on ? ' · OPEN' : ''}`}
-              style={{ fontSize: 9, fontWeight: 600, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? P_ACC : P_EDG}`, color: on ? P_ACC : P_MU, background: on ? P_ACS : 'transparent' }}>
+              style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? P_ACC : P_EDG}`, color: on ? P_ACC : P_MU, background: on ? P_ACS : 'transparent' }}>
               {s.name}
             </span>
           )
         })}
       </div>
-      <span style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, fontSize: 9, fontWeight: 600, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>
+      <span style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, fontSize: 'var(--fs-d9)', fontWeight: 600, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>
         <span>{p(now.getUTCHours())}:{p(now.getUTCMinutes())}:{p(now.getUTCSeconds())} UTC</span>
         {/* Device-local clock — owner (2026-07-27): "have a user's timezone below the UTC". */}
         <span>🇸🇬 {p(now.getHours())}:{p(now.getMinutes())}:{p(now.getSeconds())}</span>
@@ -286,7 +287,7 @@ function toTitle(label) {
 // Body type for these two cards is 9px (owner 2026-07-25): row labels AND
 // cell data. Only the two gradient cards use GradientBody, so this does not
 // leak into any other table.
-const GRAD_FONT = 9
+const GRAD_FONT = 'var(--fs-d9)'
 
 function GradientBody({
   grid, label, cols, rows, foot, groups = null, colW = 'minmax(52px,84px)',
@@ -315,7 +316,7 @@ function GradientBody({
 
   const template = `${grid} repeat(${visCols.length},${colW})`
   const pillS = {
-    cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: W_CELL,
+    cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d10)', fontWeight: W_CELL,
     color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`,
     borderRadius: 6, padding: '0 5px',
   }
@@ -343,7 +344,7 @@ function GradientBody({
   const subSep = subtotals && colsOpen && visRows.length ? gr++ : null
   const subRow = subtotals && colsOpen && visRows.length ? gr++ : null
 
-  const headStyle = smallHead ? { fontSize: 8 } : undefined
+  const headStyle = smallHead ? { fontSize: 'var(--fs-d8)' } : undefined
   // Right-aligned, square-cornered, ledger-style — the number is the signal,
   // not the shape around it.
   const cellStyle = { fontSize: GRAD_FONT, fontWeight: W_CELL, textAlign: 'right', paddingRight: 6, fontVariantNumeric: 'tabular-nums' }
@@ -428,7 +429,7 @@ function GradientBody({
           )}
         </div>
       </div>
-      <span style={{ fontSize: 9, color: P_MU }}>{foot}</span>
+      <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{foot}</span>
     </div>
   )
 }
@@ -454,22 +455,22 @@ function FxBandsBody({ fxBands }) {
       {fxBands.map(b => (
         <div key={b.band} className="perf-band-row" style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 5 }}>
           <span style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 10, fontWeight: W_ROWLABEL }}>{b.band}</span>
-            <span style={{ fontSize: 9, color: P_MU }}>{b.meta}</span>
+            <span style={{ fontSize: 'var(--fs-d10)', fontWeight: W_ROWLABEL }}>{b.band}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{b.meta}</span>
           </span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
             {b.pairs.map(p2 => (
               <button key={p2.sym} type="button" title={p2.tip}
                 aria-expanded={openPair === `${b.band}|${p2.sym}`}
                 onClick={() => setOpenPair(o => (o === `${b.band}|${p2.sym}` ? null : `${b.band}|${p2.sym}`))}
-                style={{ cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', fontSize: 9, fontWeight: 600, padding: '0 5px', borderRadius: 5, border: `1px solid ${openPair === `${b.band}|${p2.sym}` ? P_ACC : P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+                style={{ cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '0 5px', borderRadius: 5, border: `1px solid ${openPair === `${b.band}|${p2.sym}` ? P_ACC : P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
                 {p2.sym} <span style={{ fontWeight: W_CELL, color: p2.col }}>{p2.v}</span>
               </button>
             ))}
           </div>
           {b.pairs.filter(p2 => openPair === `${b.band}|${p2.sym}`).map(p2 => (
-            <span key={p2.sym} style={{ gridColumn: '1 / -1', fontSize: 9, color: P_MU, paddingLeft: 4 }}>{p2.tip || 'no TP/SL detail recorded for this pair'}</span>
+            <span key={p2.sym} style={{ gridColumn: '1 / -1', fontSize: 'var(--fs-d9)', color: P_MU, paddingLeft: 4 }}>{p2.tip || 'no TP/SL detail recorded for this pair'}</span>
           ))}
         </div>
       ))}
@@ -485,13 +486,13 @@ function StratMxBody({ stratMx }) {
         {MARKET_COLS.map(m => <span key={m.key}>{m.label}</span>)}
         <span>Net</span><span>Edge</span>
       </div>
-      {stratMx.length === 0 && <span style={{ fontSize: 9, color: P_MU, padding: '4px 0' }}>No closed trades with a strategy label in the last 30 days.</span>}
+      {stratMx.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, padding: '4px 0' }}>No closed trades with a strategy label in the last 30 days.</span>}
       {stratMx.map(s => (
         <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '3px 0', fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 9, fontWeight: W_ROWLABEL, textTransform: 'capitalize' }}>{s.name}</span>
-          {s.cells.map((c, ci) => <span key={ci} title={c.tip} style={{ fontSize: 9, fontWeight: W_CELL, color: c.col }}>{c.v}</span>)}
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: s.col }}>{s.net}</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: s.edgeCol }}>{s.edge}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL, textTransform: 'capitalize' }}>{s.name}</span>
+          {s.cells.map((c, ci) => <span key={ci} title={c.tip} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c.col }}>{c.v}</span>)}
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: s.col }}>{s.net}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: s.edgeCol }}>{s.edge}</span>
         </div>
       ))}
     </>
@@ -506,11 +507,11 @@ function CryptoBody({ crypto }) {
       </div>
       {crypto.rows.map(c2 => (
         <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '76px 96px 66px 84px 1fr', gap: 8, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{c2.sym}</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: P_MU }}>—</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>—</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
-          <span style={{ fontSize: 9, color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{c2.sym}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_MU }}>—</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 6, color: P_MU }}>—</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
         </div>
       ))}
     </>
@@ -573,26 +574,26 @@ function OpenTableBody({ rows }) {
           onClick={() => setOpenId(o => (o === p2.id ? null : p2.id))}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === p2.id ? null : p2.id)) } }}
           style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
-          <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>
             <span aria-hidden="true" style={{ color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>{' '}
             <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-open-floating">
               {p2.sym}
             </SymbolTarget>
           </span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
-          <span style={{ fontSize: 9, color: P_MU }}>{p2.entry}</span>
-          <span style={{ fontSize: 9, fontWeight: W_CELL }}>{fmtPx(p2.price)}</span>
-          <span style={{ fontSize: 9, color: P_MU }}>{fmtVol(p2.day?.v)}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.entry}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL }}>{fmtPx(p2.price)}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{fmtVol(p2.day?.v)}</span>
           {/* Owner (2026-07-24 evening): "OPEN NOW — FLOATING to show
               current open trade but market is closed so show the locked
               sign" — same 🔒 convention as the weekend 24H table, replacing
               the old OPEN/CLOSED/? text label. */}
-          <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
-          <span style={{ fontSize: 9, color: P_MU }}>{p2.sld} / {p2.tpd}</span>
+          <span style={{ fontSize: 'var(--fs-d10)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable — market closed' : undefined}>{p2.marketOpen === false ? '🔒' : ''}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.sld} / {p2.tpd}</span>
         </div>
         {openId === p2.id && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '1px 0 2px 14px', borderBottom: `1px solid ${P_EDG}`, fontSize: 9, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '1px 0 2px 14px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
             <span>entry {p2.entry}</span>
             <span>O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)}</span>
             <span>{p2.strat}</span>
@@ -634,7 +635,7 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, initialIndex = null, c
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   const p = Math.min(page, pages - 1)
   const pageRows = rows.slice(p * pageSize, p * pageSize + pageSize)
-  const btn = { cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`, borderRadius: 6, padding: '1px 6px' }
+  const btn = { cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_MU, background: 'transparent', border: `1px solid ${P_EDG}`, borderRadius: 6, padding: '1px 6px' }
   return (
     <div>
       <div style={{ maxHeight, overflowY: 'auto', overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
@@ -643,7 +644,7 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, initialIndex = null, c
       {rows.length > pageSize && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
           <button type="button" disabled={p === 0} onClick={() => setPage(p - 1)} style={{ ...btn, opacity: p === 0 ? 0.4 : 1 }}>‹</button>
-          <span style={{ fontSize: 9, color: P_MU }}>Page {p + 1} / {pages}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>Page {p + 1} / {pages}</span>
           <button type="button" disabled={p >= pages - 1} onClick={() => setPage(p + 1)} style={{ ...btn, opacity: p >= pages - 1 ? 0.4 : 1 }}>›</button>
         </div>
       )}
@@ -676,14 +677,14 @@ function Weekend24Body({ rows }) {
               onClick={() => setOpenId(o => (o === p2.id ? null : p2.id))}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === p2.id ? null : p2.id)) } }}
               style={{ display: 'grid', gridTemplateColumns: WEEKEND_ROW_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
-              <span aria-hidden="true" style={{ fontSize: 9, color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>
-              <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{p2.sym}</span>
-              <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
-              <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
-              <span style={{ fontSize: 10, textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '\u{1F512}' : ''}</span>
+              <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{p2.sym}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+              <span style={{ fontSize: 'var(--fs-d10)', textAlign: 'center' }} title={p2.marketOpen === false ? 'currently untradable' : undefined}>{p2.marketOpen === false ? '\u{1F512}' : ''}</span>
             </div>
             {openId === p2.id && (
-              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 9, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
                 entry {p2.entry} · now {fmtPx(p2.price)} · O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)} · vol {fmtVol(p2.day?.v)} · SL {p2.sld} / TP {p2.tpd} · {p2.strat}
               </div>
             )}
@@ -698,44 +699,58 @@ function Weekend24Body({ rows }) {
 // across a 24 hours (1hr timeframe) the Open balance, P/L, Close balance,
 // trades, close trades") — one row per elapsed hour since FX day open, so
 // the card always has structure even before the first close of the day.
-const TODAY_HOURLY_COLS = '54px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
+// Hour widened from 54px for the two-line SGT/UTC label — the other five
+// columns keep their exact widths, alignment and formatting (owner: "do not
+// alter their values, business logic, widths, alignment or formatting").
+// minWidth moves by the same 34px so the horizontal scroll floor is unchanged
+// in effect; the table still fits a Telegram Mini App width by scrolling, as
+// it did before.
+const TODAY_HOURLY_COLS = '88px minmax(74px,1fr) 72px minmax(74px,1fr) 48px 56px'
 function TodayHourlyBody({ rows, floatingNow = null }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   return (
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
-      <div ref={animRef} style={{ minWidth: 420 }}>
+      <div ref={animRef} style={{ minWidth: 454 }}>
         <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, borderBottom: `1px solid ${P_EDG}`, paddingBottom: 1 }}>
-          <span>Hour</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
+          <span>Hour (SGT)</span><span>Open bal</span><span>P&amp;L</span><span>Close bal</span><span>Trades</span><span>Closed</span>
         </div>
-        {rows.map(r => (
-          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', opacity: r.pending ? 0.45 : 1 }}>
-            {/* Hour in the VIEWER'S local timezone; the FX-day UTC hour rides
-                beside it 2pt smaller (owner 2026-07-28: "use user's tz with
-                bracket (FX UTC timezone) in tiny font size"). */}
-            <span style={{ fontSize: 9, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined }}>
-              {new Date(r.from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
-              <span style={{ fontSize: 7, marginLeft: 3 }}>({new Date(r.from).toISOString().slice(11, 16)} UTC)</span>
-              {r.isLive && <span style={{ fontSize: 6, marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
+        {rows.map((r) => {
+          const L = hourLabel(r.at)
+          return (
+          <div key={r.from} style={{ display: 'grid', gridTemplateColumns: TODAY_HOURLY_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
+            {/* Owner spec 2026-07-31: SGT on top (h:mm AM/PM), UTC directly
+                beneath 2px smaller, and the local date in brackets on the first
+                row of an earlier day and on the oldest row. The label is the
+                END of the row's hour — the 6:20 row is the hour that finished
+                at 6:20 — which is what makes the live minute meaningful on
+                every row instead of decorative. */}
+            <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.15, color: r.isLive ? P_TX : P_MU, fontWeight: r.isLive ? 700 : undefined, display: 'block' }}>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                {L.local}
+                {r.showDate && <span style={{ fontSize: 'var(--fs-d7)', marginLeft: 3 }}>({L.date})</span>}
+                {r.isLive && <span style={{ fontSize: 'var(--fs-d6)', marginLeft: 3, fontWeight: 800, letterSpacing: '.03em', border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px' }}>NOW</span>}
+              </span>
+              <span style={{ display: 'block', fontSize: 'var(--fs-d7)', color: P_MU, fontWeight: 400 }}>{L.utc}</span>
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.openBal != null ? money(r.openBal) : '—'}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{r.openBal != null ? money(r.openBal) : '—'}</span>
             {/* Realized P&L from closes in this hour. On the LIVE hour the
                 floating figure rides alongside in brackets — it is unrealized
                 and belongs to no single hour, so it is never summed into
                 `net` and never touches the balance columns. */}
-            <span style={{ fontSize: 9, fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
-              {!r.pending && r.closedN ? signed(r.net) : '—'}
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: r.net > 0 ? P_UP : r.net < 0 ? P_DN : P_MU }}>
+              {r.closedN ? signed(r.net) : '—'}
               {r.isLive && floatingNow != null && (
                 <span title="Floating (unrealized) P&L on the positions open right now. Not part of this hour's realized figure and not in the balance columns — balance is realized-only; equity is balance + floating."
-                  style={{ fontSize: 7, marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
+                  style={{ fontSize: 'var(--fs-d7)', marginLeft: 3, color: floatingNow > 0 ? P_UP : floatingNow < 0 ? P_DN : P_MU }}>
                   ({signed(floatingNow)} float)
                 </span>
               )}
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{r.pending ? '—' : r.closeBal != null ? money(r.closeBal) : '—'}</span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.openedN) || '—'}</span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL }}>{(!r.pending && r.closedN) || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{r.closeBal != null ? money(r.closeBal) : '—'}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL }}>{r.openedN || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL }}>{r.closedN || '—'}</span>
           </div>
-        ))}
+        )})}
       </div>
     </div>
   )
@@ -749,7 +764,7 @@ const TODAY_TRADE_COLS = '14px 42px 66px 74px 1fr'
 function TodayTradesBody({ rows }) {
   const [animRef] = useAutoAnimate({ duration: 160 })
   const [openId, setOpenId] = useState(null)
-  if (!rows.length) return <span style={{ fontSize: 9, color: P_MU }}>no closed trades in this window</span>
+  if (!rows.length) return <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>no closed trades in this window</span>
   return (
     <div ref={animRef}>
       {rows.map(t2 => {
@@ -760,14 +775,14 @@ function TodayTradesBody({ rows }) {
               onClick={() => setOpenId(o => (o === t2.id ? null : t2.id))}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenId(o => (o === t2.id ? null : t2.id)) } }}
               style={{ display: 'grid', gridTemplateColumns: TODAY_TRADE_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
-              <span aria-hidden="true" style={{ fontSize: 9, color: P_MU }}>{on ? '▾' : '▸'}</span>
-              <span style={{ fontSize: 9, color: P_MU }}>{t2.hm}</span>
-              <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
-              <span style={{ fontSize: 9, fontWeight: W_CELL, color: P_SB }}>{t2.side} {t2.lots}</span>
-              <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: t2.pnl >= 0 ? P_UP : P_DN }}>{signed(t2.pnl)}</span>
+              <span aria-hidden="true" style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{on ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{t2.hm}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{t2.sym}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_SB }}>{t2.side} {t2.lots}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: t2.pnl >= 0 ? P_UP : P_DN }}>{signed(t2.pnl)}</span>
             </div>
             {on && (
-              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 9, color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
+              <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
                 {t2.detail}
               </div>
             )}
@@ -801,8 +816,8 @@ function SessionStatsBody({ stats }) {
     { key: 'ALL', hint: 'every closed trade today', ...stats.total },
   ]
   const cell = (v, col) => (v == null
-    ? <span style={{ fontSize: 9, color: P_MU, textAlign: 'right' }}>—</span>
-    : <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: col ?? (v > 0 ? P_UP : v < 0 ? P_DN : P_SB) }}>{signed(v)}</span>)
+    ? <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, textAlign: 'right' }}>—</span>
+    : <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: col ?? (v > 0 ? P_UP : v < 0 ? P_DN : P_SB) }}>{signed(v)}</span>)
   return (
     <div style={{ overflowX: 'auto', minWidth: 0, maxWidth: '100%' }}>
       <div style={{ minWidth: 700 }}>
@@ -812,15 +827,15 @@ function SessionStatsBody({ stats }) {
         {rows.map(s => (
           <div key={s.key} title={s.hint} style={{ display: 'grid', gridTemplateColumns: SESS_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', fontWeight: s.key === 'ALL' ? 800 : undefined }}>
             <span>
-              <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{s.key}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{s.key}</span>
               {s.open === false && (
-                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 6, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
+                <span title="market closed right now — figures are the last computed value" style={{ marginLeft: 3, fontSize: 'var(--fs-d6)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_WRN, border: `1px solid ${P_WRN}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>closed</span>
               )}
               {twins[s.key] && (
-                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 6, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
+                <span title={`Same UTC cash-hours window as ${twins[s.key]} this time of year — identical figures are expected, not a bug.`} style={{ marginLeft: 3, fontSize: 'var(--fs-d6)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.02em', color: P_SB, border: `1px solid ${P_EDG}`, borderRadius: 3, padding: '0 2px', verticalAlign: 'middle' }}>={twins[s.key]}</span>
               )}
             </span>
-            <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: s.n ? P_TX : P_MU }}>{s.n || '—'}</span>
             {s.n
               ? <>{cell(s.pos, P_UP)}{cell(s.neg, P_DN)}{cell(s.high)}{cell(s.low)}{cell(s.avg)}{cell(s.sum)}{cell(s.median)}</>
               : <>{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}{cell(null)}</>}
@@ -841,7 +856,7 @@ function SessionStatsBody({ stats }) {
 function WlBody({ rows }) {
   return (
     <>
-      {rows.length === 0 && <span style={{ fontSize: 9, color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
+      {rows.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, padding: '4px 0' }}>No closed trades in the last 30 days.</span>}
       {/* Owner (2026-07-25): "each symbol only two rows. dense the row" —
           this was four lines per trade (identity, window, then one line per
           anatomy point). Now exactly two: the identity line, and everything
@@ -849,11 +864,11 @@ function WlBody({ rows }) {
       {rows.map((t2, ti) => (
         <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
-            <span style={{ fontSize: 9, color: P_SB }}>{t2.sd}</span>
-            <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: W_CELL, color: t2.col }}>{t2.pnl}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{t2.sym}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>{t2.sd}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: t2.col }}>{t2.pnl}</span>
           </div>
-          <div style={{ fontSize: 9, color: P_MU }}>{[t2.when, ...t2.points].join(' · ')}</div>
+          <div style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{[t2.when, ...t2.points].join(' · ')}</div>
         </div>
       ))}
     </>
@@ -868,20 +883,20 @@ function AcctCardsGrid({ acctCards }) {
             {acctCards.map(a => (
               <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
-                  <span style={{ fontSize: 9, color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 9, color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> = <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span> of balance</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>equity {a.equity != null ? money(a.equity) : '—'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> = <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span> of balance</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett today</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett today</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett today</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Forecast · 30D pace</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
-                <span style={{ fontSize: 9, color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
+                <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} daily stop</span>
               </div>
             ))}
     </div>
@@ -905,7 +920,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
     <>
       {modal && (
         <button type="button" onClick={() => setExpandAll(e => !e)}
-          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: P_TX, background: P_ACS, border: `1px solid ${P_GBD}`, borderRadius: 8, padding: '3px 9px', alignSelf: 'flex-start', marginBottom: 6 }}>
+          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_TX, background: P_ACS, border: `1px solid ${P_GBD}`, borderRadius: 8, padding: '3px 9px', alignSelf: 'flex-start', marginBottom: 6 }}>
           {expandAll ? 'Collapse all' : 'Expand all'}
         </button>
       )}
@@ -1004,19 +1019,19 @@ function MobileWindowCard({ w }) {
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', color: P_TX, display: 'grid', gridTemplateColumns: '76px 1fr 82px', gap: 6, alignItems: 'center', padding: '7px 11px', fontVariantNumeric: 'tabular-nums', minHeight: 44 }}>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{w.label}</span>
-          <span style={{ fontSize: 9, color: P_ACC }}>{dRange(w.from, w.to)}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{w.label}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_ACC }}>{dRange(w.from, w.to)}</span>
         </span>
         <span style={{ display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: 9, color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{money(w.carryOut)}</span></span>
-          <span style={{ fontSize: 9, color: P_MU }}>{empty ? 'no closed trades' : `${w.trades} · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · TP/SL ${w.tp + w.part}/${w.sl} · edge `}<span style={{ fontWeight: W_CELL, color: w.edge == null ? P_MU : w.edge >= 0 ? P_UP : P_DN }}>{empty ? '' : (w.edge != null ? `${signed(w.edge, 1)}%` : '—')}</span></span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>{money(w.carryIn)} → <span style={{ fontWeight: W_CELL, color: P_TX }}>{money(w.carryOut)}</span></span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{empty ? 'no closed trades' : `${w.trades} · ${w.winPct != null ? `${nf(0).format(w.winPct)}%` : '—'} · PF ${w.pf != null ? nf(2).format(w.pf) : '—'} · TP/SL ${w.tp + w.part}/${w.sl} · edge `}<span style={{ fontWeight: W_CELL, color: w.edge == null ? P_MU : w.edge >= 0 ? P_UP : P_DN }}>{empty ? '' : (w.edge != null ? `${signed(w.edge, 1)}%` : '—')}</span></span>
         </span>
-        <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'right', color: empty ? P_MU : w.net >= 0 ? P_UP : P_DN }}>{empty ? '—' : signed(w.net)}</span>
+        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'right', color: empty ? P_MU : w.net >= 0 ? P_UP : P_DN }}>{empty ? '—' : signed(w.net)}</span>
       </button>
       {open && (
         <div style={{ borderTop: `1px solid ${P_EDG}`, background: P_ACS, padding: '6px 11px', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {empty
-            ? <span style={{ fontSize: 9, color: P_SB }}>No closed trades in this window.</span>
+            ? <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>No closed trades in this window.</span>
             : (
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
@@ -1024,14 +1039,14 @@ function MobileWindowCard({ w }) {
                     const st = w.markets?.[m.key]
                     return (
                       <span key={m.key} style={{ display: 'flex', flexDirection: 'column', border: `1px solid ${P_EDG}`, borderRadius: 8, padding: '4px 7px' }}>
-                        <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>{m.label}</span>
-                        <span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
-                        <span style={{ fontSize: 9, color: P_MU }}>{st?.trades ? `PF ${st.pf != null ? nf(1).format(st.pf) : '—'} · ${st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}` : ''}</span>
+                        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>{m.label}</span>
+                        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: st?.trades ? (st.net >= 0 ? P_UP : P_DN) : P_MU }}>{st?.trades ? signed(st.net) : '—'}</span>
+                        <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{st?.trades ? `PF ${st.pf != null ? nf(1).format(st.pf) : '—'} · ${st.winPct != null ? `${nf(0).format(st.winPct)}%` : '—'}` : ''}</span>
                       </span>
                     )
                   })}
                 </div>
-                {insight(w) && <span style={{ fontSize: 9, lineHeight: 1.4, color: P_SB }}>{insight(w)}</span>}
+                {insight(w) && <span style={{ fontSize: 'var(--fs-d9)', lineHeight: 1.4, color: P_SB }}>{insight(w)}</span>}
               </>
             )}
         </div>
@@ -1223,7 +1238,7 @@ export default function Performance() {
   // order and NOW marker are the only things on this page that must follow the
   // wall clock rather than the data poll. One timer aimed at the next exact
   // hour, never a short interval; see lib/use-hour-tick.js.
-  const hourNow = useHourTick()
+  const hourNow = useTableClock()
 
   // Closed trades scoped to the account filter (M1 NULL-tolerant convention:
   // unstamped legacy rows belong to every scope).
@@ -1246,10 +1261,25 @@ export default function Performance() {
     return { from: anchor, to: loadedAt, weekend: false, label: null }
   }, [loadedAt])
 
-  // Today since the FX day roll — the design's "Today" number, plus the
-  // TP/SL split the prototype's meta line shows (evidence: close_reason).
+  // ROLLING 24 HOURS (owner ruling, 2026-07-31): "The entire card must
+  // represent one consistent rolling 24-hour period. Do not leave the card
+  // title or Closed Trades section anchored to the 5 PM New York FX day."
+  //
+  // [anchorNow - 24h, anchorNow) — the exact union of the 24 hourly windows
+  // below, so the hourly rows and the Closed Trades list cover precisely the
+  // same period and their counts reconcile. Half-open at both ends: a trade
+  // closing on a boundary belongs to one row and one row only.
+  //
+  // `todayWin` survives for the SEPARATE "Today by market session" card lower
+  // down, which is still an FX-day view and which this ruling does not touch.
+  // Bounds come from rollingWindow(), the same helper the hourly rows are
+  // built from, so the two cannot drift apart under a later edit.
+  const rollingWin = useMemo(() => rollingWindow(hourNow, 24), [hourNow])
+
+  // The card's headline number, over the rolling window, plus the TP/SL split
+  // the prototype's meta line shows (evidence: close_reason).
   const today = useMemo(() => {
-    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= todayWin.from && ms < todayWin.to })
+    const rows = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= rollingWin.from && ms < rollingWin.to })
     const wins = rows.filter(t2 => Number(t2.net_pnl) > 0)
     const isTp = (r) => /\btp\b|take.?profit|target|bank|partial|scale/.test(String(r || '').toLowerCase())
     const isSl = (r) => /\bsl\b|stop.?loss|stopped|stop hit/.test(String(r || '').toLowerCase())
@@ -1259,7 +1289,7 @@ export default function Performance() {
       tp: rows.filter(t2 => isTp(t2.close_reason) && !isSl(t2.close_reason)).length,
       sl: rows.filter(t2 => isSl(t2.close_reason) && !isTp(t2.close_reason)).length,
     }
-  }, [scopedClosed, todayWin])
+  }, [scopedClosed, rollingWin])
 
   // Owner (2026-07-24 evening): "the today card cannot be empty... it
   // should show across a 24 hours (1hr timeframe) the Open balance, P/L,
@@ -1270,25 +1300,24 @@ export default function Performance() {
   // still shows a real (flat) balance line instead of nothing at all.
   const todayHourly = useMemo(() => {
     const curBal = ledger?.balance ?? null
-    const H = 60 * 60 * 1000
-    // Owner (2026-07-28): "where are the 24 hours... even market close you
-    // have bitcoin" — the loop used to stop at `now`, so an hour into the FX
-    // day the table held 2 rows and looked broken. Always emit the full 24
-    // slots of the FX day; hours still in the future are marked `pending`
-    // and render dashed instead of being silently absent.
-    const slots = []
-    for (let from = todayWin.from; from < todayWin.from + 24 * H; from += H) {
-      slots.push({ from, to: from + H, pending: !todayWin.weekend && from >= todayWin.to })
-    }
+    // ROLLING WINDOW (owner, 2026-07-31): 24 windows of [t−1h, t) ending at the
+    // captured clock time, newest first, the live minute preserved in every
+    // row. This replaces the FX-day slots — including their dashed `pending`
+    // future rows, which a rolling window cannot have: every row is history.
+    // See hourly-order.js for why the labels were allowed to move the buckets.
+    const slots = rollingHourWindows(hourNow, 24)
     const withStats = slots.map(s => {
       const closedIn = scopedClosed.filter(t2 => { const ms = closedMs(t2); return ms != null && ms >= s.from && ms < s.to })
       const openedIn = scopedClosed.filter(t2 => { const ms = closedMs({ closed_at: t2.opened_at }); return ms != null && ms >= s.from && ms < s.to })
       return { ...s, net: closedIn.reduce((n, t2) => n + Number(t2.net_pnl), 0), closedN: closedIn.length, openedN: openedIn.length }
     })
-    // Carry back from the CURRENT stamped balance — anything closed after
-    // the window's end (weekend crypto closes when the window is Friday)
-    // is subtracted first so Friday's close balance stays honest.
-    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= todayWin.to ? n + Number(t2.net_pnl) : n }, 0)
+    // Carry back from the CURRENT stamped balance — anything closed after the
+    // newest window's end is subtracted first. With a rolling window that end
+    // is `now`, so this is normally zero; it stays because a close stamped a
+    // few seconds ahead (clock skew between the broker and this box) would
+    // otherwise be counted twice into the top row's open balance.
+    const newestTo = slots.length ? slots[slots.length - 1].to : hourNow
+    const netAfter = scopedClosed.reduce((n, t2) => { const ms = closedMs(t2); return ms != null && ms >= newestTo ? n + Number(t2.net_pnl) : n }, 0)
     let closeBal = curBal != null ? Number((curBal - netAfter).toFixed(2)) : null
     const withBal = []
     for (let i = withStats.length - 1; i >= 0; i--) {
@@ -1299,20 +1328,24 @@ export default function Performance() {
       closeBal = ob
     }
 
-    // UI-2 second pass — the LIVE hour first, past hours below it, hours still
-    // to come at the bottom. The reordering happens AFTER the carry above,
+    // Newest first for reading. The reversal happens AFTER the carry above,
     // which must run oldest-to-newest; see hourly-order.js for why touching the
     // order before it would invert every balance on the page.
     //
-    // `hourNow`, not `loadedAt`: the row order and the NOW marker follow the
-    // WALL CLOCK, so they move the moment the hour changes instead of waiting
-    // for the next 60s fetch (owner: "currently is static"). The figures still
-    // come from the poll — only the ordering is on the clock.
-    return orderHourlyForDisplay(withBal, hourNow)
-    // `loadedAt` is deliberately NOT a dependency any more: it was only ever
-    // here to supply "now", and now comes from the clock. The figures still
-    // refresh, through scopedClosed and ledger.
-  }, [scopedClosed, todayWin, ledger, hourNow])
+    // `hourNow`, not `loadedAt`: the labels, the buckets and the NOW marker all
+    // follow the WALL CLOCK, so they move on the tick instead of waiting for
+    // the next fetch (owner: "currently is static"). The figures still come
+    // from the poll — only the window is on the clock.
+    // The bracketed date rides ON the row, not alongside it: PagedRows hands
+    // each page a slice, so a parallel flags array would silently pair page 2's
+    // rows with page 1's flags.
+    const shown = displayOrder(withBal)
+    const flags = dateFlags(shown)
+    return shown.map((r, i) => ({ ...r, showDate: flags[i] }))
+    // `loadedAt` is deliberately NOT a dependency: it was only ever here to
+    // supply "now", and now comes from the clock. The figures still refresh,
+    // through scopedClosed and ledger.
+  }, [scopedClosed, ledger, hourNow])
 
   // UI-2 — floating P&L for the LIVE hour. Summed across every open position
   // regardless of which sub-table it renders in (market-open, market-closed,
@@ -1617,7 +1650,9 @@ export default function Performance() {
   // sum of the P&L column always equals `today.net`. Newest close first,
   // because the thing you just felt is the thing you look for.
   const todayTrades = useMemo(() => shapedTrades
-    .filter(t2 => t2.t >= todayWin.from && t2.t < todayWin.to)
+    // Same window as the hourly rows above — this is the reconciliation the
+    // owner's acceptance test checks: sum(hourly closedN) === todayTrades.length.
+    .filter(t2 => t2.t >= rollingWin.from && t2.t < rollingWin.to)
     .sort((a, b) => b.t - a.t)
     .map(t2 => {
       const out = t2.part ? 'TP partial' : t2.tpHit ? 'TP full' : t2.slHit ? 'SL hit' : 'manual close'
@@ -1634,7 +1669,7 @@ export default function Performance() {
           t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
         ].filter(Boolean).join(' · '),
       }
-    }), [shapedTrades, todayWin])
+    }), [shapedTrades, rollingWin])
 
   const fxBands = useMemo(() => {
     const wk = shapedTrades.filter(t2 => t2.t >= loadedAt - 7 * D)
@@ -1943,8 +1978,8 @@ export default function Performance() {
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '-.02em', color: P_TX }}>bot-trade · Performance ledger</span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 9, fontWeight: 700, color: P_ACC, border: `1px solid ${P_ACC}`, borderRadius: 999, padding: '2px 8px' }}>
+        <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, letterSpacing: '-.02em', color: P_TX }}>bot-trade · Performance ledger</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-d9)', fontWeight: 700, color: P_ACC, border: `1px solid ${P_ACC}`, borderRadius: 999, padding: '2px 8px' }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: P_ACC, animation: 'perf-pulse 1.6s infinite' }} />LIVE
         </span>
         {/* Owner (2026-07-30, iPhone screenshot): the session strip appeared
@@ -1969,8 +2004,8 @@ export default function Performance() {
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
               aria-current={screen === s.key ? 'page' : undefined}
               style={screen === s.key
-                ? { fontSize: 9, fontWeight: W_CELL, color: '#fff', background: P_ACC, borderRadius: 999, padding: '3px 10px', border: 'none', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }
-                : { fontSize: 9, fontWeight: 600, color: P_SB, border: `1px solid ${P_EDG}`, background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }}>
+                ? { fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: 'var(--color-on-accent)', background: P_ACC, borderRadius: 999, padding: '3px 10px', border: 'none', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }
+                : { fontSize: 'var(--fs-d9)', fontWeight: 600, color: P_SB, border: `1px solid ${P_EDG}`, background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }}>
               {s.label}
             </button>
           ))}
@@ -1984,64 +2019,62 @@ export default function Performance() {
             {acctCards.map(a => (
               <div key={a.id} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>{a.name} · {a.ccy}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.hasToday ? (a.day >= 0 ? P_UP : P_DN) : P_MU }}>day {a.hasToday ? signed(a.day) : '—'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
-                  <span style={{ fontSize: 9, color: P_SB }}>eq {a.equity != null ? money(a.equity) : '—'}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 9, color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> · {a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{a.bal != null ? money(a.bal) : '—'}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>eq {a.equity != null ? money(a.equity) : '—'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', color: P_SB }}>live <span style={{ fontWeight: W_CELL, color: a.live == null ? P_MU : a.live >= 0 ? P_UP : P_DN }}>{a.live != null ? signed(a.live) : '—'}</span> · {a.live != null && a.bal ? `${a.live >= 0 ? '+' : ''}${(a.live / a.bal * 100).toFixed(2)}%` : '—'}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, borderTop: `1px solid ${P_EDG}`, paddingTop: 4 }}>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
-                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>30D pace</span><span style={{ fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>TP nett</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_UP }}>{a.hasToday ? signed(a.gw) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>SL nett</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: P_DN }}>{a.hasToday ? signed(-a.gl) : '—'}</span></span>
+                  <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>30D pace</span><span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: a.n30 == null ? P_MU : a.n30 >= 0 ? P_UP : P_DN }}>{a.n30 != null ? `${signed(a.n30 / 30)}/day` : '—'}</span></span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   <div style={{ height: 4, borderRadius: 999, background: P_EDG }}>
                     <div style={{ height: 4, borderRadius: 999, width: `${Math.max(a.used ?? 0, a.used != null ? 1 : 0)}%`, background: a.usedCol }} />
                   </div>
-                  <span style={{ fontSize: 9, color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · at 100% bot closes all &amp; disarms</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>loss-cap used <span style={{ fontWeight: W_CELL, color: a.usedCol }}>{a.used != null ? `${a.used}%` : '—'}</span> of −{a.cap != null ? money(a.cap, 0) : '—'} · at 100% bot closes all &amp; disarms</span>
                 </div>
               </div>
             ))}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
-              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
-                  to correct me on exactly this reading, which is evidence the
-                  heading alone is ambiguous — every symbol is in these rows,
-                  including the ones that trade through the FX close. Said in
-                  words rather than left to be inferred from the title. */}
-              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
-                <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
+                {/* Phone copy of the same card — it must not keep saying FX day
+                    open when the desktop one no longer does (owner, 2026-07-31).
+                    Both read the same `today`, which is now on rollingWin. */}
+                <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+                <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
+                <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>{today.n ? signed(today.net) : '—'}</span>
               </div>
-              <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
             </div>
             {[{ key: 'float', title: 'Open positions — floating', rows: openSplit.floating, tot: openSplit.floatTot, border: P_GBD, titleCol: P_MU },
               { key: 'closed', title: 'Open trade but market closed', rows: openSplit.closed, tot: openSplit.closedTot, border: 'var(--color-warning-border)', titleCol: P_WRN }]
               .filter(t2 => t2.key === 'float' || t2.rows.length > 0).map(t2 => (
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
                   <AccountTag accountId={posScope.accountId} legacyRows={t2.key === 'float' ? posScope.legacyRows : 0} />
-                  <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>{t2.rows.length ? `${t2.rows.length} open · ${t2.tot != null ? signed(t2.tot) : '—'}` : 'flat'}</span>
                 </div>
-                {t2.key === 'closed' && <span style={{ fontSize: 9, color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
+                {t2.key === 'closed' && <span style={{ fontSize: 'var(--fs-d9)', color: P_WRN }}>market closed — cannot exit until reopen · latest computed P&amp;L shown</span>}
                 {t2.rows.map(p2 => (
                   <div key={p2.id} style={{ display: 'grid', gridTemplateColumns: '74px 66px 1fr 96px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 5, fontVariantNumeric: 'tabular-nums' }}>
                     <span style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>
+                      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>
                         <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-mobile-floating">{p2.sym}</SymbolTarget>
                       </span>
-                      <span style={{ fontSize: 9, color: P_MU }}>{p2.strat}</span>
+                      <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.strat}</span>
                     </span>
-                    <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
                     <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 9, fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
+                      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.pnl == null ? P_MU : p2.pnl >= 0 ? P_UP : P_DN }}>{p2.pnl != null ? signed(p2.pnl) : '—'}</span>
                       <span title="SL→TP progress needs a live price — not streamed to this page" style={{ position: 'relative', height: 4, borderRadius: 999, background: P_EDG, display: 'block' }} />
                     </span>
-                    <span style={{ fontSize: 9, color: P_MU, textAlign: 'right' }}>SL {p2.sld} · TP {p2.tpd}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, textAlign: 'right' }}>SL {p2.sld} · TP {p2.tpd}</span>
                   </div>
                 ))}
               </div>
@@ -2052,12 +2085,12 @@ export default function Performance() {
         {screen === 'ledger' && (
           <>
             <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
               {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
                 const on = acct === f.id
                 return (
                   <button key={f.id} type="button" onClick={() => setAcct(f.id)}
-                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
                     {f.label}
                   </button>
                 )
@@ -2069,12 +2102,12 @@ export default function Performance() {
 
         {(screen === 'markets' || screen === 'trades') && (
           <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
             {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
               const on = acct === f.id
               return (
                 <button key={f.id} type="button" onClick={() => setAcct(f.id)}
-                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 9, fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
                   {f.label}
                 </button>
               )
@@ -2087,10 +2120,10 @@ export default function Performance() {
             {/* Crypto — exact mobile panel (price/Δ not streamed → —). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                   {crypto.k.map(k2 => (
-                    <span key={k2.k} style={{ fontSize: 9, fontWeight: W_CELL, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
+                    <span key={k2.k} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, padding: '2px 7px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
                       <span style={{ color: P_MU }}>{k2.k} </span><span style={{ fontVariantNumeric: 'tabular-nums', color: k2.col }}>{k2.v}</span>
                     </span>
                   ))}
@@ -2101,27 +2134,27 @@ export default function Performance() {
               </div>
               {crypto.rows.map(c2 => (
                 <div key={c2.sym} style={{ display: 'grid', gridTemplateColumns: '64px 78px 56px 66px 1fr', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums' }}>
-                  <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{c2.sym}</span>
-                  <span style={{ fontSize: 9, fontWeight: W_CELL, color: P_MU }}>—</span>
-                  <span style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>—</span>
-                  <span style={{ fontSize: 9, fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
-                  <span style={{ fontSize: 9, color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{c2.sym}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'center', padding: '1px 0', borderRadius: 5, color: P_MU }}>—</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c2.col }}>{c2.pnl}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, textAlign: 'right' }}>{c2.meta}</span>
                 </div>
               ))}
             </div>
             {/* Forex bands — exact mobile panel. */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               {fxBands.map(b => (
                 <div key={b.band} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                    <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{b.band}</span>
-                    <span style={{ fontSize: 9, color: P_MU }}>{b.meta}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{b.band}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{b.meta}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: b.col }}>{b.net}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
                     {b.pairs.map(p2 => (
-                      <span key={p2.sym} title={p2.tip} style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 5, border: `1px solid ${P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
+                      <span key={p2.sym} title={p2.tip} style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '1px 5px', borderRadius: 5, border: `1px solid ${P_EDG}`, fontVariantNumeric: 'tabular-nums' }}>
                         {p2.sym} <span style={{ fontWeight: W_CELL, color: p2.col }}>{p2.v}</span>
                       </span>
                     ))}
@@ -2137,18 +2170,18 @@ export default function Performance() {
             {[{ title: 'Winners — best closed', tcol: P_UP, rows: winLag.win },
               { title: 'Laggards — worst closed', tcol: P_DN, rows: winLag.lag }].map(panel => (
               <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-                <span style={{ fontSize: 9, fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
-                {panel.rows.length === 0 && <span style={{ fontSize: 9, color: P_MU }}>No closed trades in the last 30 days.</span>}
+                <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
+                {panel.rows.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>No closed trades in the last 30 days.</span>}
                 {panel.rows.map((t2, ti) => (
                   <div key={ti} style={{ borderTop: `1px solid ${P_EDG}`, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                      <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{t2.sym}</span>
-                      <span style={{ fontSize: 9, color: P_SB }}>{t2.sd}</span>
-                      <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: t2.col }}>{t2.pnl}</span>
+                      <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{t2.sym}</span>
+                      <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>{t2.sd}</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: t2.col }}>{t2.pnl}</span>
                     </div>
-                    <span style={{ fontSize: 9, color: P_SB, fontVariantNumeric: 'tabular-nums' }}>{t2.when}</span>
-                    <span style={{ fontSize: 9, color: P_MU }}>{t2.why} · {t2.strat}</span>
-                    <span style={{ fontSize: 9, color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_SB, fontVariantNumeric: 'tabular-nums' }}>{t2.when}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{t2.why} · {t2.strat}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
                   </div>
                 ))}
               </div>
@@ -2160,25 +2193,25 @@ export default function Performance() {
           <>
             {/* Gradients — exact mobile panels (52px label col, 7px headers). */}
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — timeframe × account</span>
               <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, color: P_MU }}>
                 <span>Window</span>
                 {gradients.cols.map(c2 => <span key={c2.name} style={{ textAlign: 'center' }}>{c2.name}</span>)}
               </div>
               {gradients.t.map(r => (
                 <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
-                  <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{r.label}</span>
-                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'center', padding: '2px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{r.label}</span>
+                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'center', padding: '2px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
                 </div>
               ))}
-              <span style={{ fontSize: 9, color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>blue = net gain · red = net loss · shaded per column</span>
             </div>
             <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 14, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Gradient — asset × account · 30D</span>
               {gradients.a.map(r => (
                 <div key={r.label} style={{ display: 'grid', gridTemplateColumns: `52px repeat(${gradients.cols.length},1fr)`, gap: 3, alignItems: 'center' }}>
-                  <span style={{ fontSize: 9, fontWeight: W_ROWLABEL }}>{r.label}</span>
-                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 9, fontWeight: W_CELL, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{r.label}</span>
+                  {r.cells.map((c2, ci) => <span key={ci} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, textAlign: 'center', padding: '3px 0', borderRadius: 4, background: c2.bg, color: c2.col, fontVariantNumeric: 'tabular-nums' }}>{c2.v}</span>)}
                 </div>
               ))}
             </div>
@@ -2222,7 +2255,7 @@ export default function Performance() {
         {acctCards.length > 0 && (
           <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
+            <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
             <SectionTools id="accounts" title="Accounts — capital safety"
               data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
@@ -2251,25 +2284,26 @@ export default function Performance() {
               the table's 420px min-width, so nothing is ever cut off. */}
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '5px 9px', display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 440px', minWidth: 300 }}>
             <span style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>24 hours · FX day open (5pm NY)</span>
-              {/* The FX day open is the WINDOW ANCHOR, not the scope. Owner had
-                  to correct me on exactly this reading, which is evidence the
-                  heading alone is ambiguous — every symbol is in these rows,
-                  including the ones that trade through the FX close. Said in
-                  words rather than left to be inferred from the title. */}
-              <span style={{ fontSize: 9, color: P_MU }}>every symbol · the FX day open is only where the 24-hour window starts</span>
-              <SectionTools id="today" title="24 hours · FX day open (5pm NY)" data={{ hourly: todayHourly, closedTrades: todayTrades }}
-                toText={() => ['24 hours · FX day open (5pm NY)', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
-                  ...todayHourly.map(r => `${new Date(r.from).toISOString().slice(11, 16)} · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
+              <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU }}>Rolling 24 hours</span>
+              {/* Owner ruling 2026-07-31. The old heading named the FX day open
+                  as the anchor, and had to be footnoted ("every symbol · the FX
+                  day open is only where the window starts") because the title
+                  alone read as a scope. A rolling window needs no such footnote:
+                  the period is simply the last 24 hours, ending now. */}
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
+              <SectionTools id="today" title="Rolling 24 hours" data={{ hourly: todayHourly, closedTrades: todayTrades }}
+                toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
+                  // The copied text carries the same label the row shows — the
+                  // END of the window, in SGT over UTC — not the window start.
+                  ...todayHourly.map(r => `${hourLabel(r.at).local} (${hourLabel(r.at).utc}) · open ${r.openBal != null ? money(r.openBal) : '—'} · P/L ${r.closedN ? signed(r.net) : '—'} · close ${r.closeBal != null ? money(r.closeBal) : '—'} · ${r.openedN || 0} opened / ${r.closedN || 0} closed`),
                   '', `Closed trades (${todayTrades.length})`,
                   ...todayTrades.map(t2 => `${t2.hm} UTC · ${t2.sym} ${t2.side} ${t2.lots} · ${signed(t2.pnl)} · ${t2.detail}`)].join('\n')}
                 render={() => <><TodayHourlyBody rows={todayHourly} floatingNow={liveFloating} /><TodayTradesBody rows={todayTrades} /></>} />
             </span>
-            <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: today.n ? (today.net >= 0 ? P_UP : P_DN) : P_MU }}>
               {today.n ? <NumberFlow value={today.net} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : '—'}
             </span>
-            <span style={{ fontSize: 9, color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades yet today'}</span>
-            {todayWin.label && <span style={{ fontSize: 9, color: P_WRN }}>{todayWin.label}</span>}
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{today.n ? `${today.n} closed · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : 'no closed trades in the last 24 hours'}</span>
             {/* Owner (2026-07-25): "Today table must be longer in length" —
                 8 rows per page (3 pages over a full day) instead of 4. */}
             <PagedRows rows={todayHourly} pageSize={8} maxHeight={300}
@@ -2277,7 +2311,7 @@ export default function Performance() {
               {(pageRows) => <TodayHourlyBody rows={pageRows} floatingNow={liveFloating} />}</PagedRows>
             {/* Owner (2026-07-25): "itemised today's closed trades list back"
                 — alongside the hourly aggregate, not replacing it. */}
-            <span style={{ fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
+            <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, borderTop: `1px solid ${P_EDG}`, paddingTop: 2 }}>
               Closed trades ({todayTrades.length}) · tap a row
             </span>
             <PagedRows rows={todayTrades} pageSize={8} maxHeight={300}>{(pageRows) => <TodayTradesBody rows={pageRows} />}</PagedRows>
@@ -2295,15 +2329,15 @@ export default function Performance() {
             const card = (t2, extraStyle = {}) => (
               <div key={t2.key} style={{ background: P_GL, border: `1px solid ${t2.border}`, borderRadius: 12, padding: '7px 11px', display: 'flex', flexDirection: 'column', gap: 3, flex: '2 1 320px', minWidth: 320, ...extraStyle }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
-                  <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
+                  <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: t2.titleCol }}>{t2.title}</span>
+                  <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: t2.tot == null ? P_MU : t2.tot >= 0 ? P_UP : P_DN }}>
                     {t2.rows.length
                       ? <>{t2.rows.length} open · {t2.tot != null ? <NumberFlow value={t2.tot} format={{ signDisplay: 'exceptZero', minimumFractionDigits: 2, maximumFractionDigits: 2 }} /> : 'P&L —'}</>
                       : 'none'}
                   </span>
-                  {positions[0]?.live_pnl_at && <span style={{ fontSize: 9, color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
+                  {positions[0]?.live_pnl_at && <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>as of {String(positions[0].live_pnl_at).slice(11, 19)} UTC</span>}
                 </div>
-                {t2.note && <span style={{ fontSize: 9, color: P_WRN }}>{t2.note}</span>}
+                {t2.note && <span style={{ fontSize: 'var(--fs-d9)', color: P_WRN }}>{t2.note}</span>}
                 <SectionTools id={`open-${t2.key}`} title={t2.title} data={t2.rows.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, market: p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : 'unknown', slAway: p2.sld, tpAway: p2.tpd }))}
                   toText={() => [t2.title, ...t2.rows.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · O ${fmtPx(p2.day?.o)} H ${fmtPx(p2.day?.h)} L ${fmtPx(p2.day?.l)} C ${fmtPx(p2.day?.c)} · vol ${fmtVol(p2.day?.v)} · mkt ${p2.marketOpen === false ? 'CLOSED' : p2.marketOpen ? 'OPEN' : '?'} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
                   render={() => <OpenTableBody rows={t2.rows} />} />
@@ -2325,14 +2359,14 @@ export default function Performance() {
                       square TOP corners on the card) — that shared seam is
                       what reads as a file tucked behind a folder. */}
                   <details style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderBottom: 'none', borderRadius: '10px 10px 0 0', padding: '2px 10px 3px', margin: '0 14px -1px', opacity: .8 }}>
-                    <summary style={{ cursor: 'pointer', fontSize: 9, fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, listStyle: 'revert' }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: P_MU, listStyle: 'revert' }}>
                       Open now — floating · none
                     </summary>
-                    <span style={{ fontSize: 9, color: P_MU }}>no floating positions in an open market right now — this card expands automatically when one opens</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>no floating positions in an open market right now — this card expands automatically when one opens</span>
                   </details>
                   {openSplit.closed.length > 0
                     ? card(defs[1], { flex: '1 1 auto', borderRadius: '0 12px 12px 12px' })
-                    : <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: '0 12px 12px 12px', padding: '7px 11px', fontSize: 9, color: P_MU }}>no open positions at all</div>}
+                    : <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: '0 12px 12px 12px', padding: '7px 11px', fontSize: 'var(--fs-d9)', color: P_MU }}>no open positions at all</div>}
                 </div>
               )
             }
@@ -2347,11 +2381,11 @@ export default function Performance() {
         {openSplit.weekend24.length > 0 && (
           <details id="sec-weekend24" open style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 12, padding: '7px 11px' }}>
             <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 8, listStyle: 'revert' }}>
-              <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
-              <span style={{ fontSize: 9, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: openSplit.weekendTot == null ? P_MU : openSplit.weekendTot >= 0 ? P_UP : P_DN }}>
+              <span style={{ flexShrink: 0, fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: P_ACC }}>24H symbols — weekend trading</span>
+              <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: openSplit.weekendTot == null ? P_MU : openSplit.weekendTot >= 0 ? P_UP : P_DN }}>
                 {openSplit.weekend24.length} open · {openSplit.weekendTot != null ? signed(openSplit.weekendTot) : 'P&L —'}
               </span>
-              <span style={{ fontSize: 9, color: P_MU }}>these markets trade through the weekend — the bot can still exit them</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>these markets trade through the weekend — the bot can still exit them</span>
             </summary>
             <div style={{ marginTop: 5 }}>
               <SectionTools id="open-weekend24" title="24H symbols — weekend trading"
@@ -2370,7 +2404,7 @@ export default function Performance() {
         <Card id="sec-sessions">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
-            <span style={{ fontSize: 9, color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
+            <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
             <SectionTools id="sessions" title="Today by market session" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
@@ -2385,15 +2419,15 @@ export default function Performance() {
 
         {/* Account filter chips — exact prototype two-line buttons. */}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: P_MU }}>Account</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: P_MU }}>Account</span>
           {[{ id: 'all', label: 'All Accounts', sub: 'combined ledger' },
             ...acctCards.map(a => ({ id: a.id, label: a.name, sub: `${a.bal != null ? money(a.bal, 0) : '—'} · fc ${a.n30 != null ? `${signed(a.n30 / 30, 0)}/day` : '—'}` }))].map(f => {
             const on = acct === f.id
             return (
               <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 9, fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : P_GL, border: `1px solid ${on ? P_ACC : P_GBD}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : P_GL, border: `1px solid ${on ? P_ACC : P_GBD}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
                 <span>{f.label}</span>
-                <span style={{ fontSize: 9, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: on ? 'rgba(255,255,255,.75)' : P_MU }}>{f.sub}</span>
+                <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: on ? 'rgba(255,255,255,.75)' : P_MU }}>{f.sub}</span>
               </button>
             )
           })}
@@ -2401,7 +2435,7 @@ export default function Performance() {
               "× account" gradients compare accounts to each other, so they stay
               portfolio-wide — a filter that collapsed them to one column would
               not be filtering them, it would be emptying them. */}
-          <span style={{ fontSize: 9, color: P_MU }}>filters every table below · the account cards and the two &ldquo;× account&rdquo; gradients stay portfolio-wide · fc = 30D forecast pace</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>filters every table below · the account cards and the two &ldquo;× account&rdquo; gradients stay portfolio-wide · fc = 30D forecast pace</span>
         </div>
 
         {/* The core: timeframe ledger. Three-lens model — time rows here,
@@ -2431,8 +2465,8 @@ export default function Performance() {
         <div id="sec-gradients" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, alignItems: 'stretch' }}>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
-              <span style={{ fontSize: 9, color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
               <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
                 data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
                 render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
@@ -2441,8 +2475,8 @@ export default function Performance() {
           </div>
           <div style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
-              <span style={{ fontSize: 9, color: P_SB }}>rolling 30 days</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>rolling 30 days</span>
               <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
                 render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
@@ -2464,8 +2498,8 @@ export default function Performance() {
         <div id="sec-fx-bands" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ minWidth: 0, background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
-              <span style={{ fontSize: 9, color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
+              <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
+              <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
               <SectionTools id="fx-bands" title="Forex — banded, all pairs" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
                 render={() => <FxBandsBody fxBands={fxBands} />} />
@@ -2475,8 +2509,8 @@ export default function Performance() {
           <div className="perf-2col-even">
             <div id="sec-strategy-matrix" style={{ minWidth: 0, overflowX: 'auto', background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
-                <span style={{ fontSize: 9, color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
+                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
+                <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
                 <SectionTools id="strategy-matrix" title="Strategy × market — 30D" window="30D" data={stratMx}
                   toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
                   render={() => <StratMxBody stratMx={stratMx} />} />
@@ -2487,11 +2521,11 @@ export default function Performance() {
                 streamed to this page → honest —. */}
             <div id="sec-crypto" style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
-                <span style={{ fontSize: 9, color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
+                <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Crypto — runs 24/7</span>
+                <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>tracked separately · never session-gated · = the ledger's Crypto column</span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
                   {crypto.k.map(k2 => (
-                    <span key={k2.k} style={{ fontSize: 9, fontWeight: W_CELL, padding: '2px 8px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
+                    <span key={k2.k} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, padding: '2px 8px', borderRadius: 999, border: `1px solid ${P_GBD}`, background: P_ACS }}>
                       <span style={{ color: P_MU }}>{k2.k} </span><span style={{ fontVariantNumeric: 'tabular-nums', color: k2.col }}>{k2.v}</span>
                     </span>
                   ))}
@@ -2513,8 +2547,8 @@ export default function Performance() {
             { title: 'Laggards explained — worst closed trades, 30D', tcol: P_DN, sub: 'same anatomy — what went wrong and under what volume conditions', rows: winLag.lag }].map(panel => (
             <div key={panel.title} style={{ background: P_GL, border: `1px solid ${P_GBD}`, borderRadius: 16, boxShadow: 'var(--glass-shadow)', backdropFilter: 'blur(22px) saturate(160%)', padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 9, fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
-                <span style={{ fontSize: 9, color: P_MU }}>{panel.sub}</span>
+                <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
+                <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{panel.sub}</span>
                 <SectionTools id={panel.title.startsWith('Winners') ? 'winners' : 'laggards'} title={panel.title} window="30D" data={panel.rows}
                   toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.strat} · ${t2.pnl}`)].join('\n')}
                   render={() => <WlBody rows={panel.rows} />} />

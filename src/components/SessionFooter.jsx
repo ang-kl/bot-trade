@@ -162,7 +162,7 @@ export default function SessionFooter({ appVersion, buildSha }) {
           className="session-status-line compact-control text-[var(--color-text-sub)] hover:text-[var(--color-text)] min-w-0"
           title="This browser's session — click for full detail and to disconnect other browsers"
         >
-          <span aria-hidden="true" style={{ color: STATE_TONE[line.state], fontSize: 7, lineHeight: 1 }}>●</span>
+          <span aria-hidden="true" style={{ color: STATE_TONE[line.state], fontSize: 'var(--fs-d7)', lineHeight: 1 }}>●</span>
           {/* The state WORD is in the line, so status never depends on the dot
               colour alone (WCAG 1.4.1, and the brief says so twice). */}
           <span className="session-text">
@@ -306,7 +306,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
             <Row k="Token expires" v={localTime(current.expiresAt)} />
             <Row k="Session" v={current.maskedId} />
             <Row k="IP" v={current.ip || 'not recorded'} />
-            {current.country ? <Row k="Country" v={`${current.country} (from this tab’s timezone, so a VPN will not change it)`} /> : null}
+            <Row k="Location" v={locationText(current) || 'unknown — allow the browser location prompt to record it'} />
             <Row k="Build" v={`v${appVersion} · ${buildSha}`} />
           </dl>
           {/* The brief: no enabled Disconnect for the current session, and a
@@ -314,6 +314,27 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
               greyed-out button with no explanation. */}
           <p className="mt-1 text-[var(--color-text-sub)]">
             This session cannot disconnect itself. The server refuses a self-revoke even if a stale page asks for one.
+          </p>
+        </>
+      ) : view?.masterCaller ? (
+        // Owner ("missing information"): a master-credential caller has no
+        // session ROW, but the server still sees this request — browser, IP,
+        // location, tabs. Show what is actually known instead of an empty
+        // section with an apology.
+        <>
+          <p className="mt-0.5">
+            {view.masterCaller.label}
+            {view.masterCaller.deviceType ? <span className="text-[var(--color-text-sub)]"> · {view.masterCaller.deviceType}</span> : null}
+          </p>
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+            <Row k="Transport" v={`${view.masterCaller.transport} (HTTPS — this app has no browser socket)`} />
+            <Row k="Open tabs" v={String(view.masterCaller.openTabs ?? 0)} />
+            <Row k="IP" v={view.masterCaller.ip || 'not recorded'} />
+            <Row k="Location" v={locationText(view.masterCaller) || 'unknown — allow the browser location prompt to record it'} />
+            <Row k="Build" v={`v${appVersion} · ${buildSha}`} />
+          </dl>
+          <p className="mt-1 text-[var(--color-text-sub)]">
+            No per-device session record, so there is nothing to disconnect from this panel.
           </p>
         </>
       ) : (
@@ -330,7 +351,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
       <ul className="mt-0.5 flex flex-col">
         {(others || []).map(s => (
           <li key={s.id} className="border-t border-[var(--glass-edge)] py-1 flex items-start gap-2">
-            <span aria-hidden="true" style={{ color: STATE_TONE[s.state], fontSize: 7, lineHeight: 2 }}>●</span>
+            <span aria-hidden="true" style={{ color: STATE_TONE[s.state], fontSize: 'var(--fs-d7)', lineHeight: 2 }}>●</span>
             <div className="min-w-0 flex-1">
               <p className="truncate">{s.label}{s.deviceType ? ` · ${s.deviceType}` : ''}</p>
               <p className="text-[var(--color-text-sub)]">
@@ -341,6 +362,12 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
               <p className="text-[var(--color-text-sub)]">
                 {s.transport} · {s.appBuild ? `build ${s.appBuild}` : 'build unknown'} · {s.maskedId}
                 {s.revokedAt ? ` · revoked ${localTime(s.revokedAt)}` : ''}
+              </p>
+              {/* Owner: "I need IP Address and location for past window" — the
+                  row keeps its last stamped IP and location after the browser
+                  is gone, which is exactly when this line earns its place. */}
+              <p className="text-[var(--color-text-sub)]">
+                {s.ip || 'IP not recorded'}{locationText(s) ? ` · ${locationText(s)}` : ' · location not recorded'}
               </p>
             </div>
             {s.canDisconnect ? (
@@ -408,10 +435,19 @@ function SleepAfter() {
         ))}
       </div>
       <p className="mt-1 text-[var(--color-text-sub)]">
-        A sleeping tab stops all polling, so it costs the agent nothing. Any click or keypress wakes it.
+        An idle countdown, wired into every poll loop: each click, keypress or
+        scroll resets it, and after the chosen time with no activity the tab
+        sleeps — all polling stops, so it costs the agent nothing. The next
+        interaction starts it fresh.
       </p>
     </fieldset>
   )
+}
+
+/** "Singapore · 1.35,103.82" from whatever location facts a row carries. */
+function locationText(s) {
+  const parts = [s?.country, s?.loc].filter(Boolean)
+  return parts.length ? parts.join(' · ') : null
 }
 
 function Row({ k, v, note }) {

@@ -8,11 +8,12 @@ import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
-import { wsPlaceOrder, wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
+import { wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
+import { describeBracketGap } from '../lib/bracket-advice.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
@@ -4015,15 +4016,42 @@ export default function actionsRouter(db) {
         ...(await import('../lib/order-protection.js')).stopTriggerField(loadRiskConfig(db)),
       }
 
-      // 5A: manual/autopilot execute paths obey the exec guard (halt kill
-      // switch + volume cap) exactly like the engine chokepoint does.
+      // PHASE 4 (owner-approved 2026-07-31): this route used to call
+      // wsPlaceOrder directly, which meant it obeyed the exec guard (5A patched
+      // that in by hand) but skipped validateOrderBracket and never reached the
+      // C++ engine even when EXEC_ENGINE=cpp. naked-position-guard.js already
+      // tells the owner that "an order placed through the bot could not have
+      // been submitted this way (guard_no_target)" — which was untrue for this
+      // route and the manual-trade route below. Going through execPlaceOrder
+      // makes that claim true and gives every write ONE contract. The explicit
+      // validateExecGuard call is now redundant (the chokepoint runs it first)
+      // but is kept so a guard veto still lands in risk_events with the
+      // proposal attached, which the thrown-error path cannot do.
+      const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
       const gv1 = validateExecGuard(orderPayload, getCtraderCreds(db).execGuard)
       if (!gv1.ok) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: gv1.reason })
         return res.json({ ok: false, vetoed: true, reason: gv1.reason })
       }
-      const host = isLive ? 'live.ctraderapi.com' : 'demo.ctraderapi.com'
-      const exec = await wsPlaceOrder(host, clientId, clientSecret, accessToken, accountId, orderPayload)
+      let exec
+      try {
+        exec = await execPlaceOrder(
+          { ...getCtraderCreds(db), host, clientId, clientSecret, accessToken, accountId },
+          orderPayload)
+      } catch (err) {
+        // A guard_* refusal is a veto, not a server fault: record it against the
+        // proposal and answer in the same shape as every other veto here.
+        if (!/^guard_/.test(err.message)) throw err
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
+        // Owner 2026-07-31: name the symbol and the missing leg rather than
+        // returning a bare guard_* string. `needsInput` tells the caller which
+        // field to ask for; it is advice, never an automatic fill.
+        const needsInput = describeBracketGap(err.message, {
+          symbol: analysis.symbol, side, entry, sl, tp: tp1, digits: volMeta.digits,
+          strategy: analysis.strategy, minRR: loadRiskConfig(db).minRR,
+        })
+        return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
+      }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
@@ -4138,13 +4166,27 @@ export default function actionsRouter(db) {
         ...(await import('../lib/order-protection.js')).stopTriggerField(loadRiskConfig(db)),
       }
 
-      // 5A: same exec-guard enforcement as the engine chokepoint.
+      // PHASE 4: same reasoning as the execute-analysis route above — one
+      // contract for every broker write. This one always attaches a stop, but
+      // its take profit is conditional on proposal.tp1, so before this change a
+      // TP-less manual trade reached the broker despite guard_no_target.
       const gv2 = validateExecGuard(orderPayload, creds.execGuard)
       if (!gv2.ok) {
         persistRiskEvent(db, proposal, { approved: false, veto_reason: gv2.reason })
         return res.json({ ok: false, vetoed: true, reason: gv2.reason })
       }
-      const exec = await wsPlaceOrder(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, orderPayload)
+      let exec
+      try {
+        exec = await execPlaceOrder(creds, orderPayload)
+      } catch (err) {
+        if (!/^guard_/.test(err.message)) throw err
+        persistRiskEvent(db, proposal, { approved: false, veto_reason: err.message })
+        const needsInput = describeBracketGap(err.message, {
+          symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
+          strategy: 'manual', minRR: loadRiskConfig(db).minRR,
+        })
+        return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
+      }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
       const positionId = exec?.position?.positionId || exec?.deal?.positionId || null

@@ -78,7 +78,7 @@ export default function Card({
 
   const btn = {
     position: 'absolute', top: 6, zIndex: 5, cursor: 'pointer', fontFamily: 'inherit',
-    fontSize: 9, lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
+    fontSize: 'var(--fs-d9)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent',
     border: '1px solid transparent', borderRadius: 8, padding: '3px 6px', opacity: .55,
   }
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }

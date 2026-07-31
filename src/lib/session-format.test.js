@@ -195,8 +195,11 @@ describe('compact controls are rounded rectangles, never capsules', () => {
   it('keeps a real hit target despite 2px visual padding', () => {
     const block = css.slice(css.indexOf('.compact-control::before'))
     expect(block).toMatch(/min-height:\s*32px/)
-    // And the full HIG 44px once there is a finger involved.
-    expect(css).toMatch(/@media \(pointer: coarse\)[\s\S]{0,200}min-height:\s*44px/)
+    // 36px on coarse pointers — the owner's explicit choice (M3 audit item 3,
+    // 2026-07-31), below both HIG 44 and M3 48, picked for this desk's
+    // density. The guard still exists so a future edit cannot silently drop
+    // the coarse-pointer bump altogether.
+    expect(css).toMatch(/@media \(pointer: coarse\)[\s\S]{0,400}min-height:\s*36px/)
   })
 
   it('honours prefers-reduced-motion', () => {

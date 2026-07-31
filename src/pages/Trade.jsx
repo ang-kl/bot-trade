@@ -558,8 +558,21 @@ export default function Trade() {
         sl: Number(order.sl),
         tp: order.tp ? Number(order.tp) : undefined,
       })
-      if (r.vetoed) setOrderResult({ ok: false, text: `Risk manager vetoed: ${r.reason}` })
-      else {
+      if (r.vetoed) {
+        // Owner 2026-07-31: a missing bracket leg is not a generic veto — say
+        // WHICH symbol and WHICH leg, put the suggested price in the field, and
+        // let the trader accept or overwrite it. The suggestion is never sent
+        // on its own; placeOrder still has to be pressed again.
+        if (r.needsInput) {
+          const n = r.needsInput
+          if (n.suggestion != null) setOrder(o => ({ ...o, [n.field]: String(n.suggestion) }))
+          setOrderResult({
+            ok: false,
+            needsInput: n.field,
+            text: n.suggestionBasis ? `${n.message} (${n.suggestionBasis})` : n.message,
+          })
+        } else setOrderResult({ ok: false, text: `Risk manager vetoed: ${r.reason}` })
+      } else {
         setOrderResult({ ok: true, text: `${r.side} ${r.symbol} ${r.volume} lots @ ${r.executionPrice ?? 'market'}` })
         setOrder({ symbol: '', side: 'BUY', lots: '', sl: '', tp: '' })
         await load()
