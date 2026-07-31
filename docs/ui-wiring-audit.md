@@ -8,7 +8,8 @@ This is the evidence, not an opinion. Each pass is a mechanical check whose
 method is written down so it can be re-run after any change. Findings are only
 listed once verified by reading the code they point at.
 
-Status: **passes 1–5 complete**. Pass 6 (M3 control inventory) is outstanding.
+Status: **passes 1–6 complete**. Pass 6's proposed canonical scale awaits
+sign-off before any restyling.
 
 ---
 
@@ -128,12 +129,49 @@ while the streaks, day nets and hourly tiles are computed in the browser from
 implementations is how they drift apart. Consolidating on the server-side
 formulas is a follow-up worth taking deliberately, not a bug to slip in.
 
----
+## Pass 6 — M3 control inventory
 
-## Outstanding
+Owner: *"Buttons and Selections are not standardise to M3."* Measured across
+every `className` string and inline `style` object in `src/`.
 
-**Pass 6 — M3 control inventory.** The owner's "buttons and selections are not
-standardised to M3": enumerate every control variant in use (sizes, radii,
-states, focus rings, touch targets) and list the divergences from a single
-scale, with a proposed canonical set. Findings first; no restyling without
-sign-off.
+### What is actually in use
+
+| Axis | Distinct values | Total uses | Detail |
+| --- | --- | --- | --- |
+| Border radius (Tailwind) | **20** | 140 | `1px` ×23, `8px` ×22, `10px` ×14, `6px` ×13, `12px` ×11, `full` ×10, `7px` ×10, `4px`, `3px`, `2px`, `t-2xl`, … only 6 uses go through the `--radius-control` token |
+| Border radius (inline styles) | **19** | 124 | `999` ×22, `12` ×16, `16` ×11, `14` ×10, `8`, `10`, `6`, `5`, `4`, `3`, `2`, `'50%'` — a second, parallel radius vocabulary in the cockpit |
+| Touch-target min-height | **7** | 40 | `28px` ×18, `26px` ×7, `44px` ×6, `32px` ×5, `36px`, `40px`, `24px` |
+| Explicit pixel font size | **10** | 611 | `9px` ×551 dominates; then `8px` ×25, `11px`, `15px`, `7px`, `10px`, `14px`, `16px`, `13px`, `22px` |
+| Focus styles | **2** | 6 | `focus:outline-2` + `focus:outline-[var(--color-accent)]`, on **six** elements total |
+
+### Findings
+
+- **M-1 — two radius vocabularies, 39 distinct values between them.** Tailwind
+  classes and inline `borderRadius` numbers are maintained separately and do not
+  agree (`10px` in one, `10`/`12`/`14` in the other). The `--radius-control`
+  token exists and is used **6 times out of 264**.
+- **M-2 — touch targets below the 48dp M3 minimum almost everywhere.** The most
+  common control height is **28px**; only 6 elements reach 44px, and none reach
+  48. On a phone this is the difference between hitting a control and hitting
+  its neighbour — the strongest practical argument for the M3 pass.
+- **M-3 — focus is effectively unstyled.** Six elements carry a focus outline in
+  a UI with hundreds of controls. Keyboard navigation is close to invisible, and
+  M3's focus-indicator requirement is not met.
+- **M-4 — type scale is one size plus exceptions.** 551 of 611 explicit sizes
+  are `9px`, with nine other values scattered around it. That is not a scale;
+  it is a default with drift.
+
+### Proposed canonical set (NOT applied — awaiting sign-off)
+
+- **Radius**: three tokens only — `--radius-control` (controls), `--radius-card`
+  (surfaces), `--radius-pill` (chips/switches). Inline `borderRadius` numbers
+  read the same tokens instead of literals.
+- **Height**: `sm 32px` / `md 40px` / `lg 48px`, with **48px the default on
+  touch** (pointer: coarse), keeping the dense 32px only for desktop tables.
+- **Focus**: one shared `focus-visible` ring on every interactive element, via
+  the shared primitives rather than per-call-site classes.
+- **Type**: `9 / 10.5 / 12 / 15px` as the whole scale; anything else becomes a
+  deliberate exception with a comment.
+
+Restyling touches every page, so it is a separate change with its own review —
+this pass deliberately stops at the measurement.
