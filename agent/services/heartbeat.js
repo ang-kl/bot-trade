@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { auditControllerEvent } from './phase-audit.js'
 
 // Registry: every watched controller. `tiedToLoop` controllers run once per
 // main-loop cycle, so their expected interval follows loop_interval_min.
@@ -112,6 +113,9 @@ let bootAtMs = Date.now()
 let restartNoticeSent = false
 export function _resetBootStateForTests(ms = Date.now()) { bootAtMs = ms; restartNoticeSent = false }
 
+// Durable trail: every stall/recovery/failure event also lands in action_log
+// via auditControllerEvent, so "which controller was dead at HH:MM" is
+// answerable later — Telegram alerts evaporate, rows do not.
 export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec = null, bootMs = null } = {}) {
   const lsec = loopSec ?? loopSecFrom(db)
   const say = (text) => { try { notify?.(text) } catch { /* alerting must never throw */ } }
@@ -145,6 +149,7 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
       const ageMin = Math.round(age / 60)
       say(`🔴 CONTROLLER STALLED: ${def.label} last ran ${ageMin}m ago (expected every ~${Math.round(expected / 60) || 1}m). Positions may be unmanaged — check the Railway service.`)
       events.push({ name: row.name, event: 'stalled', ageSec: Math.round(age) })
+      auditControllerEvent(db, { controller: row.name, event: 'stalled', detail: `last ran ${ageMin}m ago (expected ~${Math.round(expected / 60) || 1}m)` })
     } else if (age <= limit && row.stalled) {
       db.prepare('UPDATE controller_heartbeats SET stalled = 0 WHERE name = ?').run(row.name)
       if (inGrace) {
@@ -153,12 +158,14 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
       }
       say(`🔵 CONTROLLER RECOVERED: ${def.label} is beating again.`)
       events.push({ name: row.name, event: 'recovered' })
+      auditControllerEvent(db, { controller: row.name, event: 'recovered' })
     }
 
     if (row.consecutive_failures >= FAIL_ALERT_AT && !row.fail_alerted) {
       db.prepare('UPDATE controller_heartbeats SET fail_alerted = 1 WHERE name = ?').run(row.name)
       say(`🔴 CONTROLLER FAILING: ${def.label} has failed ${row.consecutive_failures}× in a row — last error: ${row.last_error || 'unknown'}`)
       events.push({ name: row.name, event: 'failing', failures: row.consecutive_failures })
+      auditControllerEvent(db, { controller: row.name, event: 'failing', detail: `${row.consecutive_failures}x in a row — last error: ${row.last_error || 'unknown'}` })
     } else if (row.consecutive_failures === 0 && row.fail_alerted) {
       db.prepare('UPDATE controller_heartbeats SET fail_alerted = 0 WHERE name = ?').run(row.name)
       say(`🔵 CONTROLLER RECOVERED: ${def.label} succeeded after a failure streak.`)

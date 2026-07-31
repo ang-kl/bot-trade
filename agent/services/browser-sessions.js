@@ -232,6 +232,21 @@ export function recordHeartbeat(db, token, { ua, ip, tz, loc, nowMs = Date.now()
   if (!readMeta(db)[id]) touchSession(db, token, { ua, ip, tz, loc, nowMs })
   const meta = readMeta(db)
   if (!meta[id]) return id
+  // Inactive-browser visibility (owner, 2026-07-31): when a browser comes
+  // back after sleeping past the disconnect threshold, leave a durable trail
+  // row — so "what happened when I resumed the screen" is answerable from
+  // action_log instead of reconstructed from memory. The heartbeat itself is
+  // unchanged; this only OBSERVES the gap.
+  const prevBeat = Number(meta[id].lastHeartbeatAt ?? 0)
+  if (prevBeat > 0 && nowMs - prevBeat > THRESHOLDS.staleS * 1000) {
+    audit(db, {
+      event: 'resume_after_idle',
+      actorSessionId: id,
+      result: 'ok',
+      detail: { idleMinutes: Math.round((nowMs - prevBeat) / 60_000) },
+      nowMs,
+    })
+  }
   meta[id] = {
     ...meta[id], lastHeartbeatAt: nowMs, lastAcknowledgementAt: nowMs,
     ...(tz ? { tz: String(tz).slice(0, 64) } : {}),

@@ -14,6 +14,7 @@ import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib
 import { parseTimeframe } from '../lib/timeframes.js'
 import { getVolumeMeta, lotsToVolume, relativePoints } from '../lib/lot-sizing.js'
 import { describeBracketGap } from '../lib/bracket-advice.js'
+import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
@@ -2387,15 +2388,13 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/scan-toggle', (req, res) => {
     const on = req.body?.on !== false
-    setState(db, 'scan_enabled', on ? 'true' : 'false')
-    console.log(`[actions] Scan ${on ? 'enabled' : 'disabled'}`)
+    setPhaseFlag(db, 'scan_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/scan-toggle' })
     res.json({ ok: true, scan_enabled: on })
   })
 
   router.post('/analyze-toggle', (req, res) => {
     const on = req.body?.on !== false
-    setState(db, 'analyze_enabled', on ? 'true' : 'false')
-    console.log(`[actions] Analyze ${on ? 'enabled' : 'disabled'}`)
+    setPhaseFlag(db, 'analyze_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/analyze-toggle' })
     res.json({ ok: true, analyze_enabled: on })
   })
 
@@ -2666,16 +2665,14 @@ export default function actionsRouter(db) {
 
   router.post('/autotrade-toggle', (req, res) => {
     const on = req.body?.on === true
-    setState(db, 'autotrade_enabled', on ? 'true' : 'false')
-    console.log(`[actions] Auto-trade ${on ? 'enabled' : 'disabled'}`)
+    setPhaseFlag(db, 'autotrade_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/autotrade-toggle' })
     res.json({ ok: true, autotrade_enabled: on })
   })
 
   // Backward compat: /actions/autopilot toggles autotrade only
   router.post('/autopilot', (req, res) => {
     const on = req.body?.on === true
-    setState(db, 'autotrade_enabled', on ? 'true' : 'false')
-    console.log(`[actions] Auto-trade (via /autopilot) ${on ? 'enabled' : 'disabled'}`)
+    setPhaseFlag(db, 'autotrade_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/autopilot' })
     res.json({ ok: true, autotrade_enabled: on })
   })
 
@@ -2683,10 +2680,9 @@ export default function actionsRouter(db) {
   // POST /actions/arm — legacy: enable all three toggles
   // -----------------------------------------------------------------------
   router.post('/arm', (_req, res) => {
-    setState(db, 'scan_enabled', 'true')
-    setState(db, 'analyze_enabled', 'true')
-    setState(db, 'autotrade_enabled', 'true')
-    console.log('[actions] Armed — all toggles enabled')
+    for (const k of ['scan_enabled', 'analyze_enabled', 'autotrade_enabled']) {
+      setPhaseFlag(db, k, 'true', { actor: 'owner-ui', via: '/actions/arm' })
+    }
     res.json({ ok: true, scan_enabled: true, analyze_enabled: true, autotrade_enabled: true })
   })
 
@@ -2694,8 +2690,7 @@ export default function actionsRouter(db) {
   // POST /actions/disarm — legacy: disable autotrade only (scan+analyze stay on)
   // -----------------------------------------------------------------------
   router.post('/disarm', (_req, res) => {
-    setState(db, 'autotrade_enabled', 'false')
-    console.log('[actions] Disarmed — auto-trade disabled (scan+analyze still on)')
+    setPhaseFlag(db, 'autotrade_enabled', 'false', { actor: 'owner-ui', via: '/actions/disarm' })
     res.json({ ok: true, autotrade_enabled: false })
   })
 
@@ -2743,7 +2738,7 @@ export default function actionsRouter(db) {
         return res.status(400).json({ error: 'nothing to set — send scan, analyze and/or autotrade' })
       }
 
-      const result = setAccountPhases(db, accountId, patch)
+      const result = setAccountPhases(db, accountId, patch, { actor: 'owner-ui', via: '/actions/account-phases' })
       const master = masterPhases(db)
       const effective = effectivePhases(db, accountId, master)
       const words = Object.entries(result.set)
@@ -2785,9 +2780,9 @@ export default function actionsRouter(db) {
   // or via Feed close flow. This just stops the bot from acting further.
   // -----------------------------------------------------------------------
   router.post('/kill-all', (_req, res) => {
-    setState(db, 'scan_enabled', 'false')
-    setState(db, 'analyze_enabled', 'false')
-    setState(db, 'autotrade_enabled', 'false')
+    for (const k of ['scan_enabled', 'analyze_enabled', 'autotrade_enabled']) {
+      setPhaseFlag(db, k, 'false', { actor: 'owner-ui', via: '/actions/kill-all', reason: 'emergency kill-all' })
+    }
     const r = db.prepare("UPDATE monitored_positions SET paused = 1 WHERE status = 'active'").run()
     console.log(`[actions] KILL-ALL — all toggles off, ${r.changes} positions paused`)
     res.json({ ok: true, paused: r.changes })

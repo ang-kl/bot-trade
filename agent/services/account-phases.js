@@ -27,7 +27,8 @@
 // Values: 'true' | 'false' | absent (= inherit).
 // ---------------------------------------------------------------------------
 
-import { getState, setState } from '../db.js'
+import { getState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 
 /** The three phases, in pipeline order. */
 export const PHASES = ['scan', 'analyze', 'autotrade']
@@ -102,14 +103,15 @@ export function effectivePhases(db, accountId, master = null) {
  * @param {Record<string, boolean|null>} patch e.g. { autotrade: false }
  * @returns {{accountId: string, set: Record<string, boolean|null>}}
  */
-export function setAccountPhases(db, accountId, patch = {}) {
+export function setAccountPhases(db, accountId, patch = {}, meta = {}) {
   const set = {}
   for (const p of PHASES) {
     if (!(p in patch)) continue
     const v = patch[p]
-    if (v === null) { setState(db, acctPhaseKey(accountId, p), null); set[p] = null; continue }
+    const audit = { actor: meta.actor || 'unknown', via: meta.via || null, reason: meta.reason || null, accountId: String(accountId) }
+    if (v === null) { setPhaseFlag(db, acctPhaseKey(accountId, p), null, audit); set[p] = null; continue }
     if (typeof v !== 'boolean') continue
-    setState(db, acctPhaseKey(accountId, p), v ? 'true' : 'false')
+    setPhaseFlag(db, acctPhaseKey(accountId, p), v ? 'true' : 'false', audit)
     set[p] = v
   }
   return { accountId: String(accountId), set }

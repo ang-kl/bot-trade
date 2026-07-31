@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { setPhaseFlag } from './phase-audit.js'
 
 export const DEFAULT_PERFORMANCE_BREAKER = {
   on: true,          // alerting armed by default — it only ever sends a message
@@ -177,7 +178,12 @@ export function runPerformanceBreaker(db, { notify } = {}) {
   if (String(getState(db, seenKey)) === String(stats.newestId)) return { skipped: 'already_alerted', stats }
   setState(db, seenKey, String(stats.newestId))
 
-  if (cfg.autoDisarm) setState(db, 'autotrade_enabled', 'false')
+  if (cfg.autoDisarm) {
+    setPhaseFlag(db, 'autotrade_enabled', 'false', {
+      actor: 'performance_breaker',
+      reason: `profit factor ${stats.profitFactor.toFixed(2)} below floor ${cfg.pfThreshold} over last ${stats.trades} trades`,
+    })
+  }
 
   const msg = `🚨 ALL HANDS ON DECK: last ${stats.trades} closed trades — profit factor ${stats.profitFactor.toFixed(2)} (floor ${cfg.pfThreshold}), ${stats.winRate}% win rate, expectancy ${stats.expectancy >= 0 ? '+' : ''}${stats.expectancy}/trade, net ${stats.net >= 0 ? '+' : ''}${stats.net}.${cfg.autoDisarm ? ' Autotrade DISARMED pending review.' : ' Autotrade left running — arm auto-disarm in Tune if you want this to pause it automatically.'}`
   try {
