@@ -192,3 +192,66 @@ test('phase 2: dailyLossUsed counts only this FX day and only this account', () 
   const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
   assert.equal(out.body.account.dailyLossUsed, 20)
 })
+
+// ---------------------------------------------------------------------------
+// PHASE 4 GATE: "seeded SQLite event appears once with exact source and
+// values."
+// ---------------------------------------------------------------------------
+
+test('phase 4: a seeded event appears exactly once, values and source verbatim', async () => {
+  const { recordPositionEvent } = await import('./position-events.js')
+  recordPositionEvent(ctx.db, {
+    accountId: 'ACC_A', positionId: '900001', tradeId: 1, symbol: 'EURUSD',
+    kind: 'sl_moved', fromValue: 1.09, toValue: 1.095, rAt: 0.5, priceAt: 1.105,
+    reason: 'trail ratchet after +0.5R', source: 'profit_keeper', detail: { step: 1 },
+  })
+  const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
+  assert.equal(out.body.journal.length, 1)
+  const j = out.body.journal[0]
+  assert.equal(j.kind, 'sl_moved')
+  assert.equal(j.from, 1.09)
+  assert.equal(j.to, 1.095)
+  assert.equal(j.rAt, 0.5)
+  assert.equal(j.priceAt, 1.105)
+  assert.equal(j.reason, 'trail ratchet after +0.5R')
+  assert.equal(j.source, 'profit_keeper')
+  assert.deepEqual(j.detail, { step: 1 })
+  // The event id rides in the revision, so a management action invalidates
+  // cached explanations while a mere price tick does not.
+  assert.ok(String(out.body.meta.revision).includes(`:${j.id}:`))
+})
+
+test('phase 4: an event matching BOTH trade id and broker id still appears once', async () => {
+  const { recordPositionEvent } = await import('./position-events.js')
+  // trade_id 1 AND position_id 900001 both point at position A — the OR in
+  // the query must not duplicate the row.
+  recordPositionEvent(ctx.db, {
+    accountId: 'ACC_A', positionId: '900001', tradeId: 1, symbol: 'EURUSD',
+    kind: 'tp_moved', toValue: 1.14, source: 'manual',
+  })
+  const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
+  assert.equal(out.body.journal.filter(j => j.kind === 'tp_moved').length, 1)
+})
+
+test("phase 4: another account's events never appear, even on a colliding broker id", async () => {
+  const { recordPositionEvent } = await import('./position-events.js')
+  // The unresolved cTID question: if broker position ids ever collided across
+  // accounts, the journal must still not leak. Seed an event with A's broker
+  // id but stamped for ACC_B.
+  recordPositionEvent(ctx.db, {
+    accountId: 'ACC_B', positionId: '900001', tradeId: null, symbol: 'EURUSD',
+    kind: 'close', toValue: 0, source: 'weekend_watch',
+  })
+  const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
+  assert.equal(out.body.journal.length, 0)
+})
+
+test('phase 4: order is preserved and an empty journal is honest', async () => {
+  const { recordPositionEvent } = await import('./position-events.js')
+  const out0 = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
+  assert.deepEqual(out0.body.journal, [])
+  recordPositionEvent(ctx.db, { accountId: 'ACC_A', tradeId: 1, symbol: 'EURUSD', kind: 'trail_armed', source: 'cpp_trail_engine' })
+  recordPositionEvent(ctx.db, { accountId: 'ACC_A', tradeId: 1, symbol: 'EURUSD', kind: 'trail_tightened', source: 'cpp_trail_engine' })
+  const out = cockpitSnapshot(ctx.db, ctx.idA, scope('ACC_A'))
+  assert.deepEqual(out.body.journal.map(j => j.kind), ['trail_armed', 'trail_tightened'])
+})
