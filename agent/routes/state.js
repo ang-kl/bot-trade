@@ -342,6 +342,38 @@ export default function stateRouter(db) {
           out.body.position.marketSource = o.source || null
         } catch { /* stays null */ }
       }
+      // PHASE 3: real bars + indicators through the EXISTING chart data path
+      // (the same wsGetTrendbarsBatch call POST /actions/chart makes — no new
+      // kind of broker traffic, and only on this explicit snapshot request,
+      // never on a tick). Failure is a status on the bars block, not a 500:
+      // the identity/position/account facts above are still good.
+      if (out.status === 200) {
+        const timeframe = /^[0-9]+[mhd]$/.test(String(req.query.timeframe || '')) ? String(req.query.timeframe) : '15m'
+        const lookbackH = Math.min(168, Math.max(1, Number(req.query.lookback) || 48))
+        const { buildBarsAndIndicators, barCountFor } = await import('../services/cockpit-bars.js')
+        const sinceMs = Date.now() - lookbackH * 3_600_000
+        let fetched = []
+        let fetchError = null
+        try {
+          const { getCtraderCreds, ensureSymbolMap } = await import('../lib/ctrader-creds.js')
+          const { wsGetTrendbarsBatch } = await import('../lib/ctrader-ws.js')
+          const creds = getCtraderCreds(db)
+          if (!creds.ready) throw new Error('cTrader not connected')
+          const symbolId = (await ensureSymbolMap(db, creds))[out.body.position.symbol]
+          if (!symbolId) throw new Error(`no symbol id for ${out.body.position.symbol}`)
+          const count = barCountFor(timeframe, lookbackH * 3_600_000)
+          const byPeriod = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, [timeframe], count, 30_000)
+          fetched = byPeriod[timeframe] || []
+        } catch (err) {
+          fetchError = err.message
+        }
+        const built = buildBarsAndIndicators(fetched, { timeframe, sinceMs, fetchError })
+        out.body.bars = built.bars
+        out.body.indicators = built.indicators
+        if (built.bars.status === 'unavailable') {
+          out.body.advisories.push({ kind: 'bars', detail: `bars unavailable: ${built.bars.detail || 'unknown reason'}` })
+        }
+      }
       res.status(out.status).json(out.body)
     } catch (err) {
       res.status(500).json({ error: err.message })
