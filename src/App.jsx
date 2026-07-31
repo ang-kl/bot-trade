@@ -1,6 +1,6 @@
 /* global __APP_VERSION__, __GIT_COMMIT__ */
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { boundPosition } from './cockpit/cockpit-nav.js'
+import { boundPosition, urlIdentity } from './cockpit/cockpit-nav.js'
 
 // Trade Cockpit (design_handoff_trading_dashboard) — lazy so the heavy modal
 // and GSAP never load until a ?trade=<positionId> deep link or symbol click.
@@ -15,11 +15,45 @@ function CockpitHost() {
     return () => window.removeEventListener('popstate', f)
   }, [])
   const trade = params.get('trade')
+  // PHASE 8 (cockpit live-wiring prompt): when the deep link carries the
+  // DURABLE identity (?tdb + ?tacct — stamped by the clicking surface since
+  // PHASE 1), the host fetches the full contract snapshot and hands the body
+  // down on position.snapshot. The cockpit itself stays fetch-free; a missing
+  // identity or a failed fetch leaves the snapshot absent and the affected
+  // panels honestly demo/unknown. Bounded refresh, paused while asleep.
+  // The body is stored WITH the trade id it answers for, so a trade change
+  // yields null by derivation (no synchronous state reset in the effect).
+  const [snapState, setSnapState] = useState({ trade: null, body: null })
+  const snapshot = snapState.trade === trade ? snapState.body : null
+  useEffect(() => {
+    if (!trade) return undefined
+    const { dbPositionId, accountId } = urlIdentity()
+    if (dbPositionId == null || accountId == null) return undefined
+    let dead = false
+    const load = () => agentGet(`/state/position/${encodeURIComponent(dbPositionId)}/cockpit?account=${encodeURIComponent(accountId)}`)
+      .then(b => { if (!dead && b?.meta) setSnapState({ trade, body: b }) })
+      .catch(() => { /* absence is honest — the cockpit says which panels are demo */ })
+    load()
+    const t = setInterval(() => { if (!pageAsleep()) load() }, 30_000)
+    return () => { dead = true; clearInterval(t) }
+  }, [trade])
   if (!trade) return null
   // Broker facts handed over by the surface that was clicked (see
-  // cockpit-nav.bindPosition). Absent on a cold deep link — the cockpit then
-  // states that its values are demo rather than implying they are live.
+  // cockpit-nav.bindPosition). Absent on a cold deep link — then the
+  // snapshot's own position block (when fetched) supplies the real facts, so
+  // a reloaded deep link is no longer all-demo.
   const bound = boundPosition(trade)
+  const snapPos = snapshot ? {
+    sym: snapshot.position?.symbol, side: snapshot.position?.side,
+    lots: snapshot.position?.lots, strategy: snapshot.intention?.strategy ?? null,
+    entry: snapshot.position?.entry, sl: snapshot.position?.sl, tp: snapshot.position?.tp,
+    price: snapshot.position?.price, pnl: snapshot.position?.pnl,
+    marketOpen: snapshot.position?.marketOpen,
+    mfeR: snapshot.position?.mfeR, maeR: snapshot.position?.maeR,
+  } : null
+  const position = bound || snapPos
+    ? { ...(snapPos || {}), ...(bound || {}), ...(snapshot ? { snapshot } : {}) }
+    : null
   const close = () => {
     const url = new URL(window.location.href)
     url.searchParams.delete('trade')
@@ -31,7 +65,7 @@ function CockpitHost() {
       <TradeCockpit
         onClose={close}
         tradeId={trade}
-        position={bound}
+        position={position}
         positionState={params.get('state') === 'closed' ? 'closed' : 'open'}
         sessionState={params.get('session') || 'open'}
         variant={params.get('variant') || undefined}
@@ -41,7 +75,7 @@ function CockpitHost() {
   )
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
-import { getAgentConn, agentConfigured, sendClientPing, ensureBrowserLocation } from './lib/agent-api.js'
+import { getAgentConn, agentConfigured, agentGet, pageAsleep, sendClientPing, ensureBrowserLocation } from './lib/agent-api.js'
 // Owner (2026-07-28): "can you not load the other pages first except the
 // performance" — Performance is the landing page and stays in the main
 // bundle; every other page is code-split and only downloads (and only
