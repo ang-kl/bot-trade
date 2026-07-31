@@ -1305,6 +1305,23 @@ export default function Tune() {
               <Toggle on={config?.analyze_enabled} label="Analyze" onClick={() => toggle('/actions/analyze-toggle', 'Analyze', config?.analyze_enabled)} />
               <Toggle on={config?.autotrade_enabled} label="Autotrade" onClick={() => {
                 if (!config?.autotrade_enabled && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
+                // Owner (2026-07-31, after two unexplained all-account
+                // disarms): the MASTER may not be disarmed on a bare click —
+                // it is an absolute veto over every account, so an accidental
+                // tap here reads as "the bot broke" everywhere at once. The
+                // word must be TYPED; a second OK-button dialog would just be
+                // a second accidental tap. Deliberately UI-only: Telegram
+                // /pause and the protective breakers (equity stop, ratchet)
+                // must keep disarming instantly — safety actors never wait on
+                // a spelling test.
+                if (config?.autotrade_enabled) {
+                  const word = window.prompt('Disarm the MASTER autotrade switch? This stops new entries on EVERY account at once.\n\nType disarm to confirm:')
+                  if (word == null) return
+                  if (word.trim().toLowerCase() !== 'disarm') {
+                    flash('Master autotrade unchanged — you must type "disarm" to confirm.')
+                    return
+                  }
+                }
                 toggle('/actions/autotrade-toggle', 'Autotrade', config?.autotrade_enabled)
               }} />
             </div>
