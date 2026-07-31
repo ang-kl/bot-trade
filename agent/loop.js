@@ -2036,20 +2036,24 @@ async function runLoop(db) {
                 if (same.length) targets = [...new Set([String(accountId), ...same])]
               } catch { /* registry unavailable — selected account only, as before */ }
 
-              // Only probe accounts the sidecar's session has actually
-              // authorized: a disconnected account's deal-history fetch can
-              // only time out. Roster null = unknown → probe all, as before.
-              try {
-                const { sidecarRoster } = await import('./lib/exec-engine.js')
-                const roster = await sidecarRoster()
-                if (roster) {
-                  const off = targets.filter(a => !roster.includes(String(a)))
-                  if (off.length) {
-                    targets = targets.filter(a => roster.includes(String(a)))
-                    log(`P&L backfill: skipping ${off.length} account(s) not in the sidecar's authorized roster [${off.join(', ')}]`)
-                  }
-                }
-              } catch { /* roster probe failed — probe all, as before */ }
+              // NO SIDECAR-ROSTER GATE HERE — deliberately removed 2026-07-31.
+              //
+              // The gate (added with the other roster gates on 2026-07-30)
+              // skipped every account the sidecar hadn't authorized, on the
+              // theory that "a disconnected account's fetch can only time
+              // out". That theory was wrong for THIS call: backfillClosedPnl
+              // fetches deal history over the Node WS path (wsGetDeals) with
+              // the OAuth token, which authorizes ANY account under the cTID
+              // on its own ephemeral connection — the sidecar's session is
+              // not involved at all.
+              //
+              // Measured on production 2026-07-31: "P&L backfill: skipping 1
+              // account(s) not in the sidecar's authorized roster [47790949]
+              // … trying 1/1 account(s) [46130058] — 93 closed trade(s)
+              // still missing net_pnl". Rows on the skipped accounts could
+              // NEVER fill, so the unknown-P&L veto held the desk for three
+              // days straight. The roster gates on DISPATCH and RECONCILE
+              // (which do run through the sidecar) are untouched.
 
               let filled = 0
               let skipped = 0
