@@ -71,7 +71,7 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   // `gap: 0` joined the shape when the caller gained the ability to tell
   // "nothing was missing" from "something was missing and would not fill" —
   // this test's point is the assertion above: NO broker call.
-  assert.deepEqual(r, { backfilled: 0, closingDeals: 0, scanned: 0, gap: 0 })
+  assert.deepEqual(r, { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0 })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -186,20 +186,33 @@ test('the gap check is scoped too — no broker round-trip for an account with n
   assert.equal(r.backfilled, 0)
 })
 
-test('legacy rows with a NULL account_id belong to the SELECTED account only', async () => {
-  // Same convention as reconciler.js: rows predating account stamping were
-  // written when the selected account was the only one trading. A pass for
-  // another account must not claim them.
+test('a NULL-account row: deal evidence beats the selected-account presumption', async () => {
+  // SUPERSEDED CONVENTION, deliberately (2026-07-31). This test used to assert
+  // that a non-selected pass must never claim an unstamped row — the
+  // "legacy rows belong to the selected account" presumption. That presumption
+  // was for rows with NO evidence. Here the non-selected account's OWN deal
+  // history contains the close (at the real broker, deal history is strictly
+  // per-account), which is broker proof of which account executed it — and the
+  // production cost of refusing that proof was one orphan row vetoing every
+  // account for three days with no path to clear it.
   const db = initDB(':memory:')
   db.prepare(`INSERT INTO agent_state (key, value) VALUES ('ctrader_account_id', '43097342')
               ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run()
   seedAcct(db, { positionId: 1001, accountId: null })
 
   const getDeals = dealsApi([deal(1001, 500)])
-  assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '46130058' })).backfilled, 0,
-    'a non-selected account must not claim unstamped rows')
-  assert.equal((await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '43097342' })).backfilled, 1,
-    'the selected account does')
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '46130058' })
+  assert.equal(r.backfilled, 1, 'the account whose history holds the close claims the row')
+  assert.equal(r.attributed, 1)
+  const row = db.prepare(`SELECT account_id, net_pnl FROM trades WHERE ctrader_position_id = '1001'`).get()
+  assert.equal(row.account_id, '46130058')
+  assert.equal(row.net_pnl, 5)
+  // A row with NO matching deal still stays with the selected account: the
+  // presumption survives where there is no evidence to beat it.
+  seedAcct(db, { positionId: 1002, accountId: null })
+  const r2 = await backfillClosedPnl(db, {}, { getDeals: dealsApi([]), now: NOW, accountId: '46130058' })
+  assert.equal(r2.backfilled, 0)
+  assert.equal(db.prepare(`SELECT account_id FROM trades WHERE ctrader_position_id = '1002'`).get().account_id, null)
 })
 
 test('with no accountId passed, behaviour is unchanged for a single-account setup', async () => {
@@ -282,4 +295,45 @@ test('the ladder is bounded — it cannot grow without limit', () => {
   const T = 1_000_000
   for (let i = 0; i < 50; i++) noteBackfillAttempt('C', { backfilled: 0, gap: 1 }, T)
   assert.equal(dueForBackfill('C', T + 6 * 3_600_000), true, 'capped at the 6-hour step')
+})
+
+// --- attribute-on-match (2026-07-31) ---------------------------------------
+// The production three-day block: one closed row with account_id NULL vetoed
+// every account, and the write-off path could never reach it. When an
+// account's own deal history contains that row's close, the backfill now
+// claims it — account + P&L in one write, both from broker facts.
+
+function seedClosedOn(db, { positionId, accountId = null, net = null }) {
+  db.prepare(
+    `INSERT INTO trades (symbol, side, status, ctrader_position_id, net_pnl, account_id)
+     VALUES ('EURUSD', 'BUY', 'closed', ?, ?, ?)`
+  ).run(String(positionId), net, accountId)
+}
+
+test('an unattributed row is claimed by the account whose deal history closed it', async () => {
+  const db = initDB(':memory:')
+  seedClosedOn(db, { positionId: 777, accountId: null })
+  // A NON-selected account pass (selected is unset → acct comes from opts).
+  const getDeals = dealsApi([deal(777, 2500)])
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '47790949' })
+  assert.equal(r.backfilled, 1)
+  assert.equal(r.attributed, 1)
+  const row = db.prepare(`SELECT account_id, net_pnl FROM trades WHERE ctrader_position_id = '777'`).get()
+  assert.equal(row.account_id, '47790949')
+  assert.equal(row.net_pnl, 25)
+})
+
+test('a row already attributed to ANOTHER account is never re-claimed', async () => {
+  const db = initDB(':memory:')
+  seedClosedOn(db, { positionId: 888, accountId: '46130058' })
+  const getDeals = dealsApi([deal(888, 1000)])
+  const r = await backfillClosedPnl(db, {}, { getDeals, now: NOW, accountId: '47790949' })
+  // The scoped update misses (wrong account) and the claim must not touch an
+  // ATTRIBUTED row — its account is a fact someone recorded; only its P&L may
+  // arrive later, via its OWN account's pass.
+  assert.equal(r.backfilled, 0)
+  assert.equal(r.attributed, 0)
+  const row = db.prepare(`SELECT account_id, net_pnl FROM trades WHERE ctrader_position_id = '888'`).get()
+  assert.equal(row.account_id, '46130058')
+  assert.equal(row.net_pnl, null)
 })

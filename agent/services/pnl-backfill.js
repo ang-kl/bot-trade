@@ -90,14 +90,20 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Nothing to do unless some closed trade ON THIS ACCOUNT is actually
   // missing its P&L. This cheap check gates the broker round-trip so we don't
   // hit the deal API when every closed trade is already accounted for.
+  // The gap check ALWAYS counts NULL-account rows too: an orphan row's close
+  // may live in ANY account's deal history, so every account's pass must be
+  // willing to fetch while one exists — that is what lets attribute-on-match
+  // below ever run. (The strict scope stays on the UPDATE; only the "should
+  // we bother fetching" question widens.)
+  const gapScopeSql = acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
   const gap = db.prepare(
-    `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${scopeSql}`
+    `SELECT COUNT(*) AS n FROM trades WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql}`
   ).get(...scopeParams)
   // `gap` travels back out so the caller can tell "nothing was missing" from
   // "something was missing and the broker had no matching close". Those two
   // look identical from backfilled === 0 alone, and only the second one
   // should cost a retry.
-  if (!gap || gap.n === 0) return { backfilled: 0, closingDeals: 0, scanned: 0, gap: 0 }
+  if (!gap || gap.n === 0) return { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0 }
 
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const now = opts.now ?? Date.now()
@@ -153,23 +159,51 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
             swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
       WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL ${scopeSql}`
   )
+  // ATTRIBUTE-ON-MATCH (2026-07-31). A closed trade with account_id NULL is
+  // the single worst row in the system: unresolved-pnl.js blocks EVERY
+  // account on it, and mark-unresolvable.js can never write it off because
+  // its candidate query filters on `account_id IN (…)`. The veto's own reason
+  // string tells the owner to "attribute or backfill that row" — this is
+  // where that becomes possible without a database session.
+  //
+  // The claim is broker truth, not a guess: a position id appearing in THIS
+  // account's deal history with a closePositionDetail means the broker
+  // executed that close on this account, so the row gains its P&L and its
+  // account in one write. Position ids are unique at the broker, so a
+  // cross-account collision cannot occur. Without this, a non-selected pass
+  // (whose scope has no NULL arm) could never touch these rows at all.
+  const claim = db.prepare(
+    `UPDATE trades
+        SET account_id = ?,
+            net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
+            swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
+      WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL
+        AND account_id IS NULL`
+  )
   let backfilled = 0
+  let attributed = 0
   const tx = db.transaction((entries) => {
     for (const [positionId, agg] of entries) {
-      const r = upd.run(
+      const money = [
         Math.round(agg.net * 100) / 100,
         Math.round(agg.gross * 100) / 100,
         Math.round((agg.swap || 0) * 100) / 100,
         Math.round((agg.commission || 0) * 100) / 100,
-        positionId,
-        ...scopeParams,
-      )
+      ]
+      const r = upd.run(...money, positionId, ...scopeParams)
       backfilled += r.changes
+      // Only when the scoped update did not already take the row — the
+      // selected-account pass covers NULL rows itself via includeNull.
+      if (acct != null && r.changes === 0) {
+        const c = claim.run(String(acct), ...money, positionId)
+        attributed += c.changes
+        backfilled += c.changes
+      }
     }
   })
   tx([...byPosition])
 
-  return { backfilled, closingDeals, scanned: deals.length, gap: gap.n }
+  return { backfilled, attributed, closingDeals, scanned: deals.length, gap: gap.n }
 }
 
 // ---------------------------------------------------------------------------

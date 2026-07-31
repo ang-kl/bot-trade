@@ -66,3 +66,20 @@ test('an authorized-but-empty roster IS an empty array — that is a real answer
   mockHealth({ ok: true, connected: true, accounts: [] })
   assert.deepEqual(await sidecarRoster({ ttlMs: 0 }), [])
 })
+
+// --- withNumericIds (production bug 2026-07-31) ----------------------------
+// "Position close (LLM) FAILED: Corn — Couldn't parse integer: For input
+// string: ""233934803"" (INVALID_REQUEST)": the TEXT-column position id was
+// forwarded to the broker as a JSON string. Every sidecar-bound body now
+// passes through withNumericIds at the delegator.
+test('withNumericIds coerces int64 fields and leaves garbage visible', async () => {
+  const { withNumericIds } = await import('./exec-engine.js')
+  const out = withNumericIds({ positionId: '233934803', volume: '100000', ctidTraderAccountId: '46130058', label: 'keep' })
+  assert.deepEqual(out, { positionId: 233934803, volume: 100000, ctidTraderAccountId: 46130058, label: 'keep' })
+  // Even a value that arrives with embedded quotes (the exact production
+  // artefact) resolves to the number.
+  assert.equal(withNumericIds({ positionId: '"233934803"' }).positionId, 233934803)
+  // Garbage stays as-is so the broker rejects it LOUDLY, not as a silent null.
+  assert.equal(withNumericIds({ positionId: 'abc' }).positionId, 'abc')
+  assert.equal(withNumericIds({ positionId: null }).positionId, null)
+})

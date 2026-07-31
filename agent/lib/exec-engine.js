@@ -364,6 +364,32 @@ function withAccount(creds, payload) {
   return { ...(payload && typeof payload === 'object' ? payload : {}), ctidTraderAccountId: r.accountId }
 }
 
+/**
+ * Coerce the fields the broker protocol types as int64 to actual NUMBERS.
+ *
+ * PRODUCTION BUG 2026-07-31: `Position close (LLM) FAILED: Corn — Couldn't
+ * parse integer: For input string: ""233934803"" (INVALID_REQUEST)`. The id
+ * comes from trades.ctrader_position_id, which is a TEXT column, and the
+ * sidecar forwards its /close body into the broker JSON verbatim — so the
+ * broker received `"positionId":"233934803"` where the protocol demands an
+ * integer, and the close failed on EVERY retry. The Node/ws path was immune
+ * only because wsClosePosition parseInts its own payload; the sidecar path
+ * had no such coercion, which made the two engines disagree about the same
+ * arguments. One rule at the delegator, same as withAccount above.
+ *
+ * Only finite results are written back: a malformed id stays as it was so the
+ * broker rejects it VISIBLY rather than a NaN turning into a silent null.
+ */
+export function withNumericIds(args) {
+  const out = { ...(args && typeof args === 'object' ? args : {}) }
+  for (const k of ['positionId', 'orderId', 'volume', 'ctidTraderAccountId']) {
+    if (out[k] == null || out[k] === '') continue
+    const n = Number(String(out[k]).replace(/^"+|"+$/g, ''))
+    if (Number.isFinite(n)) out[k] = n
+  }
+  return out
+}
+
 export async function placeOrder(creds, orderPayload) {
   const g = validateExecGuard(orderPayload, creds?.execGuard)
   if (!g.ok) throw new Error(g.reason)
@@ -371,7 +397,7 @@ export async function placeOrder(creds, orderPayload) {
   if (!v.ok) throw new Error(v.reason)
   // Throws on an unresolvable or contradictory account, BEFORE the guard-passed
   // order can reach either engine.
-  orderPayload = withAccount(creds, orderPayload)
+  orderPayload = withNumericIds(withAccount(creds, orderPayload))
   if (execEngineMode() === 'cpp') {
     return withFallback('order',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/order', orderPayload) },
@@ -392,7 +418,7 @@ export async function setExecGuard(creds, cfg) {
 }
 
 export async function amendPosition(creds, args) {
-  args = withAccount(creds, args)
+  args = withNumericIds(withAccount(creds, args))
   if (execEngineMode() === 'cpp') {
     return withFallback('amend',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/amend', args) },
@@ -406,7 +432,7 @@ export async function amendPosition(creds, args) {
 }
 
 export async function closePosition(creds, args) {
-  args = withAccount(creds, args)
+  args = withNumericIds(withAccount(creds, args))
   if (execEngineMode() === 'cpp') {
     return withFallback('close',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/close', args) },
@@ -424,7 +450,7 @@ export async function cancelOrder(creds, { orderId }) {
   // part of the exit gap — but it goes through the same helper now, so there is
   // exactly one rule about where an account comes from and one error to read
   // when it cannot be determined.
-  const acct = withAccount(creds, { orderId })
+  const acct = withNumericIds(withAccount(creds, { orderId }))
   if (execEngineMode() === 'cpp') {
     return withFallback('cancel',
       async () => { await ensureSidecarSession(creds); return sidecar('POST', '/cancel', acct) },
