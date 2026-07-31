@@ -99,7 +99,7 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
     schemaVersion: SCHEMA_VERSION,
     // Revision: identity + the facts that can change. Later phases fold their
     // sections in; callers cache explanations by this value.
-    revision: `${id}:${row.current_sl}:${row.current_tp}:${row.status}:${liveAt ?? 'nolive'}`,
+    revision: `${id}:${row.current_sl}:${row.current_tp}:${row.status}:${lastJournalId(db, row)}:${liveAt ?? 'nolive'}`,
     fetchedAt: new Date(nowMs).toISOString(),
     accountId: rowAccount ?? String(scope.accountId ?? ''),
     dbPositionId: id,
@@ -146,12 +146,12 @@ export function cockpitSnapshot(db, dbPositionId, scope, nowMs = Date.now()) {
       indicators: UNKNOWN,
       execution: buildExecution(db, row, live, liveAt),
       intention: UNKNOWN,
-      journal: [],
+      journal: buildJournal(db, row, rowAccount),
       correlation: UNKNOWN,
       environment: UNKNOWN,
       fleet: UNKNOWN,
       advisories: [
-        { kind: 'phase', detail: 'phase-2: identity, position, account and execution are live/derived; bars, indicators, intention, journal, correlation, environment and fleet remain UNKNOWN by design' },
+        { kind: 'phase', detail: 'phase-4: identity, position, account, execution and journal are live/derived (bars+indicators fill in the route); intention, correlation, environment and fleet remain UNKNOWN by design' },
         ...(snapAccount != null && !snapIsThisAccount
           ? [{ kind: 'account-scope', detail: `broker snapshot cache belongs to account ${snapAccount.accountId} — not used for this position's account/live facts` }]
           : []),
@@ -254,4 +254,65 @@ function buildExecution(db, row, live, liveAt) {
     status: spreadNow != null || slippageAtEntry != null ? 'partial' : 'unknown',
     facts,
   }
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 4 — the real tweak journal. position_events IS the journal: it is
+// already written by the profit keeper, the loop's broker actions, the manual
+// routes and the C++ trail poll (P10), so this phase only READS and maps.
+// Nothing is invented: no dates, no OHLC, no R values beyond what the writer
+// recorded at the moment of the event. An empty journal is an honest answer
+// for a fresh position.
+// ---------------------------------------------------------------------------
+
+/**
+ * Events for THIS position, by durable identity: trade_id when the row has
+ * one, else the broker position id. Account-scoped with the M1 NULL
+ * convention — an event stamped for a DIFFERENT account never shows, even if
+ * a positionId collision were to exist across accounts (the open question the
+ * multi-account work has not yet closed; scoping here means the journal
+ * cannot become the place that bug leaks through).
+ */
+function journalRows(db, row, accountId) {
+  const params = []
+  const idTerms = []
+  if (row.trade_id != null) { idTerms.push('trade_id = ?'); params.push(Number(row.trade_id)) }
+  if (row.ctrader_position_id != null) { idTerms.push('position_id = ?'); params.push(String(row.ctrader_position_id)) }
+  if (!idTerms.length) return []
+  const acct = accountId == null ? null : String(accountId)
+  params.push(acct, acct)
+  return db.prepare(
+    `SELECT id, at, kind, from_value, to_value, r_at, price_at, reason, source, detail_json
+       FROM position_events
+      WHERE (${idTerms.join(' OR ')})
+        AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+      ORDER BY at ASC, id ASC`
+  ).all(...params)
+}
+
+function buildJournal(db, row, accountId) {
+  try {
+    return journalRows(db, row, accountId).map(e => ({
+      id: e.id,
+      at: e.at,
+      kind: e.kind,
+      from: e.from_value,
+      to: e.to_value,
+      rAt: e.r_at,
+      priceAt: e.price_at,
+      reason: e.reason,
+      // actor/source verbatim from the writer — profit_keeper,
+      // cpp_trail_engine, manual, … — never re-attributed at read time.
+      source: e.source,
+      detail: (() => { try { return e.detail_json ? JSON.parse(e.detail_json) : null } catch { return e.detail_json } })(),
+    }))
+  } catch { return [] }
+}
+
+/** Newest journal event id, for the snapshot revision. 0 when none. */
+function lastJournalId(db, row) {
+  try {
+    const rows = journalRows(db, row, row.account_id == null ? null : String(row.account_id))
+    return rows.length ? rows[rows.length - 1].id : 0
+  } catch { return 0 }
 }
