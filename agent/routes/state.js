@@ -809,6 +809,40 @@ export default function stateRouter(db) {
   // figure computed rather than being written off, and if there are many of
   // them the honest answer is to compute, not to stop waiting.
   // -----------------------------------------------------------------------
+  // GET /state/unknown-pnl — WHICH rows are holding the desk, and why.
+  //
+  // Owner, 2026-07-31: three days of "unknown_daily_pnl … 7 closed trade(s)
+  // today have no realised P&L" on every signal. The veto is right to block;
+  // what was missing is the next sentence. This route answers it per row —
+  // no_broker_position_id (can never be filled: the backfill matches deals by
+  // position id), unattributed_account (blocks every account AND can never be
+  // written off, because the write-off candidate query filters on account),
+  // account_not_enabled (no backfill pass ever runs for it), or the ordinary
+  // backfill_pending — plus a count of the close_reason that produced them, so
+  // a recurring daily cause is named rather than inferred.
+  //
+  // Read-only: a SELECT and two in-memory lists. It changes no gate.
+  router.get('/unknown-pnl', async (req, res) => {
+    try {
+      const { unknownPnlReport } = await import('../services/unknown-pnl-report.js')
+      const { exhaustedAccounts } = await import('../services/pnl-backfill.js')
+      const { loadRiskConfig } = await import('../services/risk.js')
+      let enabled = []
+      try {
+        const { getEnabledAccounts } = await import('../services/account-registry.js')
+        enabled = getEnabledAccounts(db).map(a => String(a.account_id))
+      } catch { /* unknown registry → every row's account counts as enabled */ }
+      const cfg = (() => { try { return loadRiskConfig(db) } catch { return {} } })()
+      res.json(unknownPnlReport(db, {
+        graceMin: cfg.unknownPnlGraceMin,
+        enabledAccounts: enabled,
+        exhaustedAccounts: exhaustedAccounts(),
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/unresolvable-plan', async (req, res) => {
     try {
       const { findUnresolvableCandidates, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =
