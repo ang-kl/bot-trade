@@ -518,7 +518,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
       {sectHead({ k: "adv", hue: "wrn", label: "ADVISORIES", tip: "Live bot notices: cautions, warnings, and fills — newest first." })}
       {!shut.adv && (
-        <div style={{ maxHeight: variant === 'iphone' ? 150 : 96, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
+        <div style={{ maxHeight: variant === 'iphone' ? 150 : 170, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
             {tradeId != null && !position && <div style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>DEMO DATA</span>
@@ -555,7 +555,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
       {sectHead({ k: "inv", hue: "vio", label: review ? 'WHAT ENDED IT' : 'INVALIDATION WATCH', tip: "Go-around: the conditions that would make the bot abort this trade's thesis and exit — like a pilot aborting a landing. All clear = the setup that got you in still holds.", right: <span style={{ marginLeft: 'auto', fontSize: fs(10.5), color: v?.gaCol, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v?.gaNote}</span> })}
       {!shut.inv && (
-        <div style={{ display: 'grid', gridTemplateColumns: variant === 'desktop' ? '1fr' : cfg.inv, gap: '0 10px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: variant === 'desktop' ? 'repeat(2,1fr)' : cfg.inv, gap: '0 10px' }}>
           {(v?.goaround ?? []).map((g, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, fontVariantNumeric: 'tabular-nums', minWidth: 0, lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: g.okCol, flex: 'none' }}>{g.mark}</span>
@@ -587,11 +587,14 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   // Fleet as a slim strip below. No panel spans the shell for a handful of
   // rows any more. Touch variants keep the single-column stack their tab
   // layout expects.
+  // Owner (2026-07-31, second screenshot): Armed Actions + Invalidation ride
+  // UP in the MFD column (they render there via the main grid below); the
+  // bottom band is Risk Budget | Advisories — Advisories takes the wide side
+  // ("Advisories can be more rows") — with Fleet as the slim strip under.
   const strips = variant === 'desktop'
     ? <>
-      <div style={{ display: 'grid', gridTemplateColumns: '0.95fr 1.15fr 1.1fr', gap: 5, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '0.8fr 1.45fr', gap: 5, alignItems: 'start' }}>
         {riskCard}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>{armedCard}{invalidationCard}</div>
         {advisoriesCard}
       </div>
       {fleetCard}
@@ -677,7 +680,10 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             // column is the taller of the two) at the PFD column's width.
             <div style={{ display: 'grid', gridTemplateColumns: cfg.grid, gap: 5, alignItems: 'stretch' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>{pfdCard}{journalCard}</div>
-              {mfdCard}
+              {/* Armed Actions + Invalidation sit UNDER the MFD in its own
+                  column (owner's sketch) — beside the journal, above the
+                  Risk/Advisories band. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>{mfdCard}{armedCard}{invalidationCard}</div>
             </div>)}
           {cfg.tabs && (
             <>
