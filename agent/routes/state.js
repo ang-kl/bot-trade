@@ -317,6 +317,27 @@ export default function stateRouter(db) {
   // query used to be `WHERE mp.status = 'active'` and nothing else, so it
   // returned every enabled account's positions and switching accounts changed
   // nothing on screen. `?account=all` opts back into the portfolio view.
+  // -----------------------------------------------------------------------
+  // GET /state/position/:id/cockpit — PHASE 1 of the cockpit live-wiring
+  // prompt: the read-only snapshot SHELL, identity-first.
+  //
+  // :id is the DURABLE identity (monitored_positions.id), ?account is
+  // REQUIRED — no silent fallback to the selected account, because a deep
+  // link minted under one account must not be answered from another. Wrong
+  // account and not-found are the same 404 on purpose: a probe must not
+  // learn that the id exists. Everything the shell cannot vouch for is
+  // status:"unknown", never a default.
+  router.get('/position/:id/cockpit', async (req, res) => {
+    try {
+      const { cockpitSnapshot } = await import('../services/cockpit-snapshot.js')
+      const scope = requestedAccount(db, req)
+      const out = cockpitSnapshot(db, req.params.id, scope)
+      res.status(out.status).json(out.body)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/positions', async (req, res) => {
     const scope = requestedAccount(db, req)
     const acct = accountWhere(scope, 'mp.account_id')

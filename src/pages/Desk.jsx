@@ -421,7 +421,11 @@ export default function Desk() {
   const gaugePositions = useMemo(() => (broker?.positions || []).map(bp => {
     const mp = monitorByPid.get(String(bp.positionId))
     return mp
-      ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl }
+      ? { ...bp, lastCheckAt: mp.last_check_at, lastCheckAction: mp.last_check_action, thesisStatus: mp.thesis_status, monitorSl: mp.current_sl,
+          // PHASE 1 (cockpit live-wiring): the DURABLE identity rides with the
+          // row so a cockpit deep link can survive a reload — the broker id
+          // alone cannot answer "which account, which db row".
+          dbPositionId: mp.id, tradeId: mp.trade_id, accountId: mp.account_id }
       : bp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [posSig, monitorByPid])

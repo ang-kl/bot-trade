@@ -23,13 +23,16 @@
 //    is visually distinct from the selected ring (the owner's spec calls for
 //    both, and a keyboard user needs to tell "where I am" from "what is on").
 //
-// PARTIAL REFRESH. Selecting a card sets local state in THIS component and
-// re-renders the detail panel only. No route change, no page reload, no refetch
-// of the page's other sections — the aggregate is computed from cards the page
-// already holds (src/lib/perf-aggregate.js), so there is no request to race and
-// no stale response that could land after a newer selection. That is a stronger
-// guarantee than cancelling requests: there are none to cancel.
-import { useMemo, useState } from 'react'
+// WHOLE-PAGE SCOPE (owner, 2026-07-31: "I select different account, the rest
+// of the performance page doesn't refresh"). The first version kept selection
+// in local state and re-rendered only its own detail panel — the deliberate
+// "partial refresh" reading of the spec. The owner has now ruled the other
+// way: these cards ARE the page's account selector, so selection is LIFTED —
+// the component is controlled by the page's `acct` state via scope/
+// onScopeChange, and choosing a card re-scopes every table and card on the
+// page exactly like the header account switch does. One selection model, not
+// three.
+import { useMemo } from 'react'
 import { aggregateAccounts, scopeLabel, ALL_SCOPE } from '../lib/perf-aggregate.js'
 
 // Matches the palette the Performance page already uses (passed in, so this
@@ -39,10 +42,11 @@ const cell = { fontSize: 'var(--fs-d9)', fontVariantNumeric: 'tabular-nums' }
 /**
  * @param {{acctCards: Array, palette: object, money: Function, signed: Function}} props
  */
-export default function PerfAccountScope({ acctCards, palette, money, signed }) {
+export default function PerfAccountScope({ acctCards, palette, money, signed, scope = ALL_SCOPE, onScopeChange }) {
   const { P_GL, P_GBD, P_MU, P_SB, P_UP, P_DN, P_ACC, P_EDG, P_WRN } = palette
-  // Default is ALL, per spec. Local state only — the page around it is untouched.
-  const [scope, setScope] = useState(ALL_SCOPE)
+  // Controlled: the page owns the scope (its `acct` filter) and every section
+  // follows it. This component only reports the click.
+  const setScope = (s) => { if (onScopeChange) onScopeChange(s) }
 
   const agg = useMemo(() => aggregateAccounts(acctCards), [acctCards])
   // A previously-selected account that has since left the in-play list falls

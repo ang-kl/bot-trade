@@ -260,7 +260,11 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
                   price: liveMid(ticks, o.symbol) ?? o.currentPrice ?? null,
                 })), p.positionId),
               })
-              openCockpit(p.positionId)
+              openCockpit(p.positionId, {
+                accountId: p.accountId ?? null,
+                dbPositionId: p.dbPositionId ?? null,
+                tradeId: p.tradeId ?? null,
+              })
             }}
             onDetail={() => setSelected(p)} />
         ))}

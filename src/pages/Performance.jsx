@@ -2267,6 +2267,8 @@ export default function Performance() {
               a card re-renders only this section's detail panel — the rest of
               the page, its filters and its scroll position are untouched. */}
           <PerfAccountScope
+            scope={acct}
+            onScopeChange={(s2) => setAcct(String(s2))}
             acctCards={acctCards}
             palette={{ P_GL, P_GBD, P_MU, P_SB, P_UP, P_DN, P_ACC, P_EDG, P_WRN }}
             money={money}
