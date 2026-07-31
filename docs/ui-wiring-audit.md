@@ -8,8 +8,7 @@ This is the evidence, not an opinion. Each pass is a mechanical check whose
 method is written down so it can be re-run after any change. Findings are only
 listed once verified by reading the code they point at.
 
-Status: **pass 1–4 complete**. Passes 5–6 (per-page data provenance and M3
-control inventory) are outstanding.
+Status: **passes 1–5 complete**. Pass 6 (M3 control inventory) is outstanding.
 
 ---
 
@@ -86,14 +85,52 @@ Already tracked by the cockpit live-wiring work and named on screen:
   section the server cannot vouch for renders `—`/unknown rather than a demo
   number.
 
+## Pass 5 — per-page data provenance ("is it actually wired?")
+
+Three mechanical checks, run over every page and component.
+
+**5a — every page is fed by real endpoints.** Extracted per file:
+
+| Page | Reads | Writes |
+| --- | --- | --- |
+| Accounts | `/state/broker-cache`, `/state/market-hours` | `/actions/broker-positions` |
+| Accounts ▸ Audit | `/state/trades`, `/state/postmortems`, `/state/symbol-clusters` | — |
+| Connect | `/state/symbol-map` | 4 cTrader actions |
+| Desk | 16 state endpoints (health, positions, orders, scans, risk-events, correlation, alpha-decay, heartbeats, llm-spend, …) | 5 actions |
+| Performance | `/state/perf-ledger`, `/state/trades`, `/state/positions`, `/state/postmortems`, `/state/risk-events`, `/state/risk-full`, `/state/accounts` | — (read-only page) |
+| Risk | `/state/risk-full` | 11 actions |
+| Trade | 12 state endpoints | 7 actions |
+| Tune | 25 state endpoints | 30 actions |
+
+No page renders a card from a constant.
+
+**5b — no hardcoded data tables.** Scanned every module-level `const NAME = [...]`
+containing decimal numbers and used with `.map`: **zero hits** outside the
+cockpit's clearly-labelled reference generator. There is no mock table feeding a
+production page.
+
+**5c — no field-name mismatches.** Every `snake_case` and `camelCase` field the
+UI reads was checked against every name the agent emits. One `snake_case` name
+is not emitted — `last_checked_at` in `Trade.jsx` — and it is a defensive
+fallback beside the real `last_check_at`, not a broken read. The remaining
+`camelCase` misses are all locally-computed objects or charting-library APIs.
+
+This is the honest answer to "many looks fake": **the data is wired.** What
+created the impression was three specific things, all now identified —
+the cockpit's demo panels and its hardcoded journal (journal fixed, the rest
+labelled), Risk's invisible save (fixed), and the two dead cockpit buttons
+(W-1, awaiting a decision).
+
+**Observation W-3 (not a defect, worth deciding).** Performance mixes two
+formula homes: the ledger tiles come from the server (`/state/perf-ledger`),
+while the streaks, day nets and hourly tiles are computed in the browser from
+`/state/trades`. Both are real data, but the same concept having two
+implementations is how they drift apart. Consolidating on the server-side
+formulas is a follow-up worth taking deliberately, not a bug to slip in.
+
 ---
 
 ## Outstanding
-
-**Pass 5 — per-page data provenance.** For every card on Performance, Accounts,
-Trade, Watchlist and Desk: which endpoint feeds it, and is any number computed
-in the browser from a constant rather than served. This is the pass that will
-answer "many looks fake" for the non-cockpit pages.
 
 **Pass 6 — M3 control inventory.** The owner's "buttons and selections are not
 standardised to M3": enumerate every control variant in use (sizes, radii,
