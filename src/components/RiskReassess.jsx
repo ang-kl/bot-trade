@@ -295,15 +295,25 @@ export default function RiskReassess({ onChanged }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {last.proposals.map(p => (
+                    {last.proposals.map(p => {
+                      // Owner (2026-07-31): "I applied 'Apply' ... and it
+                      // didn't wired to the field to change. why?" It DID
+                      // apply (the fields below refresh from the server) —
+                      // but this table kept showing the pre-apply row with a
+                      // live checkbox, so the action looked like a no-op.
+                      // Applied rows now say so, and cannot be re-ticked.
+                      const applied = last.applied && (last.appliedKeys || []).includes(p.key)
+                      return (
                       <tr key={p.key} className="border-t border-[var(--color-border)]">
                         <td className="pr-2 py-0.5">
-                          <input
-                            type="checkbox"
-                            checked={picked.has(p.key)}
-                            onChange={() => toggle(p.key)}
-                            aria-label={`apply ${p.label}`}
-                          />
+                          {applied
+                            ? <span className="font-semibold text-[var(--color-accent)]" title={`Applied ${stamp(last.appliedAt)} — the setting below now holds the proposed value`}>✓</span>
+                            : <input
+                                type="checkbox"
+                                checked={picked.has(p.key)}
+                                onChange={() => toggle(p.key)}
+                                aria-label={`apply ${p.label}`}
+                              />}
                         </td>
                         <td className="pr-2 py-0.5">
                           {p.label}
@@ -314,25 +324,44 @@ export default function RiskReassess({ onChanged }) {
                             </span>
                           )}
                         </td>
-                        <td className="pr-2 py-0.5 text-[var(--color-text-sub)]">{show(p.key, p.current, proposable)}</td>
-                        <td className="pr-2 py-0.5 font-semibold">{show(p.key, p.proposed, proposable)}</td>
+                        <td className="pr-2 py-0.5 text-[var(--color-text-sub)]">
+                          {applied
+                            ? <span title="This was the value before the apply"><s>{show(p.key, p.current, proposable)}</s></span>
+                            : show(p.key, p.current, proposable)}
+                        </td>
+                        <td className="pr-2 py-0.5 font-semibold">
+                          {show(p.key, p.proposed, proposable)}
+                          {applied && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
+                        </td>
                         <td className="py-0.5 text-[var(--color-text-sub)]">{p.reason}</td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button onClick={apply} disabled={!!busy || picked.size === 0}>
+                <Button onClick={apply} disabled={!!busy || picked.size === 0}
+                  title={picked.size === 0 ? 'Tick the proposals you accept first — nothing applies until a row is selected' : undefined}>
                   {busy === 'apply' ? 'Applying…' : `Apply ${picked.size || ''} selected`}
                 </Button>
                 <button
                   type="button"
-                  onClick={() => setPicked(new Set(last.proposals.map(p => p.key)))}
+                  onClick={() => setPicked(new Set(last.proposals
+                    .filter(p => !(last.applied && (last.appliedKeys || []).includes(p.key)))
+                    .map(p => p.key)))}
                   className="text-[9px] underline text-[var(--color-text-sub)]"
                 >
                   select all
                 </button>
+                {picked.size === 0 && !last.applied && (
+                  <span className="text-[9px] text-[var(--color-text-sub)]">tick the rows you accept, then Apply — the fields below update immediately</span>
+                )}
+                {last.applied && (
+                  <span className="text-[9px] text-[var(--color-accent)]">
+                    {(last.appliedKeys || []).length} applied {stamp(last.appliedAt)} — the settings below hold these values now
+                  </span>
+                )}
               </div>
             </>
           )}
