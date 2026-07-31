@@ -2669,12 +2669,14 @@ export default function actionsRouter(db) {
     res.json({ ok: true, autotrade_enabled: on })
   })
 
-  // Backward compat: /actions/autopilot toggles autotrade only
-  router.post('/autopilot', (req, res) => {
-    const on = req.body?.on === true
-    setPhaseFlag(db, 'autotrade_enabled', on ? 'true' : 'false', { actor: 'owner-ui', via: '/actions/autopilot' })
-    res.json({ ok: true, autotrade_enabled: on })
-  })
+  // The legacy "/actions/autopilot toggles autotrade" route was REMOVED
+  // (2026-07-31). A second POST /autopilot is registered earlier in this file
+  // (the strategy-autopilot mode switch), so this one was dead code — Express
+  // serves the first match. Dead is the good outcome: had the routes ever
+  // been reordered, a {mode:'off'} post would have read `on === true` →
+  // false and silently DISARMED autotrade — the exact class of unattributed
+  // flip the phase-audit trail exists to catch. Autotrade toggling has
+  // exactly one route: /actions/autotrade-toggle.
 
   // -----------------------------------------------------------------------
   // POST /actions/arm — legacy: enable all three toggles

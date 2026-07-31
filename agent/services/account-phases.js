@@ -152,19 +152,46 @@ export function phasesView(db) {
   let rows = []
   try {
     rows = db.prepare(
-      'SELECT account_id, trader_login, is_live, enabled, mode FROM accounts ORDER BY is_live, account_id'
+      'SELECT account_id, trader_login, is_live, enabled, mode, base_currency FROM accounts ORDER BY is_live, account_id'
     ).all()
   } catch { rows = [] }
+  // Owner (2026-07-31, on the Pipeline switches table): "I need more details
+  // like current balance, how many open positions, pending positions,
+  // disconnected or active bot-trade." Balance is the per-account stamp the
+  // loop maintains (acct:<id>:account_balance_usd) — null means the account
+  // has never been reconciled, an honest unknown, not zero. Counts are
+  // ATTRIBUTED rows only (account_id = this account): a legacy NULL row
+  // cannot be charged to every account at once. Connectivity is stamped by
+  // the ROUTE from the sidecar roster (async — this view stays sync).
+  const openCount = (() => {
+    try { return db.prepare("SELECT COUNT(*) AS n FROM monitored_positions WHERE status = 'active' AND account_id = ?") } catch { return null }
+  })()
+  const pendingCount = (() => {
+    try { return db.prepare("SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working' AND account_id = ?") } catch { return null }
+  })()
   return {
     master,
-    accounts: rows.map(r => ({
-      accountId: String(r.account_id),
-      traderLogin: r.trader_login ?? null,
-      isLive: r.is_live === 1,
-      enabled: r.enabled === 1,
-      mode: r.mode ?? null,
-      overrides: accountOverrides(db, r.account_id),
-      effective: effectivePhases(db, r.account_id, master),
-    })),
+    accounts: rows.map(r => {
+      const id = String(r.account_id)
+      const balRaw = getState(db, acctPhaseNs(id, 'account_balance_usd'))
+      const balance = balRaw != null && Number.isFinite(Number(balRaw)) ? Number(balRaw) : null
+      return {
+        accountId: id,
+        traderLogin: r.trader_login ?? null,
+        isLive: r.is_live === 1,
+        enabled: r.enabled === 1,
+        mode: r.mode ?? null,
+        baseCurrency: r.base_currency ?? null,
+        balance,
+        openPositions: (() => { try { return openCount?.get(id)?.n ?? null } catch { return null } })(),
+        pendingOrders: (() => { try { return pendingCount?.get(id)?.n ?? null } catch { return null } })(),
+        overrides: accountOverrides(db, r.account_id),
+        effective: effectivePhases(db, r.account_id, master),
+      }
+    }),
   }
 }
+
+/** acct:<id>:<key> for NON-phase state (balance etc) — same namespace as
+ *  account-registry's acctKey; duplicated here to avoid a module cycle. */
+const acctPhaseNs = (accountId, key) => `acct:${accountId}:${key}`

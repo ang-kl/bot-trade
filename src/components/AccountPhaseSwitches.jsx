@@ -192,6 +192,36 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                 {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
               </span>
               <span className="text-[8px] text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
+              {/* Owner (2026-07-31): "I need more details like current balance,
+                  how many open positions, pending positions, disconnected or
+                  active bot-trade." Balance is the loop's per-account stamp —
+                  an em-dash means never reconciled, an honest unknown, not
+                  zero. Counts are rows ATTRIBUTED to this account. The
+                  connectivity chip is the sidecar's authorized roster:
+                  active / disconnected / unknown, never guessed. */}
+              <span className="text-[8px] text-[var(--color-text-sub)] tabular-nums" title="Last reconciled balance for this account (— = never reconciled)">
+                {a.balance != null
+                  ? `${a.baseCurrency || 'USD'} ${Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : 'balance —'}
+              </span>
+              <span className="text-[8px] text-[var(--color-text-sub)] tabular-nums" title="Open positions attributed to this account · working pending orders">
+                {a.openPositions ?? '—'} open · {a.pendingOrders ?? '—'} pending
+              </span>
+              {a.connectivity && (
+                <span
+                  className={`text-[8px] font-semibold uppercase ${
+                    a.connectivity === 'active' ? 'text-[var(--color-state-on-text)]'
+                      : a.connectivity === 'disconnected' ? 'text-[var(--color-down)]'
+                        : 'text-[var(--color-text-sub)]'}`}
+                  title={a.connectivity === 'active'
+                    ? 'The broker session has authorized this account — bot-trade can manage it right now.'
+                    : a.connectivity === 'disconnected'
+                      ? 'The broker session is up but this account is NOT authorized on it — bot-trade cannot reach it until it reconnects.'
+                      : 'Connectivity unknown — the execution sidecar did not report its roster (js mode or a health blip).'}
+                >
+                  {a.connectivity}
+                </span>
+              )}
               {/* An account switched off on Connect is not dispatched at all,
                   whatever these switches say — printing them without that fact
                   would overstate what they control. */}
