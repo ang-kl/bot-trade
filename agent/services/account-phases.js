@@ -187,6 +187,12 @@ export function phasesView(db) {
         pendingOrders: (() => { try { return pendingCount?.get(id)?.n ?? null } catch { return null } })(),
         overrides: accountOverrides(db, r.account_id),
         effective: effectivePhases(db, r.account_id, master),
+        // Ratchet v2 hold (01-08): the profit ratchet no longer disarms any
+        // switch — its per-account hold is reported here so the UI can badge
+        // the row honestly. 'halt' = floor confirmed; 'soft' = warning band.
+        ratchet: getState(db, acctPhaseNs(id, 'ratchet_halt')) === 'true'
+          ? 'halt'
+          : getState(db, acctPhaseNs(id, 'ratchet_soft')) === 'true' ? 'soft' : null,
       }
     }),
   }

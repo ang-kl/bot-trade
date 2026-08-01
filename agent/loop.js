@@ -941,6 +941,29 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         continue
       }
 
+      // RATCHET GATE (v2) — the profit ratchet no longer touches the S.A.T.
+      // switches; its hold lives here instead. 'soft' = inside the warning
+      // band (entries paused, reversible on recovery); 'halt' = floor
+      // confirmed (cleared by auto re-arm or the owner's [Re-arm] button).
+      // The owner's switches above stay exactly as the owner set them.
+      try {
+        const { ratchetGate } = await import('./services/profit-ratchet.js')
+        const rg = ratchetGate(db, acct.accountId)
+        if (rg.blocked) {
+          log(`Ratchet gate: ${sym} skipped on ${acct.accountId} — ratchet ${rg.stage}`)
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'ratchet_gate', decision: 'skip',
+            reason: rg.stage === 'halt'
+              ? 'profit ratchet halt — floor was hit; re-arm via Telegram button or wait for auto re-arm'
+              : 'profit ratchet soft pause — equity inside the warning band above the floor',
+          })
+          continue
+        }
+      } catch { /* gate provenance never blocks dispatch */ }
+
       // CONNECTIVITY GATE — an account the sidecar has not authorized gets no
       // order built for it this cycle. Skips are recorded, and the account
       // rejoins automatically the moment the roster reports it again (the

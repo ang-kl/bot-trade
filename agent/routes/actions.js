@@ -539,7 +539,19 @@ export default function actionsRouter(db) {
         ...(b.floorAction !== undefined ? { floorAction: b.floorAction === 'halt' ? 'halt' : 'flatten' } : {}),
       }
       setState(db, 'profit_ratchet_json', JSON.stringify(next))
-      if (b.resetState === true) setState(db, 'profit_ratchet_state_json', 'null')
+      if (b.resetState === true) {
+        setState(db, 'profit_ratchet_state_json', 'null') // v1 legacy key
+        // v2: every account's staircase re-baselines on its next pass, and
+        // any ratchet hold is released — a reset is the owner saying "start
+        // the ladder over from here".
+        try {
+          for (const r of db.prepare('SELECT account_id FROM accounts').all()) {
+            setState(db, `acct:${r.account_id}:profit_ratchet_state_json`, 'null')
+            setState(db, `acct:${r.account_id}:ratchet_halt`, 'false')
+            setState(db, `acct:${r.account_id}:ratchet_soft`, 'false')
+          }
+        } catch { /* registry absent — nothing per-account to reset */ }
+      }
       console.log(`[actions] profit ratchet → ${next.on ? 'ON' : 'off'} step=${next.stepUsd ?? 'auto'} floorAction=${next.floorAction}${b.resetState ? ' (staircase reset)' : ''}`)
       res.json({ ok: true, profitRatchet: next, stateReset: b.resetState === true })
     } catch (err) {
