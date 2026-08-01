@@ -84,6 +84,10 @@ test('an unusable entry/stop still yields an actionable message', () => {
 // 1.19+i*0.001 .. 1.19+(i+1)*0.001.
 function hvnBars(pocBucket, { buckets = 24, lo = 1.19, step = 0.001, pocVol = 1000, baseVol = 100 } = {}) {
   const out = []
+  // Range sentinels: pin the profile to exactly [lo, lo+buckets*step] so
+  // bucket boundaries land on the round prices the assertions use.
+  out.push({ t: 1700000000000 - 120_000, o: lo, h: lo, l: lo, c: lo, v: 0.0001 })
+  out.push({ t: 1700000000000 - 60_000, o: lo + buckets * step, h: lo + buckets * step, l: lo + buckets * step, c: lo + buckets * step, v: 0.0001 })
   for (let i = 0; i < buckets; i++) {
     const l = lo + i * step + step * 0.1
     const h = lo + (i + 1) * step - step * 0.1

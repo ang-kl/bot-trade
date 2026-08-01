@@ -223,15 +223,21 @@ test('the local FX-day anchor agrees with risk.js at awkward instants', () => {
 // Mirror of the LVN logic: buckets ≥ HVN_MIN_POC_FRACTION of the POC volume,
 // adjacent qualifying buckets merged, volume-weighted centre + near edges.
 // ---------------------------------------------------------------------------
-import { hvnNodes, HVN_MIN_POC_FRACTION } from './volume-structure.js'
+import { hvnNodes, HVN_MIN_POC_FRACTION, LVN_MAX_POC_FRACTION } from './volume-structure.js'
 
 // 24 bars, each confined to its own price bucket of a [100,124] composite
-// profile (step 1), so bucket volumes are exactly the bar volumes.
+// profile (step 1), so bucket volumes are exactly the bar volumes. Two
+// near-zero-volume sentinel bars pin the range to exactly [100,124] — the
+// profile's range is data-driven, so without them the buckets drift off the
+// round numbers the assertions use.
 function bucketBars(volumes) {
   const lo = 100
-  return volumes.map((v, i) => ({
+  const bars = volumes.map((v, i) => ({
     t: hoursMs(i), o: lo + i + 0.5, h: lo + i + 0.9, l: lo + i + 0.1, c: lo + i + 0.5, v,
   }))
+  bars.push({ t: hoursMs(24), o: lo, h: lo, l: lo, c: lo, v: 0.0001 })
+  bars.push({ t: hoursMs(25), o: lo + 24, h: lo + 24, l: lo + 24, c: lo + 24, v: 0.0001 })
+  return bars
 }
 
 test('T1: one obvious volume shelf → a single HVN node with correct near edges', () => {
