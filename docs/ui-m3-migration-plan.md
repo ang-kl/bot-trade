@@ -52,9 +52,56 @@ only after their last caller migrates.
 
 ## Owner-approval queue
 
-Items that would remove/relocate/merge/hide/rename a control or change an
-established layout are parked here and NOT implemented until approved.
-(Populated from the inventory.)
+Items that would remove/relocate/merge/hide/rename a control, change an
+established layout, or add/remove a confirmation flow are parked here and
+NOT implemented until the owner approves. Everything else in the inventory
+(visual variant/role/token/aria fixes that leave behaviour identical) is
+in scope for the phases without further asks.
+
+1. **Consolidate the duplicate S/A/T editors** (sidebar MiniSwitch, Tune
+   Toggle, Tune PhaseSwitch — 4 components, 3 sizes for the same money
+   keys). Merging any of them removes/relocates controls.
+2. **Add confirmations where blast radius demands them**: master `S`/`A`
+   (stops all trading, currently bare tap), per-account disarms, `Modify
+   protection` (moves a live SL, unconfirmed), `Import settings` (rewrites
+   the whole risk config), Connect `Clear` (wipes the agent credential),
+   `bot manage` checkbox (hands positions to/from the keeper). These are
+   behaviour changes — safety-positive, but flows change.
+3. **De-duplicate dual editors**: `Reset` vs `Reset to defaults` (same
+   route, one page), Weekend bank / Loss Guardian / guardian-move-% each
+   editable on both Risk and Tune.
+4. **Collapse-control duplication on Desk** (Card ▾ + Section heading ▾,
+   different persistence) — removing either changes an established pattern.
+5. **The account filter exists 5× on Performance** with two diverging
+   state atoms (regime matrix ignores page scope) — merging is a
+   relocation; the state divergence may even be intentional.
+6. **Dead `Modify` buttons** (PositionManager/OrderManager) — removing a
+   visible control needs a nod, even a permanently disabled one.
+7. **Order FAB prominence** (48px accent circle opening the order pad) —
+   demoting the largest control in the app is a layout/hierarchy change.
+8. **Cockpit spec-vs-code contradictions (C-12…C-51)** — most divergences
+   carry in-code owner instructions that were never folded back into the
+   specs; reconciling means editing binding documents. Phase F touches
+   only control roles/states; every geometry item stays parked here.
+9. **`Halt (kill switch)` display inversion** (Risk.jsx:709) — fixing the
+   Pill so "halted" reads as the red/armed state is a display-only bug fix
+   per the Pill's own documented intent, but it inverts the colour of a
+   safety control the owner sees daily; flagged before changing.
+
+## Conflict decisions taken (within delegated authority)
+
+- Canonical radius 1px / padding 2px (contract §2) — owner's 2026-07-28
+  instruction post-dates the footer brief's 7px family.
+- Coarse-pointer target 44px with per-control commented exceptions
+  (contract §4) — consolidation brief §8 supersedes the 36px note of
+  2026-07-31; recorded, not silent.
+- ui-spec.md §11/§5/§6 stale "12px body" text loses to §2's 12/11/10/9
+  scale (C-1/C-2/C-3) — §2 carries the later owner instruction; ui-spec
+  gets a correcting edit in Phase D's commit.
+- `up/down` tones are P&L-only; direction/approval/state badges migrate to
+  `on/off`/`info` per Badge's own documented vocabulary.
+- Selected/armed states use `--color-state-on-*`; the clay accent stays
+  navigation-only (ui-spec §3 rule 3).
 
 ## Verification log
 
