@@ -1675,6 +1675,34 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/decisions-daily?days=N — per-day approved/vetoed decision
+  // counts. The Performance equity chart used to derive its "decisions per
+  // day" panel from /state/risk-events?limit=200 — on production that page
+  // of events spans ~half an hour (200 vetoes arrive in minutes), so the
+  // "daily" bars were one sliver of today and the 7D/30D range pills were
+  // furniture. Aggregate in SQL over the real window instead.
+  // -----------------------------------------------------------------------
+  router.get('/decisions-daily', (req, res) => {
+    try {
+      const days = Math.min(365, Math.max(1, parseInt(req.query.days || '90', 10)))
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const clauses = [`created_at >= datetime('now', ?)`]
+      const params = [`-${days} days`]
+      if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
+      const rows = db.prepare(
+        `SELECT substr(created_at, 1, 10) AS day,
+                SUM(approved = 1) AS approved,
+                SUM(approved != 1 OR approved IS NULL) AS vetoed
+           FROM risk_events
+          WHERE ${clauses.join(' AND ')}
+          GROUP BY day ORDER BY day`
+      ).all(...params)
+      res.json({ days, rows, accountId: scope.all ? 'all' : (scope.accountId ?? null) })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/risk-config — effective risk config (defaults merged with overrides)
   // -----------------------------------------------------------------------
   router.get('/risk-config', (_req, res) => {

@@ -1096,6 +1096,7 @@ export default function Performance() {
   // one account is selected.
   const [portfolioTrades, setPortfolioTrades] = useState([])
   const [events, setEvents] = useState([])
+  const [decisionsDaily, setDecisionsDaily] = useState([])
   // Written post-mortems, for the debrief card. Best-effort: an agent without
   // the route, or a DB with none written, leaves this empty and the card says
   // "no post-mortem written" per trade rather than implying one exists.
@@ -1123,13 +1124,16 @@ export default function Performance() {
       // switch account"). `?account=` is now threaded through all four —
       // 'all' means the portfolio view, explicitly.
       const q = acct === 'all' ? '?account=all' : `?account=${encodeURIComponent(acct)}`
-      const [led, ac, t, r, p, pm] = await Promise.all([
+      const [led, ac, t, r, p, pm, dd] = await Promise.all([
         agentGet(`/state/perf-ledger${acct === 'all' ? '' : `?account=${encodeURIComponent(acct)}`}`),
         agentGet('/state/accounts').catch(() => null),
         agentGet(`/state/trades${q}`).catch(() => null),
         agentGet(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
         agentGet(`/state/positions${q}`).catch(() => null),
         agentGet(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`).catch(() => null),
+        // Daily decision counts for the equity chart — the raw risk-events
+        // page above spans minutes on a busy agent, not days.
+        agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
       setLedger(led)
       setAccounts(ac?.accounts || [])
@@ -1139,6 +1143,7 @@ export default function Performance() {
       // cross-account fetch below only runs when one account is selected.
       if (acct === 'all') setPortfolioTrades(t?.rows || t?.trades || [])
       setEvents(r?.rows || [])
+      setDecisionsDaily(dd?.rows || [])
       setPositions(p?.rows || p?.positions || [])
       setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
       setPostmortems(pm?.rows || pm?.postmortems || [])
@@ -1183,6 +1188,8 @@ export default function Performance() {
     if (t2) setAllTrades(t2.rows || t2.trades || [])
     const r2 = swrPeek(`/state/risk-events?limit=200&account=${encodeURIComponent(acct)}`)
     if (r2) setEvents(r2.rows || [])
+    const dd2 = swrPeek(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`)
+    if (dd2) setDecisionsDaily(dd2.rows || [])
     const p2 = swrPeek(`/state/positions${q}`)
     if (p2) { setPositions(p2.rows || p2.positions || []); setPosScope({ accountId: p2?.accountId ?? null, legacyRows: p2?.legacyRows ?? 0 }) }
     const pm2 = swrPeek(`/state/postmortems?limit=200&account=${encodeURIComponent(acct)}`)
@@ -2231,7 +2238,7 @@ export default function Performance() {
               <h3 className="t-h3 mb-1.5">All-time tiles &amp; equity</h3>
               {!tiles && <p className={`text-[9px] mb-2 ${SUB}`}>No closed trades yet.</p>}
               {tilesRow}
-              <div className="overflow-x-auto"><ReportChart allTrades={allTrades} events={events} /></div>
+              <div className="overflow-x-auto"><ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} /></div>
             </Card>
           </>
         )}
@@ -2590,7 +2597,7 @@ export default function Performance() {
               render={() => (
                 <div>
                   {tilesRow}
-                  <ReportChart allTrades={allTrades} events={events} />
+                  <ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} />
                 </div>
               )} />
           </div>
@@ -2601,7 +2608,7 @@ export default function Performance() {
           <div className="mb-2">
             <SessionReview allTrades={allTrades} postmortems={postmortems} nowMs={loadedAt} />
           </div>
-          <ReportChart allTrades={allTrades} events={events} />
+          <ReportChart allTrades={allTrades} events={events} daily={decisionsDaily} />
         </Card>
       </div>
     </div>
