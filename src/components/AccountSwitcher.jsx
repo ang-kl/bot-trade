@@ -126,9 +126,14 @@ export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
   }
 
   const setAccountPhase = async (a, key, next) => {
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
     if (key === 'autotrade' && next) {
-      const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
       if (!window.confirm(`Arm autotrade on ${who}? The agent will place REAL orders on this account when a signal passes the risk gate.`)) return
+    }
+    // Approval-queue item 2 (owner 2026-08-01): per-account DISARMS confirm.
+    if (!next) {
+      const label = PHASES.find(p => p.key === key)?.label || key
+      if (!window.confirm(`Turn ${label} OFF for ${who}? ${key === 'autotrade' ? 'No new orders will be placed on this account' : 'This stops new trades on this account'} until it is back on. Open positions keep being managed.`)) return
     }
     setPhaseBusy(`${a.accountId}:${key}`)
     setErr('')

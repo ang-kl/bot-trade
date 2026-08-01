@@ -143,7 +143,21 @@ export default function PositionManager({ p, onDone }) {
     setBusy(false)
   }
 
-  const applyProtection = () => run(async () => {
+  // Approval-queue item 2 (owner 2026-08-01): Modify protection was the one
+  // unconfirmed write in this sheet — it moves a LIVE stop/target. Summarise
+  // exactly what will be written before writing it.
+  const applyProtection = () => {
+    const parts = [
+      slOn && Number(slPrice) > 0 ? `SL → ${slPrice}` : 'SL unchanged',
+      tpOn && Number(tpPrice) > 0 ? `TP → ${tpPrice}` : 'TP unchanged',
+      trailOn ? `trailing ${trailPips} pips ON` : null,
+      beOn ? `break-even ${beTrigger}/${beOffset} pips ON` : null,
+      extraTps.some(t => t.on && Number(t.price) > 0 && Number(t.lots) > 0) ? 'partial TPs set' : null,
+    ].filter(Boolean)
+    if (!window.confirm(`Modify protection on ${p.symbol} (PID${p.positionId})?\n\n${parts.join(' · ')}\n\nSL/TP are changed AT THE BROKER immediately; trailing, break-even and partial TPs are bot-enforced rules.`)) return
+    applyProtectionNow()
+  }
+  const applyProtectionNow = () => run(async () => {
     if (slOn && Number(slPrice) > 0) {
       await agentPost('/actions/position-protect', { positionId: p.positionId, sl: Number(slPrice), ...(tpOn && Number(tpPrice) > 0 ? { tp: Number(tpPrice) } : {}) })
     } else if (tpOn && Number(tpPrice) > 0) {

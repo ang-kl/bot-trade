@@ -837,6 +837,13 @@ export default function Trade() {
                       label="bot manage" checked={managed} pending={optBusy === positionId}
                       title="Let the Profit Keeper manage this position (per the policy armed on Tune). Turn OFF to leave this ONE position hands-off regardless of that policy."
                       onChange={async () => {
+                        // Approval-queue item 2: handing a position to/from
+                        // the keeper confirms — a mis-tap either gives the
+                        // bot authority over a manual position or silently
+                        // removes its protection sweeps.
+                        if (!window.confirm(managed
+                          ? `Stop the bot managing ${row.symbol}? The Profit Keeper leaves this ONE position alone — no trailing, break-even or profit-taking sweeps — until you turn it back on. Broker-side SL/TP stay as they are.`
+                          : `Let the bot manage ${row.symbol}? The Profit Keeper applies the policy armed on Tune to this position (it only ever tightens protection or takes profit).`)) return
                         setOptBusy(positionId)
                         try {
                           await agentPost('/actions/position-keeper-optout', { positionId, optOut: managed })

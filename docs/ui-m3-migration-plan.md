@@ -61,12 +61,12 @@ in scope for the phases without further asks.
 1. **Consolidate the duplicate S/A/T editors** (sidebar MiniSwitch, Tune
    Toggle, Tune PhaseSwitch — 4 components, 3 sizes for the same money
    keys). Merging any of them removes/relocates controls.
-2. **Add confirmations where blast radius demands them**: master `S`/`A`
-   (stops all trading, currently bare tap), per-account disarms, `Modify
-   protection` (moves a live SL, unconfirmed), `Import settings` (rewrites
-   the whole risk config), Connect `Clear` (wipes the agent credential),
-   `bot manage` checkbox (hands positions to/from the keeper). These are
-   behaviour changes — safety-positive, but flows change.
+2. ~~**Add confirmations where blast radius demands them**~~ — **DONE,
+   owner-approved 2026-08-01**: master `S`/`A` confirm on disarm (Tune),
+   per-account S/A/T disarms confirm (both editors), `Modify protection`
+   summarises and confirms, `Import settings` names what it replaces and
+   confirms, Connect `Clear` confirms, `bot manage` confirms both
+   directions. Arming flows unchanged (autotrade keeps its stronger gate).
 3. **De-duplicate dual editors**: `Reset` vs `Reset to defaults` (same
    route, one page), Weekend bank / Loss Guardian / guardian-move-% each
    editable on both Risk and Tune.
