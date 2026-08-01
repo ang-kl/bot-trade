@@ -939,6 +939,45 @@ export function initDB(dbPath) {
   // Now that all columns exist, create indexes
   db.exec(INDEXES);
 
+  // -------------------------------------------------------------------------
+  // Phase-flag trace (owner 01-08: "re-code how master-switch are ironclad …
+  // setup a tracer"). setPhaseFlag() attributes every flip it makes — but an
+  // attribution layer only sees writers that use it. These TRIGGERS sit under
+  // the table itself, so every physical change to an S.A.T. key leaves a row
+  // no matter who wrote it: setPhaseFlag, a raw setState, a raw UPDATE, or a
+  // hand-typed sqlite3 command. A flip with a trace row and NO matching audit
+  // row is the smoking gun the last two incidents never produced.
+  // -------------------------------------------------------------------------
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS phase_flag_trace (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key        TEXT NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_phase_trace_key_id ON phase_flag_trace(key, id DESC);
+  CREATE TRIGGER IF NOT EXISTS trg_phase_flag_insert AFTER INSERT ON agent_state
+  WHEN (NEW.key IN ('scan_enabled','analyze_enabled','autotrade_enabled')
+     OR NEW.key GLOB 'acct:*:scan_enabled' OR NEW.key GLOB 'acct:*:analyze_enabled' OR NEW.key GLOB 'acct:*:autotrade_enabled')
+  BEGIN
+    INSERT INTO phase_flag_trace (key, old_value, new_value) VALUES (NEW.key, NULL, NEW.value);
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_phase_flag_update AFTER UPDATE OF value ON agent_state
+  WHEN (NEW.key IN ('scan_enabled','analyze_enabled','autotrade_enabled')
+     OR NEW.key GLOB 'acct:*:scan_enabled' OR NEW.key GLOB 'acct:*:analyze_enabled' OR NEW.key GLOB 'acct:*:autotrade_enabled')
+   AND OLD.value IS NOT NEW.value
+  BEGIN
+    INSERT INTO phase_flag_trace (key, old_value, new_value) VALUES (NEW.key, OLD.value, NEW.value);
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_phase_flag_delete AFTER DELETE ON agent_state
+  WHEN (OLD.key IN ('scan_enabled','analyze_enabled','autotrade_enabled')
+     OR OLD.key GLOB 'acct:*:scan_enabled' OR OLD.key GLOB 'acct:*:analyze_enabled' OR OLD.key GLOB 'acct:*:autotrade_enabled')
+  BEGIN
+    INSERT INTO phase_flag_trace (key, old_value, new_value) VALUES (OLD.key, OLD.value, NULL);
+  END;
+  `);
+
   // Seed agent_state defaults (skip keys that already exist)
   const upsert = db.prepare(
     'INSERT OR IGNORE INTO agent_state (key, value) VALUES (?, ?)',
@@ -996,7 +1035,37 @@ export function getState(db, key) {
  * @param {string} key
  * @param {string|null} value
  */
+// ---------------------------------------------------------------------------
+// S.A.T. write authority (owner 01-08: "re-code how master-switch are
+// ironclad"). The pipeline flags may only be written through setPhaseFlag(),
+// which attributes every flip. This choke point catches the writer class the
+// audit trail cannot: code that calls setState directly on a phase key. The
+// write still lands (a safety brake must never be blocked by its own
+// bookkeeping) but it is logged as PHASE_RAW_WRITE with a captured JS stack —
+// so an unattributed flip names its own caller.
+// ---------------------------------------------------------------------------
+const PHASE_KEY_RE = /^(?:acct:[^:]+:)?(?:scan_enabled|analyze_enabled|autotrade_enabled)$/;
+let phaseWriteDepth = 0;
+/** setPhaseFlag wraps its write in this; everything else is a raw write. */
+export function withPhaseWriteAuthority(fn) {
+  phaseWriteDepth++;
+  try { return fn(); } finally { phaseWriteDepth--; }
+}
+
 export function setState(db, key, value) {
+  if (phaseWriteDepth === 0 && PHASE_KEY_RE.test(key)) {
+    try {
+      const prev = getState(db, key);
+      if (prev !== (value ?? null)) {
+        const stack = String(new Error().stack || '').split('\n').slice(2, 8).join('\n');
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+          'PHASE_RAW_WRITE', `/phase/${key}`,
+          JSON.stringify({ key, from: prev, to: value ?? null, at: new Date().toISOString(), stack }).slice(0, 2000),
+        );
+        console.warn(`[phase-trace] RAW write to ${key}: ${prev ?? 'unset'} → ${value ?? 'unset'} — not via setPhaseFlag; stack logged`);
+      }
+    } catch { /* tracing must never block the write */ }
+  }
   stateStatements(db).set.run(key, value);
 }
 

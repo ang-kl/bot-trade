@@ -3376,6 +3376,9 @@ async function runLoop(db) {
       // postmortems past ~2 years (retention_json overrides; null disables).
       const { pruneTradeHistory } = await import('./services/retention.js')
       const d7 = pruneTradeHistory(db)
+      // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
+      // matches risk_events — flips older than that are history, not evidence.
+      try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
       log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems`)
     } catch (err) {
       log('Housekeeping error:', err.message)
