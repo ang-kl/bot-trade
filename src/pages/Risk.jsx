@@ -66,14 +66,26 @@ function AnimatedNumber({ value, decimals = 2, className = '' }) {
 // bold text, red border, faint red wash. Segmented either/or choices (Scope,
 // Action on breach, At the floor) pass no offLabel and keep the neutral
 // treatment, because their unselected side is an alternative, not a danger.
-function Pill({ on, label, offLabel = null, onClick }) {
+// Phase E5 additions, both behaviour-preserving:
+// - `commit` labels the pill's COMMIT MODEL — most pills here edit local
+//   state until a Save button posts it, but three (Weekend bank, Weekend
+//   loss flag, VPO feeder) POST the moment they are tapped. Two identical
+//   pills with different blast timing carried nothing to tell them apart
+//   (inventory finding 23); the title now says which one you are touching.
+// - `radio` renders the either/or segmented pairs as real radios inside a
+//   radiogroup instead of independent aria-pressed toggles (finding: single
+//   choice presented as toggles). Boolean pills keep aria-pressed.
+// ON wears the state-on tint, not the navigation accent (finding 20).
+function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = false }) {
   const off = offLabel != null
     ? 'border-[var(--color-down)] text-[var(--color-down)] font-bold bg-[color-mix(in_srgb,var(--color-down)_10%,transparent)]'
     : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'
+  const aria = radio ? { role: 'radio', 'aria-checked': !!on } : { 'aria-pressed': !!on }
   return (
-    <button type="button" onClick={onClick} aria-pressed={!!on}
+    <button type="button" onClick={onClick} {...aria}
+      title={commit === 'now' ? 'Applies IMMEDIATELY when tapped' : 'Takes effect when you press this section’s Save'}
       className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-[9px] cursor-pointer ${on
-        ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
+        ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)] font-normal'
         : off}`}>
       {on ? label : (offLabel ?? label.toUpperCase())}
     </button>
@@ -391,16 +403,16 @@ export default function Risk() {
               hint="Same floor as % of current balance; the TIGHTER of the two caps applies. 2% of $48,000 ≈ $960." recommend="2% of balance." />
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
-              <span className="flex gap-1">
-                <Pill on={lossCap?.scope !== 'bot'} label="All positions" onClick={() => setLossCap(c => ({ ...c, scope: 'all' }))} />
-                <Pill on={lossCap?.scope === 'bot'} label="Bot only" onClick={() => setLossCap(c => ({ ...c, scope: 'bot' }))} />
+              <span role="radiogroup" aria-label="Scope" className="flex gap-1">
+                <Pill radio on={lossCap?.scope !== 'bot'} label="All positions" onClick={() => setLossCap(c => ({ ...c, scope: 'all' }))} />
+                <Pill radio on={lossCap?.scope === 'bot'} label="Bot only" onClick={() => setLossCap(c => ({ ...c, scope: 'bot' }))} />
               </span>
             </div>
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'Close' flattens the breaching position at market; 'Alert' only sends Telegram and leaves it open.">Action on breach</span>
-              <span className="flex gap-1">
-                <Pill on={lossCap?.action !== 'alert'} label="Close" onClick={() => setLossCap(c => ({ ...c, action: 'close' }))} />
-                <Pill on={lossCap?.action === 'alert'} label="Alert only" onClick={() => setLossCap(c => ({ ...c, action: 'alert' }))} />
+              <span role="radiogroup" aria-label="Action on breach" className="flex gap-1">
+                <Pill radio on={lossCap?.action !== 'alert'} label="Close" onClick={() => setLossCap(c => ({ ...c, action: 'close' }))} />
+                <Pill radio on={lossCap?.action === 'alert'} label="Alert only" onClick={() => setLossCap(c => ({ ...c, action: 'alert' }))} />
               </span>
             </div>
             <Field label="Retry after failed close" unit="min" value={lossCap?.retryMinutes} onChange={v => setLossCap(c => ({ ...c, retryMinutes: v }))}
@@ -429,9 +441,9 @@ export default function Risk() {
               hint="Equity growth per banked step. Empty = automatic: 1% of balance, clamped $25–$500 — scales itself as the account grows." recommend="auto (owner's '$500 min. / 1% min.' rule)." />
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'Flatten' closes the bot's positions AND disarms autotrade at the floor; 'Halt' only disarms, leaving positions to their own SL/TP.">At the floor</span>
-              <span className="flex gap-1">
-                <Pill on={ratchet?.floorAction !== 'halt'} label="Flatten" onClick={() => setRatchet(c => ({ ...c, floorAction: 'flatten' }))} />
-                <Pill on={ratchet?.floorAction === 'halt'} label="Halt only" onClick={() => setRatchet(c => ({ ...c, floorAction: 'halt' }))} />
+              <span role="radiogroup" aria-label="At the floor" className="flex gap-1">
+                <Pill radio on={ratchet?.floorAction !== 'halt'} label="Flatten" onClick={() => setRatchet(c => ({ ...c, floorAction: 'flatten' }))} />
+                <Pill radio on={ratchet?.floorAction === 'halt'} label="Halt only" onClick={() => setRatchet(c => ({ ...c, floorAction: 'halt' }))} />
               </span>
             </div>
             {(() => {
@@ -468,7 +480,8 @@ export default function Risk() {
             })()}
             <div className="flex items-center gap-2">
               <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', ratchet))}>Save ratchet</Button></span>
-              <Button size="sm" variant="ghost" onClick={() => {
+              {/* Destructive (wipes banked floors) — danger, not ghost. */}
+              <Button size="sm" variant="danger" onClick={() => {
                 if (!window.confirm('Re-baseline the staircase at CURRENT equity? Banked floors are forgotten (use after a deposit/withdrawal).')) return
                 save('ratchet', () => agentPost('/actions/profit-ratchet', { ...ratchet, resetState: true }))
               }}>Reset staircase</Button>
@@ -483,9 +496,9 @@ export default function Risk() {
             </div>
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
-              <span className="flex gap-1">
-                <Pill on={guardian2?.scope !== 'external'} label="All naked" onClick={() => setGuardian2(c => ({ ...c, scope: 'all' }))} />
-                <Pill on={guardian2?.scope === 'external'} label="External only" onClick={() => setGuardian2(c => ({ ...c, scope: 'external' }))} />
+              <span role="radiogroup" aria-label="Scope" className="flex gap-1">
+                <Pill radio on={guardian2?.scope !== 'external'} label="All naked" onClick={() => setGuardian2(c => ({ ...c, scope: 'all' }))} />
+                <Pill radio on={guardian2?.scope === 'external'} label="External only" onClick={() => setGuardian2(c => ({ ...c, scope: 'external' }))} />
               </span>
             </div>
             <Field label="Protective stop distance" unit="×ATR" value={guardian2?.maxAtrMult} onChange={v => setGuardian2(c => ({ ...c, maxAtrMult: v }))}
@@ -625,7 +638,7 @@ export default function Risk() {
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
-                    <Pill on={weekendBank} label="On" offLabel="Off" onClick={() => {
+                    <Pill commit="now" on={weekendBank} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendBank
                       setWeekendBank(next)
                       save('weekend-bank', () => agentPost('/actions/weekend-bank', { on: next }))
@@ -633,7 +646,7 @@ export default function Risk() {
                   </div>
                   <div className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag</span>
-                    <Pill on={weekendLossFlag} label="On" offLabel="Off" onClick={() => {
+                    <Pill commit="now" on={weekendLossFlag} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendLossFlag
                       setWeekendLossFlag(next)
                       save('weekend-loss-flag', () => agentPost('/actions/weekend-loss-flag', { on: next }))
@@ -663,9 +676,9 @@ export default function Risk() {
                 <div className="text-[9px] space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[var(--color-text-sub)]" title="Percentage: risk budget = balance × per-trade %. Absolute: a fixed $ amount (3-decimal precision) overrides the %.">Sizing mode</span>
-                    <span className="flex gap-1">
-                      <Pill on={mode === 'percent'} label="Percentage" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: null }))} />
-                      <Pill on={mode === 'absolute'} label="Absolute $" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: r.perTradeRiskUsd > 0 ? r.perTradeRiskUsd : Number((bal * (r.perTradeRiskPct || 0.05)).toFixed(3)) }))} />
+                    <span role="radiogroup" aria-label="Sizing mode" className="flex gap-1">
+                      <Pill radio on={mode === 'percent'} label="Percentage" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: null }))} />
+                      <Pill radio on={mode === 'absolute'} label="Absolute $" onClick={() => setRisk(r => ({ ...r, perTradeRiskUsd: r.perTradeRiskUsd > 0 ? r.perTradeRiskUsd : Number((bal * (r.perTradeRiskPct || 0.05)).toFixed(3)) }))} />
                     </span>
                   </div>
                   {mode === 'absolute' && (
@@ -720,7 +733,7 @@ export default function Risk() {
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
-                <Pill on={vpoEnabled} label="On" offLabel="Off" onClick={() => {
+                <Pill commit="now" on={vpoEnabled} label="On" offLabel="Off" onClick={() => {
                   const next = !vpoEnabled
                   setVpoEnabled(next)
                   save('vpo', () => agentPost('/actions/vpo-settings', { enabled: next }))
@@ -736,7 +749,8 @@ export default function Risk() {
           </Card>
 
           <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
-            <SectionTitle badge={<Badge tone="down">Emergency</Badge>}>Close all positions</SectionTitle>
+            {/* Section label = classification, not a P&L number (finding: down tone misuse). */}
+            <SectionTitle badge={<Badge tone="warning">Emergency</Badge>}>Close all positions</SectionTitle>
             <p className="text-[9px] text-[var(--color-text-sub)] mb-2">
               Closes every open position at the broker right now — bot-placed and manual alike. Halt (above) only blocks NEW orders; this ends existing ones. Irreversible.
             </p>
