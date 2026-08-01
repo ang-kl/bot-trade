@@ -1146,6 +1146,19 @@ export function mayCloseDbOnlyAfterSkip(reason) {
   return reason === 'ctrader_not_configured'
 }
 
+/**
+ * The broker's OWN volume for one position in a reconcile snapshot, in the
+ * protocol's units — or null when the snapshot doesn't carry it. Pure and
+ * exported for tests: this is the number a close must send, because any
+ * lots→units reconversion on our side can disagree with what the broker
+ * holds (the 2026-08-01 100× TRADING_BAD_VOLUME on adopted crypto rows).
+ */
+export function brokerPositionVolume(brokerPositions, positionId) {
+  const bp = (brokerPositions || []).find(p => String(p?.positionId) === String(positionId))
+  const v = Number(bp?.tradeData?.volume)
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : null
+}
+
 export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
@@ -1199,10 +1212,37 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
     }
 
+    // BROKER-TRUTH CLOSE VOLUME (production 2026-08-01, Railway log):
+    // `Position close (LLM) FAILED: XRPUSD — closeVolume 1000000.00 is bigger
+    // than position volume 10000.00 (TRADING_BAD_VOLUME)` — retrying every
+    // loop, position never closing. Root cause: ADOPTED rows store lots via
+    // reconciler's contractSize() table while this path multiplies by the
+    // broker's real lotSize; for crypto the two conventions disagree 100×.
+    // Rather than trust either conversion, close what the broker says it
+    // holds: fetch the live snapshot and use ITS volume. The computed figure
+    // remains only a fallback for a snapshot that could not be read.
+    const brokerSnapshot = async () => {
+      try {
+        const rec = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+        return { ok: true, positions: rec.position || [] }
+      } catch { return { ok: false, positions: [] } }
+    }
+
     if (action === 'FULL_EXIT') {
-      const meta = await volumeMeta()
-      const volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
-      if (volumeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
+      const snap = await brokerSnapshot()
+      if (snap.ok && !snap.positions.some(p => String(p?.positionId) === String(ctx.positionId))) {
+        // The broker no longer holds this position — closing "again" would
+        // only error forever. Record reality and stand down.
+        if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
+        s.closePosition.run('closed', pos.id)
+        return { closedRemotely: true, summary: 'already_closed' }
+      }
+      let volumeUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+      if (volumeUnits == null) {
+        const meta = await volumeMeta()
+        volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
+      }
+      if (!(volumeUnits > 0)) return { skipped: true, reason: 'unknown_volume' }
       const res = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         volume: volumeUnits,
@@ -1227,7 +1267,12 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
     if (action === 'PARTIAL_EXIT') {
       const meta = await volumeMeta()
-      const totalUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
+      // Same broker-truth base as FULL_EXIT: a fraction of what the broker
+      // actually holds, not of our reconversion. Falls back to the computed
+      // figure only when the snapshot could not be read.
+      const snap = await brokerSnapshot()
+      const totalUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+        ?? Math.round((ctx.volumeLots || 0) * meta.lotSize)
       const fraction = eval_.exitFraction ?? 0.5
       let closeUnits = Math.round(totalUnits * fraction)
       if (meta.stepVolume) closeUnits = Math.floor(closeUnits / meta.stepVolume) * meta.stepVolume
