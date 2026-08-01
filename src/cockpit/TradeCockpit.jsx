@@ -6,6 +6,7 @@
    All conflicts met during the port are listed in the PR body, none resolved
    silently. */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import gsap from 'gsap'
 import { cockpitFrame } from './cockpit-data.js'
 import { pageAsleep } from '../lib/agent-api.js'
@@ -33,10 +34,47 @@ const chipTint = { wrn: 'rgba(255,196,102,.16)', acc: 'rgba(79,140,255,.18)', vi
 function Chip({ fs, hue, children }) {
   return <span style={{ fontSize: fs(10.5), fontWeight: 600, letterSpacing: '.05em', color: `var(--${hue})`, background: chipTint[hue], border: `1px solid var(--${hue})`, borderRadius: 5, padding: '0 7px', whiteSpace: 'nowrap' }}>{children}</span>
 }
+// Owner (2026-08-01): "(i) information all over this cockpit isn't pop-up
+// with explanation." The old Info relied on the native `title` tooltip, which
+// never fires on touch (the iPad/iPhone variants) and needs a ~1s hover on
+// desktop — so the icons read as dead. Now a tap/click opens a real popover
+// bubble; `title` stays as the instant-hover path on desktop. The bubble
+// portals to <body> so the panes' overflow:hidden (and the phone's 0.8 shell
+// scale) can't clip or shift it.
 function Info({ fs, tip, big }) {
-  return big
-    ? <span title={tip} style={{ cursor: 'help', fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--edg)', borderRadius: '50%', width: 15, height: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>ⓘ</span>
-    : <span title={tip} style={{ cursor: 'help', fontSize: fs(9.5), color: 'var(--mu)' }}>ⓘ</span>
+  const [pop, setPop] = useState(null) // { x, y, up, theme }
+  const bubRef = useRef(null)
+  useEffect(() => {
+    if (!pop) return
+    const away = e => { if (bubRef.current && !bubRef.current.contains(e.target)) setPop(null) }
+    document.addEventListener('pointerdown', away, true)
+    window.addEventListener('scroll', away, true)
+    return () => { document.removeEventListener('pointerdown', away, true); window.removeEventListener('scroll', away, true) }
+  }, [pop])
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault()
+    if (pop) { setPop(null); return }
+    const r = e.currentTarget.getBoundingClientRect()
+    const up = r.bottom > window.innerHeight - 140 // near the bottom edge → open upward
+    setPop({
+      x: Math.max(6, Math.min(r.left, window.innerWidth - 292)),
+      y: up ? window.innerHeight - r.top + 6 : r.bottom + 6, up,
+      theme: e.currentTarget.closest('.tc-root')?.dataset.theme || 'dark',
+    })
+  }
+  const icon = big
+    ? { cursor: 'pointer', fontSize: fs(11.5), fontWeight: 600, color: pop ? 'var(--acc)' : 'var(--mu)', border: `1px solid ${pop ? 'var(--acc)' : 'var(--edg)'}`, borderRadius: '50%', width: 15, height: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }
+    : { cursor: 'pointer', fontSize: fs(9.5), color: pop ? 'var(--acc)' : 'var(--mu)' }
+  return (
+    <>
+      <span role="button" tabIndex={0} aria-label="What is this?" aria-expanded={!!pop} title={tip}
+        onClick={toggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') toggle(e) }}
+        style={icon}>ⓘ</span>
+      {pop && createPortal(
+        <div ref={bubRef} className="tc-tipbub" data-theme={pop.theme}
+          style={{ left: pop.x, ...(pop.up ? { bottom: pop.y } : { top: pop.y }) }}
+          onClick={e => e.stopPropagation()}>{tip}</div>, document.body)}
+    </>)
 }
 
 const card = { background: 'var(--gls)', border: '1px solid var(--gbd)', boxShadow: 'var(--gsh)', backdropFilter: 'blur(22px)' }
@@ -148,6 +186,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     if (q('#ei-fuel')) gsap.to(q('#ei-fuel'), { width: a.fuelW + '%', duration: 1, ease: 'power2.out' })
     ;['#alt-tp', '#alt-en', '#alt-sl'].forEach((id, i) => { const el = q(id); if (el) gsap.set(el, { top: [a.tpT, a.enT, a.slT][i] + '%' }) })
     if (q('#mfd-ac')) gsap.to(q('#mfd-ac'), { x: a.acX, y: a.acY, duration: 1.1, ease: 'power2.out' })
+    // No blinking on a closed market (owner 2026-08-01): if the session closes
+    // while the cockpit is open, stop the WX pulse instead of letting the
+    // yoyo tween run forever. The OPEN-dot pulse is CSS-gated the same way.
+    if (marketClosed && storeRef.current._wx) { storeRef.current._wx = 0
+      gsap.killTweensOf('#wx1,#wx2')
+      if (q('#wx1')) gsap.set('#wx1,#wx2', { scale: 1 }) }
     if (!storeRef.current._wx && q('#wx1') && !marketClosed) { storeRef.current._wx = 1
       gsap.to(q('#wx1'), { scale: 1.12, transformOrigin: 'center', duration: 2.2, repeat: -1, yoyo: true, ease: 'sine.inOut' })
       gsap.to(q('#wx2'), { scale: 1.25, transformOrigin: 'center', duration: 1.6, repeat: -1, yoyo: true, ease: 'sine.inOut' }) }
@@ -240,8 +284,8 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <button title={themeOverride == null ? 'Following the system theme — tap to override' : 'Overriding the system theme — tap to cycle'}
           onClick={() => setThemeOverride(o => (o == null ? (sysDark ? 'light' : 'dark') : null))}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--tx)', background: 'var(--acs)', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}{themeOverride == null ? '' : ' ·'}</button>
-        <button aria-label="Close cockpit" onClick={onClose}
-          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--sb)', background: 'transparent', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>✕</button>
+        {/* Owner (2026-08-01): no ✕ here — the six border close buttons
+            (corners + side midpoints) already cover dismissal. */}
       </div>
     </div>)
 
@@ -279,7 +323,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           </div>
         </div>
         <div style={{ ...pane, display: 'flex', flexDirection: 'column' }}>
-          <span title="Volume Profile: how much trading happened at each price. Amber = POC (most-traded price, widest bar). Violet band = Value Area (70% of volume). Grey = low-volume price (LVN) — price tends to move fast through these." style={{ cursor: 'help', fontSize: fs(8.5), fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingTop: 2, borderBottom: '1px solid var(--edg)', paddingBottom: 2 }}>VOL ⓘ</span>
+          <span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingTop: 2, borderBottom: '1px solid var(--edg)', paddingBottom: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>VOL <Info fs={fs} tip="Volume Profile: how much trading happened at each price. Amber = POC (most-traded price, widest bar). Violet band = Value Area (70% of volume). Grey = low-volume price (LVN) — price tends to move fast through these." /></span>
           <div style={{ flex: 1, position: 'relative' }}>
             {v && <>
               <div style={{ position: 'absolute', left: 0, right: 0, top: v.vaTop + '%', height: v.vaH + '%', background: 'linear-gradient(90deg,rgba(168,85,247,.16),transparent)' }} />
@@ -292,7 +336,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ fontSize: 7, fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingBottom: 2 }}>volume →</span>
         </div>
         <div style={pane}>
-          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><span title="One column, both scales: price on the left, the same level in R (risk units) on the right. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." style={{ cursor: 'help', fontSize: fs(8.5), color: 'var(--mu)' }}>ⓘ</span></div>
+          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><Info fs={fs} tip="One column, both scales: price on the left, the same level in R (risk units) on the right. ENT = your entry price (always 0.00R — the zero line of the trade). SL and TP are the stop and target rails. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." /></div>
           {v && <>
             <div title="best excursion so far (MFE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMfe + '%', height: 2, background: 'var(--up)', zIndex: 2 }} />
             <div title="worst excursion so far (MAE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMae + '%', height: 2, background: 'var(--dn)', zIndex: 2 }} />
@@ -307,7 +351,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           {!v && skeleton(150)}
         </div>
         <div style={{ ...pane, background: undefined, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0 2px' }}>
-          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4 }}>VSI</span>
+          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4, display: 'inline-flex', alignItems: 'center', gap: 2 }}>VSI <Info fs={fs} tip="Vertical Speed Indicator: how fast this trade is earning or losing, in R per hour. Needle up (+) = P&L climbing; needle down (−) = sinking. ±2 R/hr is the gauge limit. Near 0 = the trade is going nowhere." /></span>
           <div style={{ flex: 1, position: 'relative', width: '100%' }}>
             <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', height: 1, background: 'var(--edg)' }} />
             <span style={{ position: 'absolute', top: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>+2</span>

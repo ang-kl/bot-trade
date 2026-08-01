@@ -12,6 +12,11 @@
 
 /* Reference (Canvas.dc.html) shared chrome */
 @keyframes tc-pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ⓘ popover bubble — portalled to <body>, so it carries its own theme colours
+   (the --tokens above are scoped to .tc-root and can't reach it). */
+.tc-tipbub{position:fixed;z-index:99;max-width:286px;box-sizing:border-box;font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:11px;line-height:1.5;padding:7px 10px;border-radius:8px;background:#0d1326;color:#e8edfb;border:1px solid rgba(140,165,255,.38);box-shadow:0 8px 40px rgba(0,0,0,.55)}
+.tc-tipbub[data-theme="light"]{background:#f8faff;color:#131a2e;border-color:rgba(120,140,200,.55);box-shadow:0 8px 32px rgba(60,80,180,.22)}
 .tc-root a{color:var(--acc)}.tc-root a:hover{color:var(--vio)}
 
 /* Backdrop — BUILD-ORDER §4 */
