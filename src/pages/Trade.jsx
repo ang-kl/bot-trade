@@ -926,14 +926,32 @@ export default function Trade() {
           {/* WHY the vetoes — the insight before the rows. Every veto is the
               AUTO-SCAN proposing a trade and the risk gate refusing it: that
               is the system protecting the account, not failing. */}
-          {vetoBd && (vetoBd.vetoes?.length > 0 || vetoBd.ok > 0) && (
-            <p className="mb-2 text-[9px] text-[var(--color-text-sub)]">
-              Last {vetoBd.days}d: {vetoBd.ok} approved · {vetoBd.vetoes.reduce((s, v) => s + v.count, 0)} vetoed.
-              Vetoes are the auto-scan's proposals refused by the risk gate — top reasons:{' '}
-              {vetoBd.vetoes.slice(0, 3).map(v => `${humanVeto(v.reason)} ×${v.count}`).join(' · ') || '—'}.
-              {vetoBd.vetoes[0]?.reason === 'market_closed' && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
-            </p>
-          )}
+          {/* CRASH FIX (owner, 2026-08-01 21:53 SGT): /state/veto-breakdown
+              changed shape server-side — `ok` became a boolean (true > 0
+              passed the old guard) and `vetoes`/`days` became
+              `guards`/`windowDays`, so `.reduce` ran on undefined and
+              white-screened the page the moment the fetch succeeded. Read
+              BOTH shapes defensively; never assume an array again. */}
+          {(() => {
+            if (!vetoBd) return null
+            const days = vetoBd.windowDays ?? vetoBd.days ?? '—'
+            const approved = vetoBd.summary?.proposalsApproved ?? (typeof vetoBd.ok === 'number' ? vetoBd.ok : 0)
+            const rows = Array.isArray(vetoBd.vetoes)
+              ? vetoBd.vetoes
+              : Array.isArray(vetoBd.guards)
+                ? vetoBd.guards.map(g => ({ reason: g.guard ?? g.reason, count: g.count ?? 0 }))
+                : []
+            const refused = rows.reduce((s, v) => s + (Number(v.count) || 0), 0)
+            if (rows.length === 0 && !(approved > 0)) return null
+            return (
+              <p className="mb-2 text-[9px] text-[var(--color-text-sub)]">
+                Last {days}d: {approved} approved · {refused} refused/skipped.
+                These are the auto-scan's proposals stopped by the pipeline's guards — top reasons:{' '}
+                {rows.slice(0, 3).map(v => `${humanVeto(v.reason)} ×${v.count}`).join(' · ') || '—'}.
+                {String(rows[0]?.reason || '').includes('market_closed') && ' Market-closed dominates on weekends — signals re-fire when markets reopen.'}
+              </p>
+            )
+          })()}
           <OrderLogTable rows={riskEvents} marketHours={marketHours} prices={priceMap} trades={trades} leverage={account?.leverage} />
         </Card>
       </div>
