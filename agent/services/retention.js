@@ -19,6 +19,13 @@ import { getState } from '../db.js'
 export const DEFAULT_RETENTION = {
   tradesDays: 730,       // ~2 years of closed-trade ledger
   postmortemsDays: 730,  // keep the forensics as long as the trades
+  // Owner-approved 01-08 ("approve retention"), sized from production's
+  // /state/storage: cup_handle_diagnostics was 2.13M rows / 209MB — 40% of
+  // the whole database — with analyses (38MB) and action_log unpruned behind
+  // it. Same convention as above: null (or ≤0) disables that sweep.
+  cupHandleDays: 30,     // per-scan pattern diagnostics — a month is plenty to debug a detector
+  analysesDays: 90,      // LLM analysis blobs; rows a trade references are ALWAYS spared (FK)
+  actionLogDays: 365,    // request journal — but AUDIT + PHASE_RAW_WRITE rows are exempt forever
 }
 
 export function loadRetentionConfig(db) {
@@ -114,6 +121,64 @@ export function pruneTradeHistory(db, cfg = null) {
     out.postmortems = db.prepare(
       `DELETE FROM trade_postmortems WHERE REPLACE(created_at, 'T', ' ') < ?`
     ).run(pCut).changes
+  }
+  return out
+}
+
+/**
+ * Owner-approved sweep (01-08) for the three operational tables the 8-hourly
+ * housekeeping never touched. Returns { cupHandle, analyses, actionLog }.
+ *
+ * - cup_handle_diagnostics: pure detector exhaust — one row per symbol per
+ *   scan, forever. Production had 2.13M rows; nothing reads past a few weeks.
+ * - analyses: rows REFERENCED BY A TRADE ARE SPARED, whatever their age —
+ *   trades.analysis_id is an enforced FK (PRAGMA foreign_keys=ON), so
+ *   deleting a referenced row would abort the whole bulk DELETE exactly like
+ *   the referenced-trades case documented above. The ledger keeps its
+ *   provenance; only unreferenced analysis blobs age out.
+ * - action_log: AUDIT and PHASE_RAW_WRITE rows are EXEMPT FOREVER — that is
+ *   the S.A.T./controller audit trail and the raw-write tracer, and evidence
+ *   does not expire. Everything else (request exhaust) ages out at a year.
+ */
+export function pruneOperationalTables(db, cfg = null) {
+  const c = cfg || loadRetentionConfig(db)
+  const out = { cupHandle: 0, analyses: 0, actionLog: 0 }
+
+  const horizon = (days) => {
+    const d = Number(days)
+    if (!Number.isFinite(d) || d <= 0) return null
+    return new Date(Date.now() - d * 86_400_000).toISOString().replace('T', ' ')
+  }
+
+  const chCut = horizon(c.cupHandleDays)
+  if (chCut) {
+    try {
+      out.cupHandle = db.prepare(
+        `DELETE FROM cup_handle_diagnostics WHERE REPLACE(created_at, 'T', ' ') < ?`
+      ).run(chCut).changes
+    } catch { /* table absent on very old DBs */ }
+  }
+
+  const aCut = horizon(c.analysesDays)
+  if (aCut) {
+    try {
+      out.analyses = db.prepare(
+        `DELETE FROM analyses
+          WHERE REPLACE(analyzed_at, 'T', ' ') < ?
+            AND id NOT IN (SELECT analysis_id FROM trades WHERE analysis_id IS NOT NULL)`
+      ).run(aCut).changes
+    } catch { /* never let one table's sweep stop the others */ }
+  }
+
+  const alCut = horizon(c.actionLogDays)
+  if (alCut) {
+    try {
+      out.actionLog = db.prepare(
+        `DELETE FROM action_log
+          WHERE REPLACE(at, 'T', ' ') < ?
+            AND (method IS NULL OR method NOT IN ('AUDIT', 'PHASE_RAW_WRITE'))`
+      ).run(alCut).changes
+    } catch { /* never let one table's sweep stop the others */ }
   }
   return out
 }

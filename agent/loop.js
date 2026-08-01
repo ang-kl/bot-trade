@@ -3442,12 +3442,15 @@ async function runLoop(db) {
       const d6 = prunePositionEvents(db)
       // Long-horizon ledger retention (hardening 6c): closed trades +
       // postmortems past ~2 years (retention_json overrides; null disables).
-      const { pruneTradeHistory } = await import('./services/retention.js')
+      const { pruneTradeHistory, pruneOperationalTables } = await import('./services/retention.js')
       const d7 = pruneTradeHistory(db)
+      // Owner-approved 01-08 ("approve retention") — the three tables that
+      // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
+      const d8 = pruneOperationalTables(db)
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems`)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems, ${d8.cupHandle} cup-handle diags, ${d8.analyses} analyses, ${d8.actionLog} action-log rows`)
     } catch (err) {
       log('Housekeeping error:', err.message)
     }
