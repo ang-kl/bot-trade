@@ -518,7 +518,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const entryLatencyMs = Date.now() - submitT0
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
-    const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+    // normPosId: one exec path returned float-formatted ids ("234698574.0")
+    // which broke deal-history P&L matching and duplicate detection.
+    const { normPosId } = await import('./lib/pos-id.js')
+    const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
 
     const entryP = executionPrice ?? synth.entry ?? null
     // Forensics (Performance Ledger collect-forward): signed adverse-positive

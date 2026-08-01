@@ -733,6 +733,30 @@ export function initDB(dbPath) {
     }
   }
 
+  // Repair float-formatted broker position ids (2026-08-02). Some open paths
+  // stored ctrader_position_id as "234698574.0" while the broker/deal-history
+  // side uses "234698574" — so the P&L backfill never matched (52 closed
+  // trades stuck with net_pnl NULL on production, daily-loss gate vetoing
+  // every entry), the reconciler's known-id sets missed the row (duplicate
+  // adoptions), and the orphan sweep closed the originals with NULL P&L.
+  // Writers now normalise via lib/pos-id.js; this one-time pass repairs the
+  // rows already on disk. The CAST(...)>0 guard leaves non-numeric ids alone.
+  try {
+    const fixT = db.prepare(
+      `UPDATE trades SET ctrader_position_id = CAST(CAST(ctrader_position_id AS INTEGER) AS TEXT)
+        WHERE ctrader_position_id LIKE '%.%' AND CAST(ctrader_position_id AS INTEGER) > 0`
+    ).run();
+    const fixE = db.prepare(
+      `UPDATE position_events SET position_id = CAST(CAST(position_id AS INTEGER) AS TEXT)
+        WHERE position_id LIKE '%.%' AND CAST(position_id AS INTEGER) > 0`
+    ).run();
+    if (fixT.changes || fixE.changes) {
+      console.log(`[db] normalised float-formatted position ids: trades=${fixT.changes} position_events=${fixE.changes}`);
+    }
+  } catch (err) {
+    console.error('[db] position-id normalisation failed, continuing:', err.message);
+  }
+
   // Carry-cost awareness: swap rates ride along with the symbol-hours
   // refresh (same ProtoOASymbol fetch — zero extra broker calls). Stored in
   // the broker's own units (points per lot per night, moneyDigits-scaled

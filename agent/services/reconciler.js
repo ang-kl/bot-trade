@@ -1,4 +1,5 @@
 import { isOurs, parseLabel } from '../lib/trade-labels.js'
+import { normPosId } from '../lib/pos-id.js'
 import { getState, closeTradeRow } from '../db.js'
 import { contractSize } from '../lib/contracts.js'
 
@@ -62,8 +63,11 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL ${mpScope.sql}`
   ).all(...mpScope.params)
 
-  const knownIds = new Set(knownRows.map(r => String(r.ctrader_position_id)))
-  const knownById = new Map(knownRows.map(r => [String(r.ctrader_position_id), r]))
+  // normPosId, never bare String: rows written before the pos-id repair
+  // migration may carry "234698574.0" — a raw-string set would call the
+  // broker's "234698574" unknown and re-adopt it as a duplicate.
+  const knownIds = new Set(knownRows.map(r => normPosId(r.ctrader_position_id)))
+  const knownById = new Map(knownRows.map(r => [normPosId(r.ctrader_position_id), r]))
   const brokerIds = new Set()
 
   const newExternal = []
@@ -78,7 +82,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   }
 
   for (const bp of brokerPositions) {
-    const posId = String(bp.tradeData?.positionId ?? bp.positionId ?? '')
+    const posId = normPosId(bp.tradeData?.positionId ?? bp.positionId) ?? ''
     if (!posId) continue
     brokerIds.add(posId)
 
@@ -261,7 +265,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
 
   const closedDetected = []
   for (const row of knownRows) {
-    if (!brokerIds.has(String(row.ctrader_position_id))) {
+    if (!brokerIds.has(normPosId(row.ctrader_position_id))) {
       db.prepare(`UPDATE monitored_positions SET status = 'closed' WHERE id = ?`).run(row.id)
       // Say WHO closed it, or at least who didn't: a close the bot performs
       // stamps its own close_reason via markTradeClosed before reconcile
@@ -274,7 +278,7 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       // 'open' row (the dedup sweep further down handles that garbage case).
       const openIds = db.prepare(
         `SELECT id FROM trades WHERE ctrader_position_id = ? AND status = 'open'`
-      ).all(String(row.ctrader_position_id))
+      ).all(normPosId(row.ctrader_position_id))
       for (const { id } of openIds) {
         closeTradeRow(db, id, { closeReason: 'closed at the broker (manual close or broker-side SL/TP fill) — not closed by the bot' })
       }

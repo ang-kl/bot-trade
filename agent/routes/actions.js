@@ -7,6 +7,7 @@ import { getState, setState, sweepMonitoredPositionsForAccounts, accountsWithOpe
 import { runFibScan, synthesizeFibSignal, scanSymbolFib } from '../services/fib-strategy.js'
 import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-creds.js'
 import { ctraderEnv } from '../lib/ctrader-env.js'
+import { normPosId } from '../lib/pos-id.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
@@ -1063,12 +1064,15 @@ export default function actionsRouter(db) {
         if ((r.closedAt || 0) >= (agg.last.closedAt || 0)) agg.last = r
         byPosition.set(r.positionId, agg)
       }
+      // CAST both sides — same reason as pnl-backfill.js: rows written before
+      // the pos-id repair migration can carry "234698574.0", which plain
+      // equality against the broker's "234698574" never matched.
       const upd = db.prepare(
         `UPDATE trades
          SET net_pnl = ?, gross_pnl = ?,
              exit_price = COALESCE(exit_price, ?),
              closed_at = COALESCE(closed_at, ?)
-         WHERE ctrader_position_id = ? AND status = 'closed'`
+         WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER) AND status = 'closed'`
       )
       let backfilled = 0
       for (const [positionId, agg] of byPosition) {
@@ -4031,7 +4035,7 @@ export default function actionsRouter(db) {
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
 
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
-      const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+      const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
 
       const entryP = executionPrice ?? entry
       const initialRisk = (entryP && sl) ? Math.abs(entryP - sl) : null
@@ -4175,7 +4179,7 @@ export default function actionsRouter(db) {
       }
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
       const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
-      const positionId = exec?.position?.positionId || exec?.deal?.positionId || null
+      const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
       const entryP = executionPrice ?? entry
       const parsedLabel = parseLabel(structuredLabel)
 
