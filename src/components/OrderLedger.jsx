@@ -277,7 +277,7 @@ function WorkingRow({ o, onDone }) {
   return (
     <>
       <Row o={o} gone={false} action={
-        <Button size="sm" variant="ghost" onClick={() => setOpen(v => !v)}>{open ? 'Close' : 'Manage'}</Button>
+        <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen(v => !v)}>{open ? 'Close' : 'Manage'}</Button>
       } />
       {open && (
         <tr>

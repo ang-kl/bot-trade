@@ -147,7 +147,7 @@ export default function LossReview({ postmortems }) {
   const bySymbol = {}
   for (const r of rows) (bySymbol[r.symbol] ||= []).push(r)
 
-  const selectCls = 'glass-inset rounded-[6px] px-1.5 py-1 text-[9px]'
+  const selectCls = 'glass-inset rounded-[var(--radius-control)] px-1.5 py-1 text-[9px]'
   return (
     <div className="space-y-3">
       {Object.keys(byStrat).length > 0 && (
@@ -159,45 +159,46 @@ export default function LossReview({ postmortems }) {
 
       {/* Sort/filter bar — applies to whichever view is selected below. */}
       <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
-        <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]">
+        <div role="radiogroup" aria-label="View" className="flex rounded-[var(--radius-control)] overflow-hidden border border-[var(--color-border)]">
           {[['groups', 'Losses / Wins'], ['symbol', 'By symbol']].map(([k, label]) => (
-            <button key={k} type="button" onClick={() => setView(k)}
-              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-sub)]'}`}>
+            <button key={k} type="button" role="radio" aria-checked={view === k} onClick={() => setView(k)}
+              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'text-[var(--color-text-sub)]'}`}>
               {label}
             </button>
           ))}
         </div>
-        <select className={selectCls} value={filter.symbol} onChange={e => setFilter(f => ({ ...f, symbol: e.target.value }))}>
+        <select className={selectCls} aria-label="Filter by symbol" value={filter.symbol} onChange={e => setFilter(f => ({ ...f, symbol: e.target.value }))}>
           <option value="">All symbols</option>
           {symbols.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <select className={selectCls} value={filter.strategy} onChange={e => setFilter(f => ({ ...f, strategy: e.target.value }))}>
+        <select className={selectCls} aria-label="Filter by strategy" value={filter.strategy} onChange={e => setFilter(f => ({ ...f, strategy: e.target.value }))}>
           <option value="">All strategies</option>
           {strategies.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <select className={selectCls} value={filter.classification} onChange={e => setFilter(f => ({ ...f, classification: e.target.value }))}>
+        <select className={selectCls} aria-label="Filter by verdict" value={filter.classification} onChange={e => setFilter(f => ({ ...f, classification: e.target.value }))}>
           <option value="">All verdicts</option>
           {classifications.map(c => <option key={c} value={c}>{VERDICTS[c]?.label || c}</option>)}
         </select>
-        <select className={selectCls} value={filter.side} onChange={e => setFilter(f => ({ ...f, side: e.target.value }))}>
+        <select className={selectCls} aria-label="Filter by side" value={filter.side} onChange={e => setFilter(f => ({ ...f, side: e.target.value }))}>
           <option value="">Long &amp; Short</option>
           <option value="BUY">Long</option>
           <option value="SELL">Short</option>
         </select>
-        <select className={selectCls} value={sort.key} onChange={e => setSort(s => ({ ...s, key: e.target.value }))}>
+        <select className={selectCls} aria-label="Sort by" value={sort.key} onChange={e => setSort(s => ({ ...s, key: e.target.value }))}>
           <option value="date">Sort: Date</option>
           <option value="symbol">Sort: Symbol</option>
           <option value="classification">Sort: Verdict</option>
           <option value="r_multiple">Sort: R-multiple</option>
           <option value="net_pnl">Sort: P&amp;L</option>
         </select>
-        <button type="button" onClick={() => setSort(s => ({ ...s, dir: s.dir === 'desc' ? 'asc' : 'desc' }))}
-          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer">
+        <button type="button" aria-label={`Sort direction: ${sort.dir === 'desc' ? 'descending' : 'ascending'}`}
+          onClick={() => setSort(s => ({ ...s, dir: s.dir === 'desc' ? 'asc' : 'desc' }))}
+          className="glass-inset rounded-[var(--radius-control)] px-1.5 py-1 cursor-pointer">
           {sort.dir === 'desc' ? '↓ desc' : '↑ asc'}
         </button>
         {(filter.symbol || filter.strategy || filter.classification || filter.side) && (
           <button type="button" onClick={() => setFilter({ symbol: '', strategy: '', classification: '', side: '' })}
-            className="text-[var(--color-text-sub)] underline cursor-pointer">clear filters</button>
+            className="glass-inset rounded-[var(--radius-control)] px-1.5 py-1 cursor-pointer text-[var(--color-text-sub)]">clear filters</button>
         )}
       </div>
 
@@ -207,10 +208,10 @@ export default function LossReview({ postmortems }) {
           {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} / page</option>)}
         </select>
         <button type="button" disabled={safePage === 0} onClick={() => setPage(p => Math.max(0, p - 1))}
-          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">‹ prev</button>
+          className="glass-inset rounded-[var(--radius-control)] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">‹ prev</button>
         <span className="text-[var(--color-text-sub)]">Page {safePage + 1} of {pageCount}</span>
         <button type="button" disabled={safePage >= pageCount - 1} onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
-          className="glass-inset rounded-[6px] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">next ›</button>
+          className="glass-inset rounded-[var(--radius-control)] px-1.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">next ›</button>
         <span className="text-[var(--color-text-sub)]">
           {filteredRows.length === 0 ? 0 : safePage * pageSize + 1}–{Math.min(filteredRows.length, (safePage + 1) * pageSize)} of {filteredRows.length} (of {allRows.length} total)
         </span>
@@ -265,8 +266,18 @@ function SymbolTable({ symbol, rows }) {
                 const isOpen = expandedId === r.id
                 return (
                   <Fragment key={r.id}>
+                    {/* Row-click stays for pointer users; the caret button is
+                        the keyboard-operable disclosure (inventory D41 — a
+                        bare tr onClick is keyboard-dead). */}
                     <tr className="border-b border-[var(--color-border)] cursor-pointer" onClick={() => setExpandedId(isOpen ? null : r.id)}>
-                      <td className="py-1 pr-2 whitespace-nowrap">{dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">
+                        <button type="button" aria-expanded={isOpen} aria-label="Trade details"
+                          onClick={e => { e.stopPropagation(); setExpandedId(isOpen ? null : r.id) }}
+                          className="cursor-pointer text-[var(--color-text-sub)] pr-1">
+                          <span aria-hidden="true">{isOpen ? '▾' : '▸'}</span>
+                        </button>
+                        {dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}
+                      </td>
                       <td className="py-1 pr-2">{r.side}</td>
                       <td className="py-1 pr-2">{r.timeframe || '—'}</td>
                       <td className="py-1 pr-2 whitespace-nowrap">{r.strategy || 'unlabelled'}</td>

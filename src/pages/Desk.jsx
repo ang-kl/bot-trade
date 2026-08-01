@@ -120,9 +120,10 @@ function RiskDecisionRow({ ev }) {
   return (
     <li className="border-b border-[var(--color-border)] last:border-0 py-px">
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        className="w-full flex items-baseline gap-1.5 min-w-0 text-left cursor-pointer" title={ev.veto_reason || 'approved'}>
+        className="w-full flex items-baseline gap-1.5 min-w-0 text-left cursor-pointer hover:bg-[var(--glass-bg)]" title={ev.veto_reason || 'approved'}>
         <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{criteria.length ? (open ? '▾' : '▸') : ''}</span>
-        <span className={`w-9 shrink-0 text-[9px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`}>
+        {/* Approval is a STATE, not navigation — state-on blue, not accent. */}
+        <span className={`w-9 shrink-0 text-[9px] font-bold tracking-wide ${ev.approved ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-warning-text)]'}`}>
           {ev.approved ? 'OK' : 'VETO'}
         </span>
         <span className="font-semibold shrink-0">{ev.symbol}</span>
@@ -443,7 +444,10 @@ export default function Desk() {
           {/* Tri-state, honestly: "no data yet" must never read as OFF — a
               loading page and a disarmed bot are different facts. */}
           <span className="font-semibold whitespace-nowrap">
-            <span aria-hidden="true" style={{ color: !health ? '#94a3b8' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
+            {/* OFF is the red state tint, UNKNOWN stays muted — a disarmed bot
+                and a loading page must not share one grey (inventory D2), and
+                ON is the blue STATE colour, not the navigation accent. */}
+            <span aria-hidden="true" style={{ color: !health ? 'var(--color-text-sub)' : health.autotradeEnabled ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}>● </span>
             {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Autotrade ON' : 'Autotrade OFF'}
           </span>
           {health?.pendingModeEnabled && (
@@ -518,7 +522,7 @@ export default function Desk() {
             <button
               key={n} type="button" role="radio" aria-checked={pnlGridN === n}
               onClick={() => pickPnlGrid(n)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n}</button>
           ))}
         </div>
@@ -541,7 +545,7 @@ export default function Desk() {
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
               title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
@@ -551,7 +555,7 @@ export default function Desk() {
               aria-label="Chart symbol"
               value={symbol || ''}
               onChange={e => pickSymbol(e.target.value)}
-              className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
+              className="glass-inset rounded-[var(--radius-control)] px-2 min-h-[28px] text-[9px] font-semibold bg-transparent cursor-pointer max-w-[140px]"
             >
               {chartSymbols.map(sym => <option key={sym} value={sym}>{sym}</option>)}
             </select>
@@ -578,7 +582,7 @@ export default function Desk() {
               return (
                 <div key={sym} className="min-w-0">
                   <button type="button" className="text-[9px] font-bold cursor-pointer hover:underline" onClick={() => { pickSymbol(sym); pickGrid(1) }}>
-                    {sym}{held ? ' ●' : ''}
+                    {sym}{held ? <span title="position held" aria-label="position held"> ●</span> : ''}
                   </button>
                   <PositionChart
                     grid
@@ -596,7 +600,7 @@ export default function Desk() {
           {scans.map(sc => (
             <button
               key={sc.symbol} type="button" onClick={() => { pickSymbol(sc.symbol); if (gridN !== 1) pickGrid(1) }}
-              className="flex items-center gap-1.5 py-0.5 text-left cursor-pointer min-w-0"
+              className="flex items-center gap-1.5 py-0.5 text-left cursor-pointer min-w-0 rounded-[var(--radius-control)] hover:bg-[var(--glass-bg)]"
               title={sc.thesis || ''}
             >
               <span className="font-semibold w-16 shrink-0">{sc.symbol}</span>
@@ -829,7 +833,7 @@ export default function Desk() {
             <button
               key={d} type="button" role="radio" aria-checked={historyDays === d}
               onClick={() => setHistoryDays(d)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{label}</button>
           ))}
         </div>
@@ -1147,7 +1151,7 @@ export default function Desk() {
                       {backtestsList.map(b => (
                         <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
                           onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>
                           {STRAT_SHORT[b.strategy] || b.strategy}
                         </button>
                       ))}

@@ -374,12 +374,14 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                     ))}
                     <td className="py-1 whitespace-nowrap">
                       {r.chart && (
-                        <Button size="sm" variant="ghost" onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
+                        <Button size="sm" variant="ghost" aria-expanded={chartFor === r.id}
+                          onClick={() => setChartFor(chartFor === r.id ? null : r.id)}>
                           {chartFor === r.id ? 'Hide' : 'Chart'}
                         </Button>
                       )}
                       {panel && r.panel && (
-                        <Button size="sm" variant="ghost" onClick={() => setPanelFor(r.id)}>
+                        <Button size="sm" variant="ghost" aria-haspopup="dialog"
+                          onClick={() => setPanelFor(r.id)}>
                           {panel.label}
                         </Button>
                       )}
