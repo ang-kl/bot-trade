@@ -69,6 +69,12 @@ async function sidecar(method, path, body) {
       ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    // Bounded (2026-08-01 audit #2): with no timeout, a sidecar wedged behind
+    // its reconcile mutex hung the CALLER — the profit keeper's exit call
+    // just sat there, and exec-fallback never saw an error to act on. 30s is
+    // above every sidecar-side request timeout, so a genuine slow answer
+    // still lands; only a wedge aborts.
+    signal: AbortSignal.timeout(30_000),
   })
   const text = await res.text()
   if (!res.ok) {
@@ -148,7 +154,12 @@ export async function pushTrailConfig(creds, positions) {
   if (execEngineMode() !== 'cpp') return false
   try {
     await ensureSidecarSession(creds)
-    await sidecar('POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
+    const r = await sidecar('POST', '/trail-config', { positions: Array.isArray(positions) ? positions : [] })
+    // The sidecar now reports specs it REFUSED (bad dir / missing ids) —
+    // surface the coverage gap instead of letting "sent N" read as "tracking N".
+    if (r && Number(r.rejected) > 0) {
+      console.log(`[exec] trail-config: sidecar rejected ${r.rejected} spec(s) — those positions are NOT tick-trailed (keeper ratchet still covers them)`)
+    }
     return true
   } catch {
     return false // sidecar down or TRAIL_TICK_ENABLED unset — keeper's own ratchet still runs
@@ -174,7 +185,13 @@ export async function pingSidecar({ timeoutMs = 5_000 } = {}) {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetch(execBase() + '/health', { signal: ctrl.signal })
+    // Authenticated: the sidecar now serves the account roster on /health
+    // ONLY to a bearer-carrying caller when EXEC_SECRET is set (the bare
+    // response keeps ok/connected/counts for Railway's probe).
+    const res = await fetch(execBase() + '/health', {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${process.env.EXEC_SECRET || ''}` },
+    })
     const body = await res.json().catch(() => null)
     return {
       ok: res.ok && body?.ok === true,

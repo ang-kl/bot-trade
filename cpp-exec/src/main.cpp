@@ -267,17 +267,29 @@ int main(int argc, char** argv) {
 
   HttpServer server(port, execSecret);
 
-  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx](const HttpRequest&) -> HttpResponse {
+  server.route("GET", "/health", [&engine, &spotFeed, &vpoMtx, execSecret](const HttpRequest& req) -> HttpResponse {
     jsn::Value v{jsn::Object{}};
     v.set("ok", true);
     v.set("connected", engine.isConnected());
     v.set("hasCredentials", engine.hasCredentials());
     long long at = engine.lastReconcileAtMs();
     v.set("lastReconcileAt", at > 0 ? jsn::Value(at) : jsn::Value(nullptr));
-    // M2: the authorized-account roster (primary first).
-    jsn::Array ids;
-    for (long long id : engine.accountIds()) ids.push_back(jsn::Value(id));
-    v.set("accounts", jsn::Value(std::move(ids)));
+    // M2: /health is reachable UNAUTHENTICATED (Railway probes bare), and the
+    // raw ctidTraderAccountIds were the one piece of broker-identifying data
+    // on that open response (audit #12). Node's roster gates NEED the ids
+    // (exec-engine sidecarRoster, heartbeat rosterDrift), so they are served
+    // only when the caller authenticates — or when no EXEC_SECRET is
+    // configured at all, where redaction would protect nothing. Everyone
+    // always gets the count.
+    v.set("accountCount", static_cast<double>(engine.accountIds().size()));
+    auto authIt = req.headers.find("authorization");
+    const bool trusted = execSecret.empty() ||
+        (authIt != req.headers.end() && authIt->second == "Bearer " + execSecret);
+    if (trusted) {
+      jsn::Array ids;
+      for (long long id : engine.accountIds()) ids.push_back(jsn::Value(id));
+      v.set("accounts", jsn::Value(std::move(ids)));
+    }
     // Telemetry counters — null when TELEMETRY_PATH isn't configured, so the
     // Node keeper can tell "disabled" apart from "configured, zero events".
     if (Telemetry* t = engine.telemetry()) {
@@ -416,18 +428,27 @@ int main(int argc, char** argv) {
     if (!parsed || !parsed->isObject())
       return {400, "{\"error\":\"body must be a JSON object\"}"};
     std::vector<std::pair<long long, TrailSpec>> specs;
+    long long rejected = 0;
     for (const auto& p : parsed->get("positions").asArray()) {
       const long long posId = static_cast<long long>(p.get("positionId").asNumber(0));
       TrailSpec s;
       s.accountId = static_cast<long long>(p.get("ctidTraderAccountId").asNumber(0));
       s.symbolId = static_cast<long long>(p.get("symbolId").asNumber(0));
-      s.dir = p.get("dir").asNumber(0) < 0 ? -1 : 1;
+      // dir must be EXPLICITLY ±1 (audit #10): an absent or malformed dir
+      // used to default to LONG, which for a short position would ratchet the
+      // stop in the wrong direction — reject the spec instead.
+      const jsn::Value& dirV = p.get("dir");
+      const double dirN = dirV.isNumber() ? dirV.asNumber(0) : 0;
+      s.dir = dirN < 0 ? -1 : 1;
       s.trailDist = p.get("trailDistance").asNumber(0);
       s.peakPrice = p.get("peakPrice").asNumber(0);
       const jsn::Value& sl = p.get("currentSl");
       if (sl.isNumber()) { s.lastSl = sl.asNumber(0); s.hasSl = true; }
       s.digits = static_cast<int>(p.get("digits").asNumber(5));
-      if (posId > 0 && s.symbolId > 0 && s.trailDist > 0) specs.emplace_back(posId, s);
+      const bool valid = posId > 0 && s.symbolId > 0 && s.trailDist > 0 &&
+                         (dirN == 1 || dirN == -1);
+      if (valid) specs.emplace_back(posId, s);
+      else ++rejected;
     }
     trailEngine.configure(specs);
     {
@@ -437,6 +458,10 @@ int main(int argc, char** argv) {
     jsn::Value out{jsn::Object{}};
     out.set("ok", true);
     out.set("tracked", static_cast<double>(trailEngine.tracked()));
+    // A silently dropped spec was an invisible coverage gap on BOTH sides
+    // (audit #10): Node reported how many it SENT, this now reports how many
+    // were refused — exec-engine surfaces it for the keeper's log.
+    out.set("rejected", static_cast<double>(rejected));
     return {200, jsn::dump(out)};
   });
 
@@ -611,5 +636,9 @@ int main(int argc, char** argv) {
       logLine("spot feed stopped");
     }
   }
+  // The trail worker was left running on this path (audit #12) — a joinable
+  // std::thread member reaching its destructor is the same std::terminate
+  // the spot-feed block above exists to avoid.
+  trailEngine.stop();
   return served ? 0 : 1;
 }

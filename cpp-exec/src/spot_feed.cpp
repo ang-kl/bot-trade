@@ -286,8 +286,14 @@ void SpotFeed::runLoop() {
   int backoffMs = 1000;
   constexpr int kBackoffCapMs = 60000;
   while (!stopped_.load(std::memory_order_relaxed)) {
+    const auto startedAt = steady_clock::now();
     runOnce();
     ws_.close();
+    // A session that survived well past the handshake proves the path is
+    // healthy — reset the ladder so the NEXT unrelated drop reconnects in 1s,
+    // not the 60s cap accumulated over a day of routine drops (audit #8:
+    // every capped reconnect is a minute with no tick-level SL ratchet).
+    if (steady_clock::now() - startedAt >= seconds(60)) backoffMs = 1000;
     if (stopped_.load(std::memory_order_relaxed)) break;
     logLine("disconnected, reconnecting in " + std::to_string(backoffMs) + "ms");
     {

@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -107,6 +108,13 @@ private:
   // Attempts to fire one ARMED strategy whose trigger the tick crossed.
   // Returns true if a fire was attempted (successful or not) this call.
   bool tryFire(StrategyModule& s, double bid, double ask);
+  // The slow half of a fire (sizing + placeOrder + outcome record), run on
+  // fireThread_ — NEVER on the tick thread. Audit #6: placeOrder blocks on
+  // the engine mutex plus a request timeout, and running it inside onTick
+  // stalled the SpotFeed read loop — no ticks, no heartbeats, no trailing —
+  // for up to a minute per fire.
+  void fireNow(StrategyModule& s);
+  void fireLoop();
 
   ExecEngine& engine_;
   BarProvider barProvider_;
@@ -118,6 +126,14 @@ private:
   std::thread recomputeThread_;
   std::atomic<bool> running_{false};
   std::atomic<long long> accountId_{0};
+
+  // Fire queue: tick thread enqueues a CAS-won strategy, fireThread_ drains.
+  // Raw pointers are safe — strategies_ is append-only before start() and
+  // never mutated after.
+  std::thread fireThread_;
+  std::mutex fireMtx_;
+  std::condition_variable fireCv_;
+  std::vector<StrategyModule*> fireQueue_;
 
   // Written on the tick thread, read by the HTTP thread. A short mutex, not
   // atomics: lastDetail is a string, and the whole block should be read as

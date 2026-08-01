@@ -59,7 +59,7 @@ ExecEngine::ExecEngine(std::string host, std::string clientId,
       clientId_(std::move(clientId)),
       clientSecret_(std::move(clientSecret)),
       accessToken_(std::move(accessToken)),
-      accountIds_{accountId} {}
+      requestedAccountIds_{accountId} {}
 
 void ExecEngine::setCredentials(std::string host, std::string clientId,
                                 std::string clientSecret,
@@ -68,14 +68,22 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
   std::lock_guard lk(mtx_);
   const bool sameSession = host == host_ && clientId == clientId_ &&
                            accessToken == accessToken_ && authed_;
+  // The REQUESTED roster is authoritative either way — a failed auth keeps
+  // the id requested so the next reconnect retries it (audit #5).
+  std::vector<long long> wanted;
+  if (accountId > 0) wanted.push_back(accountId);
+  for (long long id : extraAccountIds) {
+    if (id <= 0) continue;
+    bool dup = false;
+    for (long long have : wanted) if (have == id) { dup = true; break; }
+    if (!dup) wanted.push_back(id);
+  }
   if (sameSession) {
     // M2: same host+app+token — the live session stays up. Auth any account
     // ids we haven't authorized yet, incrementally, without disturbing the
     // accounts already trading on this connection.
-    std::vector<long long> wanted{accountId};
-    for (long long id : extraAccountIds) wanted.push_back(id);
+    requestedAccountIds_ = wanted;
     for (long long id : wanted) {
-      if (id <= 0) continue;
       bool known = false;
       for (long long have : accountIds_) if (have == id) { known = true; break; }
       if (known) continue;
@@ -84,7 +92,7 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
         accountIds_.push_back(id);
         logLine("account " + std::to_string(id) + " authorized on existing session");
       } else {
-        logLine("account " + std::to_string(id) + " auth FAILED on existing session: " + jsn::dump(r.body));
+        logLine("account " + std::to_string(id) + " auth FAILED on existing session (stays requested, retried on next reconnect): " + jsn::dump(r.body));
       }
     }
     return;
@@ -93,14 +101,8 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
   clientId_ = std::move(clientId);
   clientSecret_ = std::move(clientSecret);
   accessToken_ = std::move(accessToken);
+  requestedAccountIds_ = wanted;
   accountIds_.clear();
-  if (accountId > 0) accountIds_.push_back(accountId);
-  for (long long id : extraAccountIds) {
-    if (id <= 0) continue;
-    bool dup = false;
-    for (long long have : accountIds_) if (have == id) { dup = true; break; }
-    if (!dup) accountIds_.push_back(id);
-  }
   // Force a clean reconnect+reauth on the next runLoop pass — the old
   // session (if any) may be authed against a different account/token.
   ws_.close();
@@ -114,7 +116,11 @@ bool ExecEngine::hasCredentials() {
 
 std::vector<long long> ExecEngine::accountIds() {
   std::lock_guard lk(mtx_);
-  return accountIds_;
+  // With a live session: what THIS session actually authorized. Before one
+  // exists: the requested roster (what the keeper asked for) — /health and
+  // the pre-connection tests both want the meaningful answer for their
+  // moment, and an empty list pre-auth would read as "no accounts at all".
+  return authed_ && !accountIds_.empty() ? accountIds_ : requestedAccountIds_;
 }
 
 bool ExecEngine::isConnected() {
@@ -162,12 +168,37 @@ void ExecEngine::maybeHeartbeatLocked() {
   }
 }
 
+// Auth-family error codes mean the session (not this one request) is dead:
+// the token expired or the account lost its authorization. Without this, an
+// expired token left authed_ true forever — every order 502'd with a broker
+// error while /health said connected:true, which also suppressed the JS
+// fallback (audit #4).
+static bool isAuthFamilyError(const std::string& code) {
+  return code == "CH_ACCESS_TOKEN_INVALID" || code == "ACCOUNT_NOT_AUTHORIZED" ||
+         code == "NOT_AUTHENTICATED" || code == "CH_CLIENT_AUTH_FAILURE" ||
+         code == "ALREADY_LOGGED_IN" || code == "CH_ACCESS_TOKEN_EXPIRED";
+}
+
+void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
+  if (!isAuthFamilyError(errorCode)) return;
+  logLine("auth-family broker error '" + errorCode + "' — closing session for reauth");
+  ws_.close();
+  authed_ = false;
+}
+
 EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
                                  int expectType, int timeoutMs) {
   if (!ws_.isOpen())
     return errResult("NOT_CONNECTED", "websocket is not connected", false);
 
+  // Every request carries a fresh clientMsgId and ONLY a frame echoing it can
+  // answer it. Pairing by payloadType alone returned buffered or unsolicited
+  // EXECUTION_EVENTs (ORDER_ACCEPTED leftovers, another account's SL hit) as
+  // the current call's success — Node then marked live positions closed or
+  // counted stop ratchets that never happened (audit #1, critical).
+  const std::string msgId = "cx" + std::to_string(++msgSeq_);
   jsn::Value frame{jsn::Object{}};
+  frame.set("clientMsgId", msgId);
   frame.set("payloadType", reqType);
   frame.set("payload", payload);
   if (!ws_.sendText(jsn::dump(frame))) {
@@ -196,8 +227,13 @@ EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
       logLine("unparseable frame dropped");
       continue;
     }
+    const std::string theirId = msg->get("clientMsgId").asString();
+    const bool mine = theirId == msgId;
+    // A frame echoing a DIFFERENT id answers some other (earlier) request —
+    // it can never answer this one. Unsolicited events carry no id at all.
+    const bool foreign = !theirId.empty() && !mine;
     int type = static_cast<int>(msg->get("payloadType").asNumber(-1));
-    if (type == expectType) {
+    if (mine && type == expectType) {
       EngineResult r;
       r.ok = true;
       r.body = msg->get("payload");
@@ -205,8 +241,17 @@ EngineResult ExecEngine::request(int reqType, const jsn::Value& payload,
     }
     if (type == pt::ERROR_RES || type == pt::ORDER_ERROR_EVENT) {
       const auto& p = msg->get("payload");
-      return errResult(p.get("errorCode").asString(),
-                       p.get("description").asString(), true);
+      const std::string code = p.get("errorCode").asString();
+      // An auth-family error kills the session whether or not it answers this
+      // request.
+      noteBrokerErrorLocked(code);
+      // SUCCESS demands our echoed id; failure is accepted on an id-less
+      // error frame too — misattributing an error fails safe (the caller
+      // retries/reports), misattributing a success is the audit-#1 bug.
+      if (!foreign || !ws_.isOpen())
+        return errResult(code, p.get("description").asString(), true);
+      handleUnsolicited(*msg);
+      continue;
     }
     handleUnsolicited(*msg);
   }
@@ -248,29 +293,35 @@ bool ExecEngine::connectAndAuth() {
     ws_.close();
     return false;
   }
-  // M2: authorize EVERY account on the roster over this one connection
+  // M2: authorize EVERY REQUESTED account over this one connection
   // (ProtoOAAccountAuthReq per id — plan C1). The primary must succeed or
-  // the session is useless; an extra that fails auth is dropped from the
-  // roster with a loud log rather than poisoning the whole session.
+  // the session is useless; an extra that fails auth is skipped FOR THIS
+  // SESSION with a loud log — it stays requested, so the next reconnect
+  // retries it instead of a transient failure erasing the account from
+  // management forever (audit #5).
   auto b = authAccountLocked(primaryAccountLocked());
   if (!b.ok) {
     logLine("account auth failed: " + jsn::dump(b.body));
     ws_.close();
     return false;
   }
-  for (size_t i = 1; i < accountIds_.size();) {
-    EngineResult r = authAccountLocked(accountIds_[i]);
+  accountIds_.clear();
+  accountIds_.push_back(primaryAccountLocked());
+  for (size_t i = 1; i < requestedAccountIds_.size(); ++i) {
+    const long long id = requestedAccountIds_[i];
+    EngineResult r = authAccountLocked(id);
     if (r.ok) {
-      ++i;
+      accountIds_.push_back(id);
     } else {
-      logLine("extra account " + std::to_string(accountIds_[i]) +
-              " auth failed — dropped from roster: " + jsn::dump(r.body));
-      accountIds_.erase(accountIds_.begin() + static_cast<long>(i));
+      logLine("extra account " + std::to_string(id) +
+              " auth failed — skipped this session, retried on next reconnect: " +
+              jsn::dump(r.body));
     }
   }
   authed_ = true;
   logLine("connected and authenticated to " + host_ + " (" +
-          std::to_string(accountIds_.size()) + " account(s))");
+          std::to_string(accountIds_.size()) + "/" +
+          std::to_string(requestedAccountIds_.size()) + " account(s))");
   return true;
 }
 
@@ -332,11 +383,14 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
     }
     return errResult(v.reason, v.reason, false);
   }
+  std::lock_guard lk(mtx_);
+  // SUBMIT is logged after the lock is held — with it logged before, the
+  // record timestamped a submission that could still be a minute away behind
+  // a reconcile sweep (audit #2 note).
   if (telemetry_) {
     telemetry_->log({static_cast<uint64_t>(nowMs()), TK_ORDER_SUBMIT, symbolId,
                      volume, price, 1, 0});
   }
-  std::lock_guard lk(mtx_);
   // The account is NOT filled in — validateOrder above has already refused a
   // payload that does not name one (guard_no_account).
   EngineResult r = request(pt::NEW_ORDER_REQ, payload, pt::EXECUTION_EVENT);
@@ -350,6 +404,13 @@ EngineResult ExecEngine::placeOrder(const jsn::Value& payload) {
 
 EngineResult ExecEngine::amendPosition(const jsn::Value& payload) {
   if (!hasAccountId(payload)) return errResult("guard_no_account", kNoAccountDesc, false);
+  // The kill switch freezes everything except REDUCING risk: closes and
+  // cancels stay allowed, but an amend can widen a stop — during a halt that
+  // is new risk, so it is refused (audit #7). The trail engine's tighten-only
+  // amends failing during a halt is visible (amendsFailed) and acceptable.
+  if (guard_.snapshot().halt) {
+    return errResult("guard_halt", "execution halted by kill switch — amends refused (closes still allowed)", false);
+  }
   std::lock_guard lk(mtx_);
   return request(pt::AMEND_POSITION_SLTP_REQ, payload, pt::EXECUTION_EVENT, 15000);
 }
@@ -369,7 +430,9 @@ EngineResult ExecEngine::cancelOrder(const jsn::Value& payload) {
 EngineResult ExecEngine::reconcileLocked(long long accountId) {
   jsn::Value p{jsn::Object{}};
   p.set("ctidTraderAccountId", accountId);
-  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 25000);
+  // 10s, not 25s: even with per-account lock scope, a hung reconcile still
+  // holds the order path for its own timeout — keep that bound tight.
+  auto r = request(pt::RECONCILE_REQ, p, pt::RECONCILE_RES, 10000);
   if (r.ok) {
     std::lock_guard sk(stateMtx_);
     reconcileByAccount_[accountId] = {jsn::dump(r.body), nowMs()};
@@ -378,17 +441,34 @@ EngineResult ExecEngine::reconcileLocked(long long accountId) {
 }
 
 EngineResult ExecEngine::reconcile() {
-  std::lock_guard lk(mtx_);
   // M2: every authorized account reconciles each pass. The PRIMARY result is
   // returned (runLoop's transport-error handling keys off it), and a
   // transport failure aborts the sweep — the connection is gone for all of
   // them anyway.
-  EngineResult primary = reconcileLocked(primaryAccountLocked());
-  if (!primary.ok && !primary.brokerError) return primary;
-  for (size_t i = 1; i < accountIds_.size(); ++i) {
-    EngineResult r = reconcileLocked(accountIds_[i]);
+  //
+  // The lock is taken PER ACCOUNT, not across the sweep (audit #2): holding
+  // mtx_ for N × up-to-25s blocked every order/amend/close — including the
+  // profit keeper's exits — behind a background poll. Between accounts the
+  // mutex is free, so a queued close runs after at most one reconcile.
+  std::vector<long long> ids;
+  {
+    std::lock_guard lk(mtx_);
+    ids = accountIds_;
+    if (ids.empty()) ids.push_back(primaryAccountLocked());
+  }
+  EngineResult primary;
+  bool havePrimary = false;
+  for (long long id : ids) {
+    if (id <= 0) continue;
+    EngineResult r;
+    {
+      std::lock_guard lk(mtx_);
+      r = reconcileLocked(id);
+    }
+    if (!havePrimary) { primary = r; havePrimary = true; }
     if (!r.ok && !r.brokerError) return r;
   }
+  if (!havePrimary) return errResult("NOT_CONNECTED", "no account to reconcile", false);
   return primary;
 }
 

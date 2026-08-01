@@ -112,11 +112,28 @@ private:
   void handleUnsolicited(const jsn::Value& msg);
   void maybeHeartbeatLocked();
   long long primaryAccountLocked() const {
+    // The requested roster answers "who should we be" (hasCredentials runs
+    // before any auth); the authorized roster is a per-session subset of it.
+    if (!requestedAccountIds_.empty()) return requestedAccountIds_.front();
     return accountIds_.empty() ? 0 : accountIds_.front();
   }
 
+  // Auth-family broker errors mean the session is dead no matter what
+  // /health's socket state says — force a reconnect+reauth. Caller must hold
+  // mtx_.
+  void noteBrokerErrorLocked(const std::string& errorCode);
+
   std::string host_, clientId_, clientSecret_, accessToken_;
-  std::vector<long long> accountIds_; // primary first, then extras
+  // requestedAccountIds_ is what the keeper ASKED for (primary first);
+  // accountIds_ is what THIS session actually authorized. Kept separate so a
+  // transient auth failure on an extra account is retried on the next
+  // reconnect instead of silently shrinking the roster forever (audit #5).
+  std::vector<long long> requestedAccountIds_;
+  std::vector<long long> accountIds_; // authorized this session, primary first
+  // Monotonic clientMsgId so every response is matched to ITS request —
+  // pairing by payloadType alone returned buffered/unsolicited execution
+  // events as the current call's success (audit #1).
+  long long msgSeq_ = 0;
 
   std::mutex mtx_; // serializes all WS access; protocol is strictly req/res here
   CtraderWs ws_;

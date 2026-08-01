@@ -843,6 +843,23 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/veto-breakdown — WHICH guard eats HOW MANY entries (owner,
+  // 2026-08-01: the data-backed version of "should I loosen things to trade
+  // more"). Counts risk_events vetoes grouped by reason head plus upstream
+  // decision_log skips per stage, over ?days (default 7, max 90), optionally
+  // ?account=… scoping the upstream rows. Read-only.
+  router.get('/veto-breakdown', async (req, res) => {
+    try {
+      const { vetoBreakdown } = await import('../services/veto-breakdown.js')
+      res.json(vetoBreakdown(db, {
+        days: req.query.days,
+        account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/unresolvable-plan', async (req, res) => {
     try {
       const { findUnresolvableCandidates, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =

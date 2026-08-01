@@ -54,12 +54,30 @@ void testConfigureDropsSpecsWithNoAccount() {
   assert(te.statusJson().find("\"specsDroppedNoAccount\":0") != std::string::npos);
 }
 
+// SUPERSEDED CONVENTION (2026-08-01 audit #3): "no known SL → any target
+// improves" let a stop already locked at breakeven be amended BACK below it
+// whenever the keeper's push carried currentSl: null. An unknown SL now means
+// DO NOT AMEND — the peak still advances, and the first push that supplies a
+// real currentSl arms the ratchet.
+void testUnknownSlNeverAmends() {
+  TrailSpec s = longSpec();
+  assert(!s.hasSl);
+  double t = trailDecide(s, 1.10000, 1.10010);
+  assert(t == 0);                      // no amend without a known floor
+  assert(s.peakPrice == 1.10000);      // but the peak still tracks
+  // Short side: same rule.
+  TrailSpec sh = longSpec();
+  sh.dir = -1;
+  assert(trailDecide(sh, 1.09990, 1.10000) == 0);
+}
+
 void testLongRatchet() {
   TrailSpec s = longSpec();
-  // First tick: peak = bid, target = peak - dist, no existing SL → improves.
+  // The ratchet only arms once the current SL is KNOWN (see above).
+  s.lastSl = 1.09000; s.hasSl = true;
   double t = trailDecide(s, 1.10000, 1.10010);
   assert(t == 1.09900);
-  s.lastSl = t; s.hasSl = true;
+  s.lastSl = t;
   // Higher bid → peak advances, target improves by ≥ step (0.0001).
   t = trailDecide(s, 1.10120, 1.10130);
   assert(t == 1.10020);
@@ -76,10 +94,11 @@ void testLongRatchet() {
 void testShortRatchet() {
   TrailSpec s = longSpec();
   s.dir = -1;
+  s.lastSl = 1.10500; s.hasSl = true; // known floor arms the ratchet
   // Short trails above on the ASK.
   double t = trailDecide(s, 1.09990, 1.10000);
   assert(t == 1.10100);
-  s.lastSl = t; s.hasSl = true;
+  s.lastSl = t;
   // Ask falls → target tightens downward.
   t = trailDecide(s, 1.09790, 1.09800);
   assert(t == 1.09900);
@@ -91,6 +110,7 @@ void testShortRatchet() {
 
 void testNeverThroughMarket() {
   TrailSpec s = longSpec();
+  s.lastSl = 1.00000; s.hasSl = true;
   s.trailDist = 0.00001; // pathological: distance below one price step
   // Target would land at/above the bid → refused.
   double t = trailDecide(s, 1.10000, 1.10010);
@@ -127,6 +147,7 @@ void testSymbolIdsDedupe() {
 } // namespace
 
 int main() {
+  testUnknownSlNeverAmends();
   testLongRatchet();
   testShortRatchet();
   testNeverThroughMarket();
