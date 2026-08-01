@@ -33,8 +33,12 @@ only after their last caller migrates.
 | C | Shared primitives: Button aliases + focus-visible + loading, Switch, IconButton, Segmented, Disclosure, Input/Field density variants, `--control-radius` alias, global :where() focus-visible | `64d37d3` | vitest 395/395 (16 new), eslint, build, no-green, agent 1827/1827, audit:ui exit 0 |
 | D | `/performance` reference route (behaviour-preserving aria/tone/keyboard fixes) | `017859b` | same gate, all green |
 | E-s1 | Cross-route emphasis + tone corrections (Trade/Tune/Connect/Accounts/OrderLedger) | `bf3306a` | same gate, all green |
-| E1-E6 | Full per-route passes (Desk manager sheets to shared danger Button; Tune Toggle→Switch adoption; Risk Pill commit-model labelling; Connect nested-interactive fix; manager-sheet tab roles; StdTradeTable disclosure adoption) | **pending — next up** | |
-| F | Cockpit (scoped: dead-control W-1 report, tab roles, journal-row aria, focus trap for aria-modal; geometry stays parked in the approval queue) | pending | cockpit contract untouched |
+| E2 | /desk pass: manager-sheet tablists + IconButton closers + Double/Reverse→danger + radius tokens; OFF≠UNKNOWN status colours; LossReview aria + keyboard rows; StdTradeTable/OrderLedger disclosure aria | `d9e6cd9` | vitest 395/395, eslint, build, no-green, agent 1827/1827 |
+| E3 | /trade pass: LONG/SHORT + OK tones → on/off, status dots, order-pad side selector → state tints, bot-manage checkbox → Switch with pending, Clean-up → danger | `882559e` | same gate, all green |
+| E4 | /tune pass: Toggle → shared Switch adapter (14 sites, flows untouched), Autopilot radiogroup, MxCell aria-pressed=selection, GO/NO-GO → on/off, on-accent tokens | `72f2bc3` | same gate, all green |
+| E5 | /risk pass: Pill commit-model titles (3 POST-now pills marked), five pairs → radiogroups, Pill ON → state tint, Reset staircase → danger, Emergency → warning | `4f55b97` | same gate, all green |
+| E6 | /connect + /accounts (+audit) pass: nested-interactive fix (3 sibling buttons), BUY/SELL → on/off, collapse aria, StrategyInsights radiogroup + emphasis un-inverted, SymbolClusters aria-pressed | `a64f5fc` | same gate, all green |
+| F | Cockpit (scoped): focus trap + dialog name, PFD/MFD/LOG tab roles, journal-row aria-expanded + Space, theme aria-pressed, MORE/LESS aria-expanded; W-1 report below; geometry parked | see log | cockpit contract untouched |
 
 ## Compatibility rules in force
 
@@ -99,6 +103,45 @@ in scope for the phases without further asks.
 - Selected/armed states use `--color-state-on-*`; the clay accent stays
   navigation-only (ui-spec §3 rule 3).
 
+## Phase F — W-1 dead-control report (cockpit)
+
+Wired-looking controls that do NOTHING today. Removing or wiring them is
+an owner decision (queue item 6 covers the same class); this report is the
+Phase F deliverable, the controls themselves are untouched:
+
+1. **`Manage` header button** (TradeCockpit.jsx ~:294) — styled as the
+   primary header action, disables when the market closes, has no onClick.
+2. **`Close` header button** (~:296) — red danger styling, live-looking
+   title ("queues for next open"), no onClick and not even disabled. On a
+   money screen a dead red Close is the worst of the class: it teaches the
+   user that red buttons here do nothing.
+3. **Fleet chip** (~:693) — role=button + tabIndex so it is focusable and
+   announced as a button, but has no onClick/onKeyDown; the spec says a
+   click swaps the cockpit to that position.
+4. (Same class, page-side, already in queue item 6: PositionManager /
+   OrderManager `Modify` — permanently disabled dominant buttons.)
+
+Still open in the cockpit after Phase F (out of scope here): MFD tweak
+markers are mouse-only, ~14 cursor:help tooltip affordances have no
+keyboard equivalent, no :focus-visible styling exists in src/cockpit/ (the
+global :where() outline from Phase C applies only where cockpit CSS does
+not override outline), and every geometry/size divergence stays parked as
+C-12…C-51 in the approval queue.
+
+## Deviations recorded (not silently skipped)
+
+- /accounts/audit SymbolClusters + WorkflowAudit chips keep their 999px
+  capsules and exact hex styles: the owner's "exact prototype styles"
+  port instruction binds those two components; only missing aria was
+  added. Reconciling them with the radius token needs an owner call.
+- OrderLedger's inline expander keeps its `Close` label (collides with
+  market-close `Close` elsewhere) — renames are queue-gated.
+
 ## Verification log
 
 Per-phase results appended here as phases complete.
+
+- E2–E6 + F (2026-08-01): every phase ran the full gate — vitest 395/395,
+  eslint clean, build OK, check:no-green OK, agent tests 1827/1827 — all
+  green on every run. Static audit unchanged (skeleton shell; live
+  measurements still require a reachable agent backend).
