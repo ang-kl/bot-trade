@@ -576,7 +576,8 @@ function OpenTableBody({ rows }) {
           style={{ display: 'grid', gridTemplateColumns: OPEN_COLS, gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '1px 0', fontVariantNumeric: 'tabular-nums', cursor: 'pointer' }}>
           <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>
             <span aria-hidden="true" style={{ color: P_MU }}>{openId === p2.id ? '▾' : '▸'}</span>{' '}
-            <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-open-floating">
+            <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-open-floating"
+              accountId={p2.acc} dbPositionId={p2.id}>
               {p2.sym}
             </SymbolTarget>
           </span>
@@ -1509,6 +1510,9 @@ export default function Performance() {
       const pct = (v) => (Number.isFinite(e) && e !== 0 && Number.isFinite(v) ? (Math.abs(e - v) / e * 100).toFixed(1) + '%' : '—')
       return {
         id: p2.id, sym: p2.symbol,
+        // Durable cockpit identity (owner 2026-08-01, fake-journal fix): id IS
+        // monitored_positions.id here, and the account rides with the row.
+        acc: p2.account_id != null ? String(p2.account_id) : null,
         side: (sideLabelUpper(p2.side) ?? '—'),
         sideCol: isLong(p2.side) ? P_UP : P_DN,
         lots: p2.volume != null ? String(p2.volume) : '—',
@@ -2065,7 +2069,8 @@ export default function Performance() {
                   <div key={p2.id} style={{ display: 'grid', gridTemplateColumns: '74px 66px 1fr 96px', gap: 8, alignItems: 'center', borderTop: `1px solid ${P_EDG}`, paddingTop: 5, fontVariantNumeric: 'tabular-nums' }}>
                     <span style={{ display: 'flex', flexDirection: 'column' }}>
                       <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>
-                        <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-mobile-floating">{p2.sym}</SymbolTarget>
+                        <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-mobile-floating"
+                          accountId={p2.acc} dbPositionId={p2.id}>{p2.sym}</SymbolTarget>
                       </span>
                       <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.strat}</span>
                     </span>

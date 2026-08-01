@@ -252,11 +252,16 @@ export function cockpitFrame(store, tick, opts = {}) {
   // resolved at each event's timestamp — those columns read '—' rather than
   // borrow the demo candle), no invented R, no marker on the demo flight path.
   const realJournal = snap ? journalFromEvents(Array.isArray(snap.journal) ? snap.journal : [], KEYS) : null
-  const journal = realJournal ?? demoJournal
+  // A REAL position must NEVER wear the demo journal (owner 2026-08-01: "the
+  // tweak journal is fake"). Without a snapshot the honest state is "not
+  // loaded", not six invented rows — the demo rows are only for the pure
+  // reference cockpit where nothing real is bound at all.
+  const journal = realJournal ?? (real ? [] : demoJournal)
+  const journalUnloaded = !!(real && !snap)
   // Chart markers: only the demo path can carry the demo markers. Real events
   // have real timestamps, and the flown path is still generated — placing them
   // on it would be a fabricated position, which is exactly what the prompt bans.
-  const tweakMarks = snap ? [] : tweaks
+  const tweakMarks = real ? [] : tweaks
   const volRaw = combined.map((p, i) => {
     const dir = i ? p - combined[i - 1] : .01
     return { dir, v: .5 + Math.abs(dir) * 30 + Math.abs(Math.sin(i * 1.7)) * 1.3 + Math.abs(Math.sin(i * .41)) * .8 }
@@ -644,7 +649,9 @@ export function cockpitFrame(store, tick, opts = {}) {
     demoPanels: real
       ? (snap
           ? ['MFD chart & EMAs', 'volume profile']
-          : ['MFD chart & EMAs', 'volume profile', 'tweak journal', 'correlated traffic', 'RVOL / spread / latency', 'MFE / MAE', 'armed actions'])
+          // 'tweak journal' is deliberately NOT in this list any more: with a
+          // real position bound it renders unloaded/empty, never demo rows.
+          : ['MFD chart & EMAs', 'volume profile', 'correlated traffic', 'RVOL / spread / latency', 'MFE / MAE', 'armed actions'])
       : null,
     review, session, sessOpensIn, marketClosed,
     pnl: (pnlUsd >= 0 ? '+' : '−') + '$' + Math.abs(pnlUsd).toFixed(0), pnlNum: pnlUsd, rNow: (rNow >= 0 ? '+' : '') + rNow.toFixed(2) + 'R', rCol: rNow >= 0 ? 'var(--up)' : 'var(--dn)',
@@ -674,7 +681,7 @@ export function cockpitFrame(store, tick, opts = {}) {
       + ' · SL ' + f2(sl) + ' / TP ' + f2(tp),
     // '—' when a snapshot is bound but correlation is unknown: an unmeasured
     // count is not zero (the prompt's missing-is-UNKNOWN rule).
-    legs, traffic, nSame: snap && !corr ? '—' : String(nSame), nDiv: snap && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks: tweakMarks, journal, wx,
+    legs, traffic, nSame: snap && !corr ? '—' : String(nSame), nDiv: snap && !corr ? '—' : String(nDiv), mktRead, flownPath, planPath, tweaks: tweakMarks, journal, journalUnloaded, wx,
     yAxis, xAxis, vwapPath, vpBars, vaTop, vaH, pocTop, yMinor, xMinor, resBands, xLabels, volBars, ema9Path, ema20Path, ema50Path,
     fuel: Math.round(fuelW) + '%',
     acctBal: usd(balance), acctEq: usd(balance + pnlUsd), capAbs: usd(dailyCap), capUsed: '−' + usd(usedAbs), capLeft: usd(dailyCap - usedAbs),

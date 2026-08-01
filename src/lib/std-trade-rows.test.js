@@ -189,3 +189,24 @@ describe('bracket money on the row adapters', () => {
     expect(row.reason).toContain('net')
   })
 })
+
+describe('brokerPositionRows: durable cockpit identity from the DB row (owner 2026-08-01 fake-journal fix)', () => {
+  it('stamps dbPositionId + accountId when the dbByPid row carries them', () => {
+    const dbByPid = new Map([['9', { id: 41, account_id: 46130058, side: 'long', current_sl: 1.09, current_tp: 1.11 }]])
+    const [row] = brokerPositionRows(
+      [{ positionId: 9, symbol: 'EURUSD', side: 'BUY', sl: 1.09, tp: 1.11 }],
+      { dbByPid }
+    )
+    expect(row.dbPositionId).toBe(41)
+    expect(row.accountId).toBe('46130058')
+  })
+
+  it('stays null without dbByPid (existing callers) and for untracked positions', () => {
+    const [bare] = brokerPositionRows([{ positionId: 9, symbol: 'EURUSD', side: 'BUY' }])
+    expect(bare.dbPositionId).toBe(null)
+    expect(bare.accountId).toBe(null)
+    const [untracked] = brokerPositionRows([{ positionId: 9, symbol: 'EURUSD', side: 'BUY' }], { dbByPid: new Map() })
+    expect(untracked.dbPositionId).toBe(null)
+    expect(untracked.accountId).toBe(null)
+  })
+})
