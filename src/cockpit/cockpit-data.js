@@ -172,6 +172,13 @@ export function cockpitFrame(store, tick, opts = {}) {
   const rNow = (price - entry) * dir / rUnit
   const rPnl = real ? num(real.pnl) : null
   const pnlUsd = rPnl != null ? rPnl : (price - entry) * 1092 * 10 / 7.8
+  const rr = haveRails ? Math.abs(tp - entry) / Math.abs(entry - sl) : (tp - entry) / (entry - sl)
+  // Dollars-per-R. Real position: from two broker facts (live P&L and the R it
+  // sits at — below 0.05R the division is not trustworthy). Demo: the
+  // reference instrument's own contract economics (same constants as pnlUsd).
+  const dollarPerR = real
+    ? (rPnl != null && Math.abs(rNow) >= .05 ? Math.abs(rPnl / rNow) : null)
+    : rUnit * 1092 * 10 / 7.8
   const spd = wv(1) * 1.6 + .5
   const vsi = rNow * .7 + wv(2) * .35
   const hdgV = clamp(wv(3) * 55 + 18, -100, 100)
@@ -180,7 +187,17 @@ export function cockpitFrame(store, tick, opts = {}) {
   // on FX a 0.10 step would put every tick far outside the visible band.
   const tickStep = rUnit / 3
   const tickOffs = [3, 2, 1, 0, -1, -2, -3].map(k => k * tickStep)
-  const altTicksAll = tickOffs.map((d, i) => ({ v: f2(price + d), r: (((price + d - entry) * dir / rUnit >= 0 ? '+' : '') + ((price + d - entry) * dir / rUnit).toFixed(1)), top: 22 + i * 11.5 }))
+  // Slide-rule bezel (owner 2026-08-01, watch-bezel reference): each tape tick
+  // carries the SAME level in a third unit — this position's dollars — so the
+  // tape converts price ↔ R ↔ $ at a glance, like the paired scales of a
+  // slide-rule bezel. Null when $/R is not derivable (real position too close
+  // to entry for a trustworthy division): the tick shows no $ rather than a guess.
+  const usdSmall = n => (n >= 0 ? '+' : '−') + '$' + (Math.abs(n) >= 1000 ? (Math.abs(n) / 1000).toFixed(1) + 'k' : Math.round(Math.abs(n)))
+  const altTicksAll = tickOffs.map((d, i) => {
+    const rTick = (price + d - entry) * dir / rUnit
+    return { v: f2(price + d), r: ((rTick >= 0 ? '+' : '') + rTick.toFixed(1)), top: 22 + i * 11.5,
+      usd: dollarPerR != null ? usdSmall(rTick * dollarPerR) : null }
+  })
   const span = .42 * K
   const pos = p => 50 - (p - price) / span * 50
   // R is signed by trade direction, so on a SHORT the TP (below entry) reads
@@ -191,6 +208,24 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mTP = mk(tp, 'TP'), mEN = mk(entry, 'ENT'), mSL = mk(sl, 'SL')
   const bands = [mTP, mEN, mSL].map(m => m.t)
   const altTicks = thinTicks(altTicksAll, bands)
+  // Tachymeter/pulsometer bezel on the VSI (same owner note): a watch
+  // tachymeter converts a rate into a time — here each rate graduation shows
+  // how long THIS trade would take, at that rate, to reach TP (above centre)
+  // or burn its cushion to SL (below centre, SL = −1R by construction). The
+  // readout line does the same conversion at the live rate.
+  const remTp = rr - rNow
+  const remSl = rNow + 1
+  const fmtDur = h => (!Number.isFinite(h) || h <= 0) ? '—' : h > 48 ? '>48h' : h < 1 ? Math.round(h * 60) + 'm' : h < 10 ? h.toFixed(1) + 'h' : Math.round(h) + 'h'
+  const vsiBezel = [
+    { r: '+2', t: fmtDur(remTp / 2), top: 8 },
+    { r: '+1', t: fmtDur(remTp / 1), top: 29 },
+    { r: '−1', t: fmtDur(remSl / 1), top: 71 },
+    { r: '−2', t: fmtDur(remSl / 2), top: 92 },
+  ]
+  const vsiEta = marketClosed ? null
+    : vsi > .05 ? 'TP ' + fmtDur(remTp / vsi)
+    : vsi < -.05 ? 'SL ' + fmtDur(remSl / -vsi)
+    : 'level'
   const hdgTicks = [[-100, 'BEAR'], [-75, ''], [-50, 'weak'], [-25, ''], [0, 'CHOP'], [25, ''], [50, 'weak'], [75, ''], [100, 'BULL']].map(([v, lb], i) => ({ v: lb || '·', left: 10 + i * 10, col: v < 0 ? 'var(--dn)' : v > 0 ? 'var(--up)' : 'var(--sb)' }))
   if (!store.hist2) {
     let s2 = 991
@@ -430,12 +465,11 @@ export function cockpitFrame(store, tick, opts = {}) {
   const mult = 10, shares = 1092 * mult, fx = 7.8, mgnRate = .2
   const notionalL = price * shares, notionalUsd = notionalL / fx
   const marginUsd = notionalUsd * mgnRate
-  const rr = haveRails ? Math.abs(tp - entry) / Math.abs(entry - sl) : (tp - entry) / (entry - sl)
-  // Dollars-per-R from two broker facts (live P&L and the R it sits at) — no
-  // contract-size guess. Below 0.05R the division is not trustworthy.
-  const dollarPerR = rPnl != null && Math.abs(rNow) >= .05 ? Math.abs(rPnl / rNow) : null
-  const slUsdV = real ? (dollarPerR != null ? -dollarPerR : null) : -(entry - sl) * shares / fx
-  const tpUsdV = real ? (dollarPerR != null ? dollarPerR * rr : null) : (tp - entry) * shares / fx
+  // rr / dollarPerR computed up top (they also feed the bezel scales). For the
+  // demo instrument dollarPerR is rUnit·shares/fx, so these two lines are
+  // value-identical to the old per-branch arithmetic.
+  const slUsdV = dollarPerR != null ? -dollarPerR : null
+  const tpUsdV = dollarPerR != null ? dollarPerR * rr : null
   const hk = n => 'HK$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 })
   const pct = n => (n >= 0 ? '+' : '−') + Math.abs(n).toFixed(2) + '%'
   // Margin stays live on a closed market (broker fact); rates freeze with wv.
@@ -658,7 +692,7 @@ export function cockpitFrame(store, tick, opts = {}) {
     spd: marketClosed ? '—' : (spd >= 0 ? '+' : '') + spd.toFixed(2), spdCol: marketClosed ? 'var(--mu)' : spd >= 0 ? 'var(--up)' : 'var(--dn)', spdTicks,
     price: f2(price), altTicks, tpLb: mTP.lb, enLb: mEN.lb, slLb: mSL.lb,
     tpBrd: mTP.off ? 'none' : '2px solid var(--up)', enBrd: mEN.off ? 'none' : '2px dashed var(--wrn)', slBrd: mSL.off ? 'none' : '2px solid var(--dn)',
-    vsi: marketClosed ? '—' : (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: marketClosed ? 'var(--mu)' : vsi >= 0 ? 'var(--up)' : 'var(--dn)',
+    vsi: marketClosed ? '—' : (vsi >= 0 ? '+' : '') + vsi.toFixed(2), vsiCol: marketClosed ? 'var(--mu)' : vsi >= 0 ? 'var(--up)' : 'var(--dn)', vsiBezel, vsiEta,
     hdg: hdgV >= 25 ? 'BULL ' + Math.round(hdgV) : hdgV <= -25 ? 'BEAR ' + Math.round(-hdgV) : 'CHOP', hdgCol: hdgV >= 25 ? 'var(--up)' : hdgV <= -25 ? 'var(--dn)' : 'var(--sb)', hdgTicks,
     mfeR: (exMfe >= 0 ? '+' : '') + exMfe.toFixed(2) + 'R', maeR: (exMae >= 0 ? '+' : '') + exMae.toFixed(2) + 'R',
     giveback: (exMfe - rNow).toFixed(2) + 'R', exIsReal,

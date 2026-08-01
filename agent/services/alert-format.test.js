@@ -36,3 +36,25 @@ test('armed + conviction >= 8 says the bot WILL act', () => {
   const msg = formatAnalysisAlert({}, { sym: 'NZDUSD', synth: s2, signal: { timeframe: '30m' }, armed: { autotrade: true, matrix: { NZDUSD: ['30m'] } } })
   assert.match(msg, /BOT WILL ACT/)
 })
+
+// Owner 01-08: per-symbol TradingView buttons on scan alerts, opened at the
+// signal's own timeframe (interval param — a fresh blank layout is not
+// reachable via TradingView's public URL, stated honestly in the source).
+import { tvChartUrl, scanAlertButtons } from './alert-format.js'
+
+test('tvChartUrl maps bot timeframes to TradingView intervals', () => {
+  assert.equal(tvChartUrl('EURUSD', '4h'), 'https://www.tradingview.com/chart/?symbol=EURUSD&interval=240')
+  assert.equal(tvChartUrl('NAS100', '1d'), 'https://www.tradingview.com/chart/?symbol=NDX&interval=D')
+  assert.equal(tvChartUrl('INTC.US', '1w'), 'https://www.tradingview.com/chart/?symbol=INTC&interval=W')
+  assert.ok(tvChartUrl('GBPUSD', 'junk').endsWith('interval=60')) // unknown → 1h
+})
+
+test('scanAlertButtons: one row per setup, capped at 6, labelled sym·tf·strategy', () => {
+  const setups = Array.from({ length: 8 }, (_, i) => ({ symbol: `SYM${i}`, timeframe: '4h', strategy: 'va_breakout' }))
+  const rows = scanAlertButtons(setups)
+  assert.equal(rows.length, 6)
+  assert.equal(rows[0].length, 1)
+  assert.match(rows[0][0].text, /SYM0 · 4h · va_breakout/)
+  assert.match(rows[0][0].url, /interval=240/)
+  assert.deepEqual(scanAlertButtons([]), [])
+})

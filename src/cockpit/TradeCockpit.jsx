@@ -6,6 +6,7 @@
    All conflicts met during the port are listed in the PR body, none resolved
    silently. */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import gsap from 'gsap'
 import { cockpitFrame } from './cockpit-data.js'
 import { pageAsleep } from '../lib/agent-api.js'
@@ -18,13 +19,13 @@ import './cockpit-tokens.css'
 // numbers it states; the minmax(90px,…) centre form is reference-verbatim.)
 const CFG = {
   desktop: { shellPad: '16px 12px 6px 24px', grid: '1fr 1.25fr', tabs: null,
-    pfdCols: '54px minmax(96px,1fr) 32px 94px 36px', pfdGap: 5, pfdH: 340,
+    pfdCols: '54px minmax(96px,1fr) 32px 94px 36px', pfdGap: 5, pfdH: 289,
     jr: '3fr 1fr', bullets: 'repeat(2,1fr)', inv: 'repeat(5,1fr)', headerWraps: false, touch: false },
   ipad: { shellW: 1024, shellPad: '16px 10px 8px 24px', grid: '1fr', tabs: ['PFD', 'MFD'],
-    pfdCols: '86px 1fr 54px 108px 54px', pfdGap: 7, pfdH: 300,
+    pfdCols: '86px 1fr 54px 108px 54px', pfdGap: 7, pfdH: 255,
     jr: '3fr 1fr', bullets: 'repeat(2,1fr)', inv: 'repeat(3,1fr)', headerWraps: false, touch: true },
   iphone: { shellW: 390, shellPad: '14px 8px 10px 20px', grid: '1fr', tabs: ['PFD', 'MFD', 'LOG'],
-    pfdCols: '50px minmax(90px,1fr) 22px 84px 36px', pfdGap: 4, pfdH: 268,
+    pfdCols: '50px minmax(90px,1fr) 22px 84px 36px', pfdGap: 4, pfdH: 228,
     jr: '1fr', bullets: '1fr', inv: 'repeat(2,1fr)', headerWraps: true, touch: true },
 }
 
@@ -33,10 +34,47 @@ const chipTint = { wrn: 'rgba(255,196,102,.16)', acc: 'rgba(79,140,255,.18)', vi
 function Chip({ fs, hue, children }) {
   return <span style={{ fontSize: fs(10.5), fontWeight: 600, letterSpacing: '.05em', color: `var(--${hue})`, background: chipTint[hue], border: `1px solid var(--${hue})`, borderRadius: 5, padding: '0 7px', whiteSpace: 'nowrap' }}>{children}</span>
 }
+// Owner (2026-08-01): "(i) information all over this cockpit isn't pop-up
+// with explanation." The old Info relied on the native `title` tooltip, which
+// never fires on touch (the iPad/iPhone variants) and needs a ~1s hover on
+// desktop — so the icons read as dead. Now a tap/click opens a real popover
+// bubble; `title` stays as the instant-hover path on desktop. The bubble
+// portals to <body> so the panes' overflow:hidden (and the phone's 0.8 shell
+// scale) can't clip or shift it.
 function Info({ fs, tip, big }) {
-  return big
-    ? <span title={tip} style={{ cursor: 'help', fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--edg)', borderRadius: '50%', width: 15, height: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>ⓘ</span>
-    : <span title={tip} style={{ cursor: 'help', fontSize: fs(9.5), color: 'var(--mu)' }}>ⓘ</span>
+  const [pop, setPop] = useState(null) // { x, y, up, theme }
+  const bubRef = useRef(null)
+  useEffect(() => {
+    if (!pop) return
+    const away = e => { if (bubRef.current && !bubRef.current.contains(e.target)) setPop(null) }
+    document.addEventListener('pointerdown', away, true)
+    window.addEventListener('scroll', away, true)
+    return () => { document.removeEventListener('pointerdown', away, true); window.removeEventListener('scroll', away, true) }
+  }, [pop])
+  const toggle = e => {
+    e.stopPropagation(); e.preventDefault()
+    if (pop) { setPop(null); return }
+    const r = e.currentTarget.getBoundingClientRect()
+    const up = r.bottom > window.innerHeight - 140 // near the bottom edge → open upward
+    setPop({
+      x: Math.max(6, Math.min(r.left, window.innerWidth - 292)),
+      y: up ? window.innerHeight - r.top + 6 : r.bottom + 6, up,
+      theme: e.currentTarget.closest('.tc-root')?.dataset.theme || 'dark',
+    })
+  }
+  const icon = big
+    ? { cursor: 'pointer', fontSize: fs(11.5), fontWeight: 600, color: pop ? 'var(--acc)' : 'var(--mu)', border: `1px solid ${pop ? 'var(--acc)' : 'var(--edg)'}`, borderRadius: '50%', width: 15, height: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }
+    : { cursor: 'pointer', fontSize: fs(9.5), color: pop ? 'var(--acc)' : 'var(--mu)' }
+  return (
+    <>
+      <span role="button" tabIndex={0} aria-label="What is this?" aria-expanded={!!pop} title={tip}
+        onClick={toggle} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') toggle(e) }}
+        style={icon}>ⓘ</span>
+      {pop && createPortal(
+        <div ref={bubRef} className="tc-tipbub" data-theme={pop.theme}
+          style={{ left: pop.x, ...(pop.up ? { bottom: pop.y } : { top: pop.y }) }}
+          onClick={e => e.stopPropagation()}>{tip}</div>, document.body)}
+    </>)
 }
 
 const card = { background: 'var(--gls)', border: '1px solid var(--gbd)', boxShadow: 'var(--gsh)', backdropFilter: 'blur(22px)' }
@@ -148,6 +186,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     if (q('#ei-fuel')) gsap.to(q('#ei-fuel'), { width: a.fuelW + '%', duration: 1, ease: 'power2.out' })
     ;['#alt-tp', '#alt-en', '#alt-sl'].forEach((id, i) => { const el = q(id); if (el) gsap.set(el, { top: [a.tpT, a.enT, a.slT][i] + '%' }) })
     if (q('#mfd-ac')) gsap.to(q('#mfd-ac'), { x: a.acX, y: a.acY, duration: 1.1, ease: 'power2.out' })
+    // No blinking on a closed market (owner 2026-08-01): if the session closes
+    // while the cockpit is open, stop the WX pulse instead of letting the
+    // yoyo tween run forever. The OPEN-dot pulse is CSS-gated the same way.
+    if (marketClosed && storeRef.current._wx) { storeRef.current._wx = 0
+      gsap.killTweensOf('#wx1,#wx2')
+      if (q('#wx1')) gsap.set('#wx1,#wx2', { scale: 1 }) }
     if (!storeRef.current._wx && q('#wx1') && !marketClosed) { storeRef.current._wx = 1
       gsap.to(q('#wx1'), { scale: 1.12, transformOrigin: 'center', duration: 2.2, repeat: -1, yoyo: true, ease: 'sine.inOut' })
       gsap.to(q('#wx2'), { scale: 1.25, transformOrigin: 'center', duration: 1.6, repeat: -1, yoyo: true, ease: 'sine.inOut' }) }
@@ -240,8 +284,8 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <button title={themeOverride == null ? 'Following the system theme — tap to override' : 'Overriding the system theme — tap to cycle'}
           onClick={() => setThemeOverride(o => (o == null ? (sysDark ? 'light' : 'dark') : null))}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--tx)', background: 'var(--acs)', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}{themeOverride == null ? '' : ' ·'}</button>
-        <button aria-label="Close cockpit" onClick={onClose}
-          style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--sb)', background: 'transparent', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>✕</button>
+        {/* Owner (2026-08-01): no ✕ here — the six border close buttons
+            (corners + side midpoints) already cover dismissal. */}
       </div>
     </div>)
 
@@ -249,7 +293,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ ...card, borderRadius: cfg.tabs ? '0 18px 18px 18px' : 18, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span style={{ fontSize: fs(12.5), fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--acc)' }}>PFD — primary flight display</span>
-        <Info fs={fs} big tip="speed = momentum · attitude = P&L · altitude = price · VSI = R/hour · heading = trend" />
+        <Info fs={fs} big tip="speed = momentum · attitude = P&L · altitude = price · VSI = R/hour · heading = trend. Bezel scales (chronograph-style): the price tape pairs every level with its R and $ value (slide rule); the VSI graduations convert each rate into time-to-TP / time-to-SL (tachymeter)." />
       </div>
       <div className="tc-pfd-grid" style={{ display: 'grid', gridTemplateColumns: cfg.pfdCols, gap: cfg.pfdGap, overflow: 'hidden', alignItems: 'stretch', height: cfg.pfdH }}>
         <div style={pane}>
@@ -279,7 +323,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           </div>
         </div>
         <div style={{ ...pane, display: 'flex', flexDirection: 'column' }}>
-          <span title="Volume Profile: how much trading happened at each price. Amber = POC (most-traded price, widest bar). Violet band = Value Area (70% of volume). Grey = low-volume price (LVN) — price tends to move fast through these." style={{ cursor: 'help', fontSize: fs(8.5), fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingTop: 2, borderBottom: '1px solid var(--edg)', paddingBottom: 2 }}>VOL ⓘ</span>
+          <span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingTop: 2, borderBottom: '1px solid var(--edg)', paddingBottom: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>VOL <Info fs={fs} tip="Volume Profile: how much trading happened at each price. Amber = POC (most-traded price, widest bar). Violet band = Value Area (70% of volume). Grey = low-volume price (LVN) — price tends to move fast through these." /></span>
           <div style={{ flex: 1, position: 'relative' }}>
             {v && <>
               <div style={{ position: 'absolute', left: 0, right: 0, top: v.vaTop + '%', height: v.vaH + '%', background: 'linear-gradient(90deg,rgba(168,85,247,.16),transparent)' }} />
@@ -292,13 +336,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ fontSize: 7, fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingBottom: 2 }}>volume →</span>
         </div>
         <div style={pane}>
-          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><span title="One column, both scales: price on the left, the same level in R (risk units) on the right. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." style={{ cursor: 'help', fontSize: fs(8.5), color: 'var(--mu)' }}>ⓘ</span></div>
+          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><Info fs={fs} tip="Slide-rule tape, three paired scales: price on the left, the same level in R (risk units) and in this position's dollars on the right. ENT = your entry price (always 0.00R — the zero line of the trade). SL and TP are the stop and target rails. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." /></div>
           {v && <>
             <div title="best excursion so far (MFE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMfe + '%', height: 2, background: 'var(--up)', zIndex: 2 }} />
             <div title="worst excursion so far (MAE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMae + '%', height: 2, background: 'var(--dn)', zIndex: 2 }} />
             <div title={`best ${v.mfeR} · worst ${v.maeR} · handed back ▼${v.giveback} from the peak`} style={{ position: 'absolute', left: 2, right: 2, bottom: 2, display: 'flex', gap: 3, justifyContent: 'space-between', fontSize: fs(8.5), fontVariantNumeric: 'tabular-nums', zIndex: 2, background: 'var(--gls)', cursor: 'help' }}><span style={{ color: 'var(--up)' }}>{v.mfeR}</span><span style={{ color: 'var(--dn)' }}>{v.maeR}</span></div>
             {v.altTicks.map((s, i) => (
-              <div key={i} style={{ position: 'absolute', left: 0, right: 0, top: s.top + '%', display: 'flex', alignItems: 'center', gap: 3, padding: '0 4px', transform: 'translateY(-50%)' }}><span style={{ width: 6, height: 1, background: 'var(--mu)' }} /><span style={{ fontSize: fs(10.5), color: dim || 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{s.v}</span><span style={{ marginLeft: 'auto', fontSize: fs(8.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums' }}>{s.r}</span></div>))}
+              <div key={i} style={{ position: 'absolute', left: 0, right: 0, top: s.top + '%', display: 'flex', alignItems: 'center', gap: 3, padding: '0 4px', transform: 'translateY(-50%)' }}><span style={{ width: 6, height: 1, background: 'var(--mu)' }} /><span style={{ fontSize: fs(10.5), color: dim || 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{s.v}</span><span style={{ marginLeft: 'auto', fontSize: fs(8.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden' }}>{s.r}{s.usd && variant !== 'iphone' ? ' · ' + s.usd : ''}</span></div>))}
             <div id="alt-tp" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--up)', borderTop: v.tpBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.tpLb}</span></div>
             <div id="alt-en" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--wrn)', borderTop: v.enBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.enLb}</span></div>
             <div id="alt-sl" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--dn)', borderTop: v.slBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.slLb}</span></div>
@@ -307,15 +351,24 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           {!v && skeleton(150)}
         </div>
         <div style={{ ...pane, background: undefined, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0 2px' }}>
-          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4 }}>VSI</span>
+          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4, display: 'inline-flex', alignItems: 'center', gap: 2 }}>VSI <Info fs={fs} tip="Vertical Speed Indicator: how fast this trade is earning or losing, in R per hour. Needle up (+) = P&L climbing; needle down (−) = sinking. Tachymeter bezel: the small time under each rate is how long, AT that rate, this trade takes to reach TP (above centre) or burn its cushion to SL (below centre). The readout line converts the live rate the same way." /></span>
           <div style={{ flex: 1, position: 'relative', width: '100%' }}>
             <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', height: 1, background: 'var(--edg)' }} />
-            <span style={{ position: 'absolute', top: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>+2</span>
-            <span style={{ position: 'absolute', bottom: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>−2</span>
+            {v?.vsiBezel
+              ? v.vsiBezel.map(b => (
+                <div key={b.r} style={{ position: 'absolute', top: b.top + '%', left: 0, right: 0, transform: 'translateY(-50%)', textAlign: 'center', lineHeight: 1.15 }}>
+                  <div style={{ fontSize: fs(10.5), color: 'var(--sb)' }}>{b.r}</div>
+                  <div style={{ fontSize: fs(8), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{b.t}</div>
+                </div>))
+              : <>
+                <span style={{ position: 'absolute', top: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>+2</span>
+                <span style={{ position: 'absolute', bottom: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>−2</span>
+              </>}
             <div id="pfd-vsi" style={{ position: 'absolute', left: 4, right: 4, top: '50%', height: 3, borderRadius: 2, background: v?.vsiCol ?? 'var(--edg)', transformOrigin: 'left center' }} />
           </div>
           <span style={{ fontSize: fs(10.5), fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: dim || v?.vsiCol, paddingBottom: 2, whiteSpace: 'nowrap' }}>{v?.vsi ?? ''}</span>
-          <span style={{ fontSize: fs(8.5), color: 'var(--mu)', paddingBottom: 4, whiteSpace: 'nowrap' }}>R/hr</span>
+          <span style={{ fontSize: fs(8.5), color: 'var(--mu)', paddingBottom: v?.vsiEta ? 1 : 4, whiteSpace: 'nowrap' }}>R/hr</span>
+          {v?.vsiEta && <span style={{ fontSize: fs(8), color: 'var(--sb)', paddingBottom: 4, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{v.vsiEta}</span>}
         </div>
       </div>
       <div style={{ position: 'relative', height: 44, borderRadius: 10, border: '1px solid var(--edg)', background: 'var(--acs)', overflow: 'hidden' }}>
@@ -344,7 +397,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           </div>) : <div key={i} style={{ border: '1px solid var(--edg)', borderRadius: 6, padding: '2px 7px', height: 26 }}>{skeleton()}</div>)}
       </div>
       <div className="tc-mfd-wrap" style={{ position: 'relative', paddingTop: 34, paddingBottom: 4 }}>
-        <svg viewBox="0 0 460 208" style={{ width: '100%', overflow: 'visible', display: 'block' }}>
+        {/* Owner (2026-08-01): "do the same for the MFD" — map height −15%.
+            The drawing keeps its 460×208 coordinate system; the box renders at
+            85% of the natural aspect height with preserveAspectRatio="none",
+            a uniform vertical squash. Every HTML overlay is %-positioned
+            against the same box, so alignment is preserved exactly. */}
+        <svg viewBox="0 0 460 208" preserveAspectRatio="none" style={{ width: '100%', aspectRatio: '460 / 176.8', overflow: 'visible', display: 'block' }}>
           <defs><filter id="glo" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
           <line x1="28" y1="16" x2="28" y2="210" stroke="var(--sb)" strokeWidth="1" />
           <line x1="28" y1="210" x2="452" y2="210" stroke="var(--sb)" strokeWidth="1" />
