@@ -1396,8 +1396,19 @@ export default function Tune() {
               <SectionTitle>Master switches</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">The three phases, and how wide autotrade casts. Everything below only matters while these are on.</p>
             <div className="flex flex-wrap gap-2">
-              <Toggle on={config?.scan_enabled} label="Scan" onClick={() => toggle('/actions/scan-toggle', 'Scan', config?.scan_enabled)} />
-              <Toggle on={config?.analyze_enabled} label="Analyze" onClick={() => toggle('/actions/analyze-toggle', 'Analyze', config?.analyze_enabled)} />
+              {/* Approval-queue item 2 (owner 2026-08-01): master Scan and
+                  Analyze confirm before turning OFF — either one silently
+                  stops the whole trading pipeline for EVERY account, and both
+                  were a bare tap. Turning ON stays one tap (it starts scans,
+                  not orders; the autotrade arm keeps its own gate). */}
+              <Toggle on={config?.scan_enabled} label="Scan" onClick={() => {
+                if (config?.scan_enabled && !window.confirm('Turn master Scan OFF? Nothing gets scanned, so NO new trades happen on ANY account until it is back on. Open positions keep being managed.')) return
+                toggle('/actions/scan-toggle', 'Scan', config?.scan_enabled)
+              }} />
+              <Toggle on={config?.analyze_enabled} label="Analyze" onClick={() => {
+                if (config?.analyze_enabled && !window.confirm('Turn master Analyze OFF? Scans still run but nothing is analyzed, so NO new trades happen on ANY account until it is back on. Open positions keep being managed.')) return
+                toggle('/actions/analyze-toggle', 'Analyze', config?.analyze_enabled)
+              }} />
               <Toggle on={config?.autotrade_enabled} label="Autotrade" onClick={() => {
                 if (!config?.autotrade_enabled && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
                 // Owner (2026-07-31, after two unexplained all-account
@@ -3358,6 +3369,16 @@ export default function Tune() {
                   if (!file) return
                   try {
                     const preset = JSON.parse(await file.text())
+                    // Approval-queue item 2: importing REWRITES the live risk
+                    // config, timeframes, filters and watchlist in one go —
+                    // say so before touching anything.
+                    const parts = [
+                      preset.riskConfig ? 'the ENTIRE risk config' : null,
+                      Array.isArray(preset.autotradeTimeframes) && preset.autotradeTimeframes.length > 0 ? 'autotrade timeframes' : null,
+                      (typeof preset.rsiFilter === 'boolean' || typeof preset.vwapFilter === 'boolean' || typeof preset.fvgFilter === 'boolean') ? 'entry filters' : null,
+                      Array.isArray(preset.symbols) && preset.symbols.length > 0 ? `the watchlist (${preset.symbols.length} symbols)` : null,
+                    ].filter(Boolean)
+                    if (!window.confirm(`Import "${file.name}"? This REPLACES ${parts.join(', ') || 'nothing recognisable'} with the file's values, effective immediately. Export your current settings first if you may want them back.`)) return
                     if (preset.riskConfig) await agentPost('/actions/risk-config', preset.riskConfig)
                     if (Array.isArray(preset.autotradeTimeframes) && preset.autotradeTimeframes.length > 0) await agentPost('/actions/autotrade-timeframes', { timeframes: preset.autotradeTimeframes })
                     if (typeof preset.rsiFilter === 'boolean') await agentPost('/actions/fib-rsi-filter', { on: preset.rsiFilter })

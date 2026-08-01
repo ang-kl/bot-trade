@@ -126,11 +126,18 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
   useEffect(() => { if (masterKey) load() }, [masterKey, load])
 
   const set = async (acct, phaseKey, on) => {
+    const who = `${acct.isLive ? 'LIVE' : 'Demo'} ${acct.traderLogin || acct.accountId}`
     // Arming REAL orders on an account gets the same confirmation the master
-    // Autotrade switch gets. Turning it OFF never asks — stopping is safe.
+    // Autotrade switch gets.
     if (phaseKey === 'autotrade' && on) {
-      const who = `${acct.isLive ? 'LIVE' : 'Demo'} ${acct.traderLogin || acct.accountId}`
       if (!window.confirm(`Arm autotrade on ${who}? The agent will place REAL orders on this account when a signal passes the risk gate.`)) return
+    }
+    // Approval-queue item 2 (owner 2026-08-01): DISARMS confirm too — after
+    // two unexplained all-account disarms, a mis-tap silently stopping an
+    // account's trading is the failure this guards against.
+    if (!on) {
+      const label = PHASES.find(p => p.key === phaseKey)?.label || phaseKey
+      if (!window.confirm(`Turn ${label} OFF for ${who}? ${phaseKey === 'autotrade' ? 'No new orders will be placed on this account' : 'This stops new trades on this account'} until it is back on. Open positions keep being managed.`)) return
     }
     const key = `${acct.accountId}:${phaseKey}`
     setBusy(key)

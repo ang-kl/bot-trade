@@ -173,7 +173,12 @@ export default function Connect() {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={saveConn}>Save</Button>
           <Button size="sm" variant="ghost" onClick={testConn}>Test connection</Button>
-          <Button size="sm" variant="danger" onClick={() => { clearAgentConn(); setUrl(''); setSecret(''); flash('Cleared — falling back to build-time env vars') }}>Clear</Button>
+          {/* Approval-queue item 2: Clear wipes this browser's stored agent
+              URL + secret — one mis-tap disconnected the UI from the bot. */}
+          <Button size="sm" variant="danger" onClick={() => {
+            if (!window.confirm('Clear the saved agent connection from THIS browser? The URL and secret are removed and the UI falls back to build-time defaults — you will need to re-enter them to reconnect. The bot itself keeps running.')) return
+            clearAgentConn(); setUrl(''); setSecret(''); flash('Cleared — falling back to build-time env vars')
+          }}>Clear</Button>
           {testResult && (
             <Badge tone={testResult.ok ? 'on' : 'off'}>{testResult.ok ? `REACHABLE — ${testResult.detail}` : `FAILED — ${testResult.detail}`}</Badge>
           )}
