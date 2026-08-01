@@ -16,6 +16,7 @@ import AccountPivot from '../components/AccountPivot.jsx'
 import MarketClock from '../components/MarketClock.jsx'
 import StrategyInsights from '../components/StrategyInsights.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
+import AccountSwitcher from '../components/AccountSwitcher.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import Skeleton from '../components/common/Skeleton.jsx'
@@ -94,12 +95,6 @@ function AccountCard({ acct, marketHours, onChanged }) {
   )
 }
 
-const ACCOUNTS_SECTIONS = [
-  { id: 'sec-clock', label: 'Market clock' },
-  { id: 'sec-primary', label: 'Bot account' },
-  { id: 'sec-others', label: 'Other accounts' },
-  { id: 'sec-insights', label: 'Strategy insights' },
-]
 
 export default function Accounts() {
   const [bot, setBot] = useState(null)         // the selected account (fast path)
@@ -186,7 +181,7 @@ export default function Accounts() {
 
   return (
     <div className="space-y-8">
-      <SectionNavFab sections={ACCOUNTS_SECTIONS} />
+      <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -201,6 +196,13 @@ export default function Accounts() {
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 
       <AccountsSubNav />
+
+      {/* S.A.T. switches — moved here from the sidebar (owner 2026-08-01:
+          "move out the Switches to Accounts page"). Same component, same
+          POST routes, same arm confirmations and typed master disarm. */}
+      <Card id="sec-switches">
+        <AccountSwitcher title="Trading switches" />
+      </Card>
 
       <div id="sec-clock"><MarketClock /></div>
 

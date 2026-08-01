@@ -40,7 +40,10 @@ function MiniSwitch({ label, initial, on, disabled, busy, title, onClick, ov = n
   )
 }
 
-export default function AccountSwitcher() {
+// Owner 2026-08-01: this panel moved from the sidebar onto the Accounts page
+// (Setup group) — same wiring, same confirmations; only the home changed.
+// `title` lets the host page name the section without a second heading.
+export default function AccountSwitcher({ title = 'Accounts' }) {
   const [data, setData] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(CACHE)) || null } catch { return null }
   })
@@ -120,7 +123,7 @@ export default function AccountSwitcher() {
   return (
     <div>
       <div className="px-3 pb-1 flex items-center gap-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">Accounts</span>
+        <span className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{title}</span>
         {/* Master S/A/T — the veto over every row below. Greyed rows follow. */}
         {master && (
           <span className="ml-auto inline-flex items-center gap-[3px]" title="Master switches — a veto over every account. The full cards stay on Tune › Pipeline.">

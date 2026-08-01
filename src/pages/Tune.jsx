@@ -1377,7 +1377,7 @@ export default function Tune() {
   return (
     <div className="space-y-3">
       {/* FAB delegates to pickTab — Tune navigates by tab state, not scroll. */}
-      <SectionNavFab sections={TABS} onSelect={pickTab} />
+      <SectionNavFab onSelect={pickTab} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
       {status && <div className="text-[9px] text-[var(--color-info-text)]" role="status">{status}</div>}
       {/* Persistent save proof — most controls here auto-save the instant you

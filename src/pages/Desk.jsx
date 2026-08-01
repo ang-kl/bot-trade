@@ -67,21 +67,6 @@ function clockSecs(iso) {
 // Collapsible desk section — triangle + title + right-aligned summary that
 // stays informative while collapsed. Open/closed persists per section.
 
-const DESK_SECTIONS = [
-  { id: 'sec-openpnl', label: 'Open trades' },
-  { id: 'sec-chartwall', label: 'Chart wall' },
-  { id: 'sec-broker', label: 'At the broker' },
-  { id: 'sec-loss-review', label: 'Trade lessons' },
-  { id: 'sec-correlation', label: 'Correlation clusters' },
-  { id: 'sec-order-ledger', label: 'Set-order ledger' },
-  { id: 'sec-closed7d', label: 'Closed at the broker' },
-  { id: 'sec-risk', label: 'Risk decisions' },
-  { id: 'sec-acct-engineering', label: 'Account engineering' },
-  { id: 'sec-controllers', label: 'Controllers' },
-  { id: 'sec-llmspend', label: 'LLM spend' },
-  { id: 'sec-alphadecay', label: 'Edge health' },
-  { id: 'sec-whynotrades', label: 'Why no trades?' },
-]
 
 function Section({ id, title, summary, tag = null, defaultOpen = true, children }) {
   const KEY = `desk_open_${id}`
@@ -433,7 +418,7 @@ export default function Desk() {
 
   return (
     <div className="space-y-2">
-      <SectionNavFab sections={DESK_SECTIONS} />
+      <SectionNavFab />
       <SwitchingNote to={switchingTo} />
       {error && <Card className="text-[9px]">{error}</Card>}
 

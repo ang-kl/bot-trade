@@ -148,18 +148,6 @@ function SectionTitle({ children, badge }) {
   )
 }
 
-const RISK_SECTIONS = [
-  { id: 'sec-rerisk', label: 'Reset / Re-Risk' },
-  { id: 'sec-account', label: 'Account snapshot' },
-  { id: 'sec-protection', label: 'Position protection' },
-  { id: 'sec-acct-risk', label: 'Account risk config' },
-  { id: 'sec-bot-risk', label: 'Bot Trade risk config' },
-  { id: 'sec-sizing', label: 'Sizing' },
-  { id: 'sec-cpp', label: 'C++ sidecar' },
-  { id: 'sec-emergency', label: 'Emergency' },
-  { id: 'sec-example-live', label: 'Example — live' },
-  { id: 'sec-example-cpp', label: 'Example — cpp' },
-]
 
 export default function Risk() {
   const [data, setData] = useState(null)
@@ -299,7 +287,7 @@ export default function Risk() {
 
   return (
     <div className="space-y-2" data-risk-dense>
-      <SectionNavFab sections={RISK_SECTIONS} />
+      <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Risk</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>

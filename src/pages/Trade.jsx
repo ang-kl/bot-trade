@@ -381,14 +381,6 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
   return <StdTradeTable rows={mapped} countLabel="attempts" marketHours={marketHours} />
 }
 
-const TRADE_SECTIONS = [
-  { id: 'sec-status', label: 'Status' },
-  { id: 'sec-signals', label: 'Signals' },
-  { id: 'sec-positions', label: 'Open positions' },
-  { id: 'sec-broker', label: 'At the broker' },
-  { id: 'sec-recent', label: 'Recent trades' },
-  { id: 'sec-orderlog', label: 'Order log' },
-]
 
 export default function Trade() {
   const [health, setHealth] = useState(null)
@@ -600,7 +592,7 @@ export default function Trade() {
 
   return (
     <div className="space-y-3">
-      <SectionNavFab sections={TRADE_SECTIONS} />
+      <SectionNavFab />
       <SwitchingNote to={switchingTo} />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
 

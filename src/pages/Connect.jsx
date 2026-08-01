@@ -11,11 +11,6 @@ import WatchlistCompare from '../components/watchlist/WatchlistCompare.jsx'
 import { getAgentConn, setAgentConn, clearAgentConn, agentGet, agentPost } from '../lib/agent-api.js'
 import { writeSelection } from '../lib/selected-account.js'
 
-const CONNECT_SECTIONS = [
-  { id: 'sec-agent', label: 'Agent backend' },
-  { id: 'sec-ctrader', label: 'cTrader account' },
-  { id: 'sec-watchlists', label: 'Compare & copy watchlists' },
-]
 
 export default function Connect() {
   const conn = getAgentConn()
@@ -158,7 +153,7 @@ export default function Connect() {
 
   return (
     <div className="space-y-8">
-      <SectionNavFab sections={CONNECT_SECTIONS} />
+      <SectionNavFab />
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
       {status && <div className="text-[9px] text-[var(--color-info-text)]">{status}</div>}
 
