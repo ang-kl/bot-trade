@@ -1940,7 +1940,7 @@ export default function Tune() {
                 const next = !lossGuard?.on
                 run(async () => {
                   const r = await agentPost('/actions/loss-guardian', { on: next })
-                  setLossGuard(r.config)
+                  setLossGuard(r.config ?? r.lossGuardian ?? null)
                 }, `Loss Guardian ${next ? 'armed' : 'off'}`)
               }} />
               {lossGuard?.on && (
