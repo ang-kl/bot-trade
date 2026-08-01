@@ -55,7 +55,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
         <AccountPivot acct={acct} />
       </div>
 
-      <button type="button" onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
+      <button type="button" aria-expanded={open} onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
         <div className="flex items-center gap-2 text-[9px] text-[var(--color-text-sub)] border-t border-[var(--glass-edge)] pt-2">
           <span className="font-semibold">Live positions &amp; pending orders</span>
           <span className="ml-auto">{acct.positions?.length ?? 0} open · {acct.orders?.length ?? 0} pending {open ? '▾ hide' : '▸ show'}</span>

@@ -265,21 +265,30 @@ export default function Connect() {
                 const detailOpen = openDetail === a.accountId
                 return (
                 <div key={a.accountId} className={`rounded-[7px] border ${linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}>
-                  <button
-                    type="button"
-                    disabled={linking}
-                    onClick={() => selectAccount(a)}
-                    className="flex w-full items-center gap-3 px-3 py-2 text-left text-[9px] cursor-pointer hover:bg-[var(--color-accent-soft)] rounded-[7px]"
-                  >
-                    <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
-                    <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
-                    {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
+                  {/* Nested-interactive fix (inventory): the detail chip was a
+                      span role=button INSIDE the account-select button —
+                      Enter-only, and a mis-tap on its edge selected the
+                      account. Now three sibling real <button>s in one row:
+                      identity and balance both select (same handler, so the
+                      clickable area is unchanged), the chip only toggles
+                      detail and gets native Enter AND Space + aria-expanded. */}
+                  <div className="flex w-full items-center gap-3 px-3 py-2 text-[9px] rounded-[7px] hover:bg-[var(--color-accent-soft)]">
+                    <button
+                      type="button"
+                      disabled={linking}
+                      onClick={() => selectAccount(a)}
+                      className="flex flex-1 items-center gap-3 text-left cursor-pointer min-w-0"
+                    >
+                      <Badge tone={a.isLive ? 'down' : 'info'}>{a.isLive ? 'LIVE' : 'DEMO'}</Badge>
+                      <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
+                      {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
+                    </button>
                     {b && (
-                      <span
-                        role="button" tabIndex={0}
-                        onClick={(e) => { e.stopPropagation(); setOpenDetail(detailOpen ? null : a.accountId) }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setOpenDetail(detailOpen ? null : a.accountId) } }}
-                        className="inline-flex items-center gap-2 text-[9px] glass-inset rounded-[16px] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
+                      <button
+                        type="button"
+                        aria-expanded={detailOpen}
+                        onClick={() => setOpenDetail(detailOpen ? null : a.accountId)}
+                        className="inline-flex items-center gap-2 text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
                         title="Tap for per-trade detail"
                       >
                         <span>{positions.length} live · {orders.length} set</span>
@@ -291,25 +300,30 @@ export default function Connect() {
                           </span>
                         )}
                         <span aria-hidden="true">{detailOpen ? '▾' : '▸'}</span>
-                      </span>
+                      </button>
                     )}
-                    <span className="ml-auto text-right">
+                    <button
+                      type="button"
+                      disabled={linking}
+                      onClick={() => selectAccount(a)}
+                      className="ml-auto text-right cursor-pointer"
+                    >
                       <span className="font-semibold block">
                         {a.balance != null ? `$${(Number(a.balance) + floating).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : ''}
                       </span>
                       {positions.length > 0 && (
                         <span className="block text-[9px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
                       )}
-                    </span>
-                    {linked?.accountId === a.accountId && <Badge tone="on">SELECTED</Badge>}
-                  </button>
+                      {linked?.accountId === a.accountId && <Badge tone="on">SELECTED</Badge>}
+                    </button>
+                  </div>
                   {detailOpen && (
                     <div className="px-3 pb-2 text-[9px] border-t border-[var(--color-border)]">
                       {positions.length === 0 && orders.length === 0 && <div className="pt-2 text-[var(--color-text-sub)]">Flat — no open positions or pending orders.</div>}
                       {positions.map(p => (
                         <div key={p.positionId} className="flex flex-wrap items-center gap-2 pt-2">
                           <span className="font-semibold">{p.symbol}</span>
-                          <Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge>
+                          <Badge tone={p.side === 'BUY' ? 'on' : 'off'}>{p.side}</Badge>
                           {p.lots != null && <span>{p.lots} lots</span>}
                           <span>in {p.entry} → now {p.currentPrice ?? '—'}</span>
                           {p.estPnlQuote != null && (
@@ -324,7 +338,7 @@ export default function Connect() {
                         <div key={o.orderId} className="flex flex-wrap items-center gap-2 pt-2">
                           <span className="font-semibold">{o.symbol}</span>
                           <Badge tone="info">{o.type}</Badge>
-                          <Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge>
+                          <Badge tone={o.side === 'BUY' ? 'on' : 'off'}>{o.side}</Badge>
                           <span>trigger {o.limitPrice ?? o.stopPrice ?? '—'}</span>
                         </div>
                       ))}
