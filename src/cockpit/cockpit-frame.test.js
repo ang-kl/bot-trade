@@ -198,3 +198,30 @@ describe('cockpitFrame without a snapshot (demo route)', () => {
     expect(v.autopilot[0].k).toBe('SCALE-OUT 50%')
   })
 })
+
+// Owner (2026-08-01): "the tweak journal is fake" — a REAL position must never
+// wear the six demo journal rows, snapshot or not. Demo rows are only for the
+// pure reference cockpit with nothing bound.
+describe('journal honesty for a bound position', () => {
+  it('real position WITHOUT a snapshot: empty journal, journalUnloaded, no demo chart marks', () => {
+    const v = cockpitFrame({}, 0, { real: { ...realBase } })
+    expect(v.journal).toEqual([])
+    expect(v.journalUnloaded).toBe(true)
+    expect(v.tweaks).toEqual([])
+    // and the demo-panel list stops claiming the journal is demo
+    expect(v.demoPanels).not.toContain('tweak journal')
+  })
+
+  it('real position WITH a snapshot: served events verbatim, not unloaded', () => {
+    const v = frame() // realBase + snapshot (snapshot.journal absent → [])
+    expect(v.journal).toEqual([])
+    expect(v.journalUnloaded).toBe(false)
+  })
+
+  it('pure demo route keeps the six reference rows and their chart marks', () => {
+    const v = cockpitFrame({}, 0, {})
+    expect(v.journal).toHaveLength(6)
+    expect(v.journalUnloaded).toBe(false)
+    expect(v.tweaks).toHaveLength(6)
+  })
+})

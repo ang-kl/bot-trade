@@ -151,6 +151,10 @@ function integrityOf(p2, dbRow) {
  * each row gets an `integrity` field cross-checking DB vs broker truth. */
 export function brokerPositionRows(positions, { manageable = false, dbByPid = null, rates = null } = {}) {
   return (positions || []).map(p2 => {
+    // The matching DB row (when the caller passed dbByPid) also carries the
+    // DURABLE cockpit identity — monitored_positions.id + account — which the
+    // symbol click needs to fetch the real snapshot (journal, advisories).
+    const dbRow = dbByPid ? dbByPid.get(String(p2.positionId)) ?? null : null
     // Broker-truth net P&L first (cTrader's own figure, every asset class);
     // the client-side estimate only fills the gap and is marked as such.
     const net = p2.netPnl ?? p2.estNetPnl ?? p2.estPnlQuote
@@ -198,7 +202,9 @@ export function brokerPositionRows(positions, { manageable = false, dbByPid = nu
       // structured label server-side; null for manual/external.
       timeframe: p2.timeframe ?? null,
       strategy: p2.strategy ?? null,
-      integrity: dbByPid ? integrityOf(p2, dbByPid.get(String(p2.positionId)) ?? null) : null,
+      integrity: dbByPid ? integrityOf(p2, dbRow) : null,
+      dbPositionId: dbRow?.id ?? null,
+      accountId: dbRow?.account_id != null ? String(dbRow.account_id) : null,
       durationMs: p2.openedAt ? Math.max(0, Date.now() - toMs(p2.openedAt)) : null,
       reason: `now ${px(p2.currentPrice)}${p2.netPnl == null && net != null ? ' (P&L est*)' : ''}`,
       reasonTitle: `now ${px(p2.currentPrice)} · P&L ${money(net)} · swap ${money(p2.swap)} · commission ${money(p2.commission)} · margin ${money(p2.usedMargin)}${p2.label || p2.comment ? ` · ${p2.label || p2.comment}` : ''}`,

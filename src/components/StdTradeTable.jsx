@@ -263,7 +263,17 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
                           // symbol-click-spec §1: every symbol is a cockpit
                           // target by default; explicit onSymbolClick callers
                           // (Desk) keep their existing behaviour.
-                          <SymbolTarget symbol={r.symbol} positionId={r.id} source="std-trade-table">
+                          <SymbolTarget symbol={r.symbol} positionId={r.id} source="std-trade-table"
+                            // Durable identity + broker facts (owner 2026-08-01,
+                            // fake-journal fix): without these the cockpit opened
+                            // snapshotless and wore the demo panels.
+                            accountId={r.accountId ?? null} dbPositionId={r.dbPositionId ?? null}
+                            position={{
+                              sym: r.symbol, side: isLong(r.side) ? 'LONG' : 'SHORT',
+                              lots: r.qty ?? null, strategy: r.strategy ?? null,
+                              entry: r.entry ?? null, sl: r.sl ?? null, tp: r.tp ?? null,
+                              price: r.current ?? null, pnl: r.pnl ?? null,
+                            }}>
                             <span className="font-bold">{r.symbol}</span>
                           </SymbolTarget>
                         )}

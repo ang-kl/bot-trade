@@ -135,6 +135,12 @@ function openPositionRows(positions, prices = {}, enrichById = {}, leverage = nu
       commission: enr.commission ?? null,
       swap: enr.swap ?? null,
       positionId: p.ctrader_position_id ?? null,
+      // Durable cockpit identity (owner 2026-08-01, fake-journal fix): the
+      // snapshot route wants monitored_positions.id + the account, and these
+      // rows come straight from that table.
+      dbPositionId: p.id ?? null,
+      accountId: p.account_id != null ? String(p.account_id) : null,
+      strategy: p.strategy ?? null,
       durationMs: openedAt ? Math.max(0, Date.now() - toMs(openedAt)) : null,
       reason: `${p.last_check_action || 'not checked yet'}${checkedAt ? ` (${ago(checkedAt)})` : ''}`,
       chart: {
@@ -190,6 +196,11 @@ function externalPositionRows(positions, prices = {}, enrichById = {}, leverage 
       commission: enr.commission ?? null,
       swap: enr.swap ?? null,
       positionId: p.ctrader_position_id ?? null,
+      // Same durable cockpit identity as openPositionRows — an external
+      // position still has a monitored row, so its journal is fetchable.
+      dbPositionId: p.id ?? null,
+      accountId: p.account_id != null ? String(p.account_id) : null,
+      strategy: p.strategy ?? null,
       durationMs: openedAt ? Math.max(0, Date.now() - toMs(openedAt)) : null,
       reason: 'observed, not managed',
       chart: { symbol: p.symbol, timeframe: '1h', lines: { entry: p.entry_price, sl: p.current_sl, tp: p.current_tp } },

@@ -482,7 +482,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
                 </div>
               </div>)
           })}
-          {v && !v.journal.length && <span style={{ fontSize: 9, color: 'var(--mu)' }}>no tweaks yet</span>}
+          {v && !v.journal.length && (
+            // "no tweaks yet" is a CLAIM — only the snapshot can make it.
+            // Without one (identity missing on the deep link, or the fetch
+            // hasn't landed) the honest state is "not loaded".
+            <span style={{ fontSize: 9, color: 'var(--mu)' }}>
+              {v.journalUnloaded ? 'journal not loaded — no snapshot for this position yet' : 'no tweaks yet'}
+            </span>)}
         </div>)}
     </div>)
 
@@ -531,14 +537,29 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>CAUTION</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>cockpit feed unavailable — retrying ({retries})</span></div>}
-            {(v?.alerts ?? []).map((a, i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
-                <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>{a.t}</span>
-                <span style={{ fontSize: fs(10.5), color: a.col }}>{a.k}</span>
-                {/* Long text scrolls INSIDE its own cell (owner: "scroll the
-                    row text") — the panel never widens for one long line. */}
-                <span title={a.d} style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'none' }}>{a.d}</span>
-              </div>))}
+            {(v?.alerts ?? []).map((a, i) => {
+              // Owner (2026-08-01): advisories expand/collapse per row —
+              // triangle at the start, TWO clamped lines when collapsed, the
+              // full text when expanded. Same interaction as the journal rows.
+              const ak = `adv-${i}`
+              const open = openKeys.includes(ak)
+              const flip = () => setOpenKeys(ks => ks.includes(ak) ? ks.filter(x => x !== ak) : ks.concat(ak))
+              return (
+                <div key={i} role="button" tabIndex={0} aria-expanded={open}
+                  onClick={flip}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip() } }}
+                  title={open ? 'click to collapse' : `${a.d} · click to expand`}
+                  style={{ display: 'grid', gridTemplateColumns: '9px 40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45, cursor: 'pointer', borderBottom: '1px solid var(--edg)', padding: '1px 0' }}>
+                  <span aria-hidden="true" style={{ fontSize: fs(8.5), color: 'var(--mu)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', alignSelf: 'center' }}>▸</span>
+                  <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>{a.t}</span>
+                  <span style={{ fontSize: fs(10.5), color: a.col }}>{a.k}</span>
+                  <span style={{ fontSize: fs(10.5), color: 'var(--sb)', minWidth: 0,
+                    ...(open
+                      ? { whiteSpace: 'normal', overflowWrap: 'anywhere' }
+                      // Collapsed: exactly two lines, then an ellipsis.
+                      : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', whiteSpace: 'normal', overflowWrap: 'anywhere' }) }}>{a.d}</span>
+                </div>)
+            })}
             {v && !v.alerts.length && <span style={{ fontSize: 9, color: 'var(--mu)' }}>no advisories</span>}
         </div>)}
     </div>)

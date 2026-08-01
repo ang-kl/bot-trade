@@ -6,14 +6,20 @@
 import { useCallback } from 'react'
 import { bindPosition, openCockpit, toast } from './cockpit-nav.js'
 
-export default function SymbolTarget({ symbol, positionId, source, position = null, children }) {
+export default function SymbolTarget({ symbol, positionId, source, position = null, accountId = null, dbPositionId = null, tradeId = null, children }) {
   const open = useCallback(() => {
-    if (positionId != null) { bindPosition(positionId, position); openCockpit(positionId); return }
+    // PHASE 8 regression fix (owner 2026-08-01, "the tweak journal is fake"):
+    // this call used to drop the durable identity, so CockpitHost never had
+    // ?tdb/?tacct to fetch the snapshot with — every SymbolTarget surface
+    // (Trade + Performance tables) opened a snapshotless cockpit that fell
+    // back to demo panels. The identity now rides on the deep link whenever
+    // the clicking row knows it.
+    if (positionId != null) { bindPosition(positionId, position); openCockpit(positionId, { accountId, dbPositionId, tradeId }); return }
     // symbol-only resolution (spec §2 steps 2–5) needs /api/symbols/:symbol/positions,
     // which the agent does not expose yet (open question in the PR). Until it
     // exists, unknown resolution honestly shows the §2.5 toast.
     toast(`no position history for ${symbol}`)
-  }, [positionId, symbol, position])
+  }, [positionId, symbol, position, accountId, dbPositionId, tradeId])
   return (
     <span role="button" tabIndex={0} data-symbol-target={source}
       // Symbol cells often sit inside a row that expands on click (the
