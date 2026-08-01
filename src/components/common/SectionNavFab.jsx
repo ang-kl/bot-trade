@@ -1,42 +1,155 @@
-// SectionNavFab — the Performance page's floating jump-to-section button,
-// extracted so every page carries it (owner 2026-07-25: "include nav FAB for
-// all other pages"). Desktop-only (≥700px), fixed bottom-right, one tap opens
-// the section list, tapping a row scrolls its anchor into view — or, when a
-// page navigates by state instead of scroll (Tune's tabs), the caller passes
-// `onSelect` and the FAB delegates instead of scrolling.
+// SectionNavFab — the floating table-of-contents navigator (owner 2026-08-01:
+// "make a table of content professional style for the Navigation FAB contains
+// both the different pages (sub-pages, table/form/card) … when user in that
+// page (that page table of content expanded to see the web-tree while the
+// other pages are collapse").
 //
-// Typography follows docs/ui-spec.md: rows are data → 9px/400; the toggle
-// glyph is an icon, not text.
+// Structure comes from src/lib/nav-tree.js — the single source for every
+// page, sub-page and section, each section tagged with its content kind
+// (T table · F form · C card · T+F table with controls). Behaviour:
+//
+//   · The current page's branch starts EXPANDED (▾); every other page is
+//     collapsed (▸). Any branch can be toggled without leaving the page.
+//   · Tapping a section of the CURRENT page scrolls its anchor into view —
+//     or, on Tune, switches the tab via the caller's `onSelect`.
+//   · Tapping a section of ANOTHER page navigates there first and then
+//     scrolls once the section has rendered (retry loop — data-driven pages
+//     mount their anchors asynchronously).
+//   · Tapping a page NAME navigates to that page.
+//
+// The FAB itself is pinned to the BOTTOM-RIGHT and stays there when the
+// panel opens (alignItems flex-end — the panel pulls out leftward/upward
+// from the pinned button); the panel is the app's liquid-glass surface
+// (glass-panel: backdrop blur + specular top streak). Desktop-only (≥700px),
+// same as before.
 import { useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { NAV_TREE, NAV_KIND_LEGEND, pageForPath } from '../../lib/nav-tree.js'
 
-export default function SectionNavFab({ sections, onSelect }) {
+// Collapsed = right-pointing ▸, expanded = down-pointing ▾ (owner-specified
+// Unicode triangles, the same pair every disclosure in the app uses).
+const CARET = { closed: '▸', open: '▾' }
+
+// After a cross-page jump the target section does not exist until the page
+// renders (often after a fetch) — retry briefly instead of scrolling nowhere.
+function scrollToWhenReady(id, tries = 25) {
+  const el = document.getElementById(id)
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return }
+  if (tries > 0) setTimeout(() => scrollToWhenReady(id, tries - 1), 120)
+}
+
+const rowBase = {
+  display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left',
+  cursor: 'pointer', fontFamily: 'inherit', color: 'var(--color-text)',
+  background: 'transparent', border: 'none', borderRadius: 6,
+}
+
+function KindTag({ kind }) {
+  return (
+    <span title={NAV_KIND_LEGEND} style={{
+      marginLeft: 'auto', flexShrink: 0, fontSize: '8px', fontWeight: 600,
+      color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
+      borderRadius: 'var(--radius-control)', padding: '0 3px', lineHeight: 1.5,
+      fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+    }}>{kind}</span>
+  )
+}
+
+export default function SectionNavFab({ onSelect }) {
   const [open, setOpen] = useState(false)
-  const jump = (id) => {
-    if (onSelect) onSelect(id)
-    else document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    setOpen(false)
+  const location = useLocation()
+  const navigate = useNavigate()
+  const current = pageForPath(location.pathname)
+  // Which page branches are expanded — keyed by path. Re-seeds to "current
+  // page only" whenever the route changes or the panel reopens, so the tree
+  // always greets you with your own page unfolded. Reset uses the
+  // adjust-state-during-render pattern (not an effect) — same as
+  // DurationField in Field.jsx.
+  const seedKey = `${current?.path || ''}|${open ? 1 : 0}`
+  const [expanded, setExpanded] = useState(() => new Set(current ? [current.path] : []))
+  const [prevSeedKey, setPrevSeedKey] = useState(seedKey)
+  if (prevSeedKey !== seedKey) {
+    setPrevSeedKey(seedKey)
+    setExpanded(new Set(current ? [current.path] : []))
   }
-  if (!sections?.length) return null
-  // Owner 2026-08-01: the FAB anchors to the BOTTOM-RIGHT and must STAY there
-  // when the list opens — before this fix the container grew to the list's
-  // 190px width and the 44px button, being left-aligned inside it, visually
-  // jumped left on open. alignItems flex-end pins the button to the right
-  // edge, so the liquid-glass panel expands leftward/upward from it.
+
+  const hover = {
+    onMouseEnter: (e) => { e.currentTarget.style.background = 'var(--glass-bg)' },
+    onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent' },
+  }
+
+  const jumpSection = (page, s) => {
+    setOpen(false)
+    if (current && page.path === current.path) {
+      if (onSelect) onSelect(s.id)
+      else document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    navigate(page.path)
+    // Tab-driven pages (Tune) have no anchors to scroll to from outside —
+    // landing on the page is the jump. Anchor pages get the retry scroll.
+    if (String(s.id).startsWith('sec-')) scrollToWhenReady(s.id)
+  }
+
+  const goPage = (page) => {
+    if (current && page.path === current.path) {
+      setExpanded(x => { const n = new Set(x); n.has(page.path) ? n.delete(page.path) : n.add(page.path); return n })
+      return
+    }
+    setOpen(false)
+    navigate(page.path)
+  }
+
+  const pageBranch = (page, depth = 0) => {
+    const isCurrent = current && page.path === current.path
+    const isOpen = expanded.has(page.path)
+    return (
+      <div key={page.path}>
+        <div style={{ display: 'flex', alignItems: 'center', paddingLeft: depth * 10 }}>
+          {/* The caret toggles the branch; the name navigates. Two targets so
+              you can peek at another page's contents without leaving. */}
+          <button type="button" aria-expanded={isOpen}
+            aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${page.label} sections`}
+            onClick={() => setExpanded(x => { const n = new Set(x); n.has(page.path) ? n.delete(page.path) : n.add(page.path); return n })}
+            style={{ ...rowBase, width: 20, flexShrink: 0, justifyContent: 'center', fontSize: 'var(--fs-d9)', color: 'var(--color-text-sub)', padding: '4px 0' }}>
+            <span aria-hidden="true">{isOpen ? CARET.open : CARET.closed}</span>
+          </button>
+          <button type="button" onClick={() => goPage(page)} {...hover}
+            aria-current={isCurrent ? 'page' : undefined}
+            style={{ ...rowBase, fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '4px 8px 4px 2px', color: isCurrent ? 'var(--color-accent)' : 'var(--color-text)' }}>
+            {page.icon && <span aria-hidden="true" style={{ fontSize: '10px' }}>{page.icon}</span>}
+            {page.label}
+          </button>
+        </div>
+        {isOpen && (page.sections || []).map(s => (
+          <button key={s.id} type="button" onClick={() => jumpSection(page, s)} {...hover}
+            style={{ ...rowBase, fontSize: 'var(--fs-d9)', fontWeight: 400, padding: '3px 8px', marginLeft: 20 + depth * 10, width: `calc(100% - ${20 + depth * 10}px)` }}>
+            {s.label}
+            <KindTag kind={s.kind} />
+          </button>
+        ))}
+        {isOpen && (page.children || []).map(c => pageBranch(c, depth + 1))}
+      </div>
+    )
+  }
+
   return (
     <div className="hidden min-[700px]:flex" style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 40, flexDirection: 'column', alignItems: 'flex-end' }}>
       {open && (
-        <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
-          {sections.map(s => (
-            <button key={s.id} type="button" onClick={() => jump(s.id)}
-              style={{ display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: 400, color: 'var(--color-text)', background: 'transparent', border: 'none', borderRadius: 8, padding: '5px 10px' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--glass-bg)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}>
-              {s.label}
-            </button>
+        <nav aria-label="Table of contents" className="glass-panel"
+          style={{ marginBottom: 8, borderRadius: 12, padding: '6px 6px 4px', maxHeight: '72vh', overflowY: 'auto', minWidth: 232 }}>
+          {NAV_TREE.map(g => (
+            <div key={g.group} style={{ marginBottom: 4 }}>
+              <div style={{ fontSize: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--color-text-sub)', padding: '3px 8px 1px' }}>{g.group}</div>
+              {g.pages.map(p => pageBranch(p))}
+            </div>
           ))}
-        </div>
+          <div style={{ fontSize: '8px', color: 'var(--color-text-sub)', padding: '3px 8px 2px', borderTop: '1px solid var(--glass-edge)' }}>
+            {NAV_KIND_LEGEND}
+          </div>
+        </nav>
       )}
-      <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open} aria-label="Jump to section" title="Jump to section"
+      <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open} aria-label="Table of contents" title="Table of contents"
         className="glass-fixed"
         style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-d18)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         {open ? '×' : '☰'}

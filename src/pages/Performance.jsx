@@ -1068,27 +1068,6 @@ const MOBILE_SCREENS = [
   { key: 'accounts', label: 'Accounts' },
 ]
 
-// Owner (2026-07-24): "this page is pack with information but I need
-// sub-navigation for the page FAB on the side bar" — desktop-only floating
-// jump-to-section button; the ledger's own DOM ids (added to each section's
-// wrapper above, distinct from SectionTools' `id` prop which is deep-link
-// state only, not a real DOM id) are the scroll targets.
-const PERF_SECTIONS = [
-  { id: 'sec-accounts', label: 'Accounts' },
-  { id: 'sec-today-open', label: 'Today & open' },
-  { id: 'sec-weekend24', label: 'Weekend 24H' },
-  { id: 'sec-sessions', label: 'Market sessions' },
-  { id: 'sec-ledger', label: 'Timeframe ledger' },
-  { id: 'sec-gradients', label: 'Gradients' },
-  { id: 'sec-fx-bands', label: 'FX bands' },
-  { id: 'sec-strategy-matrix', label: 'Strategy × market' },
-  { id: 'sec-crypto', label: 'Crypto' },
-  { id: 'sec-winlag', label: 'Winners & laggards' },
-  { id: 'sec-regime', label: 'Regime' },
-  { id: 'sec-balance', label: 'Balance in/out' },
-  { id: 'sec-datafeed', label: 'Data feed' },
-  { id: 'sec-tiles', label: 'Tiles & equity' },
-]
 
 export default function Performance() {
   const [ledger, setLedger] = useState(null)
@@ -1981,7 +1960,7 @@ export default function Performance() {
   return (
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
-      <SectionNavFab sections={PERF_SECTIONS} />
+      <SectionNavFab />
       {/* Header — exact prototype markup (title 16px/800, LIVE pulse badge,
           session pills, UTC clock). */}
       <style>{'@keyframes perf-pulse{0%,100%{opacity:1}50%{opacity:.3}}'}</style>

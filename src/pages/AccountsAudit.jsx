@@ -78,7 +78,7 @@ export default function AccountsAudit() {
   return (
     <div className="space-y-2">
       <SwitchingNote to={switchingTo} />
-      <SectionNavFab sections={[{ id: 'sec-clusters', label: 'Same-symbol clusters' }, { id: 'sec-workflow', label: 'Workflow audit' }]} />
+      <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts · Workflow audit</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">

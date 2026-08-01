@@ -89,7 +89,6 @@ const AccountsAudit = lazy(() => import('./pages/AccountsAudit.jsx'))
 const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
-import AccountSwitcher from './components/AccountSwitcher.jsx'
 import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/ActiveAccountHeader.jsx'
 import MobileTabBar from './components/MobileTabBar.jsx'
 import PageAccountLine from './components/PageAccountLine.jsx'
@@ -114,18 +113,21 @@ const NAV_GROUPS = [
       { to: '/desk', label: 'Desk', icon: '🖥️' },
     ],
   },
+  // Owner 2026-08-01: Risk moves into TRADING (it governs live trading, not
+  // setup) and Accounts moves into SETUP alongside the S.A.T. switches that
+  // relocated from the sidebar onto that page.
   {
     title: 'Trading',
     items: [
       { to: '/trade', label: 'Trade', icon: '📈' },
-      { to: '/accounts', label: 'Accounts', icon: '💼' },
+      { to: '/risk', label: 'Risk', icon: '🛡️' },
     ],
   },
   {
     title: 'Setup',
     items: [
       { to: '/tune', label: 'Tune', icon: '⚙️' },
-      { to: '/risk', label: 'Risk', icon: '🛡️' },
+      { to: '/accounts', label: 'Accounts', icon: '💼' },
       { to: '/connect', label: 'Connect', icon: '🔗' },
     ],
   },
@@ -277,7 +279,9 @@ export default function App() {
                 </div>
               </div>
             ))}
-            <AccountSwitcher />
+            {/* Owner 2026-08-01: the S.A.T. switch panel moved OFF the
+                sidebar onto the Accounts page (Setup group) — the sidebar
+                keeps only navigation + the active-account identity header. */}
           </nav>
           {/* THE SIDEBAR FOOTER (owner brief: "Move this control into the
               bottom of the left navigation panel", "Keep the sidebar footer
