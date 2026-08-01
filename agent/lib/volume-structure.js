@@ -190,6 +190,60 @@ export function inLowVolumeNode(price, nodes) {
   return (nodes || []).some(n => price >= n.lo && price <= n.hi)
 }
 
+// HVN threshold — the LVN mirror (instr/hvn-targeted-tp-spec.md §2, Trader
+// Dale's Volume-Based TP adapted to tick-volume profiles). A bucket qualifies
+// when its volume is at least this fraction of the POC bucket's. Named export
+// so the backtest sweep can vary it (0.6 / 0.7 / 0.8) without editing code.
+export const HVN_MIN_POC_FRACTION = 0.7
+
+/**
+ * High-volume nodes over a composite profile of `bars`.
+ *
+ * hvnNodes(bars, opts) → [{ price, nearEdgeLo, nearEdgeHi, volume, pctOfPoc }]
+ * sorted ascending by price. `price` is the node's volume-weighted centre;
+ * nearEdgeLo/nearEdgeHi are its outer bucket boundaries — the caller picks
+ * whichever edge faces the entry (Dale p. 98: the TP goes "a bit BEFORE the
+ * heavy volume area"; the near edge is that "a bit before" made mechanical).
+ *
+ * Pure read over bars, takes no trade decisions (file covenant). Adjacent
+ * qualifying buckets merge into one node. Fail-open: empty/degenerate input
+ * returns [] and never throws.
+ */
+export function hvnNodes(bars, { buckets = 24, minPocFraction = HVN_MIN_POC_FRACTION } = {}) {
+  if (!Array.isArray(bars) || !bars.length) return []
+  const vp = volumeProfile(bars, { type: 'composite', buckets })
+  const rows = vp?.rows
+  if (!Array.isArray(rows) || rows.length < 3) return []
+  const pocVolume = Math.max(...rows.map(r => r.volume))
+  if (!(pocVolume > 0)) return []
+  const step = rows.length > 1 ? rows[1].price - rows[0].price : 0
+  if (!(step > 0)) return [] // flat series — a single-price profile has no structure
+  const threshold = pocVolume * minPocFraction
+
+  const runs = []
+  let run = null
+  rows.forEach((r, i) => {
+    if (r.volume >= threshold) {
+      if (!run) run = { fromIdx: i, toIdx: i, volume: 0, weighted: 0 }
+      run.toIdx = i
+      run.volume += r.volume
+      run.weighted += r.volume * r.price
+    } else if (run) {
+      runs.push(run)
+      run = null
+    }
+  })
+  if (run) runs.push(run)
+
+  return runs.map(b => ({
+    price: b.volume > 0 ? b.weighted / b.volume : rows[b.fromIdx].price,
+    nearEdgeLo: rows[b.fromIdx].price - step / 2,
+    nearEdgeHi: rows[b.toIdx].price + step / 2,
+    volume: b.volume,
+    pctOfPoc: (rows.slice(b.fromIdx, b.toIdx + 1).reduce((m, r) => Math.max(m, r.volume), 0) / pocVolume) * 100,
+  }))
+}
+
 /**
  * Which way the VPOC has been travelling across consecutive sessions.
  *

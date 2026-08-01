@@ -217,3 +217,78 @@ test('the local FX-day anchor agrees with risk.js at awkward instants', () => {
     assert.equal(fxDayOpenMs(t), riskFxDayOpenMs(t), new Date(t).toISOString())
   }
 })
+
+// ---------------------------------------------------------------------------
+// HVN nodes (instr/hvn-targeted-tp-spec.md §2, owner-approved 01-08-2026).
+// Mirror of the LVN logic: buckets ≥ HVN_MIN_POC_FRACTION of the POC volume,
+// adjacent qualifying buckets merged, volume-weighted centre + near edges.
+// ---------------------------------------------------------------------------
+import { hvnNodes, HVN_MIN_POC_FRACTION, LVN_MAX_POC_FRACTION } from './volume-structure.js'
+
+// 24 bars, each confined to its own price bucket of a [100,124] composite
+// profile (step 1), so bucket volumes are exactly the bar volumes. Two
+// near-zero-volume sentinel bars pin the range to exactly [100,124] — the
+// profile's range is data-driven, so without them the buckets drift off the
+// round numbers the assertions use.
+function bucketBars(volumes) {
+  const lo = 100
+  const bars = volumes.map((v, i) => ({
+    t: hoursMs(i), o: lo + i + 0.5, h: lo + i + 0.9, l: lo + i + 0.1, c: lo + i + 0.5, v,
+  }))
+  bars.push({ t: hoursMs(24), o: lo, h: lo, l: lo, c: lo, v: 0.0001 })
+  bars.push({ t: hoursMs(25), o: lo + 24, h: lo + 24, l: lo + 24, c: lo + 24, v: 0.0001 })
+  return bars
+}
+
+test('T1: one obvious volume shelf → a single HVN node with correct near edges', () => {
+  const vols = new Array(24).fill(100)
+  vols[10] = 1000 // POC — the only qualifying bucket
+  const nodes = hvnNodes(bucketBars(vols))
+  assert.equal(nodes.length, 1)
+  const n = nodes[0]
+  // Bucket 10 of a [100,124]/24 profile spans 110..111.
+  assert.ok(Math.abs(n.nearEdgeLo - 110) < 1e-9, `lo edge ${n.nearEdgeLo}`)
+  assert.ok(Math.abs(n.nearEdgeHi - 111) < 1e-9, `hi edge ${n.nearEdgeHi}`)
+  assert.ok(Math.abs(n.price - 110.5) < 1e-9)
+  assert.equal(n.pctOfPoc, 100)
+})
+
+test('T2: adjacent qualifying buckets merge into ONE node, volume-weighted centre', () => {
+  const vols = new Array(24).fill(100)
+  vols[10] = 1000
+  vols[11] = 900 // ≥ 70% of POC and adjacent → same node
+  vols[18] = 800 // ≥ 70% but separate → its own node
+  const nodes = hvnNodes(bucketBars(vols))
+  assert.equal(nodes.length, 2)
+  const [a, b] = nodes // ascending by price
+  assert.ok(a.nearEdgeLo < b.nearEdgeLo)
+  // Merged node spans buckets 10-11 → edges 110..112.
+  assert.ok(Math.abs(a.nearEdgeLo - 110) < 1e-9)
+  assert.ok(Math.abs(a.nearEdgeHi - 112) < 1e-9)
+  // Volume-weighted centre leans toward the heavier bucket 10.
+  assert.ok(a.price < 111.5 && a.price > 110.5, `centre ${a.price}`)
+  assert.equal(Math.round(a.volume), 1900)
+})
+
+test('T3: flat series and empty bars → [] without throwing', () => {
+  assert.deepEqual(hvnNodes([]), [])
+  assert.deepEqual(hvnNodes(null), [])
+  const flat = new Array(30).fill(0).map((_, i) => ({ t: hoursMs(i), o: 100, h: 100, l: 100, c: 100, v: 500 }))
+  assert.ok(Array.isArray(hvnNodes(flat)))
+})
+
+test('T4: HVN and LVN thresholds are disjoint on the same fixture', () => {
+  assert.ok(HVN_MIN_POC_FRACTION > LVN_MAX_POC_FRACTION)
+  const vols = new Array(24).fill(500)
+  vols[10] = 1000        // HVN territory
+  vols[5] = 100          // LVN territory (≤30% of POC)
+  const bars = bucketBars(vols)
+  const hvn = hvnNodes(bars)
+  const profile = sessionProfile(bars)
+  const lvn = lowVolumeNodes(profile)
+  // No price band can be both.
+  for (const h of hvn) for (const l of lvn) {
+    assert.ok(h.nearEdgeHi <= l.lo || h.nearEdgeLo >= l.hi,
+      `HVN ${h.nearEdgeLo}-${h.nearEdgeHi} overlaps LVN ${l.lo}-${l.hi}`)
+  }
+})

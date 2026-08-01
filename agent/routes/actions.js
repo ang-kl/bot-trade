@@ -4118,8 +4118,15 @@ export default function actionsRouter(db) {
 
       // Entry estimate = freshest 1m close (includes the forming bar — this
       // is a price estimate for the risk gate, the order itself is MARKET).
-      const barsByTf = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m'], 3)
+      //
+      // HVN-TP (spec §4, owner ruling (b) 01-08): the SAME fetch also brings
+      // 240 15m bars (~2.5 days) so a guard_no_target refusal can offer the
+      // volume-structure TP candidate. Widening a fetch this route already
+      // makes — not a new one; a manual trade is human-initiated, so the
+      // extra weight is per-click, not per-loop.
+      const barsByTf = await wsGetTrendbarsBatch(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, symbolId, ['1m', '15m'], 240)
       const m1 = barsByTf['1m'] || []
+      const hvnBars = barsByTf['15m'] || []
       const entry = m1.length > 0 ? m1[m1.length - 1].c : null
       if (entry == null) return res.status(502).json({ error: `Could not fetch a current price for ${symbol}` })
 
@@ -4187,6 +4194,9 @@ export default function actionsRouter(db) {
         const needsInput = describeBracketGap(err.message, {
           symbol, side, entry, sl: proposal.sl, tp: proposal.tp1, digits: volMeta.digits,
           strategy: 'manual', minRR: loadRiskConfig(db).minRR,
+          // HVN-TP: the 15m bars fetched above — the advice computes the
+          // volume-structure TP candidate on the trade's own timeframe.
+          bars: hvnBars,
         })
         return res.json({ ok: false, vetoed: true, reason: err.message, ...(needsInput ? { needsInput } : {}) })
       }

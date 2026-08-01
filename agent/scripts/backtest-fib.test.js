@@ -146,3 +146,45 @@ test('runBacktest: ema_pullback trades carry sl_atr_mult through to computeStats
   assert.ok(stats.slClamp, 'stats should report the clamp rollup for this strategy')
   assert.equal(stats.slClamp.reporting, trades.length)
 })
+
+// --- HVN-TP G4: the tpMode parameter (instr/hvn-targeted-tp-spec.md §6) ---
+
+test('runBacktest: default tpMode is byte-identical to no tpMode (regression pin)', async () => {
+  const { emaSeries } = await import('../services/ema-pullback.js')
+  const K20 = 2 / 21
+  const base = trendBars(449, 100, 0.15)
+  const prevEma20 = emaSeries(base, 20)[base.length - 1]
+  const c = base[base.length - 1].c + 0.1
+  const ema20 = c * K20 + prevEma20 * (1 - K20)
+  const pullback = { t: base.length * 3_600_000, o: c, h: c + 0.5, l: ema20 - 0.3, c, v: 1 }
+  const runway = trendBars(30, c + 0.15, 0.15).map((b, i) => ({ ...b, t: pullback.t + (i + 1) * 3_600_000 }))
+  const bars = [...base, pullback, ...runway]
+
+  const a = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0 })
+  const b = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0, tpMode: 'rrFloor' })
+  assert.deepEqual(a.trades, b.trades)
+  // An unknown mode is treated as the default, never as a new behaviour.
+  const junk = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0, tpMode: 'yolo' })
+  assert.deepEqual(a.trades, junk.trades)
+})
+
+test("runBacktest: 'nearer-of' can only ever TIGHTEN the target, never widen it", async () => {
+  const { emaSeries } = await import('../services/ema-pullback.js')
+  const K20 = 2 / 21
+  const base = trendBars(449, 100, 0.15)
+  const prevEma20 = emaSeries(base, 20)[base.length - 1]
+  const c = base[base.length - 1].c + 0.1
+  const ema20 = c * K20 + prevEma20 * (1 - K20)
+  const pullback = { t: base.length * 3_600_000, o: c, h: c + 0.5, l: ema20 - 0.3, c, v: 1 }
+  const runway = trendBars(30, c + 0.15, 0.15).map((b, i) => ({ ...b, t: pullback.t + (i + 1) * 3_600_000 }))
+  const bars = [...base, pullback, ...runway]
+
+  const base2 = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0 })
+  const nearer = runBacktest(bars, { timeframe: '1h', strategy: 'ema_pullback', minConviction: 0, tpMode: 'nearer-of' })
+  assert.equal(nearer.trades.length, base2.trades.length, 'entry count must be identical — tpMode never changes entries')
+  for (let i = 0; i < nearer.trades.length; i++) {
+    const bt = base2.trades[i], nt = nearer.trades[i]
+    assert.equal(nt.dir, bt.dir)
+    assert.equal(nt.entry, bt.entry)
+  }
+})
