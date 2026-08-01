@@ -16,6 +16,7 @@ import { readTradableUnion } from './watchlists.js'
 import { tradePrice } from './alert-format.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
 import { getActiveSessions } from '../lib/sessions.js'
+import { normPosId } from '../lib/pos-id.js'
 
 // cTrader relative SL/TP distances are in fixed 10^-5 points for every
 // symbol — same constant loop.js uses for the market-order path.
@@ -58,7 +59,7 @@ function posField(p, key) {
 function persistFilledTrade(db, row, pos) {
   const side = row.dir < 0 ? 'SELL' : 'BUY'
   const executionPrice = pos?.price ?? row.level
-  const positionId = pos?.positionId != null ? String(pos.positionId) : null
+  const positionId = normPosId(pos?.positionId)
   const initialRisk = (executionPrice != null && row.sl != null)
     ? Math.abs(executionPrice - row.sl)
     : null

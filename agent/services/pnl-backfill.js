@@ -25,6 +25,8 @@
 // overwrites a bot-computed net_pnl, which is already broker-true).
 // ---------------------------------------------------------------------------
 
+import { normPosId } from '../lib/pos-id.js'
+
 const WEEK_MS = 7 * 24 * 3_600_000
 
 /**
@@ -130,7 +132,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   for (const d of deals) {
     const cpd = d.closePositionDetail
     if (!cpd) continue
-    const positionId = d.positionId != null ? String(d.positionId) : null
+    const positionId = normPosId(d.positionId)
     if (!positionId) continue
     closingDeals++
     const scale = Math.pow(10, cpd.moneyDigits ?? 2)
@@ -153,11 +155,17 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // Scoped on the way in AND on the way out: a position id is unique at the
   // broker, but writing without the account clause would let one account's
   // deal list fill another account's row if ids ever collided across accounts.
+  // CAST both sides: rows written before the pos-id repair migration can
+  // still carry float-formatted ids ("234698574.0") — plain equality against
+  // the broker's "234698574" never matched, which is exactly how 52 closed
+  // trades sat NULL on production (2026-08-02). Deal position ids are always
+  // numeric, so a non-numeric stored id (CAST → 0) can never false-match.
   const upd = db.prepare(
     `UPDATE trades
         SET net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
             swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
-      WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL ${scopeSql}`
+      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+        AND status = 'closed' AND net_pnl IS NULL ${scopeSql}`
   )
   // ATTRIBUTE-ON-MATCH (2026-07-31). A closed trade with account_id NULL is
   // the single worst row in the system: unresolved-pnl.js blocks EVERY
@@ -177,7 +185,8 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
         SET account_id = ?,
             net_pnl = ?, gross_pnl = COALESCE(gross_pnl, ?),
             swap = COALESCE(swap, ?), commission = COALESCE(commission, ?)
-      WHERE ctrader_position_id = ? AND status = 'closed' AND net_pnl IS NULL
+      WHERE CAST(ctrader_position_id AS INTEGER) = CAST(? AS INTEGER)
+        AND status = 'closed' AND net_pnl IS NULL
         AND account_id IS NULL`
   )
   let backfilled = 0
