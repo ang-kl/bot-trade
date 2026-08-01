@@ -36,6 +36,7 @@ import { getState } from '../db.js'
 // The phase resolver stays the single source of truth for what a phase means;
 // this module reports it, never re-derives it.
 import { masterPhases, effectivePhases } from './account-phases.js'
+import { readWatchlist } from './watchlists.js'
 
 /** The sidecar's last reported roster, as persisted by probeCppExec. */
 export function sidecarRoster(db) {
@@ -103,10 +104,34 @@ export function engineeringView(db) {
   let rows = []
   try {
     rows = db.prepare(
-      `SELECT account_id, trader_login, is_live, enabled, mode, base_currency, leverage
+      `SELECT account_id, trader_login, is_live, enabled, mode, base_currency, leverage, created_at
          FROM accounts ORDER BY is_live, account_id`
     ).all()
   } catch { rows = [] }
+
+  // Wins/losses per account (owner 2026-08-01: "number of win and loss for
+  // past 24 hours as well as since connected") — grouped queries, closed
+  // trades with a recorded net_pnl only. NULL-account legacy rows are
+  // excluded for the same reason openByAcct excludes them: one legacy trade
+  // must not appear as every account's trade. "Since connected" is simply
+  // ALL of the account's rows — trades only exist from the moment the
+  // account entered the registry.
+  const wlQuery = (extra) => `
+    SELECT account_id,
+           SUM(CASE WHEN net_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN net_pnl < 0 THEN 1 ELSE 0 END) AS losses,
+           ROUND(SUM(net_pnl), 2) AS net
+      FROM trades
+     WHERE account_id IS NOT NULL AND closed_at IS NOT NULL AND net_pnl IS NOT NULL ${extra}
+     GROUP BY account_id`
+  const wlAllByAcct = new Map()
+  const wl24ByAcct = new Map()
+  try {
+    for (const r of db.prepare(wlQuery('')).all()) wlAllByAcct.set(String(r.account_id), { wins: r.wins, losses: r.losses, net: r.net })
+  } catch { /* pre-M1 database — stats stay null */ }
+  try {
+    for (const r of db.prepare(wlQuery(`AND closed_at >= datetime('now', '-1 day')`)).all()) wl24ByAcct.set(String(r.account_id), { wins: r.wins, losses: r.losses, net: r.net })
+  } catch { /* as above */ }
 
   // Open positions per account in ONE grouped query rather than a query per
   // account. NULL-account rows are counted ONCE globally instead of being
@@ -169,7 +194,15 @@ export function engineeringView(db) {
       const phases = effectivePhases(db, id, master)
       const rec = lastReconcileAt(db, id, selectedId)
       const dec = decByAcct.get(id) || null
+      // Effective watchlist size — the account's own list when it has one,
+      // else the shared list it inherits (watchlists.js is the authority).
+      let watchlistCount = null
+      try { watchlistCount = readWatchlist(db, id).length } catch { watchlistCount = null }
       return {
+        connectedAt: r.created_at ?? null,
+        wl24h: wl24ByAcct.get(id) ?? { wins: 0, losses: 0, net: 0 },
+        wlAll: wlAllByAcct.get(id) ?? { wins: 0, losses: 0, net: 0 },
+        watchlistCount,
         accountId: id,
         traderLogin: r.trader_login ?? null,
         isLive: r.is_live === 1,
