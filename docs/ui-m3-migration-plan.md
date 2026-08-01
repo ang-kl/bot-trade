@@ -28,17 +28,13 @@ only after their last caller migrates.
 
 | Phase | Scope | Commit (rollback point) | Gates |
 |---|---|---|---|
-| A | Baseline + inventory + conflict register | — (docs only, committed with B) | baseline recorded above |
-| B | Contract + this plan + inventory docs | pending | n/a (docs) |
-| C | Shared primitives: Button (outlined/text aliases, focus-visible outline), Switch, IconButton, Tabs, Badge non-interactivity, Input/Field density variants, token aliasing (`--control-radius` → `--radius-control`) | pending | component tests + full gate |
-| D | `/performance` reference route | pending | full gate + measurements |
-| E1 | `/desk` | pending | |
-| E2 | `/trade` | pending | |
-| E3 | `/accounts` + `/accounts/audit` | pending | |
-| E4 | `/tune` | pending | |
-| E5 | `/risk` | pending | |
-| E6 | `/connect` | pending | |
-| F | Cockpit (scoped: control roles + interaction states only) | pending | cockpit contract untouched |
+| A | Baseline + inventory + conflict register | `ed1cfde` | baseline recorded above |
+| B | Contract + this plan + inventory docs | `e84aef4` (drafts), `ed1cfde` (final) | n/a (docs) |
+| C | Shared primitives: Button aliases + focus-visible + loading, Switch, IconButton, Segmented, Disclosure, Input/Field density variants, `--control-radius` alias, global :where() focus-visible | `64d37d3` | vitest 395/395 (16 new), eslint, build, no-green, agent 1827/1827, audit:ui exit 0 |
+| D | `/performance` reference route (behaviour-preserving aria/tone/keyboard fixes) | `017859b` | same gate, all green |
+| E-s1 | Cross-route emphasis + tone corrections (Trade/Tune/Connect/Accounts/OrderLedger) | `bf3306a` | same gate, all green |
+| E1-E6 | Full per-route passes (Desk manager sheets to shared danger Button; Tune Toggle→Switch adoption; Risk Pill commit-model labelling; Connect nested-interactive fix; manager-sheet tab roles; StdTradeTable disclosure adoption) | **pending — next up** | |
+| F | Cockpit (scoped: dead-control W-1 report, tab roles, journal-row aria, focus trap for aria-modal; geometry stays parked in the approval queue) | pending | cockpit contract untouched |
 
 ## Compatibility rules in force
 
