@@ -48,7 +48,12 @@ export function getSessionContext() {
 export function categoriseSymbol(symbol) {
   const s = symbol.toUpperCase()
   const fx = ['EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'USDCHF', 'USDCAD', 'NZDUSD', 'AUDJPY', 'EURJPY', 'GBPJPY']
-  const crypto = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD']
+  // Production trades LTC/ADA/DOGE too (2026-08-01: they were falling through
+  // to 'stock' — wrongly market-hours-gated AND excluded from the weekend
+  // quiet crypto exemption). Full Pepperstone crypto set, all 24/7.
+  const crypto = ['BTCUSD', 'ETHUSD', 'XRPUSD', 'SOLUSD', 'LTCUSD', 'ADAUSD',
+    'DOGEUSD', 'BCHUSD', 'BNBUSD', 'DOTUSD', 'LINKUSD', 'XLMUSD', 'AVAXUSD',
+    'UNIUSD', 'MATICUSD']
   const indices = ['US500', 'US30', 'NAS100', 'GER40', 'JPN225', 'VIX', 'CN50', 'SDY']
   const metals = ['XAUUSD', 'XAGUSD', 'XPTUSD', 'USDX']
   // ICE softs — London/NY daytime exchange windows, NOT 24/5.
