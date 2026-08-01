@@ -21,18 +21,40 @@
 // the ▾/▸ button. Collapsing sets display:none on the body rather than
 // unmounting it, so the card keeps its scroll/sort/page state and everything
 // below genuinely moves UP (the panel shrinks to its header bar).
+// Owner (2026-08-01): every section states its CONTENT KIND next to the
+// collapse caret — T data table · F form/controls · C card of stats/prose ·
+// T+F table with embedded controls — matching the FAB table of contents.
+// The tag derives from src/lib/nav-tree.js by the section's anchor id
+// (on the card itself, on a child heading, or on a wrapper parent), so no
+// call site needs wiring and the tag cannot drift from the nav map; an
+// explicit `kind` prop still wins for cards outside the tree.
 import { useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
+import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
 
 export default function Card({
   children, className = '', copyable = true, copyTitle = null,
   data = null, toText = null, collapsible = true, defaultCollapsed = false,
+  kind: kindProp = null,
   ...rest
 }) {
   const ref = useRef(null)
   const [popup, setPopup] = useState(null)
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  // Derived once from the DOM after mount (callback ref, not an effect —
+  // the anchor ids are static). kindProp bypasses the lookup entirely.
+  const [kindFound, setKindFound] = useState(null)
+  const kindLooked = useRef(false)
+  const attachRef = (node) => {
+    ref.current = node
+    if (!node || kindProp || kindLooked.current) return
+    kindLooked.current = true
+    const id = node.id || node.querySelector('[id^="sec-"]')?.id || node.closest('[id^="sec-"]')?.id
+    const k = sectionKind(id)
+    if (k) setKindFound(k)
+  }
+  const kind = kindProp || kindFound
   // Captured at collapse time (never read from the ref during render, which
   // would be impure) so the collapsed bar can still name itself.
   const [label, setLabel] = useState(null)
@@ -55,7 +77,8 @@ export default function Card({
     // open with two lines of meaningless symbols. That was tolerable in a
     // clipboard paste and is not in a saved .txt/.json file, so the control
     // glyphs are dropped here. Only the glyphs: no text is removed.
-    const CHROME_GLYPHS = /^[▾▸⧉↓✕]$/
+    // Also drops the lone-line content-kind tag (T / F / C / T+F).
+    const CHROME_GLYPHS = /^(?:[▾▸⧉↓✕]|T|F|C|T\+F)$/
     const domText = (el.innerText || '')
       .split('\n')
       .filter(l => !CHROME_GLYPHS.test(l.trim()))
@@ -85,7 +108,16 @@ export default function Card({
   const hoverOff = (e) => { e.currentTarget.style.opacity = '.55'; e.currentTarget.style.borderColor = 'transparent' }
 
   return (
-    <div ref={ref} className={cls} {...rest}>
+    <div ref={attachRef} className={cls} {...rest}>
+      {kind && (
+        <span title={NAV_KIND_LEGEND} style={{
+          position: 'absolute', top: 8, right: (collapsible ? 26 : 0) + (copyable ? 26 : 0) + 10,
+          zIndex: 5, fontSize: '8px', fontWeight: 600, lineHeight: 1.5,
+          color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
+          borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
+          whiteSpace: 'nowrap',
+        }}>{kind}</span>
+      )}
       {collapsible && (
         <button type="button" aria-expanded={!collapsed}
           title={collapsed ? 'Expand this section' : 'Collapse this section'}

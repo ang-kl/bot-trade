@@ -138,6 +138,18 @@ export const NAV_TREE = [
 /** Flat list of every page node (children included). */
 export const NAV_PAGES = NAV_TREE.flatMap(g => g.pages.flatMap(p => [p, ...(p.children || [])]))
 
+// Section id → content kind, across every page. Ids repeated on two pages
+// (sec-broker on Desk and Trade) deliberately carry the SAME kind. Cards use
+// this to label themselves (see Card.jsx) so the tag never needs per-call-
+// site wiring and cannot drift from this map.
+const KIND_BY_ID = new Map()
+for (const p of NAV_PAGES) for (const s of p.sections || []) KIND_BY_ID.set(s.id, s.kind)
+
+/** Content kind (T / F / C / T+F) for a section anchor id, or null. */
+export function sectionKind(id) {
+  return (id && KIND_BY_ID.get(id)) || null
+}
+
 /** The page node for a location pathname, longest-prefix match. */
 export function pageForPath(pathname) {
   let best = null
