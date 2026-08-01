@@ -2470,21 +2470,28 @@ async function runLoop(db) {
       
       const marketClosed = activeSessions.length === 0
 
-      // 24/7 scanning — all symbols always. No market-hours filter.
-      const symbols = allSymbols
-
       // Weekend quiet hours (owner 01-08-2026): no scan and no Telegram
       // recommendation from Saturday 00:00 SGT until Monday 01:00 SGT —
       // a weekend scan reads Friday's stale close dressed up as a signal.
+      // CRYPTO EXEMPTION (owner-approved the same evening): crypto trades a
+      // live 24/7 market, so during quiet the scan narrows to crypto-only
+      // instead of going silent — analyze/recommend/autotrade downstream see
+      // only what was scanned, so the exemption propagates by construction.
       // ONLY the scan/analyze/recommendation phase is silenced; monitoring,
       // protection, guards, reconcile and the P&L backfill run unchanged.
-      const { weekendQuietNow, quietUntilMs } = await import('./lib/quiet-hours.js')
+      const { weekendQuietNow, quietUntilMs, quietScanSymbols } = await import('./lib/quiet-hours.js')
       const weekendQuiet = weekendQuietNow()
+
+      // 24/7 scanning — all symbols always (no market-hours filter), except
+      // weekend quiet narrows the list to crypto.
+      const symbols = weekendQuiet
+        ? quietScanSymbols(allSymbols, categoriseSymbol).symbols
+        : allSymbols
 
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
-      } else if (weekendQuiet) {
-        log(`Weekend quiet hours — no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
+      } else if (weekendQuiet && symbols.length === 0) {
+        log(`Weekend quiet hours — no crypto on the watchlist, so no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
         try {
           const { recordDecision } = await import('./services/decision-log.js')
           recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT)', loopId: loopCount })
@@ -2494,6 +2501,13 @@ async function runLoop(db) {
       } else if (!scanWanted) {
         log(`Scan off on every trading account (${rosterIds.join(', ')}) — skipping; nothing would use the result`)
       } else {
+        if (weekendQuiet) {
+          log(`Weekend quiet hours — crypto-only scan (${symbols.length} of ${allSymbols.length} symbols) until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); non-crypto stays quiet`)
+          try {
+            const { recordDecision } = await import('./services/decision-log.js')
+            recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT) — non-crypto silenced; crypto exempt', loopId: loopCount })
+          } catch { /* diagnostics only */ }
+        }
         if (marketClosed) {
           log(`Off-hours scan — ${symbols.length} symbol(s), market closed`)
         }

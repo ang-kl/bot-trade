@@ -1,7 +1,8 @@
 // node --test agent/lib/quiet-hours.test.js
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { weekendQuietNow, quietUntilMs, recommendableToday } from './quiet-hours.js'
+import { weekendQuietNow, quietUntilMs, quietScanSymbols, recommendableToday } from './quiet-hours.js'
+import { categoriseSymbol } from './sessions.js'
 
 // SGT = UTC+8. Helper: an SGT wall-clock instant as ms epoch.
 const sgt = (y, m, d, h = 0, min = 0) => Date.UTC(y, m - 1, d, h - 8, min)
@@ -22,6 +23,28 @@ test('quietUntilMs answers Monday 01:00 SGT from anywhere in the window', () => 
   assert.equal(quietUntilMs(sgt(2026, 8, 2, 22, 0)), mondayOne)  // from Sunday
   assert.equal(quietUntilMs(sgt(2026, 8, 3, 0, 30)), mondayOne)  // from Monday 00:30
   assert.equal(quietUntilMs(sgt(2026, 8, 4, 10, 0)), null)       // Tuesday: not quiet
+})
+
+test('quietScanSymbols: crypto-only inside the window, untouched outside', () => {
+  const watch = [
+    { symbol: 'EURUSD' }, { symbol: 'BTCUSD' }, { symbol: 'XAUUSD' },
+    { symbol: 'ETHUSD' }, { symbol: 'NAS100' },
+  ]
+  // Friday night — not quiet: the whole list passes through, same reference.
+  const friday = quietScanSymbols(watch, categoriseSymbol, sgt(2026, 7, 31, 23, 0))
+  assert.equal(friday.quiet, false)
+  assert.equal(friday.symbols, watch)
+  // Sunday — quiet: only crypto survives (owner-approved exemption).
+  const sunday = quietScanSymbols(watch, categoriseSymbol, sgt(2026, 8, 2, 12, 0))
+  assert.equal(sunday.quiet, true)
+  assert.deepEqual(sunday.symbols.map(w => w.symbol), ['BTCUSD', 'ETHUSD'])
+  // No crypto on the watchlist → quiet stays fully quiet.
+  const noCrypto = quietScanSymbols([{ symbol: 'EURUSD' }], categoriseSymbol, sgt(2026, 8, 1, 9, 0))
+  assert.equal(noCrypto.quiet, true)
+  assert.deepEqual(noCrypto.symbols, [])
+  // A throwing categoriser counts as NOT crypto — quiet fails quiet.
+  const boom = quietScanSymbols(watch, () => { throw new Error('boom') }, sgt(2026, 8, 2, 12, 0))
+  assert.deepEqual(boom.symbols, [])
 })
 
 test('recommendableToday: open now, opens today, opens tomorrow, unknown', () => {
