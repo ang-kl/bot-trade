@@ -12,7 +12,7 @@
 // /state/account-phases poll, so a ratchet/breaker trip repaints here within
 // one poll without any extra request.
 import { useEffect, useState, useCallback } from 'react'
-import { agentPost, agentConfigured } from '../lib/agent-api.js'
+import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import { useAccountPhases, refreshPhases } from '../lib/use-active-account.js'
 import { PHASES } from '../lib/account-phases.js'
 
@@ -43,7 +43,7 @@ function MiniSwitch({ label, initial, on, disabled, busy, title, onClick, ov = n
 // Owner 2026-08-01: this panel moved from the sidebar onto the Accounts page
 // (Setup group) — same wiring, same confirmations; only the home changed.
 // `title` lets the host page name the section without a second heading.
-export default function AccountSwitcher({ title = 'Accounts' }) {
+export default function AccountSwitcher({ title = 'Accounts', broker = null }) {
   const [data, setData] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(CACHE)) || null } catch { return null }
   })
@@ -54,6 +54,10 @@ export default function AccountSwitcher({ title = 'Accounts' }) {
   // shared account poll fetches it, and refreshPhases() re-reads right after
   // each write here so the switch shows the SERVER's answer.
   const phaseView = useAccountPhases()
+  // Per-account engineering stats (owner 2026-08-01: W/L 24h + since
+  // connected, watchlist size, mode, sidecar connectivity) — one route,
+  // refreshed on the page's own cadence.
+  const [eng, setEng] = useState(null)
 
   const load = useCallback(async () => {
     if (!agentConfigured()) return
@@ -64,9 +68,17 @@ export default function AccountSwitcher({ title = 'Accounts' }) {
       try { sessionStorage.setItem(CACHE, JSON.stringify(next)) } catch { /* quota — skip */ }
       setErr('')
     } catch { /* not logged in / no token yet — stay hidden or stale */ }
+    try {
+      const e = await agentGet('/state/account-engineering')
+      setEng(e || null)
+    } catch { /* stats are additive — the switches work without them */ }
   }, [])
 
-  useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t) }, [load])
+  useEffect(() => {
+    const t = setTimeout(load, 0)
+    const iv = setInterval(load, 30_000)
+    return () => { clearTimeout(t); clearInterval(iv) }
+  }, [load])
 
   if (!agentConfigured() || !data?.accounts?.length) return null
 
@@ -89,21 +101,27 @@ export default function AccountSwitcher({ title = 'Accounts' }) {
 
   const master = phaseView?.master || null
 
-  // Master toggles — the SAME confirmations the Tune card uses, verbatim:
-  // arming asks; disarming the master autotrade demands the typed word,
-  // because it is an absolute veto over every account at once (owner
-  // 2026-07-31, after two unexplained all-account disarms).
-  const setMaster = async (key, next) => {
-    if (key === 'autotrade' && next && !window.confirm('Arm autotrade? The agent will place REAL orders when a signal passes the risk gate.')) return
-    if (key === 'autotrade' && !next) {
-      const word = window.prompt('Disarm the MASTER autotrade switch? This stops new entries on EVERY account at once.\n\nType disarm to confirm:')
-      if (word == null || word.trim().toLowerCase() !== 'disarm') return
-    }
-    setPhaseBusy(`master:${key}`)
+  // Disconnect / Reconnect (owner 2026-08-01): Disconnect disables the
+  // account in the registry — the bot stops EVERYTHING for it (scan,
+  // analyse, autotrade, keeper, reconcile) and the sidecar drops it from
+  // the credential roster on the next push. Reconnect re-enables the row
+  // and re-establishes the roster the same way. Both confirm; re-enabling
+  // a LIVE account additionally goes through the server's confirmLive
+  // carve-out with a typed word.
+  const setConnected = async (a, next) => {
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
+    if (!next && !window.confirm(`Disconnect ${who}? The bot stops ALL activity for this account — scanning, analysis, autotrade AND position management/reconcile — and the sidecar drops its credentials on the next roster push. Open positions are left to their broker-side SL/TP.`)) return
+    let confirmLive
+    if (next && a.isLive) {
+      const word = window.prompt(`⚠ ${who} is a LIVE account with REAL money.\n\nReconnecting re-establishes its credentials and re-enables it in the registry.\n\nType LIVE to confirm:`)
+      if (word !== 'LIVE') return
+      confirmLive = true
+    } else if (next && !window.confirm(`Reconnect ${who}? The account is re-enabled in the registry and the sidecar re-establishes its credentials on the next roster push.`)) return
+    setPhaseBusy(`${a.accountId}:conn`)
     setErr('')
     try {
-      await agentPost(`/actions/${key}-toggle`, { on: next })
-      await refreshPhases()
+      await agentPost('/actions/registry-account', { accountId: a.accountId, enabled: next, ...(confirmLive ? { confirmLive } : {}) })
+      await Promise.all([refreshPhases(), load()])
     } catch (e) { setErr(e.message) } finally { setPhaseBusy('') }
   }
 
@@ -120,30 +138,31 @@ export default function AccountSwitcher({ title = 'Accounts' }) {
     } catch (e) { setErr(e.message) } finally { setPhaseBusy('') }
   }
 
+  // Engineering stats by account id — additive; rows render without them.
+  const engById = new Map((eng?.accounts || []).map(a => [String(a.accountId), a]))
+  const wl = (x) => (x ? `${x.wins}W/${x.losses}L` : '—')
+  const ago = (iso) => {
+    const t = Date.parse(String(iso || '').includes('T') ? iso : String(iso || '').replace(' ', 'T') + 'Z')
+    if (!Number.isFinite(t)) return null
+    const m = Math.max(0, Math.round((Date.now() - t) / 60000))
+    return m < 60 ? `${m}m` : m < 60 * 48 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`
+  }
+
   return (
     <div>
+      {/* Owner 2026-08-01: the MASTER S/A/T row was removed from this panel —
+          the master veto lives on Tune › Pipeline only. Per-account switches
+          below still honour it (greyed while the master is off). */}
       <div className="px-3 pb-1 flex items-center gap-1.5">
         <span className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{title}</span>
-        {/* Master S/A/T — the veto over every row below. Greyed rows follow. */}
-        {master && (
-          <span className="ml-auto inline-flex items-center gap-[3px]" title="Master switches — a veto over every account. The full cards stay on Tune › Pipeline.">
-            {PHASES.map(p => (
-              <MiniSwitch
-                key={p.key} initial={p.initial}
-                label={`Master ${p.label}`}
-                on={master[p.key] === true}
-                busy={phaseBusy === `master:${p.key}`}
-                title={`Master ${p.label} is ${master[p.key] === true ? 'ON' : 'OFF'} — tap to turn ${master[p.key] === true ? 'off' : 'on'} for ALL accounts`}
-                onClick={() => setMaster(p.key, !(master[p.key] === true))}
-              />
-            ))}
-          </span>
-        )}
       </div>
       <div className="flex flex-col gap-0.5">
         {data.accounts.map(a => {
           const active = a.accountId === data.selectedAccountId
           const ph = phaseView?.byId?.[String(a.accountId)]
+          const st = engById.get(String(a.accountId)) || null
+          const bk = broker?.[String(a.accountId)] || null
+          const disabled = st ? !st.enabled : false
           return (
             <div
               key={a.accountId}
@@ -195,14 +214,58 @@ export default function AccountSwitcher({ title = 'Accounts' }) {
                         title={!ph
                           ? `${p.label} state not loaded yet`
                           : !masterOn
-                            ? `Master ${p.label} is off above — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`
+                            ? `Master ${p.label} is OFF (Tune › Pipeline) — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`
                             : `${p.label} is ${eff ? 'ON' : 'OFF'} for ${a.traderLogin || a.accountId}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`}
                         onClick={() => setAccountPhase(a, p.key, !eff)}
                       />
                     )
                   })}
+                  <button
+                    type="button"
+                    disabled={phaseBusy === `${a.accountId}:conn`}
+                    onClick={() => setConnected(a, disabled)}
+                    title={disabled
+                      ? 'Disconnected — the bot ignores this account entirely. Tap to reconnect: re-enables it in the registry and re-establishes its sidecar credentials.'
+                      : 'Disconnect this account from ALL bot activity (scan, analyse, autotrade AND management) and drop its sidecar credentials. The S/A/T switches are the finer control; this is the full unplug.'}
+                    className={`ml-1 inline-flex items-center rounded-[var(--radius-control)] border leading-none px-[4px] py-[2px] text-[8px] font-bold cursor-pointer transition-colors disabled:opacity-45 ${
+                      disabled
+                        ? 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
+                        : 'border-[var(--color-down)] text-[var(--color-down)] bg-transparent hover:bg-[color-mix(in_srgb,var(--color-down)_12%,transparent)]'
+                    }`}
+                  >{phaseBusy === `${a.accountId}:conn` ? '…' : disabled ? 'Reconnect' : 'Disconnect'}</button>
                 </span>
               </span>
+              {/* Under-the-bonnet line (owner 2026-08-01): W/L, positions +
+                  floating, equity/margin, watchlist + mode, connectivity. */}
+              {st && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[8px] text-[var(--color-text-sub)] tabular-nums pt-0.5">
+                  <span title="Wins / losses over the past 24 hours">24h {wl(st.wl24h)}</span>
+                  <span title={`Wins / losses since connected${st.connectedAt ? ` (${st.connectedAt.slice(0, 10)})` : ''} · net $${st.wlAll?.net ?? '—'}`}>all {wl(st.wlAll)}</span>
+                  <span title="Open positions this account is carrying (bot ledger)">
+                    {(bk?.positions?.length ?? st.openPositions) || 0} pos
+                    {bk && bk.floating != null ? ` ${bk.floating >= 0 ? '+' : '−'}$${Math.abs(bk.floating).toFixed(2)}` : ''}
+                  </span>
+                  {bk && bk.equity != null && (
+                    <span title="Equity (balance + floating P&L) and used margin, from the latest broker snapshot">
+                      eq ${bk.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}{bk.usedMargin != null ? ` · mgn $${bk.usedMargin.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : ''}
+                    </span>
+                  )}
+                  <span title="Watchlist symbols this account scans (own list, or the shared list it inherits)">WL {st.watchlistCount ?? '—'}</span>
+                  <span title="Bot mode: active dispatches new entries; manage_only only manages what is open; paused does neither">{st.mode || '—'}</span>
+                  <span
+                    title={st.sidecarAuthorised == null
+                      ? 'Sidecar authorization unknown (roster not reported — js exec mode or health blip)'
+                      : st.sidecarAuthorised
+                        ? `C++ sidecar holds credentials for this account${st.lastReconcileAt ? ` · last reconcile ${ago(st.lastReconcileAt) ?? '—'} ago` : ''}`
+                        : 'C++ sidecar session is up WITHOUT this account — not authorized'}
+                    className={st.sidecarAuthorised === false ? 'text-[var(--color-state-off-text)] font-semibold' : st.sidecarAuthorised ? 'text-[var(--color-state-on-text)]' : ''}
+                  >
+                    ● {st.sidecarAuthorised == null ? 'link?' : st.sidecarAuthorised ? 'linked' : 'unlinked'}
+                    {st.lastReconcileAt && ago(st.lastReconcileAt) != null ? ` · rec ${ago(st.lastReconcileAt)}` : ''}
+                  </span>
+                  {disabled && <span className="text-[var(--color-state-off-text)] font-semibold">DISCONNECTED</span>}
+                </div>
+              )}
             </div>
           )
         })}

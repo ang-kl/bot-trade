@@ -99,6 +99,23 @@ function AccountCard({ acct, marketHours, onChanged }) {
 export default function Accounts() {
   const [bot, setBot] = useState(null)         // the selected account (fast path)
   const [others, setOthers] = useState(null)   // remaining accounts (on demand)
+
+  // accountId → {positions, floating, equity, usedMargin} for the Trading
+  // switches rows, computed from whichever broker snapshots this page holds
+  // (bot always; others once fetched). Derived, never fetched again.
+  const brokerMap = {}
+  for (const acct of [bot, ...(others || [])]) {
+    if (!acct?.accountId) continue
+    const positions = acct.positions || []
+    const floating = positions.reduce((s, p) => s + (Number(p.estNetPnl ?? p.estPnlQuote) || 0), 0)
+    const usedMargin = positions.reduce((s, p) => s + (Number(p.usedMargin) || 0), 0)
+    brokerMap[String(acct.accountId)] = {
+      positions,
+      floating,
+      equity: acct.balance != null ? Number(acct.balance) + floating : null,
+      usedMargin: positions.length ? usedMargin : null,
+    }
+  }
   const [loadingAll, setLoadingAll] = useState(false)
   const [updatedAt, setUpdatedAt] = useState(null)
   const [marketHours, setMarketHours] = useState(null)
@@ -197,11 +214,12 @@ export default function Accounts() {
 
       <AccountsSubNav />
 
-      {/* S.A.T. switches — moved here from the sidebar (owner 2026-08-01:
-          "move out the Switches to Accounts page"). Same component, same
-          POST routes, same arm confirmations and typed master disarm. */}
+      {/* S.A.T. switches — moved here from the sidebar (owner 2026-08-01;
+          master row removed same day, the master veto lives on Tune ›
+          Pipeline). The broker map feeds the per-row equity/margin/floating
+          figures from the snapshots this page already fetches. */}
       <Card id="sec-switches">
-        <AccountSwitcher title="Trading switches" />
+        <AccountSwitcher title="Trading switches" broker={brokerMap} />
       </Card>
 
       <div id="sec-clock"><MarketClock /></div>
