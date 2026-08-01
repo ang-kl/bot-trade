@@ -1127,35 +1127,14 @@ export default function actionsRouter(db) {
       if (!creds.ready) return res.status(400).json({ error: 'cTrader not connected' })
       const { positionId, sl, tp } = req.body || {}
       if (!positionId) return res.status(400).json({ error: 'positionId is required' })
-      const args = { positionId: parseInt(positionId) }
-      if (Number(sl) > 0) args.stopLoss = Number(sl)
-      if (Number(tp) > 0) args.takeProfit = Number(tp)
-      if (args.stopLoss == null && args.takeProfit == null) {
-        return res.status(400).json({ error: 'sl or tp (absolute price) is required' })
-      }
-      const before = db.prepare(
-        `SELECT mp.id, mp.trade_id, mp.account_id, mp.symbol, mp.current_sl, mp.current_tp
-         FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
-         WHERE t.ctrader_position_id = ? AND mp.status = 'active'`
-      ).get(String(positionId)) || null
-      await execAmendPosition(creds, args)
-      db.prepare("UPDATE monitored_positions SET current_sl = COALESCE(?, current_sl), current_tp = COALESCE(?, current_tp) WHERE trade_id IN (SELECT id FROM trades WHERE ctrader_position_id = ?) AND status = 'active'")
-        .run(args.stopLoss ?? null, args.takeProfit ?? null, String(positionId))
-      if (before && args.stopLoss != null) {
-        recordPositionEvent(db, {
-          accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
-          kind: 'sl_moved', fromValue: before.current_sl, toValue: args.stopLoss, source: 'manual',
-        })
-      }
-      if (before && args.takeProfit != null) {
-        recordPositionEvent(db, {
-          accountId: before.account_id, positionId, tradeId: before.trade_id, symbol: before.symbol,
-          kind: 'tp_moved', fromValue: before.current_tp, toValue: args.takeProfit, source: 'manual',
-        })
-      }
-      res.json({ ok: true, positionId, sl: args.stopLoss ?? null, tp: args.takeProfit ?? null })
+      // Shared with the Telegram "Set TP" button (services/position-protect.js)
+      // so the two entry points cannot drift.
+      const { protectPosition } = await import('../services/position-protect.js')
+      const out = await protectPosition(db, creds, { positionId, sl, tp, source: 'manual' }, { amend: execAmendPosition })
+      res.json(out)
     } catch (err) {
-      res.status(502).json({ error: err.message })
+      const code = /required/.test(err.message) ? 400 : 502
+      res.status(code).json({ error: err.message })
     }
   })
 

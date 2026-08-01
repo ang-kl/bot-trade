@@ -169,7 +169,7 @@ const auditKeyFor = (accountId) =>
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
   nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
-  accountId = null,
+  accountId = null, suggestTarget = null,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
@@ -210,10 +210,34 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // gap rather than an emergency. Batched into one so a book with several
     // targetless positions produces one line per position, not one alert each.
     if (targetDue.length && typeof sendMessage === 'function') {
-      const lines = targetDue.map(f => `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot' : ''}`)
+      // Owner 01-08: propose a concrete price with a one-tap Set-TP button
+      // instead of only pointing at the curl. The suggestion is computed HERE,
+      // only for alerts actually going out (≤ once per position per 6h mute),
+      // so the underlying bar fetch is rare. A null suggestion degrades to the
+      // original instruction-only line — the alert never waits on structure.
+      const suggestions = new Map()
+      if (typeof suggestTarget === 'function') {
+        for (const f of targetDue) {
+          try {
+            const s = await suggestTarget(f)
+            if (s && Number(s.tp) > 0) suggestions.set(f, s)
+          } catch { /* a failed suggestion must not lose the alert */ }
+        }
+      }
+      const lines = targetDue.map(f => {
+        const s = suggestions.get(f)
+        return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot' : ''}` +
+          (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
+      })
+      // One button row per suggested position. callback_data is capped at 64
+      // bytes by Telegram — `prottp|<id>|<price>` fits comfortably.
+      const buttons = targetDue
+        .filter(f => suggestions.has(f))
+        .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
       try {
         await sendMessage(
-          `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT\n${lines.join('\n')}\n\nThe order path refuses to submit these (guard_no_target) — these were adopted from the broker, so the guard never saw them. Set a target with POST /actions/position-protect {positionId, tp}.`
+          `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT\n${lines.join('\n')}\n\nThe order path refuses to submit these (guard_no_target) — these were adopted from the broker, so the guard never saw them. Tap a button below, or set your own with POST /actions/position-protect {positionId, tp}.`,
+          buttons.length ? { buttons } : undefined,
         )
         for (const f of targetDue) lastTargetAlerts[String(f.positionId)] = nowMs
       } catch { /* a failed alert must not lose the audit */ }
