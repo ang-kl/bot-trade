@@ -7,6 +7,7 @@ import Card from '../components/common/Card.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
+import Switch from '../components/common/Switch.jsx'
 import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
@@ -289,8 +290,11 @@ function MxCell({ on, counts, selected, na, onClick }) {
   // sublines were unreadable and doubled the row height (owner report).
   return (
     <td className="py-0.5 px-1 text-center">
+      {/* aria-pressed reports SELECTION (which cell the editor below edits),
+          not the cell's on/off value — the value is in the visible ✓/✗ text
+          (inventory: "aria-pressed misreports"). */}
       <button
-        type="button" aria-pressed={!!on} onClick={onClick}
+        type="button" aria-pressed={!!selected} onClick={onClick}
         className={`w-full rounded-md px-1.5 py-0.5 cursor-pointer border whitespace-nowrap ${
           selected
             ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft,rgba(37,99,235,0.12))]'
@@ -516,7 +520,8 @@ function VerdictBadge({ r }) {
   const [open, setOpen] = useState(false)
   const v = verdictFor(r)
   if (!v) return null
-  const tone = v.state === 'go' ? 'up' : v.state === 'thin' ? 'info' : 'down'
+  // Verdict is a STATE, not a P&L number — on/off tints, info for thin.
+  const tone = v.state === 'go' ? 'on' : v.state === 'thin' ? 'info' : 'off'
   return (
     <span className="relative inline-block">
       <button
@@ -665,20 +670,17 @@ function SectionTitle({ children }) {
 // inverted the emphasis — the state you want to notice is whichever one is
 // unexpected, and case cannot know that. Colour carries it now; the label
 // reads the same either way.
+// Phase E: Toggle is now a thin adapter over the shared Switch primitive —
+// same state tints, same role=switch semantics, but the chip finally carries
+// the ON/OFF word ("colour is never the only cue") and the shared radius
+// token. Every confirm / typed-disarm flow stays in the caller's onClick,
+// untouched; Switch passes the next value, callers ignore it (closures).
 function Toggle({ on, onClick, label }) {
   return (
-    <button
-      type="button" role="switch" aria-checked={on}
-      onClick={onClick}
+    <Switch
+      checked={!!on} onChange={onClick} label={label}
       title={`${label}: ${on ? 'ON' : 'OFF'} — tap to turn ${on ? 'off' : 'on'}`}
-      className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer transition-colors px-[3px] py-[1px] text-[9px] font-semibold capitalize ${
-        on
-          ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)]'
-          : 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
-      }`}
-    >
-      {label}
-    </button>
+    />
   )
 }
 
@@ -1431,7 +1433,7 @@ export default function Tune() {
                       await agentPost('/actions/autotrade-scope', { scope: sc })
                       setConfig(c => ({ ...c, autotrade_scope: sc }))
                     }, `Autotrade scope → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
                     {lbl}
                   </button>
                 ))}
@@ -1530,7 +1532,8 @@ export default function Tune() {
                 >Disarm</Button>
               </div>
             )}
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-[9px]">
+            {/* Orphan role=radio buttons need a radiogroup parent (inventory). */}
+            <div role="radiogroup" aria-label="Strategy Autopilot mode" className="mt-3 flex flex-wrap items-center gap-2 text-[9px]">
               <span className="font-semibold">Strategy Autopilot:</span>
               {['off', 'suggest', 'auto'].map(m => (
                 <button
@@ -1542,7 +1545,7 @@ export default function Tune() {
                       setConfig(c => ({ ...c, autopilot_mode: m }))
                     }, `Autopilot: ${m}`)
                   }}
-                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                 >{m}</button>
               ))}
               <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -1909,7 +1912,7 @@ export default function Tune() {
                       await agentPost('/actions/burn-in', { sizeMode: mode })
                       setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
                     }, `Burn-in sizing → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
                     {lbl}
                   </button>
                 ))}
@@ -1999,7 +2002,7 @@ export default function Tune() {
                       {['adaptive', 'fixed'].map(m => (
                         <button key={m} type="button" role="radio" aria-checked={keeper.mode === m}
                           onClick={() => post({ mode: m }, `Profit Keeper mode: ${m}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{m}</button>
                       ))}
                     </span>
@@ -2020,7 +2023,7 @@ export default function Tune() {
                       {['external', 'all'].map(sc => (
                         <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
                           onClick={() => post({ scope: sc }, `Profit Keeper scope: ${sc}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{sc === 'external' ? 'manual only' : 'all positions'}</button>
                       ))}
                     </span>
@@ -2164,7 +2167,7 @@ export default function Tune() {
                           className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[3px] py-[1px] disabled:opacity-40 disabled:cursor-default ${
                             selected
                               ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[9px] font-normal capitalize'
-                              : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
+                              : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] text-[9px] font-normal capitalize'
                           }`}
                         >
                           {g.key} ({g.avail.length})
@@ -2869,7 +2872,7 @@ export default function Tune() {
                             // stale tick can't ride along with another strategy
                             if (val !== 'fib_618_fade') setBtTouchFill(false)
                           }}
-                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
                         >{running ? '⟳ ' : done ? '✓ ' : queued ? '· ' : ''}{lbl}</button>
                       )
                     })}
@@ -2983,7 +2986,7 @@ export default function Tune() {
                 <div className="flex flex-wrap items-center gap-2">
                   {bt?.report?.html && (
                     <Button
-                      size="sm" variant="secondary"
+                      size="sm" variant="subtle"
                       onClick={() => {
                         const url = URL.createObjectURL(new Blob([bt.report.html], { type: 'text/html' }))
                         const a = document.createElement('a')
@@ -3013,7 +3016,7 @@ export default function Tune() {
                       <button
                         key={v} type="button" role="radio" aria-checked={btArmClass === v}
                         onClick={() => pickArmClass(v)}
-                        className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     ))}
                     {btArmClass === 'all' && (
@@ -3113,7 +3116,7 @@ export default function Tune() {
                   {bt?.entryMode === 'touch' && pendingGoCount > 0 && (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
-                        variant="secondary"
+                        variant="accent"
                         onClick={async () => {
                           if (!window.confirm(`Arm PENDING orders (resting limit orders at the fib 61.8% level) for: ${pendingGoSummary}? The bot will park REAL limit orders at the broker for these combos only.`)) return
                           try {
@@ -3143,7 +3146,7 @@ export default function Tune() {
                         key={v} type="button" role="checkbox" aria-checked={on}
                         onClick={() => toggleVerdictFilter(v)}
                         title={on ? `Hide ${lbl} rows` : `Show ${lbl} rows`}
-                        className={`rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     )
                   })}
@@ -3151,11 +3154,11 @@ export default function Tune() {
                   <span className="ml-auto flex gap-1.5">
                     <button
                       type="button" onClick={() => setBtOpenSyms(new Set(Object.keys(bt.symbols)))}
-                      className="rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
+                      className="rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
                     >Expand all</button>
                     <button
                       type="button" onClick={() => setBtOpenSyms(new Set())}
-                      className="rounded-[8px] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
+                      className="rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer glass-inset text-[var(--color-text-sub)]"
                     >Collapse all</button>
                   </span>
                 </div>

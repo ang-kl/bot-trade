@@ -22,6 +22,11 @@ const gitCommit = (() => {
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Vitest transforms .jsx with esbuild directly (plugin-react only covers
+  // serve/build), so without this the first component test to render JSX
+  // hit "React is not defined". Automatic runtime matches what plugin-react
+  // already emits for the app bundle — no behaviour change outside tests.
+  esbuild: { jsx: 'automatic' },
   define: {
     __APP_VERSION__: JSON.stringify(displayVersion),
     __GIT_COMMIT__: JSON.stringify(gitCommit),

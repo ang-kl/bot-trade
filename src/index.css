@@ -907,6 +907,29 @@ textarea {
 :root { --radius-control: 1px; }
 .radius-control { border-radius: var(--radius-control); }
 
+/* M3 consolidation (docs/ui-m3-compact-contract.md §2): --control-radius was
+   a SECOND radius token, born in the footer brief at 7px while every other
+   rectangular control had already moved to the owner's 1px instruction of
+   2026-07-28. Two tokens for one concept is how the Save-button drift
+   happened in the first place, so the footer family now reads the canonical
+   token. Visible change: .compact-control corners go 7px → 1px, matching
+   Button/Input/pills. Genuine circles (switch knobs, dots, the round FAB)
+   never used this token and keep their shapes. */
+:root { --control-radius: var(--radius-control); }
+
+/* Focus must be VISIBLE (contract §3): the Phase A inventory found ~60 raw
+   interactive elements with no focus styling at all, several applying hover
+   by JS style mutation that keyboards never reach. One unlayered rule gives
+   every interactive element a real outline; :where() keeps specificity at
+   zero so any component-level focus treatment still wins. focus-visible
+   only — pointer clicks don't flash outlines. Survives all three themes
+   because it rides the theme's own accent token. */
+:where(button, a[href], [role="button"], [role="tab"], [role="switch"],
+       [role="radio"], [role="link"], summary, select, input, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
 /* ---------------------------------------------------------------------------
    UI-7 — PHONE TOUCH TARGETS
 

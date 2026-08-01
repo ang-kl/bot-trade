@@ -644,9 +644,9 @@ function PagedRows({ rows, pageSize = 4, maxHeight = 150, initialIndex = null, c
       </div>
       {rows.length > pageSize && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-          <button type="button" disabled={p === 0} onClick={() => setPage(p - 1)} style={{ ...btn, opacity: p === 0 ? 0.4 : 1 }}>‹</button>
+          <button type="button" aria-label="Previous page" disabled={p === 0} onClick={() => setPage(p - 1)} style={{ ...btn, opacity: p === 0 ? 0.4 : 1 }}>‹</button>
           <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>Page {p + 1} / {pages}</span>
-          <button type="button" disabled={p >= pages - 1} onClick={() => setPage(p + 1)} style={{ ...btn, opacity: p >= pages - 1 ? 0.4 : 1 }}>›</button>
+          <button type="button" aria-label="Next page" disabled={p >= pages - 1} onClick={() => setPage(p + 1)} style={{ ...btn, opacity: p >= pages - 1 ? 0.4 : 1 }}>›</button>
         </div>
       )}
     </div>
@@ -920,7 +920,7 @@ function LedgerBody({ variant, windows, ledger, error, nowMs }) {
   return (
     <>
       {modal && (
-        <button type="button" onClick={() => setExpandAll(e => !e)}
+        <button type="button" aria-pressed={expandAll} onClick={() => setExpandAll(e => !e)}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: P_TX, background: P_ACS, border: `1px solid ${P_GBD}`, borderRadius: 8, padding: '3px 9px', alignSelf: 'flex-start', marginBottom: 6 }}>
           {expandAll ? 'Collapse all' : 'Expand all'}
         </button>
@@ -964,7 +964,11 @@ function LedgerRow({ w, forceOpen = null, nowMs }) {
   const last = empty ? agoLabel(w.lastTradeAt, nowMs) : null
   return (
     <>
+      {/* A tr can't be a <button>, so it carries the disclosure semantics
+          itself — before this it was mouse-only (inventory P18). */}
       <tr onClick={() => setOpen(o => !o)}
+        role="button" tabIndex={0} aria-expanded={open}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(o => !o) } }}
         className={`border-b border-[var(--color-border)] cursor-pointer hover:bg-[var(--color-accent-soft)] ${empty ? 'opacity-60' : ''}`}>
         <td className="py-1.5 pr-2 whitespace-nowrap">
           <span aria-hidden="true" className={`inline-block w-3 text-[9px] ${SUB}`}>{open ? '▾' : '▸'}</span>
@@ -2004,9 +2008,11 @@ export default function Performance() {
           prototype's chip styles with the README's ≥44px tap minimum. */}
       <div className="min-[700px]:hidden space-y-2">
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {/* An in-page view switch, not navigation — aria-pressed, not
+              aria-current="page" (inventory P20). */}
           {MOBILE_SCREENS.map(s => (
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
-              aria-current={screen === s.key ? 'page' : undefined}
+              aria-pressed={screen === s.key}
               style={screen === s.key
                 ? { fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: 'var(--color-on-accent)', background: P_ACC, borderRadius: 999, padding: '3px 10px', border: 'none', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }
                 : { fontSize: 'var(--fs-d9)', fontWeight: 600, color: P_SB, border: `1px solid ${P_EDG}`, background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }}>
@@ -2094,8 +2100,8 @@ export default function Performance() {
               {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
                 const on = acct === f.id
                 return (
-                  <button key={f.id} type="button" onClick={() => setAcct(f.id)}
-                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                  <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
+                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
                     {f.label}
                   </button>
                 )
@@ -2111,8 +2117,8 @@ export default function Performance() {
             {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
               const on = acct === f.id
               return (
-                <button key={f.id} type="button" onClick={() => setAcct(f.id)}
-                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
+                <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
+                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
                   {f.label}
                 </button>
               )
@@ -2432,7 +2438,7 @@ export default function Performance() {
             const on = acct === f.id
             return (
               <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? '#fff' : P_TX, background: on ? P_ACC : P_GL, border: `1px solid ${on ? P_ACC : P_GBD}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
+                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : P_GL, border: `1px solid ${on ? P_ACC : P_GBD}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
                 <span>{f.label}</span>
                 <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: on ? 'rgba(255,255,255,.75)' : P_MU }}>{f.sub}</span>
               </button>

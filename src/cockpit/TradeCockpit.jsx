@@ -232,10 +232,26 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     return () => { clearTimeout(t); evts.forEach(e => el?.removeEventListener(e, arm)) }
   }, [onClose])
 
-  // Esc closes; focus moves in on mount.
+  // Esc closes; focus moves in on mount; Tab is TRAPPED inside the dialog —
+  // aria-modal without a focus trap let keyboard focus escape into the inert
+  // page behind (inventory C-47). Behaviour-preserving: same Esc, same focus
+  // return path, Tab simply wraps within the modal's own focusables.
   useEffect(() => {
     const el = rootRef.current; if (el) el.focus()
-    const onKey = e => { if (e.key === 'Escape') onClose?.() }
+    const onKey = e => {
+      if (e.key === 'Escape') { onClose?.(); return }
+      if (e.key !== 'Tab') return
+      const root = rootRef.current; if (!root) return
+      const focusables = Array.from(root.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter(n => n.offsetParent !== null)
+      if (focusables.length === 0) return
+      const first = focusables[0], last = focusables[focusables.length - 1]
+      const active = document.activeElement
+      if (e.shiftKey && (active === first || active === root)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus() }
+      else if (!root.contains(active)) { e.preventDefault(); first.focus() }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -296,6 +312,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
         <button title={marketClosed ? 'queues for next open' : undefined}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--dn)', background: 'var(--dns)', border: '1px solid var(--dn)', borderRadius: 10, padding: cfg.headerWraps ? '11px 14px' : '4px 12px', ...(cfg.headerWraps ? { flex: 1 } : {}) }}>Close</button>
         <button title={themeOverride == null ? 'Following the system theme — tap to override' : 'Overriding the system theme — tap to cycle'}
+          aria-pressed={themeOverride != null}
           onClick={() => setThemeOverride(o => (o == null ? (sysDark ? 'light' : 'dark') : null))}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(11.5), fontWeight: 600, color: 'var(--tx)', background: 'var(--acs)', border: '1px solid var(--gbd)', borderRadius: 10, padding: '4px 10px' }}>{theme === 'dark' ? '☾ Dark' : '☀ Light'}{themeOverride == null ? '' : ' ·'}</button>
         {/* Owner (2026-08-01): no ✕ here — the six border close buttons
@@ -546,8 +563,9 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             const open = openKeys.includes(j.key)
             return (
               <div key={j.key} className="tw-row" data-key={j.key} title={`${j.when} — ${j.k} · ${j.d} · click to expand`} role="button" tabIndex={0}
+                aria-expanded={open}
                 onClick={() => setOpenKeys(ks => ks.includes(j.key) ? ks.filter(x => x !== j.key) : ks.concat(j.key))}
-                onKeyDown={e => { if (e.key === 'Enter') setOpenKeys(ks => ks.includes(j.key) ? ks.filter(x => x !== j.key) : ks.concat(j.key)) }}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenKeys(ks => ks.includes(j.key) ? ks.filter(x => x !== j.key) : ks.concat(j.key)) } }}
                 onMouseEnter={() => setHi(j.key, true)} onMouseLeave={() => setHi(null, false)}
                 style={{ display: 'grid', gridTemplateColumns: '9px 34px 12px 1fr', gap: '0 5px', alignItems: 'center', fontVariantNumeric: 'tabular-nums', lineHeight: 1.4, cursor: 'pointer', borderRadius: 3, padding: cfg.touch ? '7px 2px' : '1px 2px', minHeight: open ? 'auto' : (cfg.touch ? 44 : 24), borderBottom: '1px solid var(--edg)' }}>
                 <span style={{ fontSize: fs(8.5), color: 'var(--mu)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▸</span>
@@ -721,9 +739,9 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     : <>{riskCard}{advisoriesCard}{armedCard}{invalidationCard}{fleetCard}</>
 
   const tabBar = cfg.tabs && (
-    <div style={{ display: 'flex', marginBottom: -1, zIndex: 2, position: 'relative' }}>
+    <div role="tablist" aria-label="Cockpit panes" style={{ display: 'flex', marginBottom: -1, zIndex: 2, position: 'relative' }}>
       {cfg.tabs.map(t => (
-        <button key={t} onClick={() => setPane(t)}
+        <button key={t} role="tab" aria-selected={pane2 === t} onClick={() => setPane(t)}
           style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(10.5), fontWeight: 600, letterSpacing: '.05em', color: pane2 === t ? 'var(--acc)' : 'var(--mu)', background: pane2 === t ? 'var(--gls)' : 'transparent', border: '1px solid var(--gbd)', borderBottom: pane2 === t ? '1px solid var(--gls)' : '1px solid var(--gbd)', borderRadius: '10px 10px 0 0', padding: '13px 0', flex: 1, textAlign: 'center', marginRight: -1, position: 'relative', zIndex: pane2 === t ? 1 : 0 }}>{t}</button>))}
     </div>)
 
@@ -787,6 +805,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   return (
     <div className="tc-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose?.() }}>
       <div ref={rootRef} tabIndex={-1} className="tc-root" data-theme={theme} role="dialog" aria-modal="true"
+        aria-label={`Trade cockpit — ${position?.sym || 'position'}`}
         style={{ ...shellStyle, ...card, borderRadius: 18, position: 'relative', overflow: 'hidden', outline: 'none', background: 'var(--bg)',
           display: 'flex', flexDirection: 'column',
           ...(phoneShrink ? { transform: 'scale(0.8)', transformOrigin: 'center center' } : {}) }}>
@@ -823,6 +842,6 @@ function MarketSays({ fs, clamp: doClamp, text }) {
   return (
     <div>
       <span style={{ fontSize: fs(10), lineHeight: 1.35, color: 'var(--sb)', ...(doClamp && !more ? { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } : {}) }}>{text}</span>
-      {doClamp && <button onClick={() => setMore(m => !m)} style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(10), fontWeight: 600, color: 'var(--acc)', background: 'transparent', border: 'none', padding: '13px 0 0', display: 'block' }}>{more ? '▴ LESS' : '▾ MORE'}</button>}
+      {doClamp && <button aria-expanded={more} onClick={() => setMore(m => !m)} style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: fs(10), fontWeight: 600, color: 'var(--acc)', background: 'transparent', border: 'none', padding: '13px 0 0', display: 'block' }}>{more ? '▴ LESS' : '▾ MORE'}</button>}
     </div>)
 }

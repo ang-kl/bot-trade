@@ -35,12 +35,14 @@ export default function StrategyInsights() {
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-[9px] font-semibold">Strategy forecast vs. actual</div>
         <span className="text-[9px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
-        <span className="ml-auto flex gap-1">
+        {/* Emphasis follows selection (inventory: unselected was the BOLD
+            UPPERCASE one) and the group is a real radiogroup. */}
+        <span role="radiogroup" aria-label="Insight range" className="ml-auto flex gap-1">
           {[7, 30, 0].map(d => (
-            <button key={d} type="button" onClick={() => setDays(d)}
-              className={`rounded-[2px] border px-[4px] py-[3px] text-[9px] cursor-pointer ${days === d
-                ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-normal'
-                : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-bold uppercase'}`}>
+            <button key={d} type="button" role="radio" aria-checked={days === d} onClick={() => setDays(d)}
+              className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-[9px] cursor-pointer ${days === d
+                ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-semibold'
+                : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-normal'}`}>
               {d === 0 ? 'All' : `${d}D`}
             </button>
           ))}

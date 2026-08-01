@@ -12,9 +12,10 @@
 // and TP2–4 (partial closes) are bot-enforced rules the agent applies every
 // loop cycle — same mechanism cTrader itself uses client-side.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Badge from './common/Badge.jsx'
 import Button from './common/Button.jsx'
+import IconButton from './common/IconButton.jsx'
 import PositionChart from './PositionChart.jsx'
 import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
@@ -54,13 +55,13 @@ function Stepper({ label, value, onChange, step = 1, digits = 1 }) {
       <span className="text-[9px]">{label}</span>
       <span className="flex items-center gap-2">
         <input
-          className="w-24 text-right text-[9px] bg-transparent border border-[var(--color-border)] rounded-[6px] px-1.5 py-0.5"
+          className="w-24 text-right text-[9px] bg-transparent border border-[var(--color-border)] rounded-[var(--radius-control)] px-1.5 py-0.5"
           value={value ?? ''}
           onChange={e => onChange(e.target.value)}
           inputMode="decimal"
           aria-label={label}
         />
-        <span className="glass-inset rounded-[8px] inline-flex">
+        <span className="glass-inset rounded-[var(--radius-control)] inline-flex">
           <button type="button" className="px-2.5 py-0.5 cursor-pointer" aria-label={`${label} minus`}
             onClick={() => onChange(String(Math.round(((Number(value) || 0) - step) * 10 ** digits) / 10 ** digits))}>−</button>
           <span className="w-px bg-[var(--color-border)]" />
@@ -98,6 +99,7 @@ function ToggleRow({ label, on, onToggle }) {
 
 export default function PositionManager({ p, onDone }) {
   const [tab, setTab] = useState('Modify')
+  const tabRefs = useRef([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const dir = sideDir(p.side) ?? 1
@@ -166,14 +168,26 @@ export default function PositionManager({ p, onDone }) {
           Sticky so the title + close stay reachable while a tall tab scrolls. */}
       <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
         <h3 className="text-[11px] font-bold">PID{p.positionId} {p.symbol} ({fmt(p.lots, 2)})</h3>
-        <Button size="sm" variant="ghost" onClick={onDone}>✕</Button>
+        <IconButton size="sm" variant="ghost" label="Close sheet" onClick={onDone}>✕</IconButton>
       </div>
 
-      {/* Tab strip: Size | Stop & Target | Chart | Details */}
-      <div className="glass-inset rounded-[10px] p-0.5 flex mb-2">
-        {TABS.map(t => (
-          <button key={t.key} type="button" onClick={() => setTab(t.key)}
-            className={`flex-1 rounded-[8px] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t.key ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
+      {/* Tab strip: Size | Stop & Target | Chart | Details — a real tablist
+          (aria-selected + roving tabindex + arrow keys), same pattern as
+          FolioTabs; selection keeps its shadow but also gets the state word. */}
+      <div role="tablist" aria-label="Position sheet sections" className="glass-inset rounded-[var(--radius-control)] p-0.5 flex mb-2">
+        {TABS.map((t, i) => (
+          <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
+            tabIndex={tab === t.key ? 0 : -1}
+            ref={el => { tabRefs.current[i] = el }}
+            onClick={() => setTab(t.key)}
+            onKeyDown={e => {
+              const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+              if (!d) return
+              e.preventDefault()
+              const n = (i + d + TABS.length) % TABS.length
+              setTab(TABS[n].key); tabRefs.current[n]?.focus()
+            }}
+            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t.key ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
             {t.label}
           </button>
         ))}
@@ -199,22 +213,23 @@ export default function PositionManager({ p, onDone }) {
           </div>
           <div className="text-[9px] text-[var(--color-text-sub)] mb-2">Used margin: {money(p.usedMargin)}</div>
 
-          <button type="button" disabled className="w-full rounded-[10px] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
+          <button type="button" disabled className="w-full rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
           <div className="text-center text-[9px] text-[var(--color-text-sub)] my-1.5">Leave size intact</div>
           <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <div className="flex gap-2 mb-1.5">
-            <Button className="flex-1" variant="subtle" disabled={busy}
+            {/* Real market orders — danger emphasis, not subtle (inventory D20/D21). */}
+            <Button className="flex-1" variant="danger" disabled={busy}
               onClick={() => window.confirm(`Double ${p.symbol}: open ANOTHER ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
                 run(() => agentPost('/actions/position-double', { positionId: p.positionId }), 'Position doubled')}>Double</Button>
-            <Button className="flex-1" variant="subtle" disabled={busy}
+            <Button className="flex-1" variant="danger" disabled={busy}
               onClick={() => window.confirm(`Reverse ${p.symbol}: CLOSE this ${p.side} and open ${p.side === 'BUY' ? 'SELL' : 'BUY'} ${fmt(p.lots, 2)} lots at market?`) &&
                 run(() => agentPost('/actions/position-reverse', { positionId: p.positionId }), 'Position reversed')}>Reverse</Button>
           </div>
           <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
-            className="w-full rounded-[10px] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
             onClick={() => window.confirm(`Close ${p.symbol} ${p.side} ${fmt(p.lots, 2)} lots at market?`) &&
               run(() => agentPost('/actions/position-close', { positionId: p.positionId }), 'Position closed')}>
             Close ({fmt(p.currentPrice, p.digits ?? 5)})
@@ -279,7 +294,7 @@ export default function PositionManager({ p, onDone }) {
           )}
 
           <button type="button" disabled={busy}
-            className="w-full mt-2 rounded-[10px] bg-[var(--color-accent)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full mt-2 rounded-[var(--radius-control)] bg-[var(--color-accent)] text-[var(--color-on-accent)] py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
             onClick={applyProtection}>
             Modify protection
           </button>
@@ -296,7 +311,8 @@ export default function PositionManager({ p, onDone }) {
       {tab === 'Details' && (
         <div className="text-[9px] space-y-1">
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Position</span><span className="font-semibold">PID{p.positionId}</span></div>
-          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={p.side === 'BUY' ? 'up' : 'down'}>{p.side}</Badge></div>
+          {/* Direction, not P&L — contract: blue = long, red = short (on/off tints). */}
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={p.side === 'BUY' ? 'on' : 'off'}>{p.side}</Badge></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Quantity</span><span>{fmt(p.lots, 2)} lots</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Entry</span><span>{fmt(p.entry, p.digits ?? 5)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Swap</span><span>{money(p.swap)}</span></div>

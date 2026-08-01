@@ -8,9 +8,9 @@
 // Colour note: cTrader's greens map to the app accent (blue) — this repo
 // bans green for accessibility (see scripts/check-no-green.sh).
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Badge from './common/Badge.jsx'
-import Button from './common/Button.jsx'
+import IconButton from './common/IconButton.jsx'
 import PositionChart from './PositionChart.jsx'
 import { agentPost } from '../lib/agent-api.js'
 import { priceDp } from '../lib/std-trade-rows.js'
@@ -23,6 +23,7 @@ const fmt = (v, d = 4) => (v == null || Number.isNaN(Number(v)) ? '—' : Number
 
 export default function OrderManager({ o, onDone }) {
   const [tab, setTab] = useState('Modify')
+  const tabRefs = useRef([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
@@ -48,14 +49,25 @@ export default function OrderManager({ o, onDone }) {
           the title + close stay reachable while a tall tab scrolls. */}
       <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
         <h3 className="text-[11px] font-bold">OID{o.orderId} {o.symbol} ({qty})</h3>
-        <Button size="sm" variant="ghost" onClick={onDone}>✕</Button>
+        <IconButton size="sm" variant="ghost" label="Close sheet" onClick={onDone}>✕</IconButton>
       </div>
 
-      {/* Tab strip: Modify | Chart | Details */}
-      <div className="glass-inset rounded-[10px] p-0.5 flex mb-2">
-        {TABS.map(t => (
-          <button key={t} type="button" onClick={() => setTab(t)}
-            className={`flex-1 rounded-[8px] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
+      {/* Tab strip: Modify | Chart | Details — real tablist with roving
+          tabindex + arrow keys, same as PositionManager / FolioTabs. */}
+      <div role="tablist" aria-label="Order sheet sections" className="glass-inset rounded-[var(--radius-control)] p-0.5 flex mb-2">
+        {TABS.map((t, i) => (
+          <button key={t} type="button" role="tab" aria-selected={tab === t}
+            tabIndex={tab === t ? 0 : -1}
+            ref={el => { tabRefs.current[i] = el }}
+            onClick={() => setTab(t)}
+            onKeyDown={e => {
+              const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+              if (!d) return
+              e.preventDefault()
+              const n = (i + d + TABS.length) % TABS.length
+              setTab(TABS[n]); tabRefs.current[n]?.focus()
+            }}
+            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
             {t}
           </button>
         ))}
@@ -86,14 +98,14 @@ export default function OrderManager({ o, onDone }) {
             <span>Take Profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
           </div>
 
-          <button type="button" disabled className="w-full mt-2 rounded-[10px] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
+          <button type="button" disabled className="w-full mt-2 rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
           <div className="text-center text-[9px] text-[var(--color-text-sub)] my-1.5">
             Amend-in-place isn't wired yet — cancel and let the bot re-stage (or edit in cTrader)
           </div>
           <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
-            className="w-full rounded-[10px] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
+            className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
             onClick={cancel}>
             Cancel order
           </button>
@@ -108,7 +120,8 @@ export default function OrderManager({ o, onDone }) {
         <div className="text-[9px] space-y-1">
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Order</span><span className="font-semibold">OID{o.orderId}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Type</span><span>{type}</span></div>
-          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={o.side === 'BUY' ? 'up' : 'down'}>{o.side}</Badge></div>
+          {/* Direction, not P&L — contract: blue = long, red = short (on/off tints). */}
+          <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Side</span><Badge tone={o.side === 'BUY' ? 'on' : 'off'}>{o.side}</Badge></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Quantity</span><span>{qty}{o.lots != null ? ' lots' : ''}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Trigger price</span><span>{fmt(trigger, o.digits ?? 5)}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Stop Loss</span><span>{fmt(o.sl, o.digits ?? 5)}</span></div>

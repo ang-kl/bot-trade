@@ -204,7 +204,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
 
   const pill = (on) => ({
     cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL,
-    color: on ? '#fff' : SB, background: on ? ACC : 'transparent',
+    color: on ? 'var(--color-on-accent)' : SB, background: on ? ACC : 'transparent',
     border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '1px 9px',
   })
   const label = period === 'day' ? 'this FX day' : 'this FX week'
@@ -229,8 +229,8 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       </div>
 
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        <button type="button" style={pill(period === 'day')} onClick={() => setPeriod('day')}>Day</button>
-        <button type="button" style={pill(period === 'week')} onClick={() => setPeriod('week')}>Week</button>
+        <button type="button" style={pill(period === 'day')} aria-pressed={period === 'day'} onClick={() => setPeriod('day')}>Day</button>
+        <button type="button" style={pill(period === 'week')} aria-pressed={period === 'week'} onClick={() => setPeriod('week')}>Week</button>
         <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
       </div>
 

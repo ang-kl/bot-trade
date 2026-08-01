@@ -137,11 +137,11 @@ export default function SymbolClusters({
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Range</span>
         {CLUSTER_RANGES.map(d => (
-          <button key={d} type="button" style={pill(d === days)} onClick={() => onDays(d)}>{d}D</button>
+          <button key={d} type="button" aria-pressed={d === days} style={pill(d === days)} onClick={() => onDays(d)}>{d}D</button>
         ))}
         <span style={{ marginLeft: 6, fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', letterSpacing: '.04em', color: MU }}>Window</span>
         {CLUSTER_WINDOWS.map(w => (
-          <button key={w.label} type="button" style={pill(w.windowMinutes === windowMinutes)} onClick={() => onWindow(w.windowMinutes)}>{w.label}</button>
+          <button key={w.label} type="button" aria-pressed={w.windowMinutes === windowMinutes} style={pill(w.windowMinutes === windowMinutes)} onClick={() => onWindow(w.windowMinutes)}>{w.label}</button>
         ))}
       </div>
 

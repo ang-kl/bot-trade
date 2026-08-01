@@ -5,6 +5,8 @@ import { Fragment, useEffect, useState, useCallback } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
+import IconButton from '../components/common/IconButton.jsx'
+import Switch from '../components/common/Switch.jsx'
 import Input from '../components/common/Input.jsx'
 import { Link } from 'react-router-dom'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
@@ -345,7 +347,8 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
       id: `ol-${ev.id}`,
       at: ev.created_at,
       symbol: ev.symbol,
-      result: { text: ev.approved ? 'OK' : 'VETO', tone: ev.approved ? 'up' : 'warning' },
+      // Approval is a STATE, not a profit (inventory T24) — on, not up.
+      result: { text: ev.approved ? 'OK' : 'VETO', tone: ev.approved ? 'on' : 'warning' },
       source: { text: src, tone: prop?.source === 'validation_fill' ? 'special' : 'neutral' },
       side: ev.side || null,
       qty,
@@ -401,6 +404,8 @@ export default function Trade() {
   const [broker, setBroker] = useState(null)     // reconcile snapshot: pending orders, external positions
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
+  // positionId of the keeper-optout write in flight (Switch `pending`).
+  const [optBusy, setOptBusy] = useState(null)
   const [reconcileNote, setReconcileNote] = useState('')
   const [pending, setPending] = useState(null)  // { enabled, matrix } — resting-limit pending-order mode
   const [scope, setScope] = useState('all')     // autotrade scope: all watchlist vs armed combos
@@ -613,7 +618,7 @@ export default function Trade() {
             <span className="font-semibold whitespace-nowrap">${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}</span>
           )}
           <span className="text-[var(--color-text-sub)] whitespace-nowrap">
-            <span aria-hidden="true" style={{ color: health ? 'var(--color-accent)' : 'var(--color-down)' }}>● </span>
+            <span aria-hidden="true" style={{ color: health ? 'var(--color-state-on-text)' : 'var(--color-down)' }}>● </span>
             {health ? `agent ok · loop #${fmt(health.loopCount, 0)} · scan ${ago(health.lastScanAt)}` : 'agent offline'}
           </span>
           {Number(health?.errorsToday) > 0 && <span className="text-[var(--color-warning-text)] whitespace-nowrap">{fmt(health.errorsToday, 0)} errors today</span>}
@@ -622,12 +627,12 @@ export default function Trade() {
             <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={() => act('scan', '/actions/scan')}>
               {busy === 'scan' ? 'Scanning…' : 'Scan now'}
             </Button>
-            <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={validationFill}
+            <Button size="sm" variant="danger" disabled={busy !== ''} onClick={validationFill}
               title="Fire ONE deliberate 0.01-lot market order through the real auto-trade path (risk gate included)">
               {busy === 'vfill' ? 'Firing…' : 'Test fill 0.01'}
             </Button>
             {health?.circuitBreaker && (
-              <Button size="sm" variant="ghost" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
+              <Button size="sm" variant="danger" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
             )}
             <Button
               size="sm" variant="danger" disabled={busy !== ''}
@@ -638,7 +643,9 @@ export default function Trade() {
         {/* Row 2 — trading status/scope under the account line */}
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px]">
           <span className="font-semibold whitespace-nowrap">
-            <span aria-hidden="true" style={{ color: !health ? '#94a3b8' : health.autotradeEnabled ? 'var(--color-accent)' : '#94a3b8' }}>● </span>
+            {/* OFF ≠ UNKNOWN (inventory T5/D2): OFF wears the red state tint,
+                'no data yet' stays muted; ON is state blue, not accent. */}
+            <span aria-hidden="true" style={{ color: !health ? 'var(--color-text-sub)' : health.autotradeEnabled ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}>● </span>
             {!health ? 'Autotrade: no data yet' : health.autotradeEnabled ? 'Quant trading ACTIVE' : 'Autotrade OFF'}
           </span>
           {health?.autotradeEnabled && (
@@ -688,7 +695,8 @@ export default function Trade() {
                   <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
                     <td className="pr-3 py-1.5">{sc.symbol}</td>
                     <td className="pr-3 whitespace-nowrap">{STRATEGY_NAMES[sc.strategy] || sc.strategy || 'Fib 61.8% fade'}</td>
-                    <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'up' : 'down'}>{sc.bias?.toUpperCase()}</Badge></td>
+                    {/* Direction, not P&L (inventory T10) — blue = long, red = short via the state tints. */}
+                    <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'on' : 'off'}>{sc.bias?.toUpperCase()}</Badge></td>
                     <td className="pr-3">{sc.timeframe || '—'}</td>
                     <td className="pr-3">{fmt(sc.confidence, 0)}/10</td>
                     <td className="pr-3">{fmt(sc.price)}</td>
@@ -719,7 +727,7 @@ export default function Trade() {
           <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] shadow-xl">
             <div className="flex items-center justify-between mb-2">
               <h2 className="t-h3">Manual order</h2>
-              <Button size="sm" variant="ghost" onClick={() => setOrderOpen(false)}>✕</Button>
+              <IconButton size="sm" variant="ghost" label="Close order pad" onClick={() => setOrderOpen(false)}>✕</IconButton>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))}
@@ -727,12 +735,17 @@ export default function Trade() {
               <datalist id="watchlist-symbols">
                 {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
               </datalist>
-              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
+              {/* Side selection wears the STATE tints (contract: blue = long,
+                  red = short) — not the navigation accent or the P&L red
+                  (inventory T15: SELL is a direction, not a loss). */}
+              <div className="flex rounded-[var(--radius-control)] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
                 {['BUY', 'SELL'].map(s => (
                   <button key={s} type="button" role="radio" aria-checked={order.side === s} onClick={() => setOrder(o => ({ ...o, side: s }))}
                     className={`px-2.5 py-1.5 text-[9px] font-semibold cursor-pointer ${
                       order.side === s
-                        ? (s === 'BUY' ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-down)] text-white')
+                        ? (s === 'BUY'
+                            ? 'bg-[var(--color-state-on-bg)] text-[var(--color-state-on-text)]'
+                            : 'bg-[var(--color-state-off-bg)] text-[var(--color-state-off-text)]')
                         : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'
                     }`}>{s}</button>
                 ))}
@@ -743,7 +756,11 @@ export default function Trade() {
                 placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-[9px]" />
               <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
                 placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-[9px]" />
-              <Button size="sm" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}
+              {/* accent = the pad's single commit action; the variant no longer
+                  flips by side — danger means destructive, not SHORT (contract
+                  §1; SELL is not an error). Side stays in the label + the
+                  BUY/SELL selector. */}
+              <Button size="sm" variant="accent" disabled={placing} onClick={placeOrder}
                 className="w-full" title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
                 {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
               </Button>
@@ -783,7 +800,7 @@ export default function Trade() {
             </h2>
             {(liveOrders.length || 0) > 0 && (
               <Button
-                size="sm" variant="subtle" className="ml-auto" disabled={busy === 'pclean'}
+                size="sm" variant="danger" className="ml-auto" disabled={busy === 'pclean'}
                 title="Cancel BOT-placed resting orders that the bot's ledger no longer tracks (stale duplicates from before the permanent database). Your own manual cTrader orders are never touched."
                 onClick={async () => {
                   if (!window.confirm('Clean up stale pending orders? This cancels BOT-placed resting limit orders that the bot no longer recognises (leftovers from the old database wipes). Orders the bot is actively managing, and ALL of your manual cTrader orders, are kept.')) return
@@ -819,23 +836,22 @@ export default function Trade() {
                   const positionId = row.raw?.ctrader_position_id
                   if (!positionId) return null
                   const managed = !row.raw?.keeper_opt_out
+                  // Shared Switch instead of a bare native checkbox (inventory
+                  // T19): `pending` marks the write in flight, so a failed
+                  // POST can no longer leave the control silently lying about
+                  // the position's real state. Same handler, same payload.
                   return (
-                    <label
-                      className="flex items-center gap-1 text-[9px] cursor-pointer whitespace-nowrap"
-                      title="Let the Profit Keeper manage this position (per the policy armed on Tune). Untick to leave this ONE position hands-off regardless of that policy."
-                    >
-                      <input
-                        type="checkbox" checked={managed}
-                        aria-label={`${managed ? 'Stop' : 'Let'} the bot manage ${row.symbol}`}
-                        onChange={async () => {
-                          try {
-                            await agentPost('/actions/position-keeper-optout', { positionId, optOut: managed })
-                            await load()
-                          } catch (e) { setError(e.message) }
-                        }}
-                      />
-                      bot manage
-                    </label>
+                    <Switch
+                      label="bot manage" checked={managed} pending={optBusy === positionId}
+                      title="Let the Profit Keeper manage this position (per the policy armed on Tune). Turn OFF to leave this ONE position hands-off regardless of that policy."
+                      onChange={async () => {
+                        setOptBusy(positionId)
+                        try {
+                          await agentPost('/actions/position-keeper-optout', { positionId, optOut: managed })
+                          await load()
+                        } catch (e) { setError(e.message) } finally { setOptBusy(null) }
+                      }}
+                    />
                   )
                 }}
               />

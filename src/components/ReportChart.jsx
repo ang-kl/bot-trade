@@ -167,8 +167,8 @@ export default function ReportChart({ allTrades, events }) {
         </span>
         <div className="flex gap-1 ml-auto">
           {Object.keys(RANGE_DAYS).map(r => (
-            <button key={r} type="button" onClick={() => setRange(r)}
-              className={`rounded-[1px] px-2.5 py-0.5 text-[9px] cursor-pointer ${range === r ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'}`}>{r}</button>
+            <button key={r} type="button" onClick={() => setRange(r)} aria-pressed={range === r}
+              className={`rounded-[1px] px-2.5 py-0.5 text-[9px] cursor-pointer ${range === r ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>{r}</button>
           ))}
         </div>
       </div>

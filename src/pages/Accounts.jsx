@@ -45,7 +45,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
         <span className="text-[9px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
         {acct.brokerTitle && <span className="text-[9px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
         {acct.balance != null && <span className="text-[9px] font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
-        {acct.selected && <Badge tone="up">BOT TRADES THIS ONE</Badge>}
+        {acct.selected && <Badge tone="on">BOT TRADES THIS ONE</Badge>}
       </div>
       {acct.error && <div className="text-[9px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
       {acct.metaError && <div className="text-[9px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}
@@ -55,7 +55,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
         <AccountPivot acct={acct} />
       </div>
 
-      <button type="button" onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
+      <button type="button" aria-expanded={open} onClick={() => setOpen(o => !o)} className="w-full text-left cursor-pointer mt-3">
         <div className="flex items-center gap-2 text-[9px] text-[var(--color-text-sub)] border-t border-[var(--glass-edge)] pt-2">
           <span className="font-semibold">Live positions &amp; pending orders</span>
           <span className="ml-auto">{acct.positions?.length ?? 0} open · {acct.orders?.length ?? 0} pending {open ? '▾ hide' : '▸ show'}</span>

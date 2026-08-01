@@ -341,19 +341,20 @@ export default function RiskReassess({ onChanged }) {
                 </table>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button onClick={apply} disabled={!!busy || picked.size === 0}
+                {/* The section's one commit action — accent, so it no longer
+                    renders identically to every neutral chip (finding 18). */}
+                <Button variant="accent" onClick={apply} disabled={!!busy || picked.size === 0}
                   title={picked.size === 0 ? 'Tick the proposals you accept first — nothing applies until a row is selected' : undefined}>
                   {busy === 'apply' ? 'Applying…' : `Apply ${picked.size || ''} selected`}
                 </Button>
-                <button
-                  type="button"
+                <Button
+                  variant="text"
                   onClick={() => setPicked(new Set(last.proposals
                     .filter(p => !(last.applied && (last.appliedKeys || []).includes(p.key)))
                     .map(p => p.key)))}
-                  className="text-[9px] underline text-[var(--color-text-sub)]"
                 >
                   select all
-                </button>
+                </Button>
                 {picked.size === 0 && !last.applied && (
                   <span className="text-[9px] text-[var(--color-text-sub)]">tick the rows you accept, then Apply — the fields below update immediately</span>
                 )}
