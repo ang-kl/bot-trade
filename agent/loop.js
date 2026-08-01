@@ -2395,8 +2395,22 @@ async function runLoop(db) {
       // 24/7 scanning — all symbols always. No market-hours filter.
       const symbols = allSymbols
 
+      // Weekend quiet hours (owner 01-08-2026): no scan and no Telegram
+      // recommendation from Saturday 00:00 SGT until Monday 01:00 SGT —
+      // a weekend scan reads Friday's stale close dressed up as a signal.
+      // ONLY the scan/analyze/recommendation phase is silenced; monitoring,
+      // protection, guards, reconcile and the P&L backfill run unchanged.
+      const { weekendQuietNow, quietUntilMs } = await import('./lib/quiet-hours.js')
+      const weekendQuiet = weekendQuietNow()
+
       if (allSymbols.length === 0) {
         log('No enabled symbols configured')
+      } else if (weekendQuiet) {
+        log(`Weekend quiet hours — no scan or recommendations until ${new Date(quietUntilMs()).toISOString()} (Mon 01:00 SGT); monitoring/protection unaffected`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, { stage: 'weekend_quiet', decision: 'skip', reason: 'weekend quiet hours (Sat 00:00 → Mon 01:00 SGT)', loopId: loopCount })
+        } catch { /* diagnostics only */ }
       } else if (!scanEnabled) {
         log('Scan disabled — skipping')
       } else if (!scanWanted) {
@@ -2549,7 +2563,28 @@ async function runLoop(db) {
         .join('|')
       if (hotSignature !== getState(db, 'last_hot_alert_signature')) {
         try {
-          await sendScanAlert(scanResult.scans, scanResult.desk_note, '')
+          // Market-open-day filter (owner 01-08): a setup is only recommended
+          // on a day its own market trades — open now, or opening later the
+          // same SGT day. Filtered symbols drop to the "skipped" line rather
+          // than vanishing, so the alert stays honest about what it omitted.
+          const { recommendableToday } = await import('./lib/quiet-hours.js')
+          // nextOpenInfo (not the bare open check) — recommendableToday needs
+          // next_open_at to decide "opens later TODAY" vs "shut all day".
+          const { nextOpenInfo } = await import('./services/symbol-hours.js')
+          const canRec = (sym) => {
+            try { return recommendableToday(nextOpenInfo(db, sym)) } catch { return true }
+          }
+          const alertScans = scanResult.scans.map(sc =>
+            (sc.bias !== 'skip' && sc.bias !== 'neutral' && !canRec(sc.symbol))
+              ? { ...sc, bias: 'skip' }
+              : sc)
+          const setups = alertScans.filter(sc => sc.bias !== 'skip' && sc.bias !== 'neutral')
+          if (setups.length > 0) {
+            const { scanAlertButtons } = await import('./services/alert-format.js')
+            await sendScanAlert(alertScans, scanResult.desk_note, '', { buttons: scanAlertButtons(setups) })
+          } else {
+            log('Scan alert suppressed — every setup is on a market that does not open today')
+          }
           setState(db, 'last_hot_alert_signature', hotSignature)
         } catch (err) {
           log('Telegram alert failed:', err.message)

@@ -96,6 +96,37 @@ export function tvSymbol(symbol) {
   return m ? m[1] : s
 }
 
+// TradingView interval param per bot timeframe — the button opens the chart
+// already on the strategy's own timeframe instead of whatever the user last
+// viewed. (TradingView's public chart URL accepts symbol+interval only; it
+// always opens the user's saved layout — there is no documented parameter to
+// force a blank layout, so "fresh layout" is approximated by pinning the
+// interval. Stated honestly rather than pretended.)
+const TV_INTERVAL = {
+  '1m': '1', '5m': '5', '15m': '15', '30m': '30',
+  '1h': '60', '90m': '90', '2h': '120', '4h': '240',
+  '1d': 'D', '1w': 'W', '1M': 'M',
+}
+export function tvChartUrl(sym, tf) {
+  const interval = TV_INTERVAL[String(tf || '').trim()] || '60'
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol(sym))}&interval=${interval}`
+}
+
+/**
+ * Inline-keyboard rows for a SCAN alert — one TradingView button per
+ * recommended symbol (owner 01-08-2026), opening at the signal's timeframe.
+ * Capped at 6 rows so a broad scan cannot build an absurd keyboard.
+ */
+export function scanAlertButtons(setups) {
+  return (setups || [])
+    .filter(s => s && s.symbol)
+    .slice(0, 6)
+    .map(s => [{
+      text: `📈 ${s.symbol} · ${s.timeframe || '1h'}${s.strategy ? ` · ${s.strategy}` : ''}`.slice(0, 64),
+      url: tvChartUrl(s.symbol, s.timeframe),
+    }])
+}
+
 /**
  * Inline-keyboard rows for one signal (owner 2026-07-24: one-tap instead of
  * typing /chart and /arm). callback_data is pipe-delimited and ≤64 bytes per

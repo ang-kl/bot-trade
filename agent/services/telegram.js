@@ -35,7 +35,10 @@ function formatScanAlert(scans, deskNote, session) {
       const conf = s.confidence ? ` (${s.confidence}/10)` : ''
       lines.push(`${arrow} *${s.symbol}* - ${s.bias.toUpperCase()}${conf}`)
       if (s.thesis) lines.push(`  _${s.thesis}_`)
-      if (s.timeframe) lines.push(`  Timeframe: ${s.timeframe}`)
+      // Owner (01-08): "is it based on 1w timeframe assessment or to keep for
+      // 1w?" — it is the ASSESSMENT chart, not a holding period. Say so; the
+      // holding horizon is the strategy's own time cap, enforced separately.
+      if (s.timeframe) lines.push(`  Chart: ${s.timeframe} (assessment timeframe, not a holding period)`)
       if (s.key_levels && s.key_levels !== 'watching') lines.push(`  Levels: ${s.key_levels}`)
       lines.push('')
     }
@@ -89,7 +92,7 @@ function getChatId() {
  * @param {string} session - Session context string
  * @returns {Promise<{ ok: true, messageId: number }>}
  */
-export async function sendScanAlert(scans, deskNote, session) {
+export async function sendScanAlert(scans, deskNote, session, opts = {}) {
   const botToken = getToken()
   const chatId = getChatId()
   const text = formatScanAlert(scans, deskNote, session)
@@ -98,6 +101,8 @@ export async function sendScanAlert(scans, deskNote, session) {
     text,
     parse_mode: 'Markdown',
     disable_web_page_preview: true,
+    // Owner 01-08: one TradingView button per recommended symbol.
+    ...(opts.buttons?.length ? { reply_markup: { inline_keyboard: opts.buttons } } : {}),
   })
   return { ok: true, messageId: msg.message_id }
 }
