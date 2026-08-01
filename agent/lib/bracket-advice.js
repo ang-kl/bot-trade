@@ -39,13 +39,13 @@ const HVN_MIN_BARS = 30
  * the entry's own node is noise). Suppressed — never adjusted — when its R
  * multiple falls below the strategy's floor or above the inflation cap.
  */
-function hvnTakeProfit({ entry, sl, bars, digits, rrFloor }) {
+function hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction }) {
   try {
     if (!Array.isArray(bars) || bars.length < HVN_MIN_BARS) return null
     const slDistance = Math.abs(entry - sl)
     if (!(slDistance > 0)) return null
     const long = sl < entry
-    const nodes = hvnNodes(bars)
+    const nodes = hvnNodes(bars, minPocFraction != null ? { minPocFraction } : {})
     if (!nodes.length) return null
     const step = nodes[0].nearEdgeHi - nodes[0].nearEdgeLo > 0
       ? Math.abs(nodes[0].nearEdgeHi - nodes[0].nearEdgeLo)
@@ -66,6 +66,18 @@ function hvnTakeProfit({ entry, sl, bars, digits, rrFloor }) {
   } catch {
     return null // advice must never throw (spec Constraint 4)
   }
+}
+
+/**
+ * The HVN target PRICE alone, or null — the G4 sweep's entry point
+ * (spec §6): the backtester compares TP modes with this exact rule set, so
+ * what the sweep measures is what the advice offers. Same suppression
+ * discipline as the advice path: below the floor or beyond the inflation cap
+ * returns null, never an adjusted number.
+ */
+export function hvnTargetPrice({ entry, sl, bars, digits, rrFloor, minPocFraction }) {
+  const hit = hvnTakeProfit({ entry, sl, bars, digits, rrFloor, minPocFraction })
+  return hit ? hit.price : null
 }
 
 /** Which bracket leg a guard_* reason is complaining about, or null. */

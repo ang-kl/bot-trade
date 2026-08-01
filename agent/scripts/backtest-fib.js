@@ -21,6 +21,9 @@
 import { pathToFileURL } from 'node:url'
 // Strategies resolve through the registry — any registry key is backtestable.
 import { STRATEGY_REGISTRY, strategyByKey, minRrFor } from '../services/strategies.js'
+// HVN-TP G4 sweep: the SAME target rule the advice path offers, so what the
+// sweep measures is what the trader is shown.
+import { hvnTargetPrice } from '../lib/bracket-advice.js'
 import { inPrimeSession } from '../lib/sessions.js'
 // D5 — the volatility gate, evaluated point-in-time. classifyVolFromBars reads
 // only bars at or before the decision index, so the ON run cannot be flattered
@@ -96,6 +99,24 @@ export function runBacktest(bars, opts) {
   const minRr = minRrFor(opts.strategy, opts.minRr ?? MIN_RR)
 
   const touchMode = opts.entryMode === 'touch'
+  // HVN-TP G4 sweep (instr/hvn-targeted-tp-spec.md §6). tpMode:
+  //   'rrFloor'   (default) — the strategy's own tp1, byte-identical to today
+  //   'hvn-edge'  — replace tp1 with the HVN near-edge target when one
+  //                 qualifies (same suppression rules as the advice path:
+  //                 below the strategy floor or beyond 3× it → fall back)
+  //   'nearer-of' — whichever of tp1 / HVN target is CLOSER to entry
+  // hvnFraction varies HVN_MIN_POC_FRACTION (0.6/0.7/0.8); hvnLookback caps
+  // the profile window in bars (default 240 — what the manual route fetches).
+  const tpMode = opts.tpMode === 'hvn-edge' || opts.tpMode === 'nearer-of' ? opts.tpMode : 'rrFloor'
+  const hvnLookback = Number.isFinite(opts.hvnLookback) ? opts.hvnLookback : 240
+  const tpFor = (dir, entry, sl, signalTp, i) => {
+    if (tpMode === 'rrFloor') return signalTp
+    const win = bars.slice(Math.max(0, i + 1 - hvnLookback), i + 1)
+    const hvn = hvnTargetPrice({ entry, sl, bars: win, rrFloor: minRr, minPocFraction: opts.hvnFraction })
+    if (hvn == null) return signalTp
+    if (tpMode === 'hvn-edge') return hvn
+    return dir === 1 ? Math.min(signalTp, hvn) : Math.max(signalTp, hvn)
+  }
   // D5 — vol gate OFF by default so every existing caller is byte-identical.
   const volGateOn = opts.volGate === true || opts.volGate === 'on'
   const trades = []
@@ -256,7 +277,7 @@ export function runBacktest(bars, opts) {
         dir: dir0,
         entry: entryBar.o,
         sl: widenStop(dir0, entryBar.o, signal.sl, verdict),
-        tp: signal.tp1,
+        tp: tpFor(dir0, entryBar.o, widenStop(dir0, entryBar.o, signal.sl, verdict), signal.tp1, i + need),
         entryT: entryBar.t,
         capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
         slAtrMult: signal.sl_atr_mult,
@@ -277,7 +298,7 @@ export function runBacktest(bars, opts) {
         dir: dir0,
         level: signal.entry, // = level618 in pendingSetup mode
         sl: widenStop(dir0, signal.entry, signal.sl, verdict),
-        tp: signal.tp1,
+        tp: tpFor(dir0, signal.entry, widenStop(dir0, signal.entry, signal.sl, verdict), signal.tp1, i),
         capMs,
         expireT: next.t + capMs,
         slAtrMult: signal.sl_atr_mult,
@@ -290,7 +311,7 @@ export function runBacktest(bars, opts) {
       dir: dir0,
       entry: next.o, // fill at next bar's open, not the signal close
       sl: widenStop(dir0, next.o, signal.sl, verdict),
-      tp: signal.tp1,
+      tp: tpFor(dir0, next.o, widenStop(dir0, next.o, signal.sl, verdict), signal.tp1, i),
       entryT: next.t,
       capMs: signal.time_cap_minutes ? signal.time_cap_minutes * 60_000 : 0,
       slAtrMult: signal.sl_atr_mult,
