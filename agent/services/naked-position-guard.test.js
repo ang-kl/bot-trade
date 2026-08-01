@@ -501,3 +501,37 @@ test('with every account failing, the whole-book read surfaces a real reason', (
   assert.match(all.summary, /never completed/)
   assert.match(all.summary, /boom|unreachable/, 'a bare "never run" hides why')
 })
+
+// ---------------------------------------------------------------------------
+// Owner 01-08: the targetless alert proposes a TP and carries a one-tap
+// Set-TP button, instead of only pointing at the curl.
+// ---------------------------------------------------------------------------
+
+test('targetless alert includes the suggested TP and a prottp button', async () => {
+  const db = tmpDb()
+  const sent = []
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700 }], {
+    nowMs: 1_000_000,
+    sendMessage: async (m, opts) => { sent.push({ m, opts }) },
+    suggestTarget: async () => ({ tp: 1885.5, basis: 'HVN volume node, 2.1R' }),
+  })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0].m, /suggested TP 1885.5 \(HVN volume node, 2.1R\)/)
+  const btn = sent[0].opts.buttons[0][0]
+  assert.equal(btn.callback_data, 'prottp|555|1885.5')
+  assert.match(btn.text, /Set TP 1885.5 on ETHUSD/)
+})
+
+test('a null/failed suggestion degrades to the original alert, no button', async () => {
+  const db = tmpDb()
+  const sent = []
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], [{ positionId: '555', stopLoss: 1700 }], {
+    nowMs: 1_000_000,
+    sendMessage: async (m, opts) => { sent.push({ m, opts }) },
+    suggestTarget: async () => { throw new Error('bars unavailable') },
+  })
+  assert.equal(sent.length, 1, 'the alert itself must never wait on structure')
+  assert.match(sent[0].m, /NO TAKE PROFIT/)
+  assert.ok(!sent[0].m.includes('suggested TP'))
+  assert.equal(sent[0].opts, undefined, 'no buttons when nothing was suggested')
+})

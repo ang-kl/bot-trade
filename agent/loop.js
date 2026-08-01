@@ -1915,7 +1915,11 @@ async function runLoop(db) {
             if (process.env.TELEGRAM_BOT_TOKEN) {
               notify = (await import('./services/telegram.js')).sendMessage
             }
-            const prot = await runProtectionAudit(db, openRows, brokerSl, { sendMessage: notify })
+            const { makeTargetSuggester } = await import('./services/tp-suggest.js')
+            const prot = await runProtectionAudit(db, openRows, brokerSl, {
+              sendMessage: notify,
+              suggestTarget: makeTargetSuggester(db, { host, clientId, clientSecret, accessToken, accountId }, positions),
+            })
             if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
               log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
             }
@@ -2312,7 +2316,13 @@ async function runLoop(db) {
                     }))
                     let notify2 = null
                     if (process.env.TELEGRAM_BOT_TOKEN) notify2 = (await import('./services/telegram.js')).sendMessage
-                    const p2 = await runProtectionAudit(db, rows2, bp2, { sendMessage: notify2, accountId: acc.account_id })
+                    const { makeTargetSuggester: mkSuggest2 } = await import('./services/tp-suggest.js')
+                    const p2 = await runProtectionAudit(db, rows2, bp2, {
+                      sendMessage: notify2, accountId: acc.account_id,
+                      // Same creds shape the suggester's bar fetch needs, scoped
+                      // to THIS account — the pass's own snapshot, own truth.
+                      suggestTarget: mkSuggest2(db, { host, clientId, clientSecret, accessToken, accountId: acc.account_id }, pos2),
+                    })
                     if (p2.naked.length || p2.targetless.length || p2.phantom.length) {
                       log(`PROTECTION AUDIT[${acc.account_id}]: ${p2.naked.length} with NO stop, ${p2.targetless.length} with no take profit, ${p2.phantom.length} disagreement(s)`)
                     }

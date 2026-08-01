@@ -2086,6 +2086,21 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/storage — what is on the volume (owner 01-08, after growing
+  // it 1GB → 5GB): DB/WAL file sizes, per-table rows+bytes, biggest state
+  // keys, volume free space. On-demand diagnostics — the full-page walk is
+  // too heavy to poll, so it rides the shared state cache like every read.
+  // -----------------------------------------------------------------------
+  router.get('/storage', async (_req, res) => {
+    try {
+      const { storageReport } = await import('../services/storage-report.js')
+      res.json(storageReport(db))
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/market-hours?symbols=A,B — open/closed per symbol plus WHEN
   // a closed market next opens (broker schedule when cached; heuristic
   // symbols report open/closed only). Default scope: watchlist + active

@@ -300,6 +300,33 @@ export async function pollTelegramCommands(db, deps = {}) {
             } catch { /* audit best-effort */ }
             continue
           }
+          if (parts[0] === 'prottp') {
+            // Owner 01-08: one-tap "Set TP <price>" on the targetless alert.
+            // Same logic as POST /actions/position-protect — an amend to a
+            // position the owner already holds, at the price the alert showed.
+            const [, positionId, tpRaw] = parts
+            const tp = Number(tpRaw)
+            if (!positionId || !(tp > 0)) {
+              await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Bad button payload' })
+              continue
+            }
+            const { protectPosition } = await import('./position-protect.js')
+            const creds = deps.creds ?? (await import('../lib/ctrader-creds.js')).getCtraderCreds(db)
+            if (!creds?.ready) {
+              await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'cTrader not connected', show_alert: true })
+              continue
+            }
+            await protectPosition(db, creds, { positionId, tp, source: 'telegram' })
+            toast = `✅ TP set at ${tp} on position ${positionId}`
+            await tg('answerCallbackQuery', { callback_query_id: cq.id, text: toast, show_alert: false })
+            await tg('sendMessage', { chat_id: owner, text: toast })
+            handled++
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TG_BTN', 'prottp', JSON.stringify({ positionId, tp }))
+            } catch { /* audit best-effort */ }
+            continue
+          }
           await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Unknown button' })
         } catch (e) {
           try { await tg('answerCallbackQuery', { callback_query_id: cq.id, text: `Failed: ${String(e.message).slice(0, 150)}` }) } catch { /* best effort */ }
