@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { Fragment, useEffect, useState } from 'react'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
@@ -153,7 +154,7 @@ export default function LossReview({ postmortems }) {
       {Object.keys(byStrat).length > 0 && (
         <div className="text-[9px] text-[var(--color-text-sub)]">
           <span className="font-semibold text-[var(--color-text)]">Pattern (30d): </span>
-          {Object.entries(byStrat).map(([k, v]) => `${k}: ${v.join(' · ')}`).join('  |  ')}
+          {Object.entries(byStrat).map(([k, v]) => `${strategyLabel(k) || k}: ${v.join(' · ')}`).join('  |  ')}
         </div>
       )}
 
@@ -173,7 +174,7 @@ export default function LossReview({ postmortems }) {
         </select>
         <select className={selectCls} aria-label="Filter by strategy" value={filter.strategy} onChange={e => setFilter(f => ({ ...f, strategy: e.target.value }))}>
           <option value="">All strategies</option>
-          {strategies.map(s => <option key={s} value={s}>{s}</option>)}
+          {strategies.map(s => <option key={s} value={s}>{strategyLabel(s)}</option>)}
         </select>
         <select className={selectCls} aria-label="Filter by verdict" value={filter.classification} onChange={e => setFilter(f => ({ ...f, classification: e.target.value }))}>
           <option value="">All verdicts</option>
@@ -280,7 +281,7 @@ function SymbolTable({ symbol, rows }) {
                       </td>
                       <td className="py-1 pr-2">{r.side}</td>
                       <td className="py-1 pr-2">{r.timeframe || '—'}</td>
-                      <td className="py-1 pr-2 whitespace-nowrap">{r.strategy || 'unlabelled'}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap" title={r.strategy || undefined}>{strategyLabel(r.strategy) || 'unlabelled'}</td>
                       <td className="py-1 pr-2 whitespace-nowrap">{v.label}</td>
                       <td className="py-1 pr-2 max-w-[260px] truncate text-[var(--color-text-sub)]" title={r.lesson || v.hint}>{r.lesson || v.hint}</td>
                       <td className={`py-1 pr-2 text-right whitespace-nowrap ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>{pnlText}</td>
@@ -333,7 +334,7 @@ function Verdict({ r }) {
         {/* Strategy is ALWAYS stated, never silently dropped (owner: "if you
             are using different strategy state it") — 'unlabelled' is an
             honest bucket (see the Pattern line above), not a blank. */}
-        <span className="text-[9px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {r.strategy || 'unlabelled'}</span>
+        <span className="text-[9px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {strategyLabel(r.strategy) || 'unlabelled'}</span>
         <span className="text-[9px] font-bold tracking-wide shrink-0">{v.label}</span>
         <span className="text-[9px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
         <span className={`ml-auto text-[9px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
@@ -368,7 +369,7 @@ function FieldGrid({ r }) {
   // Only fields with real data now render at all.
   const allRows = [
     ['Symbol', r.symbol],
-    ['Strategy', dash(r.strategy)],
+    ['Strategy', dash(strategyLabel(r.strategy))],
     ['Timeframe', dash(r.timeframe)],
     ['Direction', r.side === 'BUY' || r.side === 'long' ? 'Long' : r.side === 'SELL' || r.side === 'short' ? 'Short' : null],
     ['Confluence-count', r.confluence_count != null ? String(r.confluence_count) : null],

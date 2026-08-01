@@ -59,10 +59,10 @@ describe('strategy full names', () => {
     expect(orphans).toEqual([])
   })
 
-  it('spells the acronyms the way the registry does', () => {
+  it('spells the acronyms the way the owner asked (2026-08-01)', () => {
     // The whole point of the change: these are the strings CSS got wrong.
-    expect(strategyLabel('rsi2_reversion')).toBe('RSI-2 reversion')
-    expect(strategyLabel('vwap_trend')).toBe('VWAP trend-pullback')
+    expect(strategyLabel('rsi2_reversion')).toBe('RSI 2 Reversion')
+    expect(strategyLabel('vwap_trend')).toBe('VWAP Trend')
     expect(strategyLabel('fvg_retrace')).toBe('FVG retrace')
     expect(strategyLabel('ema_pullback')).toBe('EMA trend-pullback')
     expect(strategyLabel('rsi_meanrev')).toBe('RSI mean-reversion')

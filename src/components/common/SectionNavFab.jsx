@@ -17,8 +17,13 @@ export default function SectionNavFab({ sections, onSelect }) {
     setOpen(false)
   }
   if (!sections?.length) return null
+  // Owner 2026-08-01: the FAB anchors to the BOTTOM-RIGHT and must STAY there
+  // when the list opens — before this fix the container grew to the list's
+  // 190px width and the 44px button, being left-aligned inside it, visually
+  // jumped left on open. alignItems flex-end pins the button to the right
+  // edge, so the liquid-glass panel expands leftward/upward from it.
   return (
-    <div className="hidden min-[700px]:block" style={{ position: 'fixed', right: 18, bottom: 74, zIndex: 40 }}>
+    <div className="hidden min-[700px]:flex" style={{ position: 'fixed', right: 18, bottom: 18, zIndex: 40, flexDirection: 'column', alignItems: 'flex-end' }}>
       {open && (
         <div className="glass-panel" style={{ marginBottom: 8, borderRadius: 12, padding: '6px 4px', maxHeight: '70vh', overflowY: 'auto', minWidth: 190 }}>
           {sections.map(s => (
@@ -31,9 +36,9 @@ export default function SectionNavFab({ sections, onSelect }) {
           ))}
         </div>
       )}
-      <button type="button" onClick={() => setOpen(v => !v)} aria-label="Jump to section" title="Jump to section"
+      <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open} aria-label="Jump to section" title="Jump to section"
         className="glass-fixed"
-        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-d18)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        style={{ cursor: 'pointer', fontFamily: 'inherit', width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--glass-border)', color: 'var(--color-accent)', fontSize: 'var(--fs-d18)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         {open ? '×' : '☰'}
       </button>
     </div>

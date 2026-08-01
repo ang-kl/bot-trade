@@ -12,7 +12,7 @@ import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
-import { stratShort } from '../lib/strategy-labels.js'
+import { stratShort, strategyLabel } from '../lib/strategy-labels.js'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { rankVerdict, visibleRows, tallyVerdicts } from '../lib/backtest-rows.js'
@@ -2854,7 +2854,11 @@ export default function Tune() {
                         A pill both PICKS what a single run tests and SHOWS
                         that strategy's finished results — a ✓ marks the ones
                         this sweep has already produced numbers for. */}
-                    {btAllStrategies.map(({ key: val, name: lbl }) => {
+                    {/* Display names come from the shared UI map (owner's
+                        wording, 2026-08-01); the registry name is only the
+                        fallback for a key the map does not know yet. */}
+                    {btAllStrategies.map(({ key: val, name: fallback }) => {
+                      const lbl = strategyLabel(val) || fallback
                       const st = pillState(val, { runs: btRuns, runningKey: btRunning ? btRunningKey : null, queue: btQueue })
                       const done = st === 'done'
                       const running = st === 'running'
@@ -2897,7 +2901,7 @@ export default function Tune() {
               bt.watchdog.actions?.length > 0 ? (
                 <div className="mt-2 glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-[9px]">
                   <span className="font-bold text-[var(--color-down)]">Watchdog acted after this run: </span>
-                  {bt.watchdog.actions.map(a => `${a.strategy} disarmed (live: ${a.trades} trades, PF ${a.profitFactor ?? '—'}, net $${a.net})`).join(' · ')}
+                  {bt.watchdog.actions.map(a => `${strategyLabel(a.strategy)} disarmed (live: ${a.trades} trades, PF ${a.profitFactor ?? '—'}, net $${a.net})`).join(' · ')}
                 </div>
               ) : (
                 <p className="mt-2 text-[9px] text-[var(--color-text-sub)]">
@@ -2953,7 +2957,7 @@ export default function Tune() {
                               <td className="pr-3 py-0.5 whitespace-nowrap text-[var(--color-text-sub)]">{new Date(r.ran_at).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
                               <td className="pr-3 font-semibold whitespace-nowrap">{r.symbol}</td>
                               <td className="pr-3">{r.timeframe}</td>
-                              <td className="pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{r.strategy}{r.entry_mode === 'touch' ? ' · touch' : ''}</td>
+                              <td className="pr-3 whitespace-nowrap text-[var(--color-text-sub)]" title={r.strategy}>{strategyLabel(r.strategy)}{r.entry_mode === 'touch' ? ' · touch' : ''}</td>
                               {r.error
                                 ? <td colSpan={5} className="pr-3 text-[var(--color-warning-text)]">{r.error}</td>
                                 : <>

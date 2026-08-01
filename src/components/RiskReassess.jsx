@@ -48,7 +48,7 @@ function show(key, v, proposable) {
   return String(v)
 }
 
-export default function RiskReassess({ onChanged }) {
+export default function RiskReassess({ onChanged, onApplied }) {
   const [data, setData] = useState(null)      // { last, providers, proposable }
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -95,6 +95,14 @@ export default function RiskReassess({ onChanged }) {
   // Fresh proposals start unticked. Deliberate: ticking them for the owner
   // would make Apply a single click on values a model chose.
   useEffect(() => { setPicked(new Set()) }, [last?.at])
+
+  // Tell the page which config keys the last assessment applied, so it can
+  // highlight the actual setting fields below (owner 2026-08-01: "applied and
+  // then highlight in the field below it to show which one applied").
+  const appliedKeysStr = (last?.applied ? (last.appliedKeys || []) : []).join(',')
+  useEffect(() => {
+    onApplied?.(appliedKeysStr ? appliedKeysStr.split(',') : [])
+  }, [appliedKeysStr, onApplied])
 
   const reset = async () => {
     if (!window.confirm('Reset EVERY risk setting to its built-in default? Current overrides are discarded.')) return
@@ -296,24 +304,24 @@ export default function RiskReassess({ onChanged }) {
                   </thead>
                   <tbody>
                     {last.proposals.map(p => {
-                      // Owner (2026-07-31): "I applied 'Apply' ... and it
-                      // didn't wired to the field to change. why?" It DID
-                      // apply (the fields below refresh from the server) —
-                      // but this table kept showing the pre-apply row with a
-                      // live checkbox, so the action looked like a no-op.
-                      // Applied rows now say so, and cannot be re-ticked.
+                      // Owner (2026-07-31): applied rows must SAY they were
+                      // applied. Owner (2026-08-01): but the selection must
+                      // never lock — "I must be able to stop selection" — so
+                      // the checkbox stays live on every row; APPLIED is a
+                      // marker beside it, not a replacement for it, and the
+                      // real confirmation is the highlight on the setting
+                      // fields below (see onApplied).
                       const applied = last.applied && (last.appliedKeys || []).includes(p.key)
                       return (
                       <tr key={p.key} className="border-t border-[var(--color-border)]">
-                        <td className="pr-2 py-0.5">
-                          {applied
-                            ? <span className="font-semibold text-[var(--color-accent)]" title={`Applied ${stamp(last.appliedAt)} — the setting below now holds the proposed value`}>✓</span>
-                            : <input
-                                type="checkbox"
-                                checked={picked.has(p.key)}
-                                onChange={() => toggle(p.key)}
-                                aria-label={`apply ${p.label}`}
-                              />}
+                        <td className="pr-2 py-0.5 whitespace-nowrap">
+                          <input
+                            type="checkbox"
+                            checked={picked.has(p.key)}
+                            onChange={() => toggle(p.key)}
+                            aria-label={`apply ${p.label}`}
+                          />
+                          {applied && <span className="ml-1 font-semibold text-[var(--color-accent)]" title={`Applied ${stamp(last.appliedAt)} — the setting below holds the proposed value`}>✓</span>}
                         </td>
                         <td className="pr-2 py-0.5">
                           {p.label}
@@ -349,9 +357,7 @@ export default function RiskReassess({ onChanged }) {
                 </Button>
                 <Button
                   variant="text"
-                  onClick={() => setPicked(new Set(last.proposals
-                    .filter(p => !(last.applied && (last.appliedKeys || []).includes(p.key)))
-                    .map(p => p.key)))}
+                  onClick={() => setPicked(new Set(last.proposals.map(p => p.key)))}
                 >
                   select all
                 </Button>

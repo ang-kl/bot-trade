@@ -84,9 +84,15 @@ function DurationField({ value, onChange, onCommit, placeholder }) {
  * @param onCommit  fired on blur — for fields that POST directly rather than
  *                  waiting for a Save button. Omit for Save-button pages.
  */
+/**
+ * `applied` — this field's value was just written by a Re-Risk apply (owner
+ * 2026-08-01: "highlight in the field below it to show which one applied").
+ * Renders an APPLIED tag on the label and an accent edge on the input, so the
+ * confirmation lives on the real setting, not only in the proposals table.
+ */
 export default function Field({
   label, value, onChange, onCommit = null, pct = false, unit, hint, recommend,
-  placeholder = 'not set', duration = false, min, max, step = 'any',
+  placeholder = 'not set', duration = false, min, max, step = 'any', applied = false,
 }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
@@ -97,6 +103,10 @@ export default function Field({
       <label className="flex items-center justify-between gap-2">
         <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
           {text}
+          {applied && (
+            <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]"
+              title="This value was set by the last Re-Risk apply">applied</span>
+          )}
           {isDefault && (
             <span className="opacity-40 ml-0.5" title="Still on the built-in default — this value has not been changed">·</span>
           )}
@@ -112,6 +122,7 @@ export default function Field({
             : <Input type="number" step={step} min={min} max={max} value={display} placeholder={placeholder}
                 aria-label={typeof label === 'string' ? text : undefined}
                 density="compact"
+                className={applied ? '!border-[var(--color-accent)]' : ''}
                 onBlur={() => { if (onCommit) onCommit() }}
                 onChange={e => {
                   const raw = e.target.value
