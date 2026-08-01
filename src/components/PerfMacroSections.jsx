@@ -164,8 +164,8 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
         {rOpts.map(o => {
           const on = rAcct === o.id
           return (
-            <button key={o.id} type="button" onClick={() => setRAcct(o.id)}
-              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: 700, color: on ? '#fff' : TX, background: on ? ACC : 'transparent', border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '3px 11px' }}>
+            <button key={o.id} type="button" onClick={() => setRAcct(o.id)} aria-pressed={on}
+              style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: 700, color: on ? 'var(--color-on-accent)' : TX, background: on ? ACC : 'transparent', border: `1px solid ${on ? ACC : EDG}`, borderRadius: 999, padding: '3px 11px' }}>
               {o.label}
             </button>
           )
@@ -241,7 +241,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
         {dots.map(d => {
           const sel = selectedKey === d.key
           return (
-            <button key={d.key} type="button"
+            <button key={d.key} type="button" aria-pressed={sel}
               onClick={() => setSelectedKey(sel ? null : d.key)}
               onMouseEnter={() => setSelectedKey(d.key)}
               onMouseLeave={() => setSelectedKey(k => (k === d.key ? null : k))}
