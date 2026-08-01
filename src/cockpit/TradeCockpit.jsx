@@ -397,7 +397,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           </div>) : <div key={i} style={{ border: '1px solid var(--edg)', borderRadius: 6, padding: '2px 7px', height: 26 }}>{skeleton()}</div>)}
       </div>
       <div className="tc-mfd-wrap" style={{ position: 'relative', paddingTop: 34, paddingBottom: 4 }}>
-        <svg viewBox="0 0 460 208" style={{ width: '100%', overflow: 'visible', display: 'block' }}>
+        {/* Owner (2026-08-01): "do the same for the MFD" — map height −15%.
+            The drawing keeps its 460×208 coordinate system; the box renders at
+            85% of the natural aspect height with preserveAspectRatio="none",
+            a uniform vertical squash. Every HTML overlay is %-positioned
+            against the same box, so alignment is preserved exactly. */}
+        <svg viewBox="0 0 460 208" preserveAspectRatio="none" style={{ width: '100%', aspectRatio: '460 / 176.8', overflow: 'visible', display: 'block' }}>
           <defs><filter id="glo" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
           <line x1="28" y1="16" x2="28" y2="210" stroke="var(--sb)" strokeWidth="1" />
           <line x1="28" y1="210" x2="452" y2="210" stroke="var(--sb)" strokeWidth="1" />
