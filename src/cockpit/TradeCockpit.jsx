@@ -19,13 +19,13 @@ import './cockpit-tokens.css'
 // numbers it states; the minmax(90px,…) centre form is reference-verbatim.)
 const CFG = {
   desktop: { shellPad: '16px 12px 6px 24px', grid: '1fr 1.25fr', tabs: null,
-    pfdCols: '54px minmax(96px,1fr) 32px 94px 36px', pfdGap: 5, pfdH: 340,
+    pfdCols: '54px minmax(96px,1fr) 32px 94px 36px', pfdGap: 5, pfdH: 289,
     jr: '3fr 1fr', bullets: 'repeat(2,1fr)', inv: 'repeat(5,1fr)', headerWraps: false, touch: false },
   ipad: { shellW: 1024, shellPad: '16px 10px 8px 24px', grid: '1fr', tabs: ['PFD', 'MFD'],
-    pfdCols: '86px 1fr 54px 108px 54px', pfdGap: 7, pfdH: 300,
+    pfdCols: '86px 1fr 54px 108px 54px', pfdGap: 7, pfdH: 255,
     jr: '3fr 1fr', bullets: 'repeat(2,1fr)', inv: 'repeat(3,1fr)', headerWraps: false, touch: true },
   iphone: { shellW: 390, shellPad: '14px 8px 10px 20px', grid: '1fr', tabs: ['PFD', 'MFD', 'LOG'],
-    pfdCols: '50px minmax(90px,1fr) 22px 84px 36px', pfdGap: 4, pfdH: 268,
+    pfdCols: '50px minmax(90px,1fr) 22px 84px 36px', pfdGap: 4, pfdH: 228,
     jr: '1fr', bullets: '1fr', inv: 'repeat(2,1fr)', headerWraps: true, touch: true },
 }
 
