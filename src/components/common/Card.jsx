@@ -28,7 +28,12 @@
 // (on the card itself, on a child heading, or on a wrapper parent), so no
 // call site needs wiring and the tag cannot drift from the nav map; an
 // explicit `kind` prop still wins for cards outside the tree.
-import { useRef, useState } from 'react'
+// Owner (2026-08-01): every card also carries a MAXIMIZE toggle — ⇲ (U+21F2,
+// south-east corner) expands the card into a full-screen overlay, ⇱ (U+21F1)
+// restores it. The children are NOT remounted — the same content div gets a
+// fixed-overlay wrapper — so table sort/page/scroll state survives the trip,
+// exactly like the collapse's display:none trick.
+import { useEffect, useRef, useState } from 'react'
 import CopyPopup from './CopyPopup.jsx'
 import { tableToJson as scrapeJson, tableToHtml, dataToHtml, textToJson, textToHtml } from '../../lib/copy-serialize.js'
 import { sectionKind, NAV_KIND_LEGEND } from '../../lib/nav-tree.js'
@@ -42,6 +47,7 @@ export default function Card({
   const ref = useRef(null)
   const [popup, setPopup] = useState(null)
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  const [maximized, setMaximized] = useState(false)
   // Derived once from the DOM after mount (callback ref, not an effect —
   // the anchor ids are static). kindProp bypasses the lookup entirely.
   const [kindFound, setKindFound] = useState(null)
@@ -78,7 +84,7 @@ export default function Card({
     // clipboard paste and is not in a saved .txt/.json file, so the control
     // glyphs are dropped here. Only the glyphs: no text is removed.
     // Also drops the lone-line content-kind tag (T / F / C / T+F).
-    const CHROME_GLYPHS = /^(?:[▾▸⧉↓✕]|T|F|C|T\+F)$/
+    const CHROME_GLYPHS = /^(?:[▾▸⧉↓✕⇲⇱]|T|F|C|T\+F)$/
     const domText = (el.innerText || '')
       .split('\n')
       .filter(l => !CHROME_GLYPHS.test(l.trim()))
@@ -107,17 +113,41 @@ export default function Card({
   const hoverOn = (e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.borderColor = 'var(--glass-edge)' }
   const hoverOff = (e) => { e.currentTarget.style.opacity = '.55'; e.currentTarget.style.borderColor = 'transparent' }
 
+  // Top-right chrome slots, right-to-left: ⧉ copy · ▸/▾ collapse · ⇲
+  // maximize · kind tag. Offsets are computed so an opted-out button frees
+  // its slot instead of leaving a hole.
+  const slotCopy = copyable ? 8 : null
+  const slotCollapse = collapsible ? (copyable ? 34 : 8) : null
+  const slotMax = (collapsible ? 26 : 0) + (copyable ? 26 : 0) + 8
+  const slotKind = slotMax + 26 + 2
+
+  const body = <div style={collapsed && !maximized ? { display: 'none' } : undefined}>{children}</div>
+
   return (
     <div ref={attachRef} className={cls} {...rest}>
       {kind && (
         <span title={NAV_KIND_LEGEND} style={{
-          position: 'absolute', top: 8, right: (collapsible ? 26 : 0) + (copyable ? 26 : 0) + 10,
+          position: 'absolute', top: 8, right: slotKind,
           zIndex: 5, fontSize: '8px', fontWeight: 600, lineHeight: 1.5,
           color: 'var(--color-text-sub)', border: '1px solid var(--glass-edge)',
           borderRadius: 'var(--radius-control)', padding: '0 3px', opacity: .7,
           whiteSpace: 'nowrap',
         }}>{kind}</span>
       )}
+      {/* ⇲ maximize (owner 2026-08-01: U+21F2 to expand, U+21F1 to restore) */}
+      <button type="button"
+        title="Expand this section to full screen (⇱ restores)"
+        aria-label="Expand this section to full screen"
+        aria-expanded={maximized}
+        onClick={() => {
+          // Captured at click time — refs must not be read during render.
+          setLabel(copyTitle || headingOf(ref.current) || 'Section')
+          setMaximized(true)
+        }}
+        style={{ ...btn, right: slotMax }}
+        onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
+        ⇲
+      </button>
       {collapsible && (
         <button type="button" aria-expanded={!collapsed}
           title={collapsed ? 'Expand this section' : 'Collapse this section'}
@@ -126,14 +156,14 @@ export default function Card({
             if (!collapsed) setLabel(copyTitle || headingOf(ref.current) || 'Section')
             setCollapsed(c => !c)
           }}
-          style={{ ...btn, right: copyable ? 34 : 8 }}
+          style={{ ...btn, right: slotCollapse }}
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
           {collapsed ? '▸' : '▾'}
         </button>
       )}
       {copyable && (
         <button type="button" title="Copy this section" aria-label="Copy this section"
-          onClick={openCopy} style={{ ...btn, right: 8 }}
+          onClick={openCopy} style={{ ...btn, right: slotCopy }}
           onMouseEnter={hoverOn} onMouseLeave={hoverOff}>
           ⧉
         </button>
@@ -141,13 +171,48 @@ export default function Card({
       {/* Collapsed: show just the heading text so the bar is still
           identifiable, and hide (not unmount) the body so sort/page state
           survives and the card collapses to a single line. */}
-      {collapsed && (
+      {collapsed && !maximized && (
         <span className="text-[9px] font-semibold text-[var(--color-text-sub)]">
           {label || copyTitle || 'Section'}
         </span>
       )}
-      <div style={collapsed ? { display: 'none' } : undefined}>{children}</div>
+      {/* Maximized: the SAME body node renders inside a fixed overlay — no
+          remount, so table/scroll/sort state survives; ⇱ or Esc restores. */}
+      {maximized
+        ? (
+          <MaxOverlay title={copyTitle || label || 'Section'} onRestore={() => setMaximized(false)}>
+            {body}
+          </MaxOverlay>
+        )
+        : body}
       {popup && <CopyPopup title={popup.title} text={popup.text} json={popup.json} html={popup.html} onClose={() => setPopup(null)} />}
+    </div>
+  )
+}
+
+// Full-screen host for a maximized card. Kept outside Card's return for
+// clarity; Esc and the backdrop both restore.
+function MaxOverlay({ title, onRestore, children }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onRestore() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onRestore])
+  return (
+    <div role="dialog" aria-modal="true" aria-label={title}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onRestore() }}
+      style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(6,9,19,.55)', backdropFilter: 'blur(6px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div className="glass-panel" style={{ width: 'min(96vw, 1720px)', maxHeight: '92vh', borderRadius: 16, padding: '12px 16px', overflow: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
+          <button type="button" title="Restore this section to its place in the page (Esc)" aria-label="Restore this section"
+            onClick={onRestore}
+            style={{ marginLeft: 'auto', cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d11)', lineHeight: 1, color: 'var(--color-text-sub)', background: 'transparent', border: '1px solid var(--glass-edge)', borderRadius: 8, padding: '3px 7px' }}>
+            ⇱
+          </button>
+        </div>
+        {children}
+      </div>
     </div>
   )
 }
