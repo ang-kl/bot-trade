@@ -622,12 +622,12 @@ export default function Trade() {
             <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={() => act('scan', '/actions/scan')}>
               {busy === 'scan' ? 'Scanning…' : 'Scan now'}
             </Button>
-            <Button size="sm" variant="ghost" disabled={busy !== ''} onClick={validationFill}
+            <Button size="sm" variant="danger" disabled={busy !== ''} onClick={validationFill}
               title="Fire ONE deliberate 0.01-lot market order through the real auto-trade path (risk gate included)">
               {busy === 'vfill' ? 'Firing…' : 'Test fill 0.01'}
             </Button>
             {health?.circuitBreaker && (
-              <Button size="sm" variant="ghost" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
+              <Button size="sm" variant="danger" onClick={() => act('breaker', '/actions/reset-breaker')}>Reset breaker</Button>
             )}
             <Button
               size="sm" variant="danger" disabled={busy !== ''}
@@ -743,7 +743,11 @@ export default function Trade() {
                 placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-[9px]" />
               <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
                 placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-[9px]" />
-              <Button size="sm" variant={order.side === 'SELL' ? 'danger' : 'primary'} disabled={placing} onClick={placeOrder}
+              {/* accent = the pad's single commit action; the variant no longer
+                  flips by side — danger means destructive, not SHORT (contract
+                  §1; SELL is not an error). Side stays in the label + the
+                  BUY/SELL selector. */}
+              <Button size="sm" variant="accent" disabled={placing} onClick={placeOrder}
                 className="w-full" title="Same risk gate as the bot (sizing, R:R floor, cooldowns); then managed by the position monitor">
                 {placing ? 'Placing…' : `${order.side} ${order.symbol.toUpperCase() || '…'}`}
               </Button>

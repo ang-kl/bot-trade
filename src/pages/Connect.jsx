@@ -178,7 +178,7 @@ export default function Connect() {
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={saveConn}>Save</Button>
           <Button size="sm" variant="ghost" onClick={testConn}>Test connection</Button>
-          <Button size="sm" variant="subtle" onClick={() => { clearAgentConn(); setUrl(''); setSecret(''); flash('Cleared — falling back to build-time env vars') }}>Clear</Button>
+          <Button size="sm" variant="danger" onClick={() => { clearAgentConn(); setUrl(''); setSecret(''); flash('Cleared — falling back to build-time env vars') }}>Clear</Button>
           {testResult && (
             <Badge tone={testResult.ok ? 'on' : 'off'}>{testResult.ok ? `REACHABLE — ${testResult.detail}` : `FAILED — ${testResult.detail}`}</Badge>
           )}
@@ -234,7 +234,7 @@ export default function Connect() {
       <Card>
         <div className="flex items-center justify-between mb-2">
           <h2 className="t-h3" id="sec-ctrader">2 · cTrader account</h2>
-          {symbolCount != null && symbolCount > 0 && <Badge tone="up">LINKED — {symbolCount} symbols mapped</Badge>}
+          {symbolCount != null && symbolCount > 0 && <Badge tone="on">LINKED — {symbolCount} symbols mapped</Badge>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -301,7 +301,7 @@ export default function Connect() {
                         <span className="block text-[9px] text-[var(--color-text-sub)]">incl. open trades ({floating >= 0 ? '+' : '−'}${Math.abs(floating).toLocaleString(undefined, { maximumFractionDigits: 2 })})</span>
                       )}
                     </span>
-                    {linked?.accountId === a.accountId && <Badge tone="up">SELECTED</Badge>}
+                    {linked?.accountId === a.accountId && <Badge tone="on">SELECTED</Badge>}
                   </button>
                   {detailOpen && (
                     <div className="px-3 pb-2 text-[9px] border-t border-[var(--color-border)]">

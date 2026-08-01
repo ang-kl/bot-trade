@@ -45,7 +45,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
         <span className="text-[9px] font-semibold">{acct.traderLogin ? `Login ${acct.traderLogin}` : `Account ${acct.accountId}`}</span>
         {acct.brokerTitle && <span className="text-[9px] text-[var(--color-text-sub)]">{acct.brokerTitle}</span>}
         {acct.balance != null && <span className="text-[9px] font-semibold">{fmt(acct.balance, 2)}{acct.currency ? ` ${acct.currency}` : ''}</span>}
-        {acct.selected && <Badge tone="up">BOT TRADES THIS ONE</Badge>}
+        {acct.selected && <Badge tone="on">BOT TRADES THIS ONE</Badge>}
       </div>
       {acct.error && <div className="text-[9px] text-[var(--color-warning-text)]">Snapshot failed: {acct.error}</div>}
       {acct.metaError && <div className="text-[9px] text-[var(--color-warning-text)]">{acct.metaError} — showing raw ids.</div>}

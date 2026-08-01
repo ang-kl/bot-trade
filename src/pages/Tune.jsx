@@ -2164,7 +2164,7 @@ export default function Tune() {
                           className={`inline-flex items-center rounded-[2px] border leading-none cursor-pointer bg-[var(--color-bg)] px-[3px] py-[1px] disabled:opacity-40 disabled:cursor-default ${
                             selected
                               ? 'border-[var(--color-accent)] text-[var(--color-accent)] text-[9px] font-normal capitalize'
-                              : 'border-[var(--color-down)] text-[var(--color-down)] text-[9px] font-bold uppercase'
+                              : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] text-[9px] font-normal capitalize'
                           }`}
                         >
                           {g.key} ({g.avail.length})
@@ -2983,7 +2983,7 @@ export default function Tune() {
                 <div className="flex flex-wrap items-center gap-2">
                   {bt?.report?.html && (
                     <Button
-                      size="sm" variant="secondary"
+                      size="sm" variant="subtle"
                       onClick={() => {
                         const url = URL.createObjectURL(new Blob([bt.report.html], { type: 'text/html' }))
                         const a = document.createElement('a')
@@ -3113,7 +3113,7 @@ export default function Tune() {
                   {bt?.entryMode === 'touch' && pendingGoCount > 0 && (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
-                        variant="secondary"
+                        variant="accent"
                         onClick={async () => {
                           if (!window.confirm(`Arm PENDING orders (resting limit orders at the fib 61.8% level) for: ${pendingGoSummary}? The bot will park REAL limit orders at the broker for these combos only.`)) return
                           try {

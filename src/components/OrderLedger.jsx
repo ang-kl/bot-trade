@@ -123,8 +123,8 @@ function QueuedRow({ q, onDone }) {
           disabled={busy}
           onClick={veto}
           title={`Veto ${q.symbol} — cancel and block re-arming`}
-          className="inline-flex items-center justify-center rounded-[3px] border border-[var(--color-down)] text-[8px] font-bold uppercase leading-none text-[var(--color-down)] px-[3px] py-[1px] hover:bg-[var(--color-down)] hover:text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >veto</button>
+          className="inline-flex items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-down)] text-[9px] font-semibold leading-none text-[var(--color-down)] p-[2px] hover:bg-[color-mix(in_srgb,var(--color-down)_12%,transparent)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        >Veto</button>
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">{enteredCell(q.queued_at)}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{pendingMs != null ? fmtDuration(pendingMs) : '—'}</td>
