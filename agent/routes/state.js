@@ -2086,6 +2086,21 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/phase-trace — the S.A.T. tracer (owner 01-08: "setup a
+  // tracer"). Every physical change to the pipeline flags (DB triggers),
+  // each one attributed to its setPhaseFlag audit row or flagged as a raw
+  // write with the caller's stack — or UNATTRIBUTED, which is the finding.
+  // -----------------------------------------------------------------------
+  router.get('/phase-trace', async (req, res) => {
+    try {
+      const { phaseTraceView } = await import('../services/phase-audit.js')
+      res.json(phaseTraceView(db, { limit: req.query.limit ? Number(req.query.limit) : 100 }))
+    } catch (e) {
+      res.status(500).json({ error: e.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/storage — what is on the volume (owner 01-08, after growing
   // it 1GB → 5GB): DB/WAL file sizes, per-table rows+bytes, biggest state
   // keys, volume free space. On-demand diagnostics — the full-page walk is
