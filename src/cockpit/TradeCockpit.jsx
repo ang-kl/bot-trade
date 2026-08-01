@@ -293,7 +293,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ ...card, borderRadius: cfg.tabs ? '0 18px 18px 18px' : 18, padding: '9px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <span style={{ fontSize: fs(12.5), fontWeight: 600, letterSpacing: '.05em', textTransform: 'uppercase', color: 'var(--acc)' }}>PFD — primary flight display</span>
-        <Info fs={fs} big tip="speed = momentum · attitude = P&L · altitude = price · VSI = R/hour · heading = trend" />
+        <Info fs={fs} big tip="speed = momentum · attitude = P&L · altitude = price · VSI = R/hour · heading = trend. Bezel scales (chronograph-style): the price tape pairs every level with its R and $ value (slide rule); the VSI graduations convert each rate into time-to-TP / time-to-SL (tachymeter)." />
       </div>
       <div className="tc-pfd-grid" style={{ display: 'grid', gridTemplateColumns: cfg.pfdCols, gap: cfg.pfdGap, overflow: 'hidden', alignItems: 'stretch', height: cfg.pfdH }}>
         <div style={pane}>
@@ -336,13 +336,13 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           <span style={{ fontSize: 7, fontWeight: 600, color: 'var(--mu)', textAlign: 'center', paddingBottom: 2 }}>volume →</span>
         </div>
         <div style={pane}>
-          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><Info fs={fs} tip="One column, both scales: price on the left, the same level in R (risk units) on the right. ENT = your entry price (always 0.00R — the zero line of the trade). SL and TP are the stop and target rails. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." /></div>
+          <div style={{ position: 'absolute', top: 2, left: 0, right: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'var(--gls)', zIndex: 2 }}><span style={{ fontSize: fs(8.5), fontWeight: 600, color: 'var(--acc)' }}>PRICE · R</span><Info fs={fs} tip="Slide-rule tape, three paired scales: price on the left, the same level in R (risk units) and in this position's dollars on the right. ENT = your entry price (always 0.00R — the zero line of the trade). SL and TP are the stop and target rails. Blue/red ticks are the best (MFE) and worst (MAE) excursion this trade has reached." /></div>
           {v && <>
             <div title="best excursion so far (MFE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMfe + '%', height: 2, background: 'var(--up)', zIndex: 2 }} />
             <div title="worst excursion so far (MAE)" style={{ position: 'absolute', right: 0, width: 9, top: v.altMae + '%', height: 2, background: 'var(--dn)', zIndex: 2 }} />
             <div title={`best ${v.mfeR} · worst ${v.maeR} · handed back ▼${v.giveback} from the peak`} style={{ position: 'absolute', left: 2, right: 2, bottom: 2, display: 'flex', gap: 3, justifyContent: 'space-between', fontSize: fs(8.5), fontVariantNumeric: 'tabular-nums', zIndex: 2, background: 'var(--gls)', cursor: 'help' }}><span style={{ color: 'var(--up)' }}>{v.mfeR}</span><span style={{ color: 'var(--dn)' }}>{v.maeR}</span></div>
             {v.altTicks.map((s, i) => (
-              <div key={i} style={{ position: 'absolute', left: 0, right: 0, top: s.top + '%', display: 'flex', alignItems: 'center', gap: 3, padding: '0 4px', transform: 'translateY(-50%)' }}><span style={{ width: 6, height: 1, background: 'var(--mu)' }} /><span style={{ fontSize: fs(10.5), color: dim || 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{s.v}</span><span style={{ marginLeft: 'auto', fontSize: fs(8.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums' }}>{s.r}</span></div>))}
+              <div key={i} style={{ position: 'absolute', left: 0, right: 0, top: s.top + '%', display: 'flex', alignItems: 'center', gap: 3, padding: '0 4px', transform: 'translateY(-50%)' }}><span style={{ width: 6, height: 1, background: 'var(--mu)' }} /><span style={{ fontSize: fs(10.5), color: dim || 'var(--sb)', fontVariantNumeric: 'tabular-nums' }}>{s.v}</span><span style={{ marginLeft: 'auto', fontSize: fs(8.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden' }}>{s.r}{s.usd && variant !== 'iphone' ? ' · ' + s.usd : ''}</span></div>))}
             <div id="alt-tp" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--up)', borderTop: v.tpBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.tpLb}</span></div>
             <div id="alt-en" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--wrn)', borderTop: v.enBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.enLb}</span></div>
             <div id="alt-sl" style={{ position: 'absolute', right: 0, left: 4, top: '0%', transform: 'translateY(-50%)', fontSize: fs(10.5), fontWeight: 600, color: 'var(--dn)', borderTop: v.slBrd, textAlign: 'right', whiteSpace: 'nowrap', zIndex: 2 }}><span style={{ background: 'var(--gls)', borderRadius: 4, padding: '1px 4px' }}>{v.slLb}</span></div>
@@ -351,15 +351,24 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
           {!v && skeleton(150)}
         </div>
         <div style={{ ...pane, background: undefined, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0 2px' }}>
-          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4, display: 'inline-flex', alignItems: 'center', gap: 2 }}>VSI <Info fs={fs} tip="Vertical Speed Indicator: how fast this trade is earning or losing, in R per hour. Needle up (+) = P&L climbing; needle down (−) = sinking. ±2 R/hr is the gauge limit. Near 0 = the trade is going nowhere." /></span>
+          <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--mu)', paddingTop: 4, display: 'inline-flex', alignItems: 'center', gap: 2 }}>VSI <Info fs={fs} tip="Vertical Speed Indicator: how fast this trade is earning or losing, in R per hour. Needle up (+) = P&L climbing; needle down (−) = sinking. Tachymeter bezel: the small time under each rate is how long, AT that rate, this trade takes to reach TP (above centre) or burn its cushion to SL (below centre). The readout line converts the live rate the same way." /></span>
           <div style={{ flex: 1, position: 'relative', width: '100%' }}>
             <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', height: 1, background: 'var(--edg)' }} />
-            <span style={{ position: 'absolute', top: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>+2</span>
-            <span style={{ position: 'absolute', bottom: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>−2</span>
+            {v?.vsiBezel
+              ? v.vsiBezel.map(b => (
+                <div key={b.r} style={{ position: 'absolute', top: b.top + '%', left: 0, right: 0, transform: 'translateY(-50%)', textAlign: 'center', lineHeight: 1.15 }}>
+                  <div style={{ fontSize: fs(10.5), color: 'var(--sb)' }}>{b.r}</div>
+                  <div style={{ fontSize: fs(8), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{b.t}</div>
+                </div>))
+              : <>
+                <span style={{ position: 'absolute', top: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>+2</span>
+                <span style={{ position: 'absolute', bottom: '6%', left: 0, right: 0, textAlign: 'center', fontSize: fs(10.5), color: 'var(--sb)' }}>−2</span>
+              </>}
             <div id="pfd-vsi" style={{ position: 'absolute', left: 4, right: 4, top: '50%', height: 3, borderRadius: 2, background: v?.vsiCol ?? 'var(--edg)', transformOrigin: 'left center' }} />
           </div>
           <span style={{ fontSize: fs(10.5), fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: dim || v?.vsiCol, paddingBottom: 2, whiteSpace: 'nowrap' }}>{v?.vsi ?? ''}</span>
-          <span style={{ fontSize: fs(8.5), color: 'var(--mu)', paddingBottom: 4, whiteSpace: 'nowrap' }}>R/hr</span>
+          <span style={{ fontSize: fs(8.5), color: 'var(--mu)', paddingBottom: v?.vsiEta ? 1 : 4, whiteSpace: 'nowrap' }}>R/hr</span>
+          {v?.vsiEta && <span style={{ fontSize: fs(8), color: 'var(--sb)', paddingBottom: 4, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{v.vsiEta}</span>}
         </div>
       </div>
       <div style={{ position: 'relative', height: 44, borderRadius: 10, border: '1px solid var(--edg)', background: 'var(--acs)', overflow: 'hidden' }}>
