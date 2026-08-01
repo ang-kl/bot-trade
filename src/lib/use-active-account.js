@@ -42,6 +42,41 @@ function readCache() {
   } catch { return null }
 }
 
+// PER-ACCOUNT phases, extracted so the sidebar's switches can force an
+// immediate re-read after a write (owner 01-08: switches move into the
+// sidebar; a toggle must repaint on the SERVER's answer, not on hope).
+// Carries the override map (the ● marker) and the ratchet hold alongside the
+// three effective booleans — additive, so PhaseDots keeps reading the same
+// keys it always has.
+function loadPhases() {
+  return agentGet('/state/account-phases').then(v => {
+    if (!v?.master) return
+    const byId = {}
+    for (const a of v.accounts || []) {
+      byId[String(a.accountId)] = {
+        scan: a.effective?.scan === true,
+        analyze: a.effective?.analyze === true,
+        autotrade: a.effective?.autotrade === true,
+        overrides: a.overrides ?? null,
+        ratchet: a.ratchet ?? null,
+      }
+    }
+    const next = { master: { ...v.master }, byId }
+    // Cheap deep compare: this object is a handful of booleans per account,
+    // and an unchanged poll must not cause a render (the whole point of the
+    // "only repaint what changed" pass).
+    const sig = JSON.stringify(next)
+    if (sig !== shared.phasesSig) {
+      shared.phasesSig = sig
+      shared.phasesView = next
+      emit()
+    }
+  }).catch(() => {})
+}
+
+/** Force the shared phase view to refetch NOW (after a sidebar write). */
+export function refreshPhases() { return loadPhases() }
+
 function start() {
   if (started) return
   started = true
@@ -100,27 +135,7 @@ function start() {
     // kind of decorative status that made the owner ask whether the switches
     // were wired at all. `master` is kept as the fallback for an account the
     // registry does not know (or before the roster resolves).
-    agentGet('/state/account-phases').then(v => {
-      if (!v?.master) return
-      const byId = {}
-      for (const a of v.accounts || []) {
-        byId[String(a.accountId)] = {
-          scan: a.effective?.scan === true,
-          analyze: a.effective?.analyze === true,
-          autotrade: a.effective?.autotrade === true,
-        }
-      }
-      const next = { master: { ...v.master }, byId }
-      // Cheap deep compare: this object is a handful of booleans per account,
-      // and an unchanged poll must not cause a render (the whole point of the
-      // "only repaint what changed" pass).
-      const sig = JSON.stringify(next)
-      if (sig !== shared.phasesSig) {
-        shared.phasesSig = sig
-        shared.phasesView = next
-        emit()
-      }
-    }).catch(() => {})
+    loadPhases()
     // Deposit currency rides on the cached broker snapshot's positions. No
     // positions → no currency → the number prints bare rather than guessing $.
     agentGet('/state/broker-cache').then(bc => {

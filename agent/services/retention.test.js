@@ -181,3 +181,57 @@ test('keptReferenced is 0 when nothing is referenced, and the sweep is unchanged
   assert.equal(r.trades, 1)
   assert.equal(r.keptReferenced, 0)
 })
+
+// ---------------------------------------------------------------------------
+// pruneOperationalTables (owner-approved 01-08): the three tables that grew
+// production's DB to 526MB. The rules that matter: referenced analyses are
+// spared (enforced FK), and the AUDIT/PHASE_RAW_WRITE trail never expires.
+// ---------------------------------------------------------------------------
+import { pruneOperationalTables } from './retention.js'
+
+const oldTs = (days) => new Date(Date.now() - days * 86_400_000).toISOString()
+
+test('cup_handle_diagnostics: past 30d pruned, recent kept', () => {
+  const db = freshDB()
+  const ins = db.prepare("INSERT INTO cup_handle_diagnostics (symbol, scanned_at, created_at) VALUES ('X', ?, ?)")
+  ins.run(oldTs(40), oldTs(40))
+  ins.run(oldTs(5), oldTs(5))
+  const r = pruneOperationalTables(db)
+  assert.equal(r.cupHandle, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM cup_handle_diagnostics').get().n, 1)
+})
+
+test('analyses: old unreferenced pruned; a trade-referenced one is SPARED at any age', () => {
+  const db = freshDB()
+  const ins = db.prepare("INSERT INTO analyses (id, symbol, analyzed_at) VALUES (?, 'X', ?)")
+  ins.run(1, oldTs(200))  // old, referenced → spared
+  ins.run(2, oldTs(200))  // old, unreferenced → pruned
+  ins.run(3, oldTs(10))   // recent → kept
+  db.prepare("INSERT INTO trades (id, symbol, status, analysis_id) VALUES (1, 'X', 'closed', 1)").run()
+  const r = pruneOperationalTables(db)
+  assert.equal(r.analyses, 1)
+  const left = db.prepare('SELECT id FROM analyses ORDER BY id').all().map(x => x.id)
+  assert.deepEqual(left, [1, 3], 'the ledger keeps its provenance; only unreferenced blobs age out')
+})
+
+test('action_log: request exhaust past 365d pruned; AUDIT and PHASE_RAW_WRITE exempt forever', () => {
+  const db = freshDB()
+  const ins = db.prepare('INSERT INTO action_log (method, path, body, at) VALUES (?, ?, ?, ?)')
+  ins.run('GET', '/x', null, oldTs(400))            // pruned
+  ins.run(null, '/y', null, oldTs(400))             // NULL method = exhaust → pruned
+  ins.run('AUDIT', '/phase/autotrade_enabled', '{}', oldTs(400))   // exempt
+  ins.run('PHASE_RAW_WRITE', '/phase/scan_enabled', '{}', oldTs(400)) // exempt
+  ins.run('GET', '/z', null, oldTs(10))             // recent → kept
+  const r = pruneOperationalTables(db)
+  assert.equal(r.actionLog, 2)
+  const methods = db.prepare("SELECT method FROM action_log WHERE REPLACE(at,'T',' ') < datetime('now','-365 days')").all().map(x => x.method)
+  assert.deepEqual(methods.sort(), ['AUDIT', 'PHASE_RAW_WRITE'], 'evidence does not expire')
+})
+
+test('null horizons disable each sweep independently', () => {
+  const db = freshDB()
+  setState(db, 'retention_json', JSON.stringify({ cupHandleDays: null, analysesDays: null, actionLogDays: null }))
+  db.prepare("INSERT INTO cup_handle_diagnostics (symbol, scanned_at, created_at) VALUES ('X', ?, ?)").run(oldTs(400), oldTs(400))
+  const r = pruneOperationalTables(db)
+  assert.deepEqual(r, { cupHandle: 0, analyses: 0, actionLog: 0 })
+})

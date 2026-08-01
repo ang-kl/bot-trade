@@ -941,6 +941,29 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
         continue
       }
 
+      // RATCHET GATE (v2) — the profit ratchet no longer touches the S.A.T.
+      // switches; its hold lives here instead. 'soft' = inside the warning
+      // band (entries paused, reversible on recovery); 'halt' = floor
+      // confirmed (cleared by auto re-arm or the owner's [Re-arm] button).
+      // The owner's switches above stay exactly as the owner set them.
+      try {
+        const { ratchetGate } = await import('./services/profit-ratchet.js')
+        const rg = ratchetGate(db, acct.accountId)
+        if (rg.blocked) {
+          log(`Ratchet gate: ${sym} skipped on ${acct.accountId} — ratchet ${rg.stage}`)
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'ratchet_gate', decision: 'skip',
+            reason: rg.stage === 'halt'
+              ? 'profit ratchet halt — floor was hit; re-arm via Telegram button or wait for auto re-arm'
+              : 'profit ratchet soft pause — equity inside the warning band above the floor',
+          })
+          continue
+        }
+      } catch { /* gate provenance never blocks dispatch */ }
+
       // CONNECTIVITY GATE — an account the sidecar has not authorized gets no
       // order built for it this cycle. Skips are recorded, and the account
       // rejoins automatically the moment the roster reports it again (the
@@ -1123,6 +1146,19 @@ export function mayCloseDbOnlyAfterSkip(reason) {
   return reason === 'ctrader_not_configured'
 }
 
+/**
+ * The broker's OWN volume for one position in a reconcile snapshot, in the
+ * protocol's units — or null when the snapshot doesn't carry it. Pure and
+ * exported for tests: this is the number a close must send, because any
+ * lots→units reconversion on our side can disagree with what the broker
+ * holds (the 2026-08-01 100× TRADING_BAD_VOLUME on adopted crypto rows).
+ */
+export function brokerPositionVolume(brokerPositions, positionId) {
+  const bp = (brokerPositions || []).find(p => String(p?.positionId) === String(positionId))
+  const v = Number(bp?.tradeData?.volume)
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : null
+}
+
 export async function executeBrokerAction(db, s, pos, eval_, source = 'position_manager') {
   const clientId = ctraderEnv('clientId')
   const clientSecret = ctraderEnv('clientSecret')
@@ -1176,10 +1212,37 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
       return getVolumeMeta(host, clientId, clientSecret, accessToken, accountId, symbolId)
     }
 
+    // BROKER-TRUTH CLOSE VOLUME (production 2026-08-01, Railway log):
+    // `Position close (LLM) FAILED: XRPUSD — closeVolume 1000000.00 is bigger
+    // than position volume 10000.00 (TRADING_BAD_VOLUME)` — retrying every
+    // loop, position never closing. Root cause: ADOPTED rows store lots via
+    // reconciler's contractSize() table while this path multiplies by the
+    // broker's real lotSize; for crypto the two conventions disagree 100×.
+    // Rather than trust either conversion, close what the broker says it
+    // holds: fetch the live snapshot and use ITS volume. The computed figure
+    // remains only a fallback for a snapshot that could not be read.
+    const brokerSnapshot = async () => {
+      try {
+        const rec = await execReconcile({ host, clientId, clientSecret, accessToken, accountId })
+        return { ok: true, positions: rec.position || [] }
+      } catch { return { ok: false, positions: [] } }
+    }
+
     if (action === 'FULL_EXIT') {
-      const meta = await volumeMeta()
-      const volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
-      if (volumeUnits <= 0) return { skipped: true, reason: 'unknown_volume' }
+      const snap = await brokerSnapshot()
+      if (snap.ok && !snap.positions.some(p => String(p?.positionId) === String(ctx.positionId))) {
+        // The broker no longer holds this position — closing "again" would
+        // only error forever. Record reality and stand down.
+        if (pos.trade_id) closeTradeRow(db, pos.trade_id, { closeReason: 'already_closed' })
+        s.closePosition.run('closed', pos.id)
+        return { closedRemotely: true, summary: 'already_closed' }
+      }
+      let volumeUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+      if (volumeUnits == null) {
+        const meta = await volumeMeta()
+        volumeUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
+      }
+      if (!(volumeUnits > 0)) return { skipped: true, reason: 'unknown_volume' }
       const res = await execClosePosition({ host, clientId, clientSecret, accessToken, accountId }, {
         positionId: ctx.positionId,
         volume: volumeUnits,
@@ -1204,7 +1267,12 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
 
     if (action === 'PARTIAL_EXIT') {
       const meta = await volumeMeta()
-      const totalUnits = Math.round((ctx.volumeLots || 0) * meta.lotSize)
+      // Same broker-truth base as FULL_EXIT: a fraction of what the broker
+      // actually holds, not of our reconversion. Falls back to the computed
+      // figure only when the snapshot could not be read.
+      const snap = await brokerSnapshot()
+      const totalUnits = brokerPositionVolume(snap.positions, ctx.positionId)
+        ?? Math.round((ctx.volumeLots || 0) * meta.lotSize)
       const fraction = eval_.exitFraction ?? 0.5
       let closeUnits = Math.round(totalUnits * fraction)
       if (meta.stepVolume) closeUnits = Math.floor(closeUnits / meta.stepVolume) * meta.stepVolume
@@ -3374,12 +3442,15 @@ async function runLoop(db) {
       const d6 = prunePositionEvents(db)
       // Long-horizon ledger retention (hardening 6c): closed trades +
       // postmortems past ~2 years (retention_json overrides; null disables).
-      const { pruneTradeHistory } = await import('./services/retention.js')
+      const { pruneTradeHistory, pruneOperationalTables } = await import('./services/retention.js')
       const d7 = pruneTradeHistory(db)
+      // Owner-approved 01-08 ("approve retention") — the three tables that
+      // grew production's DB to 526MB, cup_handle_diagnostics alone 40%.
+      const d8 = pruneOperationalTables(db)
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
-      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems`)
+      log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems, ${d8.cupHandle} cup-handle diags, ${d8.analyses} analyses, ${d8.actionLog} action-log rows`)
     } catch (err) {
       log('Housekeeping error:', err.message)
     }

@@ -222,6 +222,16 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   {a.connectivity}
                 </span>
               )}
+              {/* Ratchet v2 hold — separate from the switches on purpose: the
+                  ratchet never writes them, so its hold needs its own badge. */}
+              {a.ratchet && (
+                <span className="text-[8px] font-bold text-[var(--color-warning-text)]"
+                  title={a.ratchet === 'halt'
+                    ? 'Profit ratchet HALT — the protected floor was hit; entries stopped on this account. Re-arm from the Telegram alert, or it re-arms on sustained recovery.'
+                    : 'Profit ratchet warning — equity is just above the protected floor; new entries paused until it recovers.'}>
+                  {a.ratchet === 'halt' ? '⛔ ratchet halt' : '⚠ ratchet warn'}
+                </span>
+              )}
               {/* An account switched off on Connect is not dispatched at all,
                   whatever these switches say — printing them without that fact
                   would overstate what they control. */}

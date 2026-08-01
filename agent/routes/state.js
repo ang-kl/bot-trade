@@ -595,28 +595,36 @@ export default function stateRouter(db) {
     try {
       const { loadProfitRatchetConfig, loadRatchetState, autoStepUsd } = await import('../services/profit-ratchet.js')
       const cfg = loadProfitRatchetConfig(db)
-      const st = loadRatchetState(db)
-      const balance = getAccountBalance(db)
-      const step = cfg.stepUsd > 0 ? Number(cfg.stepUsd) : autoStepUsd(balance)
-      // Equity here is the LAST known figure the ratchet itself recorded, not
-      // a fresh broker call — this route must stay cheap and side-effect free.
-      const floor = st?.floor ?? null
-      const hwm = st?.hwm ?? null
+      // v2 (01-08): one staircase PER ACCOUNT — this reports each enabled
+      // account's own baseline/hwm/floor/halt from the state the ratchet
+      // itself last recorded. Cheap and side-effect free: no broker call, no
+      // ratchet run, nothing armed or disarmed.
+      let ids = []
+      try { ids = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1').all().map(r => String(r.account_id)) } catch { ids = [] }
+      const accounts = ids.map(id => {
+        const st = loadRatchetState(db, id)
+        const balance = getAccountBalance(db, id)
+        const step = cfg.stepUsd > 0 ? Number(cfg.stepUsd) : autoStepUsd(balance)
+        const floor = st?.floor ?? null
+        const hwm = st?.hwm ?? null
+        return {
+          accountId: id,
+          balance,
+          step,
+          state: st,
+          equity: st?.lastEquity ?? null,
+          headroomFromFloor: floor != null && hwm != null ? Math.round((hwm - floor) * 100) / 100 : null,
+          halted: st?.halt === true,
+          keepOff: st?.keepOff === true,
+          hasTriggered: !!st?.lastTriggerAt,
+          lastTriggerAt: st?.lastTriggerAt ?? null,
+        }
+      })
       res.json({
         config: cfg,
-        balance,
-        step,
-        state: st,
-        // The two numbers that decide whether the ratchet fired: how far the
-        // high-water mark sits above the protected floor, and whether the
-        // ratchet has ever triggered (which is what disarms autotrade).
-        headroomFromFloor: floor != null && hwm != null ? Math.round((hwm - floor) * 100) / 100 : null,
-        hasTriggered: !!st?.lastTriggerAt,
-        lastTriggerAt: st?.lastTriggerAt ?? null,
-        // 'flatten' closes BOT positions on trigger; 'halt' only disarms.
-        // A disarm with positions still open is consistent with 'halt', or
-        // with 'flatten' finding no autopilot-sourced rows to close.
         floorAction: cfg.floorAction,
+        accounts,
+        // v2 never touches this flag — reported so a reader can verify that.
         autotradeEnabled: getState(db, 'autotrade_enabled') === 'true',
       })
     } catch (e) {
@@ -1927,11 +1935,14 @@ export default function stateRouter(db) {
           return { effective: loadLossCapConfig(db), defaults: DEFAULT_LOSS_CAP }
         })(),
         profitRatchet: await (async () => {
-          const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET } = await import('../services/profit-ratchet.js')
+          const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, loadRatchetState } = await import('../services/profit-ratchet.js')
+          // v2: staircases are per account — the Risk page renders the
+          // SELECTED account's ladder (its numbers are that account's money).
+          const sel = getState(db, 'ctrader_account_id')
           return {
             effective: loadProfitRatchetConfig(db),
             defaults: DEFAULT_PROFIT_RATCHET,
-            state: parse('profit_ratchet_state_json', 'null'),
+            state: sel ? loadRatchetState(db, sel) : null,
           }
         })(),
         lossGuardian: await (async () => {

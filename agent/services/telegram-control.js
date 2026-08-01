@@ -300,6 +300,33 @@ export async function pollTelegramCommands(db, deps = {}) {
             } catch { /* audit best-effort */ }
             continue
           }
+          if (parts[0] === 'ratchetarm' || parts[0] === 'ratchetkeep') {
+            // Ratchet v2 trigger-alert buttons: [Re-arm <acct> now] clears the
+            // halt (entries resume next cycle); [Keep off] stays halted and
+            // stops the auto re-arm from watching. Neither touches the
+            // S.A.T. switches — the ratchet never does, post-01-08.
+            const [, acctId] = parts
+            if (!acctId) {
+              await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'Bad button payload' })
+              continue
+            }
+            const pr = await import('./profit-ratchet.js')
+            if (parts[0] === 'ratchetarm') {
+              pr.rearmRatchet(db, acctId)
+              toast = `✅ Ratchet re-armed on ${acctId} — entries resume`
+            } else {
+              pr.keepRatchetOff(db, acctId)
+              toast = `⏸ Ratchet stays OFF on ${acctId} — auto re-arm disabled until you re-arm`
+            }
+            await tg('answerCallbackQuery', { callback_query_id: cq.id, text: toast, show_alert: false })
+            await tg('sendMessage', { chat_id: owner, text: toast })
+            handled++
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+                .run('TG_BTN', parts[0], JSON.stringify({ accountId: acctId }))
+            } catch { /* audit best-effort */ }
+            continue
+          }
           if (parts[0] === 'prottp') {
             // Owner 01-08: one-tap "Set TP <price>" on the targetless alert.
             // Same logic as POST /actions/position-protect — an amend to a
