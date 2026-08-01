@@ -94,8 +94,10 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
     <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
       <button type="button" title="Copy — opens the copy pop-up (text / JSON / HTML)" aria-label={`Copy ${title}`} style={btn}
         onClick={() => setCopyOpen(true)}>⧉</button>
-      <button type="button" title={`Open ${title} in a pop-up window`} aria-label={`Expand ${title}`} style={btn}
-        onClick={openExpand}>⤢</button>
+      {/* ⇲ per the app-wide expand vocabulary (owner 2026-08-01: U+21F2
+          expands, U+21F1 restores) — same action as before, new glyph. */}
+      <button type="button" title={`Open ${title} in a pop-up window (⇱ / Esc restores)`} aria-label={`Expand ${title}`} style={btn}
+        onClick={openExpand}>⇲</button>
       {copyOpen && (
         <CopyPopup title={title} text={textPayload()} json={jsonPayload()} html={htmlPayload()} onClose={() => setCopyOpen(false)} />
       )}
@@ -118,7 +120,7 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
               <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>{title}</span>
               <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
                 <button type="button" title="Copy section" style={btn} onClick={() => setCopyOpen(true)}>⧉ Copy</button>
-                <button type="button" title="Close (Esc)" aria-label="Close" style={btn} onClick={() => setOpen(false)}>✕</button>
+                <button type="button" title="Restore (Esc)" aria-label="Restore" style={btn} onClick={() => setOpen(false)}>⇱</button>
               </span>
             </div>
             {render ? render({ variant: 'modal' }) : null}
