@@ -20,20 +20,13 @@ import Input from './Input.jsx'
 import { parseDurationToMinutes, formatMinutesShort } from '../../lib/duration-input.js'
 
 // EVERY entry field is the SAME fixed width (owner 2026-07-24: "the size of
-// field-entry must be uniform as I am OCD"). The !important prefix is
-// load-bearing: the Input component's own base class is `w-full`, which was
-// silently winning over a plain w-[120px] — that is exactly why the fields
-// rendered full-width and "Guardian move %" wrapped onto two lines in the
-// owner's screenshot.
+// field-entry must be uniform as I am OCD"), 26px tall on desktop and 44px
+// on a phone. Those classes — including the load-bearing `!important`
+// prefixes that beat Input's own `w-full` and the unlayered input font-size
+// rule — now live in Input's `density="compact"` variant (contract §6), so
+// this file no longer repeats them per call site. `FIELD_W` stays exported
+// for any external caller composing the same width by hand.
 export const FIELD_W = '!w-[76px]'
-
-// UI-7 — phone tap height. 26px is a comfortable target for a mouse and a
-// poor one for a thumb; the HIG minimum is 44. This raises ONLY the box on a
-// phone-width screen, so the dense desktop row is untouched. It lives here,
-// on the element's own class list, because `!min-h-[26px]` is an important
-// declaration inside a Tailwind cascade layer and no rule in index.css can
-// outrank it — for important declarations, unlayered loses to layered.
-const TAP_H = 'max-[430px]:!min-h-[44px]'
 
 // `unit` renders a fixed chip after the input ($, %, min, ×SL, h…) so every
 // number on the page declares what it is measured in (owner 2026-07-28: the
@@ -67,10 +60,10 @@ function DurationField({ value, onChange, onCommit, placeholder }) {
     setInvalid(false)
   }
   return (
-    <Input type="text" value={text} placeholder={placeholder}
+    <Input type="text" value={text} placeholder={placeholder} density="compact"
       aria-invalid={invalid || undefined}
       title="Type a number of minutes, or a duration like 90s / 5m / 2h"
-      className={`${FIELD_W} !min-h-[26px] ${TAP_H} !py-0.5 !px-2 !text-[9px] text-right${invalid ? ' border-[var(--color-down)]' : ''}`}
+      className={invalid ? 'border-[var(--color-down)]' : ''}
       onBlur={() => { if (!invalid && onCommit) onCommit() }}
       onChange={e => {
         const raw = e.target.value
@@ -118,7 +111,7 @@ export default function Field({
             ? <DurationField value={value} onChange={onChange} onCommit={onCommit} placeholder={placeholder} />
             : <Input type="number" step={step} min={min} max={max} value={display} placeholder={placeholder}
                 aria-label={typeof label === 'string' ? text : undefined}
-                className={`${FIELD_W} !min-h-[26px] ${TAP_H} !py-0.5 !px-2 !text-[9px] text-right`}
+                density="compact"
                 onBlur={() => { if (onCommit) onCommit() }}
                 onChange={e => {
                   const raw = e.target.value
