@@ -77,6 +77,20 @@ function Info({ fs, tip, big }) {
     </>)
 }
 
+// Pagination for the row lists (owner 2026-08-01: journal + advisories
+// "overshot" — a page of rows and a ‹ n/m › pager instead of an ever-taller
+// card or a hidden scroll).
+function Pager({ fs, page, pages, set }) {
+  if (pages <= 1) return null
+  const bt = dis => ({ cursor: dis ? 'default' : 'pointer', fontFamily: 'inherit', fontSize: fs(10.5), lineHeight: 1.2, color: 'var(--sb)', background: 'transparent', border: '1px solid var(--gbd)', borderRadius: 4, padding: '0 7px', opacity: dis ? .35 : 1 })
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 5, paddingTop: 2 }}>
+      <button type="button" aria-label="Previous page" disabled={page <= 0} onClick={() => set(page - 1)} style={bt(page <= 0)}>‹</button>
+      <span style={{ fontSize: fs(9.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums' }}>{page + 1}/{pages}</span>
+      <button type="button" aria-label="Next page" disabled={page >= pages - 1} onClick={() => set(page + 1)} style={bt(page >= pages - 1)}>›</button>
+    </div>)
+}
+
 const card = { background: 'var(--gls)', border: '1px solid var(--gbd)', boxShadow: 'var(--gsh)', backdropFilter: 'blur(22px)' }
 const pane = { position: 'relative', borderRadius: 10, border: '1px solid var(--edg)', background: 'var(--acs)', overflow: 'hidden' }
 
@@ -402,7 +416,12 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             85% of the natural aspect height with preserveAspectRatio="none",
             a uniform vertical squash. Every HTML overlay is %-positioned
             against the same box, so alignment is preserved exactly. */}
-        <svg viewBox="0 0 460 208" preserveAspectRatio="none" style={{ width: '100%', aspectRatio: '460 / 176.8', overflow: 'visible', display: 'block' }}>
+        {/* overflow hidden (owner 2026-08-01, screenshot): a bound position can
+            put path coordinates outside the 460×208 canvas, and with visible
+            overflow those strokes walked over every card below the MFD. The
+            canvas now clips; only the sub-canvas x-axis ticks (y≤214) lose
+            their last 4px, which the axis line already marks. */}
+        <svg viewBox="0 0 460 208" preserveAspectRatio="none" style={{ width: '100%', aspectRatio: '460 / 176.8', overflow: 'hidden', display: 'block' }}>
           <defs><filter id="glo" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.2" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>
           <line x1="28" y1="16" x2="28" y2="210" stroke="var(--sb)" strokeWidth="1" />
           <line x1="28" y1="210" x2="452" y2="210" stroke="var(--sb)" strokeWidth="1" />
@@ -511,12 +530,19 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
   // which is exactly the "takes the whole length but so little space needed"
   // the owner called out. On desktop it rides UNDER the PFD, filling the dead
   // space beside the taller MFD column.
+  // Journal pagination (owner 2026-08-01): a real position can carry dozens of
+  // events — pages of 8 with a pager, never an ever-growing card.
+  const JR_PS = 8
+  const [jrPage, setJrPage] = useState(0)
+  const jrAll = v?.journal ?? []
+  const jrPages = Math.max(1, Math.ceil(jrAll.length / JR_PS))
+  const jrP = Math.min(jrPage, jrPages - 1)
   const journalCard = (
     <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', minWidth: 0, ...(variant === 'desktop' ? { flex: '1 1 auto', minHeight: 0 } : {}) }}>
-      {sectHead({ k: "jr", hue: "vio", label: "TWEAK JOURNAL", tip: "Every manual or trailing-rule adjustment made to this trade since entry, in order." })}
+      {sectHead({ k: "jr", hue: "vio", label: "TWEAK JOURNAL", tip: "Every manual or trailing-rule adjustment made to this trade since entry, in order.", right: jrAll.length > JR_PS ? <span style={{ marginLeft: 'auto', fontSize: fs(9.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums' }}>{jrAll.length} events</span> : null })}
       {!shut.jr && (
-        <div style={{ flex: 1, minHeight: 0, maxHeight: variant === 'iphone' ? 210 : variant === 'desktop' ? undefined : 150, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
-          {(v?.journal ?? []).map(j => {
+        <div style={{ display: 'flex', flexDirection: 'column', overflowX: 'hidden' }}>
+          {jrAll.slice(jrP * JR_PS, (jrP + 1) * JR_PS).map(j => {
             const open = openKeys.includes(j.key)
             return (
               <div key={j.key} className="tw-row" data-key={j.key} title={`${j.when} — ${j.k} · ${j.d} · click to expand`} role="button" tabIndex={0}
@@ -547,6 +573,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
             <span style={{ fontSize: 9, color: 'var(--mu)' }}>
               {v.journalUnloaded ? 'journal not loaded — no snapshot for this position yet' : 'no tweaks yet'}
             </span>)}
+          <Pager fs={fs} page={jrP} pages={jrPages} set={setJrPage} />
         </div>)}
     </div>)
 
@@ -582,11 +609,18 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
 
   // (2b) Each panel is its own collapsible card; advisory row text scrolls
   // sideways inside its own cell instead of forcing the panel wide.
+  // Advisories pagination — same treatment as the journal (pages of 6); the
+  // DEMO-DATA / feed-caution status rows stay pinned above every page.
+  const AD_PS = 6
+  const [adPage, setAdPage] = useState(0)
+  const adAll = v?.alerts ?? []
+  const adPages = Math.max(1, Math.ceil(adAll.length / AD_PS))
+  const adP = Math.min(adPage, adPages - 1)
   const advisoriesCard = (
     <div style={{ ...card, borderRadius: 12, padding: '4px 10px 5px', display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
-      {sectHead({ k: "adv", hue: "wrn", label: "ADVISORIES", tip: "Live bot notices: cautions, warnings, and fills — newest first." })}
+      {sectHead({ k: "adv", hue: "wrn", label: "ADVISORIES", tip: "Live bot notices: cautions, warnings, and fills — newest first.", right: adAll.length > AD_PS ? <span style={{ marginLeft: 'auto', fontSize: fs(9.5), color: 'var(--mu)', fontVariantNumeric: 'tabular-nums' }}>{adAll.length} notices</span> : null })}
       {!shut.adv && (
-        <div style={{ maxHeight: variant === 'iphone' ? 150 : 170, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', overflowX: 'hidden' }}>
             {tradeId != null && !position && <div style={{ display: 'grid', gridTemplateColumns: '40px 72px 1fr', gap: 6, alignItems: 'baseline', fontVariantNumeric: 'tabular-nums', lineHeight: 1.45 }}>
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>DEMO DATA</span>
@@ -595,10 +629,11 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
               <span style={{ fontSize: fs(10.5), color: 'var(--mu)' }}>now</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--wrn)' }}>CAUTION</span>
               <span style={{ fontSize: fs(10.5), color: 'var(--sb)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>cockpit feed unavailable — retrying ({retries})</span></div>}
-            {(v?.alerts ?? []).map((a, i) => {
+            {adAll.slice(adP * AD_PS, (adP + 1) * AD_PS).map((a, i0) => {
               // Owner (2026-08-01): advisories expand/collapse per row —
               // triangle at the start, TWO clamped lines when collapsed, the
               // full text when expanded. Same interaction as the journal rows.
+              const i = adP * AD_PS + i0 // list-global index keys the open state
               const ak = `adv-${i}`
               const open = openKeys.includes(ak)
               const flip = () => setOpenKeys(ks => ks.includes(ak) ? ks.filter(x => x !== ak) : ks.concat(ak))
@@ -619,6 +654,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
                 </div>)
             })}
             {v && !v.alerts.length && <span style={{ fontSize: 9, color: 'var(--mu)' }}>no advisories</span>}
+            <Pager fs={fs} page={adP} pages={adPages} set={setAdPage} />
         </div>)}
     </div>)
 

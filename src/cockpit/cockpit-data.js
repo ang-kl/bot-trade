@@ -251,7 +251,10 @@ export function cockpitFrame(store, tick, opts = {}) {
   // by trade direction so a SHORT's target sits in view.
   const bLo = Math.min(entry - .75 * K * dir, entry + 2.75 * K * dir)
   const bHi = Math.max(entry - .75 * K * dir, entry + 2.75 * K * dir)
-  const mapY = p => 160 - (p - bLo) / (bHi - bLo) * 128
+  // Clamped just outside the canvas: a real position whose price/VWAP/EMA sits
+  // far from the demo band must render as "pinned off-chart", not as a stroke
+  // shooting hundreds of units past the card (owner 2026-08-01 screenshot).
+  const mapY = p => clamp(160 - (p - bLo) / (bHi - bLo) * 128, -16, 224)
   const combined = store.hist2.concat(store.hist.map(h => h.p))
   const SEG = [[-48, -24, 30, 74], [-24, -4, 74, 150], [-4, 0, 150, 190], [0, 4, 190, 330], [4, 8, 330, 448]]
   const xOf = t => {
