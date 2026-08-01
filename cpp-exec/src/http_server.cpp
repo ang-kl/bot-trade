@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cctype>
@@ -42,6 +43,14 @@ bool HttpServer::run() {
   for (;;) {
     int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) continue;
+    // Socket timeouts BEFORE any read: without them a peer that connects and
+    // sends nothing (or declares a large Content-Length and stalls) pinned a
+    // detached thread forever — unbounded thread + memory growth on an
+    // INADDR_ANY listener (audit #9).
+    timeval tv{};
+    tv.tv_sec = 10;
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     std::thread([this, cfd] { handleClient(cfd); }).detach();
   }
 }

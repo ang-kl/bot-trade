@@ -32,9 +32,16 @@ double trailDecide(TrailSpec& s, double bid, double ask) {
   // Minimum improvement step: a tenth of the trail distance, floored at one
   // price step — avoids amend spam on every sub-point wiggle.
   const double step = std::max(std::pow(10.0, -s.digits), s.trailDist * 0.1);
-  const bool improves = !s.hasSl
-      ? true
-      : (s.dir == 1 ? target >= s.lastSl + step : target <= s.lastSl - step);
+  // UNKNOWN current SL means DO NOT AMEND (audit #3, critical). The keeper
+  // sends currentSl: null whenever the broker snapshot omits stopLoss, and
+  // "no minimum" here let the next tick amend a stop already locked at
+  // breakeven BACK below it — the one direction this engine exists to forbid.
+  // The spec stays tracked; the first push that supplies a real currentSl
+  // arms it. (A genuinely SL-less position is armed by the keeper's own
+  // ratchet, which knows broker truth — never by guessing here.)
+  if (!s.hasSl) return 0;
+  const bool improves =
+      (s.dir == 1 ? target >= s.lastSl + step : target <= s.lastSl - step);
   if (!improves) return 0;
   // Never place the stop through the current market (broker would reject).
   if (s.dir == 1 ? target >= px : target <= px) return 0;

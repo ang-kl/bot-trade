@@ -67,12 +67,17 @@ OrderVerdict validateOrder(const jsn::Value& payload, const GuardSnapshot& g) {
     }
   }
 
+  // A volume the guard cannot read is a volume the cap cannot bound — reject
+  // it rather than forward it verbatim for the broker to interpret (audit #7:
+  // a string/absent volume used to skip the cap entirely, and Node's
+  // withNumericIds deliberately leaves malformed values as-is).
+  const jsn::Value& vol = payload.get("volume");
+  if (!vol.isNumber() || !(vol.asNumber(0) > 0)) {
+    return { false, "guard_bad_payload: order volume is missing or not a number" };
+  }
   // #3 volume cap from the atomic block.
-  if (g.maxOrderVolume > 0) {
-    const jsn::Value& vol = payload.get("volume");
-    if (vol.isNumber() && vol.asNumber(0) > g.maxOrderVolume) {
-      return { false, "guard_volume_cap: order volume exceeds the configured max" };
-    }
+  if (g.maxOrderVolume > 0 && vol.asNumber(0) > g.maxOrderVolume) {
+    return { false, "guard_volume_cap: order volume exceeds the configured max" };
   }
 
   return { true, "" };

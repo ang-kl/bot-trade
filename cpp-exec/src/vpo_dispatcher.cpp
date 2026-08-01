@@ -55,11 +55,14 @@ void VpoDispatcher::registerStrategy(std::unique_ptr<StrategyModule> strategy) {
 void VpoDispatcher::start(int recomputeIntervalMs) {
   if (running_.exchange(true)) return; // already started
   recomputeThread_ = std::thread([this, recomputeIntervalMs] { recomputeLoop(recomputeIntervalMs); });
+  fireThread_ = std::thread([this] { fireLoop(); });
 }
 
 void VpoDispatcher::stop() {
   if (!running_.exchange(false)) return;
+  fireCv_.notify_all();
   if (recomputeThread_.joinable()) recomputeThread_.join();
+  if (fireThread_.joinable()) fireThread_.join();
 }
 
 void VpoDispatcher::recomputeLoop(int intervalMs) {
@@ -96,6 +99,47 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     outcomes_.triggered++;
   }
 
+  // Hand the SLOW half (sizing + placeOrder + outcome record) to the fire
+  // thread — audit #6: running placeOrder here, on the SpotFeed read thread,
+  // stalled tick delivery, heartbeats and the trail ratchet for up to a
+  // minute per fire. The CAS above already guarantees single-fire; the
+  // strategy stays FIRED until fireNow() resolves it.
+  //
+  // Not started (unit tests drive onTick directly, no SpotFeed thread to
+  // protect) → fire synchronously, same behaviour as before the queue.
+  if (!running_.load(std::memory_order_relaxed)) {
+    fireNow(s);
+    return true;
+  }
+  {
+    std::lock_guard<std::mutex> lk(fireMtx_);
+    fireQueue_.push_back(&s);
+  }
+  fireCv_.notify_one();
+  return true;
+}
+
+void VpoDispatcher::fireLoop() {
+  while (running_.load(std::memory_order_relaxed)) {
+    StrategyModule* s = nullptr;
+    {
+      std::unique_lock<std::mutex> lk(fireMtx_);
+      fireCv_.wait_for(lk, std::chrono::milliseconds(500), [this] {
+        return !fireQueue_.empty() || !running_.load(std::memory_order_relaxed);
+      });
+      if (!fireQueue_.empty()) {
+        s = fireQueue_.front();
+        fireQueue_.erase(fireQueue_.begin());
+      }
+    }
+    if (s) fireNow(*s);
+  }
+}
+
+void VpoDispatcher::fireNow(StrategyModule& s) {
+  VirtualPendingOrder& o = s.order();
+  const Side side = o.side.load(std::memory_order_relaxed);
+
   const double volume = volumeResolver_ ? volumeResolver_(s) : -1.0;
   if (!(volume > 0.0) || std::isnan(volume)) {
     // Sizing unavailable — refuse to fire a fabricated order. Re-arm is
@@ -112,7 +156,7 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     }
     recordOutcome(s, "no_sizing", "volumeResolver returned nothing usable");
     s.resetAfterFire();
-    return true;
+    return;
   }
 
   // PHASE 2: this tier must be told which account to trade. The sidecar refuses
@@ -129,7 +173,7 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
     }
     recordOutcome(s, "no_account", "no ctidTraderAccountId configured — POST /vpo-config must name one");
     s.resetAfterFire();
-    return true;
+    return;
   }
 
   jsn::Value payload{jsn::Object{}};
@@ -158,7 +202,6 @@ bool VpoDispatcher::tryFire(StrategyModule& s, double bid, double ask) {
                     : result.body.get("errorCode").asString() + " " +
                           result.body.get("description").asString());
   s.resetAfterFire();
-  return true;
 }
 
 void VpoDispatcher::recordOutcome(const StrategyModule& s, const char* verdict,
