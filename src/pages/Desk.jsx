@@ -31,7 +31,7 @@ import { humanVeto } from '../lib/veto-words.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
 import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
-import { STRAT_SHORT } from '../lib/strategy-labels.js'
+import { STRAT_SHORT, strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from '../components/common/Skeleton.jsx'
 
 const REFRESH_MS = 20_000
@@ -1182,7 +1182,7 @@ export default function Desk() {
                     </table>
                   </div>
                   <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
-                    {curBaseline.strategy} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
+                    {strategyLabel(curBaseline.strategy)} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.
                   </p>
                 </>
               )

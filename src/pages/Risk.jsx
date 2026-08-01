@@ -163,6 +163,17 @@ const RISK_SECTIONS = [
 
 export default function Risk() {
   const [data, setData] = useState(null)
+  // Config keys the last Re-Risk apply wrote — drives the APPLIED highlight
+  // on the matching Fields below (owner 2026-08-01). Set-compared so the
+  // child's report of an unchanged list cannot re-render in a loop.
+  const [appliedKeys, setAppliedKeys] = useState(() => new Set())
+  const onReRiskApplied = useCallback((keys) => {
+    setAppliedKeys(prev => {
+      const next = new Set(keys || [])
+      if (prev.size === next.size && [...prev].every(k => next.has(k))) return prev
+      return next
+    })
+  }, [])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState('')
   // PERSISTENT save proof (owner, twice: "I ALREADY applied, why doesn't it
@@ -306,7 +317,7 @@ export default function Risk() {
           of them. `load` is handed over so a reset or an applied proposal
           repaints the fields below from the agent rather than leaving the form
           showing the values that were just replaced. */}
-      <RiskReassess onChanged={load} />
+      <RiskReassess onChanged={load} onApplied={onReRiskApplied} />
 
       {/* ---- Live impact strip (migrated from Tune > Risk, UI-6) ----------
           Percentages are the units the gate uses, but they are not the units
@@ -519,13 +530,13 @@ export default function Risk() {
         <Card id="sec-acct-risk" data-risk-card className="w3-hover-shadow">
           <SectionTitle>Account risk configuration</SectionTitle>
           <div className="space-y-2">
-            <Field label={`Daily loss cap${mark('dailyLossPct')}`} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
+            <Field label={`Daily loss cap${mark('dailyLossPct')}`} applied={appliedKeys.has('dailyLossPct')} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
               hint="New entries stop for the day once closed P&L is down this % of balance." recommend="3% of balance." />
-            <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
+            <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} applied={appliedKeys.has('dailyLossLimit')} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
               hint="Absolute USD cap used only when balance is unknown." recommend="$300." />
-            <Field label={`Equity stop${mark('equityStopPct')}`} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
+            <Field label={`Equity stop${mark('equityStopPct')}`} applied={appliedKeys.has('equityStopPct')} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
               hint="Daily drawdown at which the loop CLOSES all bot positions and disarms (empty = same as daily loss cap)." recommend="unset — falls back to the daily loss cap above." />
-            <Field label={`Max margin usage${mark('maxMarginUsagePct')}`} pct value={risk.maxMarginUsagePct} onChange={v => setRisk(r => ({ ...r, maxMarginUsagePct: v }))}
+            <Field label={`Max margin usage${mark('maxMarginUsagePct')}`} applied={appliedKeys.has('maxMarginUsagePct')} pct value={risk.maxMarginUsagePct} onChange={v => setRisk(r => ({ ...r, maxMarginUsagePct: v }))}
               hint="Bot's own cap on margin locked as a % of balance — separate from the broker's 50% stop-out." recommend="50% of balance." />
             <div className="border-t border-[var(--glass-edge)] pt-2 space-y-2">
               <div className="flex items-center justify-between text-[9px]">
@@ -577,11 +588,11 @@ export default function Risk() {
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Entry sizing</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
-                  <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
+                  <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} applied={appliedKeys.has('perTradeRiskPct')} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
                   <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
                     hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
-                  <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
+                  <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} applied={appliedKeys.has('maxRiskCapPct')} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                     hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
                   <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} unit="$" value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
                     hint="Optional absolute $ ceiling per trade." placeholder="no cap" recommend="unset — no $ ceiling by default." />
@@ -598,9 +609,9 @@ export default function Risk() {
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
-                  <Field label={`Min SL distance${mark('minSLDistancePct')}`} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
+                  <Field label={`Min SL distance${mark('minSLDistancePct')}`} applied={appliedKeys.has('minSLDistancePct')} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
-                  <Field label={`Min R:R${mark('minRR')}`} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
+                  <Field label={`Min R:R${mark('minRR')}`} applied={appliedKeys.has('minRR')} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                     hint="TP must sit at least this multiple of the SL distance from entry — the take-profit rule." recommend="1.5 — TP at least 1.5× the SL distance." />
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
@@ -612,11 +623,11 @@ export default function Risk() {
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Exposure limits</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
-                  <Field label={`Max open positions${mark('maxOpenPositions')}`} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
+                  <Field label={`Max open positions${mark('maxOpenPositions')}`} applied={appliedKeys.has('maxOpenPositions')} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
                     recommend="5 concurrent positions." />
-                  <Field label={`Cluster exposure${mark('maxClusterExposure')}`} unit="bets" value={risk.maxClusterExposure} onChange={v => setRisk(r => ({ ...r, maxClusterExposure: v }))}
+                  <Field label={`Cluster exposure${mark('maxClusterExposure')}`} applied={appliedKeys.has('maxClusterExposure')} unit="bets" value={risk.maxClusterExposure} onChange={v => setRisk(r => ({ ...r, maxClusterExposure: v }))}
                     hint="Net directional bets allowed per correlation cluster. 0 = off." recommend="2 net directional bets per cluster." />
-                  <Field label={`Currency exposure${mark('maxCurrencyExposure')}`} unit="bets" value={risk.maxCurrencyExposure} onChange={v => setRisk(r => ({ ...r, maxCurrencyExposure: v }))}
+                  <Field label={`Currency exposure${mark('maxCurrencyExposure')}`} applied={appliedKeys.has('maxCurrencyExposure')} unit="bets" value={risk.maxCurrencyExposure} onChange={v => setRisk(r => ({ ...r, maxCurrencyExposure: v }))}
                     recommend="2 net bets per currency." />
                 </div>
               </div>
@@ -625,9 +636,9 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} unit="min" duration value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
                     hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
-                  <Field label={`Loss streak${mark('maxConsecutiveLosses')}`} unit="losses" value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
+                  <Field label={`Loss streak${mark('maxConsecutiveLosses')}`} applied={appliedKeys.has('maxConsecutiveLosses')} unit="losses" value={risk.maxConsecutiveLosses} onChange={v => setRisk(r => ({ ...r, maxConsecutiveLosses: v }))}
                     hint="After N losses in a row, pause. 0 = off." recommend="3 losses in a row." />
-                  <Field label={`Streak cooldown${mark('cooldownMinutes')}`} unit="min" duration value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
+                  <Field label={`Streak cooldown${mark('cooldownMinutes')}`} applied={appliedKeys.has('cooldownMinutes')} unit="min" duration value={risk.cooldownMinutes} onChange={v => setRisk(r => ({ ...r, cooldownMinutes: v }))}
                     recommend="60 minutes." />
                 </div>
               </div>

@@ -39,17 +39,22 @@ export const stratShort = (key) => (key ? (STRAT_SHORT[key] || key) : null)
 // (agent/services/strategies.js), which already spells them correctly, and the
 // coverage test fails the build if a new strategy is added without one.
 // ---------------------------------------------------------------------------
+// Owner 2026-08-01 set the display titles for five keys explicitly
+// ("vwap_trend = VWAP Trend, fib_confluence = Fibonacci Confluence, ...");
+// those five no longer mirror STRATEGY_REGISTRY's `name` field — the UI map
+// is the owner's wording, the registry keeps its own strings for agent-side
+// text (Telegram). The registry-coverage test still guards KEY coverage.
 export const STRAT_NAME = {
-  fib_618_fade: 'Fib 61.8% fade',
+  fib_618_fade: 'Fibonacci 61.8% fade',
   cup_handle: 'Cup & Handle',
   inv_cup_handle: 'Inverted Cup & Handle',
   ema_pullback: 'EMA trend-pullback',
   donchian_breakout: 'Range breakout',
   rsi_meanrev: 'RSI mean-reversion',
-  rsi2_reversion: 'RSI-2 reversion',
-  vwap_trend: 'VWAP trend-pullback',
-  vp_value: 'Volume-profile rotation',
-  fib_confluence: 'Fib confluence zone',
+  rsi2_reversion: 'RSI 2 Reversion',
+  vwap_trend: 'VWAP Trend',
+  vp_value: 'Vol. Profile Value',
+  fib_confluence: 'Fibonacci Confluence',
   va_breakout: 'Value-area breakout',
   fvg_retrace: 'FVG retrace',
 }
