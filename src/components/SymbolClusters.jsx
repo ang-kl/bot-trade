@@ -121,7 +121,7 @@ export default function SymbolClusters({
           separate trades, not one fill recorded twice · tap a row for the legs
         </span>
         {!inModal && (
-          <SectionTools id="symbol-clusters" title="Same-symbol clusters" window={`${days}D`} data={clusters}
+          <SectionTools id="symbol-clusters" title="Same-Symbol Clusters table" window={`${days}D`} data={clusters}
             toText={() => [
               `Same-symbol clusters — last ${days}d, ${windowMinutes}m window`,
               ranked.length ? `extra legs by path: ${ranked.map(([p, n]) => `${p} ${n}`).join(' · ')}` : 'no clusters',

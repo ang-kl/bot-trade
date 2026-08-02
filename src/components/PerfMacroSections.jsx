@@ -153,7 +153,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
         <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>growth × inflation, not static correlations · ring = volatility band · dot color = 30D net for that group · hover a dot</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 700, color: WRN }}>quadrant playbooks are the design's reference copy — the bot does not compute a live regime read yet</span>
         {!inModal && (
-          <SectionTools id="regime" title="Macro regime matrix — where the book sits" window="30D"
+          <SectionTools id="regime" title="Macro Regime Matrix — Where the Book Sits table" window="30D"
             data={dots.map(d => ({ group: d.name, net30d: d.pnl }))}
             toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')}
             render={() => <RegimeMatrix trades30={trades30} positions={positions} accounts={accounts} inModal />} />
@@ -276,7 +276,7 @@ export function BalanceInOut({ inModal = false }) {
         <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>non-trading cash flows · excluded from P&amp;L, carry-forward adjusts on the transaction date</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d11)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: MU }}>net —</span>
         {!inModal && (
-          <SectionTools id="balance-in-out" title="Balance in / out" data={[]}
+          <SectionTools id="balance-in-out" title="Balance In / Out table" data={[]}
             toText={() => 'Balance in / out — no transfers recorded (cash-flow ingestion not built yet)'}
             render={() => <BalanceInOut inModal />} />
         )}
@@ -308,7 +308,7 @@ export function DataFeed({ balance, freeMargin, equity, openCount, dailyLossPct,
         <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: 'var(--color-special-text)' }}>Data feed — core universal essentials</span>
         <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>what the bot ingests before any strategy fires, regardless of asset class</span>
         {!inModal && (
-          <SectionTools id="data-feed" title="Data feed — core universal essentials"
+          <SectionTools id="data-feed" title="Data Feed — Core Universal Essentials table"
             data={[{ balance, freeMargin, equity, openCount, dailyLossPct, equityStopArmed, slSet, tpSet, scope: scopeNote }]}
             render={() => <DataFeed balance={balance} freeMargin={freeMargin} equity={equity} openCount={openCount} dailyLossPct={dailyLossPct} equityStopArmed={equityStopArmed} slSet={slSet} tpSet={tpSet} clock={clock} scopeNote={scopeNote} inModal />} />
         )}

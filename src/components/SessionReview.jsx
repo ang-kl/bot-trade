@@ -217,7 +217,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
           who opened it, what the evidence says about the exit, and what was written down · tap a row
         </span>
         {!inModal && (
-          <SectionTools id="session-review" title="Debrief — why we won and lost" window={period === 'day' ? '1D' : '1W'}
+          <SectionTools id="session-review" title="Debrief — Why We Won and Lost card" window={period === 'day' ? '1D' : '1W'}
             data={model.rows.map(r => ({ time: r.hm, symbol: r.sym, side: r.side, pnl: r.pnl, who: r.who, how: r.how, outcome: r.bucket, onPlan: r.onPlan, note: r.note, lesson: r.lesson }))}
             toText={() => [
               `Debrief — ${label}`,

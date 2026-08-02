@@ -44,19 +44,22 @@ export const stratShort = (key) => (key ? (STRAT_SHORT[key] || key) : null)
 // those five no longer mirror STRATEGY_REGISTRY's `name` field — the UI map
 // is the owner's wording, the registry keeps its own strings for agent-side
 // text (Telegram). The registry-coverage test still guards KEY coverage.
+// Owner 2026-08-02: "I am very particular about words/terms/acronyms" —
+// every strategy display name is Title Case ("Fibonacci 61.8% Fade", never
+// "fib_618_fade" or "Fibonacci 61.8% fade").
 export const STRAT_NAME = {
-  fib_618_fade: 'Fibonacci 61.8% fade',
+  fib_618_fade: 'Fibonacci 61.8% Fade',
   cup_handle: 'Cup & Handle',
   inv_cup_handle: 'Inverted Cup & Handle',
-  ema_pullback: 'EMA trend-pullback',
-  donchian_breakout: 'Range breakout',
-  rsi_meanrev: 'RSI mean-reversion',
+  ema_pullback: 'EMA Trend-Pullback',
+  donchian_breakout: 'Range Breakout',
+  rsi_meanrev: 'RSI Mean-Reversion',
   rsi2_reversion: 'RSI 2 Reversion',
   vwap_trend: 'VWAP Trend',
   vp_value: 'Vol. Profile Value',
   fib_confluence: 'Fibonacci Confluence',
-  va_breakout: 'Value-area breakout',
-  fvg_retrace: 'FVG retrace',
+  va_breakout: 'Value-Area Breakout',
+  fvg_retrace: 'FVG Retrace',
 }
 
 // Buckets the API emits that are NOT strategies, kept out of STRAT_NAME so the
@@ -64,7 +67,7 @@ export const STRAT_NAME = {
 // 'manual / external' is strategy-insights.js's COALESCE fallback for a trade
 // with no strategy label at all (agent/services/strategy-insights.js:21).
 export const NON_STRATEGY_NAME = {
-  'manual / external': 'Manual / external',
+  'manual / external': 'Manual / External',
   manual: 'Manual',
   external: 'External',
   unlabelled: 'Unlabelled',

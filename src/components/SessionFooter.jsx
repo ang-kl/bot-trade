@@ -259,7 +259,7 @@ function SessionPopover({ id, ref, view, current, others, err, appVersion, build
       className="glass-panel pos-fixed fixed z-50 w-[min(22rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-[12px] p-3 text-(length:--fs-caption)"
     >
       <div className="flex items-baseline gap-2 mb-2">
-        <h2 id={titleId} className="text-(length:--fs-secondary) font-semibold">Browser sessions</h2>
+        <h2 id={titleId} className="text-(length:--fs-secondary) font-semibold">Browser Sessions table</h2>
         <button
           ref={firstRef}
           type="button"

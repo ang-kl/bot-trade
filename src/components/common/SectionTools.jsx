@@ -2,7 +2,7 @@
 // 2026-07-24, revised same day): EVERY section header carries ⧉ copy and
 // ⤢ expand.
 //
-//   <SectionTools id="ledger" title="Timeframe ledger" data={rows}
+//   <SectionTools id="ledger" title="Timeframe Ledger table" data={rows}
 //     toText={(rows) => '…'} render={({ variant }) => <LedgerBody …/>} />
 //
 // - ⧉ Copy opens the copy POP-UP WINDOW (CopyPopup): the section's content
