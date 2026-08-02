@@ -3456,6 +3456,38 @@ export default function actionsRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // POST /actions/account-archive { accountId, archived:boolean, mode? }
+  // A2. `archived` is the ONLY state that stops managing an account, so it is
+  // the only one that can recreate the abandonment bug — trailing stops, the
+  // loss cap, the ratchet and the naked-position guardian all key off active
+  // monitored_positions rows. It therefore does not go through the ordinary
+  // mode setter: archiveAccount refuses while the account holds open positions
+  // or working entry orders, and names them in the error so the operator knows
+  // what to clear rather than being told "no".
+  // -----------------------------------------------------------------------
+  router.post('/account-archive', async (req, res) => {
+    try {
+      const { accountId, archived, mode } = req.body || {}
+      if (accountId == null || typeof archived !== 'boolean') {
+        return res.status(400).json({ error: 'need accountId and archived:boolean' })
+      }
+      const { archiveAccount, unarchiveAccount } = await import('../services/account-capabilities.js')
+      const out = archived
+        ? archiveAccount(db, accountId)
+        : unarchiveAccount(db, accountId, mode || 'manage_only')
+      if (!out.ok) return res.status(409).json(out)
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+          .run('POST', '/actions/account-archive', JSON.stringify(out).slice(0, 2000))
+      } catch { /* audit best-effort */ }
+      const { listAccounts } = await import('../services/account-registry.js')
+      res.json({ ok: true, ...out, accounts: listAccounts(db) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.post('/ctrader-config', (req, res) => {
     try {
       const { accessToken, accounts } = req.body || {}

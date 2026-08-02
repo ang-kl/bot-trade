@@ -16,6 +16,9 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+// capabilitiesFor is a PURE preset table with no imports of its own, so
+// importing it here cannot create a cycle back through this module.
+import { capabilitiesFor } from './account-capabilities.js'
 
 const now = () => new Date().toISOString()
 
@@ -217,7 +220,13 @@ export function backfillAccountIds(db) {
  * turned off per account via params.autopilot=false.
  */
 export function registryAutopilotAccounts(db) {
+  // A2: the ENTER capability, from the one preset table, rather than a
+  // hand-rolled `mode === 'active'` here. Same answer for the three modes that
+  // existed before; the difference is that `archived` and any unrecognised
+  // mode now resolve through the same conservative rules as every other
+  // capability read, instead of each caller inventing its own.
   return getEnabledAccounts(db)
-    .filter(a => a.mode === 'active' && a.params.autopilot !== false)
+    .filter(a => capabilitiesFor(a.mode, { scanWhileManageOnly: a.params.scanWhileManageOnly !== false }).enter
+      && a.params.autopilot !== false)
     .map(a => ({ accountId: a.account_id, isLive: a.is_live === 1, autopilot: true }))
 }

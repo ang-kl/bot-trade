@@ -2452,7 +2452,18 @@ async function runLoop(db) {
     // no account the loop would dispatch to still wants the result. With no
     // overrides set (the default) these are both true and nothing changes.
     const { phaseWanted } = await import('./services/account-phases.js')
-    const rosterIds = getAutopilotAccounts(db).map(a => String(a.accountId))
+    // A2. The roster for the SCAN question is the set of accounts that may
+    // SCAN, which is not the set that may ENTER. Asking getAutopilotAccounts
+    // (an entry-capability read) made a `manage_only` account's scan
+    // preference invisible: it wants its insight history kept warm while it
+    // enters nothing, and under the old roster it was not consulted at all.
+    // Falls back to the entry roster if the registry cannot answer, so a
+    // registry problem cannot silently stop scanning altogether.
+    const { scanAccountIds } = await import('./services/account-capabilities.js')
+    let scanRoster = []
+    try { scanRoster = scanAccountIds(db) } catch { scanRoster = [] }
+    const enterRoster = getAutopilotAccounts(db).map(a => String(a.accountId))
+    const rosterIds = scanRoster.length > 0 ? scanRoster : enterRoster
     const scanWanted = phaseWanted(db, 'scan', rosterIds)
     const analyzeWanted = phaseWanted(db, 'analyze', rosterIds)
     const client = getAnthropicClient()

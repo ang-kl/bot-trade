@@ -1349,6 +1349,20 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/account-capabilities — A2/A4 feed: per account, what it may do
+  // (scan / enter / manage), its mode, and how much open work it holds. The
+  // `unmanagedExposure` flag is the plan's §1 invariant checked rather than
+  // assumed — an account with open positions and MANAGE off is an alarm, and
+  // the only way to reach it is a mode written straight into the column.
+  router.get('/account-capabilities', async (req, res) => {
+    try {
+      const { capabilityView } = await import('../services/account-capabilities.js')
+      res.json({ accounts: capabilityView(db) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/decision-feed?account=&hours=&limit=&stage=&decision=&symbol=
   // "Why didn't it trade?" as a readable answer rather than raw rows.
   // /state/decisions returns the log verbatim, which is a developer's view: a
