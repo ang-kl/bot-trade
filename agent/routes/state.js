@@ -1349,6 +1349,28 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/pause-plan?account=<id> — A3. What the pause disposition would
+  // do to this account's resting ENTRY orders right now: watch, cancel (with
+  // the signal that fired), or keep — each with its drain countdown. A read,
+  // never an action: the countdown must be visible BEFORE the deadline passes,
+  // or supervised-drain quietly degrades into keep.
+  router.get('/pause-plan', async (req, res) => {
+    try {
+      const { planPendingDisposition } = await import('../services/pause-disposition.js')
+      const { resolveAccountId } = await import('../services/account-registry.js')
+      const accountId = req.query.account ? String(req.query.account) : resolveAccountId(db)
+      if (!accountId) return res.json({ accountId: null, actions: [] })
+      let armed = null
+      try {
+        const { enabledStrategies } = await import('../services/strategies.js')
+        armed = enabledStrategies(db, getState).map(s2 => s2.key)
+      } catch { armed = null }
+      res.json(planPendingDisposition(db, { accountId, armedStrategies: armed }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/account-traffic-lights — A4. Four lights per account (link /
   // scan / enter / manage) with a one-line reason each, plus the open-work
   // counts that make a pause decision consequential. Every light can be

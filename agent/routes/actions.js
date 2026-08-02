@@ -3457,6 +3457,53 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/pause-disposition { accountId?, disposition?, drainHours? }
+  // A3. What happens to RESTING ENTRY ORDERS when an account stops entering.
+  // With accountId: a per-account override. Without: the global default.
+  // Never touches protective SL/TP orders — those belong to open positions
+  // and are not a pause's business.
+  // -----------------------------------------------------------------------
+  router.post('/pause-disposition', async (req, res) => {
+    try {
+      const { accountId, disposition, drainHours } = req.body || {}
+      const { DISPOSITIONS, STATE_KEY } = await import('../services/pause-disposition.js')
+      if (disposition != null && !DISPOSITIONS.includes(disposition)) {
+        return res.status(400).json({ error: `disposition must be one of ${DISPOSITIONS.join(', ')}` })
+      }
+      const hours = drainHours == null ? null : Number(drainHours)
+      if (hours != null && !(Number.isFinite(hours) && hours > 0)) {
+        return res.status(400).json({ error: 'drainHours must be a positive number' })
+      }
+      let out
+      if (accountId != null) {
+        const { listAccounts } = await import('../services/account-registry.js')
+        const row = listAccounts(db).find(a => String(a.account_id) === String(accountId))
+        if (!row) return res.status(404).json({ error: `account ${accountId} is not in the registry` })
+        const params = { ...row.params }
+        if (disposition != null) params.pauseDisposition = disposition
+        if (hours != null) params.drainHours = hours
+        db.prepare('UPDATE accounts SET params = ?, updated_at = ? WHERE account_id = ?')
+          .run(JSON.stringify(params), new Date().toISOString(), String(accountId))
+        out = { scope: String(accountId), disposition: params.pauseDisposition ?? null, drainHours: params.drainHours ?? null }
+      } else {
+        let current = {}
+        try { current = JSON.parse(getState(db, STATE_KEY) || '{}') || {} } catch { current = {} }
+        if (disposition != null) current.disposition = disposition
+        if (hours != null) current.drainHours = hours
+        setState(db, STATE_KEY, JSON.stringify(current))
+        out = { scope: 'global', ...current }
+      }
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+          .run('POST', '/actions/pause-disposition', JSON.stringify(out).slice(0, 2000))
+      } catch { /* audit best-effort */ }
+      res.json({ ok: true, ...out })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/account-archive { accountId, archived:boolean, mode? }
   // A2. `archived` is the ONLY state that stops managing an account, so it is
   // the only one that can recreate the abandonment bug — trailing stops, the

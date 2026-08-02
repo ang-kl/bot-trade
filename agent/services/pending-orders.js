@@ -233,12 +233,77 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     }
   }
 
+  // 4b. PAUSE DISPOSITION (A3) — what happens to this account's resting ENTRY
+  // orders now that it is no longer entering. Runs AFTER the level-breach
+  // invalidation above, so a breached row is already gone and is not counted
+  // twice. Protective SL/TP orders are untouched: this pass only ever sees
+  // rows from pending_orders, the bot's own resting-entry ledger.
+  const dispositionActions = []
+  try {
+    const { planPendingDisposition } = await import('./pause-disposition.js')
+    const { enabledStrategies } = await import('./strategies.js')
+    let armedKeys = null
+    try { armedKeys = enabledStrategies(db, getState).map(x => x.key) } catch { armedKeys = null }
+    const planned = planPendingDisposition(db, {
+      accountId: creds?.accountId,
+      rows: stillWorking,
+      armedStrategies: armedKeys,
+    })
+    summary.disposition = planned.disposition
+    for (const act of planned.actions) {
+      if (act.action !== 'cancel') continue
+      try {
+        if (act.orderId) await exec.cancelOrder(creds, { orderId: act.orderId })
+        updateStatus.run('cancelled', `pause:${act.signal}`, act.id)
+        summary.cancelled++
+        dispositionActions.push(act)
+        // Written down, per the plan: tomorrow "why didn't that trigger?" has
+        // an answer naming the signal and the price it was resting at.
+        try {
+          const { recordDecision } = await import('./decision-log.js')
+          recordDecision(db, {
+            accountId: creds?.accountId ?? null,
+            symbol: act.symbol,
+            timeframe: null,
+            strategy: null,
+            stage: 'pause_disposition',
+            decision: 'skip',
+            reason: `${act.signal}: ${act.reason}`,
+            detail: { orderId: act.orderId, level: act.level, deadlineAt: act.deadlineAt, deadlineSource: act.deadlineSource },
+          })
+        } catch { /* provenance must never block trading */ }
+        notify(`⏸ pending cancelled on pause (${act.signal}): ${act.symbol} @ ${act.level ?? '—'}`)
+        log(`${act.symbol}: pause disposition ${planned.disposition} → cancelled ${act.orderId} (${act.signal})`)
+      } catch (err) {
+        // Leave it working; the next pass settles it. A failed cancel must
+        // never be recorded as a cancel.
+        log(`${act.symbol}: pause cancel FAILED for ${act.orderId} — ${err.message}`)
+      }
+    }
+  } catch (err) {
+    log(`pause disposition pass skipped — ${err.message}`)
+  }
+  const cancelledByPause = new Set(dispositionActions.map(a => a.id))
+  const afterDisposition = stillWorking.filter(r => !cancelledByPause.has(r.id))
+
   // 5. NEW SETUPS — one working order per symbol, hard cap, plus a TOTAL
   // resting-order cap across BOTH bot placement paths (this one and the
   // closed-market limits) — 82 resting orders helped drive a margin call
   // (owner-approved build 2, 2026-07-27). Every resting order is potential
   // exposure the moment it fills; the cap bounds worst-case fill exposure.
-  const symbolsWithWorking = new Set(stillWorking.map(r => r.symbol))
+  // A3: every disposition agrees that a paused account creates NOTHING new —
+  // only the fate of its existing orders differs. Checked before any sizing or
+  // risk work, so a paused account costs nothing per cycle.
+  {
+    const { mayArmPending } = await import('./pause-disposition.js')
+    const arm = mayArmPending(db, creds?.accountId)
+    if (!arm.ok) {
+      summary.skipped.push(arm.reason)
+      return summary
+    }
+  }
+
+  const symbolsWithWorking = new Set(afterDisposition.map(r => r.symbol))
   const riskCfg = risk.loadRiskConfig(db)
   const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))
   let totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
