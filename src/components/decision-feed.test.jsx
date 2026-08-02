@@ -47,6 +47,17 @@ describe('DecisionFeed', () => {
     expect(html).toContain('Decision Feed card')
     expect(html).toContain('Loading')
   })
+
+  it('the compact variant renders its own heading, not the desktop one', () => {
+    const html = renderToStaticMarkup(<DecisionFeed variant="compact" />)
+    expect(html).toContain('Why it did or did not trade')
+    expect(html).not.toContain('Decision Feed card')
+    expect(html).toContain('Loading')
+  })
+
+  it('an unknown variant falls back to the full card rather than rendering nothing', () => {
+    expect(renderToStaticMarkup(<DecisionFeed variant="nonsense" />)).toContain('Decision Feed card')
+  })
 })
 
 describe('repeatReading', () => {
@@ -78,6 +89,18 @@ describe('repeatReading', () => {
 })
 
 describe('StageBlock', () => {
+  it('fill mode drops the row flex-basis, which would be a HEIGHT in a column', () => {
+    // `flex: 1 1 300px` resolves against the main axis. In the desktop's row
+    // container that reads "at least 300px wide"; in the phone's column
+    // container the same value means 300px TALL, and the card renders as a
+    // stack of tall empty boxes.
+    const row = renderToStaticMarkup(<StageBlock s={stage()} />)
+    const col = renderToStaticMarkup(<StageBlock s={stage()} fill />)
+    expect(row).toContain('300px')
+    expect(col).not.toContain('300px')
+    expect(col).toContain('width:100%')
+  })
+
   it('shows the stage, its volume, and a badge per decision kind', () => {
     const html = renderToStaticMarkup(<StageBlock s={stage()} />)
     expect(html).toContain('style_filter')

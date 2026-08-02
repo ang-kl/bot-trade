@@ -2032,6 +2032,9 @@ export default function Performance() {
                 else behind a disclosure — a five-card grid here would push the
                 day's actual figures below the fold. */}
             <GoalTracker variant="compact" />
+            {/* "Why didn't it trade" belongs next to the day it is asked
+                about, on the phone as much as the desktop. */}
+            <DecisionFeed variant="compact" />
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }} data-once="perf-session-clock">
               <SessionClock />
             </div>

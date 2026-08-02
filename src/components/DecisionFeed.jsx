@@ -30,10 +30,35 @@ import SectionTools from './common/SectionTools.jsx'
 const MU = 'var(--color-muted)', SB = 'var(--color-text-sub)', ACC = 'var(--color-accent)'
 const GL = 'var(--color-surface)', GBD = 'var(--color-border)'
 
-export function StageBlock({ s }) {
+// Both the desktop and the mobile shell mount this component — the split is
+// CSS (`hidden min-[700px]:block` beside `min-[700px]:hidden`), so both are in
+// the DOM on every viewport. Without sharing, one page load fires the same
+// query twice, and worse, two independent answers can disagree: the phone and
+// the desktop would show different counts for the same window. Keyed by the
+// query, because window and scope are the only things that change it.
+const inFlight = new Map()
+function fetchFeed(url) {
+  if (!inFlight.has(url)) {
+    inFlight.set(url, agentGet(url).finally(() => inFlight.delete(url)))
+  }
+  return inFlight.get(url)
+}
+
+/**
+ * @param {{s: object, fill?: boolean}} props
+ *   fill — stack full width instead of sitting in a wrapping row. NOT
+ *   cosmetic: `flex: 1 1 300px` resolves against the MAIN axis, so the desktop
+ *   basis that means "at least 300px wide" in a row container would mean "300px
+ *   TALL" in the phone's column container. Same value, different axis, and the
+ *   card would have rendered as a stack of 300px-tall boxes.
+ */
+export function StageBlock({ s, fill = false }) {
   const reading = repeatReading(s)
   return (
-    <div style={{ background: GL, border: `1px solid ${GBD}`, borderRadius: 10, padding: '5px 8px', flex: '1 1 300px', minWidth: 260 }}>
+    <div style={{
+      background: GL, border: `1px solid ${GBD}`, borderRadius: 10, padding: '5px 8px',
+      ...(fill ? { width: '100%', minWidth: 0 } : { flex: '1 1 300px', minWidth: 260 }),
+    }}>
       <div className="flex flex-wrap items-baseline gap-2">
         <span className="font-semibold" style={{ color: ACC }}>{s.stage}</span>
         <span className="tabular-nums font-semibold">{s.count.toLocaleString()}</span>
@@ -89,24 +114,30 @@ export function RowsTable({ rows }) {
   )
 }
 
-export default function DecisionFeed() {
+/**
+ * @param {{variant?: 'full'|'compact'}} props
+ *   compact — the phone form. The DECOMPOSITION is the substance, so it stays:
+ *   the busiest stages with their reasons and their repeat reading. What goes
+ *   is the width — one stage per row — and the depth: the tail of stages and
+ *   the individual rows sit behind disclosures rather than filling the screen.
+ */
+export default function DecisionFeed({ variant = 'full' }) {
   const [hours, setHours] = useState(WINDOWS[1])
   const [scope, setScope] = useState(() => selectedAccountId() ?? 'all')
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
   const [showRows, setShowRows] = useState(false)
 
-  const fetchFeed = useCallback((h, acct) => agentGet(
-    `/state/decision-feed?hours=${h}&limit=60${acct && acct !== 'all' ? `&account=${encodeURIComponent(acct)}` : ''}`
-  ), [])
+  const feedUrl = useCallback((h, acct) =>
+    `/state/decision-feed?hours=${h}&limit=60${acct && acct !== 'all' ? `&account=${encodeURIComponent(acct)}` : ''}`, [])
 
   useEffect(() => {
     let alive = true
-    fetchFeed(hours, scope)
+    fetchFeed(feedUrl(hours, scope))
       .then(d => { if (alive) { setData(d); setErr(d?.error || null) } })
       .catch(e => { if (alive) setErr(e?.message || String(e)) })
     return () => { alive = false }
-  }, [hours, scope, fetchFeed])
+  }, [hours, scope, feedUrl])
 
   // Follow the sidebar switch: the question "why didn't it trade" is always
   // about a particular account, and leaving the previous one's decisions on
@@ -117,6 +148,61 @@ export default function DecisionFeed() {
   // Only render a payload that matches the CURRENT window, so a slow fetch
   // cannot show 6-hour counts under a 72-hour label.
   const shown = data && Number(data.windowHours) === Number(hours) ? data : null
+
+  if (variant === 'compact') {
+    const stages = shown?.stages || []
+    const top = stages.slice(0, 2)
+    const rest = stages.slice(2)
+    return (
+      <div id="sec-decisions-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
+          <Segmented label="Decision window" value={String(hours)}
+            options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
+            onChange={v => setHours(Number(v))} />
+        </span>
+
+        {err && <span style={{ fontSize: 'var(--fs-d9)', color: 'var(--color-down)' }}>Unavailable: {err}</span>}
+        {!shown && !err && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>Loading…</span>}
+
+        {shown && shown.total === 0 && (
+          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+            Nothing recorded in the last {shown.windowHours}h — a quiet window, or a controller that is not
+            running. The agent health dot in the sidebar says which.
+          </span>
+        )}
+
+        {shown && shown.total > 0 && (
+          <>
+            <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+              {shown.total.toLocaleString()} decisions ·{' '}
+              {shown.accountId ? `account ${shown.accountId}` : 'all accounts'}
+              {shown.unstamped > 0 && <> · {shown.unstamped.toLocaleString()} unstamped, included</>}
+            </span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} className="text-[9px]">
+              {top.map(s2 => <StageBlock key={s2.stage} s={s2} fill />)}
+            </div>
+            {rest.length > 0 && (
+              <details>
+                <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+                  {rest.length} more {rest.length === 1 ? 'stage' : 'stages'}
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }} className="text-[9px]">
+                  {rest.map(s2 => <StageBlock key={s2.stage} s={s2} fill />)}
+                </div>
+              </details>
+            )}
+            <details>
+              <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+                {shown.rows.length} newest decisions{shown.truncated ? ' (capped)' : ''}
+              </summary>
+              <div style={{ marginTop: 4 }}><RowsTable rows={shown.rows} /></div>
+            </details>
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div id="sec-decisions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
