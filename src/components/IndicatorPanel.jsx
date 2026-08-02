@@ -56,10 +56,10 @@ export default function IndicatorPanel({ value, onChange, avwapArmed = false, on
             aria-pressed={on}
             onClick={() => toggle(id)}
             // ≥28px touch target via min-height; state = fill + aria, not hue pair
-            className={`rounded-[1px] px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
-              on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'
+            className={`rounded-[8px] px-2 h-[32px] text-[9px] font-semibold cursor-pointer border transition-colors ${
+              on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent' : 'border-[var(--md-outline-variant)] text-[var(--md-on-surface)]'
             }`}
-          >{LABELS[id]}</button>
+          >{on ? '✓ ' : ''}{LABELS[id]}</button>
         )
       })}
       {prefs.indicators.includes('vp') && (

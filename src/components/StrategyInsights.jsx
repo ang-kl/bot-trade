@@ -12,6 +12,7 @@ import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import { strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from './common/Skeleton.jsx'
 import Collapse from './common/Collapse.jsx'
+import Segmented from './common/Segmented.jsx'
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -42,15 +43,9 @@ export default function StrategyInsights({ account = 'all' }) {
         </span>
         {/* Emphasis follows selection (inventory: unselected was the BOLD
             UPPERCASE one) and the group is a real radiogroup. */}
-        <span role="radiogroup" aria-label="Insight range" className="ml-auto flex gap-1">
-          {[7, 30, 0].map(d => (
-            <button key={d} type="button" role="radio" aria-checked={days === d} onClick={() => setDays(d)}
-              className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-[9px] cursor-pointer ${days === d
-                ? 'border-[var(--color-accent)] text-[var(--color-accent)] font-semibold'
-                : 'border-[var(--glass-edge)] text-[var(--color-text-sub)] font-normal'}`}>
-              {d === 0 ? 'All' : `${d}D`}
-            </button>
-          ))}
+        <span className="ml-auto">
+          <Segmented label="Insight range" value={days} onChange={setDays}
+            options={[7, 30, 0].map(d => ({ value: d, label: d === 0 ? 'All' : `${d}D` }))} />
         </span>
       </div>
       {error && <div className="text-[9px] text-[var(--color-warning-text)]">{error}</div>}
