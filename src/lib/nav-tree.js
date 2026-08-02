@@ -124,6 +124,12 @@ export const NAV_TREE = [
               { id: 'sec-workflow', label: 'Workflow audit', kind: 'T' },
             ],
           },
+          {
+            path: '/accounts/workspace', label: 'Workspace',
+            sections: [
+              { id: 'sec-workspace', label: 'Workspace History', kind: 'T' },
+            ],
+          },
         ],
       },
       {

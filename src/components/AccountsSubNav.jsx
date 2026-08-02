@@ -5,6 +5,7 @@ import { NavLink } from 'react-router-dom'
 const LINKS = [
   { to: '/accounts', label: 'Overview', end: true },
   { to: '/accounts/audit', label: 'Workflow audit', end: false },
+  { to: '/accounts/workspace', label: 'Workspace', end: false },
 ]
 
 export default function AccountsSubNav() {

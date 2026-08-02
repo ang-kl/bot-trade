@@ -86,6 +86,7 @@ const Desk = lazy(() => import('./pages/Desk.jsx'))
 const Trade = lazy(() => import('./pages/Trade.jsx'))
 const Accounts = lazy(() => import('./pages/Accounts.jsx'))
 const AccountsAudit = lazy(() => import('./pages/AccountsAudit.jsx'))
+const AccountsWorkspace = lazy(() => import('./pages/AccountsWorkspace.jsx'))
 const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
@@ -380,6 +381,7 @@ export default function App() {
             {/* Sub-page of Accounts (owner: "Trade audit will be a sub
                 page in accounts") — shares the Accounts nav tab. */}
             <Route path="/accounts/audit" element={<AccountsAudit />} />
+            <Route path="/accounts/workspace" element={<AccountsWorkspace />} />
             <Route path="/tune" element={<Tune />} />
             <Route path="/risk" element={<Risk />} />
             <Route path="/connect" element={<Connect />} />
