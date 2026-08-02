@@ -45,9 +45,46 @@ export function getSessionContext() {
   return note
 }
 
+// ISO-4217 fiat codes, so an FX pair can be RECOGNISED rather than enumerated.
+// Deliberately excludes the metal codes (XAU/XAG/XPT/XPD), which are valid
+// ISO-4217 but must classify as 'metal' — they are checked before this anyway.
+const FIAT = new Set([
+  'USD', 'EUR', 'JPY', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF',
+  'CNH', 'CNY', 'HKD', 'SGD', 'KRW', 'TWD', 'INR', 'IDR', 'THB', 'MYR', 'PHP', 'VND',
+  'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'TRY', 'RUB', 'UAH', 'ISK',
+  'ZAR', 'MXN', 'BRL', 'CLP', 'COP', 'PEN', 'ARS',
+  'ILS', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'JOD', 'EGP', 'MAD', 'NGN', 'KES',
+])
+
+/**
+ * Is this symbol a currency pair, structurally?
+ *
+ * WHY THIS IS DERIVED AND NOT LISTED (owner report 02-08-2026: "some of the
+ * forex are in the single stock"). categoriseSymbol used to recognise FX from
+ * a hardcoded list of TEN pairs and fall through to 'stock' for everything
+ * else. That is not a display bug: isSymbolMarketOpen gates 'stock' to the New
+ * York session (Mon–Fri 14:30–20:55 UTC), so every cross outside those ten —
+ * AUDPLN, EURGBP, USDPLN, GBPAUD, USDSGD, USDIDR, all of which this bot
+ * trades — was refused for ~17½ hours a day and all weekend, with the reason
+ * "trades the New York session only". They also drew equity-shaped tuning from
+ * asset-controllers.js and fib-strategy.js.
+ *
+ * This is the THIRD time a hardcoded list with a 'stock' fallback has done
+ * this: CORN was missing and "falsely vetoed all night" (2026-07-17), then
+ * LTC/ADA/DOGE fell through the same way (2026-08-01). Enumeration cannot keep
+ * up with a 221-symbol universe, so FX is now recognised by its shape — six
+ * letters, two ISO-4217 codes — which covers every major, minor and exotic
+ * without anyone remembering to add it.
+ */
+export function isFxPair(symbol) {
+  const s = String(symbol || '').toUpperCase()
+  if (s.length !== 6) return false
+  const base = s.slice(0, 3), quote = s.slice(3)
+  return base !== quote && FIAT.has(base) && FIAT.has(quote)
+}
+
 export function categoriseSymbol(symbol) {
-  const s = symbol.toUpperCase()
-  const fx = ['EURUSD', 'USDJPY', 'GBPUSD', 'AUDUSD', 'USDCHF', 'USDCAD', 'NZDUSD', 'AUDJPY', 'EURJPY', 'GBPJPY']
+  const s = String(symbol || '').toUpperCase()
   // Production trades LTC/ADA/DOGE too (2026-08-01: they were falling through
   // to 'stock' — wrongly market-hours-gated AND excluded from the weekend
   // quiet crypto exemption). Full Pepperstone crypto set, all 24/7.
@@ -55,7 +92,7 @@ export function categoriseSymbol(symbol) {
     'DOGEUSD', 'BCHUSD', 'BNBUSD', 'DOTUSD', 'LINKUSD', 'XLMUSD', 'AVAXUSD',
     'UNIUSD', 'MATICUSD']
   const indices = ['US500', 'US30', 'NAS100', 'GER40', 'JPN225', 'VIX', 'CN50', 'SDY']
-  const metals = ['XAUUSD', 'XAGUSD', 'XPTUSD', 'USDX']
+  const metals = ['XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD', 'USDX']
   // ICE softs — London/NY daytime exchange windows, NOT 24/5.
   const softs = ['COCOA', 'COFFEE', 'SUGAR', 'COTTON', 'OJUICE']
   // CBOT grains — overnight + daytime sessions with a midday break. CORN was
@@ -63,13 +100,21 @@ export function categoriseSymbol(symbol) {
   // (owner report 2026-07-17).
   const grains = ['CORN', 'WHEAT', 'SOYBEAN', 'SOYBEANS', 'OATS', 'RICE']
   const commodities = ['NATGAS', 'COPPER', 'ALUMINIUM', 'SPOTCRUDE', 'WTI', 'BRENT']
-  if (fx.includes(s)) return 'fx'
+  // METALS BEFORE FX, always: XAU/XAG/XPT/XPD are real ISO-4217 codes, so
+  // XAUUSD would otherwise satisfy the structural pair test and lose its own
+  // session rules.
   if (crypto.includes(s)) return 'crypto'
-  if (indices.includes(s)) return 'index'
   if (metals.includes(s)) return 'metal'
+  if (indices.includes(s)) return 'index'
   if (softs.includes(s)) return 'soft'
   if (grains.includes(s)) return 'grain'
   if (commodities.includes(s)) return 'commodity'
+  if (isFxPair(s)) return 'fx'
+  // Still 'stock' — the CONSERVATIVE default, on purpose. An unrecognised
+  // symbol treated as 24/5 would send market orders into a closed exchange and
+  // collect broker rejections; treated as a stock it simply waits. The fix for
+  // the FX case is that FX is no longer unrecognised, not that the fallback
+  // became permissive.
   return 'stock'
 }
 

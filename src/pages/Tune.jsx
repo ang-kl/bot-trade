@@ -21,6 +21,10 @@ import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
 import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
+// The SAME classifier the trading path uses for market hours, imported rather
+// than mirrored — a watchlist tree that disagreed with the engine about what
+// an instrument is would be worse than no tree at all.
+import { categoriseSymbol } from '../../agent/lib/sessions.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
@@ -1134,8 +1138,42 @@ export default function Tune() {
     if (!groupOf.has(s.group)) groupOf.set(s.group, [])
     groupOf.get(s.group).push(s)
   }
-  const singles = symbols.filter(s => !s.group)
   const groupSelected = (key) => groupOf.has(key)
+
+  // --- Classification › Group › Symbol -------------------------------------
+  // Owner 02-08-2026: "some of the forex are in the single stock". They were
+  // not — the flat list had one bucket labelled "Singles" meaning UNGROUPED,
+  // which reads as "single stocks", and an unlabelled EURJPY landed there next
+  // to equities. `group` is a free-text tag the preset picker sets and a manual
+  // add does not, so it can never be the top level of the tree.
+  //
+  // Classification can, because it is DERIVED from the symbol itself
+  // (agent/lib/sessions.js — the same function the trading path uses to decide
+  // market hours, so the tree cannot disagree with the engine about what an
+  // instrument is). Every symbol therefore has a classification; only the
+  // middle level is ever "Ungrouped".
+  const UNGROUPED = '__ungrouped__'
+  const CLASS_LABEL = {
+    fx: 'Forex', crypto: 'Crypto', index: 'Indices', metal: 'Metals',
+    commodity: 'Commodities', soft: 'Softs', grain: 'Grains', stock: 'Stocks',
+  }
+  const CLASS_ORDER = ['fx', 'crypto', 'index', 'metal', 'commodity', 'soft', 'grain', 'stock']
+  // Map<classification, Map<groupName, symbol[]>>, both in a stable order.
+  const classTree = new Map()
+  for (const cls of CLASS_ORDER) classTree.set(cls, new Map())
+  for (const s of symbols) {
+    const cls = categoriseSymbol(s.symbol)
+    if (!classTree.has(cls)) classTree.set(cls, new Map())
+    const byGroup = classTree.get(cls)
+    const g = s.group || UNGROUPED
+    if (!byGroup.has(g)) byGroup.set(g, [])
+    byGroup.get(g).push(s)
+  }
+  // Drop empty classifications — a tree of eight headings over four symbols
+  // is worse than the flat list it replaced.
+  const classBands = [...classTree.entries()].filter(([, byGroup]) => byGroup.size > 0)
+  const countOf = (byGroup) => [...byGroup.values()].reduce((n, arr) => n + arr.length, 0)
+  const onCountOf = (arr) => arr.filter(m => m.enabled !== false).length
 
   const addGroup = (key, memberNames) => {
     const have = new Set(symbols.map(s => s.symbol))
@@ -2548,62 +2586,77 @@ export default function Tune() {
                       </tr>
                     </thead>
                     <tbody>
-                      {/* Excel-style bands: one collapsible band per group,
-                          plus Singles. Band row = triangle + name + count +
-                          state + group actions; expanding reveals the full
-                          per-symbol rows. 100s of instruments stay one line
-                          each until asked for. */}
-                      {[...groupOf.entries()].map(([key, members]) => {
-                        const bandOpen = openBands.has(key)
-                        const onCount = members.filter(m => m.enabled !== false).length
+                      {/* Excel-style bands, now TWO levels: Classification ›
+                          Group › Symbol. The outer band is derived from the
+                          symbol (so nothing is ever unclassified); the inner
+                          one is the optional `group` tag, with everything
+                          untagged under "Ungrouped" — which is what the old
+                          "Singles" heading meant and was read as "single
+                          stocks". Both levels stay collapsed until asked for,
+                          so 200+ instruments are still a short page. */}
+                      {classBands.map(([cls, byGroup]) => {
+                        const clsKey = `cls:${cls}`
+                        const clsOpen = openBands.has(clsKey)
+                        const total = countOf(byGroup)
+                        const clsOn = [...byGroup.values()].reduce((n, arr) => n + onCountOf(arr), 0)
                         return (
-                          <Fragment key={`band:${key}`}>
-                            <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
+                          <Fragment key={clsKey}>
+                            <tr className="border-t-2 border-[var(--color-border)] bg-[var(--glass-bg)]">
                               <td colSpan={11} className="py-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
-                                    type="button" onClick={() => toggleBand(key)} aria-expanded={bandOpen}
+                                    type="button" onClick={() => toggleBand(clsKey)} aria-expanded={clsOpen}
                                     className="flex items-center gap-1.5 font-bold cursor-pointer"
                                   >
-                                    <span aria-hidden="true" className="inline-block w-3 text-[9px]">{bandOpen ? '▾' : '▸'}</span>
-                                    {key}
-                                    <span className="font-normal text-[var(--color-text-sub)]">({members.length} symbols · {onCount} on)</span>
+                                    <span aria-hidden="true" className="inline-block w-3 text-[9px]">{clsOpen ? '▾' : '▸'}</span>
+                                    {CLASS_LABEL[cls] || cls}
+                                    <span className="font-normal text-[var(--color-text-sub)]">({total} symbols · {clsOn} on)</span>
                                   </button>
-                                  <Badge tone={onCount > 0 ? 'on' : 'off'}>{onCount > 0 ? 'ON' : 'OFF'}</Badge>
-                                  <span className="ml-auto flex items-center gap-2">
-                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => toggleGroupEnabled(key, onCount === 0)}>
-                                      {onCount > 0 ? 'Disable group' : 'Enable group'}
-                                    </Button>
-                                    <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => removeGroup(key)} aria-label={`Remove ${key} group from watchlist`}>
-                                      ✕ Remove
-                                    </Button>
-                                  </span>
+                                  <Badge tone={clsOn > 0 ? 'on' : 'off'}>{clsOn > 0 ? 'ON' : 'OFF'}</Badge>
                                 </div>
                               </td>
                             </tr>
-                            {bandOpen && members.map(renderRow)}
+                            {clsOpen && [...byGroup.entries()].map(([g, members]) => {
+                              const grpKey = `grp:${cls}|${g}`
+                              const grpOpen = openBands.has(grpKey)
+                              const onCount = onCountOf(members)
+                              const isUngrouped = g === UNGROUPED
+                              return (
+                                <Fragment key={grpKey}>
+                                  <tr className="border-t border-[var(--color-border)]">
+                                    <td colSpan={11} className="py-1 pl-4">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <button
+                                          type="button" onClick={() => toggleBand(grpKey)} aria-expanded={grpOpen}
+                                          className="flex items-center gap-1.5 font-semibold cursor-pointer"
+                                        >
+                                          <span aria-hidden="true" className="inline-block w-3 text-[9px]">{grpOpen ? '▾' : '▸'}</span>
+                                          {isUngrouped ? 'Ungrouped' : g}
+                                          <span className="font-normal text-[var(--color-text-sub)]">({members.length} symbols · {onCount} on)</span>
+                                        </button>
+                                        {/* Group actions only where there IS a
+                                            group — "Ungrouped" is an absence,
+                                            not a thing you can remove. */}
+                                        {!isUngrouped && (
+                                          <span className="ml-auto flex items-center gap-2">
+                                            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => toggleGroupEnabled(g, onCount === 0)}>
+                                              {onCount > 0 ? 'Disable group' : 'Enable group'}
+                                            </Button>
+                                            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={() => removeGroup(g)} aria-label={`Remove ${g} group from watchlist`}>
+                                              ✕ Remove
+                                            </Button>
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                  {grpOpen && members.map(renderRow)}
+                                </Fragment>
+                              )
+                            })}
                           </Fragment>
                         )
                       })}
-                      {singles.length > 0 && (
-                        <Fragment key="band:__singles__">
-                          {groupOf.size > 0 && (
-                            <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={11} className="py-1.5">
-                                <button
-                                  type="button" onClick={() => toggleBand('__singles__')} aria-expanded={openBands.has('__singles__')}
-                                  className="flex items-center gap-1.5 font-bold cursor-pointer"
-                                >
-                                  <span aria-hidden="true" className="inline-block w-3 text-[9px]">{openBands.has('__singles__') ? '▾' : '▸'}</span>
-                                  Singles
-                                  <span className="font-normal text-[var(--color-text-sub)]">({singles.length})</span>
-                                </button>
-                              </td>
-                            </tr>
-                          )}
-                          {(groupOf.size === 0 || openBands.has('__singles__')) && singles.map(renderRow)}
-                        </Fragment>
-                      )}
                     </tbody>
                   </table>
                   </Collapse>
