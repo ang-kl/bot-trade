@@ -268,19 +268,28 @@ export default function actionsRouter(db) {
       // watchlist page's backtest-history view. Errors are recorded too, so
       // "this symbol keeps failing to fetch" is visible history, not silence.
       try {
+        // A5: stamp the account the run was made under. A backtest is a fact
+        // about the MARKET, so this is provenance rather than ownership — the
+        // watchlist-summary read deliberately still counts a symbol's run
+        // whoever produced it. What the column buys is "which account's
+        // session produced this history", which is the owner's "historical
+        // data per workspace" ask.
+        const btAcct = (() => {
+          try { return req.body?.accountId != null ? String(req.body.accountId) : (getState(db, 'ctrader_account_id') || null) } catch { return null }
+        })()
         const ins = db.prepare(
           `INSERT INTO backtest_runs (ran_at, strategy, entry_mode, bars, symbol, timeframe,
-             trades, losses, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             trades, losses, win_rate_pct, profit_factor, total_profit_pct, wf_positive, wf_active, error, account_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         for (const [symName, data] of Object.entries(symbols)) {
-          if (data.error) { ins.run(payload.ranAt, strategy, entryMode, count, symName, '-', null, null, null, null, null, null, null, String(data.error).slice(0, 300)); continue }
+          if (data.error) { ins.run(payload.ranAt, strategy, entryMode, count, symName, '-', null, null, null, null, null, null, null, String(data.error).slice(0, 300), btAcct); continue }
           for (const [tf, r] of Object.entries(data.results || {})) {
             // profitFactor is NULL when grossLoss is 0 — the losses column
             // (0 with trades > 0) is what lets the UI render that as ∞
             // instead of a dash (Codex review).
-            if (r?.error) ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, null, null, null, null, null, null, null, String(r.error).slice(0, 300))
-            else ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, r.trades ?? 0, r.losses ?? null, r.winRatePct ?? null, Number.isFinite(r.profitFactor) ? r.profitFactor : null, r.totalProfitPct ?? null, r.wfPositive ?? null, r.wfActive ?? null, null)
+            if (r?.error) ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, null, null, null, null, null, null, null, String(r.error).slice(0, 300), btAcct)
+            else ins.run(payload.ranAt, strategy, entryMode, count, symName, tf, r.trades ?? 0, r.losses ?? null, r.winRatePct ?? null, Number.isFinite(r.profitFactor) ? r.profitFactor : null, r.totalProfitPct ?? null, r.wfPositive ?? null, r.wfActive ?? null, null, btAcct)
           }
         }
         db.prepare('DELETE FROM backtest_runs WHERE id NOT IN (SELECT id FROM backtest_runs ORDER BY id DESC LIMIT 2000)').run()

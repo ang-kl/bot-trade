@@ -924,10 +924,21 @@ export function initDB(dbPath) {
   // they were created under (single-account era ⇒ unambiguous). scans and
   // analyses are account-independent market observations and may stay NULL
   // ("global") by design.
+  // A5 (per-account workspaces): action_log and backtest_runs join the scoped
+  // set. They are the owner's "logs" and "historical data" asks, and were the
+  // last two per-account-meaningful tables still global. Additive and
+  // nullable, like every column above — historical rows stay NULL, which reads
+  // as "written before scoping", never as "belongs to nobody".
+  //
+  // regimes, symbol_hours, controller_heartbeats and token_usage stay GLOBAL
+  // on purpose: the first two are facts about INSTRUMENTS rather than
+  // accounts (duplicating them per account would multiply the broker load),
+  // the third is process health and the fourth a process cost.
   for (const table of [
     'trades', 'scans', 'analyses', 'signals', 'pending_orders',
     'broker_orders', 'risk_events', 'trade_postmortems', 'pending_signals',
     'cup_handle_diagnostics', 'performance_snapshots',
+    'action_log', 'backtest_runs',
   ]) {
     const cols = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
     if (!cols.has('account_id')) {

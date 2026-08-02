@@ -1349,6 +1349,63 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/workspace-log?account=&limit= — A5. The owner's "logs per
+  // workspace" ask. action_log was global until this slice; rows written
+  // before it carry NULL and are included, the same convention every other
+  // scoped read uses — a workspace that hid its own pre-stamping history
+  // would look emptier than it is.
+  router.get('/workspace-log', async (req, res) => {
+    try {
+      const { viewedAccountOf, whereClause, describeScope } = await import('../services/viewed-account.js')
+      const viewed = viewedAccountOf(db, req)
+      const w = whereClause(viewed)
+      const n = Math.min(Math.max(1, Number(req.query.limit) || 100), 500)
+      const rows = db.prepare(
+        `SELECT id, at, method, path, body, account_id FROM action_log ${w.sql} ORDER BY id DESC LIMIT ?`
+      ).all(...w.params, n)
+      res.json({ scope: describeScope(viewed), viewed, rows, truncated: rows.length >= n })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/workspace-backtests?account=&limit= — A5. Backtest history for
+  // a workspace. A backtest is a fact about the MARKET, so account_id here is
+  // PROVENANCE (which account's session produced it), not ownership: the
+  // watchlist-summary coverage read still counts a symbol's run whoever made
+  // it, and this route is the "what did I run on this workspace" view.
+  router.get('/workspace-backtests', async (req, res) => {
+    try {
+      const { viewedAccountOf, whereClause, describeScope } = await import('../services/viewed-account.js')
+      const viewed = viewedAccountOf(db, req)
+      const w = whereClause(viewed)
+      const n = Math.min(Math.max(1, Number(req.query.limit) || 200), 1000)
+      const rows = db.prepare(
+        `SELECT id, ran_at, strategy, symbol, timeframe, trades, win_rate_pct, profit_factor,
+                total_profit_pct, error, account_id
+           FROM backtest_runs ${w.sql} ORDER BY id DESC LIMIT ?`
+      ).all(...w.params, n)
+      res.json({ scope: describeScope(viewed), viewed, rows, truncated: rows.length >= n })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /state/workspace-coverage — A5, and the reason this route exists is
+  // honesty. Adding a viewed-account parameter to two routes does not make
+  // every read account-aware, and claiming otherwise would be the kind of
+  // overclaim that costs a day later. This MEASURES it: which per-account
+  // tables carry account_id, and which /state routes accept ?account=. What
+  // it reports is the real state, including the gaps.
+  router.get('/workspace-coverage', async (req, res) => {
+    try {
+      const { workspaceCoverage } = await import('../services/workspace-coverage.js')
+      res.json(workspaceCoverage(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/pause-plan?account=<id> — A3. What the pause disposition would
   // do to this account's resting ENTRY orders right now: watch, cancel (with
   // the signal that fired), or keep — each with its drain countdown. A read,

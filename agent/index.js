@@ -605,8 +605,15 @@ async function mountRoutes() {
         try {
           const redacted = JSON.stringify(req.body || {}, (k, v) =>
             /secret|token|password|key/i.test(k) ? '[redacted]' : v)
-          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
-            .run(req.method, req.path, redacted.slice(0, 2000))
+          // A5: stamp the account this action was taken under. The TRADING
+          // account, not a viewed one — an action changes the world, and the
+          // world it changed is the one the agent is trading. A body that
+          // names its own accountId wins, because per-account routes act on
+          // the account they were given rather than the selected one.
+          let acct = null
+          try { acct = req.body?.accountId != null ? String(req.body.accountId) : (getState(db, 'ctrader_account_id') || null) } catch { acct = null }
+          db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)')
+            .run(req.method, req.path, redacted.slice(0, 2000), acct)
         } catch { /* logging must never block the action */ }
       }
       next()
