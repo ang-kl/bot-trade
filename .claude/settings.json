@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/scripts/install-stop-hook.sh\"",
+            "timeout": 10,
+            "statusMessage": "Installing stop hook"
+          }
+        ]
+      }
+    ]
+  }
+}
