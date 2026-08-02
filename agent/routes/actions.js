@@ -3287,6 +3287,20 @@ export default function actionsRouter(db) {
         console.warn('[actions/ctrader-accounts] registry upsert failed (non-fatal):', e.message)
       }
 
+      // REMEMBER WHAT THE BROKER SAID. This is the only place the broker's
+      // account list reaches the agent, and until now it left no record — so
+      // nothing could tell "this registry row was removed at the broker" from
+      // "nobody has looked". Recording it is what lets the registry-fed
+      // surfaces flag a vanished account instead of listing it forever.
+      // Registry rows are still never deleted and `enabled` is never touched
+      // here: the owner's instruction was to flag it, not act on it.
+      try {
+        const { recordBrokerRoster } = await import('../services/broker-roster.js')
+        recordBrokerRoster(db, accounts)
+      } catch (e) {
+        console.warn('[actions/ctrader-accounts] roster record failed (non-fatal):', e.message)
+      }
+
       res.json({
         ok: true,
         accounts,

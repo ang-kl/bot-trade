@@ -1135,9 +1135,20 @@ export default function stateRouter(db) {
   router.get('/accounts', async (_req, res) => {
     try {
       const { listAccounts } = await import('../services/account-registry.js')
+      const { staleRegistryAccounts, accountAtBroker } = await import('../services/broker-roster.js')
+      const rows = listAccounts(db)
+      // STALE ROWS, NAMED. The registry is insert-only and nothing re-syncs it,
+      // so an account unticked in the cTrader app stays here forever — and if
+      // it is still enabled, the loop and the sidecar keep targeting it. This
+      // reports it; it does not act on it (owner 02-08-2026 chose "flag it
+      // loudly, don't touch it"). `atBroker: null` means UNKNOWN — no roster,
+      // or one too old to trust — and must never be rendered as "gone".
+      const { rosterStatus, stale } = staleRegistryAccounts(db, rows)
       res.json({
-        accounts: listAccounts(db),
+        accounts: rows.map(a => ({ ...a, atBroker: accountAtBroker(db, a.account_id) })),
         selectedAccountId: getState(db, 'ctrader_account_id') || null,
+        brokerRoster: rosterStatus,
+        staleAccounts: stale,
       })
     } catch (err) {
       res.status(500).json({ error: err.message })

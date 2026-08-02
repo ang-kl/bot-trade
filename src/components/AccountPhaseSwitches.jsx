@@ -103,14 +103,39 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
   // and a card of switches has no reason to repaint on a timer.
   const truthRef = useRef(null)
   truthRef.current = onMasterTruth
+  // The stale-account warning rides alongside the switches ON PURPOSE. This
+  // card is registry-fed, so it is exactly where a vanished account is still
+  // listed — and the only Disable button in the app lives on a BROKER-fed
+  // surface, whose row has by then disappeared. Without a control here there
+  // is no way to disable a stale account at all.
+  const [stale, setStale] = useState([])
+  const [roster, setRoster] = useState(null)
+  const [busyId, setBusyId] = useState('')
+  const loadStale = useCallback(() => agentGet('/state/accounts')
+    .then(r => { setStale(r?.staleAccounts || []); setRoster(r?.brokerRoster || null) })
+    .catch(() => { /* the switches still work without the warning */ }), [])
+
   const load = useCallback(() => agentGet('/state/account-phases')
     .then(v => {
       setView(v); setErr('')
+      loadStale()
       // Via a ref so the caller need not memoise the handler to avoid an
       // effect loop — load() is in a dependency list.
       if (v?.master) { try { truthRef.current?.(v.master) } catch { /* never break the card */ } }
     })
-    .catch(e => setErr(e.message)), [])
+    .catch(e => setErr(e.message)), [loadStale])
+
+  // The Disable that works when the broker row is gone. It writes `enabled: 0`
+  // through the same route the Accounts page uses — no new privilege, no
+  // deletion, and nothing automatic: the owner asked to be warned and left in
+  // control, so this only ever fires from a click.
+  const disableStale = (a) => {
+    setBusyId(a.accountId)
+    agentPost('/actions/registry-account', { accountId: a.accountId, enabled: false })
+      .then(() => load())
+      .catch(e => setErr(e.message))
+      .finally(() => setBusyId(''))
+  }
   useEffect(() => { load() }, [load])
 
   // ...BUT A MASTER TOGGLE IS ALSO A CHANGE TO THIS CARD, and on first ship it
@@ -181,6 +206,53 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
         every account has it off.
       </p>
       {err && <div className="text-[9px] text-[var(--color-down)]" role="alert">{err}</div>}
+
+      {/* STALE ACCOUNTS. Owner 02-08-2026: "I select only two account from the
+          CTrader, but still shows 5 in the Tune > Pipeline. I am confuse."
+          The registry is insert-only and nothing re-syncs it, so an account
+          unticked in the cTrader app lives on here forever — and if it is
+          still enabled, the loop and the sidecar keep targeting it.
+          The owner's instruction was to flag it, not act on it, so nothing is
+          disabled automatically; the button below is the only thing that
+          writes, and only when clicked. */}
+      {stale.length > 0 && (
+        <div className="rounded-[6px] border border-[var(--color-down)] p-2 mb-2 text-[9px]" role="alert">
+          <div className="font-bold text-[var(--color-down)]">
+            {stale.length} account{stale.length === 1 ? '' : 's'} below {stale.length === 1 ? 'is' : 'are'} no longer listed by the broker
+          </div>
+          <div className="text-[var(--color-text-sub)] mt-0.5">
+            You most likely unticked {stale.length === 1 ? 'it' : 'them'} in the cTrader app. Nothing removes
+            {stale.length === 1 ? ' it' : ' them'} from this list automatically, and an account left
+            <strong> enabled</strong> is still dispatched to by the loop and still authorised at the C++ engine.
+            {roster?.at && <> Broker list last read {roster.ageMin != null ? `${roster.ageMin} min ago` : 'recently'}.</>}
+          </div>
+          <ul className="mt-1 space-y-1">
+            {stale.map(a => (
+              <li key={a.accountId} className="flex flex-wrap items-center gap-2">
+                <span className={`font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : ''}`}>
+                  {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
+                </span>
+                <span className="text-[8px] text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
+                {a.enabled
+                  ? <span className="font-semibold text-[var(--color-down)]">STILL ENABLED — the bot can trade it</span>
+                  : <span className="text-[var(--color-text-sub)]">already disabled — harmless, just clutter</span>}
+                {a.enabled && (
+                  <button
+                    type="button"
+                    onClick={() => disableStale(a)}
+                    disabled={busyId === a.accountId}
+                    className="ml-auto rounded-full border border-[var(--md-outline-variant)] px-2 py-0.5 cursor-pointer disabled:opacity-60"
+                    title="Sets enabled = 0 in the registry. Open positions are NOT closed and nothing else changes — the loop simply stops opening new trades on it."
+                  >
+                    {busyId === a.accountId ? 'Disabling…' : 'Disable'}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {!view && !err && <div className="text-[9px] text-[var(--color-text-sub)]">Loading accounts…</div>}
       {view && accounts.length === 0 && (
         <div className="text-[9px] text-[var(--color-text-sub)]">
