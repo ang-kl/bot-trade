@@ -3466,6 +3466,30 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/account-setting { accountId, key, value?, revert? }
+  // A6. Pin a setting to one account, or revert it to inheritance.
+  //
+  // REVERT DELETES the account row rather than copying the shared value into
+  // it. A copy would freeze today's shared value and stop following later
+  // changes — the drift the two-level resolver exists to avoid. Revert means
+  // "follow the house rule again", not "match it once".
+  // -----------------------------------------------------------------------
+  router.post('/account-setting', async (req, res) => {
+    try {
+      const { accountId, key, value, revert } = req.body || {}
+      if (accountId == null || !key) return res.status(400).json({ error: 'need accountId and key' })
+      const { setOverride, clearOverride, overrideView } = await import('../services/setting-resolver.js')
+      const out = revert === true
+        ? clearOverride(db, accountId, key)
+        : setOverride(db, accountId, key, value)
+      if (!out.ok) return res.status(400).json(out)
+      res.json({ ok: true, ...out, view: overrideView(db, accountId) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/pause-disposition { accountId?, disposition?, drainHours? }
   // A3. What happens to RESTING ENTRY ORDERS when an account stops entering.
   // With accountId: a per-account override. Without: the global default.

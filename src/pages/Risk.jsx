@@ -8,6 +8,7 @@
 // /actions/weekend-bank, /actions/weekend-loss-flag, /actions/exec-guard,
 // /actions/vpo-settings, /actions/close-all.
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
+import AccountSettingsScope from '../components/AccountSettingsScope.jsx'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -585,6 +586,11 @@ export default function Risk() {
           </div>
         </div>
       </Card>
+
+      {/* A6: which settings this account PINS versus inherits, above the
+          per-account forms it is about. Full width and outside the grid —
+          inside it, it would take a column slot and read as a fourth form. */}
+      <Card><AccountSettingsScope /></Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-[270px_1fr_270px] gap-3 items-start">
         {/* ---- Account Risk Configuration (left) ---- */}

@@ -1349,6 +1349,22 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/account-settings?account= — A6. Which settings this account
+  // has pinned and which it inherits, plus the settings that are NOT
+  // overridable and why. The "why" is in the payload deliberately: a refusal
+  // the operator can only discover by trying is the kind that gets worked
+  // around.
+  router.get('/account-settings', async (req, res) => {
+    try {
+      const { overrideView } = await import('../services/setting-resolver.js')
+      const { viewedAccountOf, describeScope } = await import('../services/viewed-account.js')
+      const viewed = viewedAccountOf(db, req)
+      res.json({ scope: describeScope(viewed), ...overrideView(db, viewed.accountId) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/workspace-log?account=&limit= — A5. The owner's "logs per
   // workspace" ask. action_log was global until this slice; rows written
   // before it carry NULL and are included, the same convention every other

@@ -82,6 +82,7 @@ export const NAV_TREE = [
           { id: 'sec-rerisk', label: 'Reset / Re-Risk', kind: 'T+F' },
           { id: 'sec-account', label: 'Account Snapshot', kind: 'C' },
           { id: 'sec-protection', label: 'Position Protection', kind: 'F' },
+          { id: 'sec-settings-scope', label: 'Per-Account Settings', kind: 'C' },
           { id: 'sec-acct-risk', label: 'Account Risk Config', kind: 'F' },
           { id: 'sec-bot-risk', label: 'Bot Trade Risk Config', kind: 'F' },
           { id: 'sec-sizing', label: 'Sizing', kind: 'F' },
