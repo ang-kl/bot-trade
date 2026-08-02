@@ -2027,6 +2027,11 @@ export default function Performance() {
 
         {screen === 'now' && (
           <>
+            {/* The gate, in its phone form. Same numbers as the desktop card,
+                different shape: the selected account full width, everything
+                else behind a disclosure — a five-card grid here would push the
+                day's actual figures below the fold. */}
+            <GoalTracker variant="compact" />
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }} data-once="perf-session-clock">
               <SessionClock />
             </div>

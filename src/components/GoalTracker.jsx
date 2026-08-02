@@ -41,6 +41,20 @@ const pct = (v) => (v == null ? '—' : `${Number(v).toFixed(1)}%`)
 const num2 = (v) => (v == null ? '—' : Number(v).toFixed(2))
 
 /** One metric line: achieved vs target, then what the remainder must do. */
+// The desktop and mobile shells are a CSS split (`hidden min-[700px]:block`
+// beside `min-[700px]:hidden`), so BOTH variants mount on every viewport and
+// both would fetch. One shared in-flight promise means the two instances make
+// one request and paint from the same answer — which removes a subtler bug
+// than the wasted call: two independent fetches can land with different data,
+// so the phone card and the desktop card could disagree about the same gate.
+let inFlight = null
+function fetchGoal() {
+  if (!inFlight) {
+    inFlight = agentGet('/state/goal-tracker').finally(() => { inFlight = null })
+  }
+  return inFlight
+}
+
 function MetricRow({ m, label, fmt, row }) {
   const v = VERDICT[m.verdict] || VERDICT.no_data
   return (
@@ -107,17 +121,25 @@ function AccountRow({ row }) {
   )
 }
 
-export default function GoalTracker() {
+/**
+ * @param {{variant?: 'full'|'compact'}} props
+ *   compact — the phone form. Same numbers, same readings, different shape:
+ *   the account you are LOOKING AT first and full width, everything else
+ *   behind a disclosure. A five-card grid at the top of a phone screen pushes
+ *   the day's actual figures below the fold to answer a question you only ask
+ *   once a day.
+ */
+export default function GoalTracker({ variant = 'full' }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
 
-  const load = useCallback(() => agentGet('/state/goal-tracker')
+  const load = useCallback(() => fetchGoal()
     .then(d => { setData(d); setErr(null) })
     .catch(e => setErr(e?.message || String(e))), [])
 
   useEffect(() => {
     let alive = true
-    agentGet('/state/goal-tracker')
+    fetchGoal()
       .then(d => { if (alive) { setData(d); setErr(null) } })
       .catch(e => { if (alive) setErr(e?.message || String(e)) })
     return () => { alive = false }
@@ -138,6 +160,38 @@ export default function GoalTracker() {
     return s(a) - s(b) || (b.trades - a.trades)
   })
   const p = data.portfolio
+
+  if (variant === 'compact') {
+    // The selected account is the subject; the pooled row is context. If no
+    // account is selected there is no subject, so the pooled row becomes one —
+    // never a silent pick of whichever account sorted first.
+    const subject = ordered.find(r => String(r.accountId) === String(sel)) || p
+    const others = [p, ...ordered].filter(r => r !== subject)
+    return (
+      <div id="sec-goal-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
+          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+            {data.goal.winRatePct}% win · PF {data.goal.profitFactor} ·{' '}
+            <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
+              {data.daysRemaining === 0 ? 'deadline passed' : `${data.daysRemaining}d left`}
+            </strong>
+          </span>
+        </span>
+        <AccountRow row={subject} />
+        {others.length > 0 && (
+          <details>
+            <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+              {others.length} more {others.length === 1 ? 'row' : 'rows'} — all accounts and the rest
+            </summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+              {others.map(r => <AccountRow key={r.accountId} row={r} />)}
+            </div>
+          </details>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div id="sec-goal" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
