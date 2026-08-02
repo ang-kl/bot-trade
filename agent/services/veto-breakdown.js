@@ -28,27 +28,35 @@ function reasonKey(reason) {
 /**
  * Per-guard veto/skip counts over the last `days` (UTC-naive against the
  * stored `datetime('now')` timestamps, same convention as every other read).
- * `account` filters decision_log rows (risk_events carries no account column
- * before M1; rows are reported as-is with that caveat in the payload).
+ * `account` filters BOTH sources. The header used to say risk_events carried
+ * no account column; that was true when this file was written and is not now —
+ * M1a added it, and this read went on returning every account's vetoes under
+ * one account's heading, with a note in the payload apologising for it. The
+ * note has been replaced with what the query actually does.
+ *
+ * NULL-account rows are included on both sides, the convention every scoped
+ * read here uses: a row written before stamping belongs to whoever is asking.
  */
 export function vetoBreakdown(db, { days = 7, account = null } = {}) {
   const d = Math.max(1, Math.min(90, Number(days) || 7))
   const sinceExpr = `datetime('now', '-${d} days')`
 
+  const acctScope = account != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
+  const acctParams = account != null ? [String(account)] : []
+
   const riskRows = db.prepare(
     `SELECT approved, veto_reason, symbol, created_at
        FROM risk_events
-      WHERE created_at >= ${sinceExpr}`
-  ).all()
-
-  const acctScope = account != null ? 'AND (account_id = ? OR account_id IS NULL)' : ''
+      WHERE created_at >= ${sinceExpr}
+        ${acctScope}`
+  ).all(...acctParams)
   const decisionRows = db.prepare(
     `SELECT stage, decision, reason, symbol, account_id, created_at
        FROM decision_log
       WHERE created_at >= ${sinceExpr}
         AND decision IN ('skip', 'veto')
         ${acctScope}`
-  ).all(...(account != null ? [String(account)] : []))
+  ).all(...acctParams)
 
   const groups = new Map()
   const bump = (source, key, row) => {
@@ -100,7 +108,7 @@ export function vetoBreakdown(db, { days = 7, account = null } = {}) {
     windowDays: d,
     account: account != null ? String(account) : null,
     note: account != null
-      ? 'risk_events rows are account-unscoped (pre-M1 schema) and are reported for ALL accounts; the upstream decision_log rows are filtered to this account (NULL-account rows included).'
+      ? 'Both risk-gate vetoes and upstream decision_log skips are filtered to this account; rows written before per-account stamping (NULL account) are included.'
       : null,
     summary: {
       proposalsApproved: approved,

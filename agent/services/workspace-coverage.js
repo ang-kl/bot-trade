@@ -62,9 +62,16 @@ export const DECLARED_ROUTES = [
   { path: '/state/decisions', accountAware: false, note: 'raw log view — filters by symbol and stage only' },
   { path: '/state/heartbeats', accountAware: false, note: 'process health, correctly global' },
   { path: '/state/storage', accountAware: false, note: 'process storage, correctly global' },
-  { path: '/state/strategy-liveness', accountAware: false, note: 'not yet scoped — a real gap' },
-  { path: '/state/veto-breakdown', accountAware: false, note: 'not yet scoped — a real gap' },
-  { path: '/state/phase-audit', accountAware: false, note: 'not yet scoped — a real gap' },
+  // Partial by design, not by omission: `signals` comes from scans, which are
+  // account-independent market observations. The route's payload names which
+  // stages were filtered.
+  { path: '/state/strategy-liveness', accountAware: true, note: 'partial — decisions/opened/closed scoped, signals global (scans are market observations)' },
+  // CORRECTION. This was declared a gap in the A5 commit and it was not one:
+  // the route had accepted ?account= since it was written. That is precisely
+  // the failure mode the hand-declared list warns about, so the wrong entry is
+  // recorded here rather than quietly overwritten.
+  { path: '/state/veto-breakdown', accountAware: true, note: 'was mis-declared a gap in the A5 coverage list; it accepted ?account= all along' },
+  { path: '/state/phase-audit', accountAware: true, note: 'per-account phase flips scoped; master switches and controller events stay NULL and are included' },
 ]
 
 /**
@@ -96,6 +103,7 @@ export function workspaceCoverage(db) {
   const routes = DECLARED_ROUTES
   const aware = routes.filter(r => r.accountAware).length
   const gaps = routes.filter(r => !r.accountAware && /real gap/.test(r.note || ''))
+  const partial = routes.filter(r => /^partial/.test(r.note || ''))
 
   return {
     tables,
@@ -113,6 +121,9 @@ export function workspaceCoverage(db) {
       routesAccountAware: aware,
       routesDeclared: routes.length,
       knownGaps: gaps.map(r => r.path),
+      // Scoped, but not on every field. Reported separately from both the
+      // wins and the gaps, because "partial" is neither.
+      partiallyScoped: partial.map(r => ({ path: r.path, note: r.note })),
       caveat: 'Route coverage is hand-declared in workspace-coverage.js; a route added without updating that list is unmeasured, not absent.',
     },
   }

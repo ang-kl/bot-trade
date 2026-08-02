@@ -89,6 +89,28 @@ export function strategyLiveness(db, opts = {}) {
   const nowMs = opts.nowMs ?? Date.now()
   const since = cutoffIso(windowDays, nowMs)
 
+  // PER-ACCOUNT SCOPING, and it is deliberately PARTIAL — the funnel's four
+  // stages do not all belong to an account.
+  //
+  //   signals   scans rows. Account-INDEPENDENT by design (plan M1: scans and
+  //             analyses are market observations and stay NULL). One scan
+  //             serves every account, so "this account's signals" is not a
+  //             quantity that exists. It stays global, and `signalsScope`
+  //             says so in the payload rather than letting a scoped-looking
+  //             number imply otherwise.
+  //   decisions decision_log — per account.
+  //   opened    trades — per account.
+  //   closed    trades — per account.
+  //
+  // Reporting the whole funnel as scoped would be the more comfortable lie:
+  // it would make the first stage look like it had been filtered when nothing
+  // filtered it.
+  const acct = opts.accountId != null && opts.accountId !== '' && opts.accountId !== 'all'
+    ? String(opts.accountId)
+    : null
+  const acctScope = acct ? 'AND (account_id = ? OR account_id IS NULL)' : ''
+  const acctParams = acct ? [acct] : []
+
   const armedKeys = new Set(enabledStrategies(db, getState).map(s => s.key))
 
   const scans = countBy(db, `
@@ -102,8 +124,8 @@ export function strategyLiveness(db, opts = {}) {
            COUNT(*) AS n,
            SUM(CASE WHEN decision IN ('skip','veto') THEN 1 ELSE 0 END) AS stopped
       FROM decision_log
-     WHERE strategy IS NOT NULL AND ${AT_LEAST('created_at')}
-     GROUP BY strategy`, [since])
+     WHERE strategy IS NOT NULL AND ${AT_LEAST('created_at')} ${acctScope}
+     GROUP BY strategy`, [since, ...acctParams])
 
   // label_strategy is the reconciled attribution; strategy is what the signal
   // claimed. COALESCE matches how perf-ledger and the breakers read it.
@@ -111,14 +133,14 @@ export function strategyLiveness(db, opts = {}) {
     SELECT COALESCE(label_strategy, strategy) AS strategy,
            COUNT(*) AS n, MAX(opened_at) AS last_at
       FROM trades
-     WHERE ${AT_LEAST('opened_at')}
-     GROUP BY COALESCE(label_strategy, strategy)`, [since])
+     WHERE ${AT_LEAST('opened_at')} ${acctScope}
+     GROUP BY COALESCE(label_strategy, strategy)`, [since, ...acctParams])
 
   const closed = countBy(db, `
     SELECT COALESCE(label_strategy, strategy) AS strategy, COUNT(*) AS n
       FROM trades
-     WHERE status = 'closed' AND closed_at IS NOT NULL AND ${AT_LEAST('closed_at')}
-     GROUP BY COALESCE(label_strategy, strategy)`, [since])
+     WHERE status = 'closed' AND closed_at IS NOT NULL AND ${AT_LEAST('closed_at')} ${acctScope}
+     GROUP BY COALESCE(label_strategy, strategy)`, [since, ...acctParams])
 
   let totalScans = 0
   for (const row of scans.values()) totalScans += Number(row.n || 0)
@@ -174,7 +196,19 @@ export function strategyLiveness(db, opts = {}) {
   const rank = { silent: 0, signalling_not_trading: 1, unknown: 2, trading: 3, idle_unarmed: 4 }
   strategies.sort((a, b) => (rank[a.verdict] - rank[b.verdict]) || (a.signals - b.signals))
 
-  return { windowDays, since, totalScans, verdictable, strategies }
+  return {
+    windowDays,
+    since,
+    accountId: acct,
+    // Named per stage so a reader can never mistake a global number for a
+    // scoped one.
+    scope: acct
+      ? { signals: 'all accounts (scans are market observations)', decisions: acct, opened: acct, closed: acct }
+      : { signals: 'all accounts', decisions: 'all accounts', opened: 'all accounts', closed: 'all accounts' },
+    totalScans,
+    verdictable,
+    strategies,
+  }
 }
 
 /** The one-line answer: which armed strategies produced nothing at all. */

@@ -54,7 +54,11 @@ export function setPhaseFlag(db, key, value, { actor, via = null, reason = null,
   withPhaseWriteAuthority(() => setState(db, key, value))
   if (from === to) return { changed: false, from, to }
   try {
-    db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+    // A5/A6 follow-up: stamp the account this flip was made for. Per-account
+    // phase switches carry an accountId; the master switches do not and stay
+    // NULL, which reads as "applies to every account" — the truth for a
+    // global flag, not a missing value.
+    db.prepare('INSERT INTO action_log (method, path, body, account_id) VALUES (?, ?, ?, ?)').run(
       'AUDIT',
       `/phase/${key}`,
       JSON.stringify({
@@ -67,6 +71,7 @@ export function setPhaseFlag(db, key, value, { actor, via = null, reason = null,
         accountId: accountId != null ? String(accountId) : null,
         at: new Date().toISOString(),
       }),
+      accountId == null ? null : String(accountId),
     )
   } catch { /* the audit write must never block the flip itself */ }
   console.log(`[phase-audit] ${key}: ${from ?? 'unset'} → ${to ?? 'unset'} by ${actor || 'unknown'}${via ? ` via ${via}` : ''}${reason ? ` — ${reason}` : ''}`)
@@ -171,6 +176,9 @@ export function phaseTraceView(db, { limit = 100 } = {}) {
  */
 export function auditControllerEvent(db, { controller, event, detail = null }) {
   try {
+    // NO account column on purpose: a controller stall is PROCESS health, not
+    // one account's event. Stamping it with the trading account would make a
+    // per-account read look like that account had a fault of its own.
     db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
       'AUDIT',
       `/controller/${controller}/${event}`,
@@ -181,16 +189,24 @@ export function auditControllerEvent(db, { controller, event, detail = null }) {
 }
 
 /** Recent phase/controller audit rows, newest first, for /state readers. */
-export function recentPhaseAudit(db, { limit = 100 } = {}) {
+export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
   try {
+    // Scoping INCLUDES the NULL rows deliberately, and here that is more than
+    // a convention: the master switches and the controller events are global
+    // by design, and an account's audit trail without them would omit the
+    // flips that actually affected it.
+    const scope = accountId != null && accountId !== ''
+      ? { sql: 'AND (account_id = ? OR account_id IS NULL)', params: [String(accountId)] }
+      : { sql: '', params: [] }
     return db.prepare(
-      `SELECT id, at, method, path, body FROM action_log
+      `SELECT id, at, method, path, body, account_id FROM action_log
         WHERE method = 'AUDIT' AND (path LIKE '/phase/%' OR path LIKE '/controller/%')
+        ${scope.sql}
         ORDER BY id DESC LIMIT ?`
-    ).all(Math.min(500, Math.max(1, limit))).map(r => {
+    ).all(...scope.params, Math.min(500, Math.max(1, limit))).map(r => {
       let body = null
       try { body = JSON.parse(r.body) } catch { body = r.body }
-      return { id: r.id, at: r.at, path: r.path, ...((body && typeof body === 'object') ? body : { raw: body }) }
+      return { id: r.id, at: r.at, path: r.path, accountId: r.account_id ?? null, ...((body && typeof body === 'object') ? body : { raw: body }) }
     })
   } catch { return [] }
 }

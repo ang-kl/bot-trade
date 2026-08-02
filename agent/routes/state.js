@@ -1546,8 +1546,13 @@ export default function stateRouter(db) {
   router.get('/strategy-liveness', async (req, res) => {
     try {
       const { strategyLiveness } = await import('../services/strategy-liveness.js')
+      const { viewedAccountOf } = await import('../services/viewed-account.js')
       const windowDays = Number(req.query.days) > 0 ? Number(req.query.days) : undefined
-      res.json(strategyLiveness(db, { windowDays }))
+      // Scoping here is PARTIAL by design: signals come from scans, which are
+      // account-independent market observations. The payload's `scope` names
+      // which stages were filtered.
+      const viewed = viewedAccountOf(db, req)
+      res.json(strategyLiveness(db, { windowDays, accountId: viewed.accountId }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -1577,7 +1582,15 @@ export default function stateRouter(db) {
   router.get('/phase-audit', async (req, res) => {
     try {
       const { recentPhaseAudit } = await import('../services/phase-audit.js')
-      res.json({ audit: recentPhaseAudit(db, { limit: req.query.limit ? Number(req.query.limit) : 100 }) })
+      const { viewedAccountOf, describeScope } = await import('../services/viewed-account.js')
+      const viewed = viewedAccountOf(db, req)
+      res.json({
+        scope: describeScope(viewed),
+        audit: recentPhaseAudit(db, {
+          limit: req.query.limit ? Number(req.query.limit) : 100,
+          accountId: viewed.accountId,
+        }),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

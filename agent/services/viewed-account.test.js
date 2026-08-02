@@ -154,13 +154,31 @@ test('the intentionally-global tables are declared with a reason, not just omitt
     'agent_state is scoped by key convention, and the note has to say so')
 })
 
-test('route coverage reports the GAPS, not just the wins', () => {
+test('every route that is NOT account-aware says why', () => {
+  // The earlier version of this test asserted there must be at least one gap.
+  // That was true when it was written and stopped being true when the three
+  // gap routes were scoped — a test that fails on progress is a bad test. The
+  // durable property is that a non-aware route is never merely absent: it
+  // either reports every account by design, or is correctly global, or is a
+  // named gap. Silence is the only unacceptable answer.
   const db = freshDb()
   const cov = workspaceCoverage(db)
   assert.ok(cov.summary.routesAccountAware > 0)
-  assert.ok(cov.summary.knownGaps.length > 0,
-    'a coverage report with no gaps at this stage would be a lie')
-  assert.ok(cov.summary.routesAccountAware < cov.summary.routesDeclared)
+  for (const r of cov.routes.filter(x => !x.accountAware)) {
+    assert.ok(r.note, `${r.path} is not account-aware and does not say why`)
+  }
+})
+
+test('partial scoping is reported as its own thing, not counted as a clean win', () => {
+  // strategy-liveness scopes decisions/opened/closed but NOT signals, because
+  // scans are account-independent market observations. Folding that into
+  // "account-aware" would imply the whole funnel was filtered.
+  const db = freshDb()
+  const cov = workspaceCoverage(db)
+  assert.ok(cov.summary.partiallyScoped.length > 0)
+  for (const p of cov.summary.partiallyScoped) {
+    assert.match(p.note, /^partial/)
+  }
 })
 
 test('the report carries its own caveat about being hand-declared', () => {

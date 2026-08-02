@@ -8,10 +8,13 @@ import { vetoBreakdown } from './veto-breakdown.js'
 function mkDb() {
   const db = new Database(':memory:')
   db.exec(`
+    -- account_id was missing from this fixture, which is how the claim that
+    -- "risk_events carries no account column" survived after M1a added it:
+    -- the test agreed with the stale comment instead of with the schema.
     CREATE TABLE risk_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       symbol TEXT, side TEXT, approved INTEGER, veto_reason TEXT,
-      checks_json TEXT, proposal_json TEXT,
+      checks_json TEXT, proposal_json TEXT, account_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE decision_log (
@@ -73,4 +76,30 @@ test('window bounds respected and empty db is a calm empty report', () => {
   assert.equal(out.summary.proposalsVetoed, 0)
   assert.deepEqual(out.guards, [])
   assert.equal(out.summary.approvalRate, null)
+})
+
+test('risk-gate vetoes are account-filtered too, and unstamped rows still count', () => {
+  // Before this, a per-account veto breakdown reported EVERY account's
+  // risk-gate vetoes under one account's heading, with a note in the payload
+  // apologising for it. The note described a schema that had not been true
+  // since M1a.
+  const db = mkDb()
+  const ins = db.prepare(
+    `INSERT INTO risk_events (symbol, approved, veto_reason, account_id, created_at)
+     VALUES (?,?,?,?,datetime('now'))`
+  )
+  ins.run('EURUSD', 0, 'daily_loss_cap: hit', 'A')
+  ins.run('GBPUSD', 0, 'streak_breaker: 3 losses', 'B')
+  ins.run('XAUUSD', 0, 'margin_floor: below', null)
+
+  const a = vetoBreakdown(db, { days: 7, account: 'A' })
+  const guards = a.guards.filter(g => g.source === 'risk_gate').map(g => g.guard)
+  assert.ok(guards.includes('daily_loss_cap'), "A's own veto is counted")
+  assert.ok(guards.includes('margin_floor'), 'an unstamped veto counts for whoever is asking')
+  assert.ok(!guards.includes('streak_breaker'), "another account's veto must not leak in")
+  assert.match(a.note, /filtered to this account/)
+
+  const all = vetoBreakdown(db, { days: 7 })
+  assert.equal(all.guards.filter(g => g.source === 'risk_gate').length, 3)
+  assert.equal(all.note, null)
 })
