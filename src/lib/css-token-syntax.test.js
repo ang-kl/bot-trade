@@ -64,7 +64,9 @@ describe('font-size design tokens use the unambiguous Tailwind v4 syntax', () =>
   // on it — so the guard has to judge the TOKEN, not the line. A token counts
   // as a colour when its name says so; anything else (a length, a duration, a
   // shadow) is a latent version of the --fs-* bug and must be explicit.
-  const isColourToken = (name) => /^--color-/.test(name)
+  // --md-* are the M3 tonal tokens (owner task 02-08-2026); every one that a
+  // text- utility consumes (on-surface, on-*-container, error…) is a colour.
+  const isColourToken = (name) => /^--color-/.test(name) || /^--md-/.test(name)
     || /-(text|bg|border|fg|background)$/.test(name)
 
   it('never writes text-[var(--…)] for anything that is not a colour token', () => {

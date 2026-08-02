@@ -57,7 +57,7 @@ export default function IndicatorPanel({ value, onChange, avwapArmed = false, on
             onClick={() => toggle(id)}
             // ≥28px touch target via min-height; state = fill + aria, not hue pair
             className={`rounded-[1px] px-2 min-h-[28px] text-[9px] font-semibold cursor-pointer ${
-              on ? 'bg-[var(--color-accent)] text-white' : 'glass-inset text-[var(--color-text-sub)]'
+              on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'
             }`}
           >{LABELS[id]}</button>
         )

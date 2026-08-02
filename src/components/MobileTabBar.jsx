@@ -65,7 +65,7 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
                   onClick={() => setMoreOpen(false)}
                   className={({ isActive }) =>
                     `rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-[9px] font-semibold ${
-                      isActive ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]' : 'glass-inset text-[var(--color-text-sub)]'
+                      isActive ? 'text-[var(--md-on-secondary-container)] bg-[var(--md-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'
                     }`}
                 >
                   <span aria-hidden="true" className="text-[14px] leading-none">{t.icon}</span>{t.label}

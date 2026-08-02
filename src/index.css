@@ -235,6 +235,24 @@
   --content-max: 820px;
   --content-pad: 12px;
 
+  /* -- M3 tonal selection tokens (owner M3-conformance task, 02-08-2026).
+     Seed #9A4B21. SELECTED controls use secondary-container — never the
+     saturated accent fill, which stays reserved for real actions. --md-error
+     is display-only (losses / SL figures), never on a control. Each theme
+     block re-declares the set in its own tonal range. */
+  --md-primary:                #8F4C2B;
+  --md-on-primary:             #FFFFFF;
+  --md-primary-container:      #FFDBCA;
+  --md-secondary-container:    #FFDBCA;
+  --md-on-secondary-container: #55200A;
+  --md-surface:                #FFF8F5;
+  --md-on-surface:             #221A15;
+  --md-outline:                #85736B;
+  --md-outline-variant:        #D8C2B8;
+  --md-error:                  #BA1A1A;
+  /* Sticky-header scrim: the spec allows blur(12px) at >= 85% opacity. */
+  --md-surface-scrim:          rgba(255, 248, 245, 0.92);
+
   color-scheme: light;
 }
 
@@ -326,6 +344,22 @@
   --ambient-blob-2:  rgba(147, 51, 234, 0.26);
   --ambient-blob-3:  rgba(219, 39, 119, 0.16);
 
+  /* M3 dark scheme from the same #9A4B21 seed (approved deviation ¶C·1:
+     the light literals fail contrast on this near-black surface). Surface
+     tracks the app's page bg, not M3's warm brown — an opaque brown bar on
+     a blue-black page would read as a different app. */
+  --md-primary:                #FFB693;
+  --md-on-primary:             #55200A;
+  --md-primary-container:      #713519;
+  --md-secondary-container:    #5D4033;
+  --md-on-secondary-container: #FFDBCA;
+  --md-surface:                #0a0e1a;
+  --md-on-surface:             #e8edfb;
+  --md-outline:                #A08D84;
+  --md-outline-variant:        #52443D;
+  --md-error:                  #FFB4AB;
+  --md-surface-scrim:          rgba(10, 14, 26, 0.92);
+
   color-scheme: dark;
 }
 
@@ -401,6 +435,19 @@
   --ambient-blob-1:  rgba(200, 150, 60, 0.25);
   --ambient-blob-2:  rgba(160, 100, 140, 0.15);
   --ambient-blob-3:  rgba(220, 120, 80, 0.12);
+
+  /* M3 tokens on paper: same seed, warmed to sepia's parchment range. */
+  --md-primary:                #8c5a1c;
+  --md-on-primary:             #FFFFFF;
+  --md-primary-container:      #F2DEC8;
+  --md-secondary-container:    #F2DEC8;
+  --md-on-secondary-container: #4A3008;
+  --md-surface:                #F5EEDC;
+  --md-on-surface:             #3a2f1b;
+  --md-outline:                #8a7548;
+  --md-outline-variant:        #D0BC9E;
+  --md-error:                  #a33a1e;
+  --md-surface-scrim:          rgba(245, 238, 220, 0.92);
 
   color-scheme: light;
 }
@@ -1171,4 +1218,32 @@ textarea {
 .bot-changed {
   outline: 2px solid #eab308 !important;
   outline-offset: 2px;
+}
+
+/* M3 chip row (R4): horizontal touch scrolling with proximity snap, no
+   visible scrollbar, and no vertical scroll chaining out of the row. */
+.md-chip-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.md-chip-row::-webkit-scrollbar { display: none; }
+.md-chip-row > * { scroll-snap-align: start; flex-shrink: 0; }
+
+/* M3 sticky header (R3): stays above scrolled content, opaque-enough scrim
+   with blur so nothing bleeds through on iOS Safari, notch-safe. */
+.md-sticky-head {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: 4px;
+  background: var(--md-surface-scrim);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }

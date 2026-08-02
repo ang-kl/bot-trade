@@ -40,10 +40,10 @@ export default function AccountScopePills({ value, onChange, allowAll = true, no
         return (
           <button key={p.id} type="button" aria-pressed={on} onClick={() => onChange(p.id)}
             title={p.disabled ? 'Disabled in the registry — history still viewable' : undefined}
-            className={`rounded-full px-2.5 py-0.5 cursor-pointer border ${on
-              ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] border-[var(--color-accent)]'
-              : 'border-[var(--glass-edge)] text-[var(--color-text-sub)]'} ${p.disabled ? 'opacity-60' : ''}`}>
-            {p.label}
+            className={`rounded-full px-2.5 py-0.5 cursor-pointer border transition-colors ${on
+              ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent'
+              : 'border-[var(--md-outline-variant)] text-[var(--md-on-surface)]'} ${p.disabled ? 'opacity-60' : ''}`}>
+            {on ? '✓ ' : ''}{p.label}
           </button>
         )
       })}

@@ -1457,7 +1457,7 @@ export default function Tune() {
                       await agentPost('/actions/autotrade-scope', { scope: sc })
                       setConfig(c => ({ ...c, autotrade_scope: sc }))
                     }, `Autotrade scope → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
                     {lbl}
                   </button>
                 ))}
@@ -1569,7 +1569,7 @@ export default function Tune() {
                       setConfig(c => ({ ...c, autopilot_mode: m }))
                     }, `Autopilot: ${m}`)
                   }}
-                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                 >{m}</button>
               ))}
               <span className="text-[9px] text-[var(--color-text-sub)]">
@@ -1938,7 +1938,7 @@ export default function Tune() {
                       await agentPost('/actions/burn-in', { sizeMode: mode })
                       setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
                     }, `Burn-in sizing → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
+                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
                     {lbl}
                   </button>
                 ))}
@@ -2028,7 +2028,7 @@ export default function Tune() {
                       {['adaptive', 'fixed'].map(m => (
                         <button key={m} type="button" role="radio" aria-checked={keeper.mode === m}
                           onClick={() => post({ mode: m }, `Profit Keeper mode: ${m}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{m}</button>
                       ))}
                     </span>
@@ -2049,7 +2049,7 @@ export default function Tune() {
                       {['external', 'all'].map(sc => (
                         <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
                           onClick={() => post({ scope: sc }, `Profit Keeper scope: ${sc}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                         >{sc === 'external' ? 'manual only' : 'all positions'}</button>
                       ))}
                     </span>
@@ -2904,7 +2904,7 @@ export default function Tune() {
                             // stale tick can't ride along with another strategy
                             if (val !== 'fib_618_fade') setBtTouchFill(false)
                           }}
-                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
                         >{running ? '⟳ ' : done ? '✓ ' : queued ? '· ' : ''}{lbl}</button>
                       )
                     })}
@@ -3048,7 +3048,7 @@ export default function Tune() {
                       <button
                         key={v} type="button" role="radio" aria-checked={btArmClass === v}
                         onClick={() => pickArmClass(v)}
-                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     ))}
                     {btArmClass === 'all' && (
@@ -3178,7 +3178,7 @@ export default function Tune() {
                         key={v} type="button" role="checkbox" aria-checked={on}
                         onClick={() => toggleVerdictFilter(v)}
                         title={on ? `Hide ${lbl} rows` : `Show ${lbl} rows`}
-                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
                       >{lbl}</button>
                     )
                   })}

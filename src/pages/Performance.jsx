@@ -150,7 +150,7 @@ function SessionClock() {
           return (
             <span key={s.name}
               title={`${p(s.from)}:00–${p(s.to)}:00 UTC${on ? ' · OPEN' : ''}`}
-              style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? P_ACC : P_EDG}`, color: on ? P_ACC : P_MU, background: on ? P_ACS : 'transparent' }}>
+              style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, color: on ? 'var(--md-on-secondary-container)' : P_MU, background: on ? 'var(--md-secondary-container)' : 'transparent' }}>
               {s.name}
             </span>
           )
@@ -1996,16 +1996,19 @@ export default function Performance() {
           Exact ports of Performance Mobile.dc.html. Pill nav uses the
           prototype's chip styles with the README's ≥44px tap minimum. */}
       <div className="min-[700px]:hidden space-y-2">
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {/* An in-page view switch, not navigation — aria-pressed, not
-              aria-current="page" (inventory P20). */}
+        {/* An in-page view switch, not navigation — aria-pressed, not
+            aria-current="page" (inventory P20). M3 conformance (owner task,
+            02-08): selected = tonal secondary-container + ✓, never the
+            saturated accent fill; row is sticky (no bleed-through on iOS
+            Safari) and horizontally scroll-snapped. */}
+        <div className="md-chip-row md-sticky-head">
           {MOBILE_SCREENS.map(s => (
             <button key={s.key} type="button" onClick={() => setScreen(s.key)}
               aria-pressed={screen === s.key}
               style={screen === s.key
-                ? { fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: 'var(--color-on-accent)', background: P_ACC, borderRadius: 999, padding: '3px 10px', border: 'none', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }
-                : { fontSize: 'var(--fs-d9)', fontWeight: 600, color: P_SB, border: `1px solid ${P_EDG}`, background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 44, cursor: 'pointer', fontFamily: 'inherit' }}>
-              {s.label}
+                ? { fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: 'var(--md-on-secondary-container)', background: 'var(--md-secondary-container)', borderRadius: 999, padding: '3px 10px', border: '1px solid transparent', minHeight: 48, minWidth: 48, cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 150ms' }
+                : { fontSize: 'var(--fs-d9)', fontWeight: 600, color: 'var(--md-on-surface)', border: '1px solid var(--md-outline-variant)', background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 48, minWidth: 48, cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 150ms' }}>
+              {screen === s.key ? '✓ ' : ''}{s.label}
             </button>
           ))}
         </div>
@@ -2084,14 +2087,14 @@ export default function Performance() {
 
         {screen === 'ledger' && (
           <>
-            <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="md-chip-row">
               <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
               {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
                 const on = acct === f.id
                 return (
                   <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
-                    {f.label}
+                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 999, padding: '3px 9px', minHeight: 48, minWidth: 48, transition: 'background-color 150ms' }}>
+                    {on ? '✓ ' : ''}{f.label}
                   </button>
                 )
               })}
@@ -2101,14 +2104,14 @@ export default function Performance() {
         )}
 
         {(screen === 'markets' || screen === 'trades') && (
-          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div className="md-chip-row">
             <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_HEAD, textTransform: 'uppercase', color: P_MU }}>Acct</span>
             {[{ id: 'all', label: 'All' }, ...accounts.map(a => ({ id: a.account_id, label: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}` }))].map(f => {
               const on = acct === f.id
               return (
                 <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : 'transparent', border: `1px solid ${on ? P_ACC : P_EDG}`, borderRadius: 999, padding: '3px 9px', minHeight: 44 }}>
-                  {f.label}
+                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 999, padding: '3px 9px', minHeight: 48, minWidth: 48, transition: 'background-color 150ms' }}>
+                  {on ? '✓ ' : ''}{f.label}
                 </button>
               )
             })}
