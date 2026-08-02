@@ -1,11 +1,12 @@
-// Segmented — the canonical single-choice group (contract §1/7.3).
-//
-// The Phase A inventory counted seven segmented-control variants at four
-// aria-conformance levels. This is the one shape they converge on: a real
-// radiogroup with roving tabindex and arrow keys (the pattern FolioTabs
-// already implements for tabs), compact 1px-radius chips, selection in the
-// accent — which ui-spec §3 sanctions for "active pills" — never in
-// up/down, and `--color-on-accent` (not a hard-coded #fff) on the fill.
+// Segmented — the canonical single-choice group (contract §1/7.3), now a
+// REAL M3 segmented button (owner, 02-08-2026: "why does the buttons look so
+// horrible and not standards"). What M3 actually specifies — and what the
+// first tonal pass missed — is the SHAPE: one connected container, equal
+// 40px-tall segments sharing 1px dividers, fully rounded only at the group
+// ends, ✓ on the selected segment, tonal secondary-container fill. The prior
+// look (independent oval capsules, tiny text lost inside a 48px blob) came
+// from recolouring the legacy pills instead of rebuilding them; this file is
+// the rebuild, and every call site inherits it.
 //
 // options: [{ value, label, title? }] · value: current · onChange(value)
 import { useRef } from 'react'
@@ -18,20 +19,22 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
     onChange?.(options[next].value)
     refs.current[next]?.focus()
   }
-  const chip = (selected) => [
-    'border font-semibold rounded-[var(--radius-control)] whitespace-nowrap',
-    size === 'lg' ? 'px-2.5 py-1 text-[11px]' : 'px-1.5 py-0.5 text-[9px]',
-    'transition-colors cursor-pointer',
-    'focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] focus-visible:outline-offset-1',
-    // M3 conformance (owner task, 02-08-2026): selection is the TONAL
-    // secondary-container + ✓, never the saturated accent fill — that stays
-    // reserved for real actions.
+  const seg = (selected, i) => [
+    // Connected group: dividers between segments, rounding on the ends only.
+    'inline-flex items-center justify-center gap-1 whitespace-nowrap font-semibold',
+    size === 'lg' ? 'px-3 text-[11px] h-[40px]' : 'px-2.5 text-[9px] h-[32px]',
+    'min-w-[48px] transition-colors duration-150 cursor-pointer',
+    i > 0 ? 'border-l border-[var(--md-outline-variant)]' : '',
+    i === 0 ? 'rounded-l-full' : '',
+    i === options.length - 1 ? 'rounded-r-full' : '',
+    'focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] focus-visible:-outline-offset-2',
     selected
-      ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent'
-      : 'bg-transparent text-[var(--md-on-surface)] border-[var(--md-outline-variant)] hover:border-[var(--color-accent)]',
+      ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]'
+      : 'bg-transparent text-[var(--md-on-surface)] hover:bg-[var(--color-accent-soft)]',
   ].join(' ')
   return (
-    <div role="radiogroup" aria-label={label} className={`inline-flex items-center gap-1 ${className}`}>
+    <div role="radiogroup" aria-label={label}
+      className={`inline-flex items-stretch overflow-hidden rounded-full border border-[var(--md-outline-variant)] ${className}`}>
       {options.map((o, i) => (
         <button key={String(o.value)} type="button" role="radio"
           ref={el => { refs.current[i] = el }}
@@ -43,8 +46,9 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); move(1) }
             if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1) }
           }}
-          className={chip(o.value === value)}>
-          {o.value === value ? '✓ ' : ''}{o.label}
+          className={seg(o.value === value, i)}>
+          {o.value === value && <span aria-hidden="true">✓</span>}
+          {o.label}
         </button>
       ))}
     </div>

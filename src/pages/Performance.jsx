@@ -150,7 +150,7 @@ function SessionClock() {
           return (
             <span key={s.name}
               title={`${p(s.from)}:00–${p(s.to)}:00 UTC${on ? ' · OPEN' : ''}`}
-              style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '3px 9px', borderRadius: 999, border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, color: on ? 'var(--md-on-secondary-container)' : P_MU, background: on ? 'var(--md-secondary-container)' : 'transparent' }}>
+              style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, padding: '3px 9px', borderRadius: 8, border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, color: on ? 'var(--md-on-secondary-container)' : P_MU, background: on ? 'var(--md-secondary-container)' : 'transparent' }}>
               {s.name}
             </span>
           )
@@ -1997,20 +1997,31 @@ export default function Performance() {
           prototype's chip styles with the README's ≥44px tap minimum. */}
       <div className="min-[700px]:hidden space-y-2">
         {/* An in-page view switch, not navigation — aria-pressed, not
-            aria-current="page" (inventory P20). M3 conformance (owner task,
-            02-08): selected = tonal secondary-container + ✓, never the
-            saturated accent fill; row is sticky (no bleed-through on iOS
-            Safari) and horizontally scroll-snapped. */}
+            aria-current="page" (inventory P20). M3 SEGMENTED BUTTON, done
+            properly this time (owner 02-08: "looks so horrible and not
+            standards"): ONE connected container, equal 40px segments with
+            shared 1px dividers, rounding only at the group ends, ✓ + tonal
+            fill on the selection — not five independent oval capsules. Row
+            stays sticky (no iOS bleed-through) and scrolls if it overflows. */}
         <div className="md-chip-row md-sticky-head">
-          {MOBILE_SCREENS.map(s => (
-            <button key={s.key} type="button" onClick={() => setScreen(s.key)}
-              aria-pressed={screen === s.key}
-              style={screen === s.key
-                ? { fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: 'var(--md-on-secondary-container)', background: 'var(--md-secondary-container)', borderRadius: 999, padding: '3px 10px', border: '1px solid transparent', minHeight: 48, minWidth: 48, cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 150ms' }
-                : { fontSize: 'var(--fs-d9)', fontWeight: 600, color: 'var(--md-on-surface)', border: '1px solid var(--md-outline-variant)', background: 'transparent', borderRadius: 999, padding: '3px 10px', minHeight: 48, minWidth: 48, cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 150ms' }}>
-              {screen === s.key ? '✓ ' : ''}{s.label}
-            </button>
-          ))}
+          <div role="radiogroup" aria-label="Performance screens"
+            style={{ display: 'inline-flex', alignItems: 'stretch', border: '1px solid var(--md-outline-variant)', borderRadius: 999, overflow: 'hidden' }}>
+            {MOBILE_SCREENS.map((s, i) => (
+              <button key={s.key} type="button" role="radio" onClick={() => setScreen(s.key)}
+                aria-checked={screen === s.key}
+                style={{
+                  fontSize: 'var(--fs-d9)', fontWeight: screen === s.key ? W_CELL : 600, fontFamily: 'inherit', cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                  height: 40, minWidth: 48, padding: '0 12px', border: 'none',
+                  borderLeft: i > 0 ? '1px solid var(--md-outline-variant)' : 'none',
+                  color: screen === s.key ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)',
+                  background: screen === s.key ? 'var(--md-secondary-container)' : 'transparent',
+                  transition: 'background-color 150ms',
+                }}>
+                {screen === s.key && <span aria-hidden="true">✓</span>}{s.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {screen === 'now' && (
@@ -2093,7 +2104,7 @@ export default function Performance() {
                 const on = acct === f.id
                 return (
                   <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 999, padding: '3px 9px', minHeight: 48, minWidth: 48, transition: 'background-color 150ms' }}>
+                    style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 8, padding: '0 10px', height: 32, minWidth: 48, transition: 'background-color 150ms' }}>
                     {on ? '✓ ' : ''}{f.label}
                   </button>
                 )
@@ -2110,7 +2121,7 @@ export default function Performance() {
               const on = acct === f.id
               return (
                 <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 999, padding: '3px 9px', minHeight: 48, minWidth: 48, transition: 'background-color 150ms' }}>
+                  style={{ cursor: 'pointer', fontFamily: 'inherit', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : 'var(--md-on-surface)', background: on ? 'var(--md-secondary-container)' : 'transparent', border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 8, padding: '0 10px', height: 32, minWidth: 48, transition: 'background-color 150ms' }}>
                   {on ? '✓ ' : ''}{f.label}
                 </button>
               )
