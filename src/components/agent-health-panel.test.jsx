@@ -211,6 +211,23 @@ describe('components', () => {
     expect(html).toContain('abc1234')
   })
 
+  it('the compact tag drops the sha for the phone bar; the full one keeps it', () => {
+    // With no agent configured — which is this environment — both variants
+    // take the plain-tag branch, so that is what is asserted. The mobile bar
+    // is width-constrained and already showed only the version; the sha is not
+    // lost, it is half of the comparison inside the panel itself.
+    const compact = renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" compact />)
+    const full = renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" />)
+    expect(compact).toContain('1.2.3')
+    expect(compact).not.toContain('abc1234')
+    expect(full).toContain('abc1234')
+  })
+
+  it('neither variant throws when the agent is unreachable', () => {
+    expect(() => renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" />)).not.toThrow()
+    expect(() => renderToStaticMarkup(<AgentHealthPanel appVersion="1.2.3" buildSha="abc1234" compact />)).not.toThrow()
+  })
+
   it('renders nothing for an empty controller list', () => {
     expect(renderToStaticMarkup(<ControllerRows bad={[]} />)).toBe('')
   })

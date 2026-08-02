@@ -348,7 +348,11 @@ export default function App() {
         <header className="sticky top-2 z-40 px-3 lg:hidden">
           <div className="glass-bar flex items-center gap-2 rounded-[1px] px-3 py-1.5">
             <span className="text-[13px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">bot-trade</span>
-            <span className="text-[9px] text-[var(--color-text-sub)] shrink-0 truncate" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__}</span>
+            {/* Same handle as the sidebar: the version tag carries the agent
+                health dot, so a stalled controller or a UI/agent build
+                mismatch is visible on the phone too — this bar is on every
+                screen. */}
+            <AgentHealthPanel appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} compact />
             <LlmMonitorStatus />
             <span className="ml-auto shrink-0"><ActiveAccountHeaderCompact /></span>
           </div>

@@ -35,6 +35,67 @@ import Badge from './common/Badge.jsx'
 const POLL_CLOSED_MS = 60_000
 const POLL_OPEN_MS = 10_000
 
+// ---------------------------------------------------------------------------
+// ONE POLLER, SHARED BY EVERY MOUNT.
+//
+// The sidebar tag and the mobile top-bar tag are both mounted at all times —
+// the split is CSS (`hidden lg:flex` beside `lg:hidden`), not conditional
+// rendering. Two independent pollers would mean two /health + two
+// /state/heartbeats every tick, and worse, two answers that can differ: the
+// phone's dot and the desktop's dot could disagree about the same agent.
+//
+// So the fetching lives here, once. Subscribers register a cadence; the store
+// runs at the FASTEST one requested (an open panel needs live ages, and a
+// closed one must not slow it down) and pushes the same snapshot to everyone.
+// ---------------------------------------------------------------------------
+const subs = new Set()
+let snapshot = { health: null, beats: null, err: null }
+let timer = null
+let currentMs = null
+
+function publish(next) {
+  snapshot = next
+  for (const fn of subs) { try { fn(snapshot) } catch { /* one bad subscriber must not stop the rest */ } }
+}
+
+function pollOnce() {
+  return Promise.all([
+    agentGet('/health').catch(e => ({ __err: e?.message || String(e) })),
+    agentGet('/state/heartbeats').catch(() => null),
+  ]).then(([h, b]) => {
+    if (h?.__err) publish({ ...snapshot, err: h.__err })
+    else publish({ health: h, beats: b, err: null })
+  })
+}
+
+function retime() {
+  const wanted = Math.min(...[...subs].map(f => f.cadenceMs ?? POLL_CLOSED_MS), POLL_CLOSED_MS)
+  if (timer && currentMs === wanted) return
+  if (timer) clearInterval(timer)
+  currentMs = wanted
+  timer = setInterval(() => {
+    // The app's standard sleep gate. An OPEN panel is exactly when the ages
+    // need to be live, so a fast cadence overrides it.
+    if (currentMs >= POLL_CLOSED_MS && pageAsleep()) return
+    pollOnce()
+  }, wanted)
+}
+
+function subscribe(fn, cadenceMs) {
+  fn.cadenceMs = cadenceMs
+  subs.add(fn)
+  retime()
+  if (snapshot.health || snapshot.err) fn(snapshot)
+  // Opening the panel asks for a fast cadence; it should also refresh NOW
+  // rather than showing up-to-a-minute-old ages until the first fast tick.
+  if (!(snapshot.health || snapshot.err) || cadenceMs < POLL_CLOSED_MS) pollOnce()
+  return () => {
+    subs.delete(fn)
+    if (subs.size === 0) { clearInterval(timer); timer = null; currentMs = null }
+    else retime()
+  }
+}
+
 const TONE_COLOR = {
   ok: 'var(--color-state-on-text)',
   warn: 'var(--color-warning-text)',
@@ -73,36 +134,18 @@ export function ControllerRows({ bad }) {
   )
 }
 
-export default function AgentHealthPanel({ appVersion, buildSha }) {
+/**
+ * @param {{appVersion: string, buildSha: string, compact?: boolean}} props
+ *   compact — the mobile top bar. Same dot, same popover, shorter label: the
+ *   bar already drops the commit sha for width, and the sha is in the panel
+ *   anyway (it is half of the comparison the panel exists for).
+ */
+export default function AgentHealthPanel({ appVersion, buildSha, compact = false }) {
   const [open, setOpen] = useState(false)
-  const [health, setHealth] = useState(null)
-  const [beats, setBeats] = useState(null)
-  const [err, setErr] = useState(null)
+  const [{ health, beats, err }, setSnap] = useState(snapshot)
   const popoverId = useId()
 
-  useEffect(() => {
-    let alive = true
-    const poll = () => {
-      Promise.all([
-        agentGet('/health').catch(e => ({ __err: e?.message || String(e) })),
-        agentGet('/state/heartbeats').catch(() => null),
-      ]).then(([h, b]) => {
-        if (!alive) return
-        if (h?.__err) { setErr(h.__err); return }
-        setErr(null)
-        setHealth(h)
-        setBeats(b)
-      })
-    }
-    poll()
-    const id = setInterval(() => {
-      // The app's standard sleep gate, applied only while CLOSED: an open
-      // panel is exactly when the ages need to be live.
-      if (!open && pageAsleep()) return
-      poll()
-    }, open ? POLL_OPEN_MS : POLL_CLOSED_MS)
-    return () => { alive = false; clearInterval(id) }
-  }, [open])
+  useEffect(() => subscribe(setSnap, open ? POLL_OPEN_MS : POLL_CLOSED_MS), [open])
 
   const { buttonRef, popoverRef } = useAnchoredPopover({
     open,
@@ -112,7 +155,11 @@ export default function AgentHealthPanel({ appVersion, buildSha }) {
 
   if (!agentConfigured()) {
     // Nothing to compare against — show the plain tag the sidebar always had.
-    return <span className="text-[11px] text-[var(--color-text-sub)]">v{appVersion} · {buildSha}</span>
+    return (
+      <span className="text-[11px] text-[var(--color-text-sub)]">
+        v{appVersion}{compact ? '' : ` · ${buildSha}`}
+      </span>
+    )
   }
 
   const deploy = deployReading({
@@ -132,11 +179,11 @@ export default function AgentHealthPanel({ appVersion, buildSha }) {
         aria-expanded={open}
         aria-controls={popoverId}
         onClick={() => setOpen(o => !o)}
-        className="text-[11px] text-[var(--color-text-sub)] hover:text-[var(--color-text)] cursor-pointer inline-flex items-baseline gap-1"
-        title="Build and agent health — click for detail"
+        className={`${compact ? 'text-[9px]' : 'text-[11px]'} text-[var(--color-text-sub)] hover:text-[var(--color-text)] cursor-pointer inline-flex items-baseline gap-1 shrink-0`}
+        title="Build and agent health — tap for detail"
       >
         <span aria-hidden="true" style={{ color: TONE_COLOR[overall], fontSize: 'var(--fs-d7)', lineHeight: 1 }}>●</span>
-        <span>v{appVersion} · {buildSha}</span>
+        <span>v{appVersion}{compact ? '' : ` · ${buildSha}`}</span>
       </button>
 
       {/* The dot is decorative; the state is also stated in text for anyone
