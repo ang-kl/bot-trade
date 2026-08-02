@@ -212,7 +212,7 @@ function StrategyTfPerformance() {
         className="flex items-center gap-1.5 text-[9px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
         <span aria-hidden="true" className="inline-block w-3 text-[9px]">{open ? '▾' : '▸'}</span>
-        Strategy × timeframe performance
+        Strategy × Timeframe Performance table
         <span className="font-normal">— closed trades, ONE 30-day window on both axes: the reconciled view</span>
       </button>
       {open && (
@@ -398,7 +398,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
         className="flex items-center gap-1.5 text-[9px] font-semibold text-[var(--color-text-sub)] cursor-pointer hover:text-[var(--color-text)]"
       >
         <span aria-hidden="true" className="inline-block w-3 text-[9px]">{open ? '▾' : '▸'}</span>
-        Strategy × stage matrix
+        Strategy × Stage Matrix table
         <span className="font-normal">— what runs at each pipeline stage; counts are the last {mx.windowDays || 30} days</span>
       </button>
       {open && (
@@ -1393,7 +1393,7 @@ export default function Tune() {
         {tab === 'pipeline' && (
           <div className="space-y-2">
             <Card id="sec-pipe-master" className="w3-hover-shadow">
-              <SectionTitle>Master switches</SectionTitle>
+              <SectionTitle>Master Switches form</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">The three phases, and how wide autotrade casts. Everything below only matters while these are on.</p>
             <div className="flex flex-wrap gap-2">
               {/* Approval-queue item 2 (owner 2026-08-01): master Scan and
@@ -1486,7 +1486,7 @@ export default function Tune() {
               })}
             />
             <Card id="sec-pipe-strategy" className="w3-hover-shadow">
-              <SectionTitle>What may trade</SectionTitle>
+              <SectionTitle>What May Trade form</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">Which strategies and filters act at each pipeline stage, why the trade column vetoed, and whether the nightly evidence loop may change the arming for you.</p>
             {/* Strategy × stage matrix replaces the old strategy/filter chips:
                 every strategy and filter is set PER PIPELINE STAGE. Trade
@@ -1565,7 +1565,7 @@ export default function Tune() {
             </div>
             </Card>
             <Card id="sec-pipe-breakers" className="w3-hover-shadow">
-              <SectionTitle>Breakers and gates</SectionTitle>
+              <SectionTitle>Breakers and Gates form</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">When the bot must adapt or stand down on its own — a loss streak, a decayed edge, the wrong regime, or the minutes right after a session opens.</p>
             {/* Adaptive breaker + fast monitor cadence — the owner's "no
                 human pauses" doctrine: a loss streak CHANGES strategy/
@@ -1640,7 +1640,7 @@ export default function Tune() {
             </div>
             </Card>
             <Card id="sec-pipe-cadence" className="w3-hover-shadow">
-              <SectionTitle>Cadence and coverage</SectionTitle>
+              <SectionTitle>Cadence and Coverage card</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">How often the loop runs, how often open positions are checked, and which timeframes are scanned at all.</p>
             {/* UI-6: the shared Field row. onChange tracks the draft, onCommit
                 fires on blur — the same commit point as before, so typing "1"
@@ -1811,7 +1811,7 @@ export default function Tune() {
             </div>
             </Card>
             <Card id="sec-pipe-protection" className="w3-hover-shadow">
-              <SectionTitle>Position management</SectionTitle>
+              <SectionTitle>Position Management form</SectionTitle>
               <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">What happens to a position once it is open: per-class exit ladders, the weekend and tick sweeps, and the three guardians.</p>
             {/* Per-asset-class controllers — owner: "separate controllers for
                 forex/indices/commodities... trading like a beginner." A
@@ -2749,7 +2749,7 @@ export default function Tune() {
 
         {tab === 'backtest' && (
           <div>
-            <h2 className="t-h3 mb-2">Backtest (go/no-go before autotrade)</h2>
+            <h2 className="t-h3 mb-2">Backtest (Go/No-Go Before Autotrade) table</h2>
             {enabledSymbols.length === 0 ? (
               <p className="text-[9px] text-[var(--color-text-sub)]">No enabled symbols — add instruments on the Watchlist tab first.</p>
             ) : (
@@ -3342,7 +3342,7 @@ export default function Tune() {
 
         {tab === 'presets' && (
           <div>
-            <h2 className="t-h3 mb-2">Presets</h2>
+            <h2 className="t-h3 mb-2">Presets form</h2>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="subtle" onClick={() => {
                 const preset = {

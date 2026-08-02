@@ -33,7 +33,7 @@ export default function StrategyInsights() {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[9px] font-semibold">Strategy forecast vs. actual</div>
+        <div className="text-[9px] font-semibold">Strategy Forecast vs. Actual table</div>
         <span className="text-[9px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
         {/* Emphasis follows selection (inventory: unselected was the BOLD
             UPPERCASE one) and the group is a real radiogroup. */}

@@ -2253,7 +2253,7 @@ export default function Performance() {
           <div id="sec-accounts">
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Accounts — capital safety</span>
-            <SectionTools id="accounts" title="Accounts — capital safety"
+            <SectionTools id="accounts" title="Accounts — Capital Safety table"
               data={acctCards.map(a => ({ account: a.name, ccy: a.ccy, balance: a.bal, dayPnl: a.hasToday ? a.day : null, tpNettToday: a.hasToday ? a.gw : null, slNettToday: a.hasToday ? -a.gl : null, pace30d: a.n30 != null ? a.n30 / 30 : null, lossCapUsedPct: a.used, dailyStop: a.cap }))}
               toText={() => ['Accounts — capital safety', ...acctCards.map(a => `${a.name} · ${a.ccy} · bal ${a.bal != null ? money(a.bal) : '—'} · day ${a.hasToday ? signed(a.day) : '—'} · loss-cap used ${a.used != null ? `${a.used}%` : '—'} of −${a.cap != null ? money(a.cap, 0) : '—'}`)].join('\n')}
               render={() => <AcctCardsGrid acctCards={acctCards} />} />
@@ -2290,7 +2290,7 @@ export default function Performance() {
                   alone read as a scope. A rolling window needs no such footnote:
                   the period is simply the last 24 hours, ending now. */}
               <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>latest 24 one-hour windows · newest first</span>
-              <SectionTools id="today" title="Rolling 24 hours" data={{ hourly: todayHourly, closedTrades: todayTrades }}
+              <SectionTools id="today" title="Rolling 24 Hours table" data={{ hourly: todayHourly, closedTrades: todayTrades }}
                 toText={() => ['Rolling 24 hours · latest 24 one-hour windows · newest first', `net ${today.n ? signed(today.net) : '—'} · ${today.n} closed${today.n ? ` · ${today.wr}% win · ${today.tp} TP / ${today.sl} SL` : ''}`,
                   // The copied text carries the same label the row shows — the
                   // END of the window, in SGT over UTC — not the window start.
@@ -2387,7 +2387,7 @@ export default function Performance() {
               <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>these markets trade through the weekend — the bot can still exit them</span>
             </summary>
             <div style={{ marginTop: 5 }}>
-              <SectionTools id="open-weekend24" title="24H symbols — weekend trading"
+              <SectionTools id="open-weekend24" title="24H Symbols — Weekend Trading table"
                 data={openSplit.weekend24.map(p2 => ({ sym: p2.sym, side: p2.side, lots: p2.lots, latestPnl: p2.pnl, price: p2.price, dayOhlcv: p2.day, slAway: p2.sld, tpAway: p2.tpd }))}
                 toText={() => ['24H symbols — weekend trading', ...openSplit.weekend24.map(p2 => `${p2.sym} · ${p2.side} ${p2.lots} · P&L ${p2.pnl != null ? signed(p2.pnl) : '—'} · px ${fmtPx(p2.price)} · SL ${p2.sld} / TP ${p2.tpd}`)].join('\n')}
                 render={() => <Weekend24Body rows={openSplit.weekend24} />} />
@@ -2404,7 +2404,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="t-h3">Today by market session</h3>
             <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>closed trades since FX day open (5pm NY) · bucketed by close time · fixed UTC windows (current DST) · sessions overlap{todayWin.weekend ? ' · ' : ''}{todayWin.weekend && <span style={{ color: P_WRN }}>{todayWin.label}</span>}</span>
-            <SectionTools id="sessions" title="Today by market session" window="today"
+            <SectionTools id="sessions" title="Today by Market Session table" window="today"
               data={[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]}
               toText={() => ['Today by market session',
                 ...[...sessionStats.buckets, { key: 'OFF', ...sessionStats.off }, { key: 'ALL', ...sessionStats.total }]
@@ -2446,7 +2446,7 @@ export default function Performance() {
             <span className={`text-[9px] ${SUB}`}>
               carry in → net → carry out · day rolls at FX open (5pm NY) here · server ledger windows still anchor 22:00 UTC{ledger ? ` · balance ${money(ledger.balance)}` : ''}
             </span>
-            <SectionTools id="ledger" title="Timeframe ledger" data={windows} toText={ledgerToText}
+            <SectionTools id="ledger" title="Timeframe Ledger table" data={windows} toText={ledgerToText}
               render={({ variant }) => <LedgerBody variant={variant} windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />} />
           </div>
           <LedgerBody variant="card" windows={windows} ledger={ledger} error={error} nowMs={loadedAt} />
@@ -2466,7 +2466,7 @@ export default function Performance() {
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — timeframe × account</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>always shows all accounts + overall · intensity scaled per column</span>
-              <SectionTools id="grad-timeframe" title="Performance gradient — timeframe × account"
+              <SectionTools id="grad-timeframe" title="Performance Gradient — Timeframe × Account table"
                 data={gradients.tWide.map(r => ({ window: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.wideCols[ci]?.name || ci, c.v])) }))}
                 render={() => <GradientBody grid="86px" label="Window" cols={gradients.wideCols} groups={gradients.groups} rows={gradients.tWide} subtotals={gradients.tWideSub} banded smallHead colW="minmax(46px,72px)" foot="blue = net gain · red = net loss · each column shaded against its own peak window · windows overlap, so a column subtotal double-counts and is a footing, not a P&L" />} />
             </div>
@@ -2476,7 +2476,7 @@ export default function Performance() {
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Performance gradient — asset class × account</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>rolling 30 days</span>
-              <SectionTools id="grad-asset" title="Performance gradient — asset class × account" window="30D"
+              <SectionTools id="grad-asset" title="Performance Gradient — Asset Class × Account table" window="30D"
                 data={gradients.a.map(r => ({ asset: r.label, ...Object.fromEntries(r.cells.map((c, ci) => [gradients.assetCols[ci]?.name || ci, c.v])) }))}
                 render={() => <GradientBody grid="74px" label="Asset" cols={gradients.assetCols} rows={gradients.a} subtotals={gradients.aSub} foot={gradients.overallDropped
                   ? 'same closed-trade ledger, account dimension — Overall is hidden while only one account has closed trades, since it would just repeat that column'
@@ -2499,7 +2499,7 @@ export default function Performance() {
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Forex — banded, all pairs</span>
               <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>same trades as the ledger's Forex column, pair-level lens · rolling 7 days = the 1W row · tap a pair for TP/SL detail</span>
-              <SectionTools id="fx-bands" title="Forex — banded, all pairs" window="1W" data={fxBands}
+              <SectionTools id="fx-bands" title="Forex — Banded, All Pairs table" window="1W" data={fxBands}
                 toText={(rows) => ['Forex — banded, all pairs (1W)', ...(rows || []).map(b => `${b.band} · ${b.net} · ${b.meta} · ${b.pairs.filter(p2 => p2.v !== '·').map(p2 => `${p2.sym} ${p2.v}`).join(' · ') || 'no trades'}`)].join('\n')}
                 render={() => <FxBandsBody fxBands={fxBands} />} />
             </div>
@@ -2510,7 +2510,7 @@ export default function Performance() {
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
-                <SectionTools id="strategy-matrix" title="Strategy × market — 30D" window="30D" data={stratMx}
+                <SectionTools id="strategy-matrix" title="Strategy × Market — 30D table" window="30D" data={stratMx}
                   toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
                   render={() => <StratMxBody stratMx={stratMx} />} />
               </div>
@@ -2529,7 +2529,7 @@ export default function Performance() {
                     </span>
                   ))}
                 </div>
-                <SectionTools id="crypto" title="Crypto — runs 24/7" window="7D" data={crypto.rows}
+                <SectionTools id="crypto" title="Crypto — Runs 24/7 table" window="7D" data={crypto.rows}
                   toText={(rows) => ['Crypto — runs 24/7', ...crypto.k.map(k2 => `${k2.k} ${k2.v}`), ...(rows || []).map(c2 => `${c2.sym} · 7D ${c2.pnl} · ${c2.meta}`)].join('\n')}
                   render={() => <CryptoBody crypto={crypto} />} />
               </div>
@@ -2589,7 +2589,7 @@ export default function Performance() {
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
             {tiles && <span className={`text-[9px] ${SUB}`}>{tiles.closed.length} closed · {signed(tiles.total)}</span>}
-            <SectionTools id="tiles" title="All-time tiles &amp; equity"
+            <SectionTools id="tiles" title="All-Time Tiles &amp; Equity card"
               data={tileGroups ? tileGroups.flatMap(([group, items]) => items.map(([metric, value, , note]) => ({ group, metric, value, measures: note }))) : []}
               toText={() => (tileGroups
                 ? ['All-time', ...tileGroups.flatMap(([group, items]) => [group.toUpperCase(), ...items.map(([metric, value, , note]) => `  ${metric} ${value} — ${note}`)])].join('\n')

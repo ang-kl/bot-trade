@@ -1199,7 +1199,7 @@ export default function Desk() {
       {/* Why no trades — only when genuinely flat; the product explains
           itself instead of looking dead. */}
       {health && brokerFlat && positions.length === 0 && (
-        <Section id="whynotrades" title="Why no trades right now?">
+        <Section id="whynotrades" title="Why No Trades Right Now? card">
           <ul className="text-[9px] space-y-1 list-disc pl-5">
             {equityStopToday && <li className="font-semibold text-[var(--color-down)]">The daily equity stop tripped today — autotrade disarmed itself after the daily loss cap was hit. It stays off until you re-arm it on <Link to="/tune" className="underline">Tune</Link>.</li>}
             {!health.autotradeEnabled && !equityStopToday && <li className="font-semibold text-[var(--color-down)]">Autotrade is OFF — the bot never places orders. <Link to="/tune" className="underline">Activate on Tune</Link>.</li>}

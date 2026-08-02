@@ -159,7 +159,7 @@ export default function Connect() {
 
       {/* Agent connection */}
       <Card>
-        <h2 className="t-h3 mb-2" id="sec-agent">1 · Agent backend</h2>
+        <h2 className="t-h3 mb-2" id="sec-agent">1 · Agent Backend form</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-[9px]">
             <span className="text-[var(--color-text-sub)]">Agent URL</span>
@@ -233,7 +233,7 @@ export default function Connect() {
       {/* cTrader */}
       <Card>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="t-h3" id="sec-ctrader">2 · cTrader account</h2>
+          <h2 className="t-h3" id="sec-ctrader">2 · cTrader Account form</h2>
           {symbolCount != null && symbolCount > 0 && <Badge tone="on">LINKED — {symbolCount} symbols mapped</Badge>}
         </div>
 

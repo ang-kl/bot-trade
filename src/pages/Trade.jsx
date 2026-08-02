@@ -718,7 +718,7 @@ export default function Trade() {
         {orderOpen && (
           <div className="glass-panel rounded-[12px] p-3 mb-2 w-[280px] shadow-xl">
             <div className="flex items-center justify-between mb-2">
-              <h2 className="t-h3">Manual order</h2>
+              <h2 className="t-h3">Manual Order form</h2>
               <IconButton size="sm" variant="ghost" label="Close order pad" onClick={() => setOrderOpen(false)}>✕</IconButton>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -865,7 +865,7 @@ export default function Trade() {
         {/* Recent trades */}
         <Card id="sec-recent">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="t-h3">Recent trades <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
+            <h2 className="t-h3">Recent Trades table <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
             <Button
               size="sm" variant="subtle" className="ml-auto" disabled={busy === 'reconcile'}
               onClick={async () => {
@@ -891,7 +891,7 @@ export default function Trade() {
             (no quote, market closed, no creds) are persisted there too. */}
         <Card id="sec-orderlog">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="t-h3">Order log — every attempt, fill or veto</h2>
+            <h2 className="t-h3">Order Log — Every Attempt, Fill or Veto table</h2>
             <Button
               size="sm" variant="subtle" className="ml-auto"
               title="Prove the C++ execution engine matches the JS path: credentials push, broker login, open-position diff. Read-only."

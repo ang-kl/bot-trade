@@ -283,7 +283,7 @@ export default function WatchlistCompare() {
   return (
     <Card>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-        <h2 className="t-h3" id="sec-watchlists">3 · Compare & copy watchlists</h2>
+        <h2 className="t-h3" id="sec-watchlists">3 · Compare & Copy Watchlists table</h2>
         <Button size="sm" variant="ghost" onClick={load} disabled={busy}>Refresh</Button>
       </div>
       <p className="text-[9px] text-[var(--color-text-sub)] mb-2">

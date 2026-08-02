@@ -63,16 +63,16 @@ describe('strategy full names', () => {
     // The whole point of the change: these are the strings CSS got wrong.
     expect(strategyLabel('rsi2_reversion')).toBe('RSI 2 Reversion')
     expect(strategyLabel('vwap_trend')).toBe('VWAP Trend')
-    expect(strategyLabel('fvg_retrace')).toBe('FVG retrace')
-    expect(strategyLabel('ema_pullback')).toBe('EMA trend-pullback')
-    expect(strategyLabel('rsi_meanrev')).toBe('RSI mean-reversion')
+    expect(strategyLabel('fvg_retrace')).toBe('FVG Retrace')
+    expect(strategyLabel('ema_pullback')).toBe('EMA Trend-Pullback')
+    expect(strategyLabel('rsi_meanrev')).toBe('RSI Mean-Reversion')
     // And none of them still carries an underscore.
     for (const k of Object.keys(STRAT_NAME)) expect(strategyLabel(k)).not.toMatch(/_/)
   })
 
   it('names the non-strategy buckets the API can emit', () => {
     // strategy-insights.js COALESCEs an unlabelled trade to this literal.
-    expect(strategyLabel('manual / external')).toBe('Manual / external')
+    expect(strategyLabel('manual / external')).toBe('Manual / External')
     expect(strategyLabel('unlabelled')).toBe('Unlabelled')
   })
 
