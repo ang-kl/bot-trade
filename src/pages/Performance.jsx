@@ -30,6 +30,7 @@ import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
 import GoalTracker from '../components/GoalTracker.jsx'
+import DecisionFeed from '../components/DecisionFeed.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
@@ -2295,6 +2296,12 @@ export default function Performance() {
           />
           </div>
         )}
+
+        {/* Why the bot did or did not act, under the day it acted in. The
+            question "why didn't it trade?" is asked while looking at a flat
+            day, so the answer belongs next to that day — not on a separate
+            diagnostics page nobody opens. */}
+        <DecisionFeed />
 
         {/* Today + Open now — exact prototype row. */}
         <div id="sec-today-open" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>

@@ -27,6 +27,7 @@ export const NAV_TREE = [
           { id: 'sec-goal', label: 'Go-Live Gate', kind: 'C' },
           { id: 'sec-accounts', label: 'Accounts', kind: 'T' },
           { id: 'sec-today-open', label: 'Today & Open', kind: 'T' },
+          { id: 'sec-decisions', label: 'Decision Feed', kind: 'C' },
           { id: 'sec-weekend24', label: 'Weekend 24H', kind: 'T' },
           { id: 'sec-sessions', label: 'Market Sessions', kind: 'T' },
           { id: 'sec-ledger', label: 'Timeframe Ledger', kind: 'T' },

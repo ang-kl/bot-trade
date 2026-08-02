@@ -1349,6 +1349,29 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/decision-feed?account=&hours=&limit=&stage=&decision=&symbol=
+  // "Why didn't it trade?" as a readable answer rather than raw rows.
+  // /state/decisions returns the log verbatim, which is a developer's view: a
+  // hundred `style_filter/skip` rows says nothing, because one waiting setup
+  // re-logs the same skip every five-minute cycle. This returns the stage ×
+  // decision × reason MIX (with distinct-symbol counts, so retries and
+  // universe-wide rejections are distinguishable) alongside the newest rows.
+  router.get('/decision-feed', async (req, res) => {
+    try {
+      const { decisionFeed } = await import('../services/decision-feed.js')
+      res.json(decisionFeed(db, {
+        accountId: req.query.account ? String(req.query.account) : null,
+        hours: req.query.hours ? Number(req.query.hours) : undefined,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+        stage: req.query.stage ? String(req.query.stage) : null,
+        decision: req.query.decision ? String(req.query.decision) : null,
+        symbol: req.query.symbol ? String(req.query.symbol) : null,
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/watchlist-summary?accounts=<id,id,…>
   // Per-account watchlist facts: how many symbols this account actually
   // trades, whether that list is its own or inherited from the shared one,
