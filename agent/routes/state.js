@@ -2158,7 +2158,14 @@ export default function stateRouter(db) {
   router.get('/heartbeats', async (_req, res) => {
     try {
       const { heartbeatView } = await import('../services/heartbeat.js')
-      res.json({ controllers: heartbeatView(db) })
+      // The ATR sweep's own account of itself, alongside the beat. A
+      // heartbeat can only say ok/failed; this says WHY — how many symbols it
+      // had, how many fetches threw and with what message, and how many rows
+      // exist afterwards. #170 ("atr_history empty") was unanswerable from
+      // the panel alone, and that is the gap this closes.
+      let atrRefresh = null
+      try { atrRefresh = JSON.parse(getState(db, 'atr_refresh_last_json') || 'null') } catch { atrRefresh = null }
+      res.json({ controllers: heartbeatView(db), atrRefresh })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

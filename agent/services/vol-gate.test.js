@@ -224,3 +224,61 @@ test('computeRegime still works — exporting meanAtr changed nothing', () => {
   const r = computeRegime(bars)
   assert.ok(['trending', 'volatile', 'ranging', 'quiet', 'unknown'].includes(r.regime))
 })
+
+// ---------------------------------------------------------------------------
+// #170 — "atr_history is empty and nobody can say why". refreshAtrHistory has
+// always accepted an onError hook; loop.js never passed one, so a sweep where
+// every fetch threw reported `failed: 200` with the reasons discarded. These
+// pin the contract the loop now depends on to explain itself.
+// ---------------------------------------------------------------------------
+
+test('refresh reports WHY each fetch failed, not just how many', async () => {
+  const db = tmpDb()
+  const seen = []
+  const res = await refreshAtrHistory(db, ['EURJPY', 'AUDPLN'], async (s) => {
+    throw new Error(`symbolId unknown for ${s}`)
+  }, { onError: (sym, err) => seen.push(`${sym}: ${err.message}`) })
+
+  assert.equal(res.updated, 0)
+  assert.equal(res.failed, 2)
+  assert.equal(res.symbols, 2)
+  // The whole point: the CAUSE survives, so an empty table is explainable
+  // rather than merely observable.
+  assert.deepEqual(seen, ['EURJPY: symbolId unknown for EURJPY', 'AUDPLN: symbolId unknown for AUDPLN'])
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM atr_history').get().c, 0)
+})
+
+test('refresh distinguishes a fetch FAILURE from thin history', async () => {
+  const db = tmpDb()
+  const thin = Array.from({ length: 3 }, (_, i) => ({ t: START + i * DAY, o: 1, h: 1.1, l: 0.9, c: 1, v: 1 }))
+  const good = Array.from({ length: 40 }, (_, i) => ({ t: START + i * DAY, o: 1, h: 1.1, l: 0.9, c: 1, v: 1 }))
+  const errs = []
+  const res = await refreshAtrHistory(db, ['THROWS', 'THIN', 'GOOD'], async (s) => {
+    if (s === 'THROWS') throw new Error('socket closed')
+    return s === 'THIN' ? thin : good
+  }, { onError: (sym, err) => errs.push([sym, err.message]) })
+
+  // These are different problems and must not be one bucket: a throwing fetch
+  // is a broker/config fault, thin history is a legitimate skip, and only the
+  // first means the controller itself is unhealthy.
+  assert.equal(res.failed, 1)
+  assert.deepEqual(errs, [['THROWS', 'socket closed']])
+  assert.equal(res.skipped.length, 1)
+  assert.equal(res.skipped[0].symbol, 'THIN')
+  assert.equal(res.updated, 1)
+})
+
+test('refresh writes incrementally, so a run cut short still leaves what it got', async () => {
+  const db = tmpDb()
+  const good = Array.from({ length: 40 }, (_, i) => ({ t: START + i * DAY, o: 1, h: 1.1, l: 0.9, c: 1, v: 1 }))
+  // The loop abandons the WAIT at its budget while the run continues detached.
+  // If writes were batched at the end, an over-budget sweep would leave the
+  // table empty forever — the exact shape of #170. Each symbol must land as
+  // it completes.
+  let after1 = -1
+  await refreshAtrHistory(db, ['A', 'B'], async (s) => {
+    if (s === 'B') after1 = db.prepare('SELECT COUNT(*) c FROM atr_history').get().c
+    return good
+  })
+  assert.ok(after1 > 0, `A's rows must be committed before B is fetched, saw ${after1}`)
+})

@@ -3033,20 +3033,60 @@ async function runLoop(db) {
             log('ATR baseline: no symbols in autopilot_symbols_json or watchlist_json — nothing to refresh')
             await hbeat(db, 'atr_refresh', false, 'no symbols configured')
           } else {
+          // COLLECT THE REASONS, not just the count. refreshAtrHistory has
+          // always taken an onError hook and this caller has never passed
+          // one, so `failed: 200` arrived with no clue whether those were
+          // unknown symbol ids, broker throttling, or a dead socket — and
+          // #170 is exactly "the table is empty and nobody can say why".
+          const fetchErrors = []
           const r = await runBudgetedSubPhase(db, 'atr_refresh',
-            () => refreshAtrHistory(db, symbols, atrFetch), SUB_PHASE_BUDGET_MS * 2)
-          if (r && !r.timedOut) {
+            () => refreshAtrHistory(db, symbols, atrFetch, {
+              onError: (sym, err) => {
+                if (fetchErrors.length < 5) fetchErrors.push(`${sym}: ${String(err?.message || err).slice(0, 120)}`)
+              },
+            }), SUB_PHASE_BUDGET_MS * 2)
+          const ran = r && !r.timedOut && !r.skippedOverlap
+          if (ran) {
             // Name the misses. A symbol silently absent from atr_history reads
             // downstream as "normal volatility", which is a verdict it never
             // earned.
-            log(`ATR baseline: ${r.updated}/${r.symbols} symbols refreshed${r.failed ? `, ${r.failed} fetch failure(s)` : ''}${r.skipped?.length ? `, ${r.skipped.length} skipped (too little history)` : ''}`)
+            log(`ATR baseline: ${r.updated}/${r.symbols} symbols refreshed${r.failed ? `, ${r.failed} fetch failure(s)` : ''}${r.skipped?.length ? `, ${r.skipped.length} skipped (too little history)` : ''}${fetchErrors.length ? ` — e.g. ${fetchErrors[0]}` : ''}`)
             try { pruneAtrHistory(db) } catch { /* pruning is housekeeping */ }
           }
-          // An OK beat means the sweep RAN. Whether it wrote anything is in
-          // the log line above and in the row count — a sweep that updated 0
-          // of 40 symbols is a working controller reporting a data problem,
-          // not a broken controller.
-          await hbeat(db, 'atr_refresh')
+          // WHY THE SWEEP DID WHAT IT DID, somewhere durable. The log line
+          // above evaporates; the heartbeat says only ok/failed. This is the
+          // same shape as protection_audit_last_json and exists for the same
+          // reason — so the next person asking "why is atr_history empty"
+          // reads an answer instead of re-deriving one.
+          try {
+            setState(db, 'atr_refresh_last_json', JSON.stringify({
+              at: new Date().toISOString(),
+              ran, timedOut: !!r?.timedOut, skippedOverlap: !!r?.skippedOverlap,
+              symbols: symbols.length,
+              updated: r?.updated ?? null, failed: r?.failed ?? null,
+              skipped: r?.skipped?.length ?? null,
+              skippedSample: (r?.skipped || []).slice(0, 5),
+              errors: fetchErrors,
+              rowsAfter: db.prepare('SELECT COUNT(*) AS n FROM atr_history').get().n,
+            }))
+          } catch { /* status reporting must never break the sweep */ }
+          // An OK beat means the sweep RAN — and only then. It used to beat OK
+          // unconditionally, two lines under a comment warning against exactly
+          // that: a timeout had already beaten FAILED inside
+          // runBudgetedSubPhase, and this overwrote it, so a sweep that blew
+          // its 180s budget reported healthy. A sweep where EVERY fetch threw
+          // is not "a working controller reporting a data problem" either — it
+          // is a controller that did nothing, and the vol gate is inert behind
+          // it. Legitimate thin-history skips still count as a healthy run.
+          if (!ran) {
+            // The timeout path already beat FAILED with its own reason; do not
+            // stamp over it with a vaguer one.
+            if (r?.skippedOverlap) await hbeat(db, 'atr_refresh', false, 'previous sweep still in flight')
+          } else if (r.updated === 0 && r.failed > 0) {
+            await hbeat(db, 'atr_refresh', false, `every fetch failed (${r.failed}/${r.symbols})${fetchErrors.length ? ` — ${fetchErrors[0]}` : ''}`)
+          } else {
+            await hbeat(db, 'atr_refresh')
+          }
           }
         }
       } catch (err) {
