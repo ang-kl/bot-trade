@@ -72,7 +72,19 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
 
   const newExternal = []
   const manualChanges = []
+  // Kept SEPARATE from manualChanges on purpose. manualChanges means "the
+  // owner touched this at the broker" and drives an alert; a resync means
+  // "our cache had gone stale and we corrected it", which is bookkeeping.
+  // Filing one as the other would put a Telegram siren on our own drift.
+  const ledgerSynced = []
   const relinked = []
+
+  // Two-pass memory for the convergence rule below: `sl:<posId>` / `tp:<posId>`
+  // → the disagreement signature we saw last time. Bounded by the number of
+  // open positions, and entries are deleted the moment a row agrees again.
+  const RESYNC_WATCH_KEY = 'ledger_resync_watch_json'
+  let resyncWatch = {}
+  try { resyncWatch = JSON.parse(getState(db, RESYNC_WATCH_KEY) || '{}') || {} } catch { resyncWatch = {} }
 
   // Price-scale-aware "did it really change" — null↔value counts as a change.
   const differs = (a, b) => {
@@ -122,6 +134,68 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
         if (row.broker_tp != null && differs(bTp, row.broker_tp) && differs(bTp, row.current_tp)) {
           manualChanges.push({ kind: 'tp_moved', symbol: row.symbol, positionId: posId, from: row.broker_tp, to: bTp })
           updates.current_tp = bTp
+        }
+
+        // -------------------------------------------------------------
+        // LEDGER CONVERGENCE — adopt broker truth on a standing
+        // DISAGREEMENT, not only on a broker-side CHANGE.
+        //
+        // The branch above reacts to an event: `differs(bSl, row.broker_sl)`
+        // asks "did the broker's stop move since last pass?". So a ledger
+        // that drifts out of step while the broker's stop then sits still
+        // is never repaired — `bSl === row.broker_sl` on every subsequent
+        // pass, no update fires, and `current_sl` stays wrong forever.
+        //
+        // That is not theoretical: it is the other half of the
+        // POSITION_STOP_MISMATCH noise. naked-position-guard flags
+        // `phantom` whenever our stop disagrees with the broker's by more
+        // than 0.1%, and protection_audit runs every loop cycle — so one
+        // stuck row emits a finding every few minutes indefinitely, while
+        // the component that could fix it is structurally unable to.
+        //
+        // WHY IT TAKES TWO PASSES. Bot amends write current_sl and let the
+        // broker catch up, so "ledger ahead of broker" is a NORMAL transient.
+        // Reconcile runs at loop phase 0 while amends run later in the cycle
+        // AND from the 3s fast-monitor ticker, so an amend genuinely can be
+        // in flight when a snapshot is taken. Adopting the broker's value
+        // there would revert a stop the bot had just tightened.
+        //
+        // So convergence requires the SAME disagreement — same ledger value,
+        // same broker value — observed on two consecutive reconciles. An
+        // in-flight amend resolves long before that (the next snapshot shows
+        // the new stop, and the tamper-watch branch above adopts it); a
+        // genuinely stale row reproduces the identical pair indefinitely.
+        // Nothing is converged on first sighting, by construction.
+        const sig = (a, b) => `${a == null ? '' : Number(a)}|${b == null ? '' : Number(b)}`
+        if (!('current_sl' in updates) && differs(bSl, row.current_sl)) {
+          const s = sig(row.current_sl, bSl)
+          if (resyncWatch[`sl:${posId}`] === s) {
+            ledgerSynced.push({
+              kind: 'sl_resync', symbol: row.symbol, positionId: posId,
+              from: row.current_sl, to: bSl,
+            })
+            updates.current_sl = bSl
+            delete resyncWatch[`sl:${posId}`]
+          } else {
+            resyncWatch[`sl:${posId}`] = s
+          }
+        } else {
+          delete resyncWatch[`sl:${posId}`]
+        }
+        if (!('current_tp' in updates) && differs(bTp, row.current_tp)) {
+          const s = sig(row.current_tp, bTp)
+          if (resyncWatch[`tp:${posId}`] === s) {
+            ledgerSynced.push({
+              kind: 'tp_resync', symbol: row.symbol, positionId: posId,
+              from: row.current_tp, to: bTp,
+            })
+            updates.current_tp = bTp
+            delete resyncWatch[`tp:${posId}`]
+          } else {
+            resyncWatch[`tp:${posId}`] = s
+          }
+        } else {
+          delete resyncWatch[`tp:${posId}`]
         }
       }
 
@@ -442,7 +516,17 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
   // backfilled — cheap, idempotent, pure DB (see reclassifyBrokerCloses).
   const reclassified = reclassifyBrokerCloses(db)
 
-  return { newExternal, closedDetected, manualChanges, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified }
+  // Drop watch entries for positions this pass no longer knows about — closed,
+  // or belonging to an account this scoped pass did not cover (those keep
+  // their own entries, which their own pass maintains).
+  for (const k of Object.keys(resyncWatch)) {
+    const pid = k.slice(3)
+    if (brokerIds.has(pid) && !knownIds.has(pid)) delete resyncWatch[k]
+    else if (!brokerIds.has(pid) && knownIds.has(pid)) delete resyncWatch[k]
+  }
+  try { setState(RESYNC_WATCH_KEY, JSON.stringify(resyncWatch)) } catch { /* non-fatal */ }
+
+  return { newExternal, closedDetected, manualChanges, ledgerSynced, pendingOrders, orphansClosed, ordersGone, relinked, dupsClosed, reclassified }
 }
 
 /**

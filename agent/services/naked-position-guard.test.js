@@ -535,3 +535,71 @@ test('a null/failed suggestion degrades to the original alert, no button', async
   assert.ok(!sent[0].m.includes('suggested TP'))
   assert.equal(sent[0].opts, undefined, 'no buttons when nothing was suggested')
 })
+
+// ---------------------------------------------------------------------------
+// THE DURABLE TRAIL IS RATE-LIMITED. It was not: the mute windows gated
+// Telegram only, so action_log got a row per finding per pass. protection_audit
+// is loop-tied, so one standing POSITION_STOP_MISMATCH wrote a row every few
+// minutes indefinitely — and until the reconciler learned to converge a
+// standing disagreement, nothing could ever clear it.
+// ---------------------------------------------------------------------------
+
+const logRows = (db, method) => db.prepare(
+  `SELECT COUNT(*) n FROM action_log WHERE method = ? AND path = '/protection-audit'`).get(method).n
+
+test('action_log: a standing mismatch logs ONCE per mute window, not once per pass', async () => {
+  const db = tmpDb()
+  const t0 = Date.parse('2026-08-02T00:00:00Z')
+  const mismatch = [{ positionId: '555', stopLoss: 1700, takeProfit: 1900 }]
+  const ours = () => [row({ current_sl: 1650 })]   // 1650 vs 1700 → phantom
+
+  await runProtectionAudit(db, ours(), mismatch, { nowMs: t0 })
+  assert.equal(logRows(db, 'POSITION_STOP_MISMATCH'), 1, 'first sighting is recorded')
+
+  // Nineteen more loop cycles, all inside the hour (57 min) — the condition
+  // has not changed, and neither should the log.
+  for (let i = 1; i <= 19; i++) {
+    await runProtectionAudit(db, ours(), mismatch, { nowMs: t0 + i * 3 * 60_000 })
+  }
+  assert.equal(logRows(db, 'POSITION_STOP_MISMATCH'), 1, 'still one row 57 minutes later')
+
+  // Past the window it logs again, so duration stays reconstructable.
+  await runProtectionAudit(db, ours(), mismatch, { nowMs: t0 + 3700_000 })
+  assert.equal(logRows(db, 'POSITION_STOP_MISMATCH'), 2)
+})
+
+test('action_log: the mute is per position AND per kind', async () => {
+  const db = tmpDb()
+  const t0 = Date.parse('2026-08-02T00:00:00Z')
+  // One naked position and one targetless position, both live at once.
+  const rows = [
+    row({ id: 1, trade_id: 10, ctrader_position_id: '555', current_sl: 1650 }),
+    row({ id: 2, trade_id: 11, symbol: 'BTCUSD', ctrader_position_id: '666', current_sl: 90000 }),
+  ]
+  const broker = [
+    { positionId: '555', stopLoss: null, takeProfit: null },      // naked
+    { positionId: '666', stopLoss: 89000, takeProfit: null },     // targetless
+  ]
+  await runProtectionAudit(db, rows, broker, { nowMs: t0 })
+  assert.equal(logRows(db, 'POSITION_UNPROTECTED'), 1)
+  assert.equal(logRows(db, 'POSITION_NO_TARGET'), 1)
+  await runProtectionAudit(db, rows, broker, { nowMs: t0 + 3 * 60_000 })
+  assert.equal(logRows(db, 'POSITION_UNPROTECTED'), 1, 'muted independently')
+  assert.equal(logRows(db, 'POSITION_NO_TARGET'), 1)
+})
+
+test('action_log: a condition that CLEARS and returns logs again immediately', async () => {
+  const db = tmpDb()
+  const t0 = Date.parse('2026-08-02T00:00:00Z')
+  const naked = [{ positionId: '555', stopLoss: null, takeProfit: null }]
+  const fixed = [{ positionId: '555', stopLoss: 1700, takeProfit: 1900 }]
+
+  await runProtectionAudit(db, [row()], naked, { nowMs: t0 })
+  assert.equal(logRows(db, 'POSITION_UNPROTECTED'), 1)
+  // A stop gets set — the finding disappears and the mute must not outlive it.
+  await runProtectionAudit(db, [row({ current_sl: 1700 })], fixed, { nowMs: t0 + 60_000 })
+  // It goes naked again five minutes later. That is NEW information and must
+  // be recorded now, not an hour from now.
+  await runProtectionAudit(db, [row()], naked, { nowMs: t0 + 300_000 })
+  assert.equal(logRows(db, 'POSITION_UNPROTECTED'), 2, 'a re-occurrence is not muted')
+})

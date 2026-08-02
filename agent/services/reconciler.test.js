@@ -731,3 +731,113 @@ test('reclassify: short exit ABOVE the SL flags gap/liquidation', () => {
   reclassifyBrokerCloses(db)
   assert.match(db.prepare('SELECT close_reason FROM trades WHERE id = ?').get(id).close_reason, /beyond the SL/)
 })
+
+// ---------------------------------------------------------------------------
+// LEDGER CONVERGENCE. The adoption branch reacts to a broker-side CHANGE
+// (`differs(bSl, row.broker_sl)`), so a ledger that drifts while the broker's
+// stop then sits still was never repaired — and protection_audit logged
+// POSITION_STOP_MISMATCH on that row every loop cycle, forever.
+// ---------------------------------------------------------------------------
+
+const slOf = (db, positionId) => db.prepare(
+  `SELECT mp.current_sl AS sl, mp.current_tp AS tp, mp.broker_sl AS bsl, mp.broker_tp AS btp
+     FROM monitored_positions mp JOIN trades t ON t.id = mp.trade_id
+    WHERE t.ctrader_position_id = ?`).get(positionId)
+
+
+test('convergence: a standing disagreement is adopted on the SECOND sighting', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '77' })           // ledger sl 99, tp 110
+  const bp = () => [makeBrokerPosition({ positionId: '77', symbolName: 'XAUUSD', stopLoss: 95, takeProfit: 110 })]
+
+  // Pass 1 only remembers the disagreement. Converging here could revert a
+  // stop the bot had just tightened but the broker had not yet applied.
+  const r1 = reconcilePositions(db, bp(), [], setState)
+  assert.deepEqual(r1.ledgerSynced, [], 'never converges on first sighting')
+  assert.equal(slOf(db, '77').sl, 99, 'ledger untouched')
+  assert.equal(slOf(db, '77').bsl, 95, 'but broker truth is on record')
+
+  // Pass 2: identical disagreement, so it is standing, not in flight. Under
+  // the old rule `differs(95, 95)` was false and this row stayed wrong for
+  // the life of the position while protection_audit logged it every cycle.
+  const r2 = reconcilePositions(db, bp(), [], setState)
+  assert.deepEqual(r2.ledgerSynced, [{ kind: 'sl_resync', symbol: 'XAUUSD', positionId: '77', from: 99, to: 95 }])
+  assert.equal(slOf(db, '77').sl, 95, 'ledger converged on broker truth')
+
+  // And it settles — nothing left to report once they agree.
+  assert.deepEqual(reconcilePositions(db, bp(), [], setState).ledgerSynced, [])
+})
+
+test('convergence: an IN-FLIGHT amend is never clobbered', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '79' })
+  const atBroker = (sl) => [makeBrokerPosition({ positionId: '79', symbolName: 'XAUUSD', stopLoss: sl, takeProfit: 110 })]
+
+  // Ledger and broker agree at 99. The keeper then ratchets to 103 and the
+  // broker has not applied it yet when the next snapshot is taken.
+  reconcilePositions(db, atBroker(99), [], setState)
+  db.prepare(`UPDATE monitored_positions SET current_sl = 103
+              WHERE trade_id IN (SELECT id FROM trades WHERE ctrader_position_id = '79')`).run()
+  const r = reconcilePositions(db, atBroker(99), [], setState)
+  assert.deepEqual(r.ledgerSynced, [], 'first sighting of this disagreement — only remembered')
+  assert.equal(slOf(db, '79').sl, 103, 'the tightened stop survives')
+
+  // The amend lands before the next reconcile. Broker and ledger agree, the
+  // watch entry clears, and nothing was ever reverted.
+  const r2 = reconcilePositions(db, atBroker(103), [], setState)
+  assert.deepEqual(r2.ledgerSynced, [])
+  assert.equal(slOf(db, '79').sl, 103)
+  assert.equal(JSON.parse(getState(db, 'ledger_resync_watch_json') || '{}')['sl:79'], undefined, 'watch cleared')
+})
+
+test('convergence: a resync is NOT reported as a manual change', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '78' })
+  const bp = () => [makeBrokerPosition({ positionId: '78', symbolName: 'XAUUSD', stopLoss: 95, takeProfit: 110 })]
+  reconcilePositions(db, bp(), [], setState)
+  const r = reconcilePositions(db, bp(), [], setState)
+  // manualChanges means "you moved this at the broker" and drives an alert.
+  // Our own stale cache is not that, and must not ring the same bell.
+  assert.deepEqual(r.manualChanges, [])
+  assert.equal(r.ledgerSynced.length, 1)
+})
+
+test('convergence: a genuine manual move still takes the manual-change path', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '80' })
+  reconcilePositions(db, [makeBrokerPosition({ positionId: '80', symbolName: 'XAUUSD', stopLoss: 99, takeProfit: 110 })], [], setState)
+  // Owner drags the stop in the cTrader app: 99 → 97.
+  const r = reconcilePositions(db, [makeBrokerPosition({ positionId: '80', symbolName: 'XAUUSD', stopLoss: 97, takeProfit: 110 })], [], setState)
+  assert.equal(r.manualChanges.length, 1)
+  assert.equal(r.manualChanges[0].kind, 'sl_moved')
+  assert.deepEqual(r.ledgerSynced, [], 'not double-counted as a resync')
+  assert.equal(slOf(db, '80').sl, 97)
+})
+
+test('convergence: the take-profit side behaves the same way', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '81' })            // ledger tp 110
+  const bp = () => [makeBrokerPosition({ positionId: '81', symbolName: 'XAUUSD', stopLoss: 99, takeProfit: 120 })]
+  reconcilePositions(db, bp(), [], setState)
+  const r = reconcilePositions(db, bp(), [], setState)
+  assert.equal(r.ledgerSynced.length, 1)
+  assert.equal(r.ledgerSynced[0].kind, 'tp_resync')
+  assert.equal(slOf(db, '81').tp, 120)
+})
+
+test('convergence: a CHANGING disagreement never converges', () => {
+  const db = mkDb()
+  const setState = mkSetState(db)
+  seedKnownPosition(db, { positionId: '82' })
+  // A stop being walked by the C++ trail engine: a different broker value
+  // every pass. Each is a fresh disagreement, so none is ever "standing".
+  for (const sl of [95, 96, 97, 98]) {
+    const r = reconcilePositions(db, [makeBrokerPosition({ positionId: '82', symbolName: 'XAUUSD', stopLoss: sl, takeProfit: 110 })], [], setState)
+    assert.deepEqual(r.ledgerSynced, [], `sl ${sl} must not resync`)
+  }
+})
