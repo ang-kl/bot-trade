@@ -2430,9 +2430,9 @@ export default function Performance() {
             const on = acct === f.id
             return (
               <button key={f.id} type="button" onClick={() => setAcct(f.id)} aria-pressed={on}
-                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--color-on-accent)' : P_TX, background: on ? P_ACC : P_GL, border: `1px solid ${on ? P_ACC : P_GBD}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25 }}>
-                <span>{f.label}</span>
-                <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: on ? 'rgba(255,255,255,.75)' : P_MU }}>{f.sub}</span>
+                style={{ cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: on ? 'var(--md-on-secondary-container)' : P_TX, background: on ? 'var(--md-secondary-container)' : P_GL, border: `1px solid ${on ? 'transparent' : 'var(--md-outline-variant)'}`, borderRadius: 12, padding: '4px 12px', display: 'flex', flexDirection: 'column', lineHeight: 1.25, transition: 'background-color 150ms' }}>
+                <span>{on ? '✓ ' : ''}{f.label}</span>
+                <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: on ? 'var(--md-on-secondary-container)' : P_MU, opacity: on ? 0.75 : 1 }}>{f.sub}</span>
               </button>
             )
           })}
