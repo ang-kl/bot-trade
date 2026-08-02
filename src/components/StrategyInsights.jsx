@@ -18,23 +18,27 @@ function fmtMoney(n) {
 }
 const pct = (n) => (n == null ? '—' : `${n}%`)
 
-export default function StrategyInsights() {
+export default function StrategyInsights({ account = 'all' }) {
   const [rows, setRows] = useState(null)
   const [days, setDays] = useState(30)
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (!agentConfigured()) return
-    agentGet(`/state/strategy-insights${days ? `?days=${days}` : ''}`)
+    // Scoped per account (owner 02-08: "is this for current account or which
+    // account?" — before this it silently mixed every account's trades).
+    agentGet(`/state/strategy-insights?days=${days || ''}&account=${encodeURIComponent(account)}`)
       .then(r => { setRows(r.rows || []); setError('') })
       .catch(e => setError(e.message))
-  }, [days])
+  }, [days, account])
 
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <div className="text-[9px] font-semibold">Strategy Forecast vs. Actual table</div>
-        <span className="text-[9px] text-[var(--color-text-sub)]">closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires</span>
+        <span className="text-[9px] text-[var(--color-text-sub)]">
+          {account === 'all' ? 'all accounts' : `account ${account} only`} · closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires
+        </span>
         {/* Emphasis follows selection (inventory: unselected was the BOLD
             UPPERCASE one) and the group is a real radiogroup. */}
         <span role="radiogroup" aria-label="Insight range" className="ml-auto flex gap-1">

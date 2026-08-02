@@ -1999,7 +1999,8 @@ export default function stateRouter(db) {
     try {
       const { strategyInsights } = await import('../services/strategy-insights.js')
       const days = Number(req.query.days) > 0 ? Number(req.query.days) : null
-      res.json({ ok: true, rows: strategyInsights(db, { sinceDays: days }) })
+      const accountId = req.query.account && req.query.account !== 'all' ? String(req.query.account) : null
+      res.json({ ok: true, accountId, rows: strategyInsights(db, { sinceDays: days, accountId }) })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2040,14 +2041,18 @@ export default function stateRouter(db) {
   router.get('/strategy-tf-performance', (req, res) => {
     try {
       const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30))
+      // ?account=<id> scopes the grid to that account's closed trades
+      // (strict equality — legacy NULL-account rows only count in All).
+      const acct = req.query.account && req.query.account !== 'all' ? String(req.query.account) : null
       const rows = db.prepare(
         `SELECT COALESCE(label_strategy, strategy, 'unlabelled') AS strat,
                 COALESCE(label_timeframe, '—') AS tf,
                 COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
          FROM trades
          WHERE status = 'closed' AND net_pnl IS NOT NULL AND closed_at >= datetime('now', ?)
+           ${acct ? 'AND account_id = ?' : ''}
          GROUP BY strat, tf`
-      ).all(`-${days} days`)
+      ).all(`-${days} days`, ...(acct ? [acct] : []))
       const tfSet = new Set()
       const byStrat = {}
       let total = 0

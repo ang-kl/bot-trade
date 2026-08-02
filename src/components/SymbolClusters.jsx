@@ -93,12 +93,24 @@ function ClusterRow({ c, open, onToggle }) {
  *           days: number, windowMinutes: number,
  *           onDays: Function, onWindow: Function, inModal?: boolean }} props
  */
+// Owner (02-08-2026): "two columns, it is using too much space and
+// pagination after 15 rows" — one page is 15 clusters, laid out side by
+// side in two column stacks on anything wider than a phone.
+const PAGE_SIZE = 15
+
 export default function SymbolClusters({
   data, loading, error, days, windowMinutes, onDays, onWindow, inModal = false,
 }) {
   const [openId, setOpenId] = useState(null)
+  const [page, setPage] = useState(0)
 
   const clusters = data?.clusters || []
+  const pages = Math.max(1, Math.ceil(clusters.length / PAGE_SIZE))
+  const pageSafe = Math.min(page, pages - 1)
+  const pageRows = clusters.slice(pageSafe * PAGE_SIZE, pageSafe * PAGE_SIZE + PAGE_SIZE)
+  // Fill the left column first: 8/7 on a full page.
+  const splitAt = Math.ceil(pageRows.length / 2)
+  const colRows = pageRows.length > 4 ? [pageRows.slice(0, splitAt), pageRows.slice(splitAt)] : [pageRows]
   // Ranked "which code path is doing this" — the whole point of the report.
   const ranked = useMemo(
     () => Object.entries(data?.byPath || {}).sort((a, b) => b[1] - a[1]),
@@ -166,18 +178,35 @@ export default function SymbolClusters({
               extra legs by path — {ranked.length ? ranked.map(([p, n]) => `${p} ${n}`).join(' · ') : '—'}
             </span>
           </div>
-          <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, borderBottom: `1px solid ${EDG}`, paddingBottom: 1 }}>
-            <span /><span>Symbol</span><span>First open</span><span>Legs</span><span>Path</span><span style={{ textAlign: 'right' }}>Net</span>
-          </div>
           {/* Owner (2026-07-25): "Halt the animation for the Trade-Audit
               page" — the AutoAnimate list reflow re-fired on every 60s data
-              refresh; the list is static now. */}
-          <div>
-            {clusters.map(c => {
-              const id = `${c.accountId}|${c.symbol}|${c.firstOpenedAt}`
-              return <ClusterRow key={id} c={c} open={openId === id} onToggle={setOpenId} />
-            })}
+              refresh; the list is static now. Two column stacks (02-08),
+              each with its own header so a row never strays from its
+              column's labels. */}
+          <div style={{ display: 'grid', gridTemplateColumns: colRows.length === 2 ? 'repeat(auto-fit, minmax(360px, 1fr))' : '1fr', columnGap: 18 }}>
+            {colRows.map((rows, ci) => (
+              <div key={ci}>
+                <div className="t-gridhead" style={{ display: 'grid', gridTemplateColumns: COLS, gap: 6, borderBottom: `1px solid ${EDG}`, paddingBottom: 1 }}>
+                  <span /><span>Symbol</span><span>First open</span><span>Legs</span><span>Path</span><span style={{ textAlign: 'right' }}>Net</span>
+                </div>
+                {rows.map(c => {
+                  const id = `${c.accountId}|${c.symbol}|${c.firstOpenedAt}`
+                  return <ClusterRow key={id} c={c} open={openId === id} onToggle={setOpenId} />
+                })}
+              </div>
+            ))}
           </div>
+          {pages > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
+              <button type="button" aria-label="Previous page" disabled={pageSafe === 0} style={{ ...pill(false), opacity: pageSafe === 0 ? 0.4 : 1 }}
+                onClick={() => setPage(p => Math.max(0, p - 1))}>‹</button>
+              <span style={{ fontSize: 'var(--fs-d9)', color: SB, fontVariantNumeric: 'tabular-nums' }}>
+                page {pageSafe + 1} / {pages} · {clusters.length} clusters
+              </span>
+              <button type="button" aria-label="Next page" disabled={pageSafe >= pages - 1} style={{ ...pill(false), opacity: pageSafe >= pages - 1 ? 0.4 : 1 }}
+                onClick={() => setPage(p => Math.min(pages - 1, p + 1))}>›</button>
+            </div>
+          )}
         </>
       )}
     </div>

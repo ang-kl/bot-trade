@@ -15,6 +15,7 @@ import AccountHealth from '../components/AccountHealth.jsx'
 import AccountPivot from '../components/AccountPivot.jsx'
 import MarketClock from '../components/MarketClock.jsx'
 import StrategyInsights from '../components/StrategyInsights.jsx'
+import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import AccountSwitcher from '../components/AccountSwitcher.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
@@ -98,6 +99,7 @@ function AccountCard({ acct, marketHours, onChanged }) {
 
 export default function Accounts() {
   const [bot, setBot] = useState(null)         // the selected account (fast path)
+  const [insightsAcct, setInsightsAcct] = useState('all') // Strategy Forecast vs. Actual scope
   const [others, setOthers] = useState(null)   // remaining accounts (on demand)
 
   // accountId → {positions, floating, equity, usedMargin} for the Trading
@@ -242,7 +244,12 @@ export default function Accounts() {
       <div id="sec-others" className="space-y-8">{others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>
       {others && others.length === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
 
-      <div id="sec-insights"><StrategyInsights /></div>
+      <div id="sec-insights" className="space-y-1">
+        {/* Owner 02-08: "must have the option to switch trading-accounts to
+            see the information per trading-account" */}
+        <AccountScopePills value={insightsAcct} onChange={setInsightsAcct} />
+        <StrategyInsights account={insightsAcct} />
+      </div>
 
       <p className="text-[9px] text-[var(--color-text-sub)]">
         *Est. P&L is the price move in the symbol's quote currency (lots × contract size × Δprice), excluding swap and commission — cTrader's own app shows the exact figure.
