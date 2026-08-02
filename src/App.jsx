@@ -94,6 +94,7 @@ import MobileTabBar from './components/MobileTabBar.jsx'
 import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import SessionFooter from './components/SessionFooter.jsx'
+import { useBotChanges, BotChangesFooterButton, BotChangeHighlighter } from './components/BotChanges.jsx'
 import { useTheme } from './lib/theme.js'
 import { Toaster } from 'sonner'
 
@@ -203,6 +204,10 @@ function navLinkClasses(isActive) {
 }
 
 export default function App() {
+  // Bot change ledger — feeds the sidebar Bot Changes button and the yellow
+  // section highlights (owner 02-08).
+  const botChanges = useBotChanges()
+  const appLocation = useLocation()
   const { theme, setTheme } = useTheme()
   // THERE IS NO PAGE-WIDE FOOTER ANY MORE (owner brief, instr/footer_issue.md:
   // "Replace the present large page-wide footer with a compact, single-line
@@ -237,6 +242,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen text-[var(--color-text)] lg:flex">
+      {/* Yellow-border applier for bot-changed sections (owner 02-08). */}
+      <BotChangeHighlighter rows={botChanges} routeKey={appLocation.pathname} />
       {/* Global toasts (owner polish audit) — action failures surface here
           via agent-api's agentPost hook; richColors matches the app's
           up/down semantics, position clears the fixed glass footer. */}
@@ -292,6 +299,9 @@ export default function App() {
               so it cannot overlap the strategy table the way the old
               page-wide footer did. */}
           <div className="shrink-0">
+            {/* Owner 02-08: the Bot Changes ledger sits ABOVE the session
+                line — what the bot changed on their behalf, and when. */}
+            <BotChangesFooterButton rows={botChanges} />
             <SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
             {/* The theme control is the one other piece of web-app chrome that
                 has to stay reachable. It sits beside the session line as an
@@ -390,7 +400,7 @@ export default function App() {
             which on this app is the More sheet. Same component, same popover,
             same protections — not a reduced phone variant. */}
         <MobileTabBar
-          footerNote={<SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />}
+          footerNote={<><BotChangesFooterButton rows={botChanges} /><SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} /></>}
           themeButton={
             <button
               type="button"

@@ -2624,6 +2624,36 @@ export default function actionsRouter(db) {
   // atrPeriod handling was unreachable, and its `config` reply key is now on
   // the live route. Removed 2026-08-02.)
 
+  // -----------------------------------------------------------------------
+  // POST /actions/bot-note — the bot's own change ledger (owner 02-08-2026:
+  // "highlight in yellow border of the changes that you have change them in
+  // the web-app, so I know that you had done that... these are done by bot
+  // and not me and when"). Every change the agent (Claude) performs on the
+  // owner's behalf is recorded here BY the agent, and the UI reads it back:
+  // yellow borders on the touched sections + the sidebar Bot Changes panel.
+  // Body: { what, detail?, targets?: ['sec-pipeline', ...] }. Keeps the
+  // last 100 entries.
+  // -----------------------------------------------------------------------
+  router.post('/bot-note', (req, res) => {
+    try {
+      const { what, detail = null, targets = [] } = req.body || {}
+      if (!what || typeof what !== 'string') return res.status(400).json({ error: 'what (string) required' })
+      let list = []
+      try { list = JSON.parse(getState(db, 'bot_changes_json') || '[]') } catch { list = [] }
+      if (!Array.isArray(list)) list = []
+      list.unshift({
+        at: new Date().toISOString(),
+        what: String(what).slice(0, 300),
+        detail: detail != null ? String(detail).slice(0, 1000) : null,
+        targets: Array.isArray(targets) ? targets.slice(0, 20).map(t => String(t).slice(0, 80)) : [],
+      })
+      setState(db, 'bot_changes_json', JSON.stringify(list.slice(0, 100)))
+      res.json({ ok: true, count: Math.min(list.length, 100) })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // POST /actions/closed-market-limits — arm/disarm resting limit orders for
   // closed-market setups. Body: { on }.
   router.post('/closed-market-limits', async (req, res) => {

@@ -2078,6 +2078,15 @@ export default function stateRouter(db) {
     res.json({ config: loadProfitKeeperConfig(db) })
   })
 
+  // GET /state/bot-changes — the bot's change ledger (see /actions/bot-note):
+  // what the agent changed on the owner's behalf, and when. The UI paints
+  // yellow borders on the touched sections and lists entries in the sidebar.
+  router.get('/bot-changes', (_req, res) => {
+    let rows = []
+    try { rows = JSON.parse(getState(db, 'bot_changes_json') || '[]') } catch { rows = [] }
+    res.json({ rows: Array.isArray(rows) ? rows : [] })
+  })
+
   // GET /state/loss-guardian — the loss-side safety-net policy
   router.get('/loss-guardian', async (_req, res) => {
     const { loadLossGuardianConfig } = await import('../services/loss-guardian.js')
