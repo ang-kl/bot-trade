@@ -67,6 +67,59 @@ function loopSecFrom(db) {
   return (Number.isFinite(n) && n >= 1 ? n : 5) * 60
 }
 
+/**
+ * The loop's REAL period, which is not its configured interval.
+ *
+ * loop.js re-arms with `delay = max(10s, interval - elapsed)`, so the
+ * interval is a FLOOR between cycles, not a period. When a cycle takes
+ * longer than the interval — routine, since a cycle is dozens of broker
+ * round-trips — the true period is `elapsed + 10s`, and the configured
+ * number says nothing about it.
+ *
+ * Measured on production 02-08-2026: `loop_interval_min` was 1 (60s) while
+ * cycles ran ~3.5 minutes, so EIGHT tiedToLoop controllers sat permanently
+ * "stalled" — main_loop, burn_in, pending_orders, order_monitor,
+ * trade_guards, profit_keeper, adaptive_breaker, autopilot — every one of
+ * them with `consecutive_failures: 0` and a heartbeat 3 minutes old. A
+ * watchdog that is always red cannot report a real stall, which is worse
+ * than having no watchdog: the owner learns to ignore it, and the one time
+ * it means something, it looks the same as the other 287 times that day.
+ *
+ * So the expectation follows what the loop can actually achieve: the larger
+ * of the configured interval and the last observed cycle duration. `factor`
+ * still supplies the grace on top, so a genuine hang trips it exactly as
+ * before — a hang produces NO new `last_loop_ms` (loop.js writes it only
+ * after a cycle completes, loop.js:3411), so the expectation stays at the
+ * last healthy period while the age climbs past it.
+ *
+ * Capped at OBSERVED_LOOP_CEIL_SEC. Without a ceiling, one pathological
+ * cycle — a broker timeout storm, a 40-minute reconcile — would raise the
+ * expectation for every cycle after it, and at factor 3 that is hours of
+ * deliberate blindness bought from a single outlier. The cap keeps the
+ * worst case bounded: a cycle slower than the ceiling reads as stalled,
+ * which is the correct verdict for a loop that slow.
+ */
+export const OBSERVED_LOOP_CEIL_SEC = 900 // 15 min; ×3 grace = 45 min blind at worst
+
+function loopPeriodSecFrom(db, loopSec) {
+  const lastMs = Number(getState(db, 'last_loop_ms'))
+  if (!Number.isFinite(lastMs) || lastMs <= 0) return loopSec
+  // +10s: loop.js's own minimum breather between cycles.
+  const observedSec = Math.min(Math.ceil(lastMs / 1000) + 10, OBSERVED_LOOP_CEIL_SEC)
+  return Math.max(loopSec, observedSec)
+}
+
+/**
+ * The period every loop-tied expectation is measured against. Callers that
+ * pass an explicit `loopSec` (tests, and anything wanting the configured
+ * number) keep it verbatim; production passes nothing and gets the observed
+ * period. Shared by the watchdog and the panel ON PURPOSE — a panel that
+ * says "ok" while the alerter says "stalled" is its own bug.
+ */
+function effectiveLoopSec(db, loopSec) {
+  return loopSec ?? loopPeriodSecFrom(db, loopSecFrom(db))
+}
+
 function expectedSecFor(def, loopSec) {
   return def.tiedToLoop ? loopSec * (def.loopMultiplier || 1) : def.expectedSec
 }
@@ -117,7 +170,7 @@ export function _resetBootStateForTests(ms = Date.now()) { bootAtMs = ms; restar
 // via auditControllerEvent, so "which controller was dead at HH:MM" is
 // answerable later — Telegram alerts evaporate, rows do not.
 export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec = null, bootMs = null } = {}) {
-  const lsec = loopSec ?? loopSecFrom(db)
+  const lsec = effectiveLoopSec(db, loopSec)
   const say = (text) => { try { notify?.(text) } catch { /* alerting must never throw */ } }
   const events = []
   const rows = db.prepare('SELECT * FROM controller_heartbeats').all()
@@ -180,7 +233,7 @@ export function checkHeartbeats(db, { now = new Date(), notify = null, loopSec =
  * registered controller, even ones that have never beaten (status 'idle').
  */
 export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
-  const lsec = loopSec ?? loopSecFrom(db)
+  const lsec = effectiveLoopSec(db, loopSec)
   const byName = {}
   for (const row of db.prepare('SELECT * FROM controller_heartbeats').all()) byName[row.name] = row
   return Object.entries(CONTROLLERS).map(([name, def]) => {

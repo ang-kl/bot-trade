@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState, getState } from '../db.js'
 import {
   CONTROLLERS, beat, checkHeartbeats, heartbeatView, probeCppExec, rosterDrift,
-  _resetBootStateForTests,
+  _resetBootStateForTests, OBSERVED_LOOP_CEIL_SEC,
 } from './heartbeat.js'
 
 const T0 = new Date('2026-07-17T12:00:00Z')
@@ -94,6 +94,96 @@ test('checkHeartbeats: loop-tied limits follow loop_interval_min from the db', (
   beat(db, 'main_loop', { now: T0 })
   const ev = checkHeartbeats(db, { now: plus(200), notify: (t) => alerts.push(t) })
   assert.equal(ev[0]?.event, 'stalled')
+})
+
+// ---------------------------------------------------------------------------
+// The observed-period expectation. Production 02-08-2026: loop_interval_min
+// was 1 (60s) while cycles genuinely took ~3.5 minutes, so EIGHT loop-tied
+// controllers sat permanently 'stalled' with consecutive_failures 0. A
+// watchdog that is always red reports nothing.
+// ---------------------------------------------------------------------------
+
+test('loop-tied expectation follows the OBSERVED cycle, not the configured floor', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')          // 60s configured…
+  setState(db, 'last_loop_ms', String(210_000))   // …but cycles really take 3.5m
+  beat(db, 'main_loop', { now: T0 })
+
+  // 226s old — the exact production number. Under the configured floor this
+  // was 60×3 = 180s and read 'stalled'; against the observed 220s period the
+  // limit is 660s and it is simply a healthy loop mid-cycle.
+  const v = heartbeatView(db, { now: plus(226) })
+  const ml = v.find(x => x.name === 'main_loop')
+  assert.equal(ml.status, 'ok', 'a loop beating on its real cadence is not stalled')
+  assert.equal(ml.expected_sec, 220, '210s observed + loop.js 10s breather')
+
+  // And the alerter agrees with the panel — that is the whole point of them
+  // sharing one derivation.
+  const alerts = []
+  assert.deepEqual(checkHeartbeats(db, { now: plus(226), notify: (t) => alerts.push(t) }), [])
+  assert.equal(alerts.length, 0)
+})
+
+test('a REAL hang still trips, because a hung cycle writes no new last_loop_ms', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')
+  setState(db, 'last_loop_ms', String(210_000))   // last HEALTHY cycle
+  beat(db, 'main_loop', { now: T0 })
+
+  // loop.js:3411 writes last_loop_ms only after a cycle COMPLETES, so a hang
+  // leaves the expectation pinned at the last good period (220s) while the
+  // age climbs past 220×3 = 660s.
+  const alerts = []
+  const ev = checkHeartbeats(db, { now: plus(700), notify: (t) => alerts.push(t) })
+  assert.equal(ev[0]?.event, 'stalled')
+  assert.match(alerts[0], /Main loop/)
+})
+
+test('loop-tied expectation falls back to the configured interval with no measurement', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')
+  beat(db, 'main_loop', { now: T0 })
+  // No last_loop_ms at all (fresh DB, or a boot before the first cycle ends).
+  assert.equal(heartbeatView(db, { now: plus(10) }).find(v => v.name === 'main_loop').expected_sec, 60)
+
+  // Junk values are measurements too, and must not be trusted.
+  for (const junk of ['0', '-1', 'nonsense', '']) {
+    setState(db, 'last_loop_ms', junk)
+    assert.equal(
+      heartbeatView(db, { now: plus(10) }).find(v => v.name === 'main_loop').expected_sec, 60,
+      `last_loop_ms=${JSON.stringify(junk)} must not move the expectation`)
+  }
+})
+
+test('one pathological cycle cannot blind the watchdog forever', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '5')
+  setState(db, 'last_loop_ms', String(3 * 3_600_000)) // a 3-hour cycle
+  beat(db, 'main_loop', { now: T0 })
+  const ml = heartbeatView(db, { now: plus(10) }).find(v => v.name === 'main_loop')
+  assert.equal(ml.expected_sec, OBSERVED_LOOP_CEIL_SEC, 'capped, not 3 hours')
+  // So the blind window stays bounded at ceiling × factor, not hours × factor.
+  assert.equal(
+    heartbeatView(db, { now: plus(OBSERVED_LOOP_CEIL_SEC * 3 + 60) })
+      .find(v => v.name === 'main_loop').status, 'stalled')
+})
+
+test('an explicit loopSec still wins — callers asking for the configured number get it', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')
+  setState(db, 'last_loop_ms', String(210_000))
+  beat(db, 'main_loop', { now: T0 })
+  assert.equal(
+    heartbeatView(db, { now: plus(10), loopSec: 300 }).find(v => v.name === 'main_loop').expected_sec, 300)
+})
+
+test('loopMultiplier composes with the observed period (weekend_bank runs every 3rd cycle)', () => {
+  const db = initDB(':memory:')
+  setState(db, 'loop_interval_min', '1')
+  setState(db, 'last_loop_ms', String(210_000))   // 220s observed
+  beat(db, 'weekend_bank', { now: T0 })
+  const wb = heartbeatView(db, { now: plus(10) }).find(v => v.name === 'weekend_bank')
+  assert.equal(wb.expected_sec, 660, '220s × 3 cycles')
 })
 
 test('heartbeatView: idle when never beaten, ok/warn/error/stalled otherwise', () => {

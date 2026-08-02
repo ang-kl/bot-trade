@@ -6,7 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cadenceMs, relVolFromBars, effectiveCadenceMs, isSpikeMove, SPIKE_PCT_PER_MIN, frozenQuoteUpdate, FROZEN_QUOTE_DEFAULT_MIN } from './fast-monitor.js'
+import { cadenceMs, relVolFromBars, effectiveCadenceMs, isSpikeMove, SPIKE_PCT_PER_MIN, frozenQuoteUpdate, FROZEN_QUOTE_DEFAULT_MIN, makeCadenceGate } from './fast-monitor.js'
 
 const MIN = 60_000
 
@@ -117,4 +117,85 @@ test('frozenQuoteUpdate: threshold 0 disables alerting entirely', () => {
   r = frozenQuoteUpdate(r.rec, 1.1, t0 + 100 * MIN, 0)
   assert.equal(r.alert, false)
   assert.equal(FROZEN_QUOTE_DEFAULT_MIN, 10)
+})
+
+// ---------------------------------------------------------------------------
+// Sub-cadence gating. The bug this replaces: `tick % everyTicks(n) === 0` on a
+// counter that advances during SKIPPED ticks, so a sub-task ran only when a
+// multiple of its period happened to coincide with a tick where the body
+// actually started. Production cost: cpp_exec went 26h with no beat at all.
+// ---------------------------------------------------------------------------
+
+test('cadence gate: arms on first sighting, then fires on wall-clock elapsed', () => {
+  const due = makeCadenceGate()
+  const t0 = 1_000_000
+  assert.equal(due('probe', 120, t0), false, 'first sighting arms, does not fire')
+  assert.equal(due('probe', 120, t0 + 119_000), false)
+  assert.equal(due('probe', 120, t0 + 120_000), true)
+  assert.equal(due('probe', 120, t0 + 120_001), false, 're-armed immediately after firing')
+  assert.equal(due('probe', 120, t0 + 240_000), true)
+})
+
+test('cadence gate: keys are independent', () => {
+  const due = makeCadenceGate()
+  const t0 = 0
+  due('a', 60, t0); due('b', 120, t0)
+  assert.equal(due('a', 60, t0 + 60_000), true)
+  assert.equal(due('b', 120, t0 + 60_000), false, 'b is on its own schedule')
+  assert.equal(due('b', 120, t0 + 120_000), true)
+})
+
+test('cadence gate: a late pass owes ONE run, not a backlog', () => {
+  const due = makeCadenceGate()
+  due('probe', 60, 0)
+  // The pass overran by ten minutes. One fire, then re-anchored from now —
+  // catching up ten missed probes would be ten broker round-trips at once.
+  assert.equal(due('probe', 60, 600_000), true)
+  assert.equal(due('probe', 60, 600_001), false)
+  assert.equal(due('probe', 60, 660_000), true)
+})
+
+test('cadence gate: SKIPPED ticks cannot starve a sub-task (the 26h cpp_exec bug)', () => {
+  // Replay the exact production shape: a 3s ticker whose body takes 60s, so
+  // only every 20th firing actually runs the body. Under the old rule the
+  // run-start ticks were 1, 21, 41, 61… — never ≡ 0 (mod 20) and never
+  // ≡ 0 (mod 40) — so the 60s watchdog and the 120s cpp probe fired ZERO
+  // times, forever. Time-based gating does not care which ticks ran.
+  const TICK_MS = 3_000, BODY_TICKS = 20
+  const due = makeCadenceGate()
+  let probes = 0, watchdogs = 0
+  let oldProbes = 0, oldWatchdogs = 0
+  let tick = 0, busyUntil = 0
+  const everyTicks = (secs) => Math.max(1, Math.round((secs * 1000) / TICK_MS))
+
+  for (let i = 0; i < 2_000; i++) {          // 2,000 ticks = 100 minutes
+    tick++
+    if (tick < busyUntil) continue           // overlap guard: body still running
+    busyUntil = tick + BODY_TICKS
+    const nowMs = tick * TICK_MS
+    if (tick % everyTicks(120) === 0) oldProbes++       // the old rule…
+    if (tick % everyTicks(60) === 0) oldWatchdogs++
+    if (due('cpp_probe', 120, nowMs)) probes++          // …and the new one
+    if (due('watchdog', 60, nowMs)) watchdogs++
+  }
+
+  assert.equal(oldProbes, 0, 'the old modulo rule never fired — this is the bug')
+  assert.equal(oldWatchdogs, 0, 'the stall alerter was starved the same way')
+  // 100 minutes of wall clock: ~50 probes at 120s, ~100 watchdog passes at 60s.
+  // The body only runs once a minute, so each gate fires at most once per run.
+  assert.ok(probes >= 45 && probes <= 50, `cpp probe should fire ~50×, got ${probes}`)
+  assert.ok(watchdogs >= 90 && watchdogs <= 100, `watchdog should fire ~100×, got ${watchdogs}`)
+})
+
+test('cadence gate: a fast ticker with no skips does not multiply traffic', () => {
+  // The property the old `everyTicks` was there to protect: dropping
+  // FAST_MONITOR_MS from 3s to 1s must not triple probe volume.
+  const runs = (tickMs) => {
+    const due = makeCadenceGate()
+    let n = 0
+    for (let tick = 1; tick * tickMs <= 3_600_000; tick++) if (due('probe', 120, tick * tickMs)) n++
+    return n
+  }
+  assert.equal(runs(1_000), runs(3_000), 'probe count follows the clock, not the tick rate')
+  assert.equal(runs(3_000), 29, 'one hour at 120s, minus the arming interval')
 })

@@ -262,22 +262,62 @@ export async function runFastMonitor(db, creds, deps = {}) {
 }
 
 /**
- * Start the 30s ticker. Returns a stop() handle (tests, shutdown).
+ * Sub-cadence gate for the ticker — "has `everySec` actually elapsed for this
+ * sub-task?", measured in TIME.
+ *
+ * WHY THIS IS NOT `tick % everyTicks(n) === 0` (incident 02-08-2026). The
+ * ticker increments `tick` on every interval firing, INCLUDING the firings the
+ * overlap guard skips because the previous pass is still running. The
+ * sub-cadences were exact modulos on that counter, so a sub-task only ran if a
+ * multiple of its period happened to coincide with a tick where the body
+ * actually started — and the run-start ticks are a sparse arithmetic
+ * progression whose step is the pass duration. When that step shares a factor
+ * with the period, the two never meet and the sub-task NEVER RUNS.
+ *
+ * That is not hypothetical. `cpp_exec` went 26 hours without a single
+ * heartbeat — not a failed beat, no beat at all — while a manual probe of the
+ * same sidecar answered instantly. `probeCppExec` was never called, so the
+ * credential re-push self-heal inside it never ran either: a fix that was
+ * deployed, correct, and unreachable. `checkHeartbeats` (the stall alerter),
+ * `runPnlWatch`, `runLossCap` and `runProfitRatchet` sat behind the same kind
+ * of modulo — the last two ACT on money.
+ *
+ * Time is the thing these cadences were always specified in; the code comment
+ * above even claimed they were "TIME-based". Now they are.
+ *
+ * Re-anchors from `nowMs` rather than the missed deadline on purpose: a pass
+ * that ran late owes one run, not a backlog of them.
+ */
+export function makeCadenceGate() {
+  const nextAt = new Map()
+  return function due(key, everySec, nowMs) {
+    const at = nextAt.get(key)
+    if (at === undefined || nowMs >= at) {
+      nextAt.set(key, nowMs + everySec * 1000)
+      return at !== undefined // first sighting arms the timer, it does not fire
+    }
+    return false
+  }
+}
+
+/**
+ * Start the ticker. Returns a stop() handle (tests, shutdown).
  *
  * The ticker doubles as the reliability watchdog — deliberately independent
  * of the main loop so a silently dead main loop is still detected: every
- * tick beats the fast_monitor heartbeat, every 2nd tick runs the stall
- * check (checkHeartbeats → Telegram alert), every 4th tick actively probes
- * the C++ exec engine's GET /health when EXEC_ENGINE=cpp.
+ * pass beats the fast_monitor heartbeat, every 60s runs the stall check
+ * (checkHeartbeats → Telegram alert), every 120s actively probes the C++
+ * exec engine's GET /health when EXEC_ENGINE=cpp. Those sub-cadences are
+ * gated by `due()` — see makeCadenceGate for why they are not tick counts.
  */
 export function startFastMonitor(db, getCreds, deps = {}) {
-  let tick = 0
+  const due = deps.due ?? makeCadenceGate()
+  const clock = deps.clock ?? (() => Date.now())
   // Owner 2026-07-24: default tick 3s (was 30s) so spike windows re-price at
   // tick speed; FAST_MONITOR_MS overrides, floored at 1s. Sub-task cadences
-  // below are TIME-based (everyTicks) so a faster ticker doesn't multiply
-  // pnl-watch / watchdog / cpp-probe traffic.
+  // below are wall-clock so a faster ticker doesn't multiply pnl-watch /
+  // watchdog / cpp-probe traffic.
   const tickMs = deps.tickMs ?? Math.max(1_000, Number(process.env.FAST_MONITOR_MS) || 3_000)
-  const everyTicks = (secs) => Math.max(1, Math.round((secs * 1000) / tickMs))
   // WHOLE-TICK overlap guard (incident 2026-07-28: the site became
   // unreachable while the loop itself was healthy). setInterval does not
   // await an async callback, and only runFastMonitor was guarded — every
@@ -292,7 +332,6 @@ export function startFastMonitor(db, getCreds, deps = {}) {
   let tickRunning = false
   let skipped = 0
   const t = setInterval(async () => {
-    tick++
     if (tickRunning) {
       skipped++
       // Still beat — a busy monitor is not a stalled one, and skipping the
@@ -308,6 +347,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     // ONE creds read per tick: this was called five times per tick, each
     // doing several getState reads plus a JSON.parse of the symbol map.
     const creds = getCreds(db)
+    // One clock read per pass, so every sub-cadence below judges itself
+    // against the same instant.
+    const nowMs = clock()
     try {
     skipped = 0
     let tickErr = null
@@ -332,9 +374,9 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     } catch (err) {
       console.error('[fast-monitor] session-open-guard failed:', err.message)
     }
-    // P&L drift watch — every 2nd tick (~60s): Telegram warns when an open
-    // trade crosses ±N% of balance (owner audit: nothing warned on drift).
-    if (tick % everyTicks(60) === 0) {
+    // P&L drift watch — every 60s: Telegram warns when an open trade crosses
+    // ±N% of balance (owner audit: nothing warned on drift).
+    if (due('pnl_watch', 60, nowMs)) {
       try {
         if (creds?.ready) {
           const { runPnlWatch } = await import('./pnl-watch.js')
@@ -374,8 +416,8 @@ export function startFastMonitor(db, getCreds, deps = {}) {
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
       hb.beat(db, 'fast_monitor', { ok: !tickErr, error: tickErr?.message ?? null })
-      if (tick % everyTicks(120) === 0) await hb.probeCppExec(db)
-      if (tick % everyTicks(60) === 0) {
+      if (due('cpp_probe', 120, nowMs)) await hb.probeCppExec(db)
+      if (due('watchdog', 60, nowMs)) {
         hb.checkHeartbeats(db, {
           notify: (text) => import('./telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
         })
