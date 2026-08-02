@@ -1349,6 +1349,25 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/watchlist-summary?accounts=<id,id,…>
+  // Per-account watchlist facts: how many symbols this account actually
+  // trades, whether that list is its own or inherited from the shared one,
+  // how many of those symbols have a usable backtest on record, and which do
+  // not. Answers the owner's question of 02-08-2026 — "whether the ACCOUNT
+  // has how many symbols in watchlist, how many backtested" — which no
+  // surface could previously state. ?accounts= lets the Connect page ask
+  // about the BROKER roster, including accounts the registry has never seen.
+  router.get('/watchlist-summary', async (req, res) => {
+    try {
+      const { accountWatchlistSummary } = await import('../services/account-watchlist-summary.js')
+      const raw = req.query.accounts ? String(req.query.accounts) : ''
+      const ids = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : null
+      res.json(accountWatchlistSummary(db, { accountIds: ids }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/goal-tracker?days=<n>
   // Progress toward the go-live gate (win rate 68%, profit factor 1.68 by
   // 12 Aug) for every registry account plus a pooled portfolio row. Answers

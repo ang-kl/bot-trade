@@ -26,6 +26,11 @@ export default function Connect() {
   const [linked, setLinked] = useState(null)          // { accountId, isLive, symbolsMapped }
   const [symbolCount, setSymbolCount] = useState(null)
   const [broker, setBroker] = useState({})        // accountId -> full broker snapshot (positions, orders)
+  // accountId -> watchlist facts (size, own vs inherited, backtest coverage).
+  // Fetched separately from the broker snapshot because it is DB truth, not
+  // broker truth: it says what the bot WOULD trade on that account, which is
+  // the thing the account row could never previously state.
+  const [wl, setWl] = useState({})
   const [openDetail, setOpenDetail] = useState(null) // accountId whose trade detail is expanded
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
@@ -51,6 +56,24 @@ export default function Connect() {
       setBroker(m)
     }).catch(() => {})
   }, [])
+
+  // Watchlist facts follow the account list — the ids are only known once the
+  // picker has loaded, and they include broker accounts the registry has never
+  // seen, which the route answers for by falling back to the shared list.
+  const acctKey = (accounts || []).map(a => a.accountId).join(',')
+  useEffect(() => {
+    if (!acctKey) return
+    let alive = true
+    agentGet(`/state/watchlist-summary?accounts=${encodeURIComponent(acctKey)}`)
+      .then(r => {
+        if (!alive) return
+        const m = {}
+        for (const row of r?.accounts || []) m[row.accountId] = row
+        setWl(m)
+      })
+      .catch(() => { /* the chip simply does not render */ })
+    return () => { alive = false }
+  }, [acctKey])
 
   // OAuth callback: Spotware redirects back with ?code=... after the user
   // logs in. Exchange it for a token server-side, hand the token to the
@@ -263,6 +286,7 @@ export default function Connect() {
                 const winners = positions.filter(p => pnlOf(p) > 0).length
                 const losers = positions.filter(p => pnlOf(p) < 0).length
                 const detailOpen = openDetail === a.accountId
+                const w = wl[String(a.accountId)]
                 return (
                 <div key={a.accountId} className={`rounded-[7px] border ${linked?.accountId === a.accountId ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}>
                   {/* Nested-interactive fix (inventory): the detail chip was a
@@ -283,7 +307,13 @@ export default function Connect() {
                       <span className="font-semibold">{a.traderLogin ? `Login ${a.traderLogin}` : `Account ${a.accountId}`}</span>
                       {a.brokerTitle && <span className="text-[var(--color-text-sub)]">{a.brokerTitle}</span>}
                     </button>
-                    {b && (
+                    {/* The expander used to require a broker snapshot. It now
+                        opens whenever there is anything to show — the watchlist
+                        facts come from the DB and are available even when the
+                        broker call failed or has not returned. Position counts
+                        are still only printed when the snapshot is real: "0
+                        live · 0 set" for an unknown account would be a lie. */}
+                    {(b || w) && (
                       <button
                         type="button"
                         aria-expanded={detailOpen}
@@ -291,7 +321,7 @@ export default function Connect() {
                         className="inline-flex items-center gap-2 text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer hover:shadow-[var(--glow-accent)]"
                         title="Tap for per-trade detail"
                       >
-                        <span>{positions.length} live · {orders.length} set</span>
+                        <span>{b ? `${positions.length} live · ${orders.length} set` : 'detail'}</span>
                         {positions.length > 0 && (
                           <span>
                             <span className="text-[var(--color-up)] font-semibold">{winners}▲</span>
@@ -301,6 +331,24 @@ export default function Connect() {
                         )}
                         <span aria-hidden="true">{detailOpen ? '▾' : '▸'}</span>
                       </button>
+                    )}
+                    {w && (
+                      <span
+                        className="inline-flex items-center gap-1.5 text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1"
+                        title={w.untested > 0
+                          ? `Not backtested: ${w.untestedSample.join(', ')}${w.untestedTruncated ? ` and ${w.untested - w.untestedSample.length} more` : ''}`
+                          : 'Every symbol on this list has a backtest on record'}
+                      >
+                        <span className="font-semibold">{w.symbols} symbols</span>
+                        {/* "Shared" is not a smaller list — it is the same list
+                            every inheriting account sees, and editing it moves
+                            them all. Saying which one this account is on is the
+                            whole point of the chip. */}
+                        <span className="text-[var(--color-text-sub)]">{w.inherited ? 'shared' : 'own list'}</span>
+                        <span className={w.untested > 0 ? 'text-[var(--color-warning-text)]' : 'text-[var(--color-text-sub)]'}>
+                          {w.backtested}/{w.symbols} tested
+                        </span>
+                      </span>
                     )}
                     <button
                       type="button"
@@ -319,7 +367,8 @@ export default function Connect() {
                   </div>
                   {detailOpen && (
                     <div className="px-3 pb-2 text-[9px] border-t border-[var(--color-border)]">
-                      {positions.length === 0 && orders.length === 0 && <div className="pt-2 text-[var(--color-text-sub)]">Flat — no open positions or pending orders.</div>}
+                      {b && positions.length === 0 && orders.length === 0 && <div className="pt-2 text-[var(--color-text-sub)]">Flat — no open positions or pending orders.</div>}
+                      {!b && <div className="pt-2 text-[var(--color-text-sub)]">Positions not loaded for this account — the broker snapshot has not returned.</div>}
                       {positions.map(p => (
                         <div key={p.positionId} className="flex flex-wrap items-center gap-2 pt-2">
                           <span className="font-semibold">{p.symbol}</span>
@@ -342,6 +391,21 @@ export default function Connect() {
                           <span>trigger {o.limitPrice ?? o.stopPrice ?? '—'}</span>
                         </div>
                       ))}
+                      {w && (
+                        <div className="pt-2 border-t border-[var(--color-border)] mt-2">
+                          <span className="text-[var(--color-text-sub)]">
+                            Watchlist: {w.symbols} symbols ({w.enabled} enabled{w.disabled ? `, ${w.disabled} disabled` : ''}) ·{' '}
+                            {w.inherited ? 'inherited from the shared list' : 'this account own list'} ·{' '}
+                            {w.backtested} backtested{w.lastBacktestAt ? `, newest ${String(w.lastBacktestAt).slice(0, 10)}` : ''}
+                          </span>
+                          {w.untested > 0 && (
+                            <div className="text-[var(--color-warning-text)]">
+                              No backtest on record ({w.untested}): {w.untestedSample.join(', ')}
+                              {w.untestedTruncated && ` … and ${w.untested - w.untestedSample.length} more`}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       <div className="pt-2 text-[var(--color-text-sub)]">Full history and P&L per closed trade: Accounts page (open positions) and Monitor → Recent trades (bot's closed trades).</div>
                     </div>
                   )}
