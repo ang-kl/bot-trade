@@ -22,6 +22,7 @@ import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAUL
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
+import { loadFxRates } from './fx-rates.js'
 
 /**
  * Carry-cost check (pure apart from the sync symbol_hours read). Returns
@@ -497,15 +498,27 @@ export function drawdownDeriskFactor(db, balance, cfg, accountId = null) {
  * crosses then veto honestly until the first scan lands (≤5 minutes).
  */
 export function scanRates(db) {
+  // The PERSISTENT table first (agent/services/fx-rates.js), then the last
+  // batch layered on top so the freshest close always wins.
+  //
+  // Reading only the last batch is what broke cross sizing in production:
+  // the scan rotates 15 of 221 symbols per cycle, so EURJPY and the
+  // USDJPY/EURUSD leg it converts through were almost never both present,
+  // and 736 entries in a day vetoed as `usd_per_lot_unknown`. Rates are
+  // remembered across cycles now, and aged out rather than forgotten.
+  let rates = {}
+  try {
+    // Lazy require-style import avoids a cycle: fx-rates imports db only.
+    rates = loadFxRates(db)
+  } catch { rates = {} }
   try {
     const parsed = JSON.parse(getState(db, 'last_scan_results') || 'null')
-    const rates = {}
     for (const sc of parsed?.scans || []) {
       const p = Number(sc?.price)
       if (Number.isFinite(p) && p > 0 && sc?.symbol) rates[String(sc.symbol).toUpperCase()] = p
     }
-    return rates
-  } catch { return {} }
+  } catch { /* keep whatever the table gave us */ }
+  return rates
 }
 
 // ---------------------------------------------------------------------------

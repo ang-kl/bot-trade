@@ -1317,6 +1317,25 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/account-analytics?account=<id>|all&days=<n>
+  // Whole-period performance statistics computed over EVERY qualifying
+  // closed trade (audit finding 2.1: the page was deriving its "All time"
+  // tiles from /state/trades, which is capped at 100 rows — so past 100
+  // trades the win rate and profit factor the owner gates live trading on
+  // described the latest hundred, not the record). days omitted/0 = all time.
+  router.get('/account-analytics', async (req, res) => {
+    try {
+      const { accountAnalytics } = await import('../services/account-analytics.js')
+      const days = Number(req.query.days)
+      res.json(accountAnalytics(db, {
+        accountId: req.query.account ? String(req.query.account) : null,
+        days: Number.isFinite(days) && days > 0 ? days : null,
+      }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/decisions — 3A decision provenance: recent controller
   // decisions (skips included), newest first. ?symbol= &stage= &limit=

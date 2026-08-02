@@ -1097,6 +1097,13 @@ export default function Performance() {
   // `allTrades` while the filter is 'all', so it costs a second query only when
   // one account is selected.
   const [portfolioTrades, setPortfolioTrades] = useState([])
+  // Whole-period statistics, computed SERVER-SIDE over every closed trade.
+  // The tiles used to derive these from `allTrades`, which is /state/trades —
+  // capped at 100 rows — so past 100 trades "All time" quietly meant "the
+  // latest hundred" (performance audit finding 2.1). Win rate and profit
+  // factor are the live-trading gate numbers, so a truncated denominator is
+  // not a display nit. The 100-row set still feeds the trade JOURNAL below.
+  const [analytics, setAnalytics] = useState(null)
   const [events, setEvents] = useState([])
   const [decisionsDaily, setDecisionsDaily] = useState([])
   // Written post-mortems, for the debrief card. Best-effort: an agent without
@@ -1137,6 +1144,10 @@ export default function Performance() {
         // page above spans minutes on a busy agent, not days.
         agentGet(`/state/decisions-daily?days=90&account=${encodeURIComponent(acct)}`).catch(() => null),
       ])
+      // Whole-period statistics — NOT derived from the 100-row trades
+      // response above (audit 2.1). Same account scope, all closed trades.
+      const an = await agentGet(`/state/account-analytics?account=${encodeURIComponent(acct)}`).catch(() => null)
+      setAnalytics(an && !an.error ? an : null)
       setLedger(led)
       setAccounts(ac?.accounts || [])
       setSelectedAccountId(ac?.selectedAccountId || null)
@@ -1564,54 +1575,40 @@ export default function Performance() {
 
   // Stat tiles migrated verbatim from Desk's old Performance section —
   // they work from trade #1 with no warm-up.
+  // Tiles read the SERVER's whole-period statistics (audit 2.1). The old
+  // version recomputed them here from `allTrades` — the 100-row journal
+  // response — so every figure below silently became "latest 100 trades"
+  // once the account passed a hundred closes. Shape is kept flat and
+  // scalar: there is no local trade array to recount, which is the point.
   const tiles = useMemo(() => {
-    const closed = allTrades.filter(t2 => t2.status === 'closed' && t2.net_pnl != null)
-    if (closed.length === 0) return null
-    const pnls = closed.map(t2 => Number(t2.net_pnl))
-    const wins = pnls.filter(v => v > 0)
-    const losses = pnls.filter(v => v <= 0)
-    const total = pnls.reduce((s2, v) => s2 + v, 0)
-    const grossWin = wins.reduce((s2, v) => s2 + v, 0)
-    const grossLoss = Math.abs(losses.reduce((s2, v) => s2 + v, 0))
-    const pf = grossLoss > 0 ? grossWin / grossLoss : null
-    let peak = 0; let equity = 0; let mdd = 0
-    for (const v of pnls) { equity += v; peak = Math.max(peak, equity); mdd = Math.max(mdd, peak - equity) }
-    // Owner (2026-07-25): "redo the All-time tiles & equity table from the
-    // ground up." Streaks, payoff, hold time and the per-day split all come
-    // from this same closed set, so every figure in the table reconciles with
-    // every other one and with the ledger.
-    const chron = [...closed]
-      .map(t2 => ({ ms: closedMs(t2), pnl: Number(t2.net_pnl), hold: t2.hold_duration_ms != null ? Number(t2.hold_duration_ms) : null }))
-      .filter(t2 => t2.ms != null)
-      .sort((a, b) => a.ms - b.ms)
-    let winStreak = 0, lossStreak = 0, curW = 0, curL = 0
-    for (const t2 of chron) {
-      if (t2.pnl > 0) { curW++; curL = 0 } else { curL++; curW = 0 }
-      winStreak = Math.max(winStreak, curW); lossStreak = Math.max(lossStreak, curL)
-    }
-    const byDay = new Map()
-    for (const t2 of chron) {
-      const k = new Date(t2.ms).toISOString().slice(0, 10)
-      byDay.set(k, (byDay.get(k) || 0) + t2.pnl)
-    }
-    const dayNets = [...byDay.values()]
-    const holds = chron.map(t2 => t2.hold).filter(v => Number.isFinite(v) && v > 0)
-    const avgWin = wins.length ? grossWin / wins.length : null
-    const avgLoss = losses.length ? grossLoss / losses.length : null
+    if (!analytics || !analytics.trades) return null
     return {
-      closed, pnls, wins, losses, total, grossWin, grossLoss, pf, mdd,
-      avgWin, avgLoss,
-      payoff: avgWin != null && avgLoss ? avgWin / avgLoss : null,
-      winStreak, lossStreak,
-      firstMs: chron.length ? chron[0].ms : null,
-      lastMs: chron.length ? chron[chron.length - 1].ms : null,
-      tradingDays: byDay.size,
-      greenDays: dayNets.filter(v => v > 0).length,
-      bestDay: dayNets.length ? Math.max(...dayNets) : null,
-      worstDay: dayNets.length ? Math.min(...dayNets) : null,
-      medHoldMin: holds.length ? Math.round(holds.sort((a, b) => a - b)[Math.floor(holds.length / 2)] / 60_000) : null,
+      n: analytics.trades,
+      total: analytics.net ?? 0,
+      winCount: analytics.wins,
+      lossCount: analytics.losses,
+      winRate: analytics.winRate,
+      expectancy: analytics.expectancy,
+      pf: analytics.profitFactor,
+      payoff: analytics.payoff,
+      avgWin: analytics.avgWin,
+      avgLoss: analytics.avgLoss,
+      grossWin: analytics.grossWin,
+      grossLoss: analytics.grossLoss,
+      mdd: analytics.maxDrawdown ?? 0,
+      bestTrade: analytics.bestTrade,
+      worstTrade: analytics.worstTrade,
+      bestDay: analytics.bestDay,
+      worstDay: analytics.worstDay,
+      greenDays: analytics.greenDays,
+      tradingDays: analytics.tradingDays,
+      winStreak: analytics.winStreak,
+      lossStreak: analytics.lossStreak,
+      medHoldMin: analytics.medianHoldMin,
+      firstMs: analytics.firstMs,
+      lastMs: analytics.lastMs,
     }
-  }, [allTrades])
+  }, [analytics])
 
   const windows = useMemo(() => ledger?.windows || [], [ledger])
 
@@ -1915,28 +1912,27 @@ export default function Performance() {
   // figure AND what it means, so the card explains itself and Card's
   // tableToJson emits all of it automatically.
   const tileGroups = tiles && (() => {
-    const n = tiles.closed.length
-    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—')
+    const n = tiles.n
     const m2 = (v) => (v == null ? '—' : nf(2).format(v))
     const span = tiles.firstMs && tiles.lastMs
       ? `${new Date(tiles.firstMs).toISOString().slice(0, 10)} → ${new Date(tiles.lastMs).toISOString().slice(0, 10)}`
       : '—'
     return [
       ['Outcome', [
-        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'every closed trade, after swap and commission'],
+        ['Net P&L', signed(tiles.total), pnlTone(tiles.total), 'every closed trade on record, after swap and commission'],
         ['Closed trades', String(n), '', `over ${tiles.tradingDays} day${tiles.tradingDays === 1 ? '' : 's'} with a close · ${span}`],
-        ['Win rate', pct(tiles.wins.length, n), '', `${tiles.wins.length} up · ${tiles.losses.length} down (a scratch counts as down)`],
-        ['Expectancy', `${m2(tiles.total / n)} / trade`, pnlTone(tiles.total), 'net divided by trade count — what one more trade is worth on this record'],
+        ['Win rate', `${tiles.winRate}%`, '', `${tiles.winCount} up · ${tiles.lossCount} down (a scratch counts as down)`],
+        ['Expectancy', `${m2(tiles.expectancy)} / trade`, pnlTone(tiles.total), 'net divided by trade count — what one more trade is worth on this record'],
       ]],
       ['Edge', [
-        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.wins.length ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
+        ['Profit factor', tiles.pf != null ? nf(2).format(tiles.pf) : tiles.winCount ? '∞' : '—', tiles.pf == null || tiles.pf >= 1 ? UP : DOWN, `gross win ${m2(tiles.grossWin)} ÷ gross loss ${m2(tiles.grossLoss)} · above 1.0 is profitable`],
         ['Payoff ratio', tiles.payoff != null ? `${nf(2).format(tiles.payoff)} : 1` : '—', '', 'average win against average loss — the size edge, independent of win rate'],
-        ['Avg win', tiles.avgWin != null ? `+${m2(tiles.avgWin)}` : '—', UP, `across ${tiles.wins.length} winner${tiles.wins.length === 1 ? '' : 's'}`],
-        ['Avg loss', tiles.avgLoss != null ? `−${m2(tiles.avgLoss)}` : '—', DOWN, `across ${tiles.losses.length} loser${tiles.losses.length === 1 ? '' : 's'}`],
+        ['Avg win', tiles.avgWin != null ? `+${m2(tiles.avgWin)}` : '—', UP, `across ${tiles.winCount} winner${tiles.winCount === 1 ? '' : 's'}`],
+        ['Avg loss', tiles.avgLoss != null ? `−${m2(tiles.avgLoss)}` : '—', DOWN, `across ${tiles.lossCount} loser${tiles.lossCount === 1 ? '' : 's'}`],
       ]],
       ['Risk & shape', [
         ['Max drawdown', tiles.mdd > 0 ? `−${m2(tiles.mdd)}` : '—', DOWN, 'deepest fall from an equity peak, trade by trade in close order'],
-        ['Best / worst trade', `${m2(Math.max(...tiles.pnls))} / ${m2(Math.min(...tiles.pnls))}`, '', 'single largest gain and loss'],
+        ['Best / worst trade', `${m2(tiles.bestTrade)} / ${m2(tiles.worstTrade)}`, '', 'single largest gain and loss'],
         ['Best / worst day', `${m2(tiles.bestDay)} / ${m2(tiles.worstDay)}`, '', `${tiles.greenDays} of ${tiles.tradingDays} days closed green`],
         ['Longest streak', `${tiles.winStreak}W / ${tiles.lossStreak}L`, '', 'consecutive wins and losses in close order'],
         ['Median hold', tiles.medHoldMin != null ? (tiles.medHoldMin >= 60 ? `${Math.floor(tiles.medHoldMin / 60)}h ${tiles.medHoldMin % 60}m` : `${tiles.medHoldMin}m`) : '—', '', tiles.medHoldMin != null ? 'half the trades were held less than this' : 'hold duration not recorded on these trades'],
@@ -2608,7 +2604,7 @@ export default function Performance() {
         <Card id="sec-tiles">
           <div className="flex items-center gap-2 flex-wrap mb-1.5">
             <h3 className="t-h3">All-time tiles &amp; equity</h3>
-            {tiles && <span className={`text-[9px] ${SUB}`}>{tiles.closed.length} closed · {signed(tiles.total)}</span>}
+            {tiles && <span className={`text-[9px] ${SUB}`}>{tiles.n} closed · {signed(tiles.total)}</span>}
             <SectionTools id="tiles" title="All-Time Tiles &amp; Equity card"
               data={tileGroups ? tileGroups.flatMap(([group, items]) => items.map(([metric, value, , note]) => ({ group, metric, value, measures: note }))) : []}
               toText={() => (tileGroups
