@@ -85,6 +85,50 @@ export function Table({ data }) {
   )
 }
 
+/**
+ * The phone shape. A nine-column table does not become readable by scrolling
+ * sideways — the funnel is a sequence, and on a narrow screen a sequence reads
+ * as a line, not as columns you have to scroll to compare.
+ *
+ * Verdict FIRST, because it is the answer; then the funnel as one line with
+ * arrows, so a zero under a non-zero is still visible at a glance; then the
+ * plain-language note.
+ */
+export function StrategyCards({ data }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {data.strategies.map(s => {
+        const v = VERDICT[s.verdict] || VERDICT.unknown
+        const flag = data.verdictable && s.armed && s.verdict === 'silent'
+        return (
+          <div
+            key={s.key}
+            className={`rounded-[6px] border px-1.5 py-1 ${flag
+              ? 'border-[var(--color-down)] bg-[var(--color-error-bg)]'
+              : 'border-[var(--color-border)]'}`}
+          >
+            <div className="flex flex-wrap items-baseline gap-1.5">
+              <Badge tone={v.tone}>{v.label}</Badge>
+              <span className="font-semibold">{s.name}</span>
+              <Badge tone={s.armed ? 'on' : 'off'}>{s.armed ? 'ARMED' : 'OFF'}</Badge>
+              <span className="ml-auto text-[var(--color-text-sub)]">{ago(s.lastSignalAt)}</span>
+            </div>
+            {/* The funnel on one line. The arrows carry the "a zero here under
+                a non-zero there is the finding" reading that the table's
+                column order carries on a wide screen. */}
+            <div className="tabular-nums text-[var(--color-text-sub)]">
+              {s.signals.toLocaleString()} signals → {s.decisions.toLocaleString()} decisions
+              {s.vetoes > 0 && ` (${s.vetoes.toLocaleString()} stopped)`}
+              {' → '}{s.opened.toLocaleString()} opened → {s.closed.toLocaleString()} closed
+            </div>
+            <div className="text-[var(--color-text-sub)]">{s.note}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function StrategyLivenessCard() {
   const [days, setDays] = useState(WINDOWS[0])
   const [data, setData] = useState(null)
@@ -141,7 +185,16 @@ export default function StrategyLivenessCard() {
         </p>
       )}
 
-      {shown && <Table data={shown} />}
+      {/* ONE MOUNT, TWO LAYOUTS. The split is inside the component rather
+          than two mounted variants, so there is exactly one fetch and the two
+          shapes can never show different numbers — the failure mode the other
+          mobile ports had to be fixed for after the fact. */}
+      {shown && (
+        <>
+          <div className="hidden min-[700px]:block"><Table data={shown} /></div>
+          <div className="min-[700px]:hidden"><StrategyCards data={shown} /></div>
+        </>
+      )}
 
       {shown && (
         <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">

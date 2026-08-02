@@ -8,7 +8,7 @@
 // catches.
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import StrategyLivenessCard, { Table, Row } from './StrategyLivenessCard.jsx'
+import StrategyLivenessCard, { Table, Row, StrategyCards } from './StrategyLivenessCard.jsx'
 import { ago, toText } from '../lib/strategy-liveness-view.js'
 
 const fixture = (over = {}) => ({
@@ -99,5 +99,53 @@ describe('toText', () => {
   })
   it('marks a window that cannot be judged', () => {
     expect(toText(fixture({ verdictable: false }))).toContain('too few to judge')
+  })
+})
+
+describe('StrategyCards (phone shape)', () => {
+  it('leads with the verdict, not with a column of numbers', () => {
+    const html = renderToStaticMarkup(<StrategyCards data={fixture()} />)
+    // The verdict word appears before the strategy name in the markup, which
+    // is the whole reason this shape exists: on a narrow screen the answer
+    // must not be nine columns to the right.
+    expect(html.indexOf('Silent')).toBeLessThan(html.indexOf('Cup &amp; Handle'))
+  })
+
+  it('renders the funnel as a sequence, so a zero under a non-zero still reads', () => {
+    const html = renderToStaticMarkup(<StrategyCards data={fixture()} />)
+    expect(html).toContain('120 signals')
+    expect(html).toContain('118 decisions')
+    expect(html).toContain('stopped')
+    expect(html).toContain('0 opened')
+  })
+
+  // The CARD's own class, not any class inside it. The verdict Badge carries
+  // the same error token, so a whole-HTML substring match passes for the wrong
+  // reason — the identical mistake the table's row tests had to be corrected
+  // for.
+  const cardClasses = (data) => [...renderToStaticMarkup(<StrategyCards data={data} />)
+    .matchAll(/<div class="(rounded-\[6px\][^"]*)"/g)].map(m => m[1])
+
+  it('flags an ARMED silent strategy and leaves an unarmed one alone', () => {
+    const classes = cardClasses(fixture())
+    // Order matches the fixture: cup_handle (silent, armed) then ... then brk.
+    expect(classes[0]).toContain('--color-down')
+    expect(classes[3]).not.toContain('--color-error-bg')
+  })
+
+  it('does not flag anything while the window is not judgeable', () => {
+    for (const c of cardClasses(fixture({ verdictable: false }))) {
+      expect(c).not.toContain('--color-error-bg')
+    }
+  })
+
+  it('shows every strategy, armed or not', () => {
+    const html = renderToStaticMarkup(<StrategyCards data={fixture()} />)
+    for (const n of ['Cup &amp; Handle', 'EMA Cross', 'RSI-2', 'Breakout']) expect(html).toContain(n)
+  })
+
+  it('carries the same note the table shows — the reading is not dropped for width', () => {
+    const html = renderToStaticMarkup(<StrategyCards data={fixture()} />)
+    expect(html).toContain('produced NO signal in this window')
   })
 })
