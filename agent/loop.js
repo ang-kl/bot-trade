@@ -3011,22 +3011,49 @@ async function runLoop(db) {
           phase('ATR baseline refresh')
           const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
           const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-          // `'[]'` is TRUTHY, so `a || b` picks an EMPTY autopilot list over a
-          // populated watchlist and the sweep silently has nothing to do.
-          // Observed on staging 2026-07-29: atr_refresh runs=10 over 10 loops
-          // with atr_history still empty — it re-ran every cycle because the
-          // empty-table condition below never cleared. Parse both, take the
-          // first that actually has symbols.
-          const firstNonEmpty = (...keys) => {
-            for (const k of keys) {
-              try {
-                const v = JSON.parse(getState(db, k) || '[]')
-                if (Array.isArray(v) && v.length) return v
-              } catch { /* a malformed key must not stop the next one */ }
-            }
-            return []
+          // #170, ROOT CAUSE (production, 2026-08-02): this read the raw
+          // watchlist JSON and handed the parsed array straight to
+          // refreshAtrHistory, which does `String(raw).toUpperCase()`. The
+          // watchlist has been an array of OBJECTS ({symbol, enabled, …}) since
+          // the per-symbol settings work, so every entry stringified to
+          // "[OBJECT OBJECT]", missed the symbol map, and threw "symbolId
+          // unknown". The instrumentation added earlier today is what made it
+          // legible: 23 symbols, 23 failures, 0 rows, and the error text
+          // literally containing [OBJECT OBJECT].
+          //
+          // The 2026-07-29 fix above was real but addressed a DIFFERENT
+          // failure (an empty list winning over a populated one), and its
+          // `firstNonEmpty` returned raw entries — so the shape bug survived
+          // underneath it.
+          //
+          // Reading through readTradableUnion is the durable fix rather than
+          // mapping `.symbol` here: it is the same normaliser every other
+          // universe consumer uses, it accepts both the legacy string form and
+          // the object form, and it spans the accounts' lists. A future change
+          // to the stored shape now lands in one place instead of silently
+          // re-breaking this sweep.
+          const { readTradableUnion } = await import('./services/watchlists.js')
+          let symbols = []
+          try {
+            symbols = readTradableUnion(db)
+              .filter(w => w.enabled !== false)
+              .map(w => w.symbol)
+              .filter(Boolean)
+          } catch { symbols = [] }
+          // Legacy fallback, normalised the same way — a bare string list is
+          // still valid on the wire and must not be rejected for not being
+          // objects.
+          if (!symbols.length) {
+            try {
+              const raw = JSON.parse(getState(db, 'watchlist_json') || '[]')
+              if (Array.isArray(raw)) {
+                symbols = raw
+                  .map(w => (typeof w === 'string' ? w : w?.symbol))
+                  .filter(Boolean)
+                  .map(x => String(x).toUpperCase())
+              }
+            } catch { /* a malformed legacy key must not stop the sweep */ }
           }
-          const symbols = firstNonEmpty('autopilot_symbols_json', 'watchlist_json')
           const atrFetch = async (sym, count) => {
             const sid = symbolMap[String(sym).toUpperCase()]
             if (!sid) throw new Error(`symbolId unknown for ${sym}`)

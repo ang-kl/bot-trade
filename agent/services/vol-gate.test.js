@@ -11,7 +11,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { initDB } from '../db.js'
+import { initDB, setState } from '../db.js'
+import { readTradableUnion } from './watchlists.js'
 import { computeRegime, meanAtr } from './regime.js'
 import {
   classifyVolRegime, percentileRank, bandFor, atrHistory, refreshAtrHistory,
@@ -281,4 +282,45 @@ test('refresh writes incrementally, so a run cut short still leaves what it got'
     return good
   })
   assert.ok(after1 > 0, `A's rows must be committed before B is fetched, saw ${after1}`)
+})
+
+// ---------------------------------------------------------------------------
+// #170 root cause, pinned at the seam that actually broke.
+//
+// The ATR sweep passed the RAW watchlist array to refreshAtrHistory. The
+// watchlist has been an array of objects since the per-symbol settings work,
+// and refreshAtrHistory does `String(raw).toUpperCase()` — so every entry
+// became "[OBJECT OBJECT]", missed the symbol map, and threw. 23 symbols, 23
+// failures, 0 rows, for weeks, while the vol gate read every symbol as NORMAL
+// for want of a baseline.
+//
+// Two tests: one proving the contract (strings), one proving the seam
+// (readTradableUnion's output satisfies it). The second is the one that would
+// have caught this.
+// ---------------------------------------------------------------------------
+test('refreshAtrHistory takes SYMBOL STRINGS — an object list fails loudly', async () => {
+  const db = initDB(':memory:')
+  const seen = []
+  const fetchBars = async (sym) => { seen.push(sym); return [] }
+  await refreshAtrHistory(db, [{ symbol: 'EURUSD', enabled: true }], fetchBars, {})
+  assert.deepEqual(seen, ['[OBJECT OBJECT]'],
+    'this is the production failure, reproduced: the object stringifies before it is looked up')
+})
+
+test('readTradableUnion output feeds refreshAtrHistory directly — the seam that broke', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'autopilot_symbols_json', JSON.stringify([
+    { symbol: 'EURUSD', enabled: true },
+    { symbol: 'GBPUSD', enabled: false },
+    'XAUUSD',
+  ]))
+  const symbols = readTradableUnion(db)
+    .filter(w => w.enabled !== false)
+    .map(w => w.symbol)
+  const seen = []
+  await refreshAtrHistory(db, symbols, async (sym) => { seen.push(sym); return [] }, {})
+  assert.ok(seen.includes('EURUSD'), 'object entries resolve to their symbol')
+  assert.ok(seen.includes('XAUUSD'), 'a legacy bare string still works')
+  assert.ok(!seen.includes('GBPUSD'), 'a disabled symbol is not swept')
+  assert.ok(!seen.some(s => s.includes('OBJECT')), 'nothing stringifies to [OBJECT OBJECT]')
 })
