@@ -3545,12 +3545,21 @@ export default function actionsRouter(db) {
   // Separate from copilot watchlist. These are the symbols the bot scans
   // and trades autonomously. Each can have maxVolume + autoTradeThreshold.
   // -----------------------------------------------------------------------
-  router.post('/symbols', (req, res) => {
+  router.post('/symbols', async (req, res) => {
     try {
-      const { symbols } = req.body || {}
+      // `account` scopes the write to ONE account's list. Absent → the shared
+      // list, exactly as before, so every existing caller keeps working.
+      //
+      // WRITING AN ACCOUNT'S LIST ENDS ITS INHERITANCE, permanently: from here
+      // it no longer follows edits to the shared list (services/watchlists.js
+      // readWatchlist). That is inherent to owning a list, and the UI says so
+      // before the first write rather than leaving it to be discovered when a
+      // globally-added symbol fails to appear.
+      const { symbols, account } = req.body || {}
       if (!symbols || !Array.isArray(symbols)) {
         return res.status(400).json({ error: 'Missing required field: symbols (array)' })
       }
+      const acct = account == null || account === '' ? null : String(account)
       // A per-symbol `strategies` pick is VALIDATED against the registry, not
       // trusted. The pick narrows what may trade the symbol, so a typo'd key
       // ('cup_handel') would intersect to nothing and silently stop the symbol
@@ -3588,26 +3597,43 @@ export default function actionsRouter(db) {
       // every watchlist write funnels through this route, so removals are
       // caught regardless of which UI gesture caused them. Newest first,
       // capped at 100; re-adding a symbol clears its entry.
+      // Removal history follows the same scope as the list it describes — a
+      // shared key would show one account's removals on another's card.
+      const histKey = acct ? `acct:${acct}:watchlist_removed_json` : 'watchlist_removed_json'
+      let forked = false
       try {
-        let prev = []
-        try { prev = JSON.parse(getState(db, 'autopilot_symbols_json') || '[]') || [] } catch { prev = [] }
+        const { readWatchlist, hasOwnWatchlist } = await import('../services/watchlists.js')
+        if (acct) forked = !hasOwnWatchlist(db, acct)
+        // On the FORKING write there is no prior list belonging to this
+        // account, so nothing was "removed" from it — the symbols it is not
+        // carrying over were only ever inherited. Recording them would fill
+        // the one-tap re-add card with instruments this account never chose.
+        const prev = forked ? [] : (acct
+          ? readWatchlist(db, acct)
+          : (() => { try { return JSON.parse(getState(db, 'autopilot_symbols_json') || '[]') || [] } catch { return [] } })())
         const now = new Set(normalized.map(s => s.symbol))
         const removed = prev
           .map(s => (typeof s === 'string' ? { symbol: s } : s))
           .filter(s => s.symbol && !now.has(String(s.symbol).toUpperCase().trim()))
         if (removed.length || now.size) {
           let hist = []
-          try { hist = JSON.parse(getState(db, 'watchlist_removed_json') || '[]') || [] } catch { hist = [] }
+          try { hist = JSON.parse(getState(db, histKey) || '[]') || [] } catch { hist = [] }
           const at = new Date().toISOString()
           const fresh = removed.map(s => ({ symbol: String(s.symbol).toUpperCase().trim(), group: s.group || null, removedAt: at }))
           const seen = new Set(fresh.map(s => s.symbol))
           const kept = hist.filter(h => !seen.has(h.symbol) && !now.has(h.symbol))
-          setState(db, 'watchlist_removed_json', JSON.stringify([...fresh, ...kept].slice(0, 100)))
+          setState(db, histKey, JSON.stringify([...fresh, ...kept].slice(0, 100)))
         }
       } catch { /* history is best-effort — never blocks the save */ }
-      setState(db, 'autopilot_symbols_json', JSON.stringify(normalized))
-      console.log('[actions] Autopilot symbols updated:', normalized.map(w => w.symbol).join(', '))
-      res.json({ ok: true, symbols: normalized })
+      if (acct) {
+        const { writeWatchlist } = await import('../services/watchlists.js')
+        writeWatchlist(db, acct, normalized)
+        console.log(`[actions] Watchlist updated for account ${acct}${forked ? ' (now has its OWN list — no longer inherits the shared one)' : ''}:`, normalized.map(w => w.symbol).join(', '))
+      } else {
+        setState(db, 'autopilot_symbols_json', JSON.stringify(normalized))
+        console.log('[actions] Autopilot symbols updated:', normalized.map(w => w.symbol).join(', '))
+      }
+      res.json({ ok: true, symbols: normalized, account: acct, forked })
     } catch (err) {
       console.error('[actions/symbols] error:', err.message)
       res.status(500).json({ error: err.message })

@@ -12,7 +12,11 @@
 import { useEffect, useState } from 'react'
 import { agentGet } from '../../lib/agent-api.js'
 
-export default function AccountScopePills({ value, onChange, allowAll = true, note = null }) {
+// `allLabel` renames the All pill where "all" does not mean "every account's
+// data merged". On the watchlist it means the SHARED list that accounts
+// inherit until they are given one of their own — a different idea that
+// needs a different word.
+export default function AccountScopePills({ value, onChange, allowAll = true, note = null, allLabel = 'All' }) {
   const [accounts, setAccounts] = useState([])
 
   useEffect(() => {
@@ -24,7 +28,7 @@ export default function AccountScopePills({ value, onChange, allowAll = true, no
   }, [])
 
   const pills = [
-    ...(allowAll ? [{ id: 'all', label: 'All' }] : []),
+    ...(allowAll ? [{ id: 'all', label: allLabel }] : []),
     ...accounts.map(a => ({
       id: String(a.account_id),
       label: `${a.is_live ? 'Live' : 'Demo'} · ${String(a.trader_login || a.account_id).slice(-4)}`,

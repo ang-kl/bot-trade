@@ -6,6 +6,8 @@ import { Router } from 'express'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
 import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
+// Static, not the dynamic import used further down: /config is a SYNC handler.
+import { readWatchlist, hasOwnWatchlist } from '../services/watchlists.js'
 import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
@@ -1612,8 +1614,26 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/config — current watchlist + armed status
   // -----------------------------------------------------------------------
-  router.get('/config', (_req, res) => {
+  router.get('/config', (req, res) => {
+    // ?account=<id> scopes the watchlist to ONE account (owner 02-08-2026:
+    // "I am confuse whether the ACCOUNT has how many symbols in watchlist").
+    // Without it the shared list is returned, byte-for-byte as before, so
+    // every existing caller is unaffected.
+    const acct = req.query?.account ? String(req.query.account) : null
+    let scopedSymbols = null
+    let inherited = null
+    if (acct) {
+      try {
+        scopedSymbols = readWatchlist(db, acct)
+        // The UI must be able to SAY which of the two it is showing. An
+        // account with no list of its own is displaying the shared one, and
+        // its first edit forks it — that is a decision, not a detail.
+        inherited = !hasOwnWatchlist(db, acct)
+      } catch { scopedSymbols = null; inherited = null }
+    }
     const symbolsJson = getState(db, 'autopilot_symbols_json') || getState(db, 'watchlist_json')
+    const sharedSymbols = symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : []
+    const symbolsOut = scopedSymbols ?? sharedSymbols
     // Full registry with the trader's on/off choices — the UI renders this
     // list instead of hardcoding strategy names.
     const onKeys = new Set(enabledStrategies(db, getState).map(s => s.key))
@@ -1629,8 +1649,13 @@ export default function stateRouter(db) {
       autotrade_enabled: getState(db, 'autotrade_enabled') === 'true',
       // Backward compat: armed = autotrade_enabled
       armed: getState(db, 'autotrade_enabled') === 'true',
-      symbols: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
-      watchlist: symbolsJson ? (() => { try { return JSON.parse(symbolsJson) } catch { return [] } })() : [],
+      symbols: symbolsOut,
+      watchlist: symbolsOut,
+      // Which account this watchlist belongs to, and whether it is really
+      // that account's own. null/null when no ?account was asked for.
+      watchlist_account: acct,
+      watchlist_inherited: inherited,
+      watchlist_shared_count: sharedSymbols.length,
       pending_mode_enabled: getState(db, 'pending_mode_enabled') === 'true',
       pending_matrix: (() => { try { return JSON.parse(getState(db, 'pending_matrix_json') || 'null') } catch { return null } })(),
       autotrade_scope: getState(db, 'autotrade_scope') || 'all',

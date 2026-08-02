@@ -831,6 +831,12 @@ export default function Tune() {
   const [screenerAiSymbols, setScreenerAiSymbols] = useState(null)
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [wlRemoved, setWlRemoved] = useState(null)   // previously-watched symbols (server record)
+  // WHICH watchlist this tab is editing. 'all' = the SHARED list every account
+  // inherits until it is given one of its own, which is exactly what this page
+  // has always edited — so that is the default and nothing re-scopes itself
+  // behind the owner's back. Picking an account edits that account's list, and
+  // the first such save forks it off the shared one for good.
+  const [wlAcct, setWlAcct] = useState('all')
   const [wlSelected, setWlSelected] = useState(() => new Set()) // checkbox bulk-select in the watchlist table
   // Symbol whose strategy picker is open, or '__bulk__' for the selected rows.
   const [stratEditor, setStratEditor] = useState(null)
@@ -953,7 +959,10 @@ export default function Tune() {
     console.log('[dbg] load start seq=', seenSeq)
     try {
       const [c, r, tf, rf, vf, ff, sm, vm] = await Promise.all([
-        agentGet('/state/config'),
+        // Only `symbols` is account-scoped by this param; the strategies,
+        // master toggles and everything else on /state/config are global and
+        // come back unchanged either way.
+        agentGet(`/state/config${wlAcct && wlAcct !== 'all' ? `?account=${encodeURIComponent(wlAcct)}` : ''}`),
         agentGet('/state/risk-config'),
         agentGet('/state/autotrade-timeframes').catch(() => null),
         agentGet('/state/fib-rsi-filter').catch(() => null),
@@ -975,7 +984,7 @@ export default function Tune() {
       if (vm) setVetoMix(vm)
       setError('')
     } catch (e) { setError(e.message) }
-  }, [])
+  }, [wlAcct])
 
   // Deferred a tick: react-hooks/set-state-in-effect forbids state writes
   // synchronously inside an effect body.
@@ -1112,9 +1121,17 @@ export default function Tune() {
   const enabledSymbols = symbols.filter(s => s.enabled !== false).map(s => s.symbol)
   const btSymbols = enabledSymbols.filter(s => !btSkip.has(s))
 
+  const scoped = wlAcct && wlAcct !== 'all'
   const pushSymbols = (next) =>
     run(async () => {
-      await agentPost('/actions/symbols', { symbols: next })
+      const r = await agentPost('/actions/symbols', scoped ? { symbols: next, account: wlAcct } : { symbols: next })
+      // Say it at the moment it happens. Forking is irreversible in the sense
+      // that matters — from here this account no longer picks up symbols added
+      // to the shared list — and discovering that later, when a globally-added
+      // instrument silently fails to appear, is the bad version of this.
+      if (r?.forked) setError(`Account ${wlAcct} now has its OWN watchlist and no longer follows the shared one. Changes to the shared list will not reach it.`)
+      // Reload so the scope line flips from "inheriting" to "own list".
+      load()
       // The save may have RECORDED removals — refresh the Previously-watched
       // card in place, or it stays stale until a tab switch (Codex review).
       agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
@@ -2141,6 +2158,26 @@ export default function Tune() {
               const scannedCount = Object.keys(scanInfo?.by || {}).length
               return (
                 <div className="glass-inset rounded-[1px] p-2 mb-3 text-[9px]">
+                  {/* WHOSE LIST IS THIS. Owner 02-08-2026: "each sub-page
+                      doesn't tie to the account selected and flash which
+                      account I am looking or capable of edit". This tab had no
+                      account control at all while sitting under a header
+                      naming one — so it read as per-account and was not. */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-1.5">
+                    <AccountScopePills
+                      value={wlAcct}
+                      onChange={setWlAcct}
+                      allLabel="Shared"
+                      note={scoped
+                        ? (config?.watchlist_inherited
+                          ? `This account has NO list of its own — it is showing the shared list (${config?.watchlist_shared_count ?? '—'} symbols). Saving here gives it its own copy and it stops following the shared list.`
+                          : 'This account has its OWN list. Edits here affect only this account, and changes to the shared list will not reach it.')
+                        : 'Editing the SHARED list. Every account without a list of its own follows this one.'}
+                    />
+                    <Badge tone={scoped && !config?.watchlist_inherited ? 'on' : 'off'}>
+                      {!scoped ? 'SHARED LIST' : config?.watchlist_inherited ? 'INHERITING SHARED' : 'OWN LIST'}
+                    </Badge>
+                  </div>
                   <div className="font-semibold mb-1">Watchlist insight</div>
                   <div className="flex flex-wrap gap-x-6 gap-y-1">
                     <span><span className="text-[var(--color-text-sub)]">Coverage: </span>{symbols.length} symbols · {enabled.length} enabled · {groupOf.size} group{groupOf.size === 1 ? '' : 's'} · {scannedCount} scanned last cycle</span>
