@@ -23,6 +23,7 @@ import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
+import AccountScopePills from '../components/common/AccountScopePills.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -185,15 +186,17 @@ function StrategyTfPerformance() {
   })
   const [grid, setGrid] = useState(null)
   const [err, setErr] = useState(null)
+  // Owner 02-08: the grid must be viewable per trading account.
+  const [acct, setAcct] = useState('all')
 
   useEffect(() => {
     if (!open) return
     let alive = true
-    agentGet('/state/strategy-tf-performance?days=30')
+    agentGet(`/state/strategy-tf-performance?days=30&account=${encodeURIComponent(acct)}`)
       .then(d => { if (alive) { setGrid(d); setErr(d?.error || null) } })
       .catch(e => { if (alive) setErr(e.message) })
     return () => { alive = false }
-  }, [open])
+  }, [open, acct])
 
   const toggle = () => setOpen(o => {
     const next = !o
@@ -216,7 +219,8 @@ function StrategyTfPerformance() {
         <span className="font-normal">— closed trades, ONE 30-day window on both axes: the reconciled view</span>
       </button>
       {open && (
-        <div className="mt-1.5 overflow-x-auto">
+        <div className="mt-1.5 overflow-x-auto space-y-1">
+          <AccountScopePills value={acct} onChange={setAcct} />
           {err && <div className="text-[9px] text-[var(--color-down)]">Could not load: {err}</div>}
           {!err && !grid && <Skeleton lines={3} />}
           {!err && grid && (
@@ -401,6 +405,14 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
         Strategy × Stage Matrix table
         <span className="font-normal">— what runs at each pipeline stage; counts are the last {mx.windowDays || 30} days</span>
       </button>
+      {/* Owner 02-08: "Right now I don't know the tune is for each account."
+          Say it explicitly instead of leaving it implied. */}
+      {open && (
+        <p className="mt-0.5 text-[9px] text-[var(--color-muted)]">
+          Scope: GLOBAL — these stage settings apply to every trading account. Per-account arming lives in the
+          S.A.T switches on this page; per-account risk limits on the Risk page (overlay via the account selector).
+        </p>
+      )}
       {open && (
         <>
           <div className="mt-1.5 overflow-x-auto">

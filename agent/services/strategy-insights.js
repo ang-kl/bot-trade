@@ -13,8 +13,13 @@
 // rate sits below its own break-even line is losing by design, not luck.
 // ---------------------------------------------------------------------------
 
-export function strategyInsights(db, { sinceDays = null } = {}) {
+export function strategyInsights(db, { sinceDays = null, accountId = null } = {}) {
   const sinceClause = sinceDays ? `AND closed_at >= datetime('now', '-${Math.max(1, Math.floor(sinceDays))} days')` : ''
+  // Per-account scope (owner 02-08: "is this for current account or which
+  // account?" — it was ALL accounts mixed). Strict equality: legacy
+  // NULL-account rows only appear in the All view, never attributed.
+  const acctClause = accountId != null ? 'AND account_id = ?' : ''
+  const acctParams = accountId != null ? [String(accountId)] : []
   let rows = []
   try {
     rows = db.prepare(`
@@ -37,10 +42,10 @@ export function strategyInsights(db, { sinceDays = null } = {}) {
              END), 2)                                                    AS plannedRR,
              SUM(CASE WHEN sl_price IS NOT NULL AND tp_price IS NOT NULL THEN 1 ELSE 0 END) AS withLevels
       FROM trades
-      WHERE status = 'closed' AND net_pnl IS NOT NULL ${sinceClause}
+      WHERE status = 'closed' AND net_pnl IS NOT NULL ${sinceClause} ${acctClause}
       GROUP BY strat
       ORDER BY SUM(net_pnl) ASC
-    `).all()
+    `).all(...acctParams)
   } catch { rows = [] }
 
   return rows.map(r => {

@@ -1157,3 +1157,10 @@ textarea {
   background-blend-mode: normal;
 }
 .glass-panel.is-menu::before { content: none; }   /* no sheen over list rows */
+
+/* SectionTools ▸ collapse (owner 02-08-2026: collapse/expand on every card
+   and table): the section panel keeps its header row (first child, where the
+   title and ▸/⧉/⇲ tools live) and hides the body. */
+.sec-collapsed > :not(:first-child) {
+  display: none !important;
+}

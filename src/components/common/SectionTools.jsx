@@ -34,6 +34,22 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
   const [popupHost, setPopupHost] = useState(null) // portal target inside the popup window
   const panelRef = useRef(null)
   const winRef = useRef(null)
+  // ▸/▾ collapse (owner 02-08: "collapse/expand for every card and table") —
+  // SectionTools lives in the section's HEADER row; the section body is the
+  // header's following siblings. Collapsing toggles a class on the section
+  // panel (the header row's parent) and CSS hides everything but the header,
+  // so the title + tools stay tappable. Persisted per section id.
+  const rootRef = useRef(null)
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(`sec_collapsed_${id}`) === '1' } catch { return false }
+  })
+  useEffect(() => {
+    const headerRow = rootRef.current?.parentElement
+    const sectionPanel = headerRow?.parentElement
+    if (!sectionPanel) return
+    sectionPanel.classList.toggle('sec-collapsed', collapsed)
+    try { localStorage.setItem(`sec_collapsed_${id}`, collapsed ? '1' : '0') } catch { /* private mode */ }
+  }, [collapsed, id])
 
   // Deep-link nicety: ?expand=<id> opens this section on load — as the
   // in-page modal, since browsers block window.open without a user gesture.
@@ -91,7 +107,10 @@ export default function SectionTools({ id, title, window: windowLabel = null, da
   }
 
   return (
-    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
+    <span ref={rootRef} style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, position: 'relative', flexShrink: 0 }}>
+      <button type="button" aria-expanded={!collapsed} aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+        title={collapsed ? 'Expand section' : 'Collapse section'} style={btn}
+        onClick={() => setCollapsed(c => !c)}>{collapsed ? '▸' : '▾'}</button>
       <button type="button" title="Copy — opens the copy pop-up (text / JSON / HTML)" aria-label={`Copy ${title}`} style={btn}
         onClick={() => setCopyOpen(true)}>⧉</button>
       {/* ⇲ per the app-wide expand vocabulary (owner 2026-08-01: U+21F2
