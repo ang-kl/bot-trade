@@ -3624,12 +3624,34 @@ export default function actionsRouter(db) {
   router.post('/risk-config', (req, res) => {
     try {
       const body = req.body || {}
+      const allowed = Object.keys(DEFAULT_RISK_CONFIG)
+      // Per-account OVERLAY (owner 02-08-2026: elevated risk on the two
+      // >$50k demo accounts). body.accountId scopes the write to
+      // `acct:<id>:risk_config_json` — a PARTIAL config merged over the
+      // global one for that account only. reset:true clears the overlay,
+      // returning the account to global limits.
+      if (body.accountId != null) {
+        const acctId = String(body.accountId)
+        const key = `acct:${acctId}:risk_config_json`
+        if (body.reset === true) {
+          setState(db, key, null)
+          console.log(`[actions] Risk overlay CLEARED for account ${acctId}`)
+          return res.json({ ok: true, accountId: acctId, overlay: null, effective: loadRiskConfig(db, acctId) })
+        }
+        let overlay = {}
+        try { overlay = JSON.parse(getState(db, key) || '{}') || {} } catch { overlay = {} }
+        for (const k of allowed) {
+          if (k in body) overlay[k] = body[k]
+        }
+        setState(db, key, JSON.stringify(overlay))
+        console.log(`[actions] Risk overlay updated for account ${acctId}:`, overlay)
+        return res.json({ ok: true, accountId: acctId, overlay, effective: loadRiskConfig(db, acctId) })
+      }
       if (body.reset === true) {
         setState(db, 'risk_config_json', null)
         return res.json({ ok: true, effective: DEFAULT_RISK_CONFIG })
       }
       const current = loadRiskConfig(db)
-      const allowed = Object.keys(DEFAULT_RISK_CONFIG)
       const next = { ...current }
       for (const k of allowed) {
         if (k in body) next[k] = body[k]

@@ -257,14 +257,32 @@ export function fxDayStartSql(nowMs = Date.now()) {
   return new Date(fxDayOpenMs(nowMs)).toISOString().slice(0, 19).replace('T', ' ')
 }
 
-export function loadRiskConfig(db) {
-  const raw = getState(db, 'risk_config_json')
-  if (!raw) return { ...DEFAULT_RISK_CONFIG }
+/**
+ * Per-account risk OVERLAY (owner 02-08-2026: "use the 2 high balance
+ * accounts as accounts that can take elevated risk"). A partial config
+ * stored at `acct:<id>:risk_config_json`, merged OVER the global config —
+ * so one account can run elevated (or reduced) limits while every other
+ * account keeps the global settings. Absent/malformed overlay = global
+ * config stands, never looser by accident.
+ */
+export function accountRiskOverlay(db, accountId) {
+  if (accountId == null) return null
   try {
-    return { ...DEFAULT_RISK_CONFIG, ...JSON.parse(raw) }
-  } catch {
-    return { ...DEFAULT_RISK_CONFIG }
+    const raw = getState(db, `acct:${accountId}:risk_config_json`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch { return null }
+}
+
+export function loadRiskConfig(db, accountId = null) {
+  const raw = getState(db, 'risk_config_json')
+  let cfg = { ...DEFAULT_RISK_CONFIG }
+  if (raw) {
+    try { cfg = { ...cfg, ...JSON.parse(raw) } } catch { /* defaults stand */ }
   }
+  const overlay = accountRiskOverlay(db, accountId)
+  return overlay ? { ...cfg, ...overlay } : cfg
 }
 
 /**
@@ -562,7 +580,6 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
  *           checks:object, sizing_note?:string}}
  */
 export function evaluateTrade(db, proposal, configOverride) {
-  const config = configOverride || loadRiskConfig(db)
   // M1 scoped reads: every per-account query below filters to the account
   // this proposal is FOR (proposal.accountId when a worker passes one, else
   // the selected account), NULL-tolerantly — legacy unstamped rows count
@@ -570,6 +587,12 @@ export function evaluateTrade(db, proposal, configOverride) {
   // In the single-account era (backfill stamped everything to the one
   // account) this is behaviour-identical to the previous global queries.
   const acct = proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null)
+  // Per-account risk overlay applies ON TOP of whatever config arrived —
+  // callers pre-load the global config once per cycle (loop.js, pending
+  // orders) and would silently bypass the overlay otherwise.
+  const overlay = accountRiskOverlay(db, acct)
+  const base = configOverride || loadRiskConfig(db)
+  const config = overlay ? { ...base, ...overlay } : base
   // M1c: balance/leverage resolve per-account too (acct:<id>: keys when
   // stamped, legacy global keys otherwise) so caps size off the right equity.
   const balance = getAccountBalance(db, acct)
