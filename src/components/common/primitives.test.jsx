@@ -87,9 +87,11 @@ describe('Segmented', () => {
     expect(html).toContain('tabindex="0"')
     expect(html).toContain('tabindex="-1"')
   })
-  it('paints the selection with --color-on-accent, never a hard-coded #fff', () => {
+  it('paints the selection with the M3 tonal pair, never a saturated fill or hard-coded #fff', () => {
     const html = renderToStaticMarkup(<Segmented options={opts} value="a" />)
-    expect(html).toContain('--color-on-accent')
+    expect(html).toContain('--md-secondary-container')
+    expect(html).toContain('--md-on-secondary-container')
+    expect(html).not.toContain('bg-[var(--color-accent)]')
     expect(html).not.toContain('text-white')
   })
 })

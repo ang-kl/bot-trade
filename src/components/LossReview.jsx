@@ -163,7 +163,7 @@ export default function LossReview({ postmortems }) {
         <div role="radiogroup" aria-label="View" className="flex rounded-[var(--radius-control)] overflow-hidden border border-[var(--color-border)]">
           {[['groups', 'Losses / Wins'], ['symbol', 'By symbol']].map(([k, label]) => (
             <button key={k} type="button" role="radio" aria-checked={view === k} onClick={() => setView(k)}
-              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'text-[var(--color-text-sub)]'}`}>
+              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'text-[var(--color-text-sub)]'}`}>
               {label}
             </button>
           ))}

@@ -198,7 +198,7 @@ function AgentDownBanner() {
 function navLinkClasses(isActive) {
   return `rounded-[10px] px-3 py-2 text-[9px] font-semibold inline-flex items-center gap-2 transition-all w-full ${
     isActive
-      ? 'text-[var(--color-on-accent)] bg-[var(--color-accent)]'
+      ? 'text-[var(--md-on-secondary-container)] bg-[var(--md-secondary-container)]'
       : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
   }`
 }

@@ -508,7 +508,7 @@ export default function Desk() {
             <button
               key={n} type="button" role="radio" aria-checked={pnlGridN === n}
               onClick={() => pickPnlGrid(n)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n}</button>
           ))}
         </div>
@@ -531,7 +531,7 @@ export default function Desk() {
               key={n} type="button" role="radio" aria-checked={gridN === n}
               onClick={() => pickGrid(n)}
               title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{n === 1 ? '1 chart' : `${n} wall`}</button>
           ))}
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
@@ -819,7 +819,7 @@ export default function Desk() {
             <button
               key={d} type="button" role="radio" aria-checked={historyDays === d}
               onClick={() => setHistoryDays(d)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
+              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
             >{label}</button>
           ))}
         </div>
@@ -1141,7 +1141,7 @@ export default function Desk() {
                       {backtestsList.map(b => (
                         <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
                           onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>
+                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>
                           {STRAT_SHORT[b.strategy] || b.strategy}
                         </button>
                       ))}

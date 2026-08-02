@@ -23,9 +23,12 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
     size === 'lg' ? 'px-2.5 py-1 text-[11px]' : 'px-1.5 py-0.5 text-[9px]',
     'transition-colors cursor-pointer',
     'focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] focus-visible:outline-offset-1',
+    // M3 conformance (owner task, 02-08-2026): selection is the TONAL
+    // secondary-container + ✓, never the saturated accent fill — that stays
+    // reserved for real actions.
     selected
-      ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] border-[var(--color-accent)]'
-      : 'bg-transparent text-[var(--color-text-sub)] border-[var(--glass-edge)] hover:border-[var(--color-accent)]',
+      ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent'
+      : 'bg-transparent text-[var(--md-on-surface)] border-[var(--md-outline-variant)] hover:border-[var(--color-accent)]',
   ].join(' ')
   return (
     <div role="radiogroup" aria-label={label} className={`inline-flex items-center gap-1 ${className}`}>
@@ -41,7 +44,7 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
             if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1) }
           }}
           className={chip(o.value === value)}>
-          {o.label}
+          {o.value === value ? '✓ ' : ''}{o.label}
         </button>
       ))}
     </div>

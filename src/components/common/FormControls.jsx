@@ -93,7 +93,7 @@ export function PresetSelect({ label, value, onChange, options, display = v => S
                 key={v} type="button" role="option" aria-selected={active}
                 onClick={() => { onChange(Number(v)); setOpen(false) }}
                 className={`w-full text-left rounded-[var(--radius-control)] px-3 py-2 text-[9px] cursor-pointer flex items-center justify-between ${
-                  active ? 'bg-[var(--color-accent)] text-white font-semibold' : 'hover:bg-[var(--color-accent-soft)] text-[var(--color-text)]'
+                  active ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] font-semibold' : 'hover:bg-[var(--color-accent-soft)] text-[var(--color-text)]'
                 }`}
               >
                 {text}{active && <span aria-hidden="true">✓</span>}
