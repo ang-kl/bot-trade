@@ -804,14 +804,9 @@ export default function Desk() {
       >
         {/* Window picker (owner: "should also include 30 days and 3+6
             months") — switching re-fetches broker-history at that window. */}
-        <div className="flex items-center gap-1 mb-1.5" role="radiogroup" aria-label="History window">
-          {[{ d: 7, label: '7d' }, { d: 30, label: '30d' }, { d: 90, label: '3mo' }, { d: 182, label: '6mo' }].map(({ d, label }) => (
-            <button
-              key={d} type="button" role="radio" aria-checked={historyDays === d}
-              onClick={() => setHistoryDays(d)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[24px] text-[9px] font-semibold cursor-pointer ${historyDays === d ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-            >{label}</button>
-          ))}
+        <div className="mb-1.5">
+          <Segmented label="History window" value={historyDays} onChange={setHistoryDays}
+            options={[{ value: 7, label: '7d' }, { value: 30, label: '30d' }, { value: 90, label: '3mo' }, { value: 182, label: '6mo' }]} />
         </div>
         {!brokerHistory && <p className="text-[9px] text-[var(--color-text-sub)]">Fetching deal history…</p>}
         {brokerHistory?._cachedAt && (
@@ -1127,14 +1122,9 @@ export default function Desk() {
               ? (
                 <>
                   {backtestsList.length > 1 && (
-                    <div className="flex flex-wrap gap-1 mb-1.5" role="radiogroup" aria-label="Backtested strategy">
-                      {backtestsList.map(b => (
-                        <button key={b.strategy} type="button" role="radio" aria-checked={b.strategy === curBaseline.strategy}
-                          onClick={() => setBaselineStrat(b.strategy)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[26px] text-[9px] font-semibold cursor-pointer ${b.strategy === curBaseline.strategy ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>
-                          {STRAT_SHORT[b.strategy] || b.strategy}
-                        </button>
-                      ))}
+                    <div className="mb-1.5">
+                      <Segmented label="Backtested strategy" value={curBaseline.strategy} onChange={setBaselineStrat}
+                        options={backtestsList.map(b => ({ value: b.strategy, label: STRAT_SHORT[b.strategy] || b.strategy }))} />
                     </div>
                   )}
                   <div className="overflow-x-auto">

@@ -30,6 +30,7 @@
 //    counts actually want, with the veto rate as the headline.
 import { useMemo, useRef, useState } from 'react'
 import Card from './common/Card.jsx'
+import Segmented from './common/Segmented.jsx'
 
 // Owner (2026-07-25): "where are the axes, gridlines, markings and why so big
 // chart" — the axes existed but were drawn at 0.5px in the faint border
@@ -181,11 +182,9 @@ export default function ReportChart({ allTrades, events, daily }) {
         <span className="text-[9px] text-[var(--color-text-sub)]">
           top: where the account is against its own high-water mark · bottom: what the bot decided, and how much it refused
         </span>
-        <div className="flex gap-1 ml-auto">
-          {Object.keys(RANGE_DAYS).map(r => (
-            <button key={r} type="button" onClick={() => setRange(r)} aria-pressed={range === r}
-              className={`rounded-[1px] px-2.5 py-0.5 text-[9px] cursor-pointer ${range === r ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}>{r}</button>
-          ))}
+        <div className="ml-auto">
+          <Segmented label="Chart range" value={range} onChange={setRange}
+            options={Object.keys(RANGE_DAYS).map(r => ({ value: r, label: r }))} />
         </div>
       </div>
 

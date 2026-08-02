@@ -12,7 +12,8 @@
 /* eslint-disable react-refresh/only-export-components -- hook + two chrome
    components share one data source; splitting them would triple the file
    for a fast-refresh nicety on rarely-edited chrome. */
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { agentGet, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 
 const POLL_MS = 60_000
@@ -79,10 +80,17 @@ export function BotChangeHighlighter({ rows, routeKey }) {
   return null
 }
 
-/** The sidebar control: 🤖 Bot Changes · N — expands to the ledger. */
+/** The sidebar control: Bot Changes · N — opens a pop-up dialog (same
+ *  pattern as the Browser Sessions popover below it, per the owner 02-08:
+ *  '"Bot Changes" should be a pop-up window like "Browser Sessions table"').
+ *  Portalled to document.body for the same measured reason SessionFooter's
+ *  is: glass-panel's backdrop-filter makes the sidebar the containing block
+ *  for fixed descendants, and its overflow would clip the box anyway. */
 export function BotChangesFooterButton({ rows }) {
   const [open, setOpen] = useState(false)
   const panelId = useId()
+  const buttonRef = useRef(null)
+  const popoverRef = useRef(null)
   const [configured, setConfigured] = useState(false)
   // Clock read lives in an effect (render stays pure): refreshed each minute
   // so the "new" count ages out without a reload.
@@ -95,26 +103,85 @@ export function BotChangesFooterButton({ rows }) {
     const t = setInterval(tick, 60_000)
     return () => { clearTimeout(first); clearInterval(t) }
   }, [])
+
+  // Dismissal: Escape, outside click, focus return — same contract as the
+  // session popover.
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOpen(false)
+        buttonRef.current?.focus()
+      }
+    }
+    const onDown = (e) => {
+      if (popoverRef.current?.contains(e.target)) return
+      if (buttonRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onDown)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onDown)
+    }
+  }, [open])
+
+  // Viewport placement, measured after paint — prefers opening upward from
+  // the bottom-of-sidebar anchor and clamps both axes. Zoom conversion is
+  // required: index.css zooms html 1.1 above 1153px and rect reads visual
+  // pixels while style.top resolves layout pixels (see SessionFooter).
+  useLayoutEffect(() => {
+    if (!open) return
+    const el = popoverRef.current
+    const anchor = buttonRef.current
+    if (!el || !anchor) return
+    el.style.top = ''
+    el.style.bottom = ''
+    el.style.left = ''
+    const a = anchor.getBoundingClientRect()
+    const margin = 8
+    const { width: w, height: h } = el.getBoundingClientRect()
+    const maxTop = Math.max(margin, window.innerHeight - h - margin)
+    const maxLeft = Math.max(margin, window.innerWidth - w - margin)
+    let top = a.top - h - margin
+    if (top < margin) top = a.bottom + margin
+    top = Math.min(Math.max(margin, top), maxTop)
+    const left = Math.min(Math.max(margin, a.left), maxLeft)
+    const zoom = parseFloat(getComputedStyle(document.documentElement).zoom) || 1
+    el.style.top = `${top / zoom}px`
+    el.style.left = `${left / zoom}px`
+  }, [open, rows])
+
   if (!configured) return null
   const recent = now ? rows.filter(r => now - new Date(r.at).getTime() < HIGHLIGHT_HOURS * 3_600_000) : []
   return (
     <div className="px-1">
-      <button type="button" aria-expanded={open} aria-controls={panelId}
+      <button type="button" ref={buttonRef}
+        aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId}
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-1.5 rounded-[1px] px-2 py-1 text-[9px] cursor-pointer text-[var(--color-text-sub)] hover:text-[var(--color-text)]"
-        style={recent.length ? { outline: '1.5px solid #eab308', outlineOffset: '-1.5px' } : undefined}>
-        <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        style={recent.length ? { outline: '1.5px solid #eab308', outlineOffset: '-1.5px' } : undefined}
+        title="Changes the bot made on your behalf — click for the full ledger">
+        <span aria-hidden="true">{open ? '⌄' : '›'}</span>
         <span className="font-semibold">Bot Changes</span>
         <span className="ml-auto tabular-nums">{rows.length ? `${recent.length} new · ${rows.length}` : '0'}</span>
       </button>
-      {open && (
-        <div id={panelId} className="mt-1 max-h-56 overflow-y-auto rounded-[1px] glass-inset p-1.5 space-y-1.5">
-          <p className="text-[9px] text-[var(--color-muted)]">
+      {open && createPortal(
+        <div id={panelId} ref={popoverRef} role="dialog" aria-labelledby={`${panelId}-title`}
+          className="glass-panel pos-fixed fixed z-50 w-[min(22rem,calc(100vw-1rem))] max-h-[70vh] overflow-y-auto rounded-[12px] p-3 text-(length:--fs-caption)">
+          <div className="flex items-baseline gap-2 mb-2">
+            <h2 id={`${panelId}-title`} className="text-(length:--fs-secondary) font-semibold">Bot Changes table</h2>
+            <button type="button" onClick={() => { setOpen(false); buttonRef.current?.focus() }}
+              className="compact-control button-normal ml-auto" aria-label="Close bot changes panel">Close</button>
+          </div>
+          <p className="text-[9px] text-[var(--color-muted)] mb-2">
             Changes the bot (Claude) made on your behalf — yellow-bordered in the app for {HIGHLIGHT_HOURS}h. Everything else was you.
           </p>
           {rows.length === 0 && <p className="text-[9px] text-[var(--color-muted)]">No bot changes recorded.</p>}
           {rows.map((r, i) => (
-            <div key={`${r.at}-${i}`} className="text-[9px] leading-tight border-b border-[var(--glass-edge)] pb-1 last:border-0">
+            <div key={`${r.at}-${i}`} className="text-[9px] leading-tight border-b border-[var(--glass-edge)] pb-1 mb-1 last:border-0 last:mb-0">
               <div className="flex items-baseline gap-1">
                 <span className="font-semibold">{r.what}</span>
                 <span className="ml-auto shrink-0 text-[var(--color-muted)] tabular-nums">{fmtSgt(r.at)}</span>
@@ -122,7 +189,8 @@ export function BotChangesFooterButton({ rows }) {
               {r.detail && <div className="text-[var(--color-text-sub)]">{r.detail}</div>}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

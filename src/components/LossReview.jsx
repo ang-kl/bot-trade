@@ -17,6 +17,7 @@
 
 import { Fragment, useEffect, useState } from 'react'
 import { strategyLabel } from '../lib/strategy-labels.js'
+import Segmented from './common/Segmented.jsx'
 
 // Verdict → label + tone. Tones map to the app's blue/neutral palette (no
 // red-vs-green distinction is required to read them; text always present).
@@ -160,14 +161,8 @@ export default function LossReview({ postmortems }) {
 
       {/* Sort/filter bar — applies to whichever view is selected below. */}
       <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
-        <div role="radiogroup" aria-label="View" className="flex rounded-[var(--radius-control)] overflow-hidden border border-[var(--color-border)]">
-          {[['groups', 'Losses / Wins'], ['symbol', 'By symbol']].map(([k, label]) => (
-            <button key={k} type="button" role="radio" aria-checked={view === k} onClick={() => setView(k)}
-              className={`px-2 py-1 cursor-pointer ${view === k ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'text-[var(--color-text-sub)]'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        <Segmented label="View" value={view} onChange={setView}
+          options={[{ value: 'groups', label: 'Losses / Wins' }, { value: 'symbol', label: 'By symbol' }]} />
         <select className={selectCls} aria-label="Filter by symbol" value={filter.symbol} onChange={e => setFilter(f => ({ ...f, symbol: e.target.value }))}>
           <option value="">All symbols</option>
           {symbols.map(s => <option key={s} value={s}>{s}</option>)}

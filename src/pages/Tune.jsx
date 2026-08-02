@@ -24,6 +24,7 @@ import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
+import Segmented from '../components/common/Segmented.jsx'
 import Collapse from '../components/common/Collapse.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
@@ -1450,18 +1451,12 @@ export default function Tune() {
                 combos only' restores the narrow gate. */}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[9px]">
               <span className="text-[9px] text-[var(--color-text-sub)]">Autotrade scope:</span>
-              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Autotrade scope">
-                {[['all', 'Full watchlist (default)'], ['armed', 'Armed combos only']].map(([sc, lbl]) => (
-                  <button key={sc} type="button" role="radio" aria-checked={(config?.autotrade_scope ?? 'all') === sc}
-                    onClick={() => run(async () => {
-                      await agentPost('/actions/autotrade-scope', { scope: sc })
-                      setConfig(c => ({ ...c, autotrade_scope: sc }))
-                    }, `Autotrade scope → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.autotrade_scope ?? 'all') === sc ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+              <Segmented label="Autotrade scope" value={config?.autotrade_scope ?? 'all'}
+                options={[{ value: 'all', label: 'Full watchlist (default)' }, { value: 'armed', label: 'Armed combos only' }]}
+                onChange={sc => run(async () => {
+                  await agentPost('/actions/autotrade-scope', { scope: sc })
+                  setConfig(c => ({ ...c, autotrade_scope: sc }))
+                }, `Autotrade scope → ${sc === 'all' ? 'Full watchlist (default)' : 'Armed combos only'}`)} />
               <span className="text-[9px] text-[var(--color-text-sub)]">
                 Full watchlist = every enabled symbol may trade on any scanned timeframe with every armed strategy; backtest-armed combos stay as micro-tuning. The risk gate, stage matrix, market hours and equity stop still veto every order.
               </span>
@@ -1557,21 +1552,17 @@ export default function Tune() {
               </div>
             )}
             {/* Orphan role=radio buttons need a radiogroup parent (inventory). */}
-            <div role="radiogroup" aria-label="Strategy Autopilot mode" className="mt-3 flex flex-wrap items-center gap-2 text-[9px]">
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[9px]">
               <span className="font-semibold">Strategy Autopilot:</span>
-              {['off', 'suggest', 'auto'].map(m => (
-                <button
-                  key={m} type="button" role="radio" aria-checked={(config?.autopilot_mode || 'off') === m}
-                  onClick={() => {
-                    if (m === 'auto' && !window.confirm('AUTO mode: every ~24h the bot backtests all strategies and arms GO combos / disarms decayed ones by itself (max 4 changes per run, announced on Telegram, never on LIVE accounts). You stay in charge via /pause, Disarm and these buttons. Enable?')) return
-                    run(async () => {
-                      await agentPost('/actions/autopilot', { mode: m })
-                      setConfig(c => ({ ...c, autopilot_mode: m }))
-                    }, `Autopilot: ${m}`)
-                  }}
-                  className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${(config?.autopilot_mode || 'off') === m ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                >{m}</button>
-              ))}
+              <Segmented label="Strategy Autopilot mode" value={config?.autopilot_mode || 'off'}
+                options={['off', 'suggest', 'auto'].map(m => ({ value: m, label: m }))}
+                onChange={m => {
+                  if (m === 'auto' && !window.confirm('AUTO mode: every ~24h the bot backtests all strategies and arms GO combos / disarms decayed ones by itself (max 4 changes per run, announced on Telegram, never on LIVE accounts). You stay in charge via /pause, Disarm and these buttons. Enable?')) return
+                  run(async () => {
+                    await agentPost('/actions/autopilot', { mode: m })
+                    setConfig(c => ({ ...c, autopilot_mode: m }))
+                  }, `Autopilot: ${m}`)
+                }} />
               <span className="text-[9px] text-[var(--color-text-sub)]">
                 nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
               </span>
@@ -1931,18 +1922,12 @@ export default function Tune() {
                 }, `Burn-in ${next ? 'ARMED' : 'disarmed'}`)
               }} />
               <span className="text-[9px] text-[var(--color-text-sub)]">Sizing:</span>
-              <div className="flex rounded-[7px] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Burn-in sizing">
-                {[['auto', 'Auto (risk-based)'], ['fixed', 'Fixed 0.01–0.05']].map(([mode, lbl]) => (
-                  <button key={mode} type="button" role="radio" aria-checked={(config?.burn_in?.sizeMode ?? 'auto') === mode}
-                    onClick={() => run(async () => {
-                      await agentPost('/actions/burn-in', { sizeMode: mode })
-                      setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
-                    }, `Burn-in sizing → ${lbl}`)}
-                    className={`px-2 py-1 text-[9px] font-semibold cursor-pointer ${(config?.burn_in?.sizeMode ?? 'auto') === mode ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] text-[var(--color-text-sub)]'}`}>
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+              <Segmented label="Burn-in sizing" value={config?.burn_in?.sizeMode ?? 'auto'}
+                options={[{ value: 'auto', label: 'Auto (risk-based)' }, { value: 'fixed', label: 'Fixed 0.01–0.05' }]}
+                onChange={mode => run(async () => {
+                  await agentPost('/actions/burn-in', { sizeMode: mode })
+                  setConfig(c => ({ ...c, burn_in: { ...(c?.burn_in || {}), sizeMode: mode } }))
+                }, `Burn-in sizing → ${mode === 'auto' ? 'Auto (risk-based)' : 'Fixed 0.01–0.05'}`)} />
               <span className="text-[9px] text-[var(--color-text-sub)]">
                 micro-quant: timeframe adapts per symbol to live volume &amp; condition (5m scalps ↔ 1h swings), self-pacing toward {config?.burn_in?.targetTrades ?? 200} completed trades in {config?.burn_in?.windowDays ?? 2} days — behind pace → more symbols per cycle &amp; shorter cooldowns. Auto sizing uses the SAME uncapped risk-based lot as auto signals; Fixed pins a cheap 0.01–0.05 sample. Every attempt lands in the Order log (BURN-IN badge).
               </span>
@@ -2024,14 +2009,9 @@ export default function Tune() {
                 )
                 return (
                   <>
-                    <span role="radiogroup" aria-label="Profit Keeper mode" className="flex items-center gap-1">
-                      {['adaptive', 'fixed'].map(m => (
-                        <button key={m} type="button" role="radio" aria-checked={keeper.mode === m}
-                          onClick={() => post({ mode: m }, `Profit Keeper mode: ${m}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.mode === m ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                        >{m}</button>
-                      ))}
-                    </span>
+                    <Segmented label="Profit Keeper mode" value={keeper.mode}
+                      options={['adaptive', 'fixed'].map(m => ({ value: m, label: m }))}
+                      onChange={m => post({ mode: m }, `Profit Keeper mode: ${m}`)} />
                     {keeper.mode === 'adaptive' ? (
                       <>
                         {numField('Arm', 'armAtrMult', { min: 0.1, max: 10, step: 0.1, suffix: '×ATR', hint: "Arms once peak profit passes this many ATRs of the position's own value." })}
@@ -2045,14 +2025,9 @@ export default function Tune() {
                         {numField('Giveback', 'givebackPct', { min: 5, max: 95, suffix: '%', hint: 'Fixed mode: the lock sits at (100 − this)% of the peak. Clamped 0–95 by the engine.' })}
                       </>
                     )}
-                    <span role="radiogroup" aria-label="Profit Keeper scope" className="flex items-center gap-1">
-                      {['external', 'all'].map(sc => (
-                        <button key={sc} type="button" role="radio" aria-checked={keeper.scope === sc}
-                          onClick={() => post({ scope: sc }, `Profit Keeper scope: ${sc}`)}
-                          className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${keeper.scope === sc ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                        >{sc === 'external' ? 'manual only' : 'all positions'}</button>
-                      ))}
-                    </span>
+                    <Segmented label="Profit Keeper scope" value={keeper.scope}
+                      options={[{ value: 'external', label: 'manual only' }, { value: 'all', label: 'all positions' }]}
+                      onChange={sc => post({ scope: sc }, `Profit Keeper scope: ${sc}`)} />
                   </>
                 )
               })()}
@@ -2904,7 +2879,7 @@ export default function Tune() {
                             // stale tick can't ride along with another strategy
                             if (val !== 'fib_618_fade') setBtTouchFill(false)
                           }}
-                          className={`rounded-[1px] px-2.5 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${btStrategy === val ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-sub)]'}`}
+                          className={`rounded-[8px] px-2.5 h-[32px] text-[9px] font-semibold cursor-pointer border transition-colors ${btStrategy === val ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent' : 'bg-transparent border-[var(--md-outline-variant)] text-[var(--md-on-surface)]'}`}
                         >{running ? '⟳ ' : done ? '✓ ' : queued ? '· ' : ''}{lbl}</button>
                       )
                     })}
@@ -3039,18 +3014,13 @@ export default function Tune() {
                       one control to a screen reader. */}
                   <div className="flex flex-wrap items-center gap-1.5 text-[9px]" role="radiogroup" aria-label="Which verdicts to arm">
                     <span className="text-[var(--color-text-sub)] font-semibold">Add to Activate:</span>
-                    {[
-                      ['go', 'Go only'],
-                      ['go+thin', 'Go + Go (thin)'],
-                      ['thin', 'Go (thin) only'],
-                      ['all', 'All incl. No-Go (<½ blue)'],
-                    ].map(([v, lbl]) => (
-                      <button
-                        key={v} type="button" role="radio" aria-checked={btArmClass === v}
-                        onClick={() => pickArmClass(v)}
-                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${btArmClass === v ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                      >{lbl}</button>
-                    ))}
+                    <Segmented label="Which verdicts to arm" value={btArmClass} onChange={pickArmClass}
+                      options={[
+                        { value: 'go', label: 'Go only' },
+                        { value: 'go+thin', label: 'Go + Go (thin)' },
+                        { value: 'thin', label: 'Go (thin) only' },
+                        { value: 'all', label: 'All incl. No-Go (<½ blue)' },
+                      ]} />
                     {btArmClass === 'all' && (
                       <span className="text-[var(--color-warning-text)] font-semibold">No-Go rows failed the evidence bar — arming them trades against your own backtest.</span>
                     )}
@@ -3178,8 +3148,8 @@ export default function Tune() {
                         key={v} type="button" role="checkbox" aria-checked={on}
                         onClick={() => toggleVerdictFilter(v)}
                         title={on ? `Hide ${lbl} rows` : `Show ${lbl} rows`}
-                        className={`rounded-[var(--radius-control)] px-2 py-1 min-h-[28px] font-semibold cursor-pointer ${on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-                      >{lbl}</button>
+                        className={`rounded-[8px] px-2 h-[32px] font-semibold cursor-pointer border transition-colors ${on ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)] border-transparent' : 'border-[var(--md-outline-variant)] text-[var(--md-on-surface)]'}`}
+                      >{on ? '✓ ' : ''}{lbl}</button>
                     )
                   })}
                   <span className="text-[var(--color-text-sub)]">view only — hiding a row never changes what is armed</span>
