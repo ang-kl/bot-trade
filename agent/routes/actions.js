@@ -2279,6 +2279,7 @@ export default function actionsRouter(db) {
       // Persist latest results to state
       setState(db, 'last_scan_at', new Date().toISOString())
       setState(db, 'last_scan_results', JSON.stringify(scanResult))
+      try { const { recordFxRates } = await import('../services/fx-rates.js'); recordFxRates(db, scanResult) } catch { /* best effort */ }
 
       // Persist individual scan rows
       const now = new Date().toISOString()

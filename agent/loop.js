@@ -33,6 +33,7 @@ import { startPhaseProfile, stopPhaseProfile } from './services/cpu-profile.js'
 import { recordLlmMonitorResult, shouldAlert, markAlerted } from './services/llm-monitor-health.js'
 import { armedTimeframes } from './lib/timeframes.js'
 import { getState, setState, closeTradeRow, insertCupHandleDiagnostic } from './db.js'
+import { recordFxRates } from './services/fx-rates.js'
 
 const LOOP_INTERVAL = 5 * 60 * 1000 // default; Tune can override (loop_interval_min)
 
@@ -2640,6 +2641,10 @@ async function runLoop(db) {
 
     setState(db, 'last_scan_at', now)
     setState(db, 'last_scan_results', JSON.stringify(scanResult))
+    // Remember this batch's closes in the persistent FX table — the risk
+    // gate's cross-pair sizing reads it, and a 15-of-221 rotation means the
+    // last batch alone cannot supply a conversion leg (see fx-rates.js).
+    recordFxRates(db, scanResult)
 
     // Persist scan context for next loop's delta computation
     persistScanContext(db, scanResult.scans)
