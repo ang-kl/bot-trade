@@ -70,7 +70,7 @@ function niceTicks(lo, hi, target = 4) {
   return out.length >= 2 ? out : [lo, hi]
 }
 
-export default function ReportChart({ allTrades, events }) {
+export default function ReportChart({ allTrades, events, daily }) {
   const [range, setRange] = useState('30D')
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
@@ -83,16 +83,32 @@ export default function ReportChart({ allTrades, events }) {
       if (!days.has(k)) days.set(k, { t: new Date(k).getTime(), approved: 0, vetoed: 0, pnl: 0 })
       return days.get(k)
     }
-    for (const e of events) {
-      const k = dayKey(e.created_at)
-      if (!k || new Date(k).getTime() < cutoff) continue
-      const b = bucket(k)
-      if (e.approved) b.approved++; else b.vetoed++
+    // Decision counts: prefer the server-side daily aggregate — the raw
+    // risk-events page is capped at a few hundred rows, which on a busy
+    // agent spans MINUTES, not days, and made this panel a sliver of today.
+    if (Array.isArray(daily) && daily.length > 0) {
+      for (const d of daily) {
+        const k = dayKey(d.day)
+        if (!k || new Date(k).getTime() < cutoff) continue
+        const b = bucket(k)
+        b.approved += Number(d.approved) || 0
+        b.vetoed += Number(d.vetoed) || 0
+      }
+    } else {
+      for (const e of events || []) {
+        const k = dayKey(e.created_at)
+        if (!k || new Date(k).getTime() < cutoff) continue
+        const b = bucket(k)
+        if (e.approved) b.approved++; else b.vetoed++
+      }
     }
     for (const t of allTrades) {
+      // trades rows carry net_pnl — the old `t.pnl` read matched NOTHING, so
+      // the equity panel summed an empty set and drew a flat zero line.
+      const pnl = t.net_pnl ?? t.pnl
       const k = dayKey(t.closed_at)
-      if (!k || t.pnl == null || new Date(k).getTime() < cutoff) continue
-      bucket(k).pnl += Number(t.pnl)
+      if (!k || pnl == null || t.status !== 'closed' || new Date(k).getTime() < cutoff) continue
+      bucket(k).pnl += Number(pnl)
     }
     const rows = [...days.values()].sort((a, b) => a.t - b.t)
     // Equity, its running high-water mark, and the gap between them. The gap
@@ -106,7 +122,7 @@ export default function ReportChart({ allTrades, events }) {
       r.dd = eq - peak // ≤ 0
     }
     return rows
-  }, [allTrades, events, range])
+  }, [allTrades, events, daily, range])
 
   const hasData = model.length >= 1
   // 1–2 active days: dots, no path. Two points joined by a line is a straight
