@@ -21,6 +21,7 @@ import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
+import { STRATEGY_KEYS } from '../lib/strategy-labels.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -1692,7 +1693,9 @@ export default function Performance() {
   // strategies actually present in the data (never a hardcoded list).
   const stratMx = useMemo(() => {
     const m30 = shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D)
-    const names = [...new Set(m30.map(t2 => t2.strat).filter(Boolean))]
+    // Full roster union (owner 02-08): every canonical strategy gets a row
+    // even with zero 30D trades, so the matrix never hides an armed one.
+    const names = [...new Set([...m30.map(t2 => t2.strat).filter(Boolean), ...STRATEGY_KEYS])]
     return names.map(name => {
       const sl = m30.filter(t2 => t2.strat === name)
       const a = aggRows(sl)

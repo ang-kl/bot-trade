@@ -47,6 +47,15 @@ export const stratShort = (key) => (key ? (STRAT_SHORT[key] || key) : null)
 // Owner 2026-08-02: "I am very particular about words/terms/acronyms" —
 // every strategy display name is Title Case ("Fibonacci 61.8% Fade", never
 // "fib_618_fade" or "Fibonacci 61.8% fade").
+// The canonical 12-strategy roster, in the owner's order (02-08-2026:
+// strategy tables must always show the FULL list, not just the strategies
+// that happen to have trades). UIs pad their rows from this.
+export const STRATEGY_KEYS = [
+  'fib_618_fade', 'cup_handle', 'inv_cup_handle', 'ema_pullback',
+  'donchian_breakout', 'rsi_meanrev', 'vwap_trend', 'vp_value',
+  'rsi2_reversion', 'fib_confluence', 'va_breakout', 'fvg_retrace',
+]
+
 export const STRAT_NAME = {
   fib_618_fade: 'Fibonacci 61.8% Fade',
   cup_handle: 'Cup & Handle',

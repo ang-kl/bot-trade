@@ -12,6 +12,7 @@ import StdTradeTable from '../components/StdTradeTable.jsx'
 import PositionManager from '../components/PositionManager.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import AccountHealth from '../components/AccountHealth.jsx'
+import AccountCompare from '../components/AccountCompare.jsx'
 import AccountPivot from '../components/AccountPivot.jsx'
 import MarketClock from '../components/MarketClock.jsx'
 import StrategyInsights from '../components/StrategyInsights.jsx'
@@ -119,6 +120,7 @@ export default function Accounts() {
     }
   }
   const [loadingAll, setLoadingAll] = useState(false)
+  const [viewAcct, setViewAcct] = useState('all')
   const [updatedAt, setUpdatedAt] = useState(null)
   const [marketHours, setMarketHours] = useState(null)
   const [error, setError] = useState('')
@@ -239,10 +241,25 @@ export default function Accounts() {
           <Skeleton lines={4} />
         </Card>
       )}
-      <div id="sec-primary">{bot && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}</div>
+      {/* Owner 02-08: "cannot switch account to see other Account health" —
+          view pills pick WHICH account's card(s) render below. 'All' shows
+          every fetched card; picking one shows that account alone. The
+          other-account cards need the all-accounts snapshot, fetched on
+          demand the first time a non-bot account is picked. */}
+      <Card>
+        <AccountScopePills value={viewAcct} onChange={(id) => {
+          setViewAcct(id)
+          if (id !== 'all' && !others) loadAll()
+        }} note="which account's health/positions to show below · All = every fetched account" />
+      </Card>
 
-      <div id="sec-others" className="space-y-8">{others?.map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>
+      <div id="sec-primary">{bot && (viewAcct === 'all' || String(bot.accountId) === String(viewAcct)) && <AccountCard acct={bot} marketHours={marketHours} onChanged={loadBot} />}</div>
+
+      <div id="sec-others" className="space-y-8">{others?.filter(a => viewAcct === 'all' || String(a.accountId) === String(viewAcct)).map(acct => <AccountCard key={acct.accountId} acct={acct} marketHours={marketHours} />)}</div>
       {others && others.length === 0 && <p className="text-[9px] text-[var(--color-text-sub)]">No other accounts on this cTrader ID.</p>}
+      {viewAcct !== 'all' && !others && <p className="text-[9px] text-[var(--color-text-sub)]">Fetching that account from the broker…</p>}
+
+      <AccountCompare accounts={bot ? [bot, ...(others || [])] : []} onNeedAll={loadAll} loading={loadingAll} />
 
       <div id="sec-insights" className="space-y-1">
         {/* Owner 02-08: "must have the option to switch trading-accounts to

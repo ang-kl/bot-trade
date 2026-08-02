@@ -12,7 +12,8 @@ import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
-import { stratShort, strategyLabel } from '../lib/strategy-labels.js'
+import { stratShort, strategyLabel, STRATEGY_KEYS } from '../lib/strategy-labels.js'
+import RiskConfigCompare from '../components/RiskConfigCompare.jsx'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
 import { priceDp } from '../lib/std-trade-rows.js'
 import { rankVerdict, visibleRows, tallyVerdicts } from '../lib/backtest-rows.js'
@@ -195,7 +196,16 @@ function StrategyTfPerformance() {
     if (!open) return
     let alive = true
     agentGet(`/state/strategy-tf-performance?days=30&account=${encodeURIComponent(acct)}`)
-      .then(d => { if (alive) { setGrid(d); setErr(d?.error || null) } })
+      .then(d => {
+        if (!alive) return
+        // Owner 02-08: the grid must list the FULL 12-strategy roster, not
+        // only strategies with closed trades — a missing row read as a bug.
+        if (d && Array.isArray(d.strategies)) {
+          const have = new Set(d.strategies.map(s => s.strategy))
+          for (const k of STRATEGY_KEYS) if (!have.has(k)) d.strategies.push({ strategy: k, cells: {}, total: null })
+        }
+        setGrid(d); setErr(d?.error || null)
+      })
       .catch(e => { if (alive) setErr(e.message) })
     return () => { alive = false }
   }, [open, acct])
@@ -1812,6 +1822,7 @@ export default function Tune() {
               </div>
               <TimeframePerformance timeframes={timeframes} />
               <StrategyTfPerformance />
+              <RiskConfigCompare />
             </div>
             </Card>
             <Card id="sec-pipe-protection" className="w3-hover-shadow">

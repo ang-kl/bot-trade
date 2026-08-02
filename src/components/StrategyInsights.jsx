@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react'
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
-import { strategyLabel } from '../lib/strategy-labels.js'
+import { strategyLabel, STRATEGY_KEYS } from '../lib/strategy-labels.js'
 import Skeleton from './common/Skeleton.jsx'
 import Collapse from './common/Collapse.jsx'
 import Segmented from './common/Segmented.jsx'
@@ -30,7 +30,14 @@ export default function StrategyInsights({ account = 'all' }) {
     // Scoped per account (owner 02-08: "is this for current account or which
     // account?" — before this it silently mixed every account's trades).
     agentGet(`/state/strategy-insights?days=${days || ''}&account=${encodeURIComponent(account)}`)
-      .then(r => { setRows(r.rows || []); setError('') })
+      .then(r => {
+        // Full 12-strategy roster always (owner 02-08) — zero-trade
+        // strategies show as dashes instead of vanishing.
+        const got = r.rows || []
+        const have = new Set(got.map(x => x.strategy))
+        for (const k of STRATEGY_KEYS) if (!have.has(k)) got.push({ strategy: k, trades: 0, wins: 0, losses: 0 })
+        setRows(got); setError('')
+      })
       .catch(e => setError(e.message))
   }, [days, account])
 
