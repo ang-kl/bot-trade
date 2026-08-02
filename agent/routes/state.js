@@ -5,7 +5,7 @@
 import { Router } from 'express'
 import { createHash } from 'node:crypto'
 import { getState } from '../db.js'
-import { loadRiskConfig, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
+import { loadRiskConfig, accountRiskOverlay, DEFAULT_RISK_CONFIG, getAccountBalance, getAccountLeverage } from '../services/risk.js'
 import { tierForBalance } from '../lib/contracts.js'
 import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
@@ -1705,10 +1705,15 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/risk-config — effective risk config (defaults merged with overrides)
   // -----------------------------------------------------------------------
-  router.get('/risk-config', (_req, res) => {
-    const effective = loadRiskConfig(db)
-    const balance = getAccountBalance(db)
-    const leverage = getAccountLeverage(db, effective)
+  router.get('/risk-config', (req, res) => {
+    // ?account=<id> → that account's EFFECTIVE config (global merged with its
+    // acct:<id>:risk_config_json overlay) plus the overlay itself, so the UI
+    // can show which limits are elevated per account. No param = global.
+    const acctParam = req.query.account && req.query.account !== 'all' ? String(req.query.account) : null
+    const effective = loadRiskConfig(db, acctParam)
+    const overlay = acctParam ? accountRiskOverlay(db, acctParam) : null
+    const balance = getAccountBalance(db, acctParam)
+    const leverage = getAccountLeverage(db, effective, acctParam)
     const tier = balance != null ? tierForBalance(balance) : null
     const derived = balance != null
       ? {
@@ -1733,6 +1738,8 @@ export default function stateRouter(db) {
       defaults: DEFAULT_RISK_CONFIG,
       effective,
       derived,
+      accountId: acctParam,
+      overlay,
     })
   })
 

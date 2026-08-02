@@ -1149,3 +1149,48 @@ test('evaluateTrade — slippage gate enabled but null threshold stays a no-op',
   const out = evaluateTrade(db, goodProposal(), cfg)
   assert.equal(out.approved, true, `expected approved, got veto: ${out.veto_reason}`)
 })
+
+// --- Per-account risk overlay (owner 02-08-2026: elevated risk on the two
+// >$50k demo accounts) ------------------------------------------------------
+
+test('loadRiskConfig merges the acct:<id>:risk_config_json overlay over global', async () => {
+  const { loadRiskConfig, accountRiskOverlay } = await import('./risk.js')
+  const db = freshDB()
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('risk_config_json', ?)`)
+    .run(JSON.stringify({ perTradeRiskPct: 0.05, dailyLossPct: 0.03 }))
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('acct:46130058:risk_config_json', ?)`)
+    .run(JSON.stringify({ perTradeRiskPct: 0.08, dailyLossPct: 0.05 }))
+  // Global read: untouched.
+  const global = loadRiskConfig(db)
+  assert.equal(global.perTradeRiskPct, 0.05)
+  assert.equal(global.dailyLossPct, 0.03)
+  // Overlaid account: elevated values win, everything else inherits.
+  const elevated = loadRiskConfig(db, '46130058')
+  assert.equal(elevated.perTradeRiskPct, 0.08)
+  assert.equal(elevated.dailyLossPct, 0.05)
+  assert.equal(elevated.minRR, DEFAULT_RISK_CONFIG.minRR)
+  // Non-overlaid account: identical to global.
+  assert.deepEqual(loadRiskConfig(db, '43097342'), global)
+  // Overlay reader: absent → null, malformed → null.
+  assert.equal(accountRiskOverlay(db, '43097342'), null)
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('acct:9:risk_config_json', 'not-json')`).run()
+  assert.equal(accountRiskOverlay(db, '9'), null)
+})
+
+test('evaluateTrade applies the account overlay even over a pre-loaded configOverride', async () => {
+  const { loadRiskConfig } = await import('./risk.js')
+  const db = freshDB()
+  setBalance(db, 10_000)
+  // The overlay blocks this symbol only for THIS account — visible proof the
+  // overlay reached the gate despite the caller passing a global override.
+  db.prepare(`INSERT INTO agent_state (key, value) VALUES ('acct:46130058:risk_config_json', ?)`)
+    .run(JSON.stringify({ blockedSymbols: ['EURUSD'] }))
+  const globalCfg = loadRiskConfig(db) // what loop.js pre-loads per cycle
+  const proposal = { ...goodProposal(), accountId: '46130058' }
+  const out = evaluateTrade(db, proposal, globalCfg)
+  assert.equal(out.approved, false)
+  assert.match(out.veto_reason || '', /blocked/i)
+  // Same proposal for a non-overlaid account passes the blocked-symbol check.
+  const out2 = evaluateTrade(db, { ...goodProposal(), accountId: '43097342' }, globalCfg)
+  assert.ok(!/blocked/i.test(out2.veto_reason || ''), `unexpected blocked veto: ${out2.veto_reason}`)
+})
