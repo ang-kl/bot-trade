@@ -105,3 +105,37 @@ test('enabledStrategies returns registry entries (compute callable)', () => {
     assert.equal(typeof s.name, 'string')
   }
 })
+
+// ---------------------------------------------------------------------------
+// Canonical terminology (owner 02-08-2026). The registry's display names are
+// what the server sends to Desk's Strategy Decay table and the stage matrix,
+// so they are held to the SAME standard as the frontend's STRAT_NAME map —
+// Title Case, spelled-out words, no lowercase shorthand ("Fib 61.8% fade",
+// "Volume-profile rotation" and "RSI-2 reversion (high win)" all shipped to
+// the UI before this test existed).
+// ---------------------------------------------------------------------------
+const CANONICAL_NAMES = {
+  fib_618_fade: 'Fibonacci 61.8% Fade',
+  cup_handle: 'Cup & Handle',
+  inv_cup_handle: 'Inverted Cup & Handle',
+  ema_pullback: 'EMA Trend-Pullback',
+  donchian_breakout: 'Range Breakout',
+  rsi_meanrev: 'RSI Mean-Reversion',
+  vwap_trend: 'VWAP Trend',
+  vp_value: 'Vol. Profile Value',
+  rsi2_reversion: 'RSI 2 Reversion',
+  fib_confluence: 'Fibonacci Confluence',
+  va_breakout: 'Value-Area Breakout',
+  fvg_retrace: 'FVG Retrace',
+}
+
+test('STRATEGY_REGISTRY carries the full 12-strategy roster', () => {
+  const keys = STRATEGY_REGISTRY.map(s => s.key).sort()
+  assert.deepEqual(keys, Object.keys(CANONICAL_NAMES).sort())
+})
+
+test('STRATEGY_REGISTRY names match the owner canonical terminology exactly', () => {
+  for (const s of STRATEGY_REGISTRY) {
+    assert.equal(s.name, CANONICAL_NAMES[s.key], `${s.key} display name`)
+  }
+})

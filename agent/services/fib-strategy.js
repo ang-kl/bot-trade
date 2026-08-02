@@ -733,13 +733,13 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
 // Plain-words display copy per strategy key. Kept LOCAL (not imported from
 // the registry) because the registry imports this module — no cycles.
 const STRATEGY_DISPLAY = {
-  fib_618_fade:      { name: 'Fibonacci Fade',     role: 'Deterministic 61.8% retracement fade' },
+  fib_618_fade:      { name: 'Fibonacci 61.8% Fade',     role: 'Deterministic 61.8% retracement fade' },
   cup_handle:        { name: 'Cup & Handle',       role: 'Deterministic cup & handle breakout' },
   inv_cup_handle:    { name: 'Inverted Cup & Handle', role: 'Deterministic inverted cup & handle breakdown' },
-  ema_pullback:      { name: 'EMA trend-pullback', role: 'Deterministic pullback to the trend EMA' },
-  donchian_breakout: { name: 'Range breakout',     role: 'Deterministic Donchian channel breakout' },
-  rsi_meanrev:       { name: 'RSI mean-reversion', role: 'Deterministic RSI stretch snap-back' },
-  fib_confluence:    { name: 'Fib confluence',     role: 'Multi-grid Fibonacci confluence zone' },
+  ema_pullback:      { name: 'EMA Trend-Pullback', role: 'Deterministic pullback to the trend EMA' },
+  donchian_breakout: { name: 'Range Breakout',     role: 'Deterministic Donchian channel breakout' },
+  rsi_meanrev:       { name: 'RSI Mean-Reversion', role: 'Deterministic RSI stretch snap-back' },
+  fib_confluence:    { name: 'Fibonacci Confluence',     role: 'Multi-grid Fibonacci confluence zone' },
 }
 
 export function synthesizeFibSignal(symbol, signal, threshold = 8) {

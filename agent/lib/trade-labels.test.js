@@ -163,7 +163,7 @@ test('THE NAS100 CASE: the label that could not be read now reads as a sentence'
   const d = describeLabel('AP|v1|FIB|HI|SYD|10m')
   assert.equal(d.structured, true)
   assert.equal(d.text,
-    'Autopilot v1 · Fib 61.8% fade · high conviction · Sydney session · 10m timeframe · regime not recorded')
+    'Autopilot v1 · Fibonacci 61.8% Fade · high conviction · Sydney session · 10m timeframe · regime not recorded')
 })
 
 test('a MISSING component is named, not silently dropped', () => {
@@ -222,7 +222,7 @@ test('a round-trip through encodeLabel is readable', () => {
   })
   const d = describeLabel(label)
   assert.match(d.text, /Autopilot v1/)
-  assert.match(d.text, /RSI-2 reversion \(high win\)/)
+  assert.match(d.text, /RSI 2 Reversion/)
   assert.match(d.text, /New York session/)
   assert.match(d.text, /M15 timeframe/)
   assert.match(d.text, /trending market/)
