@@ -14,12 +14,13 @@
 // Copying carries the SETTINGS (enabled, group, Max lots, conviction
 // threshold, allowed styles, bias override), because a copy that moved only
 // the ticker would silently resize the trade on arrival.
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Card from '../common/Card.jsx'
 import Badge from '../common/Badge.jsx'
 import Button from '../common/Button.jsx'
 import { agentGet, agentPost } from '../../lib/agent-api.js'
 import Collapse from '../common/Collapse.jsx'
+import { buildClassTree, classLabel, groupLabel, symbolsOfBand } from '../../lib/asset-class.js'
 
 const fmtDate = (iso) => {
   if (!iso) return '—'
@@ -63,9 +64,56 @@ function settingsSummary(i) {
   return bits.join(' · ') || '—'
 }
 
+/** A band header row: triangle, select-all checkbox, name, counts. */
+function BandRow({ open, onOpen, allOn, someOn, onToggleAll, label, count, onCount, indent = 0, strong = false }) {
+  return (
+    <tr className={`border-b border-[var(--color-border)] ${strong ? 'bg-[var(--glass-bg)]' : ''}`}>
+      <td className="py-1 pr-2" style={{ paddingLeft: indent }}>
+        <input
+          type="checkbox"
+          checked={allOn}
+          // Indeterminate is the honest state for a partly-ticked band —
+          // showing it unchecked would say "none of this is selected".
+          ref={el => { if (el) el.indeterminate = !allOn && someOn }}
+          onChange={() => onToggleAll(!allOn)}
+          aria-label={`Select all — ${label}`}
+        />
+      </td>
+      <td colSpan={5} className="py-1">
+        <button
+          type="button" onClick={onOpen} aria-expanded={open}
+          className={`flex items-center gap-1.5 cursor-pointer ${strong ? 'font-bold' : 'font-semibold'}`}
+        >
+          <span aria-hidden="true" className="inline-block w-3 text-[9px]">{open ? '▾' : '▸'}</span>
+          {label}
+          <span className="font-normal text-[var(--color-text-sub)]">({count} symbol{count === 1 ? '' : 's'} · {onCount} armed)</span>
+        </button>
+      </td>
+    </tr>
+  )
+}
+
 function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compareWith = null }) {
+  // Classification › Group › Symbol (owner 02-08-2026: "the group should be a
+  // tree structure"). The THREE TABLES stay as they are — they are the diff,
+  // not market groups, and that distinction is the point of this panel. The
+  // tree lives INSIDE each one.
+  //
+  // The practical win is the checkbox on every band: copying "all Forex" or one
+  // preset group was forty ticks and is now one, and a partly-ticked band shows
+  // indeterminate rather than pretending to be empty.
+  const bands = useMemo(() => buildClassTree(rows), [rows])
+  const [shut, setShut] = useState(() => new Set())
+  const isOpen = (k) => !shut.has(k)
+  const toggleOpen = (k) => setShut(prev => {
+    const next = new Set(prev)
+    next.has(k) ? next.delete(k) : next.add(k)
+    return next
+  })
+
   if (!rows.length) return null
   const allOn = rows.every(r => checked.has(r.symbol))
+  const armed = (list) => list.filter(i => i.enabled !== false).length
   return (
     <div className="mt-2">
       <div className="flex items-center gap-2 mb-1">
@@ -86,39 +134,73 @@ function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compar
           <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th className="py-1 pr-2 w-6" aria-label="Select" />
-              <th className="py-1 pr-3 text-left">Group</th>
               <th className="py-1 pr-3 text-left">Symbol</th>
               <th className="py-1 pr-3 text-left">Settings</th>
               <th className="py-1 pr-3 text-left">Last traded</th>
-              <th className="py-1 text-right">Margin/lot</th>
+              <th className="py-1 pr-3 text-right">Margin/lot</th>
+              <th className="py-1" aria-label="spacer" />
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => (
-              <tr key={r.symbol} className="border-b border-[var(--color-border)]">
-                <td className="py-1 pr-2">
-                  <input
-                    type="checkbox"
-                    checked={checked.has(r.symbol)}
-                    onChange={() => onToggle(r.symbol)}
-                    aria-label={`Select ${r.symbol}`}
+            {bands.map(([cls, byGroup]) => {
+              const clsKey = `${title}|cls:${cls}`
+              const clsSyms = symbolsOfBand(byGroup)
+              const clsItems = [...byGroup.values()].flat()
+              const clsAll = clsSyms.every(s => checked.has(s))
+              const clsSome = clsSyms.some(s => checked.has(s))
+              return (
+                <Fragment key={clsKey}>
+                  <BandRow
+                    strong open={isOpen(clsKey)} onOpen={() => toggleOpen(clsKey)}
+                    allOn={clsAll} someOn={clsSome}
+                    onToggleAll={(on) => onToggleAll(clsSyms, on)}
+                    label={classLabel(cls)} count={clsSyms.length} onCount={armed(clsItems)}
                   />
-                </td>
-                <td className="py-1 pr-3 text-[var(--color-text-sub)]">{r.group || '—'}</td>
-                <td className={`py-1 pr-3 font-semibold ${r.enabled === false ? 'text-[var(--color-text-sub)] line-through' : ''}`}>{r.symbol}</td>
-                <td className="py-1 pr-3 text-[var(--color-text-sub)]">
-                  {settingsSummary(r)}
-                  {/* On the "differs" table, saying what the OTHER side has is
-                      the whole point — otherwise the operator has to read two
-                      tables side by side and hold the values in their head. */}
-                  {compareWith?.[r.symbol] && (
-                    <span className="block text-[var(--color-warning-text)]">other: {settingsSummary(compareWith[r.symbol])}</span>
-                  )}
-                </td>
-                <td className="py-1 pr-3 text-[var(--color-text-sub)]">{fmtDate(r.lastTradedAt)}</td>
-                <td className="py-1 text-right">{fmtMoney(r.marginPerLotUsd)}</td>
-              </tr>
-            ))}
+                  {isOpen(clsKey) && [...byGroup.entries()].map(([g, items]) => {
+                    const gKey = `${clsKey}|grp:${g}`
+                    const gSyms = items.map(i => i.symbol)
+                    const gAll = gSyms.every(s => checked.has(s))
+                    const gSome = gSyms.some(s => checked.has(s))
+                    return (
+                      <Fragment key={gKey}>
+                        <BandRow
+                          open={isOpen(gKey)} onOpen={() => toggleOpen(gKey)}
+                          allOn={gAll} someOn={gSome}
+                          onToggleAll={(on) => onToggleAll(gSyms, on)}
+                          label={groupLabel(g)} count={gSyms.length} onCount={armed(items)}
+                          indent={12}
+                        />
+                        {isOpen(gKey) && items.map(r => (
+                          <tr key={r.symbol} className="border-b border-[var(--color-border)]">
+                            <td className="py-1 pr-2" style={{ paddingLeft: 24 }}>
+                              <input
+                                type="checkbox"
+                                checked={checked.has(r.symbol)}
+                                onChange={() => onToggle(r.symbol)}
+                                aria-label={`Select ${r.symbol}`}
+                              />
+                            </td>
+                            <td className={`py-1 pr-3 font-semibold ${r.enabled === false ? 'text-[var(--color-text-sub)] line-through' : ''}`}>{r.symbol}</td>
+                            <td className="py-1 pr-3 text-[var(--color-text-sub)]">
+                              {settingsSummary(r)}
+                              {/* On the "differs" table, saying what the OTHER side has is
+                                  the whole point — otherwise the operator has to read two
+                                  tables side by side and hold the values in their head. */}
+                              {compareWith?.[r.symbol] && (
+                                <span className="block text-[var(--color-warning-text)]">other: {settingsSummary(compareWith[r.symbol])}</span>
+                              )}
+                            </td>
+                            <td className="py-1 pr-3 text-[var(--color-text-sub)]">{fmtDate(r.lastTradedAt)}</td>
+                            <td className="py-1 pr-3 text-right">{fmtMoney(r.marginPerLotUsd)}</td>
+                            <td className="py-1" />
+                          </tr>
+                        ))}
+                      </Fragment>
+                    )
+                  })}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
         </Collapse>

@@ -24,7 +24,7 @@ import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 // The SAME classifier the trading path uses for market hours, imported rather
 // than mirrored — a watchlist tree that disagreed with the engine about what
 // an instrument is would be worse than no tree at all.
-import { categoriseSymbol } from '../../agent/lib/sessions.js'
+import { buildClassTree, classLabel, groupLabel, UNGROUPED } from '../lib/asset-class.js'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
@@ -1169,26 +1169,10 @@ export default function Tune() {
   // market hours, so the tree cannot disagree with the engine about what an
   // instrument is). Every symbol therefore has a classification; only the
   // middle level is ever "Ungrouped".
-  const UNGROUPED = '__ungrouped__'
-  const CLASS_LABEL = {
-    fx: 'Forex', crypto: 'Crypto', index: 'Indices', metal: 'Metals',
-    commodity: 'Commodities', soft: 'Softs', grain: 'Grains', stock: 'Stocks',
-  }
-  const CLASS_ORDER = ['fx', 'crypto', 'index', 'metal', 'commodity', 'soft', 'grain', 'stock']
-  // Map<classification, Map<groupName, symbol[]>>, both in a stable order.
-  const classTree = new Map()
-  for (const cls of CLASS_ORDER) classTree.set(cls, new Map())
-  for (const s of symbols) {
-    const cls = categoriseSymbol(s.symbol)
-    if (!classTree.has(cls)) classTree.set(cls, new Map())
-    const byGroup = classTree.get(cls)
-    const g = s.group || UNGROUPED
-    if (!byGroup.has(g)) byGroup.set(g, [])
-    byGroup.get(g).push(s)
-  }
-  // Drop empty classifications — a tree of eight headings over four symbols
-  // is worse than the flat list it replaced.
-  const classBands = [...classTree.entries()].filter(([, byGroup]) => byGroup.size > 0)
+  // Shared with Connect's copy-watchlist tree (src/lib/asset-class.js) rather
+  // than duplicated — two trees that disagreed about what "Forex" contains
+  // would be worse than one flat list.
+  const classBands = buildClassTree(symbols)
   const countOf = (byGroup) => [...byGroup.values()].reduce((n, arr) => n + arr.length, 0)
   const onCountOf = (arr) => arr.filter(m => m.enabled !== false).length
 
@@ -2646,7 +2630,7 @@ export default function Tune() {
                                     className="flex items-center gap-1.5 font-bold cursor-pointer"
                                   >
                                     <span aria-hidden="true" className="inline-block w-3 text-[9px]">{clsOpen ? '▾' : '▸'}</span>
-                                    {CLASS_LABEL[cls] || cls}
+                                    {classLabel(cls)}
                                     <span className="font-normal text-[var(--color-text-sub)]">({total} symbols · {clsOn} on)</span>
                                   </button>
                                   <Badge tone={clsOn > 0 ? 'on' : 'off'}>{clsOn > 0 ? 'ON' : 'OFF'}</Badge>
@@ -2668,7 +2652,7 @@ export default function Tune() {
                                           className="flex items-center gap-1.5 font-semibold cursor-pointer"
                                         >
                                           <span aria-hidden="true" className="inline-block w-3 text-[9px]">{grpOpen ? '▾' : '▸'}</span>
-                                          {isUngrouped ? 'Ungrouped' : g}
+                                          {groupLabel(g)}
                                           <span className="font-normal text-[var(--color-text-sub)]">({members.length} symbols · {onCount} on)</span>
                                         </button>
                                         {/* Group actions only where there IS a
