@@ -25,6 +25,8 @@ import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 // than mirrored — a watchlist tree that disagreed with the engine about what
 // an instrument is would be worse than no tree at all.
 import { buildClassTree, classLabel, groupLabel, UNGROUPED } from '../lib/asset-class.js'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
@@ -992,6 +994,13 @@ export default function Tune() {
     const t = setTimeout(load, 0)
     return () => clearTimeout(t)
   }, [load])
+
+  // FOLLOW THE GLOBAL ACCOUNT SWITCH. This page held every editing surface —
+  // watchlist, per-account switches, strategy arming — and was one of only two
+  // that never subscribed, so switching account elsewhere left it showing the
+  // previous account's world until a manual reload. It reloads the DATA only;
+  // what a save WRITES TO is moved by the owner, via ScopeMismatchNote.
+  const switchingTo = useAccountSwitch(load)
 
   // Live-refresh the PIPELINE FLAGS only — autotrade can be flipped in the
   // background (equity stop, /killall, Telegram /pause, autopilot auto mode)
@@ -2161,6 +2170,10 @@ export default function Tune() {
                     <Badge tone={scoped && !config?.watchlist_inherited ? 'on' : 'off'}>
                       {!scoped ? 'SHARED LIST' : config?.watchlist_inherited ? 'INHERITING SHARED' : 'OWN LIST'}
                     </Badge>
+                    {switchingTo && <span className="text-[var(--color-text-sub)]">Loading {switchingTo}…</span>}
+                  </div>
+                  <div className="mb-1.5">
+                    <ScopeMismatchNote scope={wlAcct} onUse={setWlAcct} sharedLabel="the shared watchlist" />
                   </div>
                   <div className="font-semibold mb-1">Watchlist insight</div>
                   <div className="flex flex-wrap gap-x-6 gap-y-1">

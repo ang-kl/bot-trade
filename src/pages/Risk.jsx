@@ -19,6 +19,8 @@ import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.j
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 import RiskReassess from '../components/RiskReassess.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
+import { useAccountSwitch } from '../lib/use-account-switch.js'
+import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -217,6 +219,12 @@ export default function Risk() {
   }, [riskAcct])
   useEffect(() => { load() }, [load])
 
+  // FOLLOW THE GLOBAL ACCOUNT SWITCH. Risk was the other page that never
+  // subscribed — so the limits on screen could belong to an account the bot
+  // had stopped trading minutes ago. Data only; the editing scope moves by
+  // click, via ScopeMismatchNote.
+  const switchingTo = useAccountSwitch(load)
+
   const save = async (section, fn) => {
     setSaving(section)
     try {
@@ -342,6 +350,10 @@ export default function Risk() {
               Clear overrides — follow global again
             </Button>
           )}
+          {switchingTo && <span className="text-[var(--color-text-sub)]">Loading {switchingTo}…</span>}
+        </div>
+        <div className="mt-1.5">
+          <ScopeMismatchNote scope={riskAcct} onUse={setRiskAcct} sharedLabel="the global risk config" />
         </div>
         {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (
           <div className="mt-1.5 text-[var(--color-text-sub)]">
