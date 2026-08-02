@@ -26,6 +26,7 @@
 //   the switch above is off, so those switches are disabled rather than
 //   offering a click that would silently do nothing.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import AccountTrafficLights, { LightRow } from './AccountTrafficLights.jsx'
 import Card from './common/Card.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
@@ -259,6 +260,24 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
           No accounts in the registry yet — pick them on Connect first.
         </div>
       )}
+      <AccountTrafficLights>{({ byId, alarms, globalHalt, globalHaltReason }) => (
+      <>
+      {/* A4. A red Manage light is not a status — it means open exposure with
+          nothing watching it, which the API refuses to create. If it shows up,
+          something wrote accounts.mode directly, and a small dot is not
+          enough. */}
+      {alarms.length > 0 && (
+        <div className="text-[9px] font-semibold text-[var(--color-down)] border border-[var(--color-down)] rounded-[6px] px-1.5 py-1 mb-1">
+          UNMANAGED EXPOSURE: {alarms.map(r => r.accountId).join(', ')} — open work with management off.
+          {' '}{alarms[0].lights.manage.reason}
+        </div>
+      )}
+      {globalHalt && (
+        <div className="text-[9px] text-[var(--color-warning-text)] mb-1">
+          Portfolio guard is blocking entries on every account{globalHaltReason ? ` — ${globalHaltReason}` : ''}.
+          Accounts below can still show as armed; that is the account's own state, not permission to trade.
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         {accounts.map(a => {
           const ownSetting = PHASES.some(p => a.overrides[p.key] !== null)
@@ -300,6 +319,9 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                 >
                   {a.connectivity}
                 </span>
+              )}
+              {byId.get(String(a.accountId)) && (
+                <LightRow row={byId.get(String(a.accountId))} />
               )}
               {/* Ratchet v2 hold — separate from the switches on purpose: the
                   ratchet never writes them, so its hold needs its own badge. */}
@@ -345,6 +367,8 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
           )
         })}
       </div>
+      </>
+      )}</AccountTrafficLights>
     </Card>
   )
 }

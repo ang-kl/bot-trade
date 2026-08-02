@@ -1349,6 +1349,21 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/account-traffic-lights — A4. Four lights per account (link /
+  // scan / enter / manage) with a one-line reason each, plus the open-work
+  // counts that make a pause decision consequential. Every light can be
+  // `unknown`, and unknown is its own state rather than being folded into
+  // green: a green light built on absent evidence is exactly the "believing an
+  // account is quiet when it isn't" failure the lights exist to prevent.
+  router.get('/account-traffic-lights', async (req, res) => {
+    try {
+      const { accountTrafficLights } = await import('../services/account-traffic-lights.js')
+      res.json(accountTrafficLights(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/account-capabilities — A2/A4 feed: per account, what it may do
   // (scan / enter / manage), its mode, and how much open work it holds. The
   // `unmanagedExposure` flag is the plan's §1 invariant checked rather than
