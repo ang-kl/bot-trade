@@ -18,6 +18,7 @@ import WorkedExample from '../components/common/WorkedExample.jsx'
 import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.jsx'
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
 import RiskReassess from '../components/RiskReassess.jsx'
+import AccountScopePills from '../components/common/AccountScopePills.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
 // setup") — everything DISPLAYED goes through Intl.NumberFormat in the
@@ -172,6 +173,11 @@ export default function Risk() {
   const [savedAt, setSavedAt] = useState(null) // { section, at }
   // Local editable copies — saved per section.
   const [risk, setRisk] = useState({})
+  // WHOSE limits are on screen. 'all' = the global config, which is what this
+  // page has always edited — so that stays the default and nothing re-scopes
+  // itself silently. Picking an account edits that account's OVERLAY: a
+  // partial config merged over the global one, affecting only that account.
+  const [riskAcct, setRiskAcct] = useState('all')
   const [acct, setAcct] = useState({ balance: null, leverage: null })
   const [guard, setGuard] = useState({})
   const [guardianPct, setGuardianPct] = useState(0.05)
@@ -191,7 +197,10 @@ export default function Risk() {
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
-      const r = await agentGet('/state/risk-full')
+      // Scoped read: the config an ACCOUNT actually trades under is the global
+      // one with its overlay merged on top. 'all' = the global config itself,
+      // which is what this page has always shown.
+      const r = await agentGet(`/state/risk-full${riskAcct && riskAcct !== 'all' ? `?account=${encodeURIComponent(riskAcct)}` : ''}`)
       setData(r)
       setRisk(r.risk.effective)
       setAcct({ balance: r.account.balance, leverage: r.account.leverage })
@@ -205,7 +214,7 @@ export default function Risk() {
       if (r.lossGuardian) setGuardian2(r.lossGuardian.effective)
       setError('')
     } catch (e) { setError(e.message) }
-  }, [])
+  }, [riskAcct])
   useEffect(() => { load() }, [load])
 
   const save = async (section, fn) => {
@@ -219,11 +228,18 @@ export default function Risk() {
       setError('')
     } catch (e) { setError(e.message) } finally { setSaving('') }
   }
+  const riskScoped = riskAcct && riskAcct !== 'all'
   const saveRisk = (keys) => save('risk', () => {
     const body = {}
     for (const k of keys) body[k] = risk[k]
+    // With an account, this writes that account's OVERLAY — only the keys
+    // being saved enter it, so an untouched knob keeps following the global
+    // config rather than being frozen at whatever it read today.
+    if (riskScoped) body.accountId = riskAcct
     return agentPost('/actions/risk-config', body)
   })
+  const clearOverlay = () => save('risk', () =>
+    agentPost('/actions/risk-config', { accountId: riskAcct, reset: true }))
 
   const closeAll = async () => {
     if (!window.confirm('Close EVERY open position at the broker — bot and manual trades alike. This cannot be undone. Continue?')) return
@@ -299,6 +315,51 @@ export default function Risk() {
         </div>
       )}
       {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+
+      {/* ---- WHOSE LIMITS ARE THESE ---------------------------------------
+          Owner 02-08-2026: "each sub-page doesn't tie to the account selected
+          and flash which account I am looking or capabie of edit". This page
+          read the GLOBAL config and wrote the GLOBAL config, while sitting
+          under a header naming one account — so the limits on screen were not
+          necessarily the limits that account trades under, and there was no
+          way to tell. Per-account overlays already existed server-side and
+          nothing here could reach them. */}
+      <Card className="text-[9px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <AccountScopePills
+            value={riskAcct}
+            onChange={setRiskAcct}
+            allLabel="Global"
+            note={riskScoped
+              ? 'Editing this ACCOUNT\'s overlay — a partial config merged over the global one. Only the fields you save enter it; everything else keeps following the global config.'
+              : 'Editing the GLOBAL config. Every account without an overlay of its own trades under exactly this.'}
+          />
+          <Badge tone={riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 ? 'on' : 'off'}>
+            {!riskScoped ? 'GLOBAL' : (data?.risk?.overlayKeys?.length ?? 0) > 0 ? `${data.risk.overlayKeys.length} ACCOUNT OVERRIDE${data.risk.overlayKeys.length === 1 ? '' : 'S'}` : 'FOLLOWS GLOBAL'}
+          </Badge>
+          {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (
+            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={clearOverlay}>
+              Clear overrides — follow global again
+            </Button>
+          )}
+        </div>
+        {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (
+          <div className="mt-1.5 text-[var(--color-text-sub)]">
+            {/* Name them, with the global value they are standing on. "This
+                account differs" and "this differs from the DEFAULT" are two
+                different facts with two different fixes, and the page must not
+                blur them. */}
+            Overridden for this account:{' '}
+            {data.risk.overlayKeys.map((k, i) => (
+              <span key={k}>
+                {i > 0 && ' · '}
+                <span className="font-semibold text-[var(--color-text)]">{k}</span>
+                {' '}{String(data.risk.effective?.[k])} <span className="opacity-70">(global {String(data.risk.global?.[k])})</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* ---- Reset / Re-Risk / Re-Risk + Watchlist (owner 2026-07-30) ------
           At the very top, above every field, because these three act on ALL

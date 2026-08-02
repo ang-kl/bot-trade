@@ -1948,13 +1948,25 @@ export default function stateRouter(db) {
   // account balance/leverage, the broker's real stop-out level, guardian /
   // weekend-bank toggles, the C++ exec-guard knobs, and VPO settings.
   // -----------------------------------------------------------------------
-  router.get('/risk-full', async (_req, res) => {
+  router.get('/risk-full', async (req, res) => {
     try {
-      const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage } = await import('../services/risk.js')
-      const effective = loadRiskConfig(db)
+      const { DEFAULT_RISK_CONFIG, loadRiskConfig, getAccountBalance, getAccountLeverage, accountRiskOverlay } = await import('../services/risk.js')
+      // ?account=<id> resolves the config THAT ACCOUNT actually trades under —
+      // the global config with its overlay merged on top. Without it the
+      // global config is returned exactly as before.
+      const acct = req.query?.account ? String(req.query.account) : null
+      const effective = loadRiskConfig(db, acct)
       const overridden = Object.keys(DEFAULT_RISK_CONFIG).filter(
         k => JSON.stringify(effective[k]) !== JSON.stringify(DEFAULT_RISK_CONFIG[k])
       )
+      // TWO KINDS OF OVERRIDE, told apart. "Differs from the default" and
+      // "this account overrides the global" are different facts with different
+      // fixes — one is edited on the global config, the other only exists for
+      // this account — and collapsing them is how an operator changes the
+      // wrong one. `overlayKeys` is the account-specific set.
+      const overlay = acct ? accountRiskOverlay(db, acct) : null
+      const overlayKeys = overlay ? Object.keys(overlay).filter(k => k in DEFAULT_RISK_CONFIG) : []
+      const globalCfg = loadRiskConfig(db, null)
       const parse = (k, dflt) => { try { return JSON.parse(getState(db, k) || dflt) } catch { return JSON.parse(dflt) } }
       // BROKER truth wins for balance (owner saw a stale figure: the stored
       // account_balance_usd lags the broker between loop refreshes). Use the
@@ -1964,17 +1976,29 @@ export default function stateRouter(db) {
       const brokerBalance = snapAgeMs < 15 * 60 * 1000 ? (snap?.account?.health?.balance ?? snap?.account?.balance ?? null) : null
       res.json({
         ok: true,
-        risk: { effective, defaults: DEFAULT_RISK_CONFIG, overridden },
+        risk: {
+          effective, defaults: DEFAULT_RISK_CONFIG, overridden,
+          // Which account this config was resolved for (null = the global
+          // config itself), the keys THIS ACCOUNT overrides, and the global
+          // values they sit on top of — so the page can show what would come
+          // back if the overlay were cleared.
+          scopedTo: acct,
+          overlayKeys,
+          global: acct ? globalCfg : null,
+        },
         account: {
-          balance: brokerBalance ?? getAccountBalance(db),
-          balanceSource: brokerBalance != null ? 'broker' : 'stored',
-          balanceFetchedAt: brokerBalance != null ? snap.fetchedAt : null,
-          leverage: getAccountLeverage(db, effective),
+          // Balance and leverage follow the same scope: an account's risk is
+          // sized off ITS balance, and showing another's would make every
+          // derived lot figure on the page wrong.
+          balance: (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db),
+          balanceSource: acct ? 'stored' : (brokerBalance != null ? 'broker' : 'stored'),
+          balanceFetchedAt: !acct && brokerBalance != null ? snap.fetchedAt : null,
+          leverage: getAccountLeverage(db, effective, acct),
           // Pepperstone forces liquidation at 50% margin level on this
           // account — real observed history (risk.js: owner hit 16 open,
           // margin level 126% vs 50% stop-out). Broker-set, not editable.
           brokerStopOutPct: 50,
-          accountId: getState(db, 'ctrader_account_id') || null,
+          accountId: acct ?? (getState(db, 'ctrader_account_id') || null),
           isLive: getState(db, 'ctrader_is_live') === 'true',
         },
         guardian: {
