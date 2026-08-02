@@ -1349,6 +1349,24 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/goal-tracker?days=<n>
+  // Progress toward the go-live gate (win rate 68%, profit factor 1.68 by
+  // 12 Aug) for every registry account plus a pooled portfolio row. Answers
+  // the reachability question the Performance tiles cannot: at the rate this
+  // account actually closes trades, is the gate still arithmetically in play,
+  // and what would the remaining trades have to do. Returns every account —
+  // the panel needs the whole roster to say which ones are and are not on it,
+  // so this route is deliberately not scoped by ?account=.
+  router.get('/goal-tracker', async (req, res) => {
+    try {
+      const { goalTracker } = await import('../services/goal-tracker.js')
+      const days = Number(req.query.days)
+      res.json(goalTracker(db, { days: Number.isFinite(days) && days > 0 ? days : null }))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/decisions — 3A decision provenance: recent controller
   // decisions (skips included), newest first. ?symbol= &stage= &limit=

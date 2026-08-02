@@ -24,6 +24,7 @@ export const NAV_TREE = [
       {
         path: '/performance', label: 'Performance', icon: '📊',
         sections: [
+          { id: 'sec-goal', label: 'Go-Live Gate', kind: 'C' },
           { id: 'sec-accounts', label: 'Accounts', kind: 'T' },
           { id: 'sec-today-open', label: 'Today & Open', kind: 'T' },
           { id: 'sec-weekend24', label: 'Weekend 24H', kind: 'T' },

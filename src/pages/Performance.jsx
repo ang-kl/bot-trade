@@ -29,6 +29,7 @@ import ReportChart from '../components/ReportChart.jsx'
 import SessionReview from '../components/SessionReview.jsx'
 import { RegimeMatrix, BalanceInOut, DataFeed } from '../components/PerfMacroSections.jsx'
 import PerfAccountScope from '../components/PerfAccountScope.jsx'
+import GoalTracker from '../components/GoalTracker.jsx'
 import SectionTools from '../components/common/SectionTools.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import NumberFlow from '@number-flow/react'
@@ -2262,6 +2263,11 @@ export default function Performance() {
 
       {/* ================= DESKTOP (lg+): the dense ledger ================== */}
       <div className="hidden min-[700px]:block space-y-2">
+        {/* The go-live gate first, above the ledger it summarises: the owner is
+            deciding whether 12 Aug is still real, and that answer should not be
+            reached by scrolling. */}
+        <GoalTracker />
+
         {/* Accounts detail row — exact prototype cards: day P&L, balance +
             equity + live floating, TP/SL nett today, 30D forecast pace, and
             the loss-cap line (real dailyLossPct config × stamped balance). */}
