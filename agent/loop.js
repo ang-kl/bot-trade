@@ -2252,6 +2252,18 @@ async function runLoop(db) {
           }
           log(`Reconcile: ${result.newExternal.length} new external, ${result.closedDetected.length} closed detected, ${(result.manualChanges || []).length} manual change(s), ${result.pendingOrders.length} pending orders`)
 
+          // Ledger resyncs are bookkeeping, not tampering — logged, never
+          // alerted. Named per position on purpose: a row that keeps needing
+          // a resync means something is writing a stop the broker rejects,
+          // and that is worth seeing rather than silently smoothing over.
+          for (const ls of result.ledgerSynced || []) {
+            log(`Ledger resync: ${ls.symbol} position ${ls.positionId} ${ls.kind === 'sl_resync' ? 'stop loss' : 'take profit'} ${ls.from ?? '—'} → ${ls.to ?? '—'} (our record had drifted from broker truth)`)
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+                'LEDGER_RESYNC', '/reconcile', JSON.stringify(ls).slice(0, 2000))
+            } catch { /* audit best-effort */ }
+          }
+
           // Tamper watch — the owner changed a bot-tracked position in the
           // cTrader app (reverse / volume / SL / TP). Alert loudly, audit it,
           // and let the monitor manage the adopted broker truth.

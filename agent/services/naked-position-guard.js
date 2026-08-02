@@ -150,7 +150,11 @@ export function dueForAlert(findings, lastAlertMap, nowMs, muteMs = MUTE_MS) {
 
 const STATE_KEY = 'naked_position_alerts_json'
 const TARGET_STATE_KEY = 'targetless_position_alerts_json'
+const LOG_STATE_KEY = 'protection_log_writes_json'
 const LAST_AUDIT_KEY = 'protection_audit_last_json'
+
+/** How often one position+kind may re-enter action_log. See the write loop. */
+const LOG_MUTE_MS = Math.max(60_000, Number(process.env.PROTECTION_LOG_MUTE_MS) || 3600_000)
 
 /**
  * Each account is audited against its OWN broker snapshot, so each needs its
@@ -169,7 +173,7 @@ const auditKeyFor = (accountId) =>
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
   nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
-  accountId = null, suggestTarget = null,
+  logMuteMs = LOG_MUTE_MS, accountId = null, suggestTarget = null,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
@@ -188,11 +192,28 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     for (const f of audit.targetless) KIND.set(f, 'POSITION_NO_TARGET')
     for (const f of audit.phantom) KIND.set(f, 'POSITION_STOP_MISMATCH')
 
+    // THE DURABLE TRAIL IS RATE-LIMITED TOO. It was not: the mute windows
+    // above gate Telegram only, so this loop wrote a row for EVERY finding on
+    // EVERY pass. protection_audit is loop-tied, so one standing condition
+    // emitted a row every few minutes for as long as it lasted —
+    // POSITION_STOP_MISMATCH in particular, because until the reconciler
+    // learned to converge a standing disagreement (see reconciler.js) nothing
+    // could ever clear it, so it logged forever.
+    //
+    // One row per position per kind per LOG_MUTE_MS still reconstructs
+    // duration — a position naked for six hours leaves six rows, which is
+    // enough to answer "how long was it exposed" — while a page of
+    // action_log stops being one position repeating itself.
+    const logMutes = readMap(LOG_STATE_KEY)
     for (const [f, method] of KIND) {
+      const key = `${method}|${f.positionId}`
+      const last = Number(logMutes[key] || 0)
+      if (last > 0 && (nowMs - last) < logMuteMs) continue
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
           method, '/protection-audit', JSON.stringify(f).slice(0, 2000),
         )
+        logMutes[key] = nowMs
       } catch { /* audit best-effort */ }
     }
 
@@ -251,9 +272,17 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     }
     prune(lastAlerts, audit.naked)
     prune(lastTargetAlerts, audit.targetless)
+    // Same bound for the log mutes, but keyed `KIND|positionId`, so drop any
+    // key whose finding is no longer present in THIS pass — a position that
+    // gets its stop back should log immediately if it ever loses it again.
+    {
+      const live = new Set([...KIND].map(([f, method]) => `${method}|${f.positionId}`))
+      for (const k of Object.keys(logMutes)) if (!live.has(k)) delete logMutes[k]
+    }
     try {
       setState(db, STATE_KEY, JSON.stringify(lastAlerts))
       setState(db, TARGET_STATE_KEY, JSON.stringify(lastTargetAlerts))
+      setState(db, LOG_STATE_KEY, JSON.stringify(logMutes))
     } catch { /* non-fatal */ }
 
     // ¶D·2 — the audit must never simply go quiet. See recordAuditUnavailable.
