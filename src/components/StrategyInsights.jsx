@@ -11,6 +11,7 @@ import Badge from './common/Badge.jsx'
 import { agentGet, agentConfigured } from '../lib/agent-api.js'
 import { strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from './common/Skeleton.jsx'
+import Collapse from './common/Collapse.jsx'
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -56,6 +57,7 @@ export default function StrategyInsights({ account = 'all' }) {
       {rows && rows.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">No closed trades in this range.</div>}
       {rows && rows.length > 0 && (
         <div className="overflow-x-auto">
+          <Collapse id="StrategyInsights_59" label="Strategy Rows">
           <table className="w-full text-[9px]">
             <thead>
               <tr>
@@ -96,6 +98,7 @@ export default function StrategyInsights({ account = 'all' }) {
               ))}
             </tbody>
           </table>
+          </Collapse>
         </div>
       )}
       {!rows && !error && <Skeleton lines={3} />}

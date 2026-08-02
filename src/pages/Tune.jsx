@@ -24,6 +24,7 @@ import WatchlistScreener from '../components/WatchlistScreener.jsx'
 import AccountPhaseSwitches from '../components/AccountPhaseSwitches.jsx'
 import ScreenerChat from '../components/ScreenerChat.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
+import Collapse from '../components/common/Collapse.jsx'
 
 // Native broker timeframes power the quick-pick menu; free-text (90m, 1.5h,
 // 2d, 1M) is parsed by src/lib/timeframes.js and synthesised agent-side.
@@ -1834,6 +1835,7 @@ export default function Tune() {
                 per-class breakeven / partial / runner triggers (in R). Whippy classes (energy, crypto) lock in sooner; clean trenders (indices, gold) give runners more room. Blank = class default.
               </span>
               <div className="overflow-x-auto mt-1">
+                <Collapse id="Tune_1837" label="Asset-Class Rows">
                 <table className="std-cols text-[9px] tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
@@ -1880,6 +1882,7 @@ export default function Tune() {
                     ))}
                   </tbody>
                 </table>
+                </Collapse>
               </div>
             </div>
             {/* Weekend bank + tick guardian — both existed backend-only with
@@ -2541,6 +2544,7 @@ export default function Tune() {
                   </div>
                 )}
                 <div className="overflow-auto max-h-[65vh] border border-[var(--color-border)] rounded-[8px]">
+                  <Collapse id="Tune_2544" label="Symbol Rows">
                   <table className="std-cols min-w-full text-[9px]">
                     <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
                       <tr>
@@ -2616,6 +2620,7 @@ export default function Tune() {
                       )}
                     </tbody>
                   </table>
+                  </Collapse>
                 </div>
                 </>
               )

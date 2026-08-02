@@ -20,6 +20,7 @@ import { toMs, priceDp, brokerOrderRows, bracketMoney, estimateMargin } from '..
 import { humanVeto } from '../lib/veto-words.js'
 import { useSort } from '../lib/use-sort.jsx'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
+import Collapse from '../components/common/Collapse.jsx'
 
 // Inline tab link used by the "Next:" guide line
 function NavTab({ to, children }) {
@@ -670,6 +671,7 @@ export default function Trade() {
         {signalScans.length === 0 && <div className="mt-1 text-[9px] text-[var(--color-text-sub)]">No active signals right now.</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
+            <Collapse id="Trade_673" label="Signal Rows">
             <table className="std-cols w-full text-[9px]">
               <thead>
                 <tr>
@@ -697,6 +699,7 @@ export default function Trade() {
                 ))}
               </tbody>
             </table>
+            </Collapse>
           </div>
         )}
         </details>

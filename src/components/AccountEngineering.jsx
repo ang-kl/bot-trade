@@ -21,6 +21,7 @@ import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
 import { agentGet } from '../lib/agent-api.js'
 import { PHASES } from '../lib/account-phases.js'
+import Collapse from './common/Collapse.jsx'
 
 /** "4m", "3h", "2d" since an ISO stamp — or null when there is nothing to age. */
 function ago(iso) {
@@ -126,6 +127,7 @@ export default function AccountEngineering() {
 
       {accounts.length > 0 && (
         <div className="overflow-x-auto">
+          <Collapse id="AccountEngineering_129" label="Switch Rows">
           <table className="w-full text-[9px] tabular-nums">
             <thead>
               <tr className="text-left text-[var(--color-text-sub)]">
@@ -202,6 +204,7 @@ export default function AccountEngineering() {
               })}
             </tbody>
           </table>
+          </Collapse>
         </div>
       )}
 

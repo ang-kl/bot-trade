@@ -33,6 +33,7 @@ import { useSort } from '../lib/use-sort.jsx'
 // Short strategy tags — shared so Desk and the Std trade table never drift.
 import { STRAT_SHORT, strategyLabel } from '../lib/strategy-labels.js'
 import Skeleton from '../components/common/Skeleton.jsx'
+import Collapse from '../components/common/Collapse.jsx'
 
 const REFRESH_MS = 20_000
 const ACTIVE_REFRESH_MS = 5_000 // faster poll while a position/order is live — owner: "run in every 1/2 second and not in 5 minutes" (½s risks broker rate limits for no real edge on a 5m+ strategy; 5s keeps the page feeling live)
@@ -954,6 +955,7 @@ export default function Desk() {
             </div>
             {(llmSpend.by_purpose?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
+                <Collapse id="Desk_957" label="Spend by Purpose Rows">
                 <table className="std-cols w-full text-[9px] tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
@@ -978,6 +980,7 @@ export default function Desk() {
                     ))}
                   </tbody>
                 </table>
+                </Collapse>
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-end gap-2">
@@ -1049,6 +1052,7 @@ export default function Desk() {
             )}
             {(alphaDecay.strategies?.length ?? 0) > 0 && (
               <div className="overflow-x-auto">
+                <Collapse id="Desk_1052" label="Strategy Decay Rows">
                 <table className="std-cols w-full text-[9px] tabular-nums">
                   <thead>
                     <tr className="border-b border-[var(--color-border)]">
@@ -1110,6 +1114,7 @@ export default function Desk() {
                     })}
                   </tbody>
                 </table>
+                </Collapse>
               </div>
             )}
 
@@ -1143,6 +1148,7 @@ export default function Desk() {
                     </div>
                   )}
                   <div className="overflow-x-auto">
+                    <Collapse id="Desk_1146" label="Backtest Rows">
                     <table className="std-cols w-full text-[9px] tabular-nums">
                       <thead>
                         <tr className="border-b border-[var(--color-border)]">
@@ -1165,6 +1171,7 @@ export default function Desk() {
                         ))}
                       </tbody>
                     </table>
+                    </Collapse>
                   </div>
                   <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
                     {strategyLabel(curBaseline.strategy)} · tested {ago(curBaseline.ranAt)} ago{curBaseline.combos.length > 10 ? ` · showing 10 of ${curBaseline.combos.length} combos` : ''}{backtestsList.length > 1 ? ` · ${backtestsList.length} strategies tested` : ''} — <Link to="/tune" className="text-[var(--color-accent)] underline">re-run in Tune</Link> after strategy or filter changes.

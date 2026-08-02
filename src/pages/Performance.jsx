@@ -35,6 +35,7 @@ import { useAutoAnimate } from '@formkit/auto-animate/react'
 import { MARKET_COLS, categorize as catOf, dayAnchorMs, isFxWeekend, closedAtMs as closedMs } from '../../agent/shared/formulas.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
 import { fleetFrom } from '../cockpit/cockpit-fleet.js'
+import Collapse from '../components/common/Collapse.jsx'
 
 const REFRESH_MS = 60_000
 const H = 3600_000
@@ -1941,6 +1942,7 @@ export default function Performance() {
   })()
 
   const tilesRow = tiles && (
+    <Collapse id="Performance_1944" label="Metric Rows">
     <table className="w-full text-left tabular-nums mb-2">
       <thead>
         <tr><th className="w-[150px]">Metric</th><th className="w-[128px]">All time</th><th>What it measures</th></tr>
@@ -1962,6 +1964,7 @@ export default function Performance() {
         ))}
       </tbody>
     </table>
+    </Collapse>
   )
 
   return (

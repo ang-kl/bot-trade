@@ -21,6 +21,7 @@ import Button from './common/Button.jsx'
 import { screenerAdvice } from '../lib/screener-advice.js'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
+import Collapse from './common/Collapse.jsx'
 
 function SortHeader({ label, col, sort, onSort, className = '' }) {
   const active = sort.col === col
@@ -149,6 +150,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
         <p className="text-[9px] text-[var(--color-text-sub)]">All {rows.length} available symbols in this set are already on the watchlist.</p>
       )}
       {visible.length > 0 && <div className="overflow-x-auto">
+        <Collapse id="WatchlistScreener_152" label="Screener Rows">
         <table className="w-full text-[9px] tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
@@ -197,6 +199,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
             ))}
           </tbody>
         </table>
+        </Collapse>
       </div>}
     </div>
   )

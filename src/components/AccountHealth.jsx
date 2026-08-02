@@ -7,6 +7,7 @@
 // percentage" — reads from acct.health (see /actions/broker-positions).
 import Card from './common/Card.jsx'
 import Badge from './common/Badge.jsx'
+import Collapse from './common/Collapse.jsx'
 
 function fmtMoney(n, ccy) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -62,6 +63,7 @@ export default function AccountHealth({ acct }) {
         </span>
       </div>
       <div className="overflow-x-auto">
+        <Collapse id="AccountHealth_65" label="Health Rows">
         <table className="w-full text-[9px]">
           <thead>
             <tr>
@@ -89,6 +91,7 @@ export default function AccountHealth({ acct }) {
             })}
           </tbody>
         </table>
+        </Collapse>
       </div>
     </Card>
   )
