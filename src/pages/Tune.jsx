@@ -4,6 +4,7 @@
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
+import StrategyLivenessCard from '../components/StrategyLivenessCard.jsx'
 import Skeleton from '../components/common/Skeleton.jsx'
 import Badge from '../components/common/Badge.jsx'
 import Button from '../components/common/Button.jsx'
@@ -1625,6 +1626,12 @@ export default function Tune() {
                 nightly evidence loop — every run saves a charted GO/NO-GO report under Past reports; suggest = Telegram proposals only, auto = applies within a 4-change cap
               </span>
             </div>
+            </Card>
+            {/* Liveness sits directly under "What May Trade": that card is
+                where a strategy gets armed, and this is the only surface that
+                says whether arming it did anything. */}
+            <Card id="sec-pipe-liveness" className="w3-hover-shadow">
+              <StrategyLivenessCard />
             </Card>
             <Card id="sec-pipe-breakers" className="w3-hover-shadow">
               <SectionTitle>Breakers and Gates form</SectionTitle>
