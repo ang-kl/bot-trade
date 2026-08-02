@@ -26,6 +26,7 @@ import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderLedger from '../components/OrderLedger.jsx'
 import LossReview from '../components/LossReview.jsx'
 import SplitFlapClock from '../components/common/SplitFlapClock.jsx'
+import Segmented from '../components/common/Segmented.jsx'
 import { brokerPositionRows, brokerOrderRows, brokerDealRows, priceDp } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
 import { describeRiskCriteria } from '../lib/risk-criteria.js'
@@ -503,14 +504,9 @@ export default function Desk() {
             <strong>Activity</strong> — the needle reads how fast this trade's P&amp;L is moving right now: flat left (9 o'clock) = dormant, up toward 12 = profit accelerating, down toward 6 = loss accelerating. The number underneath is that rate in account currency per minute.
           </p>
         </details>
-        <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Gauge wall grid size">
-          {[1, 4, 8, 16].map(n => (
-            <button
-              key={n} type="button" role="radio" aria-checked={pnlGridN === n}
-              onClick={() => pickPnlGrid(n)}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${pnlGridN === n ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-            >{n}</button>
-          ))}
+        <div className="mb-1.5">
+          <Segmented label="Gauge wall grid size" value={pnlGridN} onChange={pickPnlGrid}
+            options={[1, 4, 8, 16].map(n => ({ value: n, label: String(n) }))} />
         </div>
         <TradeGaugeWall positions={gaugePositions} gridN={pnlGridN} marketHours={marketHours} />
       </Section>
@@ -525,15 +521,9 @@ export default function Desk() {
         title="Chart wall"
         summary={gridN === 1 ? (symbol || '—') : `${gridN}-chart wall`}
       >
-        <div className="flex items-center gap-1 mb-1.5 flex-wrap" role="radiogroup" aria-label="Chart grid size">
-          {[1, 4, 8, 16].map(n => (
-            <button
-              key={n} type="button" role="radio" aria-checked={gridN === n}
-              onClick={() => pickGrid(n)}
-              title={n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen`}
-              className={`rounded-[1px] px-2 py-0.5 min-h-[28px] text-[9px] font-semibold cursor-pointer ${gridN === n ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'}`}
-            >{n === 1 ? '1 chart' : `${n} wall`}</button>
-          ))}
+        <div className="flex items-center gap-1 mb-1.5 flex-wrap">
+          <Segmented label="Chart grid size" value={gridN} onChange={pickGrid}
+            options={[1, 4, 8, 16].map(n => ({ value: n, label: n === 1 ? '1 chart' : `${n} wall`, title: n === 1 ? '1 chart on screen' : `${n} charts — a wall of ${n} on screen` }))} />
           {/* Symbol picker: a dropdown, not 52 chips — one control, no row
               of pills to swipe through (owner: "so many UI controls"). */}
           {gridN === 1 && chartSymbols.length > 0 && (

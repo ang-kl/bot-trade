@@ -176,11 +176,15 @@ test('probeCppExec: credential-less live sidecar triggers a re-push (M4 self-hea
   assert.match(r.error, /no credentials/)
   assert.match(r.error, /re-pushed/)
   assert.ok(pushedWith && typeof pushedWith === 'object', 'pushSidecarSession called with assembled creds')
-  // The reconnecting case (creds present) must NOT re-push.
+  // The reconnecting case (creds present) must ALSO re-push — 02-08 incident:
+  // the sidecar retried a STALE access token for 22 hours after Node rotated
+  // it, and nothing re-pushed because this path only fired on missing creds.
+  // Re-pushing an unchanged token is a cheap /connect no-op; a rotated one
+  // revives the session within a probe interval.
   pushedWith = null
   exec.pingSidecar = async () => ({ ok: true, mode: 'cpp', connected: false, hasCredentials: true })
   await probeCppExec(db, { exec, now: T0 })
-  assert.equal(pushedWith, null)
+  assert.ok(pushedWith && typeof pushedWith === 'object', 're-push fires on stale-token reconnect loop too')
 })
 
 test('pingSidecar (exec-engine): js mode is trivially alive with no HTTP call', async () => {

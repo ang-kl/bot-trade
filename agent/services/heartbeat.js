@@ -291,13 +291,19 @@ export async function probeCppExec(db, deps = {}) {
     // the broker session returns within one probe interval (~30s) instead
     // of waiting for the next agent redeploy. Best-effort: a failed push
     // keeps the heartbeat red and retries on the next probe.
-    if (r.hasCredentials === false) {
-      try {
-        const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
-        const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(getCtraderCreds(db)) : false
-        if (pushed) error += ' — credentials re-pushed, session should return shortly'
-      } catch { /* creds not ready or sidecar went away — next probe retries */ }
-    }
+    // 02-08 incident: the sidecar sat "reconnecting" for 22 HOURS with
+    // hasCredentials:true — it was retrying with a STALE access token. Node
+    // had rotated the OAuth token since (maybeRefreshCtraderToken, ~daily)
+    // but nothing re-pushed it: order paths were idle all weekend and this
+    // branch only fired on missing credentials. A stale token is exactly as
+    // dead as no token, so re-push fresh creds in BOTH cases — pushing the
+    // token the sidecar already holds is one cheap /connect no-op, pushing a
+    // rotated one revives the session within a probe interval.
+    try {
+      const { getCtraderCreds } = await import('../lib/ctrader-creds.js')
+      const pushed = exec.pushSidecarSession ? await exec.pushSidecarSession(getCtraderCreds(db)) : false
+      if (pushed) error += ' — credentials re-pushed, session should return shortly'
+    } catch { /* creds not ready or sidecar went away — next probe retries */ }
   } else if (ok && r.connected === true) {
     // Connected — now check the roster actually matches what is ENABLED.
     // Re-pushed rather than merely reported: leaving the sidecar authorised for
