@@ -27,8 +27,9 @@
 // what actually happens. See agent/services/browser-sessions.js for the
 // server-side reasoning.
 // ---------------------------------------------------------------------------
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useAnchoredPopover } from '../lib/use-anchored-popover.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep, getIdleMinutes, setIdleMinutes } from '../lib/agent-api.js'
 import {
   aliveText, seenText, statusLine, localTime, splitSessions, confirmCopy,
@@ -42,8 +43,6 @@ export default function SessionFooter({ appVersion, buildSha }) {
   const [open, setOpen] = useState(false)
   const [err, setErr] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
-  const buttonRef = useRef(null)
-  const popoverRef = useRef(null)
   const popoverId = useId()
 
   // Promise-chain shape, matching the other poll loops in this app: setState
@@ -79,71 +78,16 @@ export default function SessionFooter({ appVersion, buildSha }) {
   const { current, others } = splitSessions(view)
   const line = statusLine(current)
 
-  // ---- popover dismissal: Escape, outside click, focus return -------------
-  useEffect(() => {
-    if (!open) return undefined
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        setOpen(false)
-        buttonRef.current?.focus()   // "Return focus to the activating control"
-      }
-    }
-    const onDown = (e) => {
-      if (popoverRef.current?.contains(e.target)) return
-      if (buttonRef.current?.contains(e.target)) return
-      setOpen(false)
-    }
-    document.addEventListener('keydown', onKey)
-    document.addEventListener('mousedown', onDown)
-    return () => {
-      document.removeEventListener('keydown', onKey)
-      document.removeEventListener('mousedown', onDown)
-    }
-  }, [open])
-
-  // ---- keep it inside the viewport ---------------------------------------
-  // "Remain inside the viewport / Reposition automatically near screen edges."
-  // Measured after paint, so this is the real box, not an assumed one.
-  useLayoutEffect(() => {
-    if (!open) return
-    const el = popoverRef.current
-    const anchor = buttonRef.current
-    if (!el || !anchor) return
-    el.style.top = ''
-    el.style.bottom = ''
-    el.style.left = ''
-    const a = anchor.getBoundingClientRect()
-    const margin = 8
-    // Measure AFTER clearing, and use the border box for both axes. The first
-    // version only clamped `top` against the top edge and set `left` from the
-    // anchor — measured in Chromium, that put the dialog partly outside the
-    // viewport, because a tall box anchored near the bottom still overflowed
-    // downward and a wide box overflowed to the right. Clamp both ends of both
-    // axes, which is what "Remain inside the viewport / Reposition
-    // automatically near screen edges" actually requires.
-    const { width: w, height: h } = el.getBoundingClientRect()
-    const maxTop = Math.max(margin, window.innerHeight - h - margin)
-    const maxLeft = Math.max(margin, window.innerWidth - w - margin)
-
-    // Prefer opening upward from the anchor — the control sits at the bottom of
-    // the sidebar, so upward is where the room is.
-    let top = a.top - h - margin
-    if (top < margin) top = a.bottom + margin
-    top = Math.min(Math.max(margin, top), maxTop)
-    const left = Math.min(Math.max(margin, a.left), maxLeft)
-
-    // ZOOM CONVERSION, and it is not optional. index.css puts `zoom: 1.1` on
-    // html above 1153px. getBoundingClientRect and window.innerWidth/Height all
-    // report VISUAL pixels, but a CSS length assigned to style.top resolves in
-    // LAYOUT pixels — so writing the visual number back produced a box 10% too
-    // far down and, once the sidebar offset was involved, a NEGATIVE left edge.
-    // Measured at 1440x900: left came out at -151px, i.e. the dialog hung off
-    // the side of the screen while every clamp above said it was inside.
-    const zoom = parseFloat(getComputedStyle(document.documentElement).zoom) || 1
-    el.style.top = `${top / zoom}px`
-    el.style.left = `${left / zoom}px`
-  }, [open, view])
+  // Dismissal, viewport clamping and the zoom conversion live in
+  // useAnchoredPopover — every clause in it was learned here, and a second
+  // popover (the agent health panel) needed the same contract rather than a
+  // second copy of it. `view` is a dep because the popover's CONTENT resizes
+  // when the session list arrives, and the position depends on the box size.
+  const { buttonRef, popoverRef } = useAnchoredPopover({
+    open,
+    onClose: () => setOpen(false),
+    deps: [view],
+  })
 
   if (!agentConfigured()) return null
 

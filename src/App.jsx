@@ -93,6 +93,7 @@ import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/Ac
 import MobileTabBar from './components/MobileTabBar.jsx'
 import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
+import AgentHealthPanel from './components/AgentHealthPanel.jsx'
 import SessionFooter from './components/SessionFooter.jsx'
 import { useBotChanges, BotChangesFooterButton, BotChangeHighlighter } from './components/BotChanges.jsx'
 import { useTheme } from './lib/theme.js'
@@ -264,7 +265,12 @@ export default function App() {
         <div className="glass-panel rounded-[16px] p-4 flex flex-col h-full min-h-0 overflow-hidden">
           <div className="shrink-0 flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-3">
             <span className="text-[15px] font-extrabold tracking-tight text-[var(--color-accent)]">bot-trade</span>
-            <span className="text-[11px] text-[var(--color-text-sub)]" title={`App version · build ${__GIT_COMMIT__}`}>v{__APP_VERSION__} · {__GIT_COMMIT__}</span>
+            {/* The version tag is now the handle for agent health: the number
+                alone answered nothing, and whether the BROWSER and the AGENT
+                are on the same build is the question it was always adjacent
+                to. It also carries a status dot for the loop and the
+                controllers, so a stall is visible from every screen. */}
+            <AgentHealthPanel appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} />
             <LlmMonitorStatus />
           </div>
           {/* Which account am I looking at? (owner 2026-07-29: "above the
