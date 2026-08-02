@@ -108,17 +108,56 @@ function fxQuoteCurrency(symbol) {
 /**
  * Currency → USD conversion from a live rates map ({ SYMBOL: price } — the
  * scan's freshest closes). GBP via GBPUSD (multiply), JPY via USDJPY
- * (divide). Returns NaN when no usable pair is in the map — callers veto,
+ * (divide). Returns NaN when no conversion path exists — callers veto,
  * never guess.
+ *
+ * THREE HOPS, NOT ONE (production 02-08-2026). The direct/inverse pair is
+ * only present when the USD major itself is on the watchlist. Measured on
+ * production: 654 entries vetoed `insufficient_equity … usd_per_lot_unknown`
+ * in two days — EURJPY (269), AUDPLN (268), EURGBP (100) — because USDJPY,
+ * USDPLN and GBPUSD are not scanned symbols, so the map never held them.
+ * Those were sized-out, not risk-rejected: a conversion gap silently became
+ * a trading halt on three otherwise-valid instruments.
+ *
+ * So when the direct pair is missing, derive the rate TRANSITIVELY through
+ * any scanned pair that carries the currency alongside one whose USD rate IS
+ * known — EURJPY quoted in JPY with a known EUR→USD gives
+ * JPY→USD = (EUR→USD) ÷ price(EURJPY). Only one hop is taken, and only
+ * through a directly-resolvable leg, so a rate is never chained through
+ * another derived rate (compounding two stale closes is how a sizing error
+ * becomes an over-sized position).
  */
 export function usdRate(currency, rates) {
   const c = (currency || '').toUpperCase()
   if (c === 'USD') return 1
   if (!rates || typeof rates !== 'object') return NaN
-  const direct = Number(rates[`${c}USD`])
-  if (Number.isFinite(direct) && direct > 0) return direct
-  const inverse = Number(rates[`USD${c}`])
-  if (Number.isFinite(inverse) && inverse > 0) return 1 / inverse
+  const directPair = (cur) => {
+    const d = Number(rates[`${cur}USD`])
+    if (Number.isFinite(d) && d > 0) return d
+    const inv = Number(rates[`USD${cur}`])
+    if (Number.isFinite(inv) && inv > 0) return 1 / inv
+    return NaN
+  }
+  const own = directPair(c)
+  if (Number.isFinite(own)) return own
+  // One transitive hop through a cross that carries this currency.
+  for (const [sym, raw] of Object.entries(rates)) {
+    const s = String(sym).toUpperCase()
+    if (s.length !== 6 || !/^[A-Z]{6}$/.test(s)) continue
+    const base = s.slice(0, 3)
+    const quote = s.slice(3)
+    if (base !== c && quote !== c) continue
+    const other = base === c ? quote : base
+    if (other === c) continue
+    const otherRate = other === 'USD' ? 1 : directPair(other)
+    if (!Number.isFinite(otherRate) || otherRate <= 0) continue
+    const price = Number(raw)
+    if (!Number.isFinite(price) || price <= 0) continue
+    // base=c: price is OTHER per 1 C → C→USD = price × (OTHER→USD)
+    // quote=c: price is C per 1 OTHER → C→USD = (OTHER→USD) ÷ price
+    const derived = base === c ? price * otherRate : otherRate / price
+    if (Number.isFinite(derived) && derived > 0) return derived
+  }
   return NaN
 }
 

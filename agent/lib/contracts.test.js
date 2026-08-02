@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import {
   contractSize,
   usdLossPerLot,
+  usdRate,
   notionalUsd,
   tierForBalance,
   TIERS,
@@ -172,4 +173,61 @@ test('TIERS exported with expected shape', () => {
     assert.ok(typeof t.maxBalance === 'number')
     assert.ok(typeof t.note === 'string')
   }
+})
+
+// ---------------------------------------------------------------------------
+// usdRate transitive derivation (production 02-08-2026): 654 entries in two
+// days were sized to zero — "insufficient_equity … usd_per_lot_unknown" — on
+// EURJPY, AUDPLN and EURGBP, because the USD major each needs (USDJPY,
+// USDPLN, GBPUSD) is not a scanned symbol so the rates map never held it.
+// One hop through a scanned cross resolves all three.
+// ---------------------------------------------------------------------------
+
+test('usdRate — direct pair still wins over any derivation', () => {
+  assert.equal(usdRate('GBP', { GBPUSD: 1.27, EURGBP: 0.85, EURUSD: 1.08 }), 1.27)
+})
+
+test('usdRate — inverse pair (USDJPY) still resolves JPY', () => {
+  const r = usdRate('JPY', { USDJPY: 157 })
+  assert.ok(Math.abs(r - 1 / 157) < 1e-9, `got ${r}`)
+})
+
+test('usdRate — JPY derived from EURJPY + EURUSD (the EURJPY veto)', () => {
+  // EUR→USD 1.08, EURJPY 170 ⇒ JPY→USD = 1.08 / 170
+  const r = usdRate('JPY', { EURUSD: 1.08, EURJPY: 170 })
+  assert.ok(Math.abs(r - 1.08 / 170) < 1e-9, `got ${r}`)
+})
+
+test('usdRate — GBP derived from EURGBP + EURUSD (the EURGBP veto)', () => {
+  const r = usdRate('GBP', { EURUSD: 1.08, EURGBP: 0.85 })
+  assert.ok(Math.abs(r - 1.08 / 0.85) < 1e-9, `got ${r}`)
+})
+
+test('usdRate — PLN derived from AUDPLN + AUDUSD (the AUDPLN veto)', () => {
+  const r = usdRate('PLN', { AUDUSD: 0.66, AUDPLN: 2.6 })
+  assert.ok(Math.abs(r - 0.66 / 2.6) < 1e-9, `got ${r}`)
+})
+
+test('usdRate — base-side derivation (CADCHF gives CAD via CHF)', () => {
+  // CAD is the BASE of CADCHF: price is CHF per CAD ⇒ CAD→USD = price × CHF→USD
+  const r = usdRate('CAD', { USDCHF: 0.88, CADCHF: 0.65 })
+  assert.ok(Math.abs(r - 0.65 * (1 / 0.88)) < 1e-9, `got ${r}`)
+})
+
+test('usdRate — never chains through a DERIVED leg (no compounding stale closes)', () => {
+  // PLN would need AUD, AUD would itself need deriving — refuse, do not guess.
+  assert.ok(Number.isNaN(usdRate('PLN', { AUDPLN: 2.6, EURAUD: 1.63 })));
+})
+
+test('usdRate — unknown currency with no path stays NaN (veto, never guess)', () => {
+  assert.ok(Number.isNaN(usdRate('ZAR', { EURUSD: 1.08 })))
+  assert.ok(Number.isNaN(usdRate('JPY', null)))
+})
+
+test('usdLossPerLot — EURJPY sizes instead of vetoing once JPY is derivable', () => {
+  const rates = { EURUSD: 1.08, EURJPY: 170 }
+  const v = usdLossPerLot('EURJPY', 0.5, 170, rates)
+  assert.ok(Number.isFinite(v) && v > 0, `expected a finite loss/lot, got ${v}`)
+  // 0.5 JPY × 100,000 = 50,000 JPY → × (1.08/170) USD
+  assert.ok(Math.abs(v - 50_000 * (1.08 / 170)) < 1e-6, `got ${v}`)
 })

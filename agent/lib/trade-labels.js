@@ -152,7 +152,7 @@ export function parseLabel(label) {
 //
 // The owner, on a NAS100 short that lost $1,013.08: "I don't know was strategy
 // used." The trade carried a complete, correct label — AP|v1|FIB|HI|SYD|10m —
-// which says autopilot v1, Fib 61.8% fade, high conviction, Sydney session,
+// which says autopilot v1, Fibonacci 61.8% Fade, high conviction, Sydney session,
 // 10-minute timeframe. Every fact needed to answer the question was recorded
 // and then shown as a code nobody can read at a glance.
 //
@@ -169,16 +169,16 @@ export function parseLabel(label) {
 
 export const STRATEGY_DISPLAY = {
   // Mirrors of STRATEGY_REGISTRY names (agent/services/strategies.js).
-  fib_618_fade: 'Fib 61.8% fade',
+  fib_618_fade: 'Fibonacci 61.8% Fade',
   cup_handle: 'Cup & Handle',
   inv_cup_handle: 'Inverted Cup & Handle',
-  ema_pullback: 'EMA trend-pullback',
-  donchian_breakout: 'Range breakout',
-  rsi_meanrev: 'RSI mean-reversion',
-  vwap_trend: 'VWAP trend-pullback',
-  vp_value: 'Volume-profile rotation',
-  rsi2_reversion: 'RSI-2 reversion (high win)',
-  fib_confluence: 'Fib confluence zone',
+  ema_pullback: 'EMA Trend-Pullback',
+  donchian_breakout: 'Range Breakout',
+  rsi_meanrev: 'RSI Mean-Reversion',
+  vwap_trend: 'VWAP Trend',
+  vp_value: 'Vol. Profile Value',
+  rsi2_reversion: 'RSI 2 Reversion',
+  fib_confluence: 'Fibonacci Confluence',
   // Free-text buckets that predate the registry — no registry entry to mirror.
   trend: 'Trend',
   meanrev: 'Mean reversion',
@@ -209,7 +209,7 @@ const REGIME_DISPLAY = {
  *   structured — true when the label is one of ours (pipe-delimited, source
  *                recognised). Free-text broker labels are reported as-is
  *                rather than being forced into a shape they never had.
- *   text       — one line, e.g. "Autopilot v1 · Fib 61.8% fade · high
+ *   text       — one line, e.g. "Autopilot v1 · Fibonacci 61.8% Fade · high
  *                conviction · Sydney session · 10m timeframe · regime not
  *                recorded"
  *   fields     — [{ key, code, label, value, missing }] for table rendering

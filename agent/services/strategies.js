@@ -57,21 +57,21 @@ const computeVaBreakout = await loadCompute('./va-breakout.js', 'computeVaBreako
 // nobody silently gets a wider window than it was tuned on. There is a test
 // that reads each module's MIN_BARS and fails if this table drifts from it.
 export const STRATEGY_REGISTRY = [
-  { key: 'fib_618_fade',      name: 'Fib 61.8% fade',     compute: computeFibSignal,        defaultOn: false, pendingCapable: true,  minBars: 14  },
+  { key: 'fib_618_fade',      name: 'Fibonacci 61.8% Fade',     compute: computeFibSignal,        defaultOn: false, pendingCapable: true,  minBars: 14  },
   { key: 'cup_handle',        name: 'Cup & Handle',       compute: computeCupHandleSignal,  defaultOn: true,  pendingCapable: false, minBars: 210 },
   { key: 'inv_cup_handle',    name: 'Inverted Cup & Handle', compute: computeInvCupHandleSignal, defaultOn: true, pendingCapable: false, minBars: 210 },
-  { key: 'ema_pullback',      name: 'EMA trend-pullback', compute: computeEmaPullback,      defaultOn: true,  pendingCapable: false, minBars: 450 },
-  { key: 'donchian_breakout', name: 'Range breakout',     compute: computeDonchianBreakout, defaultOn: true,  pendingCapable: false, minBars: 40  },
-  { key: 'rsi_meanrev',       name: 'RSI mean-reversion', compute: computeRsiMeanrev,       defaultOn: true,  pendingCapable: false, minBars: 60  },
-  { key: 'vwap_trend',        name: 'VWAP trend-pullback', compute: computeVwapTrend,       defaultOn: true,  pendingCapable: false, minBars: 30  },
-  { key: 'vp_value',          name: 'Volume-profile rotation', compute: computeVpValue,     defaultOn: true,  pendingCapable: false, minBars: 40  },
-  { key: 'rsi2_reversion',    name: 'RSI-2 reversion (high win)', compute: computeRsi2,      defaultOn: true,  pendingCapable: false, minBars: 104 },
-  { key: 'fib_confluence',    name: 'Fib confluence zone', compute: computeFibConfluence,   defaultOn: true,  pendingCapable: false, minBars: 40  },
-  { key: 'va_breakout',       name: 'Value-area breakout', compute: computeVaBreakout,      defaultOn: true,  pendingCapable: false, minBars: 60  },
+  { key: 'ema_pullback',      name: 'EMA Trend-Pullback', compute: computeEmaPullback,      defaultOn: true,  pendingCapable: false, minBars: 450 },
+  { key: 'donchian_breakout', name: 'Range Breakout',     compute: computeDonchianBreakout, defaultOn: true,  pendingCapable: false, minBars: 40  },
+  { key: 'rsi_meanrev',       name: 'RSI Mean-Reversion', compute: computeRsiMeanrev,       defaultOn: true,  pendingCapable: false, minBars: 60  },
+  { key: 'vwap_trend',        name: 'VWAP Trend', compute: computeVwapTrend,       defaultOn: true,  pendingCapable: false, minBars: 30  },
+  { key: 'vp_value',          name: 'Vol. Profile Value', compute: computeVpValue,     defaultOn: true,  pendingCapable: false, minBars: 40  },
+  { key: 'rsi2_reversion',    name: 'RSI 2 Reversion', compute: computeRsi2,      defaultOn: true,  pendingCapable: false, minBars: 104 },
+  { key: 'fib_confluence',    name: 'Fibonacci Confluence', compute: computeFibConfluence,   defaultOn: true,  pendingCapable: false, minBars: 40  },
+  { key: 'va_breakout',       name: 'Value-Area Breakout', compute: computeVaBreakout,      defaultOn: true,  pendingCapable: false, minBars: 60  },
   // Ships DISARMED. Every other entry here was armed after its own backtest;
   // this one has none yet, and arming a brand-new strategy by default is how
   // an unproven edge reaches live capital without anyone deciding to let it.
-  { key: 'fvg_retrace',       name: 'FVG retrace',        compute: computeFvgSignal,       defaultOn: false, pendingCapable: false, minBars: 60  },
+  { key: 'fvg_retrace',       name: 'FVG Retrace',        compute: computeFvgSignal,       defaultOn: false, pendingCapable: false, minBars: 60  },
 ]
 
 // Stamp the requirement onto the compute function itself. fib-strategy.js needs
