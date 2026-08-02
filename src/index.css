@@ -1164,3 +1164,11 @@ textarea {
 .sec-collapsed > :not(:first-child) {
   display: none !important;
 }
+
+/* Bot-changed highlight (owner 02-08-2026): a yellow border on any section
+   the bot changed on the owner's behalf in the last 48h — the sidebar
+   Bot Changes panel lists what and when. */
+.bot-changed {
+  outline: 2px solid #eab308 !important;
+  outline-offset: 2px;
+}
