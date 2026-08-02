@@ -7,6 +7,7 @@
 // guess) — so this table can't drift from what's actually open.
 import Card from './common/Card.jsx'
 import { strategyLabel } from '../lib/strategy-labels.js'
+import Collapse from './common/Collapse.jsx'
 
 function fmtMoney(n) {
   if (n == null || Number.isNaN(Number(n))) return '—'
@@ -37,6 +38,7 @@ export default function AccountPivot({ acct }) {
     <Card>
       <div className="text-[9px] font-semibold mb-2">By trading type — market open vs. closed</div>
       <div className="overflow-x-auto">
+        <Collapse id="AccountPivot_40" label="Pivot Rows">
         <table className="w-full text-[9px]">
           <thead>
             <tr>
@@ -62,6 +64,7 @@ export default function AccountPivot({ acct }) {
             </tr>
           </tbody>
         </table>
+        </Collapse>
       </div>
       <p className="text-[9px] text-[var(--color-text-sub)] mt-1">
         "Market closed" positions are still open trades whose symbol's market is shut right now (weekend/after-hours) — they carry gap risk until it reopens.

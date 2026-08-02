@@ -15,6 +15,7 @@ import { dateTimeParts } from '../lib/std-trade-rows.js'
 import { isLong } from '../lib/side.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
+import Collapse from './common/Collapse.jsx'
 
 const parseTs = (iso) => Date.parse(String(iso || '').includes('T') ? iso : String(iso || '').replace(' ', 'T') + 'Z')
 const enteredCell = (iso) => { const w = iso ? dateTimeParts(iso) : null; return w ? `${w.day} ${w.time}` : '—' }
@@ -198,10 +199,12 @@ export default function OrderLedger({ orders, onChanged = null }) {
         <div>
           <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Queued by the bot — not yet at the broker ({queued.length})</div>
           <div className="overflow-x-auto">
+            <Collapse id="OrderLedger_201" label="Ledger Rows">
             <table className="w-full text-[9px]">
               {queuedHead}
               <tbody>{queued.map((q, i) => <QueuedRow key={`q-${i}`} q={q} onDone={onChanged} />)}</tbody>
             </table>
+            </Collapse>
           </div>
         </div>
       )}
@@ -209,6 +212,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
         <div>
           <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Working now ({working.length})</div>
           <div className="overflow-x-auto">
+            <Collapse id="OrderLedger_212" label="Ledger Rows">
             <table className="w-full text-[9px]">
               {head}
               <tbody>
@@ -217,6 +221,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                 ))}
               </tbody>
             </table>
+            </Collapse>
           </div>
         </div>
       )}
@@ -224,6 +229,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
         <div>
           <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Recently gone — filled or cancelled (24h · {recentlyGone.length})</div>
           <div className="overflow-x-auto">
+            <Collapse id="OrderLedger_227" label="Ledger Rows">
             <table className="w-full text-[9px]">
               {head}
               <tbody>
@@ -257,6 +263,7 @@ export default function OrderLedger({ orders, onChanged = null }) {
                 })()}
               </tbody>
             </table>
+            </Collapse>
           </div>
         </div>
       )}

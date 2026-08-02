@@ -19,6 +19,7 @@ import Card from '../common/Card.jsx'
 import Badge from '../common/Badge.jsx'
 import Button from '../common/Button.jsx'
 import { agentGet, agentPost } from '../../lib/agent-api.js'
+import Collapse from '../common/Collapse.jsx'
 
 const fmtDate = (iso) => {
   if (!iso) return '—'
@@ -80,6 +81,7 @@ function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compar
         </label>
       </div>
       <div className="overflow-x-auto">
+        <Collapse id="WatchlistCompare_83" label="Watchlist Rows">
         <table className="std-cols w-full text-[9px] tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
@@ -119,6 +121,7 @@ function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compar
             ))}
           </tbody>
         </table>
+        </Collapse>
       </div>
     </div>
   )

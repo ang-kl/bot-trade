@@ -26,6 +26,7 @@ import { dateTimeParts, nextOpenLabel, priceDp, toMs } from '../lib/std-trade-ro
 import { stratShort } from '../lib/strategy-labels.js'
 import { isLong, sideLabel } from '../lib/side.js'
 import SymbolTarget from '../cockpit/SymbolTarget.jsx'
+import Collapse from './common/Collapse.jsx'
 
 // Sort accessors per column key. null/undefined always sorts LAST in either
 // direction so empty cells never float above real data.
@@ -188,6 +189,9 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
 
   return (
     <div>
+      {/* ▸/▾ on the table itself (owner 02-08: every table carries the
+          collapsible triangle, even inside an already-collapsible card). */}
+      <Collapse id={`stt_${countLabel.replace(/\W+/g, '_')}`} label={`${rows?.length ?? 0} ${countLabel}`}>
       <div className="overflow-x-auto">
         <table className="std-cols min-w-[880px] w-full text-[9px] tabular-nums">
           <thead>
@@ -459,6 +463,7 @@ export default function StdTradeTable({ rows, countLabel = 'rows', onSymbolClick
         <span>page {p + 1} / {pages} · {rows.length} {countLabel}</span>
         <Button size="sm" variant="subtle" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>Older ›</Button>
       </div>
+      </Collapse>
       {/* Manage POP-UP — the cTrader-style sheet floats over the page (owner:
           "pop-up window and not within the table"). Backdrop click closes. */}
       {panel && panelRow && (

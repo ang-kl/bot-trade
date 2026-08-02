@@ -22,6 +22,7 @@ import Badge from './common/Badge.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import Collapse from './common/Collapse.jsx'
 
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', placeholder: 'gpt-5.6-luna' },
@@ -292,6 +293,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
           {last.proposals?.length > 0 && (
             <>
               <div className="overflow-x-auto">
+                <Collapse id="RiskReassess_295" label="Proposal Rows">
                 <table className="w-full text-[9px] tabular-nums">
                   <thead>
                     <tr className="text-left text-[var(--color-text-sub)]">
@@ -347,6 +349,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
                     })}
                   </tbody>
                 </table>
+                </Collapse>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {/* The section's one commit action — accent, so it no longer
