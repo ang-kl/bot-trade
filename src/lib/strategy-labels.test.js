@@ -130,6 +130,32 @@ describe('strategy full names', () => {
 // chips (Tune.jsx) is untouched — those render fixed English words, not keys.
 // ---------------------------------------------------------------------------
 describe('capitalize regression guard', () => {
+
+  // A SECOND strategy-name map is how this drifts. Trade.jsx carried one that
+  // was missing six of the twelve registry strategies and spelled the rest in
+  // sentence case; the Accounts page and the strategy-insights panel each had
+  // their own before that. Only this module may key a map on strategy ids —
+  // a copy elsewhere cannot have the registry-coverage guarantee above.
+  it('no OTHER module defines its own strategy-name map', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs')
+    const { join, basename } = await import('node:path')
+    const offenders = []
+    const walk = (dir) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e)
+        if (statSync(p).isDirectory()) { walk(p); continue }
+        if (!/\.(jsx?|tsx?)$/.test(e) || e.endsWith('.test.js')) continue
+        if (basename(p) === 'strategy-labels.js') continue
+        const src = readFileSync(p, 'utf8')
+        // A map LITERAL keyed on a strategy id — `fib_618_fade: '...'`. Bare
+        // mentions of the key (filters, comparisons, comments) are untouched.
+        if (/^\s*(fib_618_fade|cup_handle|vwap_trend|fib_confluence)\s*:\s*['"`]/m.test(src)) offenders.push(p)
+      }
+    }
+    walk(new URL('..', import.meta.url).pathname)
+    expect(offenders, `import strategyLabel instead: ${offenders.join(', ')}`).toEqual([])
+  })
+
   it('no source file re-introduces inline textTransform capitalize', async () => {
     const { readdirSync, readFileSync, statSync } = await import('node:fs')
     const { join } = await import('node:path')

@@ -12,6 +12,7 @@ import { cockpitFrame } from './cockpit-data.js'
 import { pageAsleep } from '../lib/agent-api.js'
 import { makeFs } from './typeScale.js'
 import './cockpit-tokens.css'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 // BUILD-ORDER §6 — the variant table, verbatim. (Conflict, reported: iPhone
 // PFD columns are `50·1fr·22·84·36` in §6 but `50px minmax(90px,1fr) 22px 84px
@@ -296,7 +297,7 @@ export default function TradeCockpit({ variant: forced, positionState = 'open', 
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
       <span style={{ fontSize: fs(19), fontWeight: 700, letterSpacing: '-.02em' }}>{v?.sym ?? '0002.HK'}</span>
       <span style={{ fontSize: fs(11.5), fontWeight: 600, padding: '2px 9px', borderRadius: 999, color: v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)', background: v?.side === 'SHORT' ? 'var(--dns)' : 'var(--acs)', border: `1px solid ${v?.side === 'SHORT' ? 'var(--dn)' : 'var(--up)'}` }}>{v?.side ?? 'LONG'} · {v?.lots ?? '—'} lots</span>
-      <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', padding: '2px 8px', borderRadius: 6, background: 'var(--acs)' }}>{v?.strategy ?? 'fib 61.8% fade v2.3'}</span>
+      <span style={{ fontSize: fs(10.5), fontWeight: 600, color: 'var(--sb)', padding: '2px 8px', borderRadius: 6, background: 'var(--acs)' }}>{strategyLabel(v?.strategy) ?? 'Fibonacci 61.8% Fade'}</span>
       {review
         ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: 'var(--mu)', border: '1px solid var(--mu)', borderRadius: 999, padding: '2px 8px' }}>CLOSED {v?.timeIn ?? ''}</span>
         : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: fs(11.5), fontWeight: 600, color: stale ? 'var(--wrn)' : 'var(--acc)', border: `1px solid ${stale ? 'var(--wrn)' : 'var(--acc)'}`, borderRadius: 999, padding: '2px 8px' }}>

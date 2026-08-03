@@ -601,7 +601,7 @@ function OpenTableBody({ rows }) {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '1px 0 2px 14px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
             <span>entry {p2.entry}</span>
             <span>O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)}</span>
-            <span>{p2.strat}</span>
+            <span>{p2.stratLabel}</span>
             <span>SL {p2.sld} / TP {p2.tpd} from entry</span>
             <span>market {p2.marketOpen === false ? 'closed' : p2.marketOpen ? 'open' : 'unknown'} · {p2.marketSource || 'no source'}</span>
             {p2.day?.t && <span>daily bar {new Date(p2.day.t).toISOString().slice(0, 10)}</span>}
@@ -690,7 +690,7 @@ function Weekend24Body({ rows }) {
             </div>
             {openId === p2.id && (
               <div style={{ padding: '1px 0 2px 20px', borderBottom: `1px solid ${P_EDG}`, fontSize: 'var(--fs-d9)', color: P_MU, fontVariantNumeric: 'tabular-nums' }}>
-                entry {p2.entry} · now {fmtPx(p2.price)} · O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)} · vol {fmtVol(p2.day?.v)} · SL {p2.sld} / TP {p2.tpd} · {p2.strat}
+                entry {p2.entry} · now {fmtPx(p2.price)} · O {fmtPx(p2.day?.o)} H {fmtPx(p2.day?.h)} L {fmtPx(p2.day?.l)} C {fmtPx(p2.day?.c)} · vol {fmtVol(p2.day?.v)} · SL {p2.sld} / TP {p2.tpd} · {p2.stratLabel}
               </div>
             )}
           </div>
@@ -1521,7 +1521,9 @@ export default function Performance() {
         side: (sideLabelUpper(p2.side) ?? '—'),
         sideCol: isLong(p2.side) ? P_UP : P_DN,
         lots: p2.volume != null ? String(p2.volume) : '—',
-        entry: Number.isFinite(e) ? String(e) : '—', strat: p2.strategy || '—',
+        entry: Number.isFinite(e) ? String(e) : '—',
+        // `strat` stays the raw key (grouping/joins); `stratLabel` is what renders.
+        strat: p2.strategy || '—', stratLabel: strategyLabel(p2.strategy) || '—',
         sld: pct(sl), tpd: pct(tp),
         // Raw levels for the Trade Cockpit (symbol click) — it needs numbers,
         // not the entry-relative percentages shown in the table.
@@ -1630,7 +1632,9 @@ export default function Performance() {
       const tEnd = closedMs(t2)
       return {
         t: tEnd, pnl: Number(t2.net_pnl), sym: String(t2.symbol || '').toUpperCase(),
-        strat: t2.label_strategy || t2.strategy || null, rr, tpHit, slHit,
+        strat: t2.label_strategy || t2.strategy || null,
+        stratLabel: strategyLabel(t2.label_strategy || t2.strategy),
+        rr, tpHit, slHit,
         part: /partial|scale/.test(String(t2.close_reason || '').toLowerCase()),
         side: (sideLabelUpper(t2.side) ?? '—'),
         lots: t2.volume != null ? String(t2.volume) : '—',
@@ -1658,7 +1662,7 @@ export default function Performance() {
         sym: t2.sym, side: t2.side, lots: t2.lots, pnl: t2.pnl,
         detail: [
           out,
-          t2.strat || 'no strategy label',
+          t2.stratLabel || 'no strategy label',
           t2.openedAt != null ? `opened ${new Date(t2.openedAt).toISOString().slice(11, 16)} UTC` : null,
           held ? `held ${held}` : null,
           t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
@@ -1754,7 +1758,7 @@ export default function Performance() {
       // the out-side volume context is never recorded yet, so the old
       // "in: … → out: —" tail was pure noise on every single row.
       const points = [
-        `${out} · ${t2.strat || 'no strategy label'}`,
+        `${out} · ${t2.stratLabel || 'no strategy label'}`,
         [t2.rr != null ? `plan ${nf(1).format(t2.rr)}:1` : null,
          risked != null ? `risked ${money(risked, 0)}` : null,
          t2.durMin != null ? `held ${held}` : null].filter(Boolean).join(' · '),
@@ -1762,7 +1766,8 @@ export default function Performance() {
       ].filter(Boolean)
       return {
         when: `${d2.getUTCDate()} ${MO2[d2.getUTCMonth()]} · ${t2.openedAt != null ? ft(t2.openedAt) : '—'} → ${ft(t2.t)} UTC`,
-        sym: t2.sym, sd: `${t2.side} ${t2.lots} lots`, strat: t2.strat || '—',
+        sym: t2.sym, sd: `${t2.side} ${t2.lots} lots`,
+        strat: t2.strat || '—', stratLabel: strategyLabel(t2.strat) || '—',
         points,
         // Kept for the ⧉/⤢ copy payloads, which are plain-text by contract.
         why: `${out} · planned ${t2.rr != null ? `${nf(1).format(t2.rr)}:1` : '—'} · risked ${risked != null ? money(risked, 0) : '—'} · held ${held}`,
@@ -1794,6 +1799,7 @@ export default function Performance() {
         t: closedMs(t2), pnl: Number(t2.net_pnl), cat: catOf(t2.symbol),
         acc: t2.account_id != null ? String(t2.account_id) : null,
         strat: t2.label_strategy || t2.strategy || null,
+        stratLabel: strategyLabel(t2.label_strategy || t2.strategy),
       }))
       .filter(t2 => t2.t != null)
     const AC3 = [...accounts.map(a => ({ name: `${a.is_live ? 'Live' : 'Demo'} ·${String(a.trader_login || a.account_id).slice(-3)}`, id: a.account_id })), { name: 'Overall', id: null }]
@@ -1812,8 +1818,8 @@ export default function Performance() {
     const topStrats = stratNames.slice(0, 6)
     const restStrats = new Set(stratNames.slice(6))
     const SC = [
-      ...topStrats.map(n => ({ name: n.replace(/_/g, ' '), pick: (t2) => (t2.strat || 'unlabelled') === n })),
-      ...(restStrats.size ? [{ name: 'other', pick: (t2) => restStrats.has(t2.strat || 'unlabelled') }] : []),
+      ...topStrats.map(n => ({ name: strategyLabel(n) || n, pick: (t2) => (t2.strat || 'unlabelled') === n })),
+      ...(restStrats.size ? [{ name: 'Other', pick: (t2) => restStrats.has(t2.strat || 'unlabelled') }] : []),
     ]
     const KC = MARKET_COLS.map(m => ({ name: m.label, pick: (t2) => t2.cat === m.key }))
     const kf = (v) => (v < 0 ? '−' : '+') + '$' + (Math.abs(v) >= 1000 ? (Math.abs(v) / 1000).toFixed(1) + 'k' : String(Math.round(Math.abs(v))))
@@ -2094,7 +2100,7 @@ export default function Performance() {
                         <SymbolTarget symbol={p2.sym} positionId={p2.id} position={cockpitPos(p2)} source="perf-mobile-floating"
                           accountId={p2.acc} dbPositionId={p2.id}>{p2.sym}</SymbolTarget>
                       </span>
-                      <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.strat}</span>
+                      <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{p2.stratLabel}</span>
                     </span>
                     <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: p2.sideCol }}>{p2.side} {p2.lots}</span>
                     <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -2207,7 +2213,7 @@ export default function Performance() {
                       <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: W_CELL, fontVariantNumeric: 'tabular-nums', color: t2.col }}>{t2.pnl}</span>
                     </div>
                     <span style={{ fontSize: 'var(--fs-d9)', color: P_SB, fontVariantNumeric: 'tabular-nums' }}>{t2.when}</span>
-                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{t2.why} · {t2.strat}</span>
+                    <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{t2.why} · {t2.stratLabel || t2.strat}</span>
                     <span style={{ fontSize: 'var(--fs-d9)', color: P_ACC, fontVariantNumeric: 'tabular-nums' }}>{t2.ind}</span>
                   </div>
                 ))}
@@ -2590,7 +2596,7 @@ export default function Performance() {
                 <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: panel.tcol }}>{panel.title}</span>
                 <span style={{ fontSize: 'var(--fs-d9)', color: P_MU }}>{panel.sub}</span>
                 <SectionTools id={panel.title.startsWith('Winners') ? 'winners' : 'laggards'} title={panel.title} window="30D" data={panel.rows}
-                  toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.strat} · ${t2.pnl}`)].join('\n')}
+                  toText={(rows) => [panel.title, ...(rows || []).map(t2 => `${t2.when} · ${t2.sym} · ${t2.sd} · ${t2.why} · ${t2.stratLabel || t2.strat} · ${t2.pnl}`)].join('\n')}
                   render={() => <WlBody rows={panel.rows} />} />
               </div>
               <WlBody rows={panel.rows} />

@@ -21,6 +21,7 @@ import { selectedAccountId, accountLabel } from '../lib/selected-account.js'
 import { actionLabel, rowOrigin, ago, backtestResult, toText } from '../lib/workspace-history-view.js'
 import Badge from './common/Badge.jsx'
 import SectionTools from './common/SectionTools.jsx'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 const ORIGIN_TONE = { own: 'on', shared: 'neutral', other: 'warning' }
 
@@ -84,7 +85,7 @@ export function BacktestTable({ rows, accountId }) {
                 <td className="py-1 pr-2 whitespace-nowrap text-[var(--color-text-sub)]">{ago(r.ran_at)}</td>
                 <td className="py-1 pr-2 font-semibold">{r.symbol}</td>
                 <td className="py-1 pr-2">{r.timeframe}</td>
-                <td className="py-1 pr-2 text-[var(--color-text-sub)]">{r.strategy}</td>
+                <td className="py-1 pr-2 text-[var(--color-text-sub)]">{strategyLabel(r.strategy) || '—'}</td>
                 {/* A failed run is an ABSENCE of evidence, not a zero result —
                     it never shares a column treatment with a real flat run. */}
                 <td className={`py-1 pr-2 ${res.ok ? '' : 'text-[var(--color-down)]'}`}>{res.text}</td>
