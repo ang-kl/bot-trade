@@ -38,6 +38,31 @@
 
 export const DEFAULT_UNKNOWN_PNL_BLOCK = true
 export const DEFAULT_UNKNOWN_PNL_GRACE_MIN = 15
+// AGE-OUT (owner, 03-08-2026: "make unresolvable rows age out instead of
+// blocking forever").
+//
+// The grace window says "wait, the backfill may still fix this". It has no
+// upper bound, so a row the backfill never fixes blocks entries for the whole
+// FX day, every day, with no path back. Production: `unknown_daily_pnl` was
+// 32,115 of 46,380 vetoes in seven days — 69% of everything — off ONE closed
+// trade whose broker deal history never filled.
+//
+// mark-unresolvable.js already writes rows off, but only on positive evidence
+// that the broker has no deal history. A row nobody looked at, or that the
+// sweep never reached, is left blocking indefinitely. This is the time-based
+// backstop for exactly that case: past `unknownPnlMaxAgeMin` the backfill has
+// had hours, not minutes, and waiting longer is not caution — it is a halt
+// with no release.
+//
+// 6 hours is deliberately INSIDE the FX day, not a day or more. A threshold of
+// 24h would never fire, because the window this query runs over starts at the
+// FX day open and is under 24h wide by construction.
+//
+// What is NOT done: net_pnl stays NULL. Nothing is estimated or invented, so
+// the daily-loss sum is still built only from figures the broker gave us. The
+// row stops being waited on; it is never counted as zero. Set the knob to 0 or
+// null to restore the old block-forever behaviour.
+export const DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN = 360
 
 /**
  * Closed trades in the window whose realised P&L is still unknown, older than
@@ -72,11 +97,22 @@ export const DEFAULT_UNKNOWN_PNL_GRACE_MIN = 15
  *
  * @returns {{count:number, oldestClosedAt:string|null}}
  */
-export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN } = {}) {
+export function unresolvedPnlSince(db, dayStartSql, {
+  accountId = null,
+  graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+  maxAgeMin = DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
+} = {}) {
   const acct = accountId != null ? String(accountId) : null
   const grace = Number.isFinite(Number(graceMin)) && Number(graceMin) >= 0
     ? Number(graceMin)
     : DEFAULT_UNKNOWN_PNL_GRACE_MIN
+  // 0, null or junk = no age-out, i.e. the old block-until-resolved behaviour.
+  // Anything at or below the grace window is nonsense (it would age a row out
+  // before it had even started blocking) and is treated as "off" rather than
+  // silently reordering the two windows.
+  const maxAge = Number.isFinite(Number(maxAgeMin)) && Number(maxAgeMin) > grace
+    ? Number(maxAgeMin)
+    : null
   // UNKNOWN vs UNKNOWABLE (owner's decision 2026-07-30, "option 2").
   //
   // `pnl_unresolvable = 1` marks a row the broker has no deal history for and
@@ -111,6 +147,11 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
   } catch { hasUnresolvable = false }
   const notWrittenOff = hasUnresolvable ? 'AND COALESCE(pnl_unresolvable, 0) = 0' : ''
 
+  // The blocking set is now BOUNDED AT BOTH ENDS: newer than the age-out line
+  // (still worth waiting for) and older than the grace line (has had its
+  // chance). Without the age-out clause this window has no floor, which is
+  // what made the veto permanent.
+  const notAgedOut = maxAge == null ? '' : "AND REPLACE(closed_at, 'T', ' ') >= datetime('now', ?)"
   const sql = `
     SELECT COUNT(*) AS n,
            MIN(closed_at) AS oldest,
@@ -121,6 +162,22 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
       ${notWrittenOff}
       AND REPLACE(closed_at, 'T', ' ') >= ?
       AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
+      ${notAgedOut}
+      ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
+  `
+  // Rows we have STOPPED blocking on purely because of age. Counted and named
+  // separately from the evidence-based write-offs: "the broker says there is
+  // no deal history" and "we waited six hours and gave up" are different
+  // statements, and an operator reading a resumed desk should be able to tell
+  // which one happened.
+  const agedOutSql = `
+    SELECT COUNT(*) AS n, MIN(closed_at) AS oldest
+      FROM trades
+    WHERE status = 'closed'
+      AND net_pnl IS NULL
+      ${notWrittenOff}
+      AND REPLACE(closed_at, 'T', ' ') >= ?
+      AND REPLACE(closed_at, 'T', ' ') < datetime('now', ?)
       ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
   `
   // Same window and scope, but the rows we have STOPPED blocking on — reported
@@ -135,19 +192,35 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
       AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
       ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
   `
-  const params = acct == null
-    ? [dayStartSql, `-${grace} minutes`]
-    : [dayStartSql, `-${grace} minutes`, acct]
+  // POSITIONAL PARAMS, IN SOURCE ORDER. The age-out clause sits BETWEEN the
+  // grace clause and the account clause, so its parameter has to go in the
+  // same place — appending it would bind the account id to the date and the
+  // date to the account, and the query would silently return nothing (which
+  // this module reads as "nothing is blocking"). Same class of bug as the
+  // scoped-read miscounts earlier in this workstream.
+  const params = [
+    dayStartSql,
+    `-${grace} minutes`,
+    ...(maxAge == null ? [] : [`-${maxAge} minutes`]),
+    ...(acct == null ? [] : [acct]),
+  ]
+  const agedParams = acct == null
+    ? [dayStartSql, `-${maxAge} minutes`]
+    : [dayStartSql, `-${maxAge} minutes`, acct]
   let row = null
   let unres = null
+  let aged = { n: 0, oldest: null }
   try {
     row = db.prepare(sql).get(...params)
     // Only when the column exists — see the note above.
-    unres = hasUnresolvable ? db.prepare(unresolvableSql).get(...params) : { n: 0 }
+    unres = hasUnresolvable ? db.prepare(unresolvableSql).get(
+      ...(acct == null ? [dayStartSql, `-${grace} minutes`] : [dayStartSql, `-${grace} minutes`, acct]),
+    ) : { n: 0 }
+    if (maxAge != null) aged = db.prepare(agedOutSql).get(...agedParams) || aged
   } catch {
     // A query that cannot run tells us nothing about the day's losses, which
     // is exactly the state this module refuses to read as "zero".
-    return { count: -1, oldestClosedAt: null, unattributedCount: 0, unresolvableCount: 0 }
+    return { count: -1, oldestClosedAt: null, unattributedCount: 0, unresolvableCount: 0, agedOutCount: 0, agedOutOldest: null }
   }
   return {
     count: row?.n || 0,
@@ -160,6 +233,12 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
     // no deal history for them and never will. Not part of `count`; surfaced so
     // the decision is visible rather than implied by trading simply resuming.
     unresolvableCount: Number(unres?.n) || 0,
+    // Rows that stopped blocking because they got OLD, not because the broker
+    // told us anything. Kept distinct from unresolvableCount so a resumed desk
+    // can say which of the two happened.
+    agedOutCount: Number(aged?.n) || 0,
+    agedOutOldest: aged?.oldest || null,
+    agedOutAfterMin: maxAge,
   }
 }
 
@@ -172,7 +251,7 @@ export function unresolvedPnlSince(db, dayStartSql, { accountId = null, graceMin
  *
  * @returns {{block:boolean, reason?:string}}
  */
-export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCount = 0, unresolvableCount = 0 }, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
+export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCount = 0, unresolvableCount = 0, agedOutCount = 0, agedOutOldest = null, agedOutAfterMin = null }, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
   // WRITTEN-OFF ROWS ARE NAMED, WHEREVER THE ANSWER LANDS.
   //
   // #513 claimed that excluding unresolvable rows from the blocking count meant
@@ -187,9 +266,18 @@ export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCou
   // gate blocked. It is deliberately not part of `reason`: a reason is why
   // something was refused, and this is a fact about what is no longer being
   // waited on.
-  const writtenOff = Number(unresolvableCount) > 0
-    ? `${unresolvableCount} closed trade(s) in this window are marked unresolvable — the broker has no deal history for them, so they are no longer waited on and their P&L is permanently unknown, not zero`
-    : null
+  const parts = []
+  if (Number(unresolvableCount) > 0) {
+    parts.push(`${unresolvableCount} closed trade(s) in this window are marked unresolvable — the broker has no deal history for them, so they are no longer waited on and their P&L is permanently unknown, not zero`)
+  }
+  // AGED OUT is its own sentence, never folded into the write-off one. "The
+  // broker says there is no deal history" and "we waited N minutes and gave
+  // up" are different facts, and the second one is the weaker claim — it must
+  // not borrow the first one's certainty.
+  if (Number(agedOutCount) > 0) {
+    parts.push(`${agedOutCount} closed trade(s) stopped blocking on AGE alone after ${agedOutAfterMin}m${agedOutOldest ? ` (oldest ${agedOutOldest})` : ''} — the backfill never filled them, so the day's loss total is incomplete by an unknown amount rather than known to be complete`)
+  }
+  const writtenOff = parts.length ? parts.join('; ') : null
   if (enabled === false) return { block: false, ...(writtenOff ? { note: writtenOff } : {}) }
   if (count === 0) return { block: false, ...(writtenOff ? { note: writtenOff } : {}) }
   if (count < 0) {

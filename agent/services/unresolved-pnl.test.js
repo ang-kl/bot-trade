@@ -220,3 +220,90 @@ test('a failed lookup still blocks and reports no orphan count', () => {
   assert.equal(r.unattributedCount, 0)
   assert.equal(unknownPnlBlocks(r).block, true)
 })
+
+// AGE-OUT (owner, 03-08-2026: "make unresolvable rows age out instead of
+// blocking forever"). In production `unknown_daily_pnl` was 32,115 of 46,380
+// vetoes in seven days — 69% of everything — off closed trades the backfill
+// never filled. The grace window has no upper bound, so those blocked with no
+// path back.
+//
+// The claims that matter: the age-out RELEASES, it does not release too early,
+// it is off when unset, and a released desk SAYS what it stopped waiting for.
+
+/** Two unfilled closes: one 20 min old (inside the age line), one 8h old. */
+function agedDb() {
+  const db = mkDb()
+  closeTrade(db, { pnl: null, minutesAgo: 20 })
+  closeTrade(db, { pnl: null, minutesAgo: 8 * 60 })
+  return db
+}
+
+test('age-out: a row past the age line stops blocking, one inside it does not', () => {
+  const r = unresolvedPnlSince(agedDb(), EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360 })
+  assert.equal(r.count, 1, 'only the 20-minute row should still block')
+  assert.equal(r.agedOutCount, 1)
+  assert.equal(r.agedOutAfterMin, 360)
+  assert.ok(r.agedOutOldest)
+})
+
+test('age-out OFF (null / 0 / junk) is the old behaviour, to the row', () => {
+  // `undefined` is NOT in this list on purpose: omitting the option means
+  // "use the default", and the default is ON. Only an explicit off-value
+  // restores block-until-resolved.
+  for (const maxAgeMin of [null, 0, NaN, 'later']) {
+    const r = unresolvedPnlSince(agedDb(), EPOCH_ANCHOR, { graceMin: 15, maxAgeMin })
+    assert.equal(r.count, 2, `maxAgeMin=${maxAgeMin} must block both`)
+    assert.equal(r.agedOutCount, 0)
+  }
+})
+
+test('an age line at or below the grace window is refused, not silently inverted', () => {
+  // maxAge <= grace would age a row out before it had even started blocking.
+  const r = unresolvedPnlSince(agedDb(), EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 10 })
+  assert.equal(r.count, 2)
+  assert.equal(r.agedOutCount, 0)
+})
+
+test('once everything has aged out the gate opens — and says why', () => {
+  const db = mkDb()
+  closeTrade(db, { pnl: null, minutesAgo: 8 * 60 })
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360 })
+  assert.equal(r.count, 0)
+  const v = unknownPnlBlocks(r, { graceMin: 15 })
+  assert.equal(v.block, false)
+  // THE POINT: resuming is never silent about what it stopped waiting for.
+  assert.match(v.note, /stopped blocking on AGE alone after 360m/)
+  assert.match(v.note, /incomplete by an unknown amount/)
+})
+
+test('aged-out and written-off are reported as SEPARATE facts', () => {
+  const v = unknownPnlBlocks(
+    { count: 0, unresolvableCount: 2, agedOutCount: 1, agedOutAfterMin: 360 },
+    { graceMin: 15 },
+  )
+  assert.match(v.note, /marked unresolvable/)
+  assert.match(v.note, /AGE alone/)
+  // The weaker claim must not borrow the stronger one's certainty.
+  assert.ok(v.note.indexOf('unresolvable') < v.note.indexOf('AGE alone'))
+})
+
+test('a still-blocking row keeps blocking even when others aged out', () => {
+  const v = unknownPnlBlocks(
+    { count: 1, oldestClosedAt: '2026-08-03 10:00:00', agedOutCount: 3, agedOutAfterMin: 360 },
+    { graceMin: 15 },
+  )
+  assert.equal(v.block, true)
+  assert.match(v.reason, /unknown_daily_pnl/)
+  assert.match(v.note, /AGE alone/)
+})
+
+test('the account scope still binds correctly with the age clause in the middle', () => {
+  // Positional params: the age-out clause sits BETWEEN grace and account, so a
+  // miscount would bind the account id to a date. Two accounts, one unfilled
+  // row each; scoping to one must see exactly one.
+  const db = mkDb()
+  closeTrade(db, { pnl: null, minutesAgo: 20, accountId: '111' })
+  closeTrade(db, { pnl: null, minutesAgo: 20, accountId: '222' })
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { accountId: '111', graceMin: 15, maxAgeMin: 360 })
+  assert.equal(r.count, 1)
+})

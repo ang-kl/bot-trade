@@ -21,7 +21,7 @@
 
 import { getState } from '../db.js'
 import { fxDayStartSql } from './risk.js'
-import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
+import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN } from './unresolved-pnl.js'
 
 export const DEFAULT_GLOBAL_GUARDS = {
   halt: false,                    // portfolio-wide no-new-entries switch
@@ -33,6 +33,7 @@ export const DEFAULT_GLOBAL_GUARDS = {
   // window it blocks rather than letting the portfolio sum under-count it.
   blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
   unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+  unknownPnlMaxAgeMin: DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
 }
 
 /**
@@ -88,6 +89,7 @@ export function evaluateGlobalGuards(db, guards = null) {
     const unresolved = unresolvedPnlSince(db, dayStartSql, {
       accountId: null, // portfolio: every account, which is the point
       graceMin: g.unknownPnlGraceMin,
+      maxAgeMin: g.unknownPnlMaxAgeMin,
     })
     checks.portfolio_unresolved_pnl_trades = unresolved.count
     // Same reason as the per-account layer: recorded whether or not it blocked.

@@ -18,7 +18,7 @@ import { usdLossPerLot, tierForBalance, notionalUsd } from '../lib/contracts.js'
 import { correlationVeto } from './correlation.js'
 import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } from './correlation-matrix.js'
 import { minRrFor } from './strategies.js'
-import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
+import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
@@ -125,6 +125,9 @@ export const DEFAULT_RISK_CONFIG = {
   // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
   blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
   unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
+  // Owner 03-08-2026: past this age a still-unfilled row stops blocking. 0 or
+  // null restores the old block-until-resolved behaviour.
+  unknownPnlMaxAgeMin: DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
   // Per-trade risk (owner: "push default risk to 5% or absolute amount").
   // Size AGGRESSIVELY on the now-proven combos, with an ALGO HARD CAP as the
   // safety layer. The effective $ budget per trade is:
@@ -775,6 +778,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   const unresolved = unresolvedPnlSince(db, dayStartSql, {
     accountId: acct,
     graceMin: config.unknownPnlGraceMin,
+    maxAgeMin: config.unknownPnlMaxAgeMin,
   })
   checks.unresolved_pnl_trades = unresolved.count
   // Written-off rows land in checks_json on EVERY evaluation, blocked or not.

@@ -8,6 +8,12 @@
 // showed 77 such rows with the backfill parked on its 6-hour rung attempting zero
 // accounts — a stop with no release. These tests pin the evidence rule that
 // decides when a row may stop blocking, and pin that nothing is invented.
+// AGE-OUT IS PINNED OFF IN THIS FILE (`maxAgeMin: null`), deliberately.
+// unresolved-pnl.js also releases rows on AGE alone after 6h (owner 03-08-2026);
+// these fixtures are 20-30 DAYS old, so that would release them before the
+// write-off under test ever ran, and the assertions would pass for the wrong
+// reason. One mechanism per test. The age-out has its own cases in
+// unresolved-pnl.test.js.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
@@ -68,14 +74,14 @@ test('marking stops the row blocking, and net_pnl is STILL NULL — nothing is i
   const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
 
   // Before: it blocks.
-  const before = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  const before = unresolvedPnlSince(db, dayStart, { accountId: ACCT, maxAgeMin: null })
   assert.equal(before.count, 1)
   assert.equal(unknownPnlBlocks(before).block, true)
 
   assert.equal(sweepUnresolvable(db, { exhaustedAccounts: [ACCT], dryRun: false }).marked, 1)
 
   // After: it does not block, it is COUNTED, and the P&L is still unknown.
-  const after = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  const after = unresolvedPnlSince(db, dayStart, { accountId: ACCT, maxAgeMin: null })
   assert.equal(after.count, 0, 'no longer blocking')
   assert.equal(after.unresolvableCount, 1, 'but still reported — the decision is visible')
   assert.equal(unknownPnlBlocks(after).block, false)
@@ -147,7 +153,7 @@ test('a lifted veto SAYS what it stopped waiting for', () => {
   const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
   sweepUnresolvable(db, { exhaustedAccounts: [ACCT], dryRun: false })
 
-  const after = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  const after = unresolvedPnlSince(db, dayStart, { accountId: ACCT, maxAgeMin: null })
   const verdict = unknownPnlBlocks(after)
   assert.equal(verdict.block, false, 'the veto is lifted')
   // ...and it is not silent about why it is now allowed to be.
@@ -162,7 +168,7 @@ test('a STILL-blocking veto names the written-off rows alongside the blocking on
   sweepUnresolvable(db, { exhaustedAccounts: [ACCT], dryRun: false })
   closedNoPnl(db, { daysAgo: 20 })                 // still blocking, still fillable
 
-  const both = unresolvedPnlSince(db, dayStart, { accountId: ACCT })
+  const both = unresolvedPnlSince(db, dayStart, { accountId: ACCT, maxAgeMin: null })
   assert.equal(both.count, 1)
   assert.equal(both.unresolvableCount, 1)
   const verdict = unknownPnlBlocks(both)
@@ -176,7 +182,7 @@ test('no note at all when nothing has been written off — never a phantom reass
   const db = initDB(':memory:')
   closedNoPnl(db, { daysAgo: 30 })
   const dayStart = new Date(Date.now() - 90 * 86_400_000).toISOString().replace('T', ' ')
-  const v = unknownPnlBlocks(unresolvedPnlSince(db, dayStart, { accountId: ACCT }))
+  const v = unknownPnlBlocks(unresolvedPnlSince(db, dayStart, { accountId: ACCT, maxAgeMin: null }))
   assert.equal(v.block, true)
   assert.equal(v.note, undefined)
   // Same for the clean case and for the disabled case.
