@@ -243,13 +243,20 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       because = `${landed} order(s)/trade(s) from ${approved} approval(s)`
     } else if (reachedGate > 0) {
       verdict = VERDICTS.BLOCKED
-      because = `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${topVetoes[0]?.key ?? 'unspecified'}`
+      // guardName, not the raw reason: `because` is published verbatim in the
+      // PUBLIC projection, and reasons carry prices, sizes, order ids and raw
+      // error text. Caught by decision-audit.test.js, which found "0.42" from
+      // `below_min_volume: 0.42 lots` sitting in the public body after the
+      // topVetoes list had already been sanitised. The full reason is still
+      // available in `topVetoes` for Telegram and the logs, which are
+      // owner-only.
+      because = `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${guardName(topVetoes[0]?.key) || 'unspecified'}`
     } else if (skipped > 0) {
       // Nothing even reached the gate. THIS is the config answer, and naming
       // the dominant stage is the whole value — "why didn't it trade" becomes
       // one string instead of a log dig.
       verdict = VERDICTS.BLOCKED
-      because = `nothing reached the risk gate — ${skipped} decision(s) stopped upstream, dominant stage: ${topSkipStages[0]?.key ?? 'unknown'}`
+      because = `nothing reached the risk gate — ${skipped} decision(s) stopped upstream, dominant stage: ${publicKey(topSkipStages[0]?.key) || 'unknown'}`
     } else {
       verdict = VERDICTS.NO_SIGNAL
       because = 'scans ran and no setup qualified — not a blocked gate'
@@ -296,6 +303,33 @@ export function shouldAlert(audit, { marketOpen = true, quietAlertMin = QUIET_AL
 }
 
 /**
+ * Reduce a free-text reason to its structural IDENTIFIER — the guard or rule
+ * name — discarding everything after it.
+ *
+ * THIS IS A SECURITY BOUNDARY, not a formatting nicety. Reasons are written
+ * with template literals and routinely carry live trading detail:
+ *
+ *   `below_min_volume: ${volLots} lots`                    (a SIZE)
+ *   `pending_invalidated: close ${close} beyond SL ${row.sl} — order ${id}…`
+ *                                        (two PRICES and a broker ORDER ID)
+ *   `sizing_failed: ${err.message}`                        (arbitrary text)
+ *
+ * The public /health projection promises counts and names only. Passing a raw
+ * reason through would break that promise the first time one of these fired —
+ * and the `topBlock` field shipped in #571 had exactly that exposure through
+ * decision_log.reason before this existed.
+ *
+ * So: keep the leading identifier, drop the rest. Anything that is not a plain
+ * identifier character ends the name, and the result is capped. A reason that
+ * begins with detail rather than a name yields '' and is omitted entirely
+ * rather than being half-published.
+ */
+export function guardName(reason) {
+  const m = String(reason ?? '').trim().match(/^[A-Za-z][A-Za-z0-9_-]{0,63}/)
+  return m ? m[0] : ''
+}
+
+/**
  * The counts-only projection safe to expose WITHOUT authentication.
  *
  * /health's unauthenticated subset is deliberately minimal and its comment
@@ -319,10 +353,26 @@ export function publicPipelineView(audit) {
     pending: audit.pendingOrders,
     landed: audit.landed,
     silentDrops: audit.silentDrops,
-    topBlock: audit.topSkipStages?.[0]?.key ?? audit.topVetoes?.[0]?.key ?? null,
+    // Stage names and guard names only, each reduced to its identifier by
+    // guardName(). `topSkipStages` keys are "stage:reason" — the stage is
+    // already a bare identifier, and the reason is sanitised before it joins.
+    topBlock: publicKey(audit.topSkipStages?.[0]?.key) || publicKey(audit.topVetoes?.[0]?.key) || null,
+    topVetoes: (audit.topVetoes || [])
+      .map(v => ({ guard: guardName(v.key), n: v.n }))
+      .filter(v => v.guard),
     quietMinutes: audit.quietMinutes,
     at: audit.at,
   }
+}
+
+/** "stage:free text with a price in it" -> "stage:guard_name". */
+function publicKey(key) {
+  if (!key) return null
+  const [stage, ...rest] = String(key).split(':')
+  const s = guardName(stage)
+  if (!s) return null
+  const r = guardName(rest.join(':'))
+  return r ? `${s}:${r}` : s
 }
 
 /** One-line text for Telegram / logs. */
