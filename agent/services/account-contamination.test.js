@@ -6,6 +6,7 @@
 // account's rows — not merely that final balances happen to match.
 
 import test from 'node:test'
+import { clampToFxDay } from '../test-support/fx-day.js'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { evaluateTrade, DEFAULT_RISK_CONFIG, drawdownDeriskFactor } from './risk.js'
@@ -22,8 +23,8 @@ function fresh() {
 function insertClosedTrade(db, { account, symbol = 'EURUSD', pnl, closedAgoMin = 10 }) {
   db.prepare(`
     INSERT INTO trades (symbol, side, entry_price, status, net_pnl, closed_at, account_id, opened_at)
-    VALUES (?, 'BUY', 1.1, 'closed', ?, datetime('now', ?), ?, datetime('now', ?))
-  `).run(symbol, pnl, `-${closedAgoMin} minutes`, account, `-${closedAgoMin + 60} minutes`)
+    VALUES (?, 'BUY', 1.1, 'closed', ?, ?, ?, datetime('now', ?))
+  `).run(symbol, pnl, clampToFxDay(closedAgoMin), account, `-${closedAgoMin + 60} minutes`)
 }
 
 function insertOpenPosition(db, { account, symbol }) {

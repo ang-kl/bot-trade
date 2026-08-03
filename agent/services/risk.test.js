@@ -17,7 +17,7 @@ import {
   requiredMargin,
   portfolioMarginStatus,
   evaluateCommissionCost,
-  evaluateSlippageDrift,
+  evaluateSlippageDrift, fxDayOpenMs,
 } from './risk.js'
 
 // Helpers ------------------------------------------------------------------
@@ -501,7 +501,13 @@ test('paced budget — a ceiling raises the cap and says so on the veto line', (
   setBalance(db, 10000)
   insertClosedTrade(db, -400)                 // over the flat 3% ($300)…
   const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
-  const res = evaluateTrade(db, goodProposal(), cfg)
+  // PIN THE CLOCK. The paced allowance ramps from 3% at the day open to 18% at
+  // its close, so "over the flat cap but inside the paced one" is only true
+  // once the day has moved. Run this at 21:08 UTC — minutes after the FX day
+  // opens — and the paced cap is still ~3.1%, $400 is genuinely over it, and
+  // the assertion below inverts. That is not a bug in the budget; it is a test
+  // that never said WHEN. Half past the day.
+  const res = evaluateTrade(db, goodProposal(), cfg, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
   // …but inside the paced allowance, which is ≥ 3% at every point of the day.
   assert.equal(res.approved, true, `got: ${res.veto_reason}`)
   assert.equal(res.checks.daily_cap_paced, true)
@@ -517,7 +523,9 @@ test('paced budget — the ceiling still stops it, with the pacing explained', (
   setBalance(db, 10000)
   insertClosedTrade(db, -1900)                // past 18% of 10k
   const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
-  const res = evaluateTrade(db, goodProposal(), cfg)
+  // Same pinned clock as above: at the day's midpoint the ceiling is what
+  // stops this, not the ramp still being low.
+  const res = evaluateTrade(db, goodProposal(), cfg, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
   assert.equal(res.approved, false)
   assert.match(res.veto_reason, /daily_loss_limit_hit/)
   assert.match(res.veto_reason, /paced .* through the FX day/)

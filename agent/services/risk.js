@@ -602,7 +602,12 @@ export function strategyPerfStats(db, strategyKey, windowDays = 30) {
  * @returns {{approved:boolean, veto_reason?:string, adjusted_volume:number,
  *           checks:object, sizing_note?:string}}
  */
-export function evaluateTrade(db, proposal, configOverride) {
+// `opts.nowMs` exists for ONE reason: the paced daily budget is a function of
+// how far through the FX day it is, so any test of it is a test of the clock.
+// Without an injectable now, those assertions invert for the first hour after
+// every 21:00 UTC day open — a red CI window that repeats daily and has
+// nothing to do with the change under test. Production never passes it.
+export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // M1 scoped reads: every per-account query below filters to the account
   // this proposal is FOR (proposal.accountId when a worker passes one, else
   // the selected account), NULL-tolerantly — legacy unstamped rows count
@@ -738,7 +743,7 @@ export function evaluateTrade(db, proposal, configOverride) {
   // The allowance may be PACED across the FX day (dailyLossPctMax set) or
   // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
   // flat case, so this is one code path rather than two.
-  const nowMs = Date.now()
+  const nowMs = Number.isFinite(Number(opts?.nowMs)) ? Number(opts.nowMs) : Date.now()
   const pacing = pacedDailyCap({
     balance,
     basePct: config.dailyLossPct,
