@@ -386,3 +386,54 @@ test('re-reading an UNCHANGED goal logs nothing', () => {
   // goalTracker calls this on every request; a row per read would drown the log.
   assert.equal(db.prepare("SELECT COUNT(*) n FROM action_log WHERE path LIKE '/goal/%'").get().n, 0)
 })
+
+// S4b — THE PANEL THIS WORKSTREAM STARTED FROM. On 2026-08-03 the Go-Live card
+// showed six panels under six per-account headings, every one drawing the same
+// 245 POOLED trades, including the row labelled LIVE. Nothing on the screen
+// contradicted it, because a wrong number and a right number look identical.
+//
+// The card now carries its OWN coverage so its dot can print the figure that
+// was missing: how many of these rows are actually this account's.
+test('each card reports what fraction of its rows belong to that account', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, status, net_pnl, closed_at, opened_at)
+    VALUES (?, 'EURUSD', 'BUY', 'closed', ?, datetime('now'), datetime('now'))
+  `)
+  ins.run('AAA', 10)      // AAA's own
+  ins.run('AAA', -5)      // AAA's own
+  ins.run(null, 20)       // unstamped — counted for EVERY account, owned by none
+  ins.run('BBB', 30)      // somebody else's
+
+  const out = goalTracker(db, { accountIds: ['AAA'] })
+  const card = out.accounts[0]
+
+  // The OR-NULL read gives AAA three rows: its two plus the unstamped one.
+  // BBB's row is not in the denominator — it was never AAA's to count.
+  assert.equal(card.coverage.total, 3)
+  assert.equal(card.coverage.attributable, 2)
+  assert.equal(card.attributablePct, 66.7,
+    'the card must be able to SAY "66.7% of 3 rows" rather than showing a clean number')
+
+  // The roll-up spans every account by design, so coverage is not measured
+  // against one — reporting a gap there would cry wolf on a portfolio view.
+  assert.equal(out.portfolio.coverage, null)
+  assert.equal(out.portfolio.attributablePct, null)
+})
+
+test('a fully-stamped account reads 100, and an empty one is not a failure', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, status, net_pnl, closed_at, opened_at)
+    VALUES ('AAA', 'EURUSD', 'BUY', 'closed', 10, datetime('now'), datetime('now'))
+  `).run()
+
+  const clean = goalTracker(db, { accountIds: ['AAA'] }).accounts[0]
+  assert.equal(clean.attributablePct, 100)
+
+  // No trades yet is a FACT, not a gap. Painting a new account amber would
+  // teach the operator to ignore amber, which costs the real ones.
+  const empty = goalTracker(db, { accountIds: ['ZZZ'] }).accounts[0]
+  assert.equal(empty.coverage.total, 0)
+  assert.equal(empty.attributablePct, 100)
+})

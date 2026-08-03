@@ -24,6 +24,8 @@ import { agentGet } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { selectedAccountId } from '../lib/selected-account.js'
 import SectionTools from './common/SectionTools.jsx'
+import ScopeDot from './common/ScopeDot.jsx'
+import { useAccountScope, MODES } from '../lib/use-account-scope.js'
 
 const TX = 'var(--color-text)', SB = 'var(--color-text-sub)', MU = 'var(--color-muted)'
 const UP = 'var(--color-up)', DN = 'var(--color-down)', WRN = 'var(--color-warning-text)'
@@ -97,6 +99,26 @@ function MetricRow({ m, label, fmt, row }) {
 
 function AccountRow({ row }) {
   const v = VERDICT[row.verdict] || VERDICT.no_data
+  // S4b — THIS IS THE PANEL THE WHOLE WORKSTREAM STARTED FROM. On 2026-08-03
+  // it showed six cards under six different per-account headings, every one
+  // drawing the same 245 POOLED trades, including the row labelled LIVE. A
+  // wrong number and a right number look identical, so nothing on the screen
+  // contradicted it.
+  //
+  // The 'all' row is genuinely a roll-up and declares PORTFOLIO (grey, and
+  // says it spans accounts). Every other row claims to be about ONE account
+  // and declares ACCOUNT — so if its rows ever stop being attributable, this
+  // card is the first thing that goes amber, with the count in the tooltip.
+  const isRollup = String(row.accountId) === 'all'
+  const scope = useAccountScope({
+    id: `golive.card.${row.accountId}`,
+    mode: isRollup ? MODES.PORTFOLIO : MODES.ACCOUNT,
+    payload: { scope: row.scope ?? null },
+    // The route reports coverage over the whole table; this card knows
+    // something the route does not — how many of ITS OWN rows carried the
+    // account. `covers` is exactly that override.
+    covers: isRollup || row.attributablePct == null ? null : row.attributablePct,
+  })
   return (
     <div style={{
       background: GL, border: `1px solid ${row.verdict === 'out_of_reach' ? DN : GBD}`, borderRadius: 12,
@@ -127,6 +149,7 @@ function AccountRow({ row }) {
             ({row.accountId})
           </span>
         )}
+        <ScopeDot scope={scope} />
         {row.isLive && <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: DN }}>LIVE</span>}
         {row.enabled === false && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>disabled</span>}
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: v.tone }}>{v.label}</span>
