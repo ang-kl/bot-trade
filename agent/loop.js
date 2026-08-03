@@ -101,6 +101,22 @@ let pendingPhaseInFlight = false      // a budget-abandoned pending phase still 
 const subPhaseInFlight = new Map()    // name → true while a detached run is still executing
 const SUB_PHASE_BUDGET_MS = Math.max(10_000, Number(process.env.LOOP_SUBPHASE_BUDGET_MS || 90_000))
 
+// L3 idempotency window. WAS THREE MINUTES, AND THAT MADE IT INERT.
+//
+// A loop cycle on production runs ~3.5-5 minutes (heartbeat.js documents the
+// measurement: `loop_interval_min` was 1 while cycles took ~3.5 min). A
+// three-minute window therefore expired BEFORE the next cycle asked, so the
+// guard never once blocked the retry it exists to block. It has to outlast a
+// cycle, with margin, or it is decoration.
+//
+// 20 minutes: comfortably past the slowest observed cycle, and short enough
+// that a genuinely-failed entry is retryable within the same session. The
+// direction of the error is the deciding argument — suppressing a real entry
+// costs one opportunity; resubmitting onto a live fill costs money, nine
+// times over on 0066.HK.
+export const DEDUPE_WINDOW_MIN = Math.max(5, Number(process.env.SUBMIT_DEDUPE_WINDOW_MIN) || 20)
+const DEDUPE_WINDOW_SQL = `-${DEDUPE_WINDOW_MIN} minutes`
+
 /**
  * Run one loop sub-phase under a wall-clock budget with a no-overlap guard.
  * `startWork` is only called when no previous run is in flight. Returns the
@@ -466,10 +482,10 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   // to happen before it, from our own ledger.
   const dupe = db.prepare(`
     SELECT id, opened_at FROM trades
-    WHERE symbol = ? AND side = ? AND opened_at >= datetime('now', '-3 minutes')
+    WHERE symbol = ? AND side = ? AND opened_at >= datetime('now', ?)
       AND (account_id = ? OR account_id IS NULL)
     ORDER BY id DESC LIMIT 1
-  `).get(symbol, side, String(accountId))
+  `).get(symbol, side, DEDUPE_WINDOW_SQL, String(accountId))
 
   // AUDIT F-L4-01: the dedupe above reads `trades`, which the AMBIGUOUS
   // failure path never writes. wsPlaceOrder correctly refuses to retry after
@@ -489,15 +505,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     SELECT id, created_at FROM risk_events
     WHERE symbol = ? AND side = ? AND approved = 0
       AND veto_reason LIKE 'order_ambiguous:%'
-      AND created_at >= datetime('now', '-3 minutes')
+      AND created_at >= datetime('now', ?)
       AND (account_id = ? OR account_id IS NULL)
     ORDER BY id DESC LIMIT 1
-  `).get(symbol, side, String(accountId))
+  `).get(symbol, side, DEDUPE_WINDOW_SQL, String(accountId))
 
   if (dupe || ambiguous) {
     const reason = dupe
-      ? `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (3-minute idempotency window)`
-      : `duplicate_submission_ambiguous: a ${side} ${symbol} order was submitted at ${ambiguous.created_at} and its outcome is UNKNOWN (risk_event #${ambiguous.id}) — a position may already be open; not resubmitting inside the 3-minute window`
+      ? `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (${DEDUPE_WINDOW_MIN}-minute idempotency window)`
+      : `duplicate_submission_ambiguous: a ${side} ${symbol} order was submitted at ${ambiguous.created_at} and its outcome is UNKNOWN (risk_event #${ambiguous.id}) — a position may already be open; not resubmitting inside the ${DEDUPE_WINDOW_MIN}-minute window`
     persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
     try {
       const { recordDecision } = await import('./services/decision-log.js')
@@ -514,8 +530,45 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // this hand-assembled creds path exactly like getCtraderCreds callers.
     let execGuard = null
     try { execGuard = JSON.parse(getState(db, 'exec_guard_json') || 'null') } catch { /* no guard */ }
+    // (a) WRITE-AHEAD INTENT. The ledger row is created BEFORE the broker is
+    // called, in status 'submitting', and promoted to 'open' once the ACK
+    // lands. Until 2026-08-03 the row was written only AFTER a successful
+    // ACK, so a timeout, a crash, or a redeploy in that window left an order
+    // live at the broker with nothing in the ledger — and `duplicate_symbol`
+    // (risk.js:809) reads the ledger, so the next cycle could not see the
+    // position it was about to duplicate.
+    //
+    // With the intent row present, that same query sees a row on the very
+    // next cycle whatever happens next, so the guard closes even if this
+    // process dies between these two statements. A stranded 'submitting' row
+    // is itself a finding — the reconciler resolves it against broker truth,
+    // and the post-decision auditor counts it.
+    const intentId = db.prepare(`
+      INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
+                          opened_at, status, strategy, account_id, source)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade')
+    `).run(
+      symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
+      volLots, synth.strategy || null, String(accountId),
+    ).lastInsertRowid
+
     const submitT0 = Date.now()
-    const exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard }, orderPayload)
+    let exec
+    try {
+      exec = await execPlaceOrder({ host, clientId, clientSecret, accessToken, accountId, execGuard }, orderPayload)
+    } catch (err) {
+      // Mark the intent by OUTCOME rather than deleting it. A provably-unsent
+      // order is dead and must not block the next attempt; an ambiguous one
+      // may be live and MUST block it. Deleting on both would restore the very
+      // hole this row was added to close.
+      const { isAmbiguousOrderOutcome } = await import('./lib/exec-fallback.js')
+      const unknown = isAmbiguousSubmitError(err) || isAmbiguousOrderOutcome(err)
+      try {
+        db.prepare(`UPDATE trades SET status = ? WHERE id = ?`)
+          .run(unknown ? 'unconfirmed' : 'rejected', intentId)
+      } catch { /* the throw below is the report */ }
+      throw err
+    }
     const entryLatencyMs = Date.now() - submitT0
     setState(db, 'api_ctrader_last_ok', new Date().toISOString())
     const executionPrice = exec?.deal?.executionPrice || exec?.position?.price || null
@@ -532,29 +585,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const slippagePrice = (executionPrice != null && Number.isFinite(Number(synth.entry)))
       ? (side === 'BUY' ? executionPrice - synth.entry : synth.entry - executionPrice)
       : null
+    // (c) FORENSICS MOVED. These two calls — an L2 depth snapshot and a 60-bar
+    // 1m fetch (10s timeout) — used to run BETWEEN the broker ACK and the
+    // ledger write, holding the critical window open for up to ~10 seconds
+    // per entry. They are collect-forward analytics; nothing decides on them.
+    // They now run AFTER the row exists and patch it in place, so a crash
+    // costs a null column instead of an untracked live position.
     let rvolOpen = null, vwapSideOpen = null
     let depthJson = null, depthImb = null
-    try {
-      // L2 depth at entry (slice 2): the sidecar's book snapshot as close to
-      // the fill as we can get it. Nulls whenever depth is off/rejected/
-      // unreachable — captureDepthAtEntry never throws and never blocks.
-      const { captureDepthAtEntry } = await import('./services/depth-capture.js')
-      const d = await captureDepthAtEntry(symbolId)
-      depthJson = d.depthJson
-      depthImb = d.depthImbalance
-    } catch { /* depth optional */ }
-    try {
-      const [{ relVolFromBars }, ind] = await Promise.all([
-        import('./services/fast-monitor.js'), import('./lib/indicators.js'),
-      ])
-      const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1m'], 60, 10_000)
-      const bars1m = byTf['1m'] || []
-      const rv = relVolFromBars(bars1m.slice(-21))
-      if (Number.isFinite(rv)) rvolOpen = Math.round(rv * 100) / 100
-      const vw = ind.vwapAnchored(bars1m)
-      const lastVw = Array.isArray(vw) ? vw[vw.length - 1] : null
-      if (lastVw != null && entryP != null) vwapSideOpen = entryP >= lastVw ? 'above' : 'below'
-    } catch { /* context optional */ }
     const slP = synth.sl ?? null
     const initialRisk = (entryP && slP) ? Math.abs(entryP - slP) : null
 
@@ -563,39 +601,39 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       timeCap = new Date(Date.now() + synth.time_cap_minutes * 60_000).toISOString()
     }
 
-    // Atomic DB write: trade + monitored_position in a single transaction.
-    // If either INSERT fails, neither persists — no orphan rows.
+    // Atomic DB write: promote the intent row to 'open' and create its
+    // monitored_position, in a single transaction. If either statement fails,
+    // neither persists.
+    //
+    // This is an UPDATE, not an INSERT: the row already exists, written before
+    // the broker was called (see the write-ahead intent above). Inserting a
+    // second row here would leave the 'submitting' one stranded and put two
+    // ledger entries behind one broker position — the accounting version of
+    // the bug this change exists to fix.
     const parsedLabel = parseLabel(structuredLabel)
     const persistTrade = db.transaction(() => {
-      const tradeInsert = db.prepare(`
-        INSERT INTO trades (
-          symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
-          status, ctrader_position_id, analysis_id, strategy, conviction,
-          label_raw, source, label_version, label_strategy, label_conviction,
-          label_session, label_timeframe, label_regime, confluence_count,
-          account_id,
-          slippage_price, spread_at_entry, entry_latency_ms, rvol_open, vwap_side_open,
-          depth_json, depth_imbalance
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, datetime('now'),
-          'open', ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?,
-          ?, ?, ?, ?, ?,
-          ?, ?
-        )
+      db.prepare(`
+        UPDATE trades SET
+          entry_price = ?, sl_price = ?, tp_price = ?, volume = ?,
+          opened_at = datetime('now'), status = 'open',
+          ctrader_position_id = ?, strategy = ?, conviction = ?,
+          label_raw = ?, source = ?, label_version = ?, label_strategy = ?,
+          label_conviction = ?, label_session = ?, label_timeframe = ?,
+          label_regime = ?, confluence_count = ?, account_id = ?,
+          slippage_price = ?, spread_at_entry = ?, entry_latency_ms = ?
+        WHERE id = ?
       `).run(
-        symbol, side, executionPrice, slP, synth.tp1 ?? null, volLots,
-        positionId, null, synth.strategy || null, synth.overall_conviction ?? null,
+        executionPrice, slP, synth.tp1 ?? null, volLots,
+        positionId, synth.strategy || null, synth.overall_conviction ?? null,
         parsedLabel.raw, parsedLabel.source, parsedLabel.version,
         parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
         parsedLabel.timeframe, parsedLabel.regime,
         synth.confluenceCount ?? null,
         String(accountId),
-        slippagePrice, entrySpread, entryLatencyMs, rvolOpen, vwapSideOpen,
-        depthJson, depthImb,
+        slippagePrice, entrySpread, entryLatencyMs,
+        intentId,
       )
-      const tradeId = tradeInsert.lastInsertRowid
+      const tradeId = intentId
 
       db.prepare(`
         INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, current_sl, current_tp, thesis, initial_risk, invalidation_trigger, time_cap_at, strategy, source, label_raw, account_id, status)
@@ -622,6 +660,33 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
 
     const tradeId = persistTrade()
     log(`Auto-trade placed: ${side} ${symbol} @ ${executionPrice} posId=${positionId} tradeId=${tradeId}`)
+
+    // (c) Collect-forward analytics, AFTER the position is fully recorded.
+    // Every failure here leaves a NULL column and nothing else — the trade is
+    // already durable, monitored and visible to the duplicate guard.
+    try {
+      const { captureDepthAtEntry } = await import('./services/depth-capture.js')
+      const d = await captureDepthAtEntry(symbolId)
+      depthJson = d.depthJson
+      depthImb = d.depthImbalance
+    } catch { /* depth optional */ }
+    try {
+      const [{ relVolFromBars }, ind] = await Promise.all([
+        import('./services/fast-monitor.js'), import('./lib/indicators.js'),
+      ])
+      const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolId, ['1m'], 60, 10_000)
+      const bars1m = byTf['1m'] || []
+      const rv = relVolFromBars(bars1m.slice(-21))
+      if (Number.isFinite(rv)) rvolOpen = Math.round(rv * 100) / 100
+      const vw = ind.vwapAnchored(bars1m)
+      const lastVw = Array.isArray(vw) ? vw[vw.length - 1] : null
+      if (lastVw != null && entryP != null) vwapSideOpen = entryP >= lastVw ? 'above' : 'below'
+    } catch { /* context optional */ }
+    try {
+      db.prepare(`UPDATE trades SET rvol_open = ?, vwap_side_open = ?, depth_json = ?, depth_imbalance = ? WHERE id = ?`)
+        .run(rvolOpen, vwapSideOpen, depthJson, depthImb, tradeId)
+    } catch { /* forensics must never undo a recorded trade */ }
+
     return { executionPrice, positionId, side, volume: volLots }
   } catch (err) {
     // A placement failure AFTER risk approval must be as loud as a veto —
@@ -636,7 +701,15 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     //                     back. A position may be open right now. The dedupe
     //                     above reads these rows, so the next cycle will not
     //                     resubmit inside the window.
-    const amb = isAmbiguousSubmitError(err)
+    // BOTH verdicts. `isAmbiguousSubmitError` recognises Node's WS path (the
+    // `after sending <NEW_ORDER_REQ>` marker wsRun stamps); the sidecar path
+    // never passes through wsRun, so its timeouts carried no marker and were
+    // being recorded as `order_failed` = "provably no position, retry is
+    // correct". That misclassification is the root cause of the 9x 0066.HK
+    // duplicate. isAmbiguousOrderOutcome defaults to UNKNOWN and only clears
+    // when non-submission is provable.
+    const { isAmbiguousOrderOutcome } = await import('./lib/exec-fallback.js')
+    const amb = isAmbiguousSubmitError(err) || isAmbiguousOrderOutcome(err)
     log(`Auto-trade ${amb ? 'AMBIGUOUS' : 'FAILED'} for ${symbol}: ${err.message}`)
     try {
       persistRiskEvent(db, proposal, {
@@ -649,7 +722,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       try {
         const { sendMessage } = await import('./services/telegram.js')
         await sendMessage(amb
-          ? `⚠️ ORDER OUTCOME UNKNOWN: ${symbol} ${side} — the order was SENT and no confirmation came back (${err.message}). A position may be open at the broker. Check cTrader before acting; the bot will not resubmit for 3 minutes.`
+          ? `⚠️ ORDER OUTCOME UNKNOWN: ${symbol} ${side} — the order was SENT and no confirmation came back (${err.message}). A position may be open at the broker. Check cTrader before acting; the bot will not resubmit for ${DEDUPE_WINDOW_MIN} minutes.`
           : `⚠️ ORDER FAILED after risk approval: ${symbol} ${side} — ${err.message}. The broker rejected it or the connection dropped before it was sent; the signal may retry next loop.`)
       } catch { /* non-fatal */ }
     }

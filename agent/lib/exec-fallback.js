@@ -116,6 +116,50 @@ export function sidecarAttestsNotSent(err) {
 }
 
 /**
+ * Is the OUTCOME of this order submission unknown?
+ *
+ * ROOT CAUSE OF THE 9x 0066.HK DUPLICATE, 2026-08-03. Two modules in this
+ * repo disagreed about the same error, and the disagreement cost nine
+ * positions on one symbol.
+ *
+ *   exec-fallback.js (this file, mayFallbackToJs) already said it correctly:
+ *     "A timeout, a 5xx, an aborted response ... the sidecar may have filled
+ *      and lost the reply. Refusing here is the whole point."
+ *
+ *   loop.js classified the SAME error with ctrader-ws.js's
+ *   `isAmbiguousSubmitError`, which matches one string — the
+ *   `after sending <NEW_ORDER_REQ>` marker that `wsRun` stamps on Node's
+ *   WebSocket path. The C++ sidecar path never goes through wsRun, so its
+ *   timeout ("The operation was aborted due to timeout", observed in
+ *   production) carries no marker and was recorded as `order_failed` — which
+ *   loop.js documents as "the broker refused it ... No position. Retrying is
+ *   correct."
+ *
+ * It was not correct. The order had reached the broker. And because
+ * `order_failed` writes no `order_ambiguous:` row, the next cycle's dedupe —
+ * which reads exactly those rows — found nothing and re-entered immediately.
+ * Each orphan blinded the guard that would have stopped the next one.
+ *
+ * So the verdict lives here, once, next to the predicates it is built from,
+ * and both callers use it. The default is UNKNOWN: an outcome is only
+ * "provably nothing happened" when the sidecar attests it never sent the
+ * request, or the request never reached the sidecar at all. Everything else
+ * — timeout, 5xx, abort, socket death, an error we have never seen — is
+ * ambiguous, because the cost of guessing wrong is a duplicate live position
+ * and the cost of being cautious is one skipped entry.
+ *
+ * @param {Error|null} err
+ * @returns {boolean} true when a position MAY exist at the broker
+ */
+export function isAmbiguousOrderOutcome(err) {
+  if (!err) return false
+  // Provably nothing was submitted — the only two ways out.
+  if (sidecarAttestsNotSent(err)) return false
+  if (preSubmitFailure(err)) return false
+  return true
+}
+
+/**
  * May this operation be retried on the JS path?
  *
  * @param {{op:string, sidecarConnected:boolean|null, err?:Error, sidecarReachable?:boolean}} ctx
