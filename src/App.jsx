@@ -75,6 +75,7 @@ function CockpitHost() {
   )
 }
 import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
+import PageErrorBoundary from './components/common/PageErrorBoundary.jsx'
 import { getAgentConn, agentConfigured, agentGet, pageAsleep, sendClientPing, ensureBrowserLocation } from './lib/agent-api.js'
 // Owner (2026-07-28): "can you not load the other pages first except the
 // performance" — Performance is the landing page and stays in the main
@@ -379,6 +380,13 @@ export default function App() {
 
           {/* Lazy routes need a Suspense boundary — a light skeleton line,
               not a spinner wall, while a page chunk downloads. */}
+          {/* A render error in ONE page must not blank the whole app. Keyed on
+              the route so navigating away clears a crashed page without a
+              reload; mounted INSIDE the chrome so the sidebar and the S·A·T
+              switches survive — an operator must never be stranded with no way
+              to disarm because a card threw. Owner 03-08-2026: "the page keeps
+              crashing", and there was no boundary anywhere in src/ to say why. */}
+          <PageErrorBoundary key={appLocation.pathname}>
           <Suspense fallback={<div className="p-6 text-[9px] text-[var(--color-text-sub)]">loading page…</div>}>
           <Routes>
             <Route path="/" element={<Navigate to="/performance" replace />} />
@@ -400,6 +408,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/desk" replace />} />
           </Routes>
           </Suspense>
+          </PageErrorBoundary>
         </main>
         {/* NO PAGE-WIDE FOOTER. It used to live here, fixed to the viewport
             bottom across the whole content width, carrying the build stamp, the
