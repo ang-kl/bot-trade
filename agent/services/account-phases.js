@@ -221,6 +221,21 @@ export function phasesView(db) {
         pendingOrders: (() => { try { return pendingCount?.get(id)?.n ?? null } catch { return null } })(),
         overrides: accountOverrides(db, r.account_id),
         effective: effectivePhases(db, r.account_id, master),
+        // WHY an armed account still cannot enter (owner 04-08-2026: "why is
+        // the auto-trade and ratchet conflict with user request").
+        //
+        // effectivePhases already ANDs capability in and names 'capability' as
+        // the source, but a source label is not a reason: the operator needs
+        // to know it is the MODE, and which mode, before they can do anything
+        // about it. Without this the switch springs back to OFF after every
+        // tap and the page offers no account of itself — which is exactly what
+        // "I armed it 10 minutes ago and now disarmed" was.
+        capability: (() => {
+          try {
+            const c = accountCapabilities(db, id)
+            return { mode: c.mode, enabled: c.enabled, enter: c.enter, scan: c.scan, manage: c.manage, known: c.known }
+          } catch { return null }
+        })(),
         // Ratchet v2 hold (01-08): the profit ratchet no longer disarms any
         // switch — its per-account hold is reported here so the UI can badge
         // the row honestly. 'halt' = floor confirmed; 'soft' = warning band.

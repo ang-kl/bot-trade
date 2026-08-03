@@ -2610,9 +2610,15 @@ export default function stateRouter(db) {
         })(),
         profitRatchet: await (async () => {
           const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, loadRatchetState } = await import('../services/profit-ratchet.js')
-          // v2: staircases are per account — the Risk page renders the
-          // SELECTED account's ladder (its numbers are that account's money).
-          const sel = getState(db, 'ctrader_account_id')
+          // WHOSE LADDER (owner 04-08-2026, three screenshots): switching the
+          // account on the Risk page did not change the Live staircase —
+          // baseline and high-water mark read identically for 5203012, 5306502
+          // and 5268549, because this loaded the SELECTED account's ladder and
+          // ignored ?account= entirely. Same defect as the balance with no
+          // owner: a number rendered under a name it does not belong to.
+          // The queried account wins; the selected one is only the fallback
+          // for a caller that named nobody.
+          const sel = acct ?? getState(db, 'ctrader_account_id')
           return {
             effective: loadProfitRatchetConfig(db, acct),
             overlayKeys: acct ? acctOverlayKeys(db, 'profit_ratchet_json', acct) : [],
