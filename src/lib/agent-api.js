@@ -3,6 +3,8 @@
 // localStorage) and falls back to build-time VITE_ env vars so existing
 // deployments keep working without touching the UI.
 
+import { viewedAccountId, isViewingOther } from './selected-account.js'
+
 const LS_URL = 'agent_url'
 const LS_SECRET = 'agent_secret'
 
@@ -192,15 +194,51 @@ function swrWrite(path, data) {
   } catch { /* quota — memory cache still holds it */ }
 }
 
+/**
+ * S3, owner-approved 2026-08-03. THE ONE WIRE-POINT.
+ *
+ * "iron-clad wired to every page (every table, etc.)" cannot mean editing nine
+ * pages and hoping the tenth remembers. It has to be one place every read
+ * already goes through — this is that place.
+ *
+ * When the operator is viewing an account other than the one being TRADED,
+ * every /state read carries `?account=<id>`. When they are not — the resting
+ * state, and the default — this appends nothing and the request is byte-for-
+ * byte what it was before S3.
+ *
+ * /state ONLY. /actions/* are money-moving and must never pick up an account
+ * from page chrome: the viewed account is a lens, not an instruction. That
+ * separation is the whole reason the owner chose view-only.
+ *
+ * A caller that passes its own `account=` wins. Some pages legitimately ask
+ * for one specific account regardless of the lens (Accounts compares them side
+ * by side), and silently overriding an explicit argument would be the same
+ * class of surprise this workstream is removing.
+ */
+function withViewedAccount(path) {
+  if (typeof path !== 'string' || !path.startsWith('/state')) return path
+  if (/[?&]account=/.test(path)) return path
+  let viewed = null
+  try { viewed = isViewingOther() ? viewedAccountId() : null } catch { return path }
+  if (viewed == null) return path
+  return `${path}${path.includes('?') ? '&' : '?'}account=${encodeURIComponent(viewed)}`
+}
+
 export const agentGet = async (path) => {
-  const data = await request('GET', path)
-  swrWrite(path, data)
+  const wired = withViewedAccount(path)
+  const data = await request('GET', wired)
+  // Cache under the WIRED path: two accounts must never share one cache entry.
+  // That would serve account A's rows under account B's heading, which is the
+  // exact failure this whole workstream started from.
+  swrWrite(wired, data)
   return data
 }
 
+export { withViewedAccount as __withViewedAccount }
+
 /** Synchronous peek at the last cached copy of a GET (or null). */
 export function swrPeek(path) {
-  const v = swrRead(path)
+  const v = swrRead(withViewedAccount(path))
   return v ? v.data : null
 }
 
@@ -210,7 +248,7 @@ export function swrPeek(path) {
  * fresh network answer (stale: false). Returns the fresh promise.
  */
 export function agentGetSWR(path, onData) {
-  const cached = swrRead(path)
+  const cached = swrRead(withViewedAccount(path))
   if (cached) { try { onData(cached.data, { stale: true, at: cached.at }) } catch { /* caller's problem */ } }
   return agentGet(path).then(data => { onData(data, { stale: false, at: Date.now() }); return data })
 }

@@ -91,6 +91,7 @@ const Tune = lazy(() => import('./pages/Tune.jsx'))
 const Risk = lazy(() => import('./pages/Risk.jsx'))
 const Connect = lazy(() => import('./pages/Connect.jsx'))
 import ActiveAccountHeader, { ActiveAccountHeaderCompact } from './components/ActiveAccountHeader.jsx'
+import ViewAccountPicker from './components/ViewAccountPicker.jsx'
 import MobileTabBar from './components/MobileTabBar.jsx'
 import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
@@ -280,6 +281,11 @@ export default function App() {
               page below belongs to this account — reading Performance without
               knowing whose Performance it is has bitten before. */}
           <div className="shrink-0"><ActiveAccountHeader /></div>
+          {/* S3 — ONE view picker, in the chrome, for every page below it.
+              It changes what you are LOOKING AT (?account= on every /state
+              read); the switch that moves what the bot TRADES stays on
+              Accounts behind its own confirmations. Viewing is not arming. */}
+          <div className="shrink-0"><ViewAccountPicker /></div>
           <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>
