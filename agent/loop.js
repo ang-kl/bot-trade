@@ -3169,6 +3169,60 @@ async function runLoop(db) {
         await hbeat(db, 'atr_refresh', false, err.message)
       }
 
+      // ---------------------------------------------------------------
+      // DECISION AUDIT — the check AFTER the risk gate has decided.
+      //
+      // Owner, 2026-08-03: "you are to ... actively check risk decision
+      // after it has been completed". Runs LAST in the cycle, once the
+      // scan/analyse/dispatch/risk phases above have written everything they
+      // are going to write, and asks the question no controller asked: of
+      // everything considered this FX day, what reached the gate, what did
+      // the gate approve, and if nothing traded, WHICH stage consumed it.
+      //
+      // Every controller already has a heartbeat, so a loop that STOPS is
+      // caught. A loop that runs perfectly and achieves nothing is not — it
+      // beats OK on every controller and looks exactly like a quiet market.
+      // That is the shape of #170 and of the protection audit reading "idle",
+      // and this closes it for the entry path.
+      // ---------------------------------------------------------------
+      try {
+        const { auditDecisions, shouldAlert, toText: auditText } =
+          await import('./services/decision-audit.js')
+        // Re-derived rather than reusing the scan phase's `weekendQuiet` —
+        // that binding lives inside the scan block, and reaching for it here
+        // would be a ReferenceError at runtime that no test covers.
+        const { weekendQuietNow } = await import('./lib/quiet-hours.js')
+        const marketOpen = !weekendQuietNow()
+        const audit = auditDecisions(db, { marketOpen })
+        setState(db, 'decision_audit_last_json', JSON.stringify(audit))
+        const alert = shouldAlert(audit, { marketOpen })
+        if (alert) {
+          log(`DECISION AUDIT [${alert.level}]: ${alert.text}`)
+          // Once per streak, not once per cycle. A monitor that fires every
+          // five minutes teaches the owner to ignore it, and then the one
+          // time it matters it looks like the other 287 that day — the same
+          // discipline heartbeat.js applies to stall alerts.
+          const prevKey = getState(db, 'decision_audit_alert_key') || ''
+          const key = `${audit.verdict}:${audit.topSkipStages?.[0]?.key || audit.topVetoes?.[0]?.key || ''}`
+          if (key !== prevKey) {
+            setState(db, 'decision_audit_alert_key', key)
+            if (process.env.TELEGRAM_BOT_TOKEN) {
+              try {
+                const { sendMessage } = await import('./services/telegram.js')
+                await sendMessage(`⚠️ ${alert.text}\n\n${auditText(audit)}`)
+              } catch { /* an alert that cannot send must not break the loop */ }
+            }
+          }
+        } else {
+          setState(db, 'decision_audit_alert_key', '')
+        }
+        await hbeat(db, 'decision_audit')
+      } catch (err) {
+        // Beat FAILED rather than staying silent — an auditor that quietly
+        // stops is the exact bug it was built to detect.
+        await hbeat(db, 'decision_audit', false, err.message)
+      }
+
       // Strategy Autopilot — nightly evidence loop (mode-gated inside;
       // failures must never touch the trading phases).
       try {

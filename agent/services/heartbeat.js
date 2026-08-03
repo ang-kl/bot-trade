@@ -58,6 +58,11 @@ export const CONTROLLERS = {
   // volatility: a verdict none of them earned, and indistinguishable from a
   // real one. Daily cadence, generous grace — it is once per ~288 loops.
   atr_refresh: { label: 'ATR baseline refresh', expectedSec: 86_400, factor: 2 },
+  // The check AFTER the risk gate decides (owner 2026-08-03). Answers "why
+  // didn't it trade" from the DB every cycle. It is itself a controller, so a
+  // stalled auditor is visible rather than being mistaken for a clean day —
+  // an auditor that silently stops is the exact bug it was built to detect.
+  decision_audit: { label: 'Post-decision audit', tiedToLoop: true, factor: 3 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting
