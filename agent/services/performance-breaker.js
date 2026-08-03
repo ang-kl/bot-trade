@@ -34,12 +34,13 @@
 
 import { getState, setState } from '../db.js'
 import { setPhaseFlag } from './phase-audit.js'
+import { BREAKER_BAR } from './edge-bars.js'
 
 export const DEFAULT_PERFORMANCE_BREAKER = {
   on: true,          // alerting armed by default — it only ever sends a message
   window: 20,         // rolling window of closed trades
   minTrades: 15,      // don't judge an edge on a handful of trades
-  pfThreshold: 0.8,   // profit factor below this over the window = trouble
+  pfThreshold: BREAKER_BAR.profitFactor,   // below this over the window = trouble (edge-bars.js)
   // OFF, by the owner's instruction on 2026-07-30: "autoDisarm - leave it OFF".
   //
   // This REVERSES their own 2026-07-20 decision, which armed it after PF hit

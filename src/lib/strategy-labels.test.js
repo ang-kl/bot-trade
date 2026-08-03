@@ -117,3 +117,36 @@ describe('strategy full names', () => {
     expect(strategyLabel('-')).toBe('-')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-08-03, screenshot of Performance > "Strategy × market — 30D":
+// every row label read "Fib_confluence", "Inv_cup_handle", "Rsi2_reversion",
+// "Vwap_trend". That table had never adopted strategyLabel — it rendered the
+// raw KEY under an inline `textTransform: 'capitalize'`, which is precisely
+// the defect this module was written to end, escaping one table at a time.
+//
+// So the guard is on the MECHANISM, not on one table: no source file may use
+// the inline capitalize style prop. Tailwind's `capitalize` class on mode
+// chips (Tune.jsx) is untouched — those render fixed English words, not keys.
+// ---------------------------------------------------------------------------
+describe('capitalize regression guard', () => {
+  it('no source file re-introduces inline textTransform capitalize', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const offenders = []
+    const walk = (dir) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e)
+        if (statSync(p).isDirectory()) { walk(p); continue }
+        if (!/\.(jsx?|tsx?)$/.test(e) || e.endsWith('.test.js')) continue
+        const src = readFileSync(p, 'utf8')
+        // The comments in this file and its callers legitimately NAME the
+        // property while explaining why not to use it; only the style prop
+        // itself is an offence.
+        if (/textTransform:\s*['"]capitalize['"]/.test(src)) offenders.push(p)
+      }
+    }
+    walk(new URL('..', import.meta.url).pathname)
+    expect(offenders, `use strategyLabel() instead: ${offenders.join(', ')}`).toEqual([])
+  })
+})

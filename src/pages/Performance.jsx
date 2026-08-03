@@ -21,7 +21,7 @@ import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '
 import { hourLabel, dateFlags } from '../lib/hour-label.js'
 import { useTableClock } from '../lib/table-clock.js'
 import { isLong, sideLabelUpper } from '../lib/side.js'
-import { STRATEGY_KEYS } from '../lib/strategy-labels.js'
+import { STRATEGY_KEYS, strategyLabel } from '../lib/strategy-labels.js'
 import Card from '../components/common/Card.jsx'
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -493,7 +493,7 @@ function StratMxBody({ stratMx }) {
       {stratMx.length === 0 && <span style={{ fontSize: 'var(--fs-d9)', color: P_MU, padding: '4px 0' }}>No closed trades with a strategy label in the last 30 days.</span>}
       {stratMx.map(s => (
         <div key={s.name} style={{ display: 'grid', gridTemplateColumns: '132px repeat(6,1fr) 76px 52px', gap: 6, alignItems: 'center', borderBottom: `1px solid ${P_EDG}`, padding: '3px 0', fontVariantNumeric: 'tabular-nums' }}>
-          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL, textTransform: 'capitalize' }}>{s.name}</span>
+          <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_ROWLABEL }}>{s.label}</span>
           {s.cells.map((c, ci) => <span key={ci} title={c.tip} style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: c.col }}>{c.v}</span>)}
           <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: s.col }}>{s.net}</span>
           <span style={{ fontSize: 'var(--fs-d9)', fontWeight: W_CELL, color: s.edgeCol }}>{s.edge}</span>
@@ -1699,7 +1699,11 @@ export default function Performance() {
       const sl = m30.filter(t2 => t2.strat === name)
       const a = aggRows(sl)
       return {
-        name, net: signed(a.pnl), col: a.pnl >= 0 ? P_UP : P_DN,
+        // `name` stays the raw key — it is the React key and the join key.
+        // `label` is the only thing rendered: CSS `capitalize` over a raw key
+        // is what produced "Rsi2_reversion" and "Vwap_trend" here.
+        name, label: strategyLabel(name) || name,
+        net: signed(a.pnl), col: a.pnl >= 0 ? P_UP : P_DN,
         edge: a.edge != null ? `${a.edge >= 0 ? '+' : ''}${a.edge}%` : '—', edgeCol: a.edge == null ? P_MU : a.edge >= 0 ? P_UP : P_DN,
         cells: MARKET_COLS.map(m => {
           const l = sl.filter(t2 => catOf(t2.sym) === m.key)
@@ -2548,7 +2552,7 @@ export default function Performance() {
                 <span style={{ fontSize: 'var(--fs-d11)', fontWeight: 800, color: P_ACC, flexShrink: 0 }}>Strategy × market — 30D</span>
                 <span style={{ fontSize: 'var(--fs-d9)', color: P_SB }}>the ledger's 30D row re-sliced by strategy — each market column here sums to the 30D market cell above</span>
                 <SectionTools id="strategy-matrix" title="Strategy × Market — 30D table" window="30D" data={stratMx}
-                  toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
+                  toText={(rows) => ['Strategy × market — 30D', ...(rows || []).map(s => `${s.label || s.name} · net ${s.net} · edge ${s.edge} · ${s.cells.map((c, ci) => `${MARKET_COLS[ci].label} ${c.v}`).join(' · ')}`)].join('\n')}
                   render={() => <StratMxBody stratMx={stratMx} />} />
               </div>
               <StratMxBody stratMx={stratMx} />

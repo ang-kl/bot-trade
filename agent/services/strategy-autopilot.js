@@ -23,6 +23,7 @@ import { tfMs } from '../lib/timeframes.js'
 import { armedTimeframes } from '../lib/timeframes.js'
 import { backtestStageStrategies } from './stage-matrix.js'
 import { getActiveSessions } from '../lib/sessions.js'
+import { ARM_BAR } from './edge-bars.js'
 
 const RUN_EVERY_MS = 22 * 3600_000 // legacy default (fallback only)
 const BUSY_MS = 10 * 60_000        // US session — the action window
@@ -86,9 +87,11 @@ export function decideChanges(verdicts, current, opts = {}) {
   // lose. Only a PROVEN combo gets armed. Disarm still triggers on NO-GO, so a
   // GO-below-bar armed combo is kept, not churned (live results / the Edge
   // Watchdog handle decay). Thresholds are configurable.
-  const armMinPf = opts.armMinPf ?? 1.7
-  const armMinWin = opts.armMinWin ?? 60
-  const armMinTrades = opts.armMinTrades ?? 25
+  // Defaults from edge-bars.js — see that file for why this bar deliberately
+  // differs from the go-live gate and the breaker floor.
+  const armMinPf = opts.armMinPf ?? ARM_BAR.profitFactor
+  const armMinWin = opts.armMinWin ?? ARM_BAR.winRatePct
+  const armMinTrades = opts.armMinTrades ?? ARM_BAR.minTrades
   const armGrade = (v) => (v.pf ?? 0) >= armMinPf && (v.winRate ?? 0) >= armMinWin && (v.trades ?? 0) >= armMinTrades
   const arm = []
   const disarm = []
