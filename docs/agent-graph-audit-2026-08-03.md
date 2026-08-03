@@ -55,8 +55,8 @@ deploy the risk budget the owner authorised (F-RISK-01).
 
 **Safeguards that remain essential and should not be touched:** the daily-loss
 cap itself, the duplicate-symbol guard, the margin-level floor, and the
-`enabled = 0` flag on the live account — which is currently the *only* thing
-keeping live trading off (F-POLICY-01).
+`enabled = 0` flag on the live account (F-POLICY-01 — note the same-day
+correction recorded against that finding).
 
 ---
 
@@ -209,6 +209,27 @@ authority), which requires C++ evidence not gathered here.
 ---
 
 ### F-POLICY-01 — `mode` is displayed and not enforced; the live account's S.A.T. switches read ON
+
+> **CORRECTED 2026-08-03, same day, by the author.** The finding as first
+> written said *"`canEnter()` is never called on the dispatch path"*. **That is
+> wrong.** `registryAutopilotAccounts()` has always filtered the entry roster on
+> the `enter` capability via `capabilitiesFor()` — the source trace behind the
+> claim grepped for `accountCapabilities|canEnter` and missed the direct
+> `capabilitiesFor` call. Mode IS enforced on the registry route.
+>
+> Two real defects survive the correction, and they carried the live-account
+> risk:
+>
+> 1. **The LEGACY roster bypassed the registry.** `getAutopilotAccounts()`
+>    prefers `ctrader_account_roles_json` whenever more than one role carries
+>    `autopilot`, and that branch filtered on `autopilot` alone — no mode, no
+>    `enabled`. Fixed: the legacy list now intersects the registry's
+>    enter-capable set.
+> 2. **The readout was wrong even where the dispatcher was right** — the item
+>    below, unchanged and confirmed.
+>
+> Kept visible rather than rewritten, per §12: *do not rewrite history to make
+> the first attempt appear successful.*
 
 | Field | Value |
 |---|---|
