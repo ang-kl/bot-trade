@@ -196,6 +196,11 @@ export default function GoalTracker({ variant = 'full' }) {
   const sel = selectedAccountId()
   if (err) return <span style={{ fontSize: 'var(--fs-d9)', color: DN }}>Goal tracker unavailable: {err}</span>
   if (!data) return null
+  // `data` arriving is not proof `data.goal` did. The route can answer with an
+  // error body, or an older agent build without the goal block, and reading
+  // data.goal.winRatePct then takes the whole Performance page down (measured
+  // 03-08-2026 in the degraded-payload sweep). No goal = nothing to show.
+  if (!data.goal) return null
 
   const rows = data.accounts || []
   // Selected account first, then the ones with a real record, then the rest.
