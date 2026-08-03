@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { fxDayStartSql } from './risk.js'
 import {
-  auditDecisions, shouldAlert, publicPipelineView, toText, VERDICTS,
+  auditDecisions, shouldAlert, publicPipelineView, toText, VERDICTS, guardName,
 } from './decision-audit.js'
 
 /** A timestamp inside the current FX day, in SQLite's own space-separated form. */
@@ -170,4 +170,44 @@ test('a broken DB reports its own failure rather than throwing into the loop', (
   assert.equal(a.verdict, VERDICTS.IDLE)
   assert.match(a.because, /audit failed/)
   assert.equal(typeof toText(a), 'string')
+})
+
+// ---------------------------------------------------------------------------
+// The public projection is a SECURITY BOUNDARY, and reasons are free text.
+//
+// Veto reasons are built with template literals and routinely carry live
+// detail — `below_min_volume: ${volLots} lots`, `pending_invalidated: close
+// ${close} beyond SL ${row.sl} — order ${id} cancelled`, `sizing_failed:
+// ${err.message}`. The `topBlock` field shipped in #571 passed a raw reason
+// straight through. These pin the sanitiser so that cannot recur.
+// ---------------------------------------------------------------------------
+
+test('guardName keeps the identifier and discards everything after it', () => {
+  assert.equal(guardName('below_min_volume: 0.42 lots'), 'below_min_volume')
+  assert.equal(guardName('pending_invalidated: close 1.0842 beyond SL 1.0870 — order 55123 cancelled'), 'pending_invalidated')
+  assert.equal(guardName('sizing_failed: ECONNRESET at 10.0.0.4:443'), 'sizing_failed')
+  assert.equal(guardName('vpo_pre_arm margin 12.5% below floor'), 'vpo_pre_arm')
+  assert.equal(guardName('insufficient_margin'), 'insufficient_margin')
+  // A reason that leads with detail rather than a name yields nothing, and the
+  // caller omits it — half-publishing is worse than omitting.
+  assert.equal(guardName('1.0842 beyond SL'), '')
+  assert.equal(guardName(null), '')
+})
+
+test('no price, size, order id or error text reaches the public projection', () => {
+  const db = initDB(':memory:')
+  gate(db, { approved: false, reason: 'pending_invalidated: close 1.0842 beyond SL 1.0870 — order 55123 cancelled' })
+  gate(db, { approved: false, reason: 'below_min_volume: 0.42 lots' })
+  gate(db, { approved: false, reason: 'sizing_failed: ECONNRESET at 10.0.0.4:443' })
+  skip(db, { stage: 'stage_matrix', reason: "strategy 'vwap_trend' is OFF at 1.0842" })
+
+  const pub = JSON.stringify(publicPipelineView(auditDecisions(db)))
+  for (const leak of ['1.0842', '1.0870', '55123', '0.42', 'ECONNRESET', '10.0.0.4', 'lots']) {
+    assert.ok(!pub.includes(leak), `public view leaked "${leak}" — ${pub}`)
+  }
+  // Still useful: the guard NAMES survive, which is the whole point.
+  const v = publicPipelineView(auditDecisions(db))
+  const guards = v.topVetoes.map(x => x.guard)
+  assert.ok(guards.includes('pending_invalidated'), `expected guard names, got ${JSON.stringify(v.topVetoes)}`)
+  assert.equal(v.topBlock, 'stage_matrix:strategy')
 })

@@ -102,7 +102,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
   const blank = {
     verdict: VERDICTS.IDLE, because: 'no decision records for this FX day', scope,
     sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0,
-    tradesOpened: 0, silentDrops: 0, topVetoes: [], topSkipStages: [],
+    tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
+    silentDrops: 0, topVetoes: [], topSkipStages: [],
     quietMinutes: null, at,
   }
 
@@ -137,14 +138,37 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // GATE is not available and must not be implied. Said in `gateScope`
     // rather than silently returning portfolio numbers under an account
     // heading — the mistake this whole module exists to stop.
+    // PLACEMENT RECEIPTS ARE NOT GATE DECISIONS.
+    //
+    // Found by this module's FIRST production reading, 2026-08-03: it reported
+    // "235 approved but only 100 orders — 135 approvals went nowhere", which
+    // was wrong. A successfully placed order writes TWO approved risk_events:
+    // the gate's own verdict (pending-orders.js:351, closed-market-limits.js:
+    // 184) and then a second confirmation row once the broker accepts it
+    // (pending-orders.js:442 `pending_order_placed`, closed-market-limits.js:
+    // 237 `closed_market_limit_placed`). Subtracting orders from a count that
+    // double-counts every success manufactures a silent drop out of a healthy
+    // day — the precise false alarm this module must not produce, because an
+    // alert that cries wolf is worse than no alert.
+    //
+    // So receipts are separated out. They are not decisions; they are
+    // EVIDENCE that a decision landed, and they are counted as such.
     const gate = db.prepare(`
-      SELECT approved, veto_reason, COUNT(*) AS n
+      SELECT approved, veto_reason,
+             CASE WHEN checks_json LIKE '%_placed":true%'
+                    OR checks_json LIKE '%_placed": true%' THEN 1 ELSE 0 END AS is_receipt,
+             COUNT(*) AS n
         FROM risk_events
        WHERE REPLACE(created_at, 'T', ' ') >= ?
-       GROUP BY approved, veto_reason
+       GROUP BY approved, veto_reason, is_receipt
     `).all(dayStart)
 
-    const approved = gate.filter(r => int(r.approved) === 1).reduce((a, r) => a + int(r.n), 0)
+    const placementReceipts = gate
+      .filter(r => int(r.approved) === 1 && int(r.is_receipt) === 1)
+      .reduce((a, r) => a + int(r.n), 0)
+    const approved = gate
+      .filter(r => int(r.approved) === 1 && int(r.is_receipt) !== 1)
+      .reduce((a, r) => a + int(r.n), 0)
     const vetoed = gate.filter(r => int(r.approved) !== 1).reduce((a, r) => a + int(r.n), 0)
     const reachedGate = approved + vetoed
     const skipped = skips.reduce((a, r) => a + int(r.n), 0)
@@ -176,7 +200,10 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
          WHERE REPLACE(placed_at, 'T', ' ') >= ?${acctSql}
       `).get(dayStart, ...acctArgs)?.n)
     } catch { pending = 0 }
-    const landed = tradesOpened + pending
+    // A broker receipt is itself proof the order left the building, so it
+    // counts toward landed even if the pending_orders row has since been
+    // filled, cancelled or pruned out of the day's window.
+    const landed = Math.max(tradesOpened + pending, placementReceipts)
     const silentDrops = Math.max(0, approved - landed)
 
     const topVetoes = topBy(gate.filter(r => int(r.approved) !== 1), r => r.veto_reason || 'unspecified')
@@ -216,13 +243,20 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       because = `${landed} order(s)/trade(s) from ${approved} approval(s)`
     } else if (reachedGate > 0) {
       verdict = VERDICTS.BLOCKED
-      because = `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${topVetoes[0]?.key ?? 'unspecified'}`
+      // guardName, not the raw reason: `because` is published verbatim in the
+      // PUBLIC projection, and reasons carry prices, sizes, order ids and raw
+      // error text. Caught by decision-audit.test.js, which found "0.42" from
+      // `below_min_volume: 0.42 lots` sitting in the public body after the
+      // topVetoes list had already been sanitised. The full reason is still
+      // available in `topVetoes` for Telegram and the logs, which are
+      // owner-only.
+      because = `${vetoed} proposal(s) reached the risk gate and every one was vetoed — top reason: ${guardName(topVetoes[0]?.key) || 'unspecified'}`
     } else if (skipped > 0) {
       // Nothing even reached the gate. THIS is the config answer, and naming
       // the dominant stage is the whole value — "why didn't it trade" becomes
       // one string instead of a log dig.
       verdict = VERDICTS.BLOCKED
-      because = `nothing reached the risk gate — ${skipped} decision(s) stopped upstream, dominant stage: ${topSkipStages[0]?.key ?? 'unknown'}`
+      because = `nothing reached the risk gate — ${skipped} decision(s) stopped upstream, dominant stage: ${publicKey(topSkipStages[0]?.key) || 'unknown'}`
     } else {
       verdict = VERDICTS.NO_SIGNAL
       because = 'scans ran and no setup qualified — not a blocked gate'
@@ -231,7 +265,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     return {
       verdict, because, scope, sinceFxDayOpen: true,
       considered, reachedGate, approved, vetoed,
-      tradesOpened, silentDrops, topVetoes, topSkipStages, quietMinutes, at,
+      tradesOpened, pendingOrders: pending, placementReceipts, landed,
+      silentDrops, topVetoes, topSkipStages, quietMinutes, at,
       // Stated, not implied: risk_events has no account column, so gate
       // numbers are portfolio-wide even when the skip numbers are scoped.
       gateScope: 'all accounts (risk_events carries no account column)',
@@ -268,6 +303,33 @@ export function shouldAlert(audit, { marketOpen = true, quietAlertMin = QUIET_AL
 }
 
 /**
+ * Reduce a free-text reason to its structural IDENTIFIER — the guard or rule
+ * name — discarding everything after it.
+ *
+ * THIS IS A SECURITY BOUNDARY, not a formatting nicety. Reasons are written
+ * with template literals and routinely carry live trading detail:
+ *
+ *   `below_min_volume: ${volLots} lots`                    (a SIZE)
+ *   `pending_invalidated: close ${close} beyond SL ${row.sl} — order ${id}…`
+ *                                        (two PRICES and a broker ORDER ID)
+ *   `sizing_failed: ${err.message}`                        (arbitrary text)
+ *
+ * The public /health projection promises counts and names only. Passing a raw
+ * reason through would break that promise the first time one of these fired —
+ * and the `topBlock` field shipped in #571 had exactly that exposure through
+ * decision_log.reason before this existed.
+ *
+ * So: keep the leading identifier, drop the rest. Anything that is not a plain
+ * identifier character ends the name, and the result is capped. A reason that
+ * begins with detail rather than a name yields '' and is omitted entirely
+ * rather than being half-published.
+ */
+export function guardName(reason) {
+  const m = String(reason ?? '').trim().match(/^[A-Za-z][A-Za-z0-9_-]{0,63}/)
+  return m ? m[0] : ''
+}
+
+/**
  * The counts-only projection safe to expose WITHOUT authentication.
  *
  * /health's unauthenticated subset is deliberately minimal and its comment
@@ -287,12 +349,30 @@ export function publicPipelineView(audit) {
     reachedGate: audit.reachedGate,
     approved: audit.approved,
     vetoed: audit.vetoed,
-    landed: audit.tradesOpened,
+    trades: audit.tradesOpened,
+    pending: audit.pendingOrders,
+    landed: audit.landed,
     silentDrops: audit.silentDrops,
-    topBlock: audit.topSkipStages?.[0]?.key ?? audit.topVetoes?.[0]?.key ?? null,
+    // Stage names and guard names only, each reduced to its identifier by
+    // guardName(). `topSkipStages` keys are "stage:reason" — the stage is
+    // already a bare identifier, and the reason is sanitised before it joins.
+    topBlock: publicKey(audit.topSkipStages?.[0]?.key) || publicKey(audit.topVetoes?.[0]?.key) || null,
+    topVetoes: (audit.topVetoes || [])
+      .map(v => ({ guard: guardName(v.key), n: v.n }))
+      .filter(v => v.guard),
     quietMinutes: audit.quietMinutes,
     at: audit.at,
   }
+}
+
+/** "stage:free text with a price in it" -> "stage:guard_name". */
+function publicKey(key) {
+  if (!key) return null
+  const [stage, ...rest] = String(key).split(':')
+  const s = guardName(stage)
+  if (!s) return null
+  const r = guardName(rest.join(':'))
+  return r ? `${s}:${r}` : s
 }
 
 /** One-line text for Telegram / logs. */
@@ -301,7 +381,7 @@ export function toText(audit) {
   const bits = [
     `verdict ${audit.verdict}`,
     audit.because,
-    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.tradesOpened}`,
+    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.landed} (${audit.tradesOpened} trade(s), ${audit.pendingOrders} pending)`,
   ]
   if (audit.topSkipStages?.length) bits.push(`upstream: ${audit.topSkipStages.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topVetoes?.length) bits.push(`vetoes: ${audit.topVetoes.map(s => `${s.key} ${s.n}`).join(', ')}`)
