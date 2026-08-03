@@ -102,3 +102,86 @@ export function countUnattributed(db, table, extraWhere = '', extraParams = []) 
     ).get(...extraParams)?.n ?? 0
   } catch { return 0 }
 }
+
+/**
+ * HOW MUCH OF THIS ANSWER IS ACTUALLY THIS ACCOUNT'S?
+ *
+ * `countUnattributed` above answers "how many rows carry no account_id" over
+ * the WHOLE table. That is the right number for a footnote and the wrong one
+ * for a per-panel signal: it is not scoped to the rows the caller returned, so
+ * a route that fetched 20 open positions reports a count drawn from thousands
+ * of closed ones. Five routes use it, and none of them can say what fraction
+ * of the answer on screen is attributable.
+ *
+ * That fraction is the number that would have caught the Go-Live Gate card on
+ * 2026-08-03: six panels — "All accounts", four "Pepperstone", one
+ * "Pepperstone LIVE" — each showing the same 245 closed trades, because every
+ * row had `account_id: NULL` and satisfied every scoped read identically. The
+ * OR-NULL convention is correct when unstamped rows are a residue and ruinous
+ * when they are all of them, and nothing in the response said which case it
+ * was in.
+ *
+ * So this reports coverage OVER THE CALLER'S OWN PREDICATE: of the rows this
+ * read returned, how many carry this account's id, and how many were swept in
+ * by the OR-NULL. `pct` is what the UI turns into a dot — 100% blue, anything
+ * below amber with the figure shown (owner, 2026-08-03).
+ *
+ * One COUNT over the predicate the caller already runs. Never throws: a
+ * coverage read that fails must not take a read route down, so it degrades to
+ * `pct: null`, which the UI renders as UNKNOWN — never as healthy.
+ *
+ * @param {*} db
+ * @param {{table: string, column?: string, scope: object,
+ *          extraWhere?: string, extraParams?: any[]}} q
+ *   `extraWhere` is the caller's own filtering (status, window …), so the
+ *   figure describes the rows actually returned. Coverage for a different set
+ *   of rows is worse than none.
+ * @returns {{total:number, attributable:number, unstamped:number,
+ *            pct:number|null, scoped:boolean}}
+ */
+export function scopeCoverage(db, { table, column = 'account_id', scope, extraWhere = '', extraParams = [] }) {
+  const out = { total: 0, attributable: 0, unstamped: 0, pct: null, scoped: false }
+  try {
+    const acct = accountWhere(scope, column)
+    const filt = extraWhere ? `WHERE (${extraWhere})` : ''
+    if (!acct.active) {
+      // Unscoped BY REQUEST (?account=all, or nothing selected). Every row is
+      // in scope by definition — reporting a gap here would cry wolf on a
+      // portfolio view doing exactly what was asked.
+      const r = db.prepare(`SELECT COUNT(*) AS n FROM ${table} ${filt}`).get(...extraParams)
+      out.total = Number(r?.n || 0)
+      out.attributable = out.total
+      out.pct = 100
+      return out
+    }
+    out.scoped = true
+    const r = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN ${column} = ? THEN 1 ELSE 0 END) AS attributable,
+             SUM(CASE WHEN ${column} IS NULL THEN 1 ELSE 0 END) AS unstamped
+        FROM ${table} ${filt ? filt + ' AND' : 'WHERE'} ${acct.where}
+    `).get(String(scope.accountId), ...extraParams, ...acct.params)
+    out.total = Number(r?.total || 0)
+    out.attributable = Number(r?.attributable || 0)
+    out.unstamped = Number(r?.unstamped || 0)
+    // No rows is a fact, not a gap. An account with no trades painted amber
+    // would teach the operator to ignore amber, which costs the real ones.
+    out.pct = out.total === 0 ? 100 : Math.round((out.attributable / out.total) * 1000) / 10
+  } catch {
+    out.pct = null
+  }
+  return out
+}
+
+/**
+ * The block a route echoes so the ANSWER says what it covered — one shape
+ * everywhere, so the UI never has to learn which route reports coverage how.
+ */
+export function scopeReport(scope, coverage = null) {
+  return {
+    account: scope?.all ? 'all' : (scope?.accountId ?? null),
+    explicit: !!scope?.explicit,
+    scoped: !!coverage?.scoped,
+    coverage: coverage ? { ...coverage, complete: coverage.pct === 100 } : null,
+  }
+}

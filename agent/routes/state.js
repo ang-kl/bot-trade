@@ -13,7 +13,7 @@ import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { stateEpoch } from '../lib/state-cache.js'
 import { armedTimeframes } from '../lib/timeframes.js'
-import { requestedAccount, accountWhere, countUnattributed } from '../lib/account-scope.js'
+import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scopeReport } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
@@ -221,16 +221,34 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/scans — latest scan results + recent DB rows
   // -----------------------------------------------------------------------
-  router.get('/scans', (_req, res) => {
+  router.get('/scans', (req, res) => {
     const lastResults = getState(db, 'last_scan_results')
+    // S1 batch 3, corrected. scans carries account_id, but db.js calls scans
+    // "account-independent market observations [that] may stay NULL (global)"
+    // — this is the plan's `global` mode, so it FILTERS ONLY WHEN ASKED.
+    //
+    // Defaulting to the selected account was wrong: a scan row is a market
+    // observation and the price is the price whoever recorded it. Silently
+    // dropping another account's rows would shrink the price map the UI
+    // converts currencies with, which is how a scoping change becomes a
+    // missing dollar figure two screens away. Coverage is still reported, so
+    // the panel can say "global" out loud instead of implying per-account.
+    const scope = requestedAccount(db, req)
+    const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const recentScans = db
-      .prepare('SELECT * FROM scans ORDER BY scanned_at DESC LIMIT 50')
-      .all()
+      .prepare(
+        `SELECT * FROM scans${acct.active ? ` WHERE ${acct.where}` : ''}
+         ORDER BY scanned_at DESC LIMIT 50`
+      )
+      .all(...acct.params)
 
     res.json({
       lastScanAt: getState(db, 'last_scan_at'),
       lastResults: lastResults ? (() => { try { return JSON.parse(lastResults) } catch { return null } })() : null,
       recentScans,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'scans', scope })),
     })
   })
 
@@ -249,46 +267,81 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/scans/:symbol', (req, res) => {
     const symbol = req.params.symbol.toUpperCase()
+    // Global by default, like /state/scans above — filtered only when asked.
+    const scope = requestedAccount(db, req)
+    const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const rows = db
       .prepare(
-        'SELECT * FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 50'
+        `SELECT * FROM scans WHERE symbol = ?${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY scanned_at DESC LIMIT 50`
       )
-      .all(symbol)
+      .all(symbol, ...acct.params)
 
-    res.json({ symbol, scans: rows })
+    res.json({
+      symbol,
+      scans: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'scans', scope, extraWhere: 'symbol = ?', extraParams: [symbol],
+      })),
+    })
   })
 
   // -----------------------------------------------------------------------
   // GET /state/signals — latest signal per symbol
   // -----------------------------------------------------------------------
-  router.get('/signals', (_req, res) => {
+  router.get('/signals', (req, res) => {
+    // S1 batch 4. The predicate goes on BOTH halves. Filtering only the outer
+    // select would pick "the latest signal on any account" and then drop it if
+    // it belonged to another one — the symbol would show nothing rather than
+    // its own latest signal, which is a worse answer than the unscoped one.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')       // the inner subquery
+    const outer = accountWhere(scope, 's.account_id')    // the aliased outer
     const rows = db
       .prepare(
         `SELECT s.*
          FROM signals s
          INNER JOIN (
            SELECT symbol, MAX(recorded_at) AS max_at
-           FROM signals
+           FROM signals${acct.active ? ` WHERE ${acct.where}` : ''}
            GROUP BY symbol
          ) latest ON s.symbol = latest.symbol AND s.recorded_at = latest.max_at
+         ${outer.active ? `WHERE ${outer.where}` : ''}
          ORDER BY s.recorded_at DESC`
       )
-      .all()
+      .all(...acct.params, ...outer.params)
 
-    res.json({ signals: rows })
+    res.json({
+      signals: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'signals', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
   // GET /state/signals/flips — recent flips (last 100)
   // -----------------------------------------------------------------------
-  router.get('/signals/flips', (_req, res) => {
+  router.get('/signals/flips', (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const rows = db
       .prepare(
-        'SELECT * FROM signals WHERE flipped = 1 ORDER BY recorded_at DESC LIMIT 100'
+        `SELECT * FROM signals WHERE flipped = 1${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY recorded_at DESC LIMIT 100`
       )
-      .all()
+      .all(...acct.params)
 
-    res.json({ flips: rows })
+    res.json({
+      flips: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'signals', scope, extraWhere: 'flipped = 1',
+      })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -478,6 +531,9 @@ export default function stateRouter(db) {
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'monitored_positions', scope, extraWhere: "status = 'active'",
+      })),
     })
   })
 
@@ -708,13 +764,21 @@ export default function stateRouter(db) {
     }
   })
 
-  router.get('/correlation', async (_req, res) => {
+  router.get('/correlation', async (req, res) => {
     try {
       const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
       const { loadStoredMatrix } = await import('../services/correlation-matrix.js')
+      // S1 batch 6. Cluster exposure is a CONCENTRATION reading — "how much
+      // of one correlated basket am I holding". Summed across accounts it
+      // overstates it for every account individually: three accounts each
+      // holding one EUR leg read as a three-leg EUR cluster that no account
+      // actually has. The risk this panel exists to show is per-account.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
       const positions = db.prepare(
-        `SELECT symbol, side FROM monitored_positions WHERE status = 'active'`
-      ).all()
+        `SELECT symbol, side FROM monitored_positions
+          WHERE status = 'active'${acct.active ? ` AND ${acct.where}` : ''}`
+      ).all(...acct.params)
       const exposure = clusterExposure(positions, null)
       const cfg = loadRiskConfig(db)
       let matrix = null
@@ -732,6 +796,11 @@ export default function stateRouter(db) {
           computedAt: matrix?.computedAt || null,
           symbols: matrix?.symbols?.length || 0,
         },
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'monitored_positions', scope, extraWhere: "status = 'active'",
+        })),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -999,10 +1068,18 @@ export default function stateRouter(db) {
   // candidate duplicate CLOSED trade records and how much they'd
   // double-count in Performance/Edge-health stats — never deletes anything.
   // -----------------------------------------------------------------------
-  router.get('/duplicate-trades', async (_req, res) => {
+  router.get('/duplicate-trades', async (req, res) => {
     try {
       const { findDuplicateTrades } = await import('../services/trade-integrity.js')
-      res.json(findDuplicateTrades(db))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...findDuplicateTrades(db, { scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope,
+          extraWhere: "status = 'closed' AND entry_price IS NOT NULL AND net_pnl IS NOT NULL",
+        })),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -1083,14 +1160,26 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
-  router.get('/metrics', (_req, res) => {
+  router.get('/metrics', (req, res) => {
+    // S1 batch 5. A performance snapshot is a per-account fact by nature —
+    // win rate and profit factor pooled across a demo and a live account
+    // describe neither. This is the same shape as the Go-Live card failure,
+    // one table over.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const row = db
       .prepare(
-        'SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1'
+        `SELECT * FROM performance_snapshots${acct.active ? ` WHERE ${acct.where}` : ''}
+         ORDER BY computed_at DESC LIMIT 1`
       )
-      .get()
+      .get(...acct.params)
 
-    res.json({ metrics: row || null })
+    res.json({
+      metrics: row || null,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'performance_snapshots', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1098,16 +1187,25 @@ export default function stateRouter(db) {
   // ?limit=N (default 200, max 1000); ?format=text returns a plain-text file.
   router.get('/action-log', (req, res) => {
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200))
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     let rows = []
     try {
-      rows = db.prepare('SELECT * FROM action_log ORDER BY id DESC LIMIT ?').all(limit)
+      rows = db.prepare(
+        `SELECT * FROM action_log${acct.active ? ` WHERE ${acct.where}` : ''} ORDER BY id DESC LIMIT ?`
+      ).all(...acct.params, limit)
     } catch { /* table appears on first boot after migration */ }
     if (req.query.format === 'text') {
       res.setHeader('content-type', 'text/plain; charset=utf-8')
       res.setHeader('content-disposition', 'attachment; filename="action-log.txt"')
       return res.send(rows.map(r => `${r.at}Z  ${r.method} ${r.path}  ${r.body || ''}`).join('\n'))
     }
-    res.json({ rows })
+    res.json({
+      rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'action_log', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1733,16 +1831,32 @@ export default function stateRouter(db) {
     try {
       const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
       const sym = String(req.query.symbol || '').toUpperCase().trim()
-      const rows = sym
-        ? db.prepare('SELECT * FROM backtest_runs WHERE symbol = ? ORDER BY id DESC LIMIT ?').all(sym, limit)
-        : db.prepare('SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?').all(limit)
+      // S1 batch 4. backtest_runs joined the scoped set in the A5 migration
+      // (per-account workspaces) — a backtest run under one account's config
+      // is not evidence about another's.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const clauses = []
+      const params = []
+      if (sym) { clauses.push('symbol = ?'); params.push(sym) }
+      if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
+      const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+      const rows = db.prepare(
+        `SELECT * FROM backtest_runs${where} ORDER BY id DESC LIMIT ?`
+      ).all(...params, limit)
       const bySymbol = db.prepare(
         `SELECT symbol, COUNT(*) AS rows, MAX(ran_at) AS lastRanAt,
                 SUM(COALESCE(trades, 0)) AS totalTrades,
                 SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
-           FROM backtest_runs GROUP BY symbol ORDER BY lastRanAt DESC`
-      ).all()
-      res.json({ rows, bySymbol })
+           FROM backtest_runs${acct.active ? ` WHERE ${acct.where}` : ''}
+           GROUP BY symbol ORDER BY lastRanAt DESC`
+      ).all(...acct.params)
+      res.json({
+        rows, bySymbol,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'backtest_runs', scope })),
+      })
     } catch (err) { res.status(500).json({ error: err.message }) }
   })
 
@@ -1782,6 +1896,13 @@ export default function stateRouter(db) {
       legacyRows: acct.active
         ? countUnattributed(db, 'trades', "status IN ('closed','rejected')")
         : 0,
+      // S1 — coverage over THESE rows, not the whole table. `legacyRows`
+      // above counts NULLs across every closed trade ever; this says what
+      // fraction of the answer on screen is actually this account's, which is
+      // the number the Go-Live card needed and did not have.
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'trades', scope, extraWhere: "status IN ('closed','rejected')",
+      })),
     })
   })
 
@@ -1956,6 +2077,7 @@ export default function stateRouter(db) {
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
         legacyRows: acct.active ? countUnattributed(db, 'pending_orders') : 0,
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'pending_orders', scope })),
       })
     } catch (e) {
       res.json({ rows: [], error: e.message })
@@ -1983,6 +2105,7 @@ export default function stateRouter(db) {
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'risk_events') : 0,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'risk_events', scope })),
     })
   })
 
@@ -2083,6 +2206,12 @@ export default function stateRouter(db) {
     const days = Math.max(1, Math.min(365, parseInt(req.query.days || '90', 10)))
     const sinceISO = new Date(Date.now() - days * 86400_000).toISOString()
 
+    // S1 batch 3. This route answers "which strategy makes money" — pooled
+    // across accounts it answers it for nobody. A demo account running the
+    // loosened gates and the live account running the tight ones average into
+    // a profit factor neither of them has.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const groupExpr = cols.join(', ')
     const rows = db.prepare(`
       SELECT
@@ -2101,10 +2230,10 @@ export default function stateRouter(db) {
         ) AS profit_factor
       FROM trades
       WHERE status = 'closed'
-        AND closed_at >= ?
+        AND closed_at >= ?${acct.active ? ` AND ${acct.where}` : ''}
       GROUP BY ${groupExpr}
       ORDER BY total_pnl DESC NULLS LAST
-    `).all(sinceISO)
+    `).all(sinceISO, ...acct.params)
 
     // Enrich each row with win_rate for convenience.
     for (const r of rows) {
@@ -2112,7 +2241,14 @@ export default function stateRouter(db) {
       r.win_rate = t > 0 ? Number((r.wins / t).toFixed(3)) : null
     }
 
-    res.json({ groupBy, days, since: sinceISO, rows })
+    res.json({
+      groupBy, days, since: sinceISO, rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'trades', scope, extraWhere: "status = 'closed' AND closed_at >= ?", extraParams: [sinceISO],
+      })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -2135,26 +2271,51 @@ export default function stateRouter(db) {
   router.get('/metrics/history', (req, res) => {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)))
     const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     try {
       const rows = db.prepare(
-        'SELECT * FROM performance_snapshots WHERE computed_at >= ? ORDER BY computed_at ASC'
-      ).all(since)
-      res.json({ snapshots: rows })
+        `SELECT * FROM performance_snapshots WHERE computed_at >= ?${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY computed_at ASC`
+      ).all(since, ...acct.params)
+      res.json({
+        snapshots: rows,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'performance_snapshots', scope,
+          extraWhere: 'computed_at >= ?', extraParams: [since],
+        })),
+      })
     } catch {
       res.json({ snapshots: [] })
     }
   })
 
-  router.get('/analyses/latest', (_req, res) => {
+  router.get('/analyses/latest', (req, res) => {
+    // S1 batch 5. Only the ANALYSES half is scoped. The LEFT JOIN onto scans
+    // is there to decorate each analysis with the scan it came from; adding
+    // the predicate there too would turn the join into a filter and drop the
+    // decoration whenever the scan is another account's (or, commonly, global
+    // and unstamped) — losing scan_bias rather than gaining accuracy.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'a.account_id')
     try {
       const rows = db.prepare(`
         SELECT a.*, s.bias AS scan_bias, s.confidence AS scan_confidence
         FROM analyses a
         LEFT JOIN scans s ON s.id = a.scan_id
-        WHERE a.analyzed_at > datetime('now', '-24 hours')
+        WHERE a.analyzed_at > datetime('now', '-24 hours')${acct.active ? ` AND ${acct.where}` : ''}
         ORDER BY a.analyzed_at DESC
-      `).all()
-      res.json({ analyses: rows })
+      `).all(...acct.params)
+      res.json({
+        analyses: rows,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'analyses', scope, extraWhere: "analyzed_at > datetime('now', '-24 hours')",
+        })),
+      })
     } catch (e) {
       res.json({ analyses: [], error: e.message })
     }
@@ -2348,13 +2509,20 @@ export default function stateRouter(db) {
   // has enough sample (n >= min_n) and is net negative. The watchlist stays
   // configuration — this is the evidence beside it.
   // -----------------------------------------------------------------------
-  router.get('/watchlist-stats', (_req, res) => {
+  router.get('/watchlist-stats', (req, res) => {
     try {
       const MIN_N = 10
+      // S1 batch 4. This route decides which symbols are flagged `loser` on
+      // the watchlist. Pooled, a symbol that loses on one account's settings
+      // is condemned on every account — and one that loses on ONLY the
+      // account you are looking at is hidden by the others' wins.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
       const rows = db.prepare(
         `SELECT UPPER(symbol) AS sym, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
-         FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL GROUP BY UPPER(symbol)`
-      ).all()
+         FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL${acct.active ? ` AND ${acct.where}` : ''}
+         GROUP BY UPPER(symbol)`
+      ).all(...acct.params)
       const by = {}
       for (const r of rows) {
         by[r.sym] = {
@@ -2364,7 +2532,14 @@ export default function stateRouter(db) {
           loser: r.n >= MIN_N && r.net < 0,
         }
       }
-      res.json({ min_n: MIN_N, by })
+      res.json({
+        min_n: MIN_N, by,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope, extraWhere: "status = 'closed' AND net_pnl IS NOT NULL",
+        })),
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -2636,7 +2811,13 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/broker-orders — external positions + pending orders from last reconciliation
   // -----------------------------------------------------------------------
-  router.get('/broker-orders', (_req, res) => {
+  router.get('/broker-orders', (req, res) => {
+    // S1 batch 3. externalPositions is a scoped read; pendingOrders is NOT —
+    // it is a broker snapshot blob in agent_state with no account column, so
+    // it stays portfolio-wide and says so rather than being filtered on a
+    // field it does not have.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'mp.account_id')
     try {
       const pendingJson = getState(db, 'broker_pending_orders_json')
       const lastReconcileAt = getState(db, 'last_reconcile_at')
@@ -2647,12 +2828,22 @@ export default function stateRouter(db) {
         `SELECT mp.*, t.ctrader_position_id, t.volume AS volume
          FROM monitored_positions mp
          LEFT JOIN trades t ON t.id = mp.trade_id
-         WHERE mp.status = 'active' AND mp.source = 'external'
+         WHERE mp.status = 'active' AND mp.source = 'external'${acct.active ? ` AND ${acct.where}` : ''}
          ORDER BY mp.created_at DESC`
-      ).all()
+      ).all(...acct.params)
       let pendingOrders = []
       try { pendingOrders = JSON.parse(pendingJson || '[]') } catch { /* non-fatal */ }
-      res.json({ externalPositions, pendingOrders, lastReconcileAt })
+      res.json({
+        externalPositions, pendingOrders, lastReconcileAt,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'monitored_positions', scope,
+          extraWhere: "status = 'active' AND source = 'external'",
+        })),
+        // The broker pending-order snapshot has no account column of its own.
+        pendingOrdersScoped: false,
+      })
     } catch (e) {
       res.json({ externalPositions: [], pendingOrders: [], lastReconcileAt: null, error: e.message })
     }

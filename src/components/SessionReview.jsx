@@ -125,6 +125,7 @@ function classify(t) {
 
 function Bar({ label, n, of, tone }) {
   const pct = of ? Math.round((n / of) * 100) : 0
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 34px', gap: 6, alignItems: 'center' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -148,6 +149,15 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   const at = nowMs ?? 0
   const [period, setPeriod] = useState('day')
   const [openId, setOpenId] = useState(null)
+  // Owner, 2026-08-03: "Build Cap of 20 rows and pagination". A debrief day
+  // can carry a hundred closes, and an unbounded list buries the summary
+  // panels underneath it — the same reason the workflow-audit clusters were
+  // paginated (#175). 20 keeps the whole card on one screen.
+  const PAGE = 20
+  const [page, setPage] = useState(0)
+  // Clamped at RENDER, not in an effect: if the list shrinks under the
+  // current page (a narrower window, a filter), the reader must land on the
+  // last real page rather than on a blank one for a frame.
 
   const model = useMemo(() => {
     const from = period === 'day' ? fxDayStart(at) : fxWeekStart(at)
@@ -209,6 +219,9 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
   })
   const label = period === 'day' ? 'this FX day' : 'this FX week'
 
+  const lastPage = Math.max(0, Math.ceil(model.rows.length / PAGE) - 1)
+  const safePage = Math.min(page, lastPage)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
@@ -229,8 +242,8 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
       </div>
 
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        <button type="button" style={pill(period === 'day')} aria-pressed={period === 'day'} onClick={() => setPeriod('day')}>Day</button>
-        <button type="button" style={pill(period === 'week')} aria-pressed={period === 'week'} onClick={() => setPeriod('week')}>Week</button>
+        <button type="button" style={pill(period === 'day')} aria-pressed={period === 'day'} onClick={() => { setPeriod('day'); setPage(0) }}>Day</button>
+        <button type="button" style={pill(period === 'week')} aria-pressed={period === 'week'} onClick={() => { setPeriod('week'); setPage(0) }}>Week</button>
         <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>from {new Date(model.from).toISOString().slice(0, 16).replace('T', ' ')} UTC (FX {period === 'day' ? 'day' : 'week'} open)</span>
       </div>
 
@@ -266,7 +279,7 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
           </div>
 
           <div style={{ borderTop: `1px solid ${EDG}`, paddingTop: 2 }}>
-            {model.rows.map(r => {
+            {model.rows.slice(safePage * PAGE, (safePage + 1) * PAGE).map(r => {
               const on = openId === r.id
               return (
                 <div key={r.id}>
@@ -290,6 +303,26 @@ export default function SessionReview({ allTrades = [], postmortems = [], nowMs,
               )
             })}
           </div>
+
+          {model.rows.length > PAGE && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
+              <button
+                type="button" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0}
+                style={{ fontSize: 'var(--fs-d9)', color: safePage === 0 ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage === 0 ? 'default' : 'pointer' }}
+              >&lsaquo; Newer</button>
+              <span style={{ fontSize: 'var(--fs-d9)', color: MU, fontVariantNumeric: 'tabular-nums' }}>
+                {/* The RANGE, not just the page number — "21-40 of 137" answers
+                    "how much am I not looking at", which a bare page index does not. */}
+                {safePage * PAGE + 1}&ndash;{Math.min((safePage + 1) * PAGE, model.rows.length)} of {model.rows.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage(p => (Math.min(p, lastPage) + 1 <= lastPage ? Math.min(p, lastPage) + 1 : p))}
+                disabled={safePage >= lastPage}
+                style={{ fontSize: 'var(--fs-d9)', color: safePage >= lastPage ? MU : ACC, background: 'none', border: 'none', padding: 0, cursor: safePage >= lastPage ? 'default' : 'pointer' }}
+              >Older &rsaquo;</button>
+            </div>
+          )}
 
           <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
             Buckets come from the close reason and the realised loss against the loss the plan budgeted (|entry − SL|) — never from a guess;

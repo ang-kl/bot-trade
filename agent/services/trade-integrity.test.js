@@ -150,3 +150,62 @@ test('opens further apart than the window are separate clusters, not one', async
   assert.equal(clusters.length, 2)
   assert.deepEqual(clusters.map(c => c.count), [2, 2])
 })
+
+// S1 batch 6. findOpenDuplicates already scoped its same-second key to the
+// account and wrote down why; this function did not. The bot dispatches one
+// signal to several accounts, so two accounts filling the same symbol at the
+// same price is the system working — not a duplicate record.
+function insertScoped(db, acct, o) {
+  db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, entry_price, exit_price, net_pnl,
+                        status, closed_at, ctrader_position_id, opened_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'closed', datetime('now'), ?, datetime('now'))
+  `).run(acct, o.symbol, o.side, o.entry, o.exit, o.pnl, o.posId ?? null)
+}
+
+test('the SAME fill on TWO accounts is not a duplicate — it is the bot doing its job', () => {
+  const db = initDB(':memory:')
+  const leg = { symbol: 'EURUSD', side: 'BUY', entry: 1.0850, exit: 1.0900, pnl: 42.5 }
+  insertScoped(db, 'AAA', { ...leg, posId: '10' })
+  insertScoped(db, 'BBB', { ...leg, posId: '11' })   // different broker position
+  const { groups, totalExtraRows, totalExtraPnl } = findDuplicateTrades(db)
+  assert.equal(groups.length, 0, 'copied legs must not merge into one false duplicate')
+  assert.equal(totalExtraRows, 0)
+  assert.equal(totalExtraPnl, 0, 'and must not subtract real P&L from Performance')
+})
+
+test('a real duplicate WITHIN one account is still caught, and names the account', () => {
+  const db = initDB(':memory:')
+  const leg = { symbol: 'EURUSD', side: 'BUY', entry: 1.0850, exit: 1.0900, pnl: 42.5, posId: '10' }
+  insertScoped(db, 'AAA', leg)
+  insertScoped(db, 'AAA', leg)
+  const { groups, totalExtraRows } = findDuplicateTrades(db)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].count, 2)
+  assert.equal(groups[0].accountId, 'AAA')
+  assert.equal(totalExtraRows, 1)
+})
+
+test('one broker position id under TWO accounts stays flagged — scoping must not hide it', () => {
+  const db = initDB(':memory:')
+  // Different prices, so only the position-id signal can catch this. That key
+  // is deliberately NOT account-scoped: one id is one position at the broker,
+  // so the same id on two accounts is a bookkeeping fault however it arose.
+  insertScoped(db, 'AAA', { symbol: 'GBPUSD', side: 'SELL', entry: 1.27, exit: 1.26, pnl: 80, posId: '777' })
+  insertScoped(db, 'BBB', { symbol: 'GBPUSD', side: 'SELL', entry: 1.28, exit: 1.25, pnl: 91, posId: '777' })
+  const { groups } = findDuplicateTrades(db)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].count, 2)
+})
+
+test('scope filters the window to one account', () => {
+  const db = initDB(':memory:')
+  const leg = { symbol: 'EURUSD', side: 'BUY', entry: 1.0850, exit: 1.0900, pnl: 42.5, posId: '10' }
+  insertScoped(db, 'AAA', leg); insertScoped(db, 'AAA', leg)
+  insertScoped(db, 'BBB', leg); insertScoped(db, 'BBB', leg)
+  const scoped = findDuplicateTrades(db, { scope: { accountId: 'AAA', all: false } })
+  assert.equal(scoped.groups.length, 1)
+  assert.equal(scoped.groups[0].accountId, 'AAA')
+  const all = findDuplicateTrades(db, { scope: { all: true } })
+  assert.equal(all.groups.length, 2, 'the portfolio view still sees both accounts, separately')
+})

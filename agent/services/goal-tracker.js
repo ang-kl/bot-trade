@@ -268,6 +268,12 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
     return buildRow({
       key: id,
       label: reg?.broker_label || null,
+      // THE NUMBER THE OWNER READS. `broker_label` is 'Pepperstone' on every
+      // row, so four cards headed by it are four identical headings — owner,
+      // 2026-08-03: "Which account? I don't see the Account # label". The
+      // cTrader login (5067353, 5203012 …) is the id they recognise, it has
+      // been in the registry since M0, and nothing returned it.
+      login: reg?.trader_login || null,
       isLive: reg?.is_live === 1,
       enabled: reg?.enabled === 1,
       stats: accountAnalytics(db, { accountId: id, days, now }),
@@ -292,7 +298,7 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
   return { goal, now, daysRemaining: left, windowDays: days || null, accounts, portfolio }
 }
 
-function buildRow({ key, label, isLive, enabled, stats, goal, left }) {
+function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left }) {
   const trades = stats.trades || 0
   const sampleOk = trades >= goal.minTrades
   // Observed closing rate over this account's own span, floored at one day so
@@ -364,6 +370,7 @@ function buildRow({ key, label, isLive, enabled, stats, goal, left }) {
   return {
     accountId: key,
     label,
+    login,
     isLive,
     enabled,
     trades,

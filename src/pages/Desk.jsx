@@ -146,6 +146,8 @@ function RiskDecisionRow({ ev }) {
 export default function Desk() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
+  // Newest close per symbol across ALL cycles — the currency-conversion base.
+  const [latestPrices, setLatestPrices] = useState({})
   const [positions, setPositions] = useState([])   // bot-tracked rows (chart lines)
   // Whose positions the route says these are, + rows it hid for having no
   // account_id. /state/positions is account-scoped server-side now, so Desk
@@ -268,7 +270,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, dupe, wlf] = await Promise.all([
+      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -284,8 +286,10 @@ export default function Desk() {
         agentGet('/state/correlation').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
         agentGet('/state/weekend-loss-flags').catch(() => null),
+        agentGet('/state/prices').catch(() => null),
       ])
       setHealth(h)
+      setLatestPrices(px?.prices || {})
       // lastResults.scans is the CURRENT scan cycle's snapshot — recentScans
       // is the last 50 DB rows across cycles, which can carry a stale
       // non-skip row past a later skip for the same symbol, and duplicate
@@ -391,7 +395,26 @@ export default function Desk() {
   // Scan closes double as the FX rate map bracketMoney needs to convert a
   // cross's quote-currency risk into USD (GBPJPY risk lands in JPY). Without
   // it crosses report blank rather than a wrong number.
-  const rateMap = useMemo(() => Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price])), [scans])
+  // TWO TIERS, not one. The base is /state/prices — the newest close per
+  // symbol across ALL cycles — with the current cycle's snapshot layered on
+  // top as the fresher value.
+  //
+  // Scanning rotates ~15 of 221 symbols per cycle, so a map built from one
+  // cycle almost never holds the conversion leg a cross needs. The agent hit
+  // this and fixed it with a persistent table (services/fx-rates.js); this
+  // page was still reading one batch, which is why a Hong Kong row's
+  // stop-loss had no USDHKD to convert through.
+  const rateMap = useMemo(() => {
+    const m = {}
+    for (const [sym, v] of Object.entries(latestPrices || {})) {
+      const px2 = Number(v?.price ?? v)
+      if (Number.isFinite(px2) && px2 > 0) m[String(sym).toUpperCase()] = px2
+    }
+    for (const sc of scans) {
+      if (Number.isFinite(Number(sc.price))) m[String(sc.symbol).toUpperCase()] = sc.price
+    }
+    return m
+  }, [scans, latestPrices])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const brokerPosRows = useMemo(() => brokerPositionRows(broker?.positions || [], { manageable: true, dbByPid: monitorByPid, rates: rateMap }), [posSig, monitorByPid, rateMap])
   // eslint-disable-next-line react-hooks/exhaustive-deps
