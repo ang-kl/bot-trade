@@ -23,6 +23,9 @@ import RiskReassess from '../components/RiskReassess.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-dirty.js'
+import { ESSENTIALS, EVERYTHING, loadRiskMode, saveRiskMode, cardVisible } from '../lib/risk-view.js'
+import Advanced from '../components/common/Advanced.jsx'
+import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -235,6 +238,13 @@ export default function Risk() {
   const setGuardian2 = useCallback((v) => { setGuardian2Raw(v); touch('loss-guardian') }, [touch])
   const loadedScope = useRef(null)
 
+  // HOW MUCH IS ON SCREEN (owner 04-08-2026: "i find the RISK page becomes
+  // complicated"). Essentials is the default and shows the knobs that actually
+  // get changed plus everything that can stop a loss; Everything is this page
+  // exactly as it was. Nothing is removed in either — see src/lib/risk-view.js.
+  const [viewMode, setViewMode] = useState(() => loadRiskMode())
+  const chooseMode = useCallback((m) => { setViewMode(m); saveRiskMode(m) }, [])
+
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
     try {
@@ -371,6 +381,20 @@ export default function Risk() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Risk</h1>
         <span className="text-[9px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
+        {/* HOW MUCH TO SHOW (owner 04-08-2026: "the RISK page becomes
+            complicated"). Essentials is the default; Everything is this page
+            unchanged. Nothing is removed by Essentials — advanced groups
+            collapse and reference cards defer, and anything holding a
+            non-default value says so on its collapsed header. */}
+        <span role="radiogroup" aria-label="How much to show" className="flex gap-1">
+          <Pill radio on={viewMode === ESSENTIALS} label="Essentials" onClick={() => chooseMode(ESSENTIALS)} />
+          <Pill radio on={viewMode === EVERYTHING} label="Everything" onClick={() => chooseMode(EVERYTHING)} />
+        </span>
+        {viewMode === ESSENTIALS && (
+          <span className="text-[9px] text-[var(--color-text-sub)]">
+            showing the settings that get changed and every layer that can stop a loss — nothing is disabled or hidden from the bot
+          </span>
+        )}
         {saving && <Badge tone="info">saving {saving}…</Badge>}
       </div>
       {savedAt && !saving && (
@@ -477,6 +501,8 @@ export default function Risk() {
       })()}
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
+      {/* /actions/balance takes no accountId — one stored balance and leverage
+          for the whole bot, which is why an account switch never changes it. */}
       <Card id="sec-account" data-risk-card className="w3-hover-shadow">
         <SectionTitle badge={data?.account?.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}>
           Global Account — cTrader risk configuration
@@ -522,6 +548,7 @@ export default function Risk() {
             three Save buttons at the bottom of three columns were easy to miss
             on a phone. This bar says so, and offers the single button the
             heading implies. */}
+        <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
           <span className="text-[var(--color-text-sub)]">
             Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
@@ -560,6 +587,9 @@ export default function Risk() {
             <Field label="Max loss, % of balance" unit="%" value={lossCap?.maxLossPctOfBalance} onChange={v => setLossCap(c => ({ ...c, maxLossPctOfBalance: v }))}
               placeholder="$ only"
               hint="Same floor as % of current balance; the TIGHTER of the two caps applies. 2% of $48,000 ≈ $960." recommend="2% of balance." />
+            <Advanced mode={viewMode} label="Loss-cap details" total={3}
+              changed={[lossCap?.scope === 'bot', lossCap?.action === 'alert', lossCap?.retryMinutes !== 10].filter(Boolean).length}
+              dirty={!!dirty['loss-cap']}>
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
               <span role="radiogroup" aria-label="Scope" className="flex gap-1">
@@ -576,6 +606,7 @@ export default function Risk() {
             </div>
             <Field label="Retry after failed close" unit="min" value={lossCap?.retryMinutes} onChange={v => setLossCap(c => ({ ...c, retryMinutes: v }))}
               hint="If a breach close fails (market closed, broker error), re-attempt after this long instead of hammering." recommend="10 minutes." />
+            </Advanced>
             {(() => {
               const balNow = Number(acct.balance) || null
               const pctCap = lossCap?.maxLossPctOfBalance != null && balNow ? balNow * lossCap.maxLossPctOfBalance / 100 : null
@@ -687,6 +718,9 @@ export default function Risk() {
               {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
+            <Advanced mode={viewMode} label="Guardian details" total={3}
+              changed={[guardian2?.scope === 'external', guardian2?.fallbackAdversePct !== 0.02, guardian2?.maxHoldHours != null].filter(Boolean).length}
+              dirty={!!dirty['loss-guardian']}>
             <div className="flex items-center justify-between text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
               <span role="radiogroup" aria-label="Scope" className="flex gap-1">
@@ -701,7 +735,8 @@ export default function Risk() {
             <Field label="Max hold time" unit="h" value={guardian2?.maxHoldHours} onChange={v => setGuardian2(c => ({ ...c, maxHoldHours: v }))}
               placeholder="off"
               hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
-            <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />
+            </Advanced>
+            {viewMode === EVERYTHING && <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />}
             <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', guardian2))}>Save guardian</Button></span>
           </div>
         </div>
@@ -710,7 +745,7 @@ export default function Risk() {
       {/* A6: which settings this account PINS versus inherits, above the
           per-account forms it is about. Full width and outside the grid —
           inside it, it would take a column slot and read as a fourth form. */}
-      <Card><AccountSettingsScope /></Card>
+      {cardVisible('sec-scope', viewMode) && <Card id="sec-scope"><AccountSettingsScope /></Card>}
 
       <div className="grid grid-cols-1 lg:grid-cols-[270px_1fr_270px] gap-3 items-start">
         {/* ---- Account Risk Configuration (left) ---- */}
@@ -743,6 +778,9 @@ export default function Risk() {
                 {data.dailyPacing.tradesLeft != null && <> (~{data.dailyPacing.tradesLeft} more trades)</>}
               </div>
             )}
+            <Advanced mode={viewMode} label="Drawdown response and fallbacks" total={6}
+              changed={['dailyLossLimit', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'].filter(k => overridden.has(k)).length}
+              dirty={!!dirty['risk']}>
             <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} applied={appliedKeys.has('dailyLossLimit')} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
               hint="Absolute USD cap used only when balance is unknown." recommend="$300." />
             <Field label={`Equity stop${mark('equityStopPct')}`} applied={appliedKeys.has('equityStopPct')} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
@@ -767,6 +805,7 @@ export default function Risk() {
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
             </label>
+            </Advanced>
             <div className="flex items-center gap-2">
               <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
               {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
@@ -801,10 +840,18 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} applied={appliedKeys.has('perTradeRiskPct')} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
-                  <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
-                    hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
                   <Field label={`Risk hard cap${mark('maxRiskCapPct')}`} applied={appliedKeys.has('maxRiskCapPct')} pct value={risk.maxRiskCapPct} onChange={v => setRisk(r => ({ ...r, maxRiskCapPct: v }))}
                     hint="Never risk more than this % of balance regardless of other settings." recommend="5% — matches the per-trade % above, so it's a true ceiling, not extra headroom." />
+                </div>
+                {/* The two knobs above are the ones that get changed. These
+                    five are real and reachable — they are simply not what
+                    anyone opens this page to adjust. */}
+                <Advanced mode={viewMode} label="Sizing details" total={5}
+                  changed={['perTradeRiskUsd', 'maxRiskUsd', 'minLotSize', 'minTradesForKelly', 'allowNegativeExpectancyOverride'].filter(k => overridden.has(k)).length}
+                  dirty={!!dirty['risk']}>
+                <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
+                  <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
+                    hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
                   <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} unit="$" value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
                     hint="Optional absolute $ ceiling per trade." placeholder="no cap" recommend="unset — no $ ceiling by default." />
                   <Field label={`Min lot size${mark('minLotSize')}`} unit="lots" value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
@@ -816,6 +863,7 @@ export default function Risk() {
                     <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
                   </div>
                 </div>
+                </Advanced>
               </div>
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
@@ -842,6 +890,9 @@ export default function Risk() {
                     recommend="2 net bets per currency." />
                 </div>
               </div>
+              <Advanced mode={viewMode} label="Cooldowns, streaks, monitoring and weekends" total={6}
+                changed={['symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes'].filter(k => overridden.has(k)).length}
+                dirty={!!dirty['risk']}>
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
@@ -855,6 +906,7 @@ export default function Risk() {
               </div>
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
+                <GlobalScopeNote className="mb-1.5" what="The guardian move %, weekend profit bank and weekend loss flag" />
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label="Guardian move" pct value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
@@ -876,6 +928,7 @@ export default function Risk() {
                   </div>
                 </div>
               </div>
+              </Advanced>
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
@@ -885,6 +938,7 @@ export default function Risk() {
             </div>
           </Card>
 
+          {cardVisible('sec-sizing', viewMode) && (
           <Card id="sec-sizing" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="info">Sizing</Badge>}>Lot Calculation form</SectionTitle>
             {(() => {
@@ -936,8 +990,11 @@ export default function Risk() {
             })()}
           </Card>
 
+          )}
+          {cardVisible('sec-cpp', viewMode) && (
           <Card id="sec-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>C++ Risk Configuration form</SectionTitle>
+            <GlobalScopeNote className="mb-2" what="The sidecar's halt, bracket and volume guards" />
             <div className="grid grid-cols-1 @sm:grid-cols-2 gap-x-5 gap-y-1">
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Kill switch: the C++ engine refuses EVERY order while halted.">Halt (kill switch)</span>
@@ -970,6 +1027,9 @@ export default function Risk() {
             </div>
           </Card>
 
+          )}
+          {/* NOT deferred, at any view size: a page that hides the panic
+              button to look tidier has optimised the wrong thing. */}
           <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
             {/* Section label = classification, not a P&L number (finding: down tone misuse). */}
             <SectionTitle badge={<Badge tone="warning">Emergency</Badge>}>Close All Positions form</SectionTitle>
@@ -990,6 +1050,7 @@ export default function Risk() {
 
         {/* ---- Right column: worked examples ---- */}
         <div className="space-y-2">
+          {cardVisible('sec-example-live', viewMode) && (
           <Card id="sec-example-live" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example Trade — Bot-Trade Live card</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
@@ -1002,6 +1063,8 @@ export default function Risk() {
               </div>
             </div>
           </Card>
+          )}
+          {cardVisible('sec-example-cpp', viewMode) && (
           <Card id="sec-example-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle>Example Trade — C++ Configuration card</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} trigger={entry - slDist * 0.4} />
@@ -1016,6 +1079,7 @@ export default function Risk() {
               </div>
             </div>
           </Card>
+          )}
         </div>
       </div>
     </div>

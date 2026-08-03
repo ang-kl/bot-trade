@@ -6,14 +6,14 @@ import { test, beforeEach } from 'node:test'
 import assert from 'node:assert'
 import { initDB } from '../db.js'
 import { unknownPnlReport } from './unknown-pnl-report.js'
-import { fxDayStartSql } from './risk.js'
+import { fxDayStartSql, fxDayOpenMs } from './risk.js'
 
 let db
 beforeEach(() => { db = initDB(':memory:') })
 
 /** Closed inside the current FX day, older than the grace window. */
 function closedTrade(over = {}) {
-  const dayStart = fxDayStartSql()
+  const dayStart = fxDayStartSql(NOW)
   const cols = {
     symbol: 'EURUSD', side: 'BUY', status: 'closed',
     // 30 minutes past the day start, and well past a 15-minute grace.
@@ -28,7 +28,12 @@ function closedTrade(over = {}) {
   return info.lastInsertRowid
 }
 
-const opts = { enabledAccounts: ['46130058'], exhaustedAccounts: [] }
+// PINNED CLOCK. This report is scoped to the FX day, so every fixture below is
+// really a statement about the time of day: "closed 30 minutes into the day,
+// past the 15-minute grace" cannot be satisfied in the first half hour after
+// the 21:00 UTC open, and the whole file went red for that window daily.
+const NOW = fxDayOpenMs() + 12 * 3600_000
+const opts = { enabledAccounts: ['46130058'], exhaustedAccounts: [], nowMs: NOW }
 
 test('a row with no broker position id can NEVER be filled — and is named as such', () => {
   closedTrade({ ctrader_position_id: null })
@@ -74,7 +79,7 @@ test('rows inside the grace window, filled rows and written-off rows do not bloc
   // Fresh close, inside the 15-minute grace: expected to be NULL for a cycle.
   closedTrade({
     ctrader_position_id: '900007',
-    closed_at: new Date(Date.now() - 60_000).toISOString().slice(0, 19).replace('T', ' '),
+    closed_at: new Date(NOW - 60_000).toISOString().slice(0, 19).replace('T', ' '),
   })
   const id = closedTrade({ ctrader_position_id: '900008' })
   db.prepare('UPDATE trades SET pnl_unresolvable = 1 WHERE id = ?').run(id)
@@ -86,6 +91,6 @@ test('rows inside the grace window, filled rows and written-off rows do not bloc
 
 test('an empty registry does not turn every row into account_not_enabled', () => {
   closedTrade({ account_id: '99999999' })
-  const out = unknownPnlReport(db, { enabledAccounts: [], exhaustedAccounts: [] })
+  const out = unknownPnlReport(db, { enabledAccounts: [], exhaustedAccounts: [], nowMs: NOW })
   assert.equal(out.rows[0].reason, 'backfill_pending')
 })

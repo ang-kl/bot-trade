@@ -5,6 +5,7 @@
 // (halt) when an EXISTING config is unreadable.
 
 import test from 'node:test'
+import { clampToFxDay } from '../test-support/fx-day.js'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import { loadGlobalGuards, evaluateGlobalGuards, DEFAULT_GLOBAL_GUARDS } from './global-guards.js'
@@ -22,8 +23,8 @@ function fresh() {
 function insertClosedTrade(db, { account, pnl }) {
   db.prepare(`
     INSERT INTO trades (symbol, side, entry_price, status, net_pnl, closed_at, account_id, opened_at)
-    VALUES ('EURUSD', 'BUY', 1.1, 'closed', ?, datetime('now', '-10 minutes'), ?, datetime('now', '-70 minutes'))
-  `).run(pnl, account)
+    VALUES ('EURUSD', 'BUY', 1.1, 'closed', ?, ?, ?, datetime('now', '-70 minutes'))
+  `).run(pnl, clampToFxDay(10), account)
 }
 
 function insertOpenTrade(db, { account, symbol }) {

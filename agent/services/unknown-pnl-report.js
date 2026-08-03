@@ -46,11 +46,23 @@ import { DEFAULT_UNKNOWN_PNL_GRACE_MIN } from './unresolved-pnl.js'
  * @param {string[]} [opts.enabledAccounts] account ids the loop backfills
  * @param {string[]} [opts.exhaustedAccounts] accounts pnl-backfill gave up on
  */
+const sqlAt = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ')
+
+/**
+ * `nowMs` is injectable for the same reason the paced budget's is: this report
+ * is scoped to the FX day, so any test of it is a test of the clock. Fixtures
+ * that place a row "30 minutes into the day, past the 15-minute grace" are
+ * impossible to satisfy in the first half hour after the 21:00 UTC open — the
+ * day simply is not old enough — and the suite went red for that window every
+ * day. Production never passes it.
+ */
 export function unknownPnlReport(db, {
   graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN,
   enabledAccounts = [],
   exhaustedAccounts = [],
+  nowMs = null,
 } = {}) {
+  const clock = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now()
   const grace = Number.isFinite(Number(graceMin)) && Number(graceMin) >= 0 ? Number(graceMin) : DEFAULT_UNKNOWN_PNL_GRACE_MIN
   const enabled = new Set((enabledAccounts || []).map(String))
   const exhausted = new Set((exhaustedAccounts || []).map(String))
@@ -62,7 +74,7 @@ export function unknownPnlReport(db, {
     hasUnresolvable = db.prepare('PRAGMA table_info(trades)').all().some(c => c.name === 'pnl_unresolvable')
   } catch { hasUnresolvable = false }
 
-  const dayStart = fxDayStartSql()
+  const dayStart = fxDayStartSql(clock)
   let rows = []
   try {
     rows = db.prepare(`
@@ -73,9 +85,9 @@ export function unknownPnlReport(db, {
        WHERE status = 'closed'
          AND net_pnl IS NULL
          AND REPLACE(closed_at, 'T', ' ') >= ?
-         AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
+         AND REPLACE(closed_at, 'T', ' ') <= ?
        ORDER BY closed_at
-    `).all(dayStart, `-${grace} minutes`)
+    `).all(dayStart, sqlAt(clock - grace * 60_000))
   } catch (err) {
     return { ok: false, error: err.message, dayStart, rows: [], summary: null }
   }
