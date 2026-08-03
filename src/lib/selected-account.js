@@ -88,7 +88,10 @@ export function writeSelection(accountId) {
 }
 
 function tick() {
-  const id = readCache()?.selectedAccountId ?? null
+  // The VIEWED account, not the traded one: when an override is set the pages
+  // must follow the override. With no override this is the traded account, so
+  // the behaviour is unchanged.
+  const id = viewedAccountId()
   if (id == null) return
   // First observation establishes the baseline; it is not a switch.
   if (current == null) { current = id; return }
@@ -115,4 +118,74 @@ export function onAccountSwitch(cb) {
     setInterval(tick, WATCH_MS)
   }
   return () => subscribers.delete(cb)
+}
+
+// ---------------------------------------------------------------------------
+// THE VIEWED ACCOUNT — S3, owner-approved 2026-08-03 ("view-only").
+//
+// Owner: "I find it difficult to switch account to check."
+//
+// The only switch that existed until now is POST /actions/ctrader-select-account,
+// and it rewrites the SERVER's trading account: ctrader_account_id,
+// symbol_id_map, account_balance_usd, account_leverage, roles_json. It moves
+// what the BOT TRADES. Wiring that to a dropdown in the page chrome would make
+// a stray click able to re-point live trading — including at the LIVE account.
+//
+// S1 changed what is possible. Every account-meaningful /state route now takes
+// `?account=`, so "look at another account" no longer requires moving the bot.
+// That is the whole idea here: VIEWING IS NOT ARMING, and the two must not
+// share a control.
+//
+// This lives in selected-account.js rather than a new module ON PURPOSE. A
+// parallel "viewed account" file is exactly the second-source-of-truth defect
+// this workstream exists to remove — the server already has an unused
+// services/viewed-account.js, and adding a client twin would make three.
+//
+// DEFAULT IS NULL = no override = today's behaviour, byte for byte. Nothing
+// changes until the operator picks an account to view.
+// ---------------------------------------------------------------------------
+
+const VIEW_KEY = 'viewed_account_id'
+
+/**
+ * The account being LOOKED AT: the override if one is set, otherwise whatever
+ * the server is trading. Never null unless nothing is selected at all.
+ */
+export function viewedAccountId() {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY)
+    if (raw === 'all') return 'all'
+    if (raw) return Number(raw)
+  } catch { /* private mode — fall through to the traded account */ }
+  return selectedAccountId()
+}
+
+/** True when the operator is looking at something other than what is traded. */
+export function isViewingOther() {
+  const v = viewedAccountId()
+  const s = selectedAccountId()
+  return v != null && s != null && String(v) !== String(s)
+}
+
+/**
+ * Set (or clear, with null) the viewed account. Clearing returns the app to
+ * following the traded account, which is the resting state.
+ *
+ * Fans out through the SAME onAccountSwitch subscribers the traded-account
+ * switch uses, so every page's existing useAccountSwitch(load) reloads
+ * immediately. No page needs to know this feature exists — which is what
+ * "iron-clad wired to every page" has to mean if it is to survive the next
+ * feature.
+ */
+export function setViewedAccount(accountId) {
+  const before = viewedAccountId()
+  try {
+    if (accountId == null) localStorage.removeItem(VIEW_KEY)
+    else localStorage.setItem(VIEW_KEY, String(accountId))
+  } catch { /* private mode — the picker will look unresponsive, not lie */ }
+  const after = viewedAccountId()
+  if (String(before) === String(after)) return
+  for (const cb of subscribers) {
+    try { cb({ from: before, to: after, label: accountLabel(after), viewOnly: true }) } catch { /* keep going */ }
+  }
 }
