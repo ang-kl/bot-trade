@@ -13,6 +13,7 @@ import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { useLensAccount } from '../lib/use-lens-account.js'
 import { stratShort, strategyLabel, STRATEGY_KEYS } from '../lib/strategy-labels.js'
 import RiskConfigCompare from '../components/RiskConfigCompare.jsx'
 import { NATIVE_TF_MS, parseTimeframe, tfMs } from '../lib/timeframes.js'
@@ -197,7 +198,7 @@ function StrategyTfPerformance() {
   const [grid, setGrid] = useState(null)
   const [err, setErr] = useState(null)
   // Owner 02-08: the grid must be viewable per trading account.
-  const [acct, setAcct] = useState('all')
+  const [acct, setAcct] = useLensAccount('all')
 
   useEffect(() => {
     if (!open) return
