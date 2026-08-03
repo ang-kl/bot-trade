@@ -26,6 +26,7 @@ import { WINDOWS, DECISION_TONE, repeatReading, ago, toText } from '../lib/decis
 import Badge from './common/Badge.jsx'
 import Segmented from './common/Segmented.jsx'
 import SectionTools from './common/SectionTools.jsx'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 const MU = 'var(--color-muted)', SB = 'var(--color-text-sub)', ACC = 'var(--color-accent)'
 const GL = 'var(--color-surface)', GBD = 'var(--color-border)'
@@ -102,7 +103,7 @@ export function RowsTable({ rows }) {
             <tr key={r.id}>
               <td className="py-1 pr-2 whitespace-nowrap" style={{ color: SB }}>{ago(r.created_at)}</td>
               <td className="py-1 pr-2 font-semibold">{r.symbol || '—'}</td>
-              <td className="py-1 pr-2" style={{ color: SB }}>{r.strategy || '—'}</td>
+              <td className="py-1 pr-2" style={{ color: SB }}>{strategyLabel(r.strategy) || '—'}</td>
               <td className="py-1 pr-2">{r.stage}</td>
               <td className="py-1 pr-2"><Badge tone={DECISION_TONE[r.decision] || 'neutral'}>{r.decision}</Badge></td>
               <td className="py-1" style={{ color: SB }}>{r.reason || '—'}</td>

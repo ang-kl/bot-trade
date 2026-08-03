@@ -16,6 +16,7 @@ import { isLong } from '../lib/side.js'
 import OrderManager from './OrderManager.jsx'
 import Button from './common/Button.jsx'
 import Collapse from './common/Collapse.jsx'
+import { strategyLabel } from '../lib/strategy-labels.js'
 
 const parseTs = (iso) => Date.parse(String(iso || '').includes('T') ? iso : String(iso || '').replace(' ', 'T') + 'Z')
 const enteredCell = (iso) => { const w = iso ? dateTimeParts(iso) : null; return w ? `${w.day} ${w.time}` : '—' }
@@ -70,7 +71,7 @@ function Row({ o, gone, action = null }) {
       {/* TF then Strategy — same column order as the open-positions table
           (owner: fix the discrepancy between the two). */}
       <td className="py-1.5 pr-3 whitespace-nowrap">{tf || '—'}</td>
-      <td className="py-1.5 pr-3 whitespace-nowrap">{strat || '—'}</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{strategyLabel(strat) || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">{o.is_bot ? 'Bot' : 'Manual'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">
         <span className={gone ? 'text-[var(--color-text-sub)]' : 'text-[var(--color-accent)] font-semibold'}>
@@ -147,7 +148,7 @@ function QueuedRow({ q, onDone }) {
           open-positions table (owner: fix the discrepancy between the two;
           these used to be combined into one cell here only). */}
       <td className="py-1.5 pr-3 whitespace-nowrap">{q.timeframe || '—'}</td>
-      <td className="py-1.5 pr-3 whitespace-nowrap">{q.strategy || '—'}</td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">{strategyLabel(q.strategy) || '—'}</td>
       <td className="py-1.5 pr-3 whitespace-nowrap">Bot</td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-text-sub)]">
         waiting{q.expires_at ? ` · expires ${expiresLabel(q.expires_at)}` : ''}{q.note ? ` · ${String(q.note).slice(0, 60)}` : ''}

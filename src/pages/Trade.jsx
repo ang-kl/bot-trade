@@ -18,6 +18,7 @@ import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
 import { toMs, priceDp, brokerOrderRows, bracketMoney, estimateMargin } from '../lib/std-trade-rows.js'
 import { humanVeto } from '../lib/veto-words.js'
+import { strategyLabel } from '../lib/strategy-labels.js'
 import { useSort } from '../lib/use-sort.jsx'
 import { useLiveTicks, liveMid } from '../lib/useLiveTicks.js'
 import Collapse from '../components/common/Collapse.jsx'
@@ -271,15 +272,15 @@ function closedTradeRows(trades, prices = {}, leverage = null) {
   })
 }
 
-// Plain-words strategy names for signal rows (scans.strategy).
-const STRATEGY_NAMES = {
-  fib_618_fade: 'Fib 61.8% fade',
-  cup_handle: 'Cup & Handle',
-  inv_cup_handle: 'Inverted Cup & Handle',
-  ema_pullback: 'EMA pullback',
-  donchian_breakout: 'Range breakout',
-  rsi_meanrev: 'RSI mean-rev',
-}
+// A second STRATEGY_NAMES map used to live here, and it had gone stale in two
+// ways at once: it was missing SIX of the twelve registry strategies
+// (vwap_trend, vp_value, rsi2_reversion, fib_confluence, va_breakout,
+// fvg_retrace all fell through to the raw snake_case key), and it spelled the
+// six it did carry in sentence case rather than Title Case.
+//
+// strategy-labels.js is the one map, and its registry-coverage test fails the
+// build when a strategy is added without a name — which is exactly the guard a
+// hand-copied duplicate cannot have.
 
 // Plain-words provenance labels for order-log rows (proposal_json.source).
 const ATTEMPT_SOURCE = {
@@ -545,7 +546,7 @@ export default function Trade() {
   const skipScans = scans.filter(sc => !sc.bias || sc.bias === 'skip')
   // Signals table sorts like every other table — conviction first by default.
   const sigSort = useSort(signalScans, { key: 'confidence', dir: 'desc' }, {
-    strategy: sc => STRATEGY_NAMES[sc.strategy] || sc.strategy || '',
+    strategy: sc => strategyLabel(sc.strategy) || '',
   })
 
   const [orderOpen, setOrderOpen] = useState(false)
@@ -688,7 +689,7 @@ export default function Trade() {
                 {sigSort.sorted.map(sc => (
                   <tr key={sc.symbol} className="border-t border-[var(--color-border)]">
                     <td className="pr-3 py-1.5">{sc.symbol}</td>
-                    <td className="pr-3 whitespace-nowrap">{STRATEGY_NAMES[sc.strategy] || sc.strategy || 'Fib 61.8% fade'}</td>
+                    <td className="pr-3 whitespace-nowrap">{strategyLabel(sc.strategy) || 'Fibonacci 61.8% Fade'}</td>
                     {/* Direction, not P&L (inventory T10) — blue = long, red = short via the state tints. */}
                     <td className="pr-3"><Badge tone={sc.bias === 'long' ? 'on' : 'off'}>{sc.bias?.toUpperCase()}</Badge></td>
                     <td className="pr-3">{sc.timeframe || '—'}</td>
