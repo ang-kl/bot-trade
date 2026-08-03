@@ -48,6 +48,24 @@ export const MIN_DAYS_FOR_VERDICT = Math.max(20, Number(process.env.VOL_GATE_MIN
 export const ATR_PERIOD = 14
 
 /**
+ * The broker trendbar period the daily sweep asks for.
+ *
+ * #170, FOURTH DEFECT (production, 2026-08-03): loop.js asked for `'D1'`.
+ * `TRENDBAR_PERIODS` is keyed `'1d'` — the reversed form was never valid, and
+ * `parseTimeframe` does not accept it either, so every one of 185 symbols
+ * threw `unknown period "D1"` before a single bar was fetched. The sweep had
+ * NEVER succeeded; the shape bug fixed in ad2ad33 was in front of this one and
+ * hid it, because a symbol that fails to resolve never reaches the fetch.
+ *
+ * It lives here, next to the window it feeds, rather than as a literal at the
+ * call site — a string that must match a key in another module's frozen table
+ * is exactly the thing a test should be able to assert, and vol-gate.test.js
+ * now does. Note this is the BAR period (one bar per day); `ATR_PERIOD` above
+ * is the 14-bar lookback. Two different meanings of "period", named apart.
+ */
+export const ATR_BAR_PERIOD_KEY = '1d'
+
+/**
  * Percentile rank of `value` within `sample`, 0-100.
  *
  * Uses the "≤" (weak) rank: the fraction of observations at or below the

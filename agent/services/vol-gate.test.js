@@ -14,8 +14,10 @@ import path from 'node:path'
 import { initDB, setState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { computeRegime, meanAtr } from './regime.js'
+import { beat, lastOkMs } from './heartbeat.js'
+import { TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import {
-  classifyVolRegime, percentileRank, bandFor, atrHistory, refreshAtrHistory,
+  classifyVolRegime, percentileRank, bandFor, atrHistory, refreshAtrHistory, ATR_BAR_PERIOD_KEY,
   pruneAtrHistory, HISTORY_DAYS, MIN_DAYS_FOR_VERDICT, ATR_PERIOD,
 } from './vol-gate.js'
 
@@ -323,4 +325,75 @@ test('readTradableUnion output feeds refreshAtrHistory directly — the seam tha
   assert.ok(seen.includes('XAUUSD'), 'a legacy bare string still works')
   assert.ok(!seen.includes('GBPUSD'), 'a disabled symbol is not swept')
   assert.ok(!seen.some(s => s.includes('OBJECT')), 'nothing stringifies to [OBJECT OBJECT]')
+})
+
+// ---------------------------------------------------------------------------
+// #170, SECOND DEFECT — the daily sweep was scheduled against an IN-MEMORY
+// counter.
+//
+// `loopCount % 288 === 11` fires ~55 minutes after process start and then once
+// a day. `loopCount` is a module-level `let` in loop.js, so every restart puts
+// it back to 0: on a host that redeploys more often than 55 minutes, the daily
+// sweep never runs. The empty-table self-seed hid this — while atr_history was
+// empty something still fired hourly — so it only surfaces once the table has
+// rows, exactly when a stale baseline starts reading as NORMAL.
+//
+// The schedule now hangs off `lastOkMs(db, 'atr_refresh')`, which is the
+// heartbeat row and survives a restart. These pin that property directly,
+// because the loop's own gate is not importable in isolation.
+// ---------------------------------------------------------------------------
+
+test('lastOkMs survives a restart, which a loop counter does not', () => {
+  const db = initDB(':memory:')
+  // Never run: due immediately, which is what a fresh deploy should see.
+  assert.equal(lastOkMs(db, 'atr_refresh'), 0)
+
+  const dayAgo = new Date(Date.now() - 25 * 3600_000)
+  beat(db, 'atr_refresh', { ok: true, now: dayAgo })
+  const ok = lastOkMs(db, 'atr_refresh')
+  assert.ok(Math.abs(ok - dayAgo.getTime()) < 1000, 'the success time is read back verbatim')
+  assert.ok(Date.now() - ok > 86_400_000, 'a day-old success reads as due')
+
+  // A FAILED beat must not move the clock forward. If it did, a controller
+  // failing hourly would keep postponing its own daily schedule and look
+  // healthy-ish forever.
+  beat(db, 'atr_refresh', { ok: false, error: 'every fetch failed' })
+  assert.equal(lastOkMs(db, 'atr_refresh'), ok, 'a failure does not count as a success')
+
+  beat(db, 'atr_refresh', { ok: true })
+  assert.ok(Date.now() - lastOkMs(db, 'atr_refresh') < 86_400_000, 'a success clears the due state')
+})
+
+test('an unknown controller reads as never-succeeded rather than throwing', () => {
+  const db = initDB(':memory:')
+  assert.equal(lastOkMs(db, 'not_a_controller'), 0)
+})
+
+// ---------------------------------------------------------------------------
+// #170, FOURTH DEFECT — the sweep asked the broker for a period that does not
+// exist.
+//
+// loop.js requested `'D1'`. TRENDBAR_PERIODS is keyed `'1d'`, and
+// parseTimeframe does not accept the reversed form either, so all 185 symbols
+// threw `unknown period "D1"` before a single bar was fetched. The sweep had
+// never once succeeded. Each earlier defect stood in front of this one and hid
+// it: a symbol that stringifies to "[OBJECT OBJECT]" never reaches the fetch,
+// so the period was never exercised.
+//
+// A bare string that must match a key in another module's frozen table is
+// exactly what a test should assert. This is that assertion.
+// ---------------------------------------------------------------------------
+
+test('the ATR sweep asks for a period the broker layer actually knows', () => {
+  const spec = TRENDBAR_PERIODS[ATR_BAR_PERIOD_KEY]
+  assert.ok(spec, `"${ATR_BAR_PERIOD_KEY}" is not a TRENDBAR_PERIODS key — the sweep would throw before fetching anything`)
+  // And it must be DAILY. A valid-but-wrong key (say '1h') would fetch happily
+  // and quietly build a baseline of the wrong resolution — a worse failure
+  // than the throw, because nothing would report it.
+  assert.equal(spec.ms, 86_400_000, 'atr_history is a DAILY series; the bar period must be one day')
+})
+
+test('the reversed form that broke production is still not a valid key', () => {
+  assert.equal(TRENDBAR_PERIODS.D1, undefined,
+    'if "D1" ever becomes an alias, the constant above should be revisited rather than silently working')
 })

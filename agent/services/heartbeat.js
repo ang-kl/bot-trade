@@ -143,6 +143,28 @@ export function beat(db, name, { ok = true, error = null, now = new Date() } = {
   ).run(name, ts, ok ? ts : null, errText, ok ? 0 : 1, ts, okInt, okInt, okInt)
 }
 
+/**
+ * When did this controller last SUCCEED, in epoch ms? 0 if never.
+ *
+ * Exists so a daily controller can schedule itself against its own durable
+ * record instead of an in-memory tick counter. #170: `atr_refresh` was gated
+ * on `loopCount % 288 === 11`, and `loopCount` is a module-level variable that
+ * resets to 0 on every process start — so on a host that restarts more often
+ * than ~55 minutes the daily sweep never fires at all. The heartbeat row is
+ * already the answer to "when did this last work"; nothing new needs storing.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} name
+ * @returns {number} epoch ms, or 0 when the controller has never succeeded
+ */
+export function lastOkMs(db, name) {
+  try {
+    const row = db.prepare('SELECT last_ok_at FROM controller_heartbeats WHERE name = ?').get(name)
+    const t = Date.parse(row?.last_ok_at || '')
+    return Number.isFinite(t) ? t : 0
+  } catch { return 0 }
+}
+
 function ageSecOf(row, now) {
   const t = Date.parse(row.last_run_at || '')
   if (!Number.isFinite(t)) return Infinity
