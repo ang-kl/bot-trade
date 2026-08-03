@@ -219,3 +219,35 @@ test('extraParams bind in the right order, scoped and unscoped', () => {
   assert.equal(portfolio.total, 3, 'the open row stays out of both branches')
   assert.equal(portfolio.pct, 100)
 })
+
+// S1 batch 4 — /state/signals is "latest signal per symbol", a self-join. It
+// needs the SAME predicate on the inner aggregate and on the aliased outer
+// select, which is the first use of accountWhere with a qualified column.
+// Filtering only the outer half picks the latest row across ALL accounts and
+// then discards it if it belongs to another one: the symbol renders EMPTY
+// rather than showing its own latest signal — worse than the unscoped answer.
+test('accountWhere qualifies a column, so a self-join can scope both halves', () => {
+  const db = dbWithSelected('AAA')
+  db.exec(`CREATE TABLE signals (id INTEGER PRIMARY KEY AUTOINCREMENT,
+           symbol TEXT, recorded_at TEXT, account_id TEXT)`)
+  const ins = db.prepare('INSERT INTO signals (symbol, recorded_at, account_id) VALUES (?, ?, ?)')
+  ins.run('EURUSD', '2026-01-01', 'AAA')
+  ins.run('EURUSD', '2026-01-02', 'BBB')   // newer, but somebody else's
+  ins.run('GBPUSD', '2026-01-03', null)    // legacy, unstamped — still ours
+
+  const scope = requestedAccount(db, {})
+  const inner = accountWhere(scope, 'account_id')
+  const outer = accountWhere(scope, 's.account_id')
+  assert.equal(outer.where, '(s.account_id = ? OR s.account_id IS NULL)')
+
+  const rows = db.prepare(`
+    SELECT s.* FROM signals s
+    INNER JOIN (
+      SELECT symbol, MAX(recorded_at) AS max_at FROM signals WHERE ${inner.where} GROUP BY symbol
+    ) latest ON s.symbol = latest.symbol AND s.recorded_at = latest.max_at
+    WHERE ${outer.where} ORDER BY s.recorded_at DESC
+  `).all(...inner.params, ...outer.params)
+
+  assert.deepEqual(rows.map(r => `${r.symbol}@${r.recorded_at}`), ['GBPUSD@2026-01-03', 'EURUSD@2026-01-01'],
+    "EURUSD shows OUR latest, not BBB's newer one and not nothing")
+})

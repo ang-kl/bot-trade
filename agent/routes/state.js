@@ -274,34 +274,57 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/signals — latest signal per symbol
   // -----------------------------------------------------------------------
-  router.get('/signals', (_req, res) => {
+  router.get('/signals', (req, res) => {
+    // S1 batch 4. The predicate goes on BOTH halves. Filtering only the outer
+    // select would pick "the latest signal on any account" and then drop it if
+    // it belonged to another one — the symbol would show nothing rather than
+    // its own latest signal, which is a worse answer than the unscoped one.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')       // the inner subquery
+    const outer = accountWhere(scope, 's.account_id')    // the aliased outer
     const rows = db
       .prepare(
         `SELECT s.*
          FROM signals s
          INNER JOIN (
            SELECT symbol, MAX(recorded_at) AS max_at
-           FROM signals
+           FROM signals${acct.active ? ` WHERE ${acct.where}` : ''}
            GROUP BY symbol
          ) latest ON s.symbol = latest.symbol AND s.recorded_at = latest.max_at
+         ${outer.active ? `WHERE ${outer.where}` : ''}
          ORDER BY s.recorded_at DESC`
       )
-      .all()
+      .all(...acct.params, ...outer.params)
 
-    res.json({ signals: rows })
+    res.json({
+      signals: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'signals', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
   // GET /state/signals/flips — recent flips (last 100)
   // -----------------------------------------------------------------------
-  router.get('/signals/flips', (_req, res) => {
+  router.get('/signals/flips', (req, res) => {
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const rows = db
       .prepare(
-        'SELECT * FROM signals WHERE flipped = 1 ORDER BY recorded_at DESC LIMIT 100'
+        `SELECT * FROM signals WHERE flipped = 1${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY recorded_at DESC LIMIT 100`
       )
-      .all()
+      .all(...acct.params)
 
-    res.json({ flips: rows })
+    res.json({
+      flips: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'signals', scope, extraWhere: 'flipped = 1',
+      })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1758,16 +1781,32 @@ export default function stateRouter(db) {
     try {
       const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200))
       const sym = String(req.query.symbol || '').toUpperCase().trim()
-      const rows = sym
-        ? db.prepare('SELECT * FROM backtest_runs WHERE symbol = ? ORDER BY id DESC LIMIT ?').all(sym, limit)
-        : db.prepare('SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?').all(limit)
+      // S1 batch 4. backtest_runs joined the scoped set in the A5 migration
+      // (per-account workspaces) — a backtest run under one account's config
+      // is not evidence about another's.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const clauses = []
+      const params = []
+      if (sym) { clauses.push('symbol = ?'); params.push(sym) }
+      if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
+      const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+      const rows = db.prepare(
+        `SELECT * FROM backtest_runs${where} ORDER BY id DESC LIMIT ?`
+      ).all(...params, limit)
       const bySymbol = db.prepare(
         `SELECT symbol, COUNT(*) AS rows, MAX(ran_at) AS lastRanAt,
                 SUM(COALESCE(trades, 0)) AS totalTrades,
                 SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
-           FROM backtest_runs GROUP BY symbol ORDER BY lastRanAt DESC`
-      ).all()
-      res.json({ rows, bySymbol })
+           FROM backtest_runs${acct.active ? ` WHERE ${acct.where}` : ''}
+           GROUP BY symbol ORDER BY lastRanAt DESC`
+      ).all(...acct.params)
+      res.json({
+        rows, bySymbol,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'backtest_runs', scope })),
+      })
     } catch (err) { res.status(500).json({ error: err.message }) }
   })
 
@@ -2395,13 +2434,20 @@ export default function stateRouter(db) {
   // has enough sample (n >= min_n) and is net negative. The watchlist stays
   // configuration — this is the evidence beside it.
   // -----------------------------------------------------------------------
-  router.get('/watchlist-stats', (_req, res) => {
+  router.get('/watchlist-stats', (req, res) => {
     try {
       const MIN_N = 10
+      // S1 batch 4. This route decides which symbols are flagged `loser` on
+      // the watchlist. Pooled, a symbol that loses on one account's settings
+      // is condemned on every account — and one that loses on ONLY the
+      // account you are looking at is hidden by the others' wins.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
       const rows = db.prepare(
         `SELECT UPPER(symbol) AS sym, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
-         FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL GROUP BY UPPER(symbol)`
-      ).all()
+         FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL${acct.active ? ` AND ${acct.where}` : ''}
+         GROUP BY UPPER(symbol)`
+      ).all(...acct.params)
       const by = {}
       for (const r of rows) {
         by[r.sym] = {
@@ -2411,7 +2457,14 @@ export default function stateRouter(db) {
           loser: r.n >= MIN_N && r.net < 0,
         }
       }
-      res.json({ min_n: MIN_N, by })
+      res.json({
+        min_n: MIN_N, by,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope, extraWhere: "status = 'closed' AND net_pnl IS NOT NULL",
+        })),
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
