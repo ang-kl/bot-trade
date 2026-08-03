@@ -305,8 +305,21 @@ export function getAccountBalance(db, accountId = null) {
   // `acct:<id>:account_balance_usd` value (stamped by the loop's balance
   // refresh) wins; the legacy global key remains the fallback so the
   // single-account era behaves identically.
-  if (accountId != null) {
-    const scoped = Number(getState(db, `acct:${accountId}:account_balance_usd`))
+  // RESOLVE, don't fall through to an unowned number (owner 04-08-2026, with
+  // a screenshot: "conflicting account numbers … cause the user distrust the
+  // page information"). The Trade header printed
+  //     Account: DEMO 5306502   $1,370.44
+  // where the balance was 5067353's — because with no accountId this read the
+  // LEGACY GLOBAL key, which is whatever account refreshed it last. A balance
+  // with no owner will be wrong the moment there is more than one account, and
+  // it is worse than missing: it is printed next to somebody else's name.
+  //
+  // No account named now means THE SELECTED ACCOUNT, which is what "the
+  // account" meant in the single-account era anyway. The legacy key survives
+  // only as the last resort, for a database that has no selected account.
+  const resolved = accountId != null ? accountId : getState(db, 'ctrader_account_id')
+  if (resolved != null) {
+    const scoped = Number(getState(db, `acct:${resolved}:account_balance_usd`))
     if (Number.isFinite(scoped) && scoped > 0) return scoped
   }
   const raw = getState(db, 'account_balance_usd')
@@ -321,8 +334,10 @@ export function getAccountBalance(db, accountId = null) {
  * config default when unset or malformed. Leverage ≤0 is ignored.
  */
 export function getAccountLeverage(db, config, accountId = null) {
-  if (accountId != null) {
-    const scoped = Number(getState(db, `acct:${accountId}:account_leverage`))
+  // Same resolution rule as getAccountBalance above, for the same reason.
+  const resolvedAcct = accountId != null ? accountId : getState(db, 'ctrader_account_id')
+  if (resolvedAcct != null) {
+    const scoped = Number(getState(db, `acct:${resolvedAcct}:account_leverage`))
     if (Number.isFinite(scoped) && scoped > 0) return scoped
   }
   const raw = getState(db, 'account_leverage')

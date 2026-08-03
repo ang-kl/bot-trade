@@ -501,7 +501,9 @@ export default function Trade() {
       setTradeScope({ scope: t?.scope ?? null })
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])
-      setAccount(rc?.derived || null)
+      // Carry WHOSE numbers these are, so the header can never print a
+      // balance next to a different account's name (owner 04-08-2026).
+      setAccount(rc?.derived ? { ...rc.derived, accountId: rc.resolvedAccountId ?? rc.accountId ?? null } : null)
       setBroker(bo || null)
       setPending(cfg
         ? {
@@ -643,14 +645,34 @@ export default function Trade() {
           status/scope. Guidance appears only when NOT ready. */}
       <Card id="sec-status">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px]">
-          {health?.broker?.accountId
+          {/* ONE IDENTITY, ONE SENTENCE (owner 04-08-2026, with a screenshot:
+              "conflicting account numbers … cause the user distrust the page
+              information"). This line used to read
+                    Account: DEMO 5306502    $1,370.44
+              where the NAME came from health.broker — the broker session —
+              and the BALANCE from an unscoped /state/risk-config, which
+              returned whichever account last refreshed the legacy balance key.
+              They were two different accounts inside one sentence.
+              Now: the money is labelled with the account the SERVER says it
+              belongs to, and the broker session is a separate statement that
+              speaks up only when it is a different account. */}
+          {account?.balance != null
             ? <span className="font-semibold whitespace-nowrap">
-                Account: <span className={health.broker.isLive ? 'text-[var(--color-down)]' : ''}>{health.broker.isLive ? '⚠ LIVE' : 'DEMO'} {health.broker.traderLogin || health.broker.accountId}</span>
+                Account <AccountTag accountId={account.accountId} />{' '}
+                ${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}
               </span>
-            : <span className="font-semibold whitespace-nowrap text-[var(--color-text-sub)]">No account linked</span>}
-          {account?.balance != null && (
-            <span className="font-semibold whitespace-nowrap">${fmt(account.balance, 2)}{account.leverage ? ` · 1:${fmt(account.leverage, 0)}` : ''}</span>
+            : <span className="font-semibold whitespace-nowrap text-[var(--color-text-sub)]">No balance recorded</span>}
+          {health?.broker?.accountId && (
+            account?.accountId != null && String(health.broker.accountId) !== String(account.accountId)
+              ? <span className="whitespace-nowrap font-semibold text-[var(--color-warning-text)]"
+                  title="The broker session the agent holds is for a different account than the balance shown here.">
+                  ⚠ broker session is {health.broker.isLive ? 'LIVE ' : 'DEMO '}{health.broker.traderLogin || health.broker.accountId} — a different account
+                </span>
+              : <span className="whitespace-nowrap text-[var(--color-text-sub)]">
+                  {health.broker.isLive ? <span className="font-semibold text-[var(--color-down)]">⚠ LIVE</span> : 'demo'} · broker session connected
+                </span>
           )}
+          {!health?.broker?.accountId && <span className="font-semibold whitespace-nowrap text-[var(--color-text-sub)]">No account linked</span>}
           <span className="text-[var(--color-text-sub)] whitespace-nowrap">
             <span aria-hidden="true" style={{ color: health ? 'var(--color-state-on-text)' : 'var(--color-down)' }}>● </span>
             {health ? `agent ok · loop #${fmt(health.loopCount, 0)} · scan ${ago(health.lastScanAt)}` : 'agent offline'}
