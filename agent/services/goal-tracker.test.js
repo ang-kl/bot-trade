@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   goalTracker, loadGoal, daysRemaining, winsNeeded, winnersNeededForPf,
-  impliedWinRateForPf, DEFAULT_GOAL, GOAL_STATE_KEY,
+  impliedWinRateForPf, DEFAULT_GOAL, GOAL_STATE_KEY, auditGoalChange,
 } from './goal-tracker.js'
 
 const NOW = Date.parse('2026-08-02T12:00:00Z')
@@ -348,4 +348,41 @@ test('the gate follows profit factor, not the AND of both', () => {
   // on a card whose PF gate was the one the owner cared about.
   const g = loadGoal({ getState: () => null })
   assert.equal(g.gateOn, 'profitFactor')
+})
+
+// ---------------------------------------------------------------------------
+// Risk-Decision Audit, 2026-08-03, finding #2: the go-live gate could be
+// loosened with no record of it. These cover the change detector.
+// ---------------------------------------------------------------------------
+test('the FIRST sighting of a goal is a baseline, not a logged change', () => {
+  const db = initDB(':memory:')
+  const r = auditGoalChange(db, loadGoal(db))
+  assert.equal(r.changed, false, 'a fresh DB has not had its gate edited')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM action_log WHERE path LIKE '/goal/%'").get().n, 0)
+})
+
+test('loosening the gate is written to action_log, however it was written', () => {
+  const db = initDB(':memory:')
+  auditGoalChange(db, loadGoal(db))                     // baseline
+
+  // Set DIRECTLY in agent_state — the path that has no setter, which is the
+  // whole reason this is a detector rather than a logging saveGoal().
+  setState(db, GOAL_STATE_KEY, JSON.stringify({ profitFactor: 1.2 }))
+  const r = auditGoalChange(db, loadGoal(db))
+
+  assert.equal(r.changed, true)
+  assert.equal(r.from.profitFactor, 1.68)
+  assert.equal(r.to.profitFactor, 1.2)
+  const row = db.prepare("SELECT body FROM action_log WHERE path LIKE '/goal/%'").get()
+  const logged = JSON.parse(row.body)
+  assert.equal(logged.from.profitFactor, 1.68)
+  assert.equal(logged.to.profitFactor, 1.2)
+})
+
+test('re-reading an UNCHANGED goal logs nothing', () => {
+  const db = initDB(':memory:')
+  auditGoalChange(db, loadGoal(db))
+  for (let i = 0; i < 5; i++) auditGoalChange(db, loadGoal(db))
+  // goalTracker calls this on every request; a row per read would drown the log.
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM action_log WHERE path LIKE '/goal/%'").get().n, 0)
 })

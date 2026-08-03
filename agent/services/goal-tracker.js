@@ -56,13 +56,17 @@
 import { accountAnalytics } from './account-analytics.js'
 import { listAccounts } from './account-registry.js'
 import { getState } from '../db.js'
+import { GO_LIVE_BAR } from './edge-bars.js'
 
 export const GOAL_STATE_KEY = 'trading_goal_json'
 
 /** The owner's stated gate. Overridable via agent_state, never invented. */
 export const DEFAULT_GOAL = {
-  winRatePct: 68,
-  profitFactor: 1.68,
+  // Values live in edge-bars.js, the register of every numeric edge bar, so a
+  // change here is visible next to the arming bar and the breaker floor it
+  // silently relates to (Risk-Decision Audit 2026-08-03, finding #3).
+  winRatePct: GO_LIVE_BAR.winRatePct,
+  profitFactor: GO_LIVE_BAR.profitFactor,
   // WHICH METRIC IS THE GATE. Owner 2026-08-03: profit factor alone.
   //
   // It had been an AND of both, and that made the weaker-looking target the
@@ -97,6 +101,57 @@ export function loadGoal(db) {
     deadline,
     minTrades: Math.round(num(saved.minTrades, DEFAULT_GOAL.minTrades)),
   }
+}
+
+/** State key holding the last goal this process observed, for change detection. */
+export const GOAL_SEEN_KEY = 'trading_goal_last_seen'
+
+/**
+ * Write an `action_log` row whenever the effective go-live goal has changed
+ * since the last time anything looked at it.
+ *
+ * WHY A CHANGE DETECTOR AND NOT A LOGGING SETTER. Risk-Decision Audit,
+ * 2026-08-03, finding #2: `loadGoal()` accepts an override from `agent_state`
+ * with no audit trail, unlike `performance_breaker_json`, "so the go-live gate
+ * itself could be silently loosened (e.g. PF target lowered from 1.68 to 1.2)
+ * with no forced record of who changed it or when".
+ *
+ * The obvious fix is a `saveGoal()` that logs. It would not work: there is no
+ * `saveGoal()` today, and there never was — the goal is changed by writing
+ * `agent_state` directly. An audit trail hanging off a setter records only the
+ * writes that go through the setter, which is exactly the set of writes that
+ * were never the concern. Detecting the CHANGE catches every path into the
+ * key, including the one an operator would actually use.
+ *
+ * It cannot say WHO changed it — nothing in the write path carries an actor —
+ * and it does not pretend to. It records what the gate was, what it became,
+ * and when it was first seen to differ. Never throws.
+ *
+ * @returns {{changed: boolean, from: object|null, to: object}}
+ */
+export function auditGoalChange(db, goal) {
+  const out = { changed: false, from: null, to: goal }
+  try {
+    const raw = getState(db, GOAL_SEEN_KEY)
+    const prev = raw ? JSON.parse(raw) : null
+    const same = prev && ['winRatePct', 'profitFactor', 'gateOn', 'deadline', 'minTrades']
+      .every(k => prev[k] === goal[k])
+    if (same) return out
+    // First observation on a fresh database is not a "change" to report — it
+    // is the baseline. Recording it as a change would put a spurious edit in
+    // the log every time the DB is rebuilt.
+    if (prev) {
+      out.changed = true
+      out.from = prev
+      db.prepare('INSERT INTO action_log (method, path, body) VALUES (?,?,?)')
+        .run('STATE', `/goal/${GOAL_STATE_KEY}`, JSON.stringify({ from: prev, to: goal }))
+    }
+    db.prepare(`
+      INSERT INTO agent_state (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(GOAL_SEEN_KEY, JSON.stringify(goal))
+  } catch { /* an audit trail must never break the report it rides on */ }
+  return out
 }
 
 const DAY_MS = 86_400_000
@@ -196,6 +251,10 @@ function verdictFor({ needed, remaining, sampleOk, trades, meetsNow }) {
  */
 export function goalTracker(db, { now = Date.now(), days = null, accountIds = null } = {}) {
   const goal = loadGoal(db)
+  // Every read of the gate is also a chance to notice the gate moved. Hung
+  // here rather than inside loadGoal so the loader stays a pure read that
+  // tests can call without side effects.
+  auditGoalChange(db, goal)
   const left = daysRemaining(goal.deadline, now)
 
   const all = listAccounts(db)

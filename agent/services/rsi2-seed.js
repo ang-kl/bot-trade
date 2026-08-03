@@ -29,6 +29,7 @@
 import { getState as dbGetState, setState as dbSetState } from '../db.js'
 import { tfMs } from '../lib/timeframes.js'
 import { enabledStrategies } from './strategies.js'
+import { SEED_BAR } from './edge-bars.js'
 
 export const RSI2_SEED_FLAG = 'rsi2_go_seed_v1'
 export const RSI2_KEY = 'rsi2_reversion'
@@ -36,7 +37,7 @@ export const RSI2_KEY = 'rsi2_reversion'
 // GO thresholds — mirror the "proven edge" bar Edge health uses (PF > 1 with
 // trades), but stricter for auto-arming real money: a clear positive
 // expectancy on a real sample, walk-forward not explicitly negative.
-export const GO_PF = 1.5          // profit factor floor
+export const GO_PF = SEED_BAR.profitFactor          // profit factor floor (edge-bars.js)
 export const GO_MIN_TRADES = 20   // enough closes to trust the number
 export const GO_MAX = 12          // cap how many combos we auto-arm
 const HOUR_MS = 3_600_000         // RSI-2's structural floor (1h)
