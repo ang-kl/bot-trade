@@ -577,6 +577,24 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const { normPosId } = await import('./lib/pos-id.js')
     const positionId = normPosId(exec?.position?.positionId ?? exec?.deal?.positionId)
 
+    // THE PRICE EVERY LEDGER WRITE MUST USE. `executionPrice` is the broker's
+    // confirmed fill and is frequently ABSENT — a market order's deal can land
+    // after the ACK, and the C++ sidecar returns a positionId without one. When
+    // it is missing, the signal's intended entry is the best number available
+    // and is very close to the fill for the limit orders this system mostly
+    // places.
+    //
+    // This variable already existed and was already used for `initialRisk`
+    // below — but the two writes that STORE the price passed the raw
+    // `executionPrice` instead. Production proved it: rows carrying
+    // `initial_risk: 3.043` (computed here, from entryP) alongside
+    // `entry_price: null` (from executionPrice), one line apart in the same
+    // function. Downstream, the time cap could not be evaluated (#580) and the
+    // SL/TP money column reported notional instead of risk (#581).
+    //
+    // `slippage_price` still keys off `executionPrice` alone, so a row where
+    // the fill was never confirmed remains identifiable: entry present,
+    // slippage null.
     const entryP = executionPrice ?? synth.entry ?? null
     // Forensics (Performance Ledger collect-forward): signed adverse-positive
     // slippage vs the signal's intended entry, and market context at open —
@@ -623,7 +641,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
           slippage_price = ?, spread_at_entry = ?, entry_latency_ms = ?
         WHERE id = ?
       `).run(
-        executionPrice, slP, synth.tp1 ?? null, volLots,
+        entryP, slP, synth.tp1 ?? null, volLots,
         positionId, synth.strategy || null, synth.overall_conviction ?? null,
         parsedLabel.raw, parsedLabel.source, parsedLabel.version,
         parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
@@ -642,7 +660,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         symbol,
         tradeId,
         side === 'BUY' ? 'long' : 'short',
-        executionPrice,
+        entryP,
         slP,
         synth.tp1 ?? null,
         synth.synthesis || '',

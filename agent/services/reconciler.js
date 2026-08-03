@@ -115,6 +115,22 @@ export function reconcilePositions(db, brokerPositions, brokerOrders, setState, 
       const bPrice = bp.price ?? bp.tradeData?.openPrice ?? null
       const updates = {}
 
+      // SELF-HEAL A MISSING ENTRY PRICE. `bPrice` is broker truth and has been
+      // sitting right here on every pass all along, but it was only ever
+      // applied when the SIDE reversed — a rare manual flip. A row that simply
+      // never got an entry price (loop.js wrote the order ACK's fill price,
+      // which can be absent) stayed null forever, and two separate downstream
+      // calculations broke on it: the time cap could not be evaluated (#580),
+      // and the SL/TP money column reported notional instead of risk (#581).
+      //
+      // Only ever fills a NULL. It never overwrites a recorded entry — the
+      // stored price is the fill this system actually saw, and a later broker
+      // snapshot of an averaged or partially-closed position is not a better
+      // answer to "what did we get in at".
+      if (row.entry_price == null && bPrice != null) {
+        updates.entry_price = bPrice
+      }
+
       if (row.side && bSide !== row.side) {
         manualChanges.push({ kind: 'reversed', symbol: row.symbol, positionId: posId, from: row.side, to: bSide })
         updates.side = bSide
