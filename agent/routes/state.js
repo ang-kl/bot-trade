@@ -223,13 +223,18 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/scans', (req, res) => {
     const lastResults = getState(db, 'last_scan_results')
-    // S1 batch 3. scans carries account_id but db.js calls scans "account-
-    // independent market observations [that] may stay NULL (global)" — so
-    // expect a low coverage figure here and read it as "these are global
-    // rows", not as a bug. Reporting it is the point: an unstamped scan under
-    // a per-account heading is exactly the Go-Live-card failure.
+    // S1 batch 3, corrected. scans carries account_id, but db.js calls scans
+    // "account-independent market observations [that] may stay NULL (global)"
+    // — this is the plan's `global` mode, so it FILTERS ONLY WHEN ASKED.
+    //
+    // Defaulting to the selected account was wrong: a scan row is a market
+    // observation and the price is the price whoever recorded it. Silently
+    // dropping another account's rows would shrink the price map the UI
+    // converts currencies with, which is how a scoping change becomes a
+    // missing dollar figure two screens away. Coverage is still reported, so
+    // the panel can say "global" out loud instead of implying per-account.
     const scope = requestedAccount(db, req)
-    const acct = accountWhere(scope, 'account_id')
+    const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const recentScans = db
       .prepare(
         `SELECT * FROM scans${acct.active ? ` WHERE ${acct.where}` : ''}
@@ -262,8 +267,9 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/scans/:symbol', (req, res) => {
     const symbol = req.params.symbol.toUpperCase()
+    // Global by default, like /state/scans above — filtered only when asked.
     const scope = requestedAccount(db, req)
-    const acct = accountWhere(scope, 'account_id')
+    const acct = scope?.explicit ? accountWhere(scope, 'account_id') : { where: '', params: [], active: false }
     const rows = db
       .prepare(
         `SELECT * FROM scans WHERE symbol = ?${acct.active ? ` AND ${acct.where}` : ''}

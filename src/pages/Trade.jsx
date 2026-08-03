@@ -387,6 +387,8 @@ function OrderLogTable({ rows, marketHours = null, prices = {}, trades = [], lev
 export default function Trade() {
   const [health, setHealth] = useState(null)
   const [scans, setScans] = useState([])
+  // Newest close per symbol across ALL cycles — the currency-conversion base.
+  const [latestPrices, setLatestPrices] = useState({})
   const [positions, setPositions] = useState([])
   // Which account the positions payload says these rows belong to, plus how
   // many active rows it hid for carrying no account_id. Owner: "I still cannot
@@ -427,7 +429,26 @@ export default function Trade() {
   // same "poll instant-paints, live stream overwrites" two-tier pattern used
   // everywhere else in this app.
   const priceMap = (() => {
-    const m = Object.fromEntries(scans.map(sc => [String(sc.symbol).toUpperCase(), sc.price]))
+    // THREE TIERS, not two. The base is /state/prices — the newest close per
+    // symbol across ALL cycles (255 symbols), not the ~15 the current cycle
+    // happens to hold.
+    //
+    // This map is not only "what is X trading at": bracketMoney converts a
+    // quote-currency loss to USD through it, so a missing USDHKD means every
+    // Hong Kong row's stop-loss and take-profit read "—". The agent hit
+    // exactly this and fixed it with a persistent fx-rates table (see
+    // services/fx-rates.js: the scan rotates 15 of 221 symbols per cycle, so
+    // the conversion leg is almost never in the same batch). The frontend was
+    // still reading one batch.
+    const m = {}
+    for (const [sym, v] of Object.entries(latestPrices || {})) {
+      const px = Number(v?.price ?? v)
+      if (Number.isFinite(px) && px > 0) m[String(sym).toUpperCase()] = px
+    }
+    // The current cycle's snapshot is fresher than the per-symbol table.
+    for (const sc of scans) {
+      if (Number.isFinite(Number(sc.price))) m[String(sc.symbol).toUpperCase()] = sc.price
+    }
     for (const sym of liveSymbols) {
       const mid = liveMid(liveTicks, sym)
       if (mid != null) m[String(sym).toUpperCase()] = mid
@@ -440,7 +461,7 @@ export default function Trade() {
     try {
       // Slot count matters: destructure order must mirror the array below —
       // append new fetches at the END or every later variable shifts.
-      const [h, s, p, t, r, rc, bo, cfg, mh] = await Promise.all([
+      const [h, s, p, t, r, rc, bo, cfg, mh, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -450,8 +471,10 @@ export default function Trade() {
         agentGet('/state/broker-orders').catch(() => null),
         agentGet('/state/config').catch(() => null),
         agentGet('/state/market-hours').catch(() => null),
+        agentGet('/state/prices').catch(() => null),
       ])
       setHealth(h)
+      setLatestPrices(px?.prices || {})
       // lastResults.scans is the CURRENT scan cycle's snapshot (one row per
       // symbol) — recentScans is the last 50 DB rows across cycles, which can
       // carry a stale non-skip row past a later skip for the same symbol, and
