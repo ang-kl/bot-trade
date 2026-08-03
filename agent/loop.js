@@ -5,7 +5,7 @@
 import { createLLMClient } from './lib/llm-provider.js'
 import { runFibScan, synthesizeFibSignal } from './services/fib-strategy.js'
 import { enabledStrategies } from './services/strategies.js'
-import { scanStageStrategies, scanFilterOptions, tradeStageGate, manageStageAllows } from './services/stage-matrix.js'
+import { scanStageStrategies, scanFilterOptions, tradeStageGate, anyAccountTradeGate, manageStageAllows } from './services/stage-matrix.js'
 import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
@@ -905,9 +905,17 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
     // MORE than what may trade — the strategy's "Auto Trade & Open"
     // cell must be on, and no trade-armed filter may have failed at
     // scan time (filters run in annotate mode there).
-    const gate = tradeStageGate(db, getState, {
+    // UNION, not verdict (04-08-2026). The stage matrix is now per-account:
+    // one account may have armed a strategy the global matrix has off. This
+    // check therefore only stops work NOBODY could act on; the authoritative
+    // per-account decision happens inside the dispatch fan-out below, where
+    // the account is known. With no overlays anywhere this is identical to the
+    // single global gate it replaces.
+    const rosterForGate = getAutopilotAccounts(db).map(a => String(a.accountId))
+    const gate = anyAccountTradeGate(db, getState, {
       strategy: synth.strategy,
       filtersFailed: signal?.filters_failed || [],
+      accountIds: rosterForGate,
     })
     if (!gate.ok) {
       log(`Stage gate: ${sym} blocked — ${gate.reason}`)
@@ -1062,6 +1070,30 @@ export async function dispatchSymbolSignal(db, s, symbols, sym, signal) {
             symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
             stage: `account_${offPhase}`, decision: 'skip',
             reason: `${offPhase} is off for this account (${phases.source[offPhase]})`,
+          })
+        } catch { /* provenance never blocks */ }
+        continue
+      }
+
+      // PER-ACCOUNT STAGE GATE — the authoritative one. The signal-level check
+      // above is a union across the roster, so a strategy this ACCOUNT has not
+      // armed can still arrive here. Placed right after the phase gate and
+      // before any sizing work, for the same reason that one is first: an
+      // account that may not trade this strategy should not pay for building
+      // an order it will never send.
+      const acctGate = tradeStageGate(db, getState, {
+        strategy: synth.strategy,
+        filtersFailed: signal?.filters_failed || [],
+        accountId: String(acct.accountId),
+      })
+      if (!acctGate.ok) {
+        log(`Stage gate: ${sym} skipped on ${acct.accountId} — ${acctGate.reason}`)
+        try {
+          const { recordDecision } = await import('./services/decision-log.js')
+          recordDecision(db, {
+            accountId: String(acct.accountId),
+            symbol: sym, timeframe: synth.timeframe, strategy: synth.strategy,
+            stage: 'stage_matrix', decision: 'skip', reason: acctGate.reason,
           })
         } catch { /* provenance never blocks */ }
         continue

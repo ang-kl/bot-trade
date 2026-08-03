@@ -340,7 +340,7 @@ function MxCell({ on, counts, selected, na, onClick }) {
   )
 }
 
-function StageMatrix({ mx, onUpdated, onError, armTarget }) {
+function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }) {
   const [open, setOpen] = useState(() => {
     try { return localStorage.getItem(STAGE_MX_OPEN_KEY) !== '0' } catch { return true }
   })
@@ -394,7 +394,12 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
         !window.confirm('Turn the Fib 61.8% fade OFF for Auto Trade & Open? It is the strategy behind your armed pending orders — no new fib orders will open (scanning continues; existing pending orders are not cancelled).')) return
     setBusy(true)
     try {
-      const r = await agentPost('/actions/stage-matrix', { kind: sel.kind, key: sel.key, stage: sel.stage, on })
+      // With an account selected this writes THAT account's overlay only —
+      // the shared matrix and every other account are untouched.
+      const r = await agentPost('/actions/stage-matrix', {
+        kind: sel.kind, key: sel.key, stage: sel.stage, on,
+        ...(acct && acct !== 'all' ? { accountId: acct } : {}),
+      })
       onUpdated?.(r)
     } catch (e) { onError?.(e.message) } finally { setBusy(false) }
   }
@@ -435,14 +440,22 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
           all, so arming a strategy arms it everywhere — that deserves the same
           warning bar the global cards on the Risk page now carry. */}
       {open && (
-        <GlobalScopeNote className="mt-1"
-          what="Which strategies and filters run at each pipeline stage, including Auto Trade & Open" />
-      )}
-      {open && (
-        <p className="mt-0.5 text-[9px] text-[var(--color-muted)]">
-          Per-account arming lives in the S.A.T switches on this page; per-account risk limits on the Risk page
-          (overlay via the account selector).
-        </p>
+        <div className="mt-1 space-y-1">
+          <AccountScopePills
+            value={acct} onChange={onAcct} allLabel="Shared"
+            note={acct && acct !== 'all'
+              ? 'Editing THIS ACCOUNT\'s overlay — only the cells you change enter it; every other cell keeps following the shared matrix.'
+              : 'Editing the SHARED matrix. Every account without an overlay of its own trades exactly this.'}
+          />
+          {acct && acct !== 'all'
+            ? (mx?.overlayKeys?.length > 0
+              ? <p className="text-[9px] text-[var(--color-text-sub)]">
+                  <b className="text-[var(--color-text)]">{mx.overlayKeys.length} cell{mx.overlayKeys.length === 1 ? '' : 's'} pinned</b>{' '}
+                  for this account — the rest follow the shared matrix.
+                </p>
+              : <p className="text-[9px] text-[var(--color-text-sub)]">This account follows the shared matrix entirely. Changing a cell here gives it its own copy of that cell only.</p>)
+            : <GlobalScopeNote what="Which strategies and filters run at each pipeline stage, including Auto Trade &amp; Open" />}
+        </div>
       )}
       {open && (
         <>
@@ -861,6 +874,13 @@ export default function Tune() {
   // With the warning ahead of the action rather than behind it, the lens can
   // drive this too.
   const [wlAcct, setWlAcct] = useLensAccount('all')
+  // WHOSE PIPELINE (owner 04-08-2026). The stage matrix is now per-account:
+  // 'all' edits the shared matrix every account follows, an account edits its
+  // own overlay. A ref mirrors it for the 20s background refresh, which must
+  // not re-subscribe (and re-fetch everything) on every scope change.
+  const [pipeAcct, setPipeAcct] = useLensAccount('all')
+  const pipeAcctRef = useRef('all')
+  useEffect(() => { pipeAcctRef.current = pipeAcct }, [pipeAcct])
   const [wlSelected, setWlSelected] = useState(() => new Set()) // checkbox bulk-select in the watchlist table
   // Symbol whose strategy picker is open, or '__bulk__' for the selected rows.
   const [stratEditor, setStratEditor] = useState(null)
@@ -992,7 +1012,7 @@ export default function Tune() {
         agentGet('/state/fib-rsi-filter').catch(() => null),
         agentGet('/state/fib-vwap-filter').catch(() => null),
         agentGet('/state/fib-fvg-filter').catch(() => null),
-        agentGet('/state/stage-matrix').catch(() => null),
+        agentGet(`/state/stage-matrix${pipeAcct && pipeAcct !== 'all' ? `?account=${encodeURIComponent(pipeAcct)}` : ''}`).catch(() => null),
         agentGet('/state/veto-breakdown?days=30').catch(() => null),
       ])
       console.log('[dbg] load done seen=', seenSeq, 'now=', writeSeq.current, 'EURUSD=', JSON.stringify(c.symbols?.find(x=>x.symbol==='EURUSD')?.strategies))
@@ -1008,7 +1028,7 @@ export default function Tune() {
       if (vm) setVetoMix(vm)
       setError('')
     } catch (e) { setError(e.message) }
-  }, [wlAcct])
+  }, [wlAcct, pipeAcct])
 
   // Deferred a tick: react-hooks/set-state-in-effect forbids state writes
   // synchronously inside an effect body.
@@ -1047,7 +1067,7 @@ export default function Tune() {
         } : c)
         // Trade column of the stage matrix can flip in the background too
         // (autopilot arm/disarm, Telegram) — refresh the whole table.
-        const sm = await agentGet('/state/stage-matrix')
+        const sm = await agentGet(`/state/stage-matrix${pipeAcctRef.current && pipeAcctRef.current !== 'all' ? `?account=${encodeURIComponent(pipeAcctRef.current)}` : ''}`)
         if (sm?.strategies) setStageMx(sm)
       } catch { /* transient — next tick retries */ }
     }, 20_000)
@@ -1581,6 +1601,8 @@ export default function Tune() {
                 edits write the same legacy keys the chips used. */}
             <StageMatrix
               mx={stageMx}
+              acct={pipeAcct}
+              onAcct={setPipeAcct}
               armTarget={armTarget}
               onError={setError}
               onUpdated={(r) => {

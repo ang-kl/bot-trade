@@ -22,7 +22,10 @@ import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
-import { stageMatrixView } from '../services/stage-matrix.js'
+import { stageMatrixView, loadStageMatrix, stageOverlayKeys } from '../services/stage-matrix.js'
+// Aliased: this handler already has a local `overlayKeys` for the RISK
+// overlay, and the shadow made the call below resolve to that array.
+import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
@@ -2585,7 +2588,14 @@ export default function stateRouter(db) {
         // for the ratchet, the live staircase state to render.
         lossCap: await (async () => {
           const { loadLossCapConfig, DEFAULT_LOSS_CAP } = await import('../services/loss-cap.js')
-          return { effective: loadLossCapConfig(db), defaults: DEFAULT_LOSS_CAP }
+          return {
+            effective: loadLossCapConfig(db, acct),
+            defaults: DEFAULT_LOSS_CAP,
+            accountId: acct,
+            // Which fields THIS account has pinned. Named, so an override can
+            // never be invisible — the same rule the risk overlay follows.
+            overlayKeys: acct ? acctOverlayKeys(db, 'loss_cap_json', acct) : [],
+          }
         })(),
         profitRatchet: await (async () => {
           const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, loadRatchetState } = await import('../services/profit-ratchet.js')
@@ -2760,9 +2770,17 @@ export default function stateRouter(db) {
   // per-cell on/off (trade column derived live from the legacy keys) plus
   // 30-day usage counts per cell.
   // -----------------------------------------------------------------------
-  router.get('/stage-matrix', (_req, res) => {
+  router.get('/stage-matrix', (req, res) => {
     try {
-      res.json(stageMatrixView(db, getState))
+      // ?account=<id> returns what THAT account actually trades under: the
+      // global matrix with its overlay merged on top, plus the list of cells
+      // it has pinned so the UI can badge them rather than leaving an override
+      // invisible.
+      const acct = req.query?.account && req.query.account !== 'all' ? String(req.query.account) : null
+      const view = stageMatrixView(db, getState)
+      if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [] })
+      const scoped = loadStageMatrix(db, getState, acct)
+      res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct) })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
