@@ -5,7 +5,7 @@
 // and the ones that would quietly reintroduce the bug if they regressed.
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert'
-import { initDB, getState, setState } from '../db.js'
+import { initDB, setState } from '../db.js'
 import { loadWithOverlay, saveWithOverlay, overlayKeys, clearOverlay, acctStateKey } from './account-overlay.js'
 import { loadLossCapConfig, DEFAULT_LOSS_CAP, LOSS_CAP_KEY } from './loss-cap.js'
 
