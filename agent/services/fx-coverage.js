@@ -47,10 +47,19 @@ export function fxCoverage(rates, probeSymbols = []) {
   const syms = Object.keys(map)
 
   // Every currency that appears anywhere in the map, and whether it resolves.
+  //
+  // The census must use the SAME pair test as the probes. It didn't, and
+  // NATGAS was split into two invented currencies, NAT and GAS, which then
+  // reported as unresolvable — a permanent false alarm on a symbol the sizer
+  // handles fine. `quoteOf` is null for anything that is not a currency pair,
+  // which is exactly the predicate needed.
   const seen = new Set()
   for (const s of syms) {
     const u = String(s).toUpperCase()
-    if (u.length === 6 && /^[A-Z]{6}$/.test(u)) { seen.add(u.slice(0, 3)); seen.add(u.slice(3)) }
+    const q = quoteOf(u)
+    if (!q) continue
+    seen.add(u.slice(0, 3))
+    seen.add(q)
   }
   const currencies = {}
   const unresolvable = []
@@ -90,9 +99,12 @@ export function missingLegsFor(currency, rates) {
   const hops = []
   for (const sym of Object.keys(map)) {
     const s = String(sym).toUpperCase()
-    if (s.length !== 6 || !/^[A-Z]{6}$/.test(s)) continue
+    // Same pair test as the census and the probes — a hop "via NATGAS" is not
+    // a hop, and suggesting one would send the operator after a symbol that
+    // could never supply a rate.
+    const quote = quoteOf(s)
+    if (!quote) continue
     const base = s.slice(0, 3)
-    const quote = s.slice(3)
     if (base !== c && quote !== c) continue
     const other = base === c ? quote : base
     if (other === c || other === 'USD') continue
