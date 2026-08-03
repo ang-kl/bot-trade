@@ -20,6 +20,7 @@
 import { getState } from '../db.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from './strategies.js'
 import { STRATEGY_KIND } from './regime-gate.js'
+import { accountWhere } from '../lib/account-scope.js'
 
 const MIN_WINDOW_N = 10 // below this a verdict would be noise, say so instead
 
@@ -94,15 +95,22 @@ export function streakOf(trades) {
 }
 
 /** Full dashboard payload from the DB. */
-export function alphaDecayView(db, { window = 30 } = {}) {
+// S1 batch 8. `scope` is optional and unscoped by default. Alpha decay asks
+// "is this strategy still working" — pooled across accounts it answers for a
+// composite trader who does not exist. Only the TRADES half is scoped; the
+// LEFT JOIN onto analyses is there to date the signal, and filtering it too
+// would drop signal_at whenever the analysis is global or another account's,
+// silently turning a measurable decay curve into an unmeasurable one.
+export function alphaDecayView(db, { window = 30, scope = null } = {}) {
+  const acct = accountWhere(scope, 't.account_id')
   const trades = db.prepare(
     `SELECT t.net_pnl, t.closed_at, t.opened_at, t.source,
             COALESCE(t.label_strategy, t.strategy) AS strat,
             a.analyzed_at AS signal_at
      FROM trades t
      LEFT JOIN analyses a ON a.id = t.analysis_id
-     WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL`
-  ).all()
+     WHERE t.status = 'closed' AND t.net_pnl IS NOT NULL${acct.active ? ` AND ${acct.where}` : ''}`
+  ).all(...acct.params)
 
   // No "unknown": trades without a strategy label are the owner's manual
   // trades, test fills, and adopted fills — bucketed as 'unlabelled' WITH

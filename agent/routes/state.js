@@ -1944,28 +1944,40 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/activity', (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 200)
+    // S1 batch 8. Six of the seven UNION legs carry account_id; `regimes` does
+    // NOT, and that is deliberate — db.js keeps regimes global because a
+    // regime is a fact about an INSTRUMENT, not an account. So the regime leg
+    // is left unfiltered and the response says which legs were scoped, rather
+    // than filtering on a column that does not exist or quietly dropping the
+    // leg. A feed that silently loses a row type is worse than one that
+    // explains why it kept it.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
+    const leg = acct.active ? ` AND ${acct.where}` : ''
+    const legWhere = acct.active ? ` WHERE ${acct.where}` : ''
+    const p = acct.params
     const rows = db.prepare(`
       SELECT * FROM (
         SELECT 'scan'     AS kind, id, symbol, scanned_at  AS at,
                bias       AS v1,  confidence AS v2,  thesis AS note,
                trade_grade AS extra, NULL AS ref
-        FROM scans
+        FROM scans${legWhere}
         UNION ALL
         SELECT 'analysis' AS kind, id, symbol, analyzed_at AS at,
                consensus_bias AS v1, overall_conviction AS v2, consensus_summary AS note,
                strategy AS extra, scan_id AS ref
-        FROM analyses
+        FROM analyses${legWhere}
         UNION ALL
         SELECT 'monitor'  AS kind, id, symbol, last_check_at AS at,
                last_check_action AS v1, NULL AS v2, last_check_reasoning AS note,
                thesis_status AS extra, trade_id AS ref
         FROM monitored_positions
-        WHERE last_check_at IS NOT NULL
+        WHERE last_check_at IS NOT NULL${leg}
         UNION ALL
         SELECT 'trade'    AS kind, id, symbol, COALESCE(closed_at, opened_at) AS at,
                side AS v1, conviction AS v2, thesis AS note,
                status AS extra, analysis_id AS ref
-        FROM trades
+        FROM trades${legWhere}
         UNION ALL
         SELECT 'regime'   AS kind, id, symbol, computed_at AS at,
                regime AS v1, atr_pct AS v2, trend_direction AS note,
@@ -1976,19 +1988,28 @@ export default function stateRouter(db) {
                bias AS v1, confidence AS v2, flip_from AS note,
                source AS extra, NULL AS ref
         FROM signals
-        WHERE flipped = 1
+        WHERE flipped = 1${leg}
         UNION ALL
         SELECT 'risk'     AS kind, id, symbol, created_at AS at,
                side AS v1, approved AS v2, veto_reason AS note,
                checks_json AS extra, NULL AS ref
-        FROM risk_events
+        FROM risk_events${legWhere}
       )
       WHERE at IS NOT NULL
       ORDER BY at DESC
       LIMIT ?
-    `).all(limit)
+    `).all(...p, ...p, ...p, ...p, ...p, ...p, limit)
 
-    res.json({ activity: rows })
+    res.json({
+      activity: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      // Named, not implied: `regime` rows are instrument facts and stay
+      // portfolio-wide even on a scoped read.
+      scopedKinds: acct.active ? ['scan', 'analysis', 'monitor', 'trade', 'flip', 'risk'] : [],
+      globalKinds: ['regime'],
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'trades', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -2003,12 +2024,23 @@ export default function stateRouter(db) {
     let synthesis = null
     try { synthesis = JSON.parse(row.synthesis || 'null') } catch { /* non-fatal */ }
 
+    // S1 batch 8. An id lookup is NOT filtered — a row asked for by primary
+    // key exists or it does not, and 404-ing a real row because the sidebar
+    // happens to be on another account would be a scoping change that only
+    // ever loses information. What it does instead is SAY whose it is, so a
+    // detail view opened from a per-account list can tell when it has landed
+    // on another account's row. `null` means the row predates stamping.
+    const scope = requestedAccount(db, req)
     res.json({
       analysis: {
         ...row,
         minion_reports: reports,
         synthesis_parsed: synthesis,
       },
+      accountId: row.account_id ?? null,
+      viewingAccountId: scope.all ? 'all' : (scope.accountId ?? null),
+      foreign: !scope.all && scope.accountId != null && row.account_id != null
+        && String(row.account_id) !== String(scope.accountId),
     })
   })
 
@@ -2028,7 +2060,15 @@ export default function stateRouter(db) {
       ? db.prepare('SELECT * FROM trades WHERE id = ?').get(pos.trade_id)
       : null
 
-    res.json({ position: pos, trade, recentScans })
+    // Same as /analysis/:id — reported, never filtered.
+    const scope = requestedAccount(db, req)
+    res.json({
+      position: pos, trade, recentScans,
+      accountId: pos.account_id ?? null,
+      viewingAccountId: scope.all ? 'all' : (scope.accountId ?? null),
+      foreign: !scope.all && scope.accountId != null && pos.account_id != null
+        && String(pos.account_id) !== String(scope.accountId),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -2776,7 +2816,14 @@ export default function stateRouter(db) {
     try {
       const window = Math.min(100, Math.max(10, parseInt(req.query.window || '30', 10)))
       const { alphaDecayView } = await import('../services/alpha-decay.js')
-      res.json(alphaDecayView(db, { window }))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...alphaDecayView(db, { window, scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope, extraWhere: "status = 'closed' AND net_pnl IS NOT NULL",
+        })),
+      })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
