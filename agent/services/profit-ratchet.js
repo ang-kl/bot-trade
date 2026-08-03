@@ -109,6 +109,29 @@ export function rearmRatchet(db, accountId) {
   return { ok: true, accountId: String(accountId) }
 }
 
+/**
+ * Owner action: throw ONE account's staircase away, so the next pass rebuilds
+ * baseline = high-water = its CURRENT equity.
+ *
+ * This exists because clearing a halt is not always enough. After a trip the
+ * staircase keeps its old baseline and high-water, and `computeFloor` measures
+ * from there — so an account that halted at 51,627 and now sits at 48,265 has
+ * a floor of null (nothing banked from that baseline) and will not bank a step,
+ * or protect anything, until equity climbs back past baseline + one step. A
+ * re-arm resumes trading under a ladder that is measuring from a level the
+ * account no longer stands on; a re-baseline moves the ladder to the floor the
+ * account is actually on.
+ *
+ * It never widens protection silently: baseline = equity means floor = null
+ * (nothing banked yet), which is the same state a fresh account starts in.
+ */
+export function rebaselineRatchet(db, accountId) {
+  setState(db, stateKey(accountId), 'null')
+  setState(db, haltKey(accountId), 'false')
+  setState(db, softKey(accountId), 'false')
+  return { ok: true, accountId: String(accountId) }
+}
+
 /** Owner action ([Keep off]): stay halted; auto re-arm stops watching. */
 export function keepRatchetOff(db, accountId) {
   const st = loadRatchetState(db, accountId) || {}

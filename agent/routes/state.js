@@ -2560,6 +2560,11 @@ export default function stateRouter(db) {
             effective: loadProfitRatchetConfig(db),
             defaults: DEFAULT_PROFIT_RATCHET,
             state: sel ? loadRatchetState(db, sel) : null,
+            // WHOSE ladder this is. Without the id the page can render a halt
+            // it has no way to lift — POST /actions/ratchet-account is
+            // per-account by design, and the alternative (reset every
+            // staircase) is exactly the blunt instrument it replaced.
+            accountId: sel || null,
           }
         })(),
         lossGuardian: await (async () => {
