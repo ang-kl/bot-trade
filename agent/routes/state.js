@@ -870,6 +870,37 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/loss-cap — the last per-position loss-cap sweep, per account.
+  //
+  // Owner, 2026-08-03: "check the derived pnl coverage". It could not be
+  // checked, because it existed only as a console line printed when there were
+  // closes or errors. `covered` / `missingPrice` are the numbers that say
+  // whether the cap is watching anything at all: a pass that covers 2 of 11
+  // positions is nine unprotected positions, and it must not be able to look
+  // the same as a quiet, healthy pass. Read-only.
+  router.get('/loss-cap', (req, res) => {
+    try {
+      const raw = db.prepare("SELECT value FROM agent_state WHERE key = 'loss_cap_last_pass'").get()?.value
+      if (!raw) return res.json({ pass: null, note: 'no sweep recorded yet' })
+      const pass = JSON.parse(raw)
+      const covered = (pass.perAccount || []).reduce((s, a) => s + (a.covered || 0), 0)
+      const missing = (pass.perAccount || []).reduce((s, a) => s + (a.missingPrice || 0), 0)
+      res.json({
+        pass,
+        // Rolled up here rather than in the sweep so the stored row stays the
+        // raw measurement and the arithmetic is visible at the point of use.
+        coverage: {
+          covered,
+          missingPrice: missing,
+          pct: covered + missing > 0 ? Math.round((covered / (covered + missing)) * 1000) / 10 : null,
+        },
+        ageSec: pass.at ? Math.round((Date.now() - Date.parse(pass.at)) / 1000) : null,
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/unresolvable-plan', async (req, res) => {
     try {
       const { findUnresolvableCandidates, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =

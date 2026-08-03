@@ -228,7 +228,7 @@ export async function runLossCap(db, creds, deps = {}) {
  * @returns {{checked, breaches, closes, errors: string[], accounts: number}}
  */
 export async function runLossCapAllAccounts(db, baseCreds, deps = {}) {
-  const out = { checked: 0, breaches: 0, closes: 0, errors: [], accounts: 0 }
+  const out = { checked: 0, breaches: 0, closes: 0, errors: [], accounts: 0, perAccount: [] }
   if (!baseCreds?.ready) return out
 
   const { getEnabledAccounts } = await import('./account-registry.js')
@@ -264,12 +264,52 @@ export async function runLossCapAllAccounts(db, baseCreds, deps = {}) {
       out.checked += r.checked
       out.breaches += r.breaches
       out.closes += r.closes
+      out.perAccount.push({
+        accountId: id,
+        checked: r.checked,
+        breaches: r.breaches,
+        closes: r.closes,
+        pnlSource: r.pnlSource ?? null,
+        covered: r.derived?.covered ?? null,
+        missingPrice: r.derived?.missingPrice ?? null,
+        errors: r.errors.length,
+      })
       if (r.errors.length) out.errors.push(...r.errors)
     } catch (err) {
       out.errors.push(`account ${id}: ${err?.message || err}`)
+      out.perAccount.push({ accountId: id, failed: err?.message || String(err) })
     }
   }
+  recordLossCapPass(db, out)
   return out
+}
+
+/**
+ * Persist the last sweep so its COVERAGE can be read after the fact.
+ *
+ * Until now the only record that the cap covered 3 of 11 positions was a
+ * console line in `fast-monitor`, printed solely when there were closes or
+ * errors, and gone as soon as the log rotated. Coverage is exactly the number
+ * that decides whether the cap is protecting anything, so it must outlive the
+ * pass that measured it. Never throws: a bookkeeping write must not be able to
+ * abort a protective sweep that has already done its work.
+ */
+export function recordLossCapPass(db, out) {
+  try {
+    db.prepare(`
+      INSERT INTO agent_state (key, value) VALUES ('loss_cap_last_pass', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(JSON.stringify({
+      at: new Date().toISOString(),
+      accounts: out.accounts,
+      checked: out.checked,
+      breaches: out.breaches,
+      closes: out.closes,
+      perAccount: out.perAccount,
+      // Bounded: the whole point is a readable summary, not a log sink.
+      errors: out.errors.slice(0, 20),
+    }))
+  } catch { /* observability must never break the safety net */ }
 }
 
 /**

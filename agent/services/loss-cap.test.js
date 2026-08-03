@@ -237,3 +237,38 @@ test('one failing account does not stop the sweep of the others', async () => {
   assert.equal(out.errors.length, 1)
   assert.match(out.errors[0], /AAA/)
 })
+
+test('the sweep records per-account COVERAGE so it can be read after the fact', async () => {
+  const db = initDB(':memory:')
+  setState(db, 'account_balance_usd', '50000')
+  setState(db, 'symbol_id_map', JSON.stringify({ EURUSD: 1, USDZAR: 2 }))
+  db.prepare(`INSERT INTO accounts (account_id, enabled, is_live, mode) VALUES (?,1,0,'active')`).run('AAA')
+  setState(db, 'ctrader_account_id', 'AAA')
+
+  // The broker refuses the P&L call — exactly what production does — so the
+  // derived path runs. One position has a live price, one does not.
+  const positions = [
+    { positionId: 1, price: 1.1, tradeData: { symbolId: 1, tradeSide: 'BUY', volume: 100000 } },
+    { positionId: 2, price: 18.0, tradeData: { symbolId: 2, tradeSide: 'BUY', volume: 100000 } },
+  ]
+  const deps = {
+    exec: { reconcile: async () => ({ position: positions }), closePosition: async () => ({}) },
+    ws: { wsGetUnrealizedPnl: async () => { throw new Error('CANT_ROUTE_REQUEST') } },
+    spotFor: (id) => (Number(id) === 1 ? 1.1005 : null),
+    notify: async () => {},
+  }
+  const base = { ready: true, accountId: 'AAA', isLive: false, host: 'h', clientId: 'c', clientSecret: 's', accessToken: 't' }
+  const out = await runLossCapAllAccounts(db, base, deps)
+
+  const a = out.perAccount.find(x => x.accountId === 'AAA')
+  assert.equal(a.pnlSource, 'derived', 'the broker refused, so the derived path must be what ran')
+  assert.equal(a.covered, 1)
+  assert.equal(a.missingPrice, 1, 'a position with no live price is UNPROTECTED and must be counted as such')
+
+  // Durable, not just a console line: the whole reason this exists is that the
+  // only record of coverage used to vanish with the log.
+  const saved = JSON.parse(db.prepare("SELECT value FROM agent_state WHERE key = 'loss_cap_last_pass'").get().value)
+  assert.equal(saved.perAccount[0].covered, 1)
+  assert.equal(saved.perAccount[0].missingPrice, 1)
+  assert.ok(saved.at, 'the pass must be timestamped — a coverage figure with no age is unreadable')
+})
