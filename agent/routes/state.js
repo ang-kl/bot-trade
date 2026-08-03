@@ -478,6 +478,9 @@ export default function stateRouter(db) {
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'monitored_positions', scope, extraWhere: "status = 'active'",
+      })),
     })
   })
 
@@ -1963,6 +1966,7 @@ export default function stateRouter(db) {
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
         legacyRows: acct.active ? countUnattributed(db, 'pending_orders') : 0,
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'pending_orders', scope })),
       })
     } catch (e) {
       res.json({ rows: [], error: e.message })
@@ -1990,6 +1994,7 @@ export default function stateRouter(db) {
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'risk_events') : 0,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'risk_events', scope })),
     })
   })
 
