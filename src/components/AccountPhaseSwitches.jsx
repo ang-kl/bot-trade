@@ -45,24 +45,55 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
   const eff = acct.effective[phase.key] === true
   const ov = acct.overrides[phase.key]
   const blocked = !masterOn
+  // OVERRULED, NOT OFF (owner 04-08-2026: "why is the auto-trade … conflict
+  // with user request", and earlier "I armed it 10 minutes ago and now
+  // disarmed-autotrade!!!!!").
+  //
+  // Nothing disarmed anything. The owner's ON was stored — `overrides.
+  // autotrade` is still true — and then the account's MODE said no new
+  // entries, so `effective` came back false and this switch repainted OFF.
+  // Tapping it again re-sends the same ON, which is why it looked like a
+  // fight with the page. A switch that silently drops the operator's answer
+  // and shows the opposite is the same "two sources of truth" defect as a
+  // balance under the wrong account name.
+  //
+  // So: the switch keeps SAYING what the owner set, and the veto is drawn
+  // beside it as a veto — a blocked state with the reason and the fix, not
+  // an OFF that pretends nobody ever asked.
+  const cap = acct.capability || null
+  const overruled = phase.key === 'autotrade' && !eff && ov === true
+    && acct.effective?.source?.autotrade === 'capability'
+  const capWhy = !cap ? 'this account cannot enter new trades'
+    : !cap.enabled ? 'this account is DISABLED in the registry — it is not in the broker roster, so no order can reach it'
+      : cap.mode === 'manage_only' ? 'its mode is Manage only — existing positions are still managed, but no new entries'
+        : cap.mode === 'paused' ? 'its mode is Paused — no scanning and no new entries'
+          : cap.mode === 'archived' ? 'this account is Archived'
+            : `its mode is ${cap.mode || 'unknown'}`
   const why = blocked
     ? `Master ${phase.label} is off above — turn it on there first. This account's own setting (${ov === null ? 'inherit' : ov ? 'on' : 'off'}) is remembered.`
-    : `${phase.label} is ${eff ? 'ON' : 'OFF'} for ${acct.traderLogin || acct.accountId}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`
+    : overruled
+      ? `You armed ${phase.label} on ${acct.traderLogin || acct.accountId} and that setting is SAVED — but ${capWhy}. Change the mode on this row to Active and it takes effect. Tap to withdraw the arm instead.`
+      : `${phase.label} is ${eff ? 'ON' : 'OFF'} for ${acct.traderLogin || acct.accountId}${ov === null ? ' (following the master)' : ' (set on this account)'} — tap to turn ${eff ? 'off' : 'on'}`
   return (
     <button
-      type="button" role="switch" aria-checked={eff} disabled={blocked || busy}
-      aria-label={`${phase.label} for account ${acct.traderLogin || acct.accountId}`}
+      type="button" role="switch" aria-checked={overruled ? true : eff} disabled={blocked || busy}
+      aria-label={`${phase.label} for account ${acct.traderLogin || acct.accountId}${overruled ? ' — armed but blocked by account mode' : ''}`}
       title={why}
-      onClick={() => onSet(phase.key, !eff)}
+      onClick={() => onSet(phase.key, overruled ? false : !eff)}
       className={`inline-flex items-center justify-center rounded-[3px] border leading-none
                   min-w-[26px] px-[5px] py-[3px] text-[9px] font-bold transition-colors
                   ${blocked || busy ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'} ${
-        eff
-          ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)]'
-          : 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
+        overruled
+          ? 'border-[var(--color-warning-border)] text-[var(--color-warning-text)] bg-[var(--color-warning-bg)]'
+          : eff
+            ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)]'
+            : 'border-[var(--color-state-off-border)] text-[var(--color-state-off-text)] bg-[var(--color-state-off-bg)]'
       }`}
     >
       {phase.initial}
+      {/* The strike says the arm exists AND is not in force — two facts one
+          colour cannot carry. */}
+      {overruled && <span aria-hidden="true" className="ml-[2px] text-[7px] leading-none">⃠</span>}
       {/* The override marker: a dot means this account has its OWN setting
           rather than following the master. Without it, an account switched off
           individually is indistinguishable from one whose master is off. */}
@@ -136,6 +167,30 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
       .then(() => load())
       .catch(e => setErr(e.message))
       .finally(() => setBusyId(''))
+  }
+
+  // Change what an account is ALLOWED to do. Same route, same privilege as the
+  // Disable button above — this only widens which of its arguments the UI can
+  // reach, and never for a LIVE row (the select is disabled there, and the
+  // route refuses an enable without confirmLive regardless).
+  //
+  // Moving to Active is the one direction that can start new orders, so it
+  // confirms exactly like arming does. Every other direction only ever removes
+  // permission, and management of open positions survives all four.
+  const setMode = async (a, next) => {
+    const who = `${a.isLive ? 'LIVE' : 'Demo'} ${a.traderLogin || a.accountId}`
+    const enabled = next !== 'disabled'
+    const mode = enabled ? next : 'manage_only'
+    if (next === 'active') {
+      if (!window.confirm(`Set ${who} to Active? With Auto Trade armed, the agent may open REAL new positions on this account.`)) return
+    } else if (!window.confirm(`Set ${who} to ${next === 'disabled' ? 'Disabled' : next === 'paused' ? 'Paused' : 'Manage only'}? No new entries will be opened on it. Open positions keep being managed.`)) return
+    setBusyId(a.accountId)
+    try {
+      await agentPost('/actions/registry-account', { accountId: a.accountId, enabled, mode })
+      await load()
+      showDone(`Mode ${next} · ${a.traderLogin || a.accountId}`)
+      setErr('')
+    } catch (e) { setErr(e.message) } finally { setBusyId('') }
   }
   useEffect(() => { load() }, [load])
 
@@ -320,6 +375,36 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   {a.connectivity}
                 </span>
               )}
+              {/* THE MODE, AS A CONTROL (owner 04-08-2026).
+                  `accounts.mode` decided whether an armed account could enter,
+                  and NOTHING in the app could change it — POST /actions/
+                  registry-account existed and had exactly one caller, the
+                  Disable-a-stale-account button. So two of three connected
+                  accounts sat in `manage_only` with the owner's arm saved and
+                  overruled, and the only way out was a route call by hand.
+                  A veto with no control beside it is not a safety feature; it
+                  is a dead end.
+                  LIVE rows are read-only here on purpose: enabling live
+                  trading is the M5 cutover gesture and the route refuses it
+                  without confirmLive — that stays a deliberate act, never a
+                  dropdown. */}
+              <select
+                aria-label={`Trading mode for account ${a.traderLogin || a.accountId}`}
+                value={a.enabled ? (a.mode || 'manage_only') : 'disabled'}
+                disabled={a.isLive || busyId === a.accountId}
+                title={a.isLive
+                  ? 'LIVE account — its mode is not changed from this dropdown. Enabling live trading is a deliberate cutover, not a click.'
+                  : 'Active = may open new trades · Manage only = keeps existing positions managed, opens nothing new · Paused = no scanning, no entries · Disabled = out of the broker roster entirely. Open positions are ALWAYS managed.'}
+                onChange={(e) => setMode(a, e.target.value)}
+                className={`rounded-[3px] border border-[var(--color-border)] bg-transparent px-[3px] py-[2px]
+                            text-[8px] font-semibold text-[var(--color-text)]
+                            ${a.isLive ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                <option value="active">Active</option>
+                <option value="manage_only">Manage only</option>
+                <option value="paused">Paused</option>
+                <option value="disabled">Disabled</option>
+              </select>
               {byId.get(String(a.accountId)) && (
                 <LightRow row={byId.get(String(a.accountId))} />
               )}

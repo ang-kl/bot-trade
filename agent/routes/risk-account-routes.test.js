@@ -127,3 +127,39 @@ test('balance and leverage follow the same scope as the limits', async () => {
     assert.equal((await riskFull(s, '5203012')).account.accountId, '5203012')
   } finally { s.close() }
 })
+
+// ---------------------------------------------------------------------------
+// THE LIVE STAIRCASE FOLLOWS THE ACCOUNT TOO (owner 04-08-2026, three
+// screenshots: "I don't see the change in Live staircase when i change the
+// account in this Risk page").
+//
+// The ratchet block on this route loaded `ctrader_account_id` and ignored
+// `?account=` entirely, so all three screenshots showed one account's baseline
+// and high-water mark under three different account names — the same defect as
+// a balance with no owner, one layer down. Money figures, so it is not a
+// cosmetic mismatch: the staircase is what the operator reads to decide
+// whether a floor is about to trigger.
+// ---------------------------------------------------------------------------
+test('the profit-ratchet staircase is the QUERIED account\'s, not the selected one', async () => {
+  const s = await server()
+  try {
+    s.db.prepare("INSERT OR REPLACE INTO agent_state (key, value) VALUES ('ctrader_account_id', '5306502')").run()
+    const ladder = (id, o) => s.db.prepare('INSERT OR REPLACE INTO agent_state (key, value) VALUES (?, ?)')
+      .run(`acct:${id}:profit_ratchet_state_json`, JSON.stringify(o))
+    ladder('5306502', { baseline: 50548.76, hwm: 50653.92, floor: null, halt: false })
+    ladder('5203012', { baseline: 36000.00, hwm: 36500.00, floor: 36100, halt: true })
+
+    const a = await riskFull(s, '5203012')
+    assert.equal(a.profitRatchet.state.baseline, 36000.00)
+    assert.equal(a.profitRatchet.state.hwm, 36500.00)
+    assert.equal(a.profitRatchet.accountId, '5203012', 'and it says whose ladder this is')
+
+    const b = await riskFull(s, '5306502')
+    assert.equal(b.profitRatchet.state.baseline, 50548.76)
+    assert.equal(b.profitRatchet.state.hwm, 50653.92)
+
+    // No account named = the selected one, exactly as before.
+    const g = await riskFull(s)
+    assert.equal(g.profitRatchet.state.baseline, 50548.76)
+  } finally { s.close() }
+})

@@ -583,6 +583,28 @@ export default function actionsRouter(db) {
       saveWithOverlay(db, setState, {
         defaults: cur, baseKey: PROFIT_RATCHET_KEY, accountId: ratchetAcct, patch: rPatch,
       })
+      // SWITCHING THE LAYER OFF CLEARS ITS HOLD (owner 04-08-2026: "I remove
+      // the ratchet but still see ratchet on the account I disarmed").
+      // The halt is state written by a layer that is now off — it can no
+      // longer be re-evaluated, re-armed or explained, so leaving it set means
+      // an account stays blocked by a mechanism the owner just disabled and
+      // nothing on screen can lift. Turning the ratchet ON never touches these
+      // flags; only turning it OFF does, and only for the accounts the switch
+      // actually covers.
+      if (b.on === false) {
+        const { haltKey, softKey } = await import('../services/profit-ratchet.js')
+        const targets = ratchetAcct
+          ? [ratchetAcct]
+          : (() => {
+            try { return db.prepare('SELECT account_id FROM accounts').all().map(r => String(r.account_id)) }
+            catch { return [] }
+          })()
+        for (const id of targets) {
+          setState(db, haltKey(id), 'false')
+          setState(db, softKey(id), 'false')
+        }
+        if (targets.length) console.log(`[actions] profit ratchet off → cleared hold on ${targets.length} account(s)`)
+      }
       if (b.resetState === true) {
         setState(db, 'profit_ratchet_state_json', 'null') // v1 legacy key
         // v2: every account's staircase re-baselines on its next pass, and
