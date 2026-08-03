@@ -102,7 +102,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
   const blank = {
     verdict: VERDICTS.IDLE, because: 'no decision records for this FX day', scope,
     sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0,
-    tradesOpened: 0, silentDrops: 0, topVetoes: [], topSkipStages: [],
+    tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
+    silentDrops: 0, topVetoes: [], topSkipStages: [],
     quietMinutes: null, at,
   }
 
@@ -137,14 +138,37 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // GATE is not available and must not be implied. Said in `gateScope`
     // rather than silently returning portfolio numbers under an account
     // heading — the mistake this whole module exists to stop.
+    // PLACEMENT RECEIPTS ARE NOT GATE DECISIONS.
+    //
+    // Found by this module's FIRST production reading, 2026-08-03: it reported
+    // "235 approved but only 100 orders — 135 approvals went nowhere", which
+    // was wrong. A successfully placed order writes TWO approved risk_events:
+    // the gate's own verdict (pending-orders.js:351, closed-market-limits.js:
+    // 184) and then a second confirmation row once the broker accepts it
+    // (pending-orders.js:442 `pending_order_placed`, closed-market-limits.js:
+    // 237 `closed_market_limit_placed`). Subtracting orders from a count that
+    // double-counts every success manufactures a silent drop out of a healthy
+    // day — the precise false alarm this module must not produce, because an
+    // alert that cries wolf is worse than no alert.
+    //
+    // So receipts are separated out. They are not decisions; they are
+    // EVIDENCE that a decision landed, and they are counted as such.
     const gate = db.prepare(`
-      SELECT approved, veto_reason, COUNT(*) AS n
+      SELECT approved, veto_reason,
+             CASE WHEN checks_json LIKE '%_placed":true%'
+                    OR checks_json LIKE '%_placed": true%' THEN 1 ELSE 0 END AS is_receipt,
+             COUNT(*) AS n
         FROM risk_events
        WHERE REPLACE(created_at, 'T', ' ') >= ?
-       GROUP BY approved, veto_reason
+       GROUP BY approved, veto_reason, is_receipt
     `).all(dayStart)
 
-    const approved = gate.filter(r => int(r.approved) === 1).reduce((a, r) => a + int(r.n), 0)
+    const placementReceipts = gate
+      .filter(r => int(r.approved) === 1 && int(r.is_receipt) === 1)
+      .reduce((a, r) => a + int(r.n), 0)
+    const approved = gate
+      .filter(r => int(r.approved) === 1 && int(r.is_receipt) !== 1)
+      .reduce((a, r) => a + int(r.n), 0)
     const vetoed = gate.filter(r => int(r.approved) !== 1).reduce((a, r) => a + int(r.n), 0)
     const reachedGate = approved + vetoed
     const skipped = skips.reduce((a, r) => a + int(r.n), 0)
@@ -176,7 +200,10 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
          WHERE REPLACE(placed_at, 'T', ' ') >= ?${acctSql}
       `).get(dayStart, ...acctArgs)?.n)
     } catch { pending = 0 }
-    const landed = tradesOpened + pending
+    // A broker receipt is itself proof the order left the building, so it
+    // counts toward landed even if the pending_orders row has since been
+    // filled, cancelled or pruned out of the day's window.
+    const landed = Math.max(tradesOpened + pending, placementReceipts)
     const silentDrops = Math.max(0, approved - landed)
 
     const topVetoes = topBy(gate.filter(r => int(r.approved) !== 1), r => r.veto_reason || 'unspecified')
@@ -231,7 +258,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     return {
       verdict, because, scope, sinceFxDayOpen: true,
       considered, reachedGate, approved, vetoed,
-      tradesOpened, silentDrops, topVetoes, topSkipStages, quietMinutes, at,
+      tradesOpened, pendingOrders: pending, placementReceipts, landed,
+      silentDrops, topVetoes, topSkipStages, quietMinutes, at,
       // Stated, not implied: risk_events has no account column, so gate
       // numbers are portfolio-wide even when the skip numbers are scoped.
       gateScope: 'all accounts (risk_events carries no account column)',
@@ -287,7 +315,9 @@ export function publicPipelineView(audit) {
     reachedGate: audit.reachedGate,
     approved: audit.approved,
     vetoed: audit.vetoed,
-    landed: audit.tradesOpened,
+    trades: audit.tradesOpened,
+    pending: audit.pendingOrders,
+    landed: audit.landed,
     silentDrops: audit.silentDrops,
     topBlock: audit.topSkipStages?.[0]?.key ?? audit.topVetoes?.[0]?.key ?? null,
     quietMinutes: audit.quietMinutes,
@@ -301,7 +331,7 @@ export function toText(audit) {
   const bits = [
     `verdict ${audit.verdict}`,
     audit.because,
-    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.tradesOpened}`,
+    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.landed} (${audit.tradesOpened} trade(s), ${audit.pendingOrders} pending)`,
   ]
   if (audit.topSkipStages?.length) bits.push(`upstream: ${audit.topSkipStages.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topVetoes?.length) bits.push(`vetoes: ${audit.topVetoes.map(s => `${s.key} ${s.n}`).join(', ')}`)
