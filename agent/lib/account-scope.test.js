@@ -251,3 +251,43 @@ test('accountWhere qualifies a column, so a self-join can scope both halves', ()
   assert.deepEqual(rows.map(r => `${r.symbol}@${r.recorded_at}`), ['GBPUSD@2026-01-03', 'EURUSD@2026-01-01'],
     "EURUSD shows OUR latest, not BBB's newer one and not nothing")
 })
+
+// S1 batch 8 — /state/activity is a seven-way UNION. Six legs carry
+// account_id; `regimes` does NOT, and db.js keeps it that way on purpose
+// because a regime is a fact about an INSTRUMENT, not an account. The trap is
+// that a UNION binds its parameters POSITIONALLY: six predicates means six
+// copies of the same param, in order, and one miscount silently shifts every
+// later leg's filter onto the wrong value. This pins the binding.
+test('a multi-leg UNION binds one param per scoped leg, and skips the global leg', () => {
+  const db = dbWithSelected('AAA')
+  db.exec(`
+    CREATE TABLE trades  (id INTEGER PRIMARY KEY, symbol TEXT, at TEXT, account_id TEXT);
+    CREATE TABLE signals (id INTEGER PRIMARY KEY, symbol TEXT, at TEXT, account_id TEXT);
+    CREATE TABLE regimes (id INTEGER PRIMARY KEY, symbol TEXT, at TEXT);
+  `)
+  db.prepare('INSERT INTO trades  (symbol, at, account_id) VALUES (?,?,?)').run('EURUSD', '2026-01-01', 'AAA')
+  db.prepare('INSERT INTO trades  (symbol, at, account_id) VALUES (?,?,?)').run('GBPUSD', '2026-01-02', 'BBB')
+  db.prepare('INSERT INTO signals (symbol, at, account_id) VALUES (?,?,?)').run('USDJPY', '2026-01-03', 'BBB')
+  db.prepare('INSERT INTO regimes (symbol, at) VALUES (?,?)').run('NAS100', '2026-01-04')
+
+  const scope = requestedAccount(db, {})
+  const acct = accountWhere(scope, 'account_id')
+  const w = acct.active ? ` WHERE ${acct.where}` : ''
+  const p = acct.params
+  const rows = db.prepare(`
+    SELECT * FROM (
+      SELECT 'trade'  AS kind, symbol, at FROM trades${w}
+      UNION ALL
+      SELECT 'flip'   AS kind, symbol, at FROM signals${w}
+      UNION ALL
+      SELECT 'regime' AS kind, symbol, at FROM regimes
+    ) ORDER BY at DESC
+  `).all(...p, ...p)
+
+  const kinds = rows.map(r => `${r.kind}:${r.symbol}`)
+  assert.ok(kinds.includes('trade:EURUSD'), "our own account's row is kept")
+  assert.ok(!kinds.includes('trade:GBPUSD'), "another account's trade is filtered")
+  assert.ok(!kinds.includes('flip:USDJPY'), 'and so is its signal — the second leg bound correctly')
+  assert.ok(kinds.includes('regime:NAS100'),
+    'the GLOBAL leg survives a scoped read — dropping it would lose a row type, not scope it')
+})
