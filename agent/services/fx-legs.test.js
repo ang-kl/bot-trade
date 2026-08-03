@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   requiredQuoteCurrencies, legSymbolFor, staleLegs, refreshFxLegs, fxLegReport,
-  LEG_REFRESH_AFTER_MS,
+  legVetoDemand, LEG_REFRESH_AFTER_MS,
 } from './fx-legs.js'
 import { loadFxRates, readFxTable } from './fx-rates.js'
 
@@ -60,6 +60,64 @@ test('staleness is about AGE, and the most degraded leg goes first', () => {
   assert.deepEqual(stale.map(s => s.symbol), ['USDNOK', 'USDPLN', 'USDCAD'])
   assert.equal(stale[0].everSeen, false)              // never in the table at all
   assert.ok(stale.find(s => s.symbol === 'USDJPY') === undefined, 'a fresh leg is not refetched')
+})
+
+// Ordering by blocked entries -------------------------------------------
+// Owner, watching the first live sweep, 03-08-2026: "prioritise by veto
+// count, not alphabetical". Age alone LOOKED principled: every never-seen leg
+// ties at Infinity, so the queue fell back to input order — alphabetical by
+// currency — and CZK and DKK, which block nothing, were priced ahead of PLN
+// and NOK, which were between them blocking 744 entries.
+
+function vetoDB(counts) {
+  const db = initDB(':memory:')
+  const ins = db.prepare(
+    `INSERT INTO risk_events (symbol, side, approved, veto_reason, created_at)
+     VALUES (?, 'long', 0, 'insufficient_equity min_lot=0.01 computed=0 usd_per_lot_unknown', datetime('now'))`
+  )
+  for (const [sym, n] of Object.entries(counts)) for (let i = 0; i < n; i++) ins.run(sym)
+  return db
+}
+
+test('demand is counted per LEG, not per symbol — several crosses share one rate', () => {
+  const db = vetoDB({ AUDPLN: 695, EURJPY: 352, AUDCAD: 253, GBPNOK: 49 })
+  const d = legVetoDemand(db, { symbolMap: SYMBOL_MAP })
+  assert.equal(d.USDPLN, 695)
+  assert.equal(d.USDJPY, 352)
+  assert.equal(d.USDCAD, 253)
+  assert.equal(d.USDNOK, 49)
+})
+
+test('only usd_per_lot_unknown vetoes count — other guards are somebody else\'s problem', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at)
+              VALUES ('AUDPLN', 0, 'daily_loss_limit_hit pnl=-1 limit=1', datetime('now'))`).run()
+  db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at)
+              VALUES ('AUDPLN', 1, 'insufficient_equity … usd_per_lot_unknown', datetime('now'))`).run()
+  assert.deepEqual(legVetoDemand(db, { symbolMap: SYMBOL_MAP }), {})   // one wrong guard, one approved
+})
+
+test('THE FIX: the leg blocking the most entries is priced first, not the alphabetical one', () => {
+  const db = vetoDB({ AUDPLN: 695, GBPNOK: 49 })
+  const demand = legVetoDemand(db, { symbolMap: SYMBOL_MAP })
+  // All four have never been seen, so age ties them at Infinity — exactly the
+  // situation that produced the wrong order in production.
+  const order = staleLegs({}, ['USDCZK', 'USDDKK', 'USDNOK', 'USDPLN'], { now: NOW, demand })
+    .map(s => s.symbol)
+  assert.deepEqual(order.slice(0, 2), ['USDPLN', 'USDNOK'])
+  assert.deepEqual(order.slice(2).sort(), ['USDCZK', 'USDDKK'])
+})
+
+test('age still decides between legs blocking the same amount', () => {
+  const table = { USDCZK: { p: 4.1, t: NOW - 30 * HOUR }, USDDKK: { p: 6.4, t: NOW - 7 * HOUR } }
+  const order = staleLegs(table, ['USDCZK', 'USDDKK'], { now: NOW, demand: {} }).map(s => s.symbol)
+  assert.deepEqual(order, ['USDCZK', 'USDDKK'])
+})
+
+test('no risk_events table → ordering falls back to age instead of throwing', () => {
+  const db = initDB(':memory:')
+  db.exec('DROP TABLE risk_events')
+  assert.deepEqual(legVetoDemand(db, { symbolMap: SYMBOL_MAP }), {})
 })
 
 test('a zero or malformed price counts as missing, not as a usable rate', () => {

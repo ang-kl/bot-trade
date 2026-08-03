@@ -76,12 +76,47 @@ export function legSymbolFor(currency, availableSymbols) {
 }
 
 /**
+ * How many entries each LEG is currently blocking, from the risk gate's own
+ * record. Counts `usd_per_lot_unknown` vetoes per symbol over the window and
+ * attributes each to the leg that would have resolved it.
+ *
+ * Best-effort by contract: no table, no rows, or a malformed row → an empty
+ * map, and ordering falls back to age. A missing diagnostic must not stop the
+ * refresher from running.
+ */
+export function legVetoDemand(db, { symbolMap, days = 7 } = {}) {
+  const demand = {}
+  try {
+    const rows = db.prepare(
+      `SELECT symbol, COUNT(*) AS n FROM risk_events
+        WHERE approved = 0 AND veto_reason LIKE '%usd_per_lot_unknown%'
+          AND created_at >= datetime('now', ?)
+        GROUP BY symbol`
+    ).all(`-${Math.max(1, Number(days) || 7)} days`)
+    for (const r of rows) {
+      const leg = legSymbolFor(fxQuoteCurrency(String(r.symbol || '').toUpperCase()), symbolMap)
+      if (!leg) continue
+      demand[leg] = (demand[leg] || 0) + (Number(r.n) || 0)
+    }
+  } catch { /* diagnostics are optional; the sweep is not */ }
+  return demand
+}
+
+/**
  * Pure. Which legs need fetching right now: missing from the table, or older
- * than `refreshAfterMs`. Returns them oldest-first so a capped run always
- * refreshes the most degraded legs, not an arbitrary slice.
+ * than `refreshAfterMs`, ordered by what a capped run should spend its calls
+ * on first.
+ *
+ * ORDER IS BY BLOCKED ENTRIES, THEN AGE. Owner, 03-08-2026, watching the
+ * first live sweep: "prioritise by veto count, not alphabetical". Age alone
+ * looked principled and wasn't — every never-seen leg ties at Infinity, so
+ * the queue fell back to input order, which is alphabetical by currency. CZK
+ * and DKK, which block nothing, were priced ahead of PLN and NOK, which were
+ * between them blocking 744 entries. The rate that is costing trades goes
+ * first; age only breaks ties between legs blocking the same amount.
  */
 export function staleLegs(table, legSymbols, {
-  now = Date.now(), refreshAfterMs = LEG_REFRESH_AFTER_MS,
+  now = Date.now(), refreshAfterMs = LEG_REFRESH_AFTER_MS, demand = null,
 } = {}) {
   const scored = []
   for (const sym of legSymbols) {
@@ -89,9 +124,9 @@ export function staleLegs(table, legSymbols, {
     const age = row && Number.isFinite(row.t) ? now - row.t : Infinity
     const usable = row && Number.isFinite(row.p) && row.p > 0
     if (usable && age <= refreshAfterMs) continue
-    scored.push({ symbol: sym, ageMs: age, everSeen: !!usable })
+    scored.push({ symbol: sym, ageMs: age, everSeen: !!usable, blocked: demand?.[sym] || 0 })
   }
-  return scored.sort((a, b) => b.ageMs - a.ageMs)
+  return scored.sort((a, b) => (b.blocked - a.blocked) || (b.ageMs - a.ageMs))
 }
 
 /**
@@ -119,7 +154,8 @@ export async function refreshFxLegs(db, {
     return { checked: unique.length, stale: 0, fetched: [], failed: [], currencies, skipped: 'no_quote_source' }
   }
 
-  const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs })
+  const demand = legVetoDemand(db, { symbolMap })
+  const stale = staleLegs(readFxTable(db), unique, { now, refreshAfterMs, demand })
   const fetched = []
   const failed = []
   for (const s of stale.slice(0, limit)) {
@@ -154,6 +190,7 @@ export async function refreshFxLegs(db, {
  */
 export function fxLegReport(db, { symbols, symbolMap, now = Date.now() } = {}) {
   const table = readFxTable(db)
+  const demand = legVetoDemand(db, { symbolMap })
   const rows = []
   for (const c of [...requiredQuoteCurrencies(symbols)].sort()) {
     const leg = legSymbolFor(c, symbolMap)
@@ -164,6 +201,9 @@ export function fxLegReport(db, { symbols, symbolMap, now = Date.now() } = {}) {
       leg,
       price: row?.p ?? null,
       ageMin: ageMs == null ? null : Math.round(ageMs / 60_000),
+      // Entries this leg blocked over the last 7 days — the number that
+      // decides which legs a capped sweep prices first.
+      blocked: leg ? (demand[leg] || 0) : 0,
       state: !leg ? 'no_leg'
         : ageMs == null ? 'missing'
           : ageMs > RATE_MAX_AGE_MS ? 'expired'
