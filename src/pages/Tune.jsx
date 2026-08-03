@@ -2764,7 +2764,7 @@ export default function Tune() {
                           Forex, hundreds of pairs) in one action — the fastest way
                           to get from 0 to all 1900+. */}
                       <div className="max-h-[70vh] overflow-y-auto grid gap-2 sm:grid-cols-2 xl:grid-cols-3 items-start text-[9px]">
-                        {tree.classes.map(cls => {
+                        {(tree.classes || []).map(cls => {
                           const clsKey = `c:${cls.name}`
                           const clsOpen = openNodes.has(clsKey) || !!bq
                           const cats = bq
@@ -3046,15 +3046,15 @@ export default function Tune() {
                 <div className="mt-1.5">
                   <div className="flex flex-wrap items-center gap-2 mb-1.5">
                     <Input value={btHistSym} onChange={e => setBtHistSym(e.target.value)} placeholder="Filter by symbol…" className="max-w-[160px] !py-1 !min-h-0" />
-                    {btHist?.bySymbol?.length > 0 && (
+                    {(btHist?.bySymbol?.length ?? 0) > 0 && (
                       <span className="text-[var(--color-text-sub)]">{btHist.bySymbol.length} symbols ever tested · newest first · last 2,000 rows kept</span>
                     )}
                   </div>
                   {!btHist && <Skeleton lines={3} />}
-                  {btHist && btHist.rows.length === 0 && (
+                  {btHist && (btHist.rows?.length ?? 0) === 0 && (
                     <p className="text-[var(--color-text-sub)]">No recorded runs{btHistSym ? ` for ${btHistSym.toUpperCase()}` : ''} yet — history starts recording from the next backtest.</p>
                   )}
-                  {btHist && btHist.rows.length > 0 && (
+                  {btHist && (btHist.rows?.length ?? 0) > 0 && (
                     <div className="overflow-auto max-h-[45vh] border border-[var(--color-border)] rounded-[8px]">
                       <table className="std-cols min-w-full text-[9px]">
                         <thead className="sticky top-0 z-10 bg-[var(--color-bg)]">
@@ -3071,7 +3071,7 @@ export default function Tune() {
                           </tr>
                         </thead>
                         <tbody>
-                          {btHist.rows.map(r => (
+                          {(btHist.rows || []).map(r => (
                             <tr key={r.id} className="border-t border-[var(--color-border)] tabular-nums">
                               <td className="pr-3 py-0.5 whitespace-nowrap text-[var(--color-text-sub)]">{new Date(r.ran_at).toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
                               <td className="pr-3 font-semibold whitespace-nowrap">{r.symbol}</td>

@@ -110,7 +110,7 @@ export default function AccountSettingsScope() {
         it does not freeze today's shared value.
       </p>
 
-      {view.groups.map(g => (
+      {(view.groups || []).map(g => (
         <div key={g.category} className="rounded-[6px] border border-[var(--color-border)] px-1.5 py-1">
           <div className="font-semibold text-[var(--color-accent)]">{g.label}</div>
           {g.settings.map(s => (

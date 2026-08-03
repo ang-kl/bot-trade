@@ -788,7 +788,7 @@ export default function Desk() {
             <p className="text-[9px] text-[var(--color-text-sub)]">
               Positions in the same cluster are the SAME macro bet. The risk gate vetoes any entry pushing a cluster's net beyond ±{correlation.maxClusterExposure}. Net is signed: +2 long-USD means two full USD-strength bets stacked.
             </p>
-            {correlation.clusters.map(c => (
+            {(correlation.clusters || []).map(c => (
               <div key={c.key} className="glass-inset rounded-lg p-2 text-[9px]">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold">{c.label}</span>
