@@ -3028,7 +3028,7 @@ async function runLoop(db) {
         if (creds.ready && !cycleOverBudget() && seedBackoffOk && (atrDue || haveAtr === 0)) {
           setState(db, 'atr_refresh_last_attempt_ms', String(Date.now()))
           phase('ATR baseline refresh')
-          const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
+          const { refreshAtrHistory, pruneAtrHistory, ATR_BAR_PERIOD_KEY } = await import('./services/vol-gate.js')
           // #170, THIRD DEFECT: this read the map raw. `symbol_id_map` is
           // written when an account is linked, and a DB wipe, a fresh volume
           // or a never-relinked account leaves it EMPTY — in which case every
@@ -3090,8 +3090,8 @@ async function runLoop(db) {
             if (!sid) throw new Error(`symbolId unknown for ${sym}`)
             const byTf = await wsGetTrendbarsBatch(
               creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
-              sid, ['D1'], count, 20_000, 0)
-            return byTf.D1 || []
+              sid, [ATR_BAR_PERIOD_KEY], count, 20_000, 0)
+            return byTf[ATR_BAR_PERIOD_KEY] || []
           }
           if (!symbols.length) {
             // Say it, and beat FAILED. A sweep with no symbols that beats OK

@@ -15,8 +15,9 @@ import { initDB, setState } from '../db.js'
 import { readTradableUnion } from './watchlists.js'
 import { computeRegime, meanAtr } from './regime.js'
 import { beat, lastOkMs } from './heartbeat.js'
+import { TRENDBAR_PERIODS } from '../lib/ctrader-ws.js'
 import {
-  classifyVolRegime, percentileRank, bandFor, atrHistory, refreshAtrHistory,
+  classifyVolRegime, percentileRank, bandFor, atrHistory, refreshAtrHistory, ATR_BAR_PERIOD_KEY,
   pruneAtrHistory, HISTORY_DAYS, MIN_DAYS_FOR_VERDICT, ATR_PERIOD,
 } from './vol-gate.js'
 
@@ -366,4 +367,33 @@ test('lastOkMs survives a restart, which a loop counter does not', () => {
 test('an unknown controller reads as never-succeeded rather than throwing', () => {
   const db = initDB(':memory:')
   assert.equal(lastOkMs(db, 'not_a_controller'), 0)
+})
+
+// ---------------------------------------------------------------------------
+// #170, FOURTH DEFECT — the sweep asked the broker for a period that does not
+// exist.
+//
+// loop.js requested `'D1'`. TRENDBAR_PERIODS is keyed `'1d'`, and
+// parseTimeframe does not accept the reversed form either, so all 185 symbols
+// threw `unknown period "D1"` before a single bar was fetched. The sweep had
+// never once succeeded. Each earlier defect stood in front of this one and hid
+// it: a symbol that stringifies to "[OBJECT OBJECT]" never reaches the fetch,
+// so the period was never exercised.
+//
+// A bare string that must match a key in another module's frozen table is
+// exactly what a test should assert. This is that assertion.
+// ---------------------------------------------------------------------------
+
+test('the ATR sweep asks for a period the broker layer actually knows', () => {
+  const spec = TRENDBAR_PERIODS[ATR_BAR_PERIOD_KEY]
+  assert.ok(spec, `"${ATR_BAR_PERIOD_KEY}" is not a TRENDBAR_PERIODS key — the sweep would throw before fetching anything`)
+  // And it must be DAILY. A valid-but-wrong key (say '1h') would fetch happily
+  // and quietly build a baseline of the wrong resolution — a worse failure
+  // than the throw, because nothing would report it.
+  assert.equal(spec.ms, 86_400_000, 'atr_history is a DAILY series; the bar period must be one day')
+})
+
+test('the reversed form that broke production is still not a valid key', () => {
+  assert.equal(TRENDBAR_PERIODS.D1, undefined,
+    'if "D1" ever becomes an alias, the constant above should be revisited rather than silently working')
 })
