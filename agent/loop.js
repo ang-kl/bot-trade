@@ -3006,11 +3006,42 @@ async function runLoop(db) {
         // spends broker calls on it — which is what staging was doing.
         const lastAtrTry = Number(getState(db, 'atr_refresh_last_attempt_ms')) || 0
         const seedBackoffOk = Date.now() - lastAtrTry > 3600_000
-        if (creds.ready && !cycleOverBudget() && (loopCount % 288 === 11 || (haveAtr === 0 && seedBackoffOk))) {
+        // #170, SECOND DEFECT (2026-08-03): the daily cadence was
+        // `loopCount % 288 === 11`. `loopCount` is a module-level variable
+        // initialised to 0 at the top of this file, so it resets on every
+        // process start — and 288 five-minute loops is a day, meaning loop 11
+        // lands ~55 minutes after boot. On a host that redeploys or restarts
+        // more often than that, the daily sweep NEVER RUNS. The empty-table
+        // self-seed masked it: while atr_history was empty something still
+        // fired hourly, so the bug only becomes visible once the table has
+        // rows — at which point the baseline silently ages and every symbol
+        // reads NORMAL again, which is the exact failure #170 is about.
+        //
+        // The schedule now hangs off the controller's own last SUCCESS, which
+        // is already recorded in controller_heartbeats and already survives a
+        // restart. `seedBackoffOk` still caps attempts at one an hour, so a
+        // sweep that keeps failing costs the broker one burst per hour rather
+        // than one per five-minute loop.
+        const { lastOkMs } = await import('./services/heartbeat.js')
+        const atrLastOk = lastOkMs(db, 'atr_refresh')
+        const atrDue = Date.now() - atrLastOk > 86_400_000
+        if (creds.ready && !cycleOverBudget() && seedBackoffOk && (atrDue || haveAtr === 0)) {
           setState(db, 'atr_refresh_last_attempt_ms', String(Date.now()))
           phase('ATR baseline refresh')
           const { refreshAtrHistory, pruneAtrHistory } = await import('./services/vol-gate.js')
-          const symbolMap = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+          // #170, THIRD DEFECT: this read the map raw. `symbol_id_map` is
+          // written when an account is linked, and a DB wipe, a fresh volume
+          // or a never-relinked account leaves it EMPTY — in which case every
+          // symbol here throws "symbolId unknown" and the sweep reports 0/N
+          // with a perfectly accurate error message that names the wrong
+          // cause. `ensureSymbolMap` is the existing self-heal (it downloads
+          // the broker's light symbol list and persists it) and every other
+          // consumer that cannot proceed without the map already uses it.
+          // One extra broker call at most once an hour, and only when the map
+          // is genuinely empty.
+          const { ensureSymbolMap } = await import('./lib/ctrader-creds.js')
+          let symbolMap = {}
+          try { symbolMap = await ensureSymbolMap(db, creds) } catch { symbolMap = getSymbolMap(db) }
           // #170, ROOT CAUSE (production, 2026-08-02): this read the raw
           // watchlist JSON and handed the parsed array straight to
           // refreshAtrHistory, which does `String(raw).toUpperCase()`. The
@@ -3070,6 +3101,12 @@ async function runLoop(db) {
             // protection audit reading "idle".
             log('ATR baseline: no symbols in autopilot_symbols_json or watchlist_json — nothing to refresh')
             await hbeat(db, 'atr_refresh', false, 'no symbols configured')
+          } else if (!Object.keys(symbolMap).length) {
+            // Distinct from "every fetch failed". N identical "symbolId
+            // unknown" errors describe the symptom; this names the cause once,
+            // and spends no broker calls proving it N times.
+            log(`ATR baseline: symbol_id_map is empty — ${symbols.length} symbols cannot be resolved to broker ids; relink the account`)
+            await hbeat(db, 'atr_refresh', false, `symbol_id_map empty — ${symbols.length} symbols unresolvable`)
           } else {
           // COLLECT THE REASONS, not just the count. refreshAtrHistory has
           // always taken an onError hook and this caller has never passed
