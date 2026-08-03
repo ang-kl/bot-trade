@@ -93,12 +93,50 @@ export async function runLossCap(db, creds, deps = {}) {
   })
   const nowMs = deps.now ?? Date.now()
 
-  const [rec, pnlMap] = await Promise.all([
-    exec.reconcile(creds),
-    ws.wsGetUnrealizedPnl(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId),
-  ])
+  // BROKER FIRST, DERIVED SECOND. wsGetUnrealizedPnl is the accurate source —
+  // it includes swap and commission — but production refuses it outright
+  // ("CANT_ROUTE_REQUEST", every pass), and a cap whose only feed is a call
+  // that never answers is not a cap. So its failure is caught, not fatal, and
+  // the P&L is derived from the position + the guardian's live spot instead.
+  //
+  // Reconcile is NOT in the same catch: without positions there is nothing to
+  // check at all, and a silent empty list would look identical to a clean
+  // account.
+  const rec = await exec.reconcile(creds)
   const positions = rec?.position || []
   if (!positions.length) return out
+
+  let pnlMap = null
+  let pnlSource = 'broker'
+  try {
+    pnlMap = await ws.wsGetUnrealizedPnl(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId)
+  } catch (err) {
+    pnlMap = null
+    out.errors.push(`unrealized P&L unavailable from broker (${err?.message || err}) — deriving from live spot`)
+  }
+  if (!pnlMap || !Object.keys(pnlMap).length) {
+    const { deriveUnrealizedMap } = await import('./unrealized-pnl.js')
+    const { spotFor } = await import('./guardian.js')
+    let idToSym = {}
+    try {
+      const m = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+      idToSym = Object.fromEntries(Object.entries(m).map(([sym, id]) => [String(id), sym]))
+    } catch { idToSym = {} }
+    const derived = deriveUnrealizedMap(
+      positions,
+      (id) => (deps.spotFor ?? spotFor)(id),
+      { symbolOf: (id) => idToSym[String(id)] || null },
+    )
+    pnlMap = derived.map
+    pnlSource = 'derived'
+    out.derived = { covered: derived.covered, missingPrice: derived.missingPrice }
+    // A position with no live price is UNPROTECTED and must say so. Silence
+    // here is how a cap comes to look healthy while watching nothing.
+    if (derived.missingPrice > 0) {
+      out.errors.push(`${derived.missingPrice} position(s) have no fresh price — not covered by the loss cap this pass`)
+    }
+  }
+  out.pnlSource = pnlSource
 
   // symbolId → name for readable alerts; ledger set for scope 'bot'.
   let idToSymbol = {}

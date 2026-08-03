@@ -38,6 +38,59 @@ import { readTradableUnion } from './watchlists.js'
 import { isSpikeMove, SPIKE_PCT_PER_MIN } from './fast-monitor.js'
 
 /** Pure: is this move big enough to wake the guards? */
+// ---------------------------------------------------------------------------
+// LIVE SPOT CACHE — the guardian already receives every tick it needs.
+//
+// The per-position loss cap's only source of floating P&L was cTrader's
+// GET_POSITION_UNREALIZED_PNL_REQ (payloadType 2187), and production refuses
+// it: "CANT_ROUTE_REQUEST — Cannot route request", on every 60s pass, while
+// app auth, account auth and this very spot stream work fine on the same host,
+// token and account. One request type, permanently unroutable — so the cap had
+// no numbers and could not act, on any account.
+//
+// It does not need that call. The guardian is already streaming spots for
+// every held symbol AND the watchlist (185 symbols in production), and a
+// position's floating P&L is (current − entry) × size, which is arithmetic.
+// So the ticks are recorded here, once, with a timestamp, and anything that
+// needs a live price reads them instead of asking the broker again.
+//
+// STALENESS IS EXPLICIT. `spotFor` returns null past `maxAgeMs` rather than a
+// stale number. A loss cap acting on a price from twenty minutes ago is worse
+// than one that abstains and says why — the whole reason this exists is that
+// something silently had no data.
+// ---------------------------------------------------------------------------
+const SPOT = new Map() // symbolId → { price, at }
+
+/** Default freshness bound. A tick older than this is not a live price. */
+export const SPOT_MAX_AGE_MS = 120_000
+
+/** Record a tick. Exported for tests; the stream handler calls it. */
+export function recordSpot(symbolId, price, at = Date.now()) {
+  if (symbolId == null || !(price > 0)) return
+  SPOT.set(Number(symbolId), { price, at })
+}
+
+/**
+ * Freshest mid for a symbolId, or null when there is none or it is stale.
+ * @returns {number|null}
+ */
+export function spotFor(symbolId, { now = Date.now(), maxAgeMs = SPOT_MAX_AGE_MS } = {}) {
+  const hit = SPOT.get(Number(symbolId))
+  if (!hit) return null
+  if (now - hit.at > maxAgeMs) return null
+  return hit.price
+}
+
+/** How many symbols currently carry a fresh price — for diagnostics. */
+export function spotCoverage({ now = Date.now(), maxAgeMs = SPOT_MAX_AGE_MS } = {}) {
+  let fresh = 0
+  for (const v of SPOT.values()) if (now - v.at <= maxAgeMs) fresh++
+  return { tracked: SPOT.size, fresh }
+}
+
+/** Test seam only — the cache is module state by design (one stream, one map). */
+export function __resetSpots() { SPOT.clear() }
+
 export function significantMove(prevPrice, price, minPct = 0.05) {
   if (!(prevPrice > 0) || !(price > 0)) return false
   return Math.abs((price - prevPrice) / prevPrice) * 100 >= minPct
@@ -149,6 +202,11 @@ export function startGuardian(db, getCreds, deps = {}) {
   const onTick = (creds) => (tick) => {
     const price = tick.bid != null && tick.ask != null ? (tick.bid + tick.ask) / 2 : tick.bid ?? tick.ask
     if (!(price > 0)) return
+    // Every tick, held or watchlist-only, BEFORE any of the guard logic
+    // below returns early. The loss cap reads this map; a price recorded only
+    // on the paths that happen to continue would be missing exactly when a
+    // symbol is quiet, which is not when you want to lose sight of a position.
+    recordSpot(tick.symbolId, price)
     if (heldIds.has(tick.symbolId)) {
       const minPct = Number(getState(db, 'guardian_move_pct')) || 0.05
       const prev = lastEval.get(tick.symbolId)
