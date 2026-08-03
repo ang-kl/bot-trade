@@ -2515,6 +2515,42 @@ export default function stateRouter(db) {
           accountId: acct ?? (getState(db, 'ctrader_account_id') || null),
           isLive: getState(db, 'ctrader_is_live') === 'true',
         },
+        // TODAY'S ACTUAL ALLOWANCE, computed by the same function the risk
+        // gate uses. The paced cap is a moving number, and the one thing worse
+        // than not showing it is showing a second, subtly different version of
+        // it: the FX-day anchor is DST-aware (17:00 New York), so a browser
+        // reimplementation would drift twice a year and disagree with the veto
+        // line. Null when nothing is paced.
+        dailyPacing: await (async () => {
+          const { fxDayOpenMs, fxDayStartSql } = await import('../services/risk.js')
+          const { pacedDailyCap } = await import('../services/daily-loss-pacing.js')
+          const balance = (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db)
+          if (!(balance > 0)) return null
+          const nowMs = Date.now()
+          const id = acct ?? (getState(db, 'ctrader_account_id') || null)
+          let spent = 0
+          try {
+            const row = db.prepare(
+              `SELECT COALESCE(SUM(net_pnl), 0) AS pnl FROM trades
+                WHERE status = 'closed' AND REPLACE(closed_at, 'T', ' ') >= ?
+                  AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+            ).get(fxDayStartSql(nowMs), id, id)
+            spent = Math.max(0, -(row?.pnl || 0))
+          } catch { /* no trades table slice — report the allowance, not the spend */ }
+          const p = pacedDailyCap({
+            balance,
+            basePct: effective.dailyLossPct,
+            maxPct: effective.dailyLossPctMax,
+            absoluteFallback: effective.dailyLossLimit,
+            nowMs,
+            dayOpenMs: fxDayOpenMs(nowMs),
+            spentUsd: spent,
+            perTradeRiskUsd: effective.perTradeRiskUsd > 0
+              ? Number(effective.perTradeRiskUsd)
+              : balance * effective.perTradeRiskPct,
+          })
+          return { ...p, spentUsd: spent, accountId: id }
+        })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',
           movePct: Number(getState(db, 'guardian_move_pct')) || 0.05,

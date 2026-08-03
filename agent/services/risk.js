@@ -23,6 +23,7 @@ import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
+import { pacedDailyCap, describePacing } from './daily-loss-pacing.js'
 
 /**
  * Carry-cost check (pure apart from the sync symbol_hours read). Returns
@@ -113,6 +114,12 @@ export function evaluateSlippageDrift(db, proposal, maxAdversePct, minTrades = 5
 export const DEFAULT_RISK_CONFIG = {
   dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
   dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
+  // Owner 03-08-2026: the daily budget may RAMP across the FX day instead of
+  // being available all at once — dailyLossPct is what the day OPENS with,
+  // dailyLossPctMax is the most it can ever reach, and the allowance moves
+  // between them with elapsed day time. null (or ≤ dailyLossPct) = the flat
+  // cap, unchanged. See services/daily-loss-pacing.js.
+  dailyLossPctMax: null,
   // P1 / audit F-L6-06: a closed trade with NULL net_pnl is UNKNOWN, not zero.
   // Past the grace window it blocks new entries rather than letting the
   // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
@@ -725,13 +732,37 @@ export function evaluateTrade(db, proposal, configOverride) {
     .get(dayStartSql, acct, acct)
   const todayPnl = todayRow?.pnl || 0
   checks.daily_pnl = todayPnl
-  const effectiveDailyCap = balance != null
-    ? balance * config.dailyLossPct
-    : config.dailyLossLimit
+  // The allowance may be PACED across the FX day (dailyLossPctMax set) or
+  // flat (it isn't). pacedDailyCap collapses to the old arithmetic in the
+  // flat case, so this is one code path rather than two.
+  const nowMs = Date.now()
+  const pacing = pacedDailyCap({
+    balance,
+    basePct: config.dailyLossPct,
+    maxPct: config.dailyLossPctMax,
+    absoluteFallback: config.dailyLossLimit,
+    nowMs,
+    dayOpenMs: fxDayOpenMs(nowMs),
+    spentUsd: Math.max(0, -todayPnl),
+    // What one trade typically costs on this account, for "~N more trades".
+    perTradeRiskUsd: config.perTradeRiskUsd > 0
+      ? Number(config.perTradeRiskUsd)
+      : (balance > 0 ? balance * config.perTradeRiskPct : 0),
+  })
+  const effectiveDailyCap = pacing.capUsd
   checks.daily_cap_usd = Number(effectiveDailyCap.toFixed(2))
+  if (pacing.paced) {
+    checks.daily_cap_paced = true
+    checks.daily_cap_pct = Number((pacing.pct * 100).toFixed(3))
+    checks.daily_cap_ceiling_usd = Number(pacing.ceilingUsd.toFixed(2))
+    checks.daily_day_elapsed = Number(pacing.elapsed.toFixed(3))
+  }
+  checks.daily_budget_left_usd = pacing.remainingUsd == null ? null : Number(pacing.remainingUsd.toFixed(2))
+  checks.daily_trades_left = pacing.tradesLeft
   if (todayPnl <= -Math.abs(effectiveDailyCap)) {
+    const tail = describePacing(pacing)
     return veto(
-      `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}`,
+      `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}${tail ? ` — ${tail}` : ''}`,
       checks, proposal,
     )
   }
