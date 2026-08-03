@@ -635,7 +635,31 @@ export default function Risk() {
           <SectionTitle>Account Risk Configuration form</SectionTitle>
           <div className="space-y-2">
             <Field label={`Daily loss cap${mark('dailyLossPct')}`} applied={appliedKeys.has('dailyLossPct')} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
-              hint="New entries stop for the day once closed P&L is down this % of balance." recommend="3% of balance." />
+              hint="New entries stop for the day once closed P&L is down this % of balance. When a day ceiling is set below, this is what the day OPENS with." recommend="3% of balance." />
+            {/* Owner 03-08-2026: "raise to 8.8% and dynamic-intelligent
+                adjusted down from 18.8% … for longevity to trade". Empty =
+                the flat cap above, unchanged — the ramp is opt-in. */}
+            <Field label={`Day ceiling (paced)${mark('dailyLossPctMax')}`} applied={appliedKeys.has('dailyLossPctMax')} pct value={risk.dailyLossPctMax} onChange={v => setRisk(r => ({ ...r, dailyLossPctMax: v }))}
+              placeholder="off"
+              hint="The MOST a day may ever cost. Set it above the cap and the allowance ramps from the cap at the FX day open to this by the day's end — so a bad first hour stops early instead of spending the whole day's budget. Empty = flat cap."
+              recommend="empty (flat), or ~2× the daily cap when pacing." />
+            {/* Where the paced allowance stands RIGHT NOW — served by the
+                agent (data.dailyPacing), from the same function the risk gate
+                calls. Recomputing it in the browser would mean a second
+                DST-aware FX-day anchor that drifts from the veto line twice a
+                year. */}
+            {data?.dailyPacing?.paced && (
+              <div className="glass-inset rounded-[1px] p-1.5 text-[9px] text-[var(--color-text-sub)]">
+                Now, {(data.dailyPacing.elapsed * 100).toFixed(0)}% through the FX day:
+                <span className="font-semibold tabular-nums text-[var(--color-text)]">
+                  {' '}{(data.dailyPacing.pct * 100).toFixed(2)}% = ${fmt$(data.dailyPacing.capUsd)}
+                </span>
+                {' '}· ceiling ${fmt$(data.dailyPacing.ceilingUsd)}
+                {' '}· spent ${fmt$(data.dailyPacing.spentUsd)}
+                {' '}· <span className="font-semibold text-[var(--color-text)]">${fmt$(data.dailyPacing.remainingUsd)} left</span>
+                {data.dailyPacing.tradesLeft != null && <> (~{data.dailyPacing.tradesLeft} more trades)</>}
+              </div>
+            )}
             <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} applied={appliedKeys.has('dailyLossLimit')} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
               hint="Absolute USD cap used only when balance is unknown." recommend="$300." />
             <Field label={`Equity stop${mark('equityStopPct')}`} applied={appliedKeys.has('equityStopPct')} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
@@ -661,7 +685,7 @@ export default function Risk() {
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
             </label>
             <div className="flex items-center gap-2">
-              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
+              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
               {/* Migrated from Tune > Risk (UI-6). This resets EVERY key in
                   risk_config_json, not just this card's — it is the only
                   control on the page with that reach, so it confirms first. */}

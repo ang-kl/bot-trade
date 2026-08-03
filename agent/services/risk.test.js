@@ -475,6 +475,56 @@ test('equity-aware — $10k balance, EURUSD: risk-based volume computed (5% defa
   assert.equal(res.adjusted_volume, 0.01)
 })
 
+// Paced daily budget (owner 03-08-2026) ------------------------------------
+// The unit arithmetic lives in daily-loss-pacing.test.js. What matters HERE
+// is that the gate actually uses it, and — the part that could go wrong
+// silently — that an unconfigured ceiling leaves the limit exactly where it
+// was.
+
+test('paced budget — no dailyLossPctMax leaves the flat cap untouched', () => {
+  const db = freshDB()
+  setBalance(db, 10000)                       // 3% = $300
+  insertClosedTrade(db, -299)
+  assert.equal(evaluateTrade(db, goodProposal(), NO_SYMBOL_COOLDOWN).approved, true)
+  const db2 = freshDB()
+  setBalance(db2, 10000)
+  insertClosedTrade(db2, -301)
+  const res = evaluateTrade(db2, goodProposal(), NO_SYMBOL_COOLDOWN)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /daily_loss_limit_hit/)
+  assert.ok(!/paced/.test(res.veto_reason), 'an unpaced cap must not claim to be paced')
+  assert.equal(res.checks.daily_cap_paced, undefined)
+})
+
+test('paced budget — a ceiling raises the cap and says so on the veto line', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  insertClosedTrade(db, -400)                 // over the flat 3% ($300)…
+  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
+  const res = evaluateTrade(db, goodProposal(), cfg)
+  // …but inside the paced allowance, which is ≥ 3% at every point of the day.
+  assert.equal(res.approved, true, `got: ${res.veto_reason}`)
+  assert.equal(res.checks.daily_cap_paced, true)
+  assert.ok(res.checks.daily_cap_usd >= 300)
+  assert.equal(res.checks.daily_cap_ceiling_usd, 1800)
+  // The ask was "how many can be trade" — the answer is on the record.
+  assert.equal(typeof res.checks.daily_trades_left, 'number')
+  assert.ok(res.checks.daily_budget_left_usd > 0)
+})
+
+test('paced budget — the ceiling still stops it, with the pacing explained', () => {
+  const db = freshDB()
+  setBalance(db, 10000)
+  insertClosedTrade(db, -1900)                // past 18% of 10k
+  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
+  const res = evaluateTrade(db, goodProposal(), cfg)
+  assert.equal(res.approved, false)
+  assert.match(res.veto_reason, /daily_loss_limit_hit/)
+  assert.match(res.veto_reason, /paced .* through the FX day/)
+  assert.equal(res.checks.daily_budget_left_usd, 0)
+  assert.equal(res.checks.daily_trades_left, 0)
+})
+
 test('equity-aware — daily cap scales with balance (%)', () => {
   const db = freshDB()
   setBalance(db, 10000) // 3% = $300 daily cap
