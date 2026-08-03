@@ -23,6 +23,9 @@ import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView, loadStageMatrix, stageOverlayKeys } from '../services/stage-matrix.js'
+// Aliased: this handler already has a local `overlayKeys` for the RISK
+// overlay, and the shadow made the call below resolve to that array.
+import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
 import { currentJob, getJob, jobMeta } from '../services/backtest-job.js'
 import { postmortemStats, pendingLessons } from '../services/loss-postmortem.js'
 import { readRecentErrors } from '../services/error-log.js'
@@ -2585,7 +2588,14 @@ export default function stateRouter(db) {
         // for the ratchet, the live staircase state to render.
         lossCap: await (async () => {
           const { loadLossCapConfig, DEFAULT_LOSS_CAP } = await import('../services/loss-cap.js')
-          return { effective: loadLossCapConfig(db), defaults: DEFAULT_LOSS_CAP }
+          return {
+            effective: loadLossCapConfig(db, acct),
+            defaults: DEFAULT_LOSS_CAP,
+            accountId: acct,
+            // Which fields THIS account has pinned. Named, so an override can
+            // never be invisible — the same rule the risk overlay follows.
+            overlayKeys: acct ? acctOverlayKeys(db, 'loss_cap_json', acct) : [],
+          }
         })(),
         profitRatchet: await (async () => {
           const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, loadRatchetState } = await import('../services/profit-ratchet.js')

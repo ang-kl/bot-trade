@@ -23,6 +23,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 
 export const DEFAULT_LOSS_CAP = {
@@ -39,13 +40,16 @@ export const DEFAULT_LOSS_CAP = {
   retryMinutes: 10,          // re-attempt a failed/ignored breach after this long
 }
 
-export function loadLossCapConfig(db) {
-  try {
-    const saved = JSON.parse(getState(db, 'loss_cap_json') || 'null')
-    return { ...DEFAULT_LOSS_CAP, ...(saved || {}) }
-  } catch {
-    return { ...DEFAULT_LOSS_CAP }
-  }
+export const LOSS_CAP_KEY = 'loss_cap_json'
+
+/**
+ * @param {string|number|null} accountId  null = the shared config itself;
+ *   an id returns the shared config with THAT account's overlay merged on top
+ *   (partial — unset fields keep following the shared value). See
+ *   services/account-overlay.js for why the pattern lives in one place.
+ */
+export function loadLossCapConfig(db, accountId = null) {
+  return loadWithOverlay(db, DEFAULT_LOSS_CAP, LOSS_CAP_KEY, accountId)
 }
 
 /**
@@ -77,7 +81,12 @@ export function effectiveCapUsd(cfg, balance) {
  */
 export async function runLossCap(db, creds, deps = {}) {
   const out = { checked: 0, breaches: 0, closes: 0, errors: [] }
-  const cfg = loadLossCapConfig(db)
+  // PER-ACCOUNT CONFIG (04-08-2026). This sweep already runs per account —
+  // creds carries the one it is authorised for, and the balance below is that
+  // account's — but the cap it enforced came from one shared key. An account
+  // with its own overlay now gets its own cap; every other account is
+  // unchanged, including when no overlay exists anywhere.
+  const cfg = loadLossCapConfig(db, creds?.accountId ?? null)
   if (!cfg.on || !creds?.ready) return out
   // Per-account balance, not the global one: a 1% cap computed from the
   // SELECTED account's balance would be the wrong number for every other

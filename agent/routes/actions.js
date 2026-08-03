@@ -497,9 +497,19 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/loss-cap', async (req, res) => {
     try {
-      const { loadLossCapConfig } = await import('../services/loss-cap.js')
-      const cur = loadLossCapConfig(db)
+      const { loadLossCapConfig, LOSS_CAP_KEY } = await import('../services/loss-cap.js')
+      const { saveWithOverlay, clearOverlay } = await import('../services/account-overlay.js')
       const b = req.body || {}
+      // accountId scopes the write to that account's overlay; absent, the
+      // shared config — identical to the behaviour before overlays.
+      const acct = b.accountId == null ? null : String(b.accountId)
+      if (b.reset === true && acct) {
+        const { DEFAULT_LOSS_CAP } = await import('../services/loss-cap.js')
+        clearOverlay(db, setState, LOSS_CAP_KEY, acct)
+        console.log(`[actions] loss cap: overlay cleared for account ${acct}`)
+        return res.json({ ok: true, lossCap: loadLossCapConfig(db, acct), accountId: acct, defaults: DEFAULT_LOSS_CAP })
+      }
+      const cur = loadLossCapConfig(db, acct)
       const num = (v, name, max) => {
         if (v === null) return null
         const n = Number(v)
@@ -515,9 +525,16 @@ export default function actionsRouter(db) {
         ...(b.action !== undefined ? { action: b.action === 'alert' ? 'alert' : 'close' } : {}),
         ...(b.retryMinutes !== undefined ? { retryMinutes: num(b.retryMinutes, 'retryMinutes', 1440) } : {}),
       }
-      setState(db, 'loss_cap_json', JSON.stringify(next))
-      console.log(`[actions] loss cap → ${next.on ? 'ON' : 'off'} $${next.maxLossUsd ?? '—'} / ${next.maxLossPctOfBalance ?? '—'}% scope=${next.scope} action=${next.action}`)
-      res.json({ ok: true, lossCap: next })
+      // Only the fields this request actually named enter the store, so an
+      // account overlay stays partial and a shared change still reaches the
+      // fields it never pinned.
+      const patch = {}
+      for (const k of Object.keys(next)) if (b[k] !== undefined) patch[k] = next[k]
+      const saved = saveWithOverlay(db, setState, {
+        defaults: cur, baseKey: LOSS_CAP_KEY, accountId: acct, patch,
+      })
+      console.log(`[actions] loss cap${acct ? ` (account ${acct})` : ''} → ${saved.next.on ? 'ON' : 'off'} $${saved.next.maxLossUsd ?? '—'} / ${saved.next.maxLossPctOfBalance ?? '—'}% scope=${saved.next.scope} action=${saved.next.action}`)
+      res.json({ ok: true, lossCap: saved.next, accountId: acct, overlayKeys: saved.overlayKeys })
     } catch (err) {
       res.status(400).json({ error: err.message })
     }

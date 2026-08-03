@@ -548,7 +548,17 @@ export default function Risk() {
             three Save buttons at the bottom of three columns were easy to miss
             on a phone. This bar says so, and offers the single button the
             heading implies. */}
-        <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />
+        {/* The loss cap now has a real per-account overlay; the other two do
+            not YET, and saying so is the whole point of this bar. */}
+        {riskScoped
+          ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-[9px] text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
+              <b className="text-[var(--color-text)]">Per-position loss cap: editing this account&apos;s overlay.</b>{' '}
+              {data?.lossCap?.overlayKeys?.length > 0
+                ? `${data.lossCap.overlayKeys.length} field${data.lossCap.overlayKeys.length === 1 ? '' : 's'} pinned here; the rest follow the shared settings.`
+                : 'This account follows the shared settings — saving pins only the fields you changed.'}
+              {' '}The profit ratchet and Loss Guardian below are still shared by every account.
+            </div>
+          : <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
           <span className="text-[var(--color-text-sub)]">
             Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
@@ -559,7 +569,7 @@ export default function Risk() {
               // Sequential, not parallel: each route re-reads and rewrites its
               // own state key, and a failure part-way must leave what it has
               // already written intact rather than half-applied.
-              if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', lossCap); untouch('loss-cap') }
+              if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap); untouch('loss-cap') }
               if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', ratchet); untouch('ratchet') }
               if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', guardian2); untouch('loss-guardian') }
             })}
@@ -617,7 +627,7 @@ export default function Risk() {
                 </div>
               )
             })()}
-            <span data-save-pulse="loss-cap"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', lossCap))}>Save loss cap</Button></span>
+            <span data-save-pulse="loss-cap"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-cap', () => agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap))}>Save loss cap</Button></span>
           </div>
 
           {/* Layer 2 — profit ratchet staircase (A4) */}
