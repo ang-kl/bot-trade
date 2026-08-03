@@ -185,3 +185,66 @@ test('an ambiguous marker inside the widened window still blocks', () => {
   assert.ok(db.prepare(AMBIGUOUS_LOOKUP).get('EURUSD', 'BUY', WINDOW_SQL, '111'),
     'a 4-minute-old ambiguous submission was invisible under the 3-minute window')
 })
+
+// ---------------------------------------------------------------------------
+// THE SCHEMA, NOT THE LOGIC.
+//
+// The write-ahead intent row was written, tested, linted and passed CI green —
+// and would have halted trading on the first entry. `trades.status` carries a
+// CHECK constraint, and 'submitting' was not in it, so the INSERT throws
+// BEFORE the broker is called. Nothing exercised that statement, so nothing
+// caught it. These do: they run the real INSERT and UPDATE against the real
+// schema, which is the only thing that can.
+//
+// The same class already bit this repo once — see the 'rejected' migration in
+// db.js and the comment "owner hit CHECK constraint failed".
+// ---------------------------------------------------------------------------
+
+test('the write-ahead intent row is actually insertable', () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
+                        opened_at, status, strategy, account_id, source)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade')
+  `).run('EURUSD', 'BUY', 1.08, 1.07, 1.09, 0.01, 'fib_confluence', '111').lastInsertRowid
+  assert.ok(id > 0)
+  assert.equal(db.prepare('SELECT status FROM trades WHERE id = ?').get(id).status, 'submitting')
+})
+
+test('both failure statuses are insertable, and they are DIFFERENT states', () => {
+  const db = initDB(':memory:')
+  const mk = (status) => db.prepare(
+    `INSERT INTO trades (symbol, side, opened_at, status) VALUES ('EURUSD','BUY',datetime('now'),?)`
+  ).run(status).lastInsertRowid
+  // Ambiguous — a position MAY exist, so this must keep blocking re-entry.
+  assert.ok(mk('unconfirmed') > 0)
+  // Provably unsent — must NOT block the next attempt.
+  assert.ok(mk('rejected') > 0)
+  const rows = db.prepare("SELECT status, COUNT(*) n FROM trades GROUP BY status").all()
+  assert.equal(rows.length, 2, 'the two outcomes must not collapse into one status')
+})
+
+test('the intent row is PROMOTED in place, never duplicated', () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(
+    `INSERT INTO trades (symbol, side, opened_at, status, volume) VALUES ('EURUSD','BUY',datetime('now'),'submitting',0.01)`
+  ).run().lastInsertRowid
+  db.prepare(
+    `UPDATE trades SET status = 'open', entry_price = ?, ctrader_position_id = ? WHERE id = ?`
+  ).run(1.0842, '234725452', id)
+  // One broker position, one ledger row. Inserting a second row on ACK would
+  // strand the 'submitting' one and put two entries behind one position — the
+  // accounting version of the bug this whole change exists to fix.
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM trades').get().n, 1)
+  const row = db.prepare('SELECT * FROM trades WHERE id = ?').get(id)
+  assert.equal(row.status, 'open')
+  assert.equal(row.ctrader_position_id, '234725452')
+})
+
+test('an unknown status is still rejected — the constraint is not just widened away', () => {
+  const db = initDB(':memory:')
+  assert.throws(
+    () => db.prepare(`INSERT INTO trades (symbol, side, opened_at, status) VALUES ('EURUSD','BUY',datetime('now'),'nonsense')`).run(),
+    /CHECK constraint failed/,
+    'the CHECK must still constrain — adding values must not turn it into a free-text column')
+})
