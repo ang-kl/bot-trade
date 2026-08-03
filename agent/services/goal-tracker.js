@@ -277,6 +277,11 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       isLive: reg?.is_live === 1,
       enabled: reg?.enabled === 1,
       stats: accountAnalytics(db, { accountId: id, days, now }),
+      // S4b — the card's OWN coverage, so its dot can print a number instead
+      // of "no scope reported". This is the panel that showed six per-account
+      // headings over one pooled set of 245 trades; the figure it lacked is
+      // exactly "how many of these rows are actually this account's".
+      coverage: rowCoverage(db, id, days),
       goal,
       left,
     })
@@ -291,6 +296,9 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
     isLive: null,
     enabled: null,
     stats: accountAnalytics(db, { accountId: null, days, now }),
+    // The roll-up is portfolio BY DESIGN — every closed trade belongs in it,
+    // so coverage is 100 by definition rather than by measurement.
+    coverage: null,
     goal,
     left,
   })
@@ -298,7 +306,40 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
   return { goal, now, daysRemaining: left, windowDays: days || null, accounts, portfolio }
 }
 
-function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left }) {
+/**
+ * What fraction of the CLOSED trades this card counts actually carry this
+ * account's id. Unstamped rows (account_id IS NULL) are included in the read —
+ * that is the existing OR-NULL convention — so they inflate the count without
+ * belonging to anyone. Saying so is the whole point of the dot.
+ *
+ * Best effort: any failure returns null, which the UI renders as UNKNOWN
+ * rather than as healthy.
+ */
+function rowCoverage(db, accountId, days) {
+  try {
+    const id = String(accountId)
+    // Params in SOURCE ORDER, built alongside the SQL. Interleaving a
+    // conditional placeholder with a hand-ordered .get() list is how a filter
+    // silently lands on the wrong value — this file should not repeat that.
+    const params = [id]                                   // the CASE WHEN
+    let win = ''
+    if (days) { win = " AND closed_at >= datetime('now', ?)"; params.push(`-${days} days`) }
+    params.push(id)                                       // the OR-NULL clause
+    const r = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN account_id = ? THEN 1 ELSE 0 END) AS mine
+        FROM trades
+       WHERE status = 'closed'${win}
+         AND (account_id = ? OR account_id IS NULL)
+    `).get(...params)
+    const total = Number(r?.total || 0)
+    if (total === 0) return { total: 0, attributable: 0, pct: 100 }
+    const mine = Number(r?.mine || 0)
+    return { total, attributable: mine, pct: Math.round((mine / total) * 1000) / 10 }
+  } catch { return null }
+}
+
+function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left, coverage = null }) {
   const trades = stats.trades || 0
   const sampleOk = trades >= goal.minTrades
   // Observed closing rate over this account's own span, floored at one day so
@@ -369,6 +410,10 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
 
   return {
     accountId: key,
+    // What fraction of the rows behind this card are actually this account's.
+    // null on the portfolio row, which spans them all by design.
+    attributablePct: coverage ? coverage.pct : null,
+    coverage,
     label,
     login,
     isLive,
