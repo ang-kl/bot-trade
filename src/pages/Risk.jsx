@@ -25,6 +25,7 @@ import { useAccountSwitch } from '../lib/use-account-switch.js'
 import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-dirty.js'
 import { ESSENTIALS, EVERYTHING, loadRiskMode, saveRiskMode, cardVisible } from '../lib/risk-view.js'
 import Advanced from '../components/common/Advanced.jsx'
+import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -500,6 +501,8 @@ export default function Risk() {
       })()}
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
+      {/* /actions/balance takes no accountId — one stored balance and leverage
+          for the whole bot, which is why an account switch never changes it. */}
       <Card id="sec-account" data-risk-card className="w3-hover-shadow">
         <SectionTitle badge={data?.account?.isLive ? <Badge tone="down">LIVE</Badge> : <Badge tone="info">DEMO</Badge>}>
           Global Account — cTrader risk configuration
@@ -545,6 +548,7 @@ export default function Risk() {
             three Save buttons at the bottom of three columns were easy to miss
             on a phone. This bar says so, and offers the single button the
             heading implies. */}
+        <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
           <span className="text-[var(--color-text-sub)]">
             Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
@@ -902,6 +906,7 @@ export default function Risk() {
               </div>
               <div>
                 <div className="text-[8px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
+                <GlobalScopeNote className="mb-1.5" what="The guardian move %, weekend profit bank and weekend loss flag" />
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label="Guardian move" pct value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
@@ -989,6 +994,7 @@ export default function Risk() {
           {cardVisible('sec-cpp', viewMode) && (
           <Card id="sec-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>C++ Risk Configuration form</SectionTitle>
+            <GlobalScopeNote className="mb-2" what="The sidecar's halt, bracket and volume guards" />
             <div className="grid grid-cols-1 @sm:grid-cols-2 gap-x-5 gap-y-1">
               <div className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="Kill switch: the C++ engine refuses EVERY order while halted.">Halt (kill switch)</span>

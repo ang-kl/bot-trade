@@ -2,6 +2,7 @@
 // pipeline toggles, autotrade timeframes, risk limits + account, watchlist,
 // backtest, presets. Folio tabs (one panel at a time) — no long scroll.
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
+import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import StrategyLivenessCard from '../components/StrategyLivenessCard.jsx'
@@ -428,10 +429,19 @@ function StageMatrix({ mx, onUpdated, onError, armTarget }) {
       </button>
       {/* Owner 02-08: "Right now I don't know the tune is for each account."
           Say it explicitly instead of leaving it implied. */}
+      {/* Owner 04-08-2026 measured it the hard way: "i try to change the setup
+          for different account but it didn't work". This WAS a muted grey line
+          that read as a footnote. /actions/stage-matrix takes no accountId at
+          all, so arming a strategy arms it everywhere — that deserves the same
+          warning bar the global cards on the Risk page now carry. */}
+      {open && (
+        <GlobalScopeNote className="mt-1"
+          what="Which strategies and filters run at each pipeline stage, including Auto Trade & Open" />
+      )}
       {open && (
         <p className="mt-0.5 text-[9px] text-[var(--color-muted)]">
-          Scope: GLOBAL — these stage settings apply to every trading account. Per-account arming lives in the
-          S.A.T switches on this page; per-account risk limits on the Risk page (overlay via the account selector).
+          Per-account arming lives in the S.A.T switches on this page; per-account risk limits on the Risk page
+          (overlay via the account selector).
         </p>
       )}
       {open && (
