@@ -65,3 +65,28 @@ test('the loss cap uses it — an account can hold a tighter cap than the shared
   // …and the rest of the cap config still comes from the shared settings.
   assert.equal(loadLossCapConfig(db, '5203012').on, true)
 })
+
+test('the profit ratchet and Loss Guardian use it too — three layers, one pattern', async () => {
+  const { loadProfitRatchetConfig, DEFAULT_PROFIT_RATCHET, PROFIT_RATCHET_KEY } = await import('./profit-ratchet.js')
+  const { loadLossGuardianConfig, DEFAULT_LOSS_GUARDIAN, LOSS_GUARDIAN_KEY } = await import('./loss-guardian.js')
+
+  // One account turns the ratchet OFF for itself while the shared config stays
+  // on — the case the owner could not express at all before today.
+  saveWithOverlay(db, setState, {
+    defaults: DEFAULT_PROFIT_RATCHET, baseKey: PROFIT_RATCHET_KEY, accountId: '5203012', patch: { on: false },
+  })
+  assert.equal(loadProfitRatchetConfig(db, '5203012').on, false)
+  assert.equal(loadProfitRatchetConfig(db, '5306502').on, DEFAULT_PROFIT_RATCHET.on)
+  assert.equal(loadProfitRatchetConfig(db).on, DEFAULT_PROFIT_RATCHET.on)
+  // Its OTHER fields still follow the shared config.
+  assert.equal(loadProfitRatchetConfig(db, '5203012').floorAction, DEFAULT_PROFIT_RATCHET.floorAction)
+
+  // The guardian: one account guards external-only, another guards everything.
+  saveWithOverlay(db, setState, {
+    defaults: DEFAULT_LOSS_GUARDIAN, baseKey: LOSS_GUARDIAN_KEY, accountId: '5203012', patch: { scope: 'external', maxAtrMult: 5 },
+  })
+  assert.equal(loadLossGuardianConfig(db, '5203012').scope, 'external')
+  assert.equal(loadLossGuardianConfig(db, '5203012').maxAtrMult, 5)
+  assert.equal(loadLossGuardianConfig(db, '5306502').scope, DEFAULT_LOSS_GUARDIAN.scope)
+  assert.equal(loadLossGuardianConfig(db, '5306502').maxAtrMult, DEFAULT_LOSS_GUARDIAN.maxAtrMult)
+})

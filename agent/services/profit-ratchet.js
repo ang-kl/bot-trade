@@ -36,6 +36,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
+import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 
 export const DEFAULT_PROFIT_RATCHET = {
@@ -48,13 +49,15 @@ export const DEFAULT_PROFIT_RATCHET = {
   rearmHoldMin: 15,       // minutes equity must hold above the recovery line
 }
 
-export function loadProfitRatchetConfig(db) {
-  try {
-    const saved = JSON.parse(getState(db, 'profit_ratchet_json') || 'null')
-    return { ...DEFAULT_PROFIT_RATCHET, ...(saved || {}) }
-  } catch {
-    return { ...DEFAULT_PROFIT_RATCHET }
-  }
+export const PROFIT_RATCHET_KEY = 'profit_ratchet_json'
+
+/**
+ * @param {string|number|null} accountId  null = the shared config; an id
+ *   returns the shared config with THAT account's overlay merged on top
+ *   (partial — unset fields keep following the shared value).
+ */
+export function loadProfitRatchetConfig(db, accountId = null) {
+  return loadWithOverlay(db, DEFAULT_PROFIT_RATCHET, PROFIT_RATCHET_KEY, accountId)
 }
 
 /** Pure: the auto step for a balance — 1% clamped to [$25, $500]. */
@@ -159,8 +162,18 @@ function accountsToWatch(db, creds) {
  * rearmed, closes, errors}], skipped? }.
  */
 export async function runProfitRatchet(db, creds, deps = {}) {
-  const cfg = loadProfitRatchetConfig(db)
-  if (!cfg.on || !creds?.ready) return { skipped: 'off_or_no_creds', accounts: [] }
+  if (!creds?.ready) return { skipped: 'off_or_no_creds', accounts: [] }
+  // PER-ACCOUNT CONFIG (04-08-2026). The staircase STATE was already per
+  // account; its settings were not, so "ratchet off for the demo account" was
+  // not expressible. The whole sweep is skipped only when NO watched account
+  // has it on — a union, so a single account turning it on still gets served
+  // even if the shared default is off.
+  const watched = accountsToWatch(db, creds)
+  const cfgFor = (id) => loadProfitRatchetConfig(db, id)
+  const anyOn = watched.length > 0
+    ? watched.some(id => cfgFor(id).on)
+    : loadProfitRatchetConfig(db).on
+  if (!anyOn) return { skipped: 'off_or_no_creds', accounts: [] }
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
   const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
@@ -170,8 +183,12 @@ export async function runProfitRatchet(db, creds, deps = {}) {
   const nowMs = deps.now ?? Date.now()
 
   const out = { accounts: [] }
-  for (const accountId of accountsToWatch(db, creds)) {
+  for (const accountId of watched) {
     try {
+      // Each account's OWN settings — step size, floor action, soft band and
+      // the on switch itself.
+      const cfg = cfgFor(accountId)
+      if (!cfg.on) { out.accounts.push({ accountId, skipped: 'ratchet_off_for_account' }); continue }
       const res = await ratchetOneAccount(db, { ...creds, accountId }, accountId, cfg, { exec, ws, notify, nowMs })
       if (res) out.accounts.push(res)
     } catch (err) {

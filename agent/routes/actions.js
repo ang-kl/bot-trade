@@ -547,9 +547,19 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/profit-ratchet', async (req, res) => {
     try {
-      const { loadProfitRatchetConfig } = await import('../services/profit-ratchet.js')
-      const cur = loadProfitRatchetConfig(db)
+      const { loadProfitRatchetConfig, PROFIT_RATCHET_KEY } = await import('../services/profit-ratchet.js')
+      const { saveWithOverlay, clearOverlay } = await import('../services/account-overlay.js')
       const b = req.body || {}
+      // accountId scopes to that account's overlay. resetState (the staircase
+      // wipe) stays GLOBAL on purpose — it is about stored state, not config,
+      // and its per-account gesture is /actions/ratchet-account.
+      const ratchetAcct = b.accountId == null ? null : String(b.accountId)
+      if (b.clearOverlay === true && ratchetAcct) {
+        clearOverlay(db, setState, PROFIT_RATCHET_KEY, ratchetAcct)
+        console.log(`[actions] profit ratchet: overlay cleared for account ${ratchetAcct}`)
+        return res.json({ ok: true, profitRatchet: loadProfitRatchetConfig(db, ratchetAcct), accountId: ratchetAcct })
+      }
+      const cur = loadProfitRatchetConfig(db, ratchetAcct)
       let stepUsd = cur.stepUsd
       if (b.stepUsd !== undefined) {
         if (b.stepUsd === null) stepUsd = null
@@ -565,7 +575,14 @@ export default function actionsRouter(db) {
         stepUsd,
         ...(b.floorAction !== undefined ? { floorAction: b.floorAction === 'halt' ? 'halt' : 'flatten' } : {}),
       }
-      setState(db, 'profit_ratchet_json', JSON.stringify(next))
+      // Partial write: only the fields this request named enter the store, so
+      // an account overlay stays partial and shared changes still reach the
+      // fields it never pinned.
+      const rPatch = {}
+      for (const k of Object.keys(next)) if (b[k] !== undefined) rPatch[k] = next[k]
+      saveWithOverlay(db, setState, {
+        defaults: cur, baseKey: PROFIT_RATCHET_KEY, accountId: ratchetAcct, patch: rPatch,
+      })
       if (b.resetState === true) {
         setState(db, 'profit_ratchet_state_json', 'null') // v1 legacy key
         // v2: every account's staircase re-baselines on its next pass, and
@@ -579,8 +596,8 @@ export default function actionsRouter(db) {
           }
         } catch { /* registry absent — nothing per-account to reset */ }
       }
-      console.log(`[actions] profit ratchet → ${next.on ? 'ON' : 'off'} step=${next.stepUsd ?? 'auto'} floorAction=${next.floorAction}${b.resetState ? ' (staircase reset)' : ''}`)
-      res.json({ ok: true, profitRatchet: next, stateReset: b.resetState === true })
+      console.log(`[actions] profit ratchet${ratchetAcct ? ` (account ${ratchetAcct})` : ''} → ${next.on ? 'ON' : 'off'} step=${next.stepUsd ?? 'auto'} floorAction=${next.floorAction}${b.resetState ? ' (staircase reset)' : ''}`)
+      res.json({ ok: true, profitRatchet: next, stateReset: b.resetState === true, accountId: ratchetAcct })
     } catch (err) {
       res.status(400).json({ error: err.message })
     }
@@ -652,8 +669,15 @@ export default function actionsRouter(db) {
   // -----------------------------------------------------------------------
   router.post('/loss-guardian', async (req, res) => {
     try {
-      const { loadLossGuardianConfig } = await import('../services/loss-guardian.js')
-      const cur = loadLossGuardianConfig(db)
+      const { loadLossGuardianConfig, LOSS_GUARDIAN_KEY } = await import('../services/loss-guardian.js')
+      const { saveWithOverlay: saveG, clearOverlay: clearG } = await import('../services/account-overlay.js')
+      const gAcct = req.body?.accountId == null ? null : String(req.body.accountId)
+      if (req.body?.clearOverlay === true && gAcct) {
+        clearG(db, setState, LOSS_GUARDIAN_KEY, gAcct)
+        console.log(`[actions] loss guardian: overlay cleared for account ${gAcct}`)
+        return res.json({ ok: true, lossGuardian: loadLossGuardianConfig(db, gAcct), accountId: gAcct })
+      }
+      const cur = loadLossGuardianConfig(db, gAcct)
       const b = req.body || {}
       const num = (v, name, min, max) => {
         if (v === null) return null
@@ -669,13 +693,15 @@ export default function actionsRouter(db) {
         ...(b.fallbackAdversePct !== undefined ? { fallbackAdversePct: num(b.fallbackAdversePct, 'fallbackAdversePct', 0.001, 0.2) ?? cur.fallbackAdversePct } : {}),
         ...(b.maxHoldHours !== undefined ? { maxHoldHours: num(b.maxHoldHours, 'maxHoldHours', 1, 720) } : {}),
       }
-      setState(db, 'loss_guardian_json', JSON.stringify(next))
+      const gPatch = {}
+      for (const k of Object.keys(next)) if (req.body?.[k] !== undefined) gPatch[k] = next[k]
+      saveG(db, setState, { defaults: cur, baseKey: LOSS_GUARDIAN_KEY, accountId: gAcct, patch: gPatch })
       console.log(`[actions] loss guardian → ${next.on ? 'ON' : 'off'} scope=${next.scope} atr=${next.maxAtrMult} fallback=${next.fallbackAdversePct} timeCap=${next.maxHoldHours ?? 'off'}`)
       // `config` mirrors GET /state/loss-guardian — Tune's Toggle reads
       // r.config, and the old `lossGuardian`-only reply made a successful arm
       // LOOK like it snapped back to OFF (owner report 2026-08-02). Both keys
       // stay so no caller breaks.
-      res.json({ ok: true, config: next, lossGuardian: next })
+      res.json({ ok: true, config: next, lossGuardian: next, accountId: gAcct })
     } catch (err) {
       res.status(400).json({ error: err.message })
     }

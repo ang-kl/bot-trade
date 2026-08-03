@@ -23,7 +23,7 @@
 // goes through the exec engine and lands in action_log + Telegram.
 // ---------------------------------------------------------------------------
 
-import { getState } from '../db.js'
+import { loadWithOverlay } from './account-overlay.js'
 import { roundToDigits } from './trade-guard.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
@@ -36,13 +36,14 @@ export const DEFAULT_LOSS_GUARDIAN = {
   maxHoldHours: null,       // optional hard time cap for positions without one (null = off)
 }
 
-export function loadLossGuardianConfig(db) {
-  try {
-    const saved = JSON.parse(getState(db, 'loss_guardian_json') || 'null')
-    return { ...DEFAULT_LOSS_GUARDIAN, ...(saved || {}) }
-  } catch {
-    return { ...DEFAULT_LOSS_GUARDIAN }
-  }
+export const LOSS_GUARDIAN_KEY = 'loss_guardian_json'
+
+/**
+ * @param {string|number|null} accountId  null = the shared config; an id
+ *   returns it with THAT account's overlay merged on top (partial).
+ */
+export function loadLossGuardianConfig(db, accountId = null) {
+  return loadWithOverlay(db, DEFAULT_LOSS_GUARDIAN, LOSS_GUARDIAN_KEY, accountId)
 }
 
 /**
@@ -107,22 +108,40 @@ function atrFromBars(bars, period) {
 export async function runLossGuardian(db, creds, deps = {}) {
   const summary = { checked: 0, stops: 0, closes: 0, errors: [] }
   try {
-    const cfg = loadLossGuardianConfig(db)
-    if (!cfg.on) return summary
-
-    const scopeSql = cfg.scope === 'all'
-      ? "mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual')"
-      : "mp.source IN ('external', 'manual')"
-    const rows = db.prepare(
+    // PER-ACCOUNT CONFIG (04-08-2026). `scope` and the on switch used to come
+    // from one shared key and were baked into the SQL, so one account could
+    // not guard external-only while another guarded everything.
+    //
+    // The query now fetches the WIDEST candidate set — every naked-eligible
+    // position with its account — and each row is judged against ITS OWN
+    // account's config below. A row whose account has the guardian off, or
+    // whose scope excludes its source, is dropped there.
+    const cfgCache = new Map()
+    const cfgFor = (accountId) => {
+      const k = accountId == null ? '' : String(accountId)
+      if (!cfgCache.has(k)) cfgCache.set(k, loadLossGuardianConfig(db, k || null))
+      return cfgCache.get(k)
+    }
+    const allRows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl,
-              mp.time_cap_at,
-              t.ctrader_position_id AS position_id
+              mp.time_cap_at, mp.source AS source,
+              t.ctrader_position_id AS position_id, t.account_id AS account_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
-         AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})`
+         AND t.ctrader_position_id IS NOT NULL
+         AND (mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual'))`
     ).all()
+    const rows = allRows.filter(r => {
+      const c = cfgFor(r.account_id)
+      if (!c.on) return false
+      // 'external' scope guards only positions this bot did not open. An
+      // UNSTAMPED source is treated as bot-owned, which is the conservative
+      // read: it keeps the narrower scope narrow.
+      if (c.scope !== 'all') return r.source === 'external' || r.source === 'manual'
+      return true
+    })
     if (rows.length === 0) return summary
 
     const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -147,16 +166,26 @@ export async function runLossGuardian(db, creds, deps = {}) {
     )
 
     // ATR per symbol — only needed to size a protective stop for a naked position.
-    const atrBySymbolId = {}
-    const nakedSymbolIds = [...new Set(involved.filter(x => (x.bp.stopLoss ?? x.r.current_sl) == null).map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
-    for (const id of nakedSymbolIds) {
+    // ATR per symbol AND per (timeframe, period) — those two are config, and
+    // config is now per account, so two accounts holding the same symbol with
+    // different ATR settings must not share one cached number. Keyed by the
+    // parameters that actually determine the value.
+    const atrCache = new Map()
+    const atrKey = (symbolId, c) => `${symbolId}|${c.atrTimeframe}|${c.atrPeriod}`
+    const naked = involved.filter(x => (x.bp.stopLoss ?? x.r.current_sl) == null)
+    for (const x of naked) {
+      const id = x.bp.tradeData?.symbolId
+      if (!id) continue
+      const c = cfgFor(x.r.account_id)
+      const key = atrKey(id, c)
+      if (atrCache.has(key)) continue
       try {
         const bars = await ws.wsGetTrendbarsBatch(
           creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
-          id, [cfg.atrTimeframe], Math.max(cfg.atrPeriod * 3, 50)
+          id, [c.atrTimeframe], Math.max(c.atrPeriod * 3, 50)
         )
-        atrBySymbolId[id] = atrFromBars(bars?.[cfg.atrTimeframe] || [], cfg.atrPeriod)
-      } catch { atrBySymbolId[id] = null }
+        atrCache.set(key, atrFromBars(bars?.[c.atrTimeframe] || [], c.atrPeriod))
+      } catch { atrCache.set(key, null) }
     }
 
     const updAct = db.prepare(
@@ -177,12 +206,14 @@ export async function runLossGuardian(db, creds, deps = {}) {
 
       const openMs = td.openTimestamp ? Number(td.openTimestamp) : null
       const ageHours = openMs != null ? (nowMs - openMs) / 3_600_000 : null
-      const decision = decideLossGuardian(cfg, {
+      // THIS position's account decides: stop distance, fallback and time cap.
+      const rowCfg = cfgFor(r.account_id)
+      const decision = decideLossGuardian(rowCfg, {
         side: r.side,
         entry: bp.price ?? r.entry_price,
         price,
         currentSl: bp.stopLoss ?? r.current_sl,
-        atr: atrBySymbolId[td.symbolId] ?? null,
+        atr: atrCache.get(atrKey(td.symbolId, rowCfg)) ?? null,
         digits: meta.digits,
         ageHours,
         hasOwnTimeCap: r.time_cap_at != null,

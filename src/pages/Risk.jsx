@@ -552,11 +552,11 @@ export default function Risk() {
             not YET, and saying so is the whole point of this bar. */}
         {riskScoped
           ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-[9px] text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
-              <b className="text-[var(--color-text)]">Per-position loss cap: editing this account&apos;s overlay.</b>{' '}
+              <b className="text-[var(--color-text)]">Editing this account&apos;s overlay — all three layers.</b>{' '}
               {data?.lossCap?.overlayKeys?.length > 0
                 ? `${data.lossCap.overlayKeys.length} field${data.lossCap.overlayKeys.length === 1 ? '' : 's'} pinned here; the rest follow the shared settings.`
                 : 'This account follows the shared settings — saving pins only the fields you changed.'}
-              {' '}The profit ratchet and Loss Guardian below are still shared by every account.
+              {' '}The profit ratchet and Loss Guardian are scoped the same way — each shows what it has pinned on its own card.
             </div>
           : <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />}
         <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
@@ -570,8 +570,8 @@ export default function Risk() {
               // own state key, and a failure part-way must leave what it has
               // already written intact rather than half-applied.
               if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', riskScoped ? { ...lossCap, accountId: riskAcct } : lossCap); untouch('loss-cap') }
-              if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', ratchet); untouch('ratchet') }
-              if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', guardian2); untouch('loss-guardian') }
+              if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet); untouch('ratchet') }
+              if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2); untouch('loss-guardian') }
             })}
           >
             {saving === 'protection-all' ? 'Saving…' : 'Save all three layers'}
@@ -588,6 +588,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
+              {riskScoped && data?.lossCap?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossCap.overlayKeys.length} pinned</span>}
               {dirty['loss-cap'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!lossCap?.on} label="On" offLabel="Off" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
             </div>
@@ -634,6 +635,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
+              {riskScoped && data?.profitRatchet?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.profitRatchet.overlayKeys.length} pinned</span>}
               {dirty['ratchet'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!ratchet?.on} label="On" offLabel="Off" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
             </div>
@@ -712,7 +714,7 @@ export default function Risk() {
               )
             })()}
             <div className="flex items-center gap-2">
-              <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', ratchet))}>Save ratchet</Button></span>
+              <span data-save-pulse="ratchet"><Button size="sm" className={SAVE_BTN} onClick={() => save('ratchet', () => agentPost('/actions/profit-ratchet', riskScoped ? { ...ratchet, accountId: riskAcct } : ratchet))}>Save ratchet</Button></span>
               {/* Destructive (wipes banked floors) — danger, not ghost. */}
               <Button size="sm" variant="danger" onClick={() => {
                 if (!window.confirm('Re-baseline the staircase at CURRENT equity? Banked floors are forgotten (use after a deposit/withdrawal).')) return
@@ -725,6 +727,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
+              {riskScoped && data?.lossGuardian?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossGuardian.overlayKeys.length} pinned</span>}
               {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
@@ -747,7 +750,7 @@ export default function Risk() {
               hint="Optional hard time cap: a position without its own time cap is closed after this many hours regardless of P&L." recommend="unset — let price levels decide, unless positions keep rotting for days." />
             </Advanced>
             {viewMode === EVERYTHING && <WorkedExample lines={guardianExample(guardian2 || {})} label="Worked example" />}
-            <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', guardian2))}>Save guardian</Button></span>
+            <span data-save-pulse="loss-guardian"><Button size="sm" className={SAVE_BTN} onClick={() => save('loss-guardian', () => agentPost('/actions/loss-guardian', riskScoped ? { ...guardian2, accountId: riskAcct } : guardian2))}>Save guardian</Button></span>
           </div>
         </div>
       </Card>
