@@ -188,3 +188,34 @@ test('scopeReport marks complete only at 100%', () => {
   assert.equal(rep.coverage.pct, 50)
   assert.equal(rep.coverage.complete, false)
 })
+
+// S1 batch 3 — /state/attribution is the first caller to pass a BOUND
+// parameter into the coverage predicate (its `closed_at >= ?` window). If the
+// placeholders and the params bind out of order the query throws, coverage
+// degrades to null, and the panel silently reads UNKNOWN forever — a coverage
+// signal that fails open is the failure it exists to catch.
+test('extraParams bind in the right order, scoped and unscoped', () => {
+  const { db, add } = tradesDb()
+  add('AAA', 'closed'); add(null, 'closed'); add('BBB', 'closed')
+  add('AAA', 'open')                       // excluded by the predicate
+
+  const scoped = scopeCoverage(db, {
+    table: 'trades',
+    scope: requestedAccount(db, {}),
+    extraWhere: 'status = ?',
+    extraParams: ['closed'],
+  })
+  assert.equal(scoped.total, 2, "AAA's closed row plus the unstamped one")
+  assert.equal(scoped.attributable, 1)
+  assert.equal(scoped.unstamped, 1)
+  assert.equal(scoped.pct, 50)
+
+  const portfolio = scopeCoverage(db, {
+    table: 'trades',
+    scope: requestedAccount(db, { query: { account: 'all' } }),
+    extraWhere: 'status = ?',
+    extraParams: ['closed'],
+  })
+  assert.equal(portfolio.total, 3, 'the open row stays out of both branches')
+  assert.equal(portfolio.pct, 100)
+})
