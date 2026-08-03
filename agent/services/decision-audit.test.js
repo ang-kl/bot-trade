@@ -211,3 +211,20 @@ test('no price, size, order id or error text reaches the public projection', () 
   assert.ok(guards.includes('pending_invalidated'), `expected guard names, got ${JSON.stringify(v.topVetoes)}`)
   assert.equal(v.topBlock, 'stage_matrix:strategy')
 })
+
+test('sanitising merges reasons that share a guard, instead of listing it twice', () => {
+  const db = initDB(':memory:')
+  // Two raw reasons, one guard. The first live reading listed overexposed_USD
+  // at 138 and again at 18 — understating it, and spending a top-five slot
+  // that a distinct guard should have had.
+  for (let i = 0; i < 3; i++) gate(db, { approved: false, reason: 'overexposed_USD: 3 of 3' })
+  for (let i = 0; i < 2; i++) gate(db, { approved: false, reason: 'overexposed_USD: 2 of 2' })
+  gate(db, { approved: false, reason: 'bad_rr: 0.8 below 1.5' })
+
+  const v = publicPipelineView(auditDecisions(db))
+  const over = v.topVetoes.filter(x => x.guard === 'overexposed_USD')
+  assert.equal(over.length, 1, `overexposed_USD must appear once, saw ${JSON.stringify(v.topVetoes)}`)
+  assert.equal(over[0].n, 5, 'and carry the merged count')
+  // And the merged entry must re-sort above the smaller one.
+  assert.equal(v.topVetoes[0].guard, 'overexposed_USD')
+})

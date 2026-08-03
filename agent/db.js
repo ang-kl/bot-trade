@@ -22,11 +22,22 @@ const TRADES_TABLE_SQL = `
     hold_duration_ms      INTEGER,
     gross_pnl             REAL,
     net_pnl               REAL,
-    -- 'rejected' = order sent, no broker fill found on reconcile (owner hit
-    -- "CHECK constraint failed" — this value was already written by
-    -- reconcile-trades and already queried by /state/trades, but never
-    -- allowed here until now).
-    status                TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled','rejected')),
+    -- 'rejected'    = order sent, broker refused it — provably no position.
+    -- 'submitting'  = WRITE-AHEAD INTENT. The row is created before the broker
+    --                 is called and promoted to 'open' on ACK, so a timeout or
+    --                 a crash mid-flight still leaves the duplicate guard
+    --                 (risk.js:809, which reads this table) something to see.
+    --                 Without it, an order could be live at the broker with
+    --                 nothing in the ledger — the 9x 0066.HK duplicate.
+    -- 'unconfirmed' = the submission failed AMBIGUOUSLY. A position may exist.
+    --                 Deliberately distinct from 'rejected': one must keep
+    --                 blocking re-entry, the other must not.
+    --
+    -- Adding a value here WITHOUT the migration below is a live trading
+    -- outage, not a schema nicety: every INSERT carrying the new status throws
+    -- "CHECK constraint failed" at the call site. That is how 'rejected' was
+    -- found, and it nearly happened again with 'submitting'.
+    status                TEXT DEFAULT 'open' CHECK(status IN ('open','closed','cancelled','rejected','submitting','unconfirmed')),
     close_reason          TEXT,
     thesis                TEXT,
     strategy              TEXT,
@@ -597,7 +608,10 @@ export function initDB(dbPath) {
   }
 
   const tradesSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'trades'`).get()?.sql || '';
-  if (tradesSql && !tradesSql.includes("'rejected'")) {
+  // Keyed on the NEWEST allowed status, not the oldest: a database sitting at
+  // either earlier revision (pre-'rejected' or pre-'submitting') is carried
+  // forward by this one pass, and a database already current is skipped.
+  if (tradesSql && !tradesSql.includes("'submitting'")) {
     try {
       const fkWasOn = db.pragma('foreign_keys', { simple: true });
       db.pragma('foreign_keys = OFF');

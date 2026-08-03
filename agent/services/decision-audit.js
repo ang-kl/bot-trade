@@ -357,9 +357,20 @@ export function publicPipelineView(audit) {
     // guardName(). `topSkipStages` keys are "stage:reason" — the stage is
     // already a bare identifier, and the reason is sanitised before it joins.
     topBlock: publicKey(audit.topSkipStages?.[0]?.key) || publicKey(audit.topVetoes?.[0]?.key) || null,
-    topVetoes: (audit.topVetoes || [])
-      .map(v => ({ guard: guardName(v.key), n: v.n }))
-      .filter(v => v.guard),
+    // RE-AGGREGATE AFTER SANITISING. Sanitising maps many raw reasons onto one
+    // guard name — `overexposed_USD: 3 of 3` and `overexposed_USD: 2 of 2`
+    // both become `overexposed_USD` — so a straight map leaves the SAME guard
+    // listed twice with its count split. The first live reading showed exactly
+    // that: overexposed_USD at 138 and again at 18, understating it as 138
+    // when it was really 156, and burning a slot that a fifth distinct guard
+    // should have had. Merge, then re-sort, then take the top five.
+    topVetoes: Object.entries(
+      (audit.topVetoes || []).reduce((acc, v) => {
+        const g = guardName(v.key)
+        if (g) acc[g] = (acc[g] || 0) + (Number(v.n) || 0)
+        return acc
+      }, {}),
+    ).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([guard, n]) => ({ guard, n })),
     quietMinutes: audit.quietMinutes,
     at: audit.at,
   }
