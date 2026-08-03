@@ -61,7 +61,22 @@ function levelMoney(symbol, side, lots, entry, level, ref, rates) {
   const e = Number(entry)
   const l = Number(level)
   const q = Number(lots)
-  if (!Number.isFinite(e) || !Number.isFinite(l) || !Number.isFinite(q) || q === 0) return null
+  // `Number(null)` is 0, NOT NaN — so a missing entry price sailed through
+  // `Number.isFinite(e)` as zero, and `l - e` became the WHOLE PRICE LEVEL
+  // instead of the distance from entry. Every bracket figure was then
+  // `level × contractSize × lots`: the notional value at the stop, not the
+  // risk. Owner screenshot, 2026-08-03, account 46130058 — seven positions,
+  // entry column all "—", reporting a +$651,869 stop-loss and a +$715,251
+  // take-profit against a real floating P&L of −$60.53.
+  //
+  // Verified against the shown figures: EURGBP SL 0.8357 × 100,000 × 1.46 lots
+  // × 1.349 GBP→USD = 164,594 vs 164,256 displayed; 0016.HK 119.28 × 1,389.14
+  // = 165,697 vs 165,692. It was reporting notional, exactly.
+  //
+  // A price is strictly positive, so `> 0` is the honest test and it rejects
+  // null, '', undefined and 0 alike. No entry price means no risk figure —
+  // the caller renders a dash, which is the truth.
+  if (!(e > 0) || !Number.isFinite(l) || !Number.isFinite(q) || q === 0) return null
   // DIRECTION VIA THE SHARED VOCABULARY. This was `=== 'BUY' ? 1 : -1`, which
   // read the DB's 'long' as a SHORT and inverted the sign on every long held in
   // monitored_positions — the owner's "Stop-Loss shows a positive dollar"

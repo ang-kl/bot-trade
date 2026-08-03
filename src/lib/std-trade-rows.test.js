@@ -210,3 +210,50 @@ describe('brokerPositionRows: durable cockpit identity from the DB row (owner 20
     expect(untracked.accountId).toBe(null)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Owner screenshot, 2026-08-03, account 46130058: seven open positions with an
+// empty Entry column reporting a +$651,869 stop-loss and +$715,251 take-profit
+// sub-total against a real floating P&L of −$60.53.
+//
+// `Number(null)` is 0, not NaN, so a null entry passed the finite guard as
+// zero and `level - entry` became the whole price level. Every figure was the
+// NOTIONAL AT THE STOP, not the risk — reproduced exactly: EURGBP SL 0.8357 ×
+// 100,000 × 1.46 lots × 1.349 GBP→USD ≈ 164,594 against 164,256 displayed.
+// ---------------------------------------------------------------------------
+describe('bracketMoney with no entry price', () => {
+  const RATES = { GBPUSD: 1.349, EURUSD: 1.154 }
+
+  it('returns null rather than the notional when entry is null', () => {
+    const { slMoney, tpMoney } = bracketMoney({
+      symbol: 'EURGBP', side: 'long', qty: 1.46,
+      entry: null, sl: 0.8357, tp: 0.8892, ref: 0.8561, rates: RATES,
+    })
+    expect(slMoney, 'no entry price means no risk figure').toBe(null)
+    expect(tpMoney).toBe(null)
+  })
+
+  it('rejects the other falsy shapes a missing price arrives in', () => {
+    for (const entry of [undefined, '', 0, NaN]) {
+      const { slMoney } = bracketMoney({
+        symbol: 'EURGBP', side: 'long', qty: 1.46,
+        entry, sl: 0.8357, ref: 0.8561, rates: RATES,
+      })
+      expect(slMoney, `entry ${String(entry)} must not produce a number`).toBe(null)
+    }
+  })
+
+  it('still computes a real risk figure when entry IS known', () => {
+    // 1.46 lots x 0.0204 GBP x 100,000 x 1.349 ~ $4,018 — a plausible stop on
+    // a position this size, and three orders of magnitude below the notional
+    // the bug was reporting.
+    const { slMoney } = bracketMoney({
+      symbol: 'EURGBP', side: 'long', qty: 1.46,
+      entry: 0.8561, sl: 0.8357, ref: 0.8561, rates: RATES,
+    })
+    expect(slMoney).not.toBe(null)
+    expect(Math.abs(slMoney)).toBeGreaterThan(3500)
+    expect(Math.abs(slMoney)).toBeLessThan(4500)
+    expect(slMoney, 'a stop below entry on a long is a LOSS').toBeLessThan(0)
+  })
+})
