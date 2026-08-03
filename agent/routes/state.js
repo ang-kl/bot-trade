@@ -1750,12 +1750,19 @@ export default function stateRouter(db) {
   router.get('/decisions', async (req, res) => {
     try {
       const { recentDecisions } = await import('../services/decision-log.js')
+      // decision_log stamps account_id on every write (decision-log.js:31).
+      // This is the 3A provenance trail — "why did the bot do that" is always
+      // a question about ONE account's run.
+      const scope = requestedAccount(db, req)
       res.json({
         decisions: recentDecisions(db, {
           symbol: req.query.symbol ? String(req.query.symbol).toUpperCase() : null,
           stage: req.query.stage ? String(req.query.stage) : null,
           limit: req.query.limit,
+          scope,
         }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'decision_log', scope })),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -2829,36 +2836,17 @@ export default function stateRouter(db) {
     }
   })
 
-  // -----------------------------------------------------------------------
-  // GET /state/veto-breakdown?days=30 — WHY trades were vetoed, grouped by
-  // reason family (symbol_cooldown, market_closed, spread…). The stage
-  // matrix shows how many; this shows what actually blocked them.
-  // -----------------------------------------------------------------------
-  router.get('/veto-breakdown', (req, res) => {
-    const days = Math.min(90, Math.max(1, parseInt(req.query.days || '30', 10)))
-    try {
-      const rows = db.prepare(
-        `SELECT approved, veto_reason FROM risk_events
-          WHERE datetime(created_at) >= datetime('now', ?)`
-      ).all(`-${days} days`)
-      const byReason = {}
-      let ok = 0
-      for (const r of rows) {
-        if (r.approved) { ok++; continue }
-        const key = String(r.veto_reason || 'unknown').split(/[:\s]/)[0] || 'unknown'
-        byReason[key] = (byReason[key] || 0) + 1
-      }
-      res.json({
-        days,
-        ok,
-        vetoes: Object.entries(byReason)
-          .map(([reason, count]) => ({ reason, count }))
-          .sort((a, b) => b.count - a.count),
-      })
-    } catch (e) {
-      res.json({ days, ok: 0, vetoes: [], error: e.message })
-    }
-  })
+  // /state/veto-breakdown was DECLARED TWICE. Express serves the first
+  // registration and silently ignores every later one, so the second handler
+  // — a simpler, account-BLIND version that split reasons on the first
+  // delimiter — had never run. It was removed rather than merged: the live
+  // one delegates to services/veto-breakdown.js and already accepts
+  // ?account=, which is strictly more than the dead one did.
+  //
+  // The hazard is not the wasted lines, it is that a dead route looks alive.
+  // Editing it changes nothing, and reading it tells you the endpoint is
+  // account-blind when it is not. A guard test now fails the build on any
+  // duplicate path in this file.
 
   // GET /state/arm-benchmarks — backtest stats stored at Apply time
   router.get('/arm-benchmarks', (_req, res) => {

@@ -16,6 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { getState } from '../db.js'
+import { accountWhere } from '../lib/account-scope.js'
 
 export const DECISION_RETENTION_DAYS = 90
 
@@ -42,13 +43,14 @@ export function recordDecision(db, { accountId = null, symbol = null, timeframe 
 }
 
 /** Recent decisions, newest first, optional filters. */
-export function recentDecisions(db, { symbol = null, stage = null, limit = 100 } = {}) {
+export function recentDecisions(db, { symbol = null, stage = null, limit = 100, scope = null } = {}) {
   const n = Math.min(Math.max(1, Number(limit) || 100), 1000)
+  const acct = accountWhere(scope, 'account_id')
   return db.prepare(`
     SELECT * FROM decision_log
-    WHERE (? IS NULL OR symbol = ?) AND (? IS NULL OR stage = ?)
+    WHERE (? IS NULL OR symbol = ?) AND (? IS NULL OR stage = ?)${acct.active ? ` AND ${acct.where}` : ''}
     ORDER BY id DESC LIMIT ?
-  `).all(symbol, symbol, stage, stage, n)
+  `).all(symbol, symbol, stage, stage, ...acct.params, n)
 }
 
 /** Retention sweep — call from the loop's housekeeping, never fatal. */
