@@ -98,7 +98,7 @@ export function contractSize(symbol) {
  * COFFEE and COTTON are 6 uppercase letters but are NOT currency pairs
  * (treating them as crosses vetoed their sizing as usd_per_lot_unknown).
  */
-function fxQuoteCurrency(symbol) {
+export function fxQuoteCurrency(symbol) {
   const s = (symbol || '').toUpperCase()
   if (CONTRACT_SIZE[s] != null) return null
   if (s.length === 6 && /^[A-Z]{6}$/.test(s)) return s.slice(3)
