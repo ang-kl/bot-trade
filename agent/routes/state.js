@@ -758,13 +758,21 @@ export default function stateRouter(db) {
     }
   })
 
-  router.get('/correlation', async (_req, res) => {
+  router.get('/correlation', async (req, res) => {
     try {
       const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
       const { loadStoredMatrix } = await import('../services/correlation-matrix.js')
+      // S1 batch 6. Cluster exposure is a CONCENTRATION reading — "how much
+      // of one correlated basket am I holding". Summed across accounts it
+      // overstates it for every account individually: three accounts each
+      // holding one EUR leg read as a three-leg EUR cluster that no account
+      // actually has. The risk this panel exists to show is per-account.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
       const positions = db.prepare(
-        `SELECT symbol, side FROM monitored_positions WHERE status = 'active'`
-      ).all()
+        `SELECT symbol, side FROM monitored_positions
+          WHERE status = 'active'${acct.active ? ` AND ${acct.where}` : ''}`
+      ).all(...acct.params)
       const exposure = clusterExposure(positions, null)
       const cfg = loadRiskConfig(db)
       let matrix = null
@@ -782,6 +790,11 @@ export default function stateRouter(db) {
           computedAt: matrix?.computedAt || null,
           symbols: matrix?.symbols?.length || 0,
         },
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'monitored_positions', scope, extraWhere: "status = 'active'",
+        })),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -1049,10 +1062,18 @@ export default function stateRouter(db) {
   // candidate duplicate CLOSED trade records and how much they'd
   // double-count in Performance/Edge-health stats — never deletes anything.
   // -----------------------------------------------------------------------
-  router.get('/duplicate-trades', async (_req, res) => {
+  router.get('/duplicate-trades', async (req, res) => {
     try {
       const { findDuplicateTrades } = await import('../services/trade-integrity.js')
-      res.json(findDuplicateTrades(db))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...findDuplicateTrades(db, { scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope,
+          extraWhere: "status = 'closed' AND entry_price IS NOT NULL AND net_pnl IS NOT NULL",
+        })),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

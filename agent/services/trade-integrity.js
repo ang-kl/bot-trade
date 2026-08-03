@@ -18,6 +18,8 @@
 // can decide what to do, rather than silently deleting trade history.
 // ---------------------------------------------------------------------------
 
+import { accountWhere } from '../lib/account-scope.js'
+
 /**
  * Group CLOSED trades sharing symbol+side+entry+exit+net_pnl. Real
  * independent fills essentially never match on all four to the cent, so
@@ -31,21 +33,31 @@
  * side closes), since Performance/Edge-health already count these trades by
  * status='closed' + net_pnl regardless of exit_price.
  */
-export function findDuplicateTrades(db, { windowDays = 90 } = {}) {
+export function findDuplicateTrades(db, { windowDays = 90, scope = null } = {}) {
+  const acct = accountWhere(scope, 'account_id')
   let rows = []
   try {
     rows = db.prepare(`
-      SELECT id, symbol, side, entry_price, exit_price, net_pnl, closed_at,
+      SELECT id, account_id, symbol, side, entry_price, exit_price, net_pnl, closed_at,
              ctrader_position_id, label_strategy
       FROM trades
       WHERE status = 'closed' AND closed_at >= datetime('now', ?)
-        AND entry_price IS NOT NULL AND net_pnl IS NOT NULL
-    `).all(`-${windowDays} days`)
+        AND entry_price IS NOT NULL AND net_pnl IS NOT NULL${acct.active ? ` AND ${acct.where}` : ''}
+    `).all(`-${windowDays} days`, ...acct.params)
   } catch { return { groups: [], totalExtraRows: 0, totalExtraPnl: 0 } }
 
   const byKey = new Map()
   for (const r of rows) {
-    const key = [r.symbol, r.side, r.entry_price, r.exit_price, r.net_pnl].join('|')
+    // SCOPED TO THE ACCOUNT — the same reasoning findOpenDuplicates already
+    // records for its same-second key, which this function was missing. The
+    // bot dispatches one signal to several accounts, so the same symbol, side,
+    // entry, exit and net P&L on two accounts is the system working, not a
+    // duplicate record. Unscoped, those legs merge into one "duplicate" filed
+    // under whichever account sorted first, and totalExtraPnl subtracts real
+    // P&L from Performance. A false alarm trains the owner to ignore the
+    // audit, which is the same outcome as not having it.
+    // (A legacy NULL account_id groups with other NULLs, as before.)
+    const key = [r.account_id ?? '', r.symbol, r.side, r.entry_price, r.exit_price, r.net_pnl].join('|')
     if (!byKey.has(key)) byKey.set(key, [])
     byKey.get(key).push(r)
   }
@@ -72,6 +84,7 @@ export function findDuplicateTrades(db, { windowDays = 90 } = {}) {
 
   const toEntry = (g) => ({
     symbol: g[0].symbol,
+    accountId: g[0].account_id ?? null,
     side: g[0].side,
     entry_price: g[0].entry_price,
     exit_price: g[0].exit_price,
