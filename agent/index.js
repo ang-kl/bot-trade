@@ -135,6 +135,15 @@ startHeartbeatLog(() => ({
   openPositions: (() => { try { return db.prepare("SELECT COUNT(*) c FROM monitored_positions WHERE status='active'").get().c } catch { return '?' } })(),
 }));
 
+// Owner 2026-08-03: per-position loss cap to 1% of balance with a $50 floor.
+// One-time and idempotent — see migrateLossCapConfig for why a stored config
+// makes a default change insufficient, and why this must not re-apply.
+try {
+  const { migrateLossCapConfig } = await import('./services/loss-cap.js')
+  const r = migrateLossCapConfig(db)
+  if (r.applied) console.log('[boot] loss cap migrated to 1% of balance with a $50 floor')
+} catch (err) { console.error('[boot] loss-cap migration skipped:', err.message) }
+
 // Seed cTrader credentials from env vars if present and not already stored.
 // This lets Railway hold the secrets so the agent starts trading immediately
 // after deploy — no UI push required. Any capitalization/underscore spelling

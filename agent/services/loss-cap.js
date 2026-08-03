@@ -28,7 +28,12 @@ import { getAccountBalance } from './risk.js'
 export const DEFAULT_LOSS_CAP = {
   on: true,
   maxLossUsd: null,          // absolute $ floor per position; null = this cap off
-  maxLossPctOfBalance: 2,    // % of balance per position (2% of $48k ≈ $960 — would have caught the GOOGL −$900); null = off
+  maxLossPctOfBalance: 1,    // % of balance per position (owner 2026-08-03: 1%); null = off
+  // FLOOR under the % cap. 1% of a $1,440 account is $14.40 — tight enough
+  // that ordinary noise closes everything, which is not a risk control, it is
+  // an off switch with extra steps. The floor keeps the cap usable on small
+  // accounts while the % keeps it proportionate on large ones. Owner set $50.
+  minCapUsd: 50,
   scope: 'all',              // 'all' = every broker position · 'bot' = ledger positions only
   action: 'close',           // 'close' = flatten the breaching position · 'alert' = Telegram only
   retryMinutes: 10,          // re-attempt a failed/ignored breach after this long
@@ -56,7 +61,14 @@ export function effectiveCapUsd(cfg, balance) {
   if (cfg.maxLossPctOfBalance != null && Number.isFinite(pct) && pct > 0 && balance > 0) {
     caps.push(balance * (pct / 100))
   }
-  return caps.length ? Math.min(...caps) : null
+  if (!caps.length) return null
+  const cap = Math.min(...caps)
+  // The floor is applied LAST, after the tightest cap is chosen, so it lifts
+  // whichever rule produced the number. It never LOWERS a cap — a floor that
+  // could tighten would be a second, silent limit.
+  const floor = Number(cfg.minCapUsd)
+  if (cfg.minCapUsd != null && Number.isFinite(floor) && floor > 0) return Math.max(cap, floor)
+  return cap
 }
 
 /**
@@ -67,7 +79,10 @@ export async function runLossCap(db, creds, deps = {}) {
   const out = { checked: 0, breaches: 0, closes: 0, errors: [] }
   const cfg = loadLossCapConfig(db)
   if (!cfg.on || !creds?.ready) return out
-  const balance = getAccountBalance(db)
+  // Per-account balance, not the global one: a 1% cap computed from the
+  // SELECTED account's balance would be the wrong number for every other
+  // account it is applied to.
+  const balance = getAccountBalance(db, creds?.accountId ?? null)
   const cap = effectiveCapUsd(cfg, balance)
   if (cap == null) return out
 
@@ -143,4 +158,113 @@ export async function runLossCap(db, creds, deps = {}) {
     }
   }
   return out
+}
+
+/**
+ * THE SWEEP, ACROSS EVERY ENABLED ACCOUNT.
+ *
+ * WHY THIS EXISTS. Owner, 2026-08-03, after a USDZAR position reached
+ * −$2,186.29 against a configured, enabled, action:'close' cap of $800:
+ * "no safety net to curb more than 1% losses".
+ *
+ * The cap was not off and was not misconfigured. It ran — for ONE account.
+ * `runLossCap` takes `creds`, and creds carry a single `accountId` resolved
+ * from `ctrader_account_id` (lib/ctrader-creds.js). `wsGetUnrealizedPnl` is
+ * then asked about that one account. `scope: 'all'` means "every position ON
+ * THAT ACCOUNT" — it reads like "every account" and is not.
+ *
+ * So every account except whichever happened to be selected ran with no
+ * per-position loss cap at all. That is the gap M2 left behind: EXECUTION was
+ * made multi-account (the sidecar receives a roster of every enabled account),
+ * and the PROTECTIVE sweep was not. The profit ratchet beside it in
+ * fast-monitor was reworked per-account on 01-08; this one was missed in the
+ * same pass.
+ *
+ * Accounts are swept SEQUENTIALLY, not in parallel: each pass is a reconcile
+ * plus an unrealized-P&L read, and firing them at once against one broker
+ * connection is the 2026-07-28 throttling incident. One slow or failing
+ * account must not stop the others, so each is caught individually and
+ * reported — a sweep that dies on account 1 and silently skips 2..N would
+ * recreate this bug in a new shape.
+ *
+ * @returns {{checked, breaches, closes, errors: string[], accounts: number}}
+ */
+export async function runLossCapAllAccounts(db, baseCreds, deps = {}) {
+  const out = { checked: 0, breaches: 0, closes: 0, errors: [], accounts: 0 }
+  if (!baseCreds?.ready) return out
+
+  const { getEnabledAccounts } = await import('./account-registry.js')
+
+  let roster = []
+  try {
+    // Same live/demo side only — one credential set reaches one host, and a
+    // demo token cannot read a live account's positions.
+    const isLive = !!baseCreds.isLive
+    roster = getEnabledAccounts(db)
+      .filter(a => (a.is_live === 1) === isLive)
+      .map(a => String(a.account_id))
+  } catch { roster = [] }
+
+  // The selected account leads, and a registry that does not list it still
+  // gets it swept — never let a registry gap silently drop the account the
+  // operator is actually looking at.
+  const primary = baseCreds.accountId != null ? String(baseCreds.accountId) : null
+  const ids = [...new Set([...(primary ? [primary] : []), ...roster])]
+  if (!ids.length) return out
+
+  for (const id of ids) {
+    try {
+      // Same credentials, different account id. One cTrader access token
+      // authorises every account under its cTID (wsGetAccountsByToken proves
+      // it), so re-deriving creds per account would re-read the same token
+      // and only add a way for the roster to come back not-ready and silently
+      // skip an account — which is the failure being fixed here.
+      const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
+      if (!creds?.ready) continue
+      const r = await runLossCap(db, creds, deps)
+      out.accounts++
+      out.checked += r.checked
+      out.breaches += r.breaches
+      out.closes += r.closes
+      if (r.errors.length) out.errors.push(...r.errors)
+    } catch (err) {
+      out.errors.push(`account ${id}: ${err?.message || err}`)
+    }
+  }
+  return out
+}
+
+/**
+ * ONE-TIME rewrite of the stored config to the owner's 2026-08-03 decision:
+ * 1% of balance with a $50 floor.
+ *
+ * Why a migration and not just a new default: `loadLossCapConfig` spreads the
+ * SAVED config over the defaults, so a stored `maxLossPctOfBalance: 2` wins
+ * over any default this file declares. Production is carrying exactly that —
+ * {on:true, maxLossUsd:800, maxLossPctOfBalance:2, retryMinutes:3} — so
+ * changing DEFAULT_LOSS_CAP alone would have looked done and changed nothing.
+ *
+ * Keyed and idempotent: it fires once, ever. If the owner later moves the cap
+ * from the Risk page, this must not quietly drag it back — a migration that
+ * re-applies is a setting the operator cannot actually change.
+ *
+ * Only the two fields the owner named are touched. `maxLossUsd`, `scope`,
+ * `action` and `retryMinutes` are preserved exactly as stored.
+ */
+export const LOSS_CAP_MIGRATION_KEY = 'loss_cap_1pct_floor50_applied'
+
+export function migrateLossCapConfig(db, { getState: gs = getState, setState: ss = setState } = {}) {
+  try {
+    if (gs(db, LOSS_CAP_MIGRATION_KEY) === 'true') return { applied: false, reason: 'already applied' }
+    let saved = null
+    try { saved = JSON.parse(gs(db, 'loss_cap_json') || 'null') } catch { saved = null }
+    const next = { ...DEFAULT_LOSS_CAP, ...(saved || {}), maxLossPctOfBalance: 1, minCapUsd: 50 }
+    ss(db, 'loss_cap_json', JSON.stringify(next))
+    ss(db, LOSS_CAP_MIGRATION_KEY, 'true')
+    return { applied: true, config: next }
+  } catch (err) {
+    // A migration failure must never stop the process from booting — the cap
+    // keeps running on whatever is stored, which is the previous behaviour.
+    return { applied: false, reason: err?.message || String(err) }
+  }
 }

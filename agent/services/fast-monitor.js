@@ -390,9 +390,14 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // whose floating loss breached the $/% cap instead of only messaging.
       try {
         if (creds?.ready) {
-          const { runLossCap } = await import('./loss-cap.js')
-          const lc = await runLossCap(db, creds)
-          if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
+          // ACROSS EVERY ENABLED ACCOUNT, not just the selected one. Until
+          // 2026-08-03 this called runLossCap(db, creds) — one account — so
+          // every other account ran with no per-position loss cap. A USDZAR
+          // position reached −$2,186 against an $800 cap because the cap was
+          // never asked about that account.
+          const { runLossCapAllAccounts } = await import('./loss-cap.js')
+          const lc = await runLossCapAllAccounts(db, creds)
+          if (lc.closes || lc.errors.length) console.log(`[fast-monitor] loss-cap: ${lc.accounts} account(s), ${lc.closes} close(s), ${lc.errors.length} error(s) ${lc.errors.join(' · ')}`)
         }
       } catch (err) {
         console.error('[fast-monitor] loss-cap failed:', err.message)
