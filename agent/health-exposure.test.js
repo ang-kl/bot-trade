@@ -41,7 +41,22 @@ function healthHandler() {
 
 // The ONLY fields an unauthenticated caller may see. Adding to this list is a
 // deliberate act; the test exists so it cannot happen by accident.
-const PUBLIC_ALLOWLIST = ['status', 'version', 'commit', 'uptime', 'authenticated']
+//
+// `pipeline` was added deliberately on 2026-08-03. Owner: "no, I cannot help
+// you" — the agent had spent a morning entering nothing, and answering "why"
+// required a human to fetch an authenticated endpoint and paste the JSON. The
+// field is services/decision-audit.js's `publicPipelineView`: a projection of
+// counts and STAGE NAMES only — verdict, decisions considered, how many
+// reached the risk gate, which stage blocked. It carries no symbol, side,
+// price, volume, P&L, balance or account id, and decision-audit.test.js proves
+// that by scanning the serialised output for each of them.
+//
+// The line being held: this is the same class of fact as `status` and
+// `uptime` — it says the machine is stuck and where. It does not say what is
+// being traded, which way, or with how much. A future field that would reveal
+// an instrument, a price or a size does NOT belong here just because this one
+// was let through.
+const PUBLIC_ALLOWLIST = ['status', 'version', 'commit', 'uptime', 'authenticated', 'pipeline']
 
 test('the unauthenticated branch returns only the liveness allowlist', () => {
   const h = healthHandler()

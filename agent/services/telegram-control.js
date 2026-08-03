@@ -447,8 +447,24 @@ export async function pollTelegramCommands(db, deps = {}) {
         reply = lines.length
           ? `📰 ${symArg ? symArg.toUpperCase() : 'EURUSD'} — scheduled news (±24h):\n${lines.join('\n')}`
           : 'No high/medium-impact scheduled news in the window (or the feed is unreachable).'
+      } else if (cmd === '/why') {
+        // "Why hasn't it traded?" — answered from the DB, on demand.
+        //
+        // Owner, 2026-08-03: the answer used to require a human to fetch a
+        // /state endpoint and read the JSON. The post-decision auditor already
+        // computes it every cycle; this just hands it over. Falls back to a
+        // fresh audit when the loop has not written one yet (first cycle after
+        // a deploy), so the command is never dead.
+        const { auditDecisions, toText: whyText } = await import('./decision-audit.js')
+        const symArg = msg.text.trim().split(/\s+/)[1] || null
+        let audit = null
+        if (!symArg) {
+          try { audit = JSON.parse(getState(db, 'decision_audit_last_json') || 'null') } catch { audit = null }
+        }
+        if (!audit) audit = auditDecisions(db, { accountId: symArg })
+        reply = `🔎 Why: ${audit.scope}\n${whyText(audit)}`
       } else if (cmd === '/help' || cmd === '/start') {
-        reply = 'Commands: /status /guards /haltall /resumeall /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
+        reply = 'Commands: /status /why [account] /guards /haltall /resumeall /pause /resume /pending /killall /chart <SYM> [tf] [+ai] /autopilot [off|suggest|auto] /arm <strategy> <SYM> <tf> /help'
       }
       if (reply) {
         handled++

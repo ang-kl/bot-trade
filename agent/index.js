@@ -16,6 +16,7 @@ import { randomInt } from 'node:crypto';
 import { llmProviderInfo } from './lib/llm-provider.js';
 import { tierTable } from './lib/model-router.js';
 import { historicalRateStatus } from './lib/ctrader-ws.js';
+import { publicPipelineView } from './services/decision-audit.js';
 import { readRecentErrors } from './services/error-log.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
 
@@ -489,6 +490,28 @@ app.get('/health', (req, res) => {
   // The public liveness subset. Deliberately built FIRST and returned early, so
   // there is no path where a new field is added below and silently becomes
   // public by omission — the default for anything new is authenticated.
+  // THE ONE DELIBERATE ADDITION to the public liveness subset (owner
+  // 2026-08-03: "no, I cannot help you" — the diagnosis has to be readable
+  // without a human relaying an authenticated payload by hand).
+  //
+  // `publicPipelineView` is a counts-and-stage-names projection: the verdict,
+  // how many decisions were made, how many reached the risk gate, and which
+  // stage blocked. It carries NO symbol, side, price, volume, P&L, balance or
+  // account id — services/decision-audit.test.js asserts that by scanning the
+  // serialised output for each of them.
+  //
+  // The justification for widening the allowlist at all: this is the same
+  // CLASS of operational fact as `status` and `uptime`, which are already
+  // public. It says the machine is stuck and where. It says nothing about
+  // what is being traded, in which direction, or with how much. Everything
+  // else in this handler stays authenticated by default, and the guard below
+  // still precedes the full payload so that remains true for new fields.
+  let pipeline = null
+  try {
+    const raw = getState(db, 'decision_audit_last_json')
+    if (raw) pipeline = publicPipelineView(JSON.parse(raw))
+  } catch { pipeline = null }
+
   if (!authed) {
     return res.json({
       status,
@@ -496,6 +519,7 @@ app.get('/health', (req, res) => {
       commit,
       uptime: process.uptime(),
       authenticated: false,
+      pipeline,
     })
   }
 
