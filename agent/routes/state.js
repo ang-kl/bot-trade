@@ -262,13 +262,24 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   router.get('/scans/:symbol', (req, res) => {
     const symbol = req.params.symbol.toUpperCase()
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const rows = db
       .prepare(
-        'SELECT * FROM scans WHERE symbol = ? ORDER BY scanned_at DESC LIMIT 50'
+        `SELECT * FROM scans WHERE symbol = ?${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY scanned_at DESC LIMIT 50`
       )
-      .all(symbol)
+      .all(symbol, ...acct.params)
 
-    res.json({ symbol, scans: rows })
+    res.json({
+      symbol,
+      scans: rows,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'scans', scope, extraWhere: 'symbol = ?', extraParams: [symbol],
+      })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1122,14 +1133,26 @@ export default function stateRouter(db) {
   // -----------------------------------------------------------------------
   // GET /state/metrics — latest performance snapshot
   // -----------------------------------------------------------------------
-  router.get('/metrics', (_req, res) => {
+  router.get('/metrics', (req, res) => {
+    // S1 batch 5. A performance snapshot is a per-account fact by nature —
+    // win rate and profit factor pooled across a demo and a live account
+    // describe neither. This is the same shape as the Go-Live card failure,
+    // one table over.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     const row = db
       .prepare(
-        'SELECT * FROM performance_snapshots ORDER BY computed_at DESC LIMIT 1'
+        `SELECT * FROM performance_snapshots${acct.active ? ` WHERE ${acct.where}` : ''}
+         ORDER BY computed_at DESC LIMIT 1`
       )
-      .get()
+      .get(...acct.params)
 
-    res.json({ metrics: row || null })
+    res.json({
+      metrics: row || null,
+      accountId: scope.all ? 'all' : (scope.accountId ?? null),
+      scoped: acct.active,
+      scope: scopeReport(scope, scopeCoverage(db, { table: 'performance_snapshots', scope })),
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -2221,26 +2244,51 @@ export default function stateRouter(db) {
   router.get('/metrics/history', (req, res) => {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days || '30', 10)))
     const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'account_id')
     try {
       const rows = db.prepare(
-        'SELECT * FROM performance_snapshots WHERE computed_at >= ? ORDER BY computed_at ASC'
-      ).all(since)
-      res.json({ snapshots: rows })
+        `SELECT * FROM performance_snapshots WHERE computed_at >= ?${acct.active ? ` AND ${acct.where}` : ''}
+         ORDER BY computed_at ASC`
+      ).all(since, ...acct.params)
+      res.json({
+        snapshots: rows,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'performance_snapshots', scope,
+          extraWhere: 'computed_at >= ?', extraParams: [since],
+        })),
+      })
     } catch {
       res.json({ snapshots: [] })
     }
   })
 
-  router.get('/analyses/latest', (_req, res) => {
+  router.get('/analyses/latest', (req, res) => {
+    // S1 batch 5. Only the ANALYSES half is scoped. The LEFT JOIN onto scans
+    // is there to decorate each analysis with the scan it came from; adding
+    // the predicate there too would turn the join into a filter and drop the
+    // decoration whenever the scan is another account's (or, commonly, global
+    // and unstamped) — losing scan_bias rather than gaining accuracy.
+    const scope = requestedAccount(db, req)
+    const acct = accountWhere(scope, 'a.account_id')
     try {
       const rows = db.prepare(`
         SELECT a.*, s.bias AS scan_bias, s.confidence AS scan_confidence
         FROM analyses a
         LEFT JOIN scans s ON s.id = a.scan_id
-        WHERE a.analyzed_at > datetime('now', '-24 hours')
+        WHERE a.analyzed_at > datetime('now', '-24 hours')${acct.active ? ` AND ${acct.where}` : ''}
         ORDER BY a.analyzed_at DESC
-      `).all()
-      res.json({ analyses: rows })
+      `).all(...acct.params)
+      res.json({
+        analyses: rows,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'analyses', scope, extraWhere: "analyzed_at > datetime('now', '-24 hours')",
+        })),
+      })
     } catch (e) {
       res.json({ analyses: [], error: e.message })
     }
