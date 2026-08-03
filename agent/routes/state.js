@@ -2226,6 +2226,11 @@ export default function stateRouter(db) {
     // acct:<id>:risk_config_json overlay) plus the overlay itself, so the UI
     // can show which limits are elevated per account. No param = global.
     const acctParam = req.query.account && req.query.account !== 'all' ? String(req.query.account) : null
+    // WHOSE numbers these are, always answered. The caller may not have named
+    // an account; the reply still says which one it resolved to, so a UI can
+    // never print this balance beside a different account's name (owner
+    // 04-08-2026: "conflicting account numbers … cause the user distrust").
+    const resolvedAccountId = acctParam ?? (getState(db, 'ctrader_account_id') || null)
     const effective = loadRiskConfig(db, acctParam)
     const overlay = acctParam ? accountRiskOverlay(db, acctParam) : null
     const balance = getAccountBalance(db, acctParam)
@@ -2254,7 +2259,13 @@ export default function stateRouter(db) {
       defaults: DEFAULT_RISK_CONFIG,
       effective,
       derived,
+      // `accountId` is the SCOPE the caller asked for (null = they asked for
+      // the shared config). `resolvedAccountId` is whose balance and leverage
+      // `derived` actually describes — they differ exactly when nobody named
+      // an account, and printing the numbers without that answer is what put
+      // one account's balance beside another's name on the Trade header.
       accountId: acctParam,
+      resolvedAccountId,
       overlay,
     })
   })
