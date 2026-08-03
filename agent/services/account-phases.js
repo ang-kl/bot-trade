@@ -29,6 +29,8 @@
 
 import { getState } from '../db.js'
 import { setPhaseFlag } from './phase-audit.js'
+// No cycle: account-capabilities imports db + account-registry, never this file.
+import { accountCapabilities } from './account-capabilities.js'
 
 /** The three phases, in pipeline order. */
 export const PHASES = ['scan', 'analyze', 'autotrade']
@@ -82,16 +84,48 @@ export function effectivePhases(db, accountId, master = null) {
   const m = master || masterPhases(db)
   if (accountId == null) return { ...m, source: { scan: 'master', analyze: 'master', autotrade: 'master' } }
   const ov = accountOverrides(db, accountId)
+  // CAPABILITY IS THE THIRD AND (audit F-POLICY-01, 03-08-2026).
+  //
+  // The switches used to report only master AND override. So a `manage_only`
+  // account — and a `enabled = 0` account, INCLUDING THE LIVE ONE — displayed
+  // `autotrade: true`, because the master was on and no override said
+  // otherwise. The dispatcher was right (registryAutopilotAccounts filters on
+  // the `enter` capability); the readout was not, and the readout is what the
+  // owner looks at before deciding whether live trading is off.
+  //
+  // A switch that says ON for an account that cannot enter is worse than no
+  // switch. Capability is ANDed in for `autotrade` only: scan and analyze have
+  // their own capability rules (a manage_only account may legitimately scan),
+  // and this must not turn those off.
+  // KNOWN is the precondition, not `enter !== false`. accountCapabilities
+  // returns a CONSERVATIVE enter:false for an account the registry has never
+  // seen — correct for the dispatcher, wrong for a readout: on a fresh box or
+  // any DB without registry rows it would report autotrade OFF everywhere,
+  // which is a false all-clear about the thing the owner most needs to trust.
+  // Caught by equity-stop.test.js, whose fixture has no accounts table rows.
+  let canEnterAcct = true
+  try {
+    const caps = accountCapabilities(db, accountId)
+    if (caps.known) canEnterAcct = caps.enter !== false
+  } catch { canEnterAcct = true }
   const out = { source: {} }
   for (const p of PHASES) {
     // Master is an AND, never an OR: a per-account ON cannot defeat a global
     // OFF. The kill switch has to stay a kill switch.
-    const eff = m[p] && (ov[p] === null ? true : ov[p])
+    let eff = m[p] && (ov[p] === null ? true : ov[p])
+    if (p === 'autotrade' && eff && !canEnterAcct) eff = false
     out[p] = eff
-    out.source[p] = !m[p] ? 'master' : (ov[p] === false ? 'account' : 'master')
+    // Precedence for the REASON: master, then the owner's explicit override,
+    // then capability. An override the owner set by hand is the more
+    // actionable answer when both apply — capability explains an account they
+    // never switched off.
+    out.source[p] = !m[p] ? 'master'
+      : ov[p] === false ? 'account'
+        : (p === 'autotrade' && !canEnterAcct) ? 'capability' : 'master'
   }
   return out
 }
+
 
 /**
  * Set or clear one account's overrides.

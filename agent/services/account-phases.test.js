@@ -49,8 +49,31 @@ test('a per-account OFF stops that account and NOT the others', () => {
   setAccountPhases(db, '46130058', { autotrade: false })
   assert.equal(effectivePhases(db, '46130058').autotrade, false)
   assert.equal(effectivePhases(db, '46130058').source.autotrade, 'account')
-  // The other account is untouched — this is the whole point of the feature.
-  assert.equal(effectivePhases(db, '42993489').autotrade, true)
+  // The other account is untouched BY THE OVERRIDE — but see below: it also
+  // cannot enter, so its autotrade now reads false for a different reason.
+  assert.equal(effectivePhases(db, '42993489').source.autotrade, 'capability')
+})
+
+test('an account that CANNOT ENTER never reports autotrade ON — including the live one', () => {
+  // AUDIT F-POLICY-01, 03-08-2026. This assertion used to read `true`, and that
+  // was the defect encoded as an expectation: the fixture's 42993489 is the
+  // LIVE account (is_live=1, enabled=0, mode=manage_only), and the switches
+  // reported autotrade ON for it because the master was on and no override
+  // said otherwise. The dispatcher was right — registryAutopilotAccounts
+  // filters on the `enter` capability — but the READOUT was not, and the
+  // readout is what the owner checks before believing live trading is off.
+  const db = db_()
+  armAll(db)
+  const live = effectivePhases(db, '42993489')
+  assert.equal(live.autotrade, false, 'a disabled manage_only account must never read armed')
+  assert.equal(live.source.autotrade, 'capability', 'and it must say WHY, not blame the master')
+  // Scan and analyze are NOT suppressed: a manage_only account may legitimately
+  // keep its insight history warm. Capability is ANDed into autotrade alone.
+  assert.equal(live.scan, true)
+  assert.equal(live.analyze, true)
+  // The enter-capable account is unaffected.
+  assert.equal(effectivePhases(db, '46130058').autotrade, true)
+  assert.equal(effectivePhases(db, '46130058').source.autotrade, 'master')
 })
 
 test('THE MASTER IS AN ABSOLUTE VETO — a per-account ON cannot defeat it', () => {

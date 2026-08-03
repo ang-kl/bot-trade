@@ -221,7 +221,7 @@ function recordAnthropicUsage(db, usage, purpose = 'monitor', model = null) {
 // by wsAmendPosition / wsClosePosition on the monitor hot path).
 // ---------------------------------------------------------------------------
 
-function getAutopilotAccounts(db) {
+export function getAutopilotAccounts(db) {
   // Multi-account roles pushed via /actions/ctrader-config keep their
   // legacy precedence (that flow already trades several accounts and
   // predates the registry) — the registry mirrors it on push, so both
@@ -230,7 +230,38 @@ function getAutopilotAccounts(db) {
   if (rolesJson) {
     try {
       const roles = JSON.parse(rolesJson).filter(a => a.autopilot)
-      if (roles.length > 1) return roles
+      // THE LEGACY PATH MUST STILL RESPECT THE REGISTRY (audit F-POLICY-01,
+      // 03-08-2026). This branch returns roles filtered on `autopilot` ALONE
+      // and takes precedence over the registry, so `mode` and `enabled` were
+      // both bypassed whenever more than one role carried autopilot. The
+      // registry route below has always filtered on the `enter` capability;
+      // this one did not, which meant an account marked `manage_only` — or
+      // marked `enabled = 0`, including the LIVE account — could be dispatched
+      // an entry through the older config flow.
+      //
+      // Intersect rather than replace: the legacy precedence is kept (it
+      // predates the registry and still decides ORDER and role metadata), but
+      // an account the registry refuses to let enter is dropped from it.
+      // If the registry cannot answer at all, the legacy list stands as
+      // before — a registry outage must not silently stop trading, and the
+      // per-account risk gate still runs downstream either way.
+      if (roles.length > 1) {
+        let allowed = null
+        try {
+          allowed = new Set(registryAutopilotAccounts(db).map(a => String(a.accountId)))
+        } catch { allowed = null }
+        if (allowed == null || allowed.size === 0) return roles
+        const kept = roles.filter(a => allowed.has(String(a.accountId)))
+        const dropped = roles.length - kept.length
+        if (dropped > 0) {
+          log(`Entry roster: ${dropped} legacy autopilot role(s) dropped — the registry does not permit them to enter (mode/enabled)`)
+        }
+        if (kept.length > 1) return kept
+        if (kept.length === 1) return kept
+        // Every legacy role is refused: fall through to the registry, which
+        // is the stricter answer, rather than returning an empty roster and
+        // reporting it as "no accounts configured".
+      }
     } catch { /* fall through */ }
   }
   // Account Registry (M0 shim): the enabled/active rows. With exactly one
