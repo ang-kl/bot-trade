@@ -870,6 +870,35 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/fx-coverage?symbols=AUDPLN,EURJPY — can the sizer convert?
+  //
+  // Owner, 2026-08-03: "root cause usd_per_lot_unknown". It was the largest
+  // veto bucket of the day (1,353) and the cause could not be settled from
+  // outside, because the deciding input — the scanned-closes rates map — was
+  // invisible. This runs the SAME `usdRate` the risk gate runs, so it cannot
+  // drift into telling a comfortable story the sizer disagrees with.
+  //
+  // `?symbols=` defaults to the symbols that bucket actually named, so the
+  // default call answers the question that was asked. Read-only.
+  router.get('/fx-coverage', async (req, res) => {
+    try {
+      const { fxCoverage, missingLegsFor } = await import('../services/fx-coverage.js')
+      const { scanRates } = await import('../services/risk.js')
+      const probes = String(req.query.symbols || 'AUDPLN,EURJPY,AUDCAD,EURGBP,EURAUD')
+        .split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 40)
+      const rates = scanRates(db)
+      const out = fxCoverage(rates, probes)
+      res.json({
+        ...out,
+        // Named legs, not just "PLN does not resolve" — a diagnosis nobody
+        // can act on is not a diagnosis.
+        fixes: out.unresolvable.map(c => missingLegsFor(c, rates)),
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /state/loss-cap — the last per-position loss-cap sweep, per account.
   //
   // Owner, 2026-08-03: "check the derived pnl coverage". It could not be
