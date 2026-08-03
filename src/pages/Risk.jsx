@@ -18,6 +18,7 @@ import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import Field, { Unit, FIELD_W, DEFAULT_MARK } from '../components/common/Field.jsx'
 import { ratchetExample, guardianExample } from '../lib/worked-examples.js'
+import { useLensAccount } from '../lib/use-lens-account.js'
 import RiskReassess from '../components/RiskReassess.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
@@ -180,7 +181,9 @@ export default function Risk() {
   // page has always edited — so that stays the default and nothing re-scopes
   // itself silently. Picking an account edits that account's OVERLAY: a
   // partial config merged over the global one, affecting only that account.
-  const [riskAcct, setRiskAcct] = useState('all')
+  // The sidebar lens decides where this page starts and where it lands when
+  // you switch; the dropdown below still overrides for a one-off comparison.
+  const [riskAcct, setRiskAcct] = useLensAccount('all')
   const [acct, setAcct] = useState({ balance: null, leverage: null })
   const [guard, setGuard] = useState({})
   const [guardianPct, setGuardianPct] = useState(0.05)

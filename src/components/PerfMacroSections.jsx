@@ -12,6 +12,7 @@
 //    tracked in the DB) → exact panel with an honest empty state;
 //  - data feed panel: real values where the APIs provide them, '—' else.
 import { useState } from 'react'
+import { useLensAccount } from '../lib/use-lens-account.js'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 
@@ -104,7 +105,7 @@ function QuadCard({ q }) {
 
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
 export function RegimeMatrix({ trades30, positions, accounts, inModal = false }) {
-  const [rAcct, setRAcct] = useState('all')
+  const [rAcct, setRAcct] = useLensAccount('all')
   // Linked highlighting (owner spec A2): one shared selectedKey — legend row
   // click/hover highlights its dot (1.6×, others dim to .35) and dot click
   // highlights the legend row.

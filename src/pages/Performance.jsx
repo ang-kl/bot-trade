@@ -14,7 +14,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentConfigured, pageAsleep, swrPeek } from '../lib/agent-api.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
-import { selectedAccountId as appSelectedAccountId } from '../lib/selected-account.js'
+import { useLensAccount } from '../lib/use-lens-account.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
 import { rollingHourWindows, rollingWindow, displayOrder, totalFloating } from '../lib/hourly-order.js'
@@ -1087,10 +1087,12 @@ export default function Performance() {
   // the page was ever asking about the switched-to account. `accounts.account_id`
   // is TEXT, so the id is carried as a STRING throughout (scopedClosed compares
   // with String()); the sessionStorage cache holds it as a number.
-  const [acct, setAcct] = useState(() => {
-    const id = appSelectedAccountId()
-    return id == null ? 'all' : String(id)
-  })
+  // Owner 03-08-2026: the sidebar lens must be what this page starts on and
+  // follows. It used to start on the TRADED account (appSelectedAccountId),
+  // which meant changing the lens moved the sidebar and nothing else — and,
+  // worse, Risk started on 'all' while this started on the traded account, so
+  // two pages disagreed about whose numbers you were looking at.
+  const [acct, setAcct] = useLensAccount('all')
   const [allTrades, setAllTrades] = useState([])
   // Portfolio-wide closed trades, fetched alongside the scoped set. The
   // per-account cards and the two "× account" gradients are CROSS-account by
@@ -1233,11 +1235,12 @@ export default function Performance() {
   // replaced, and the `[load]` effect below re-fetches on the new scope by
   // itself; calling load() here as well would fire an extra request for the
   // account the owner just left.
-  const onSwitch = useCallback((ev) => {
-    const to = ev?.to == null ? null : String(ev.to)
-    if (to && acct !== 'all' && to !== acct) { setAcct(to); return undefined }
-    return load()
-  }, [acct, load])
+  // Moving the SCOPE on a switch is useLensAccount's job now — it subscribes to
+  // the same event and sets `acct`, which re-runs the loader through the effect
+  // below. Doing it here as well meant two owners for one piece of state, and
+  // the old branch also refused to move while the page sat on 'all', so a lens
+  // change from the portfolio view went nowhere. This just reloads.
+  const onSwitch = useCallback(() => load(), [load])
   const switchingTo = useAccountSwitch(onSwitch)
 
   // A clock that ticks once per hour, on the hour — the 24-hour table's row

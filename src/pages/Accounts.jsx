@@ -20,6 +20,7 @@ import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import AccountsSubNav from '../components/AccountsSubNav.jsx'
 import AccountSwitcher from '../components/AccountSwitcher.jsx'
 import { brokerPositionRows, brokerOrderRows, priceDp } from '../lib/std-trade-rows.js'
+import { useLensAccount } from '../lib/use-lens-account.js'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
 import Skeleton from '../components/common/Skeleton.jsx'
 
@@ -100,7 +101,9 @@ function AccountCard({ acct, marketHours, onChanged }) {
 
 export default function Accounts() {
   const [bot, setBot] = useState(null)         // the selected account (fast path)
-  const [insightsAcct, setInsightsAcct] = useState('all') // Strategy Forecast vs. Actual scope
+  // Lens-defaulted (owner 03-08-2026: "include all pages"). The dropdown
+  // still overrides for a one-off comparison.
+  const [insightsAcct, setInsightsAcct] = useLensAccount('all') // Strategy Forecast vs. Actual scope
   const [others, setOthers] = useState(null)   // remaining accounts (on demand)
 
   // accountId → {positions, floating, equity, usedMargin} for the Trading
@@ -120,7 +123,7 @@ export default function Accounts() {
     }
   }
   const [loadingAll, setLoadingAll] = useState(false)
-  const [viewAcct, setViewAcct] = useState('all')
+  const [viewAcct, setViewAcct] = useLensAccount('all')
   const [updatedAt, setUpdatedAt] = useState(null)
   const [marketHours, setMarketHours] = useState(null)
   const [error, setError] = useState('')
