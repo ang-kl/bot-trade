@@ -287,3 +287,52 @@ test('bank target: per-class override flows through rules (crypto banks at 3R)',
   assert.equal(res.action, 'FULL_EXIT')
   assert.match(res.reason, /bank_target_3R/)
 })
+
+// ---------------------------------------------------------------------------
+// Production, 2026-08-03 (owner screenshot, account 43097342): seven burn-in
+// positions whose thesis said "closes in ≤12m" were still open 5h18m to 8h31m
+// past their time caps, holding −$52.91. Every one had entry_price null and
+// logged "Price data unavailable", so currentR returned null and the function
+// bailed at the price gate — which sat ABOVE the time-cap check.
+// ---------------------------------------------------------------------------
+test('TIME CAP fires even when the position cannot be priced', () => {
+  const pos = {
+    id: 1, symbol: '9618.HK', side: 'long',
+    entry_price: null,               // the production shape
+    current_sl: 127.402, current_tp: null,
+    initial_risk: 3.04, mfe_r: 0, mae_r: 0, be_moved: 0, scaled_out: 0,
+    invalidation_trigger: null,
+    time_cap_at: '2026-08-03T01:48:20.405Z',
+    created_at: '2026-08-03 01:36:20',
+  }
+  const out = evaluatePosition(pos, { currentPrice: null, now: new Date('2026-08-03T07:00:00Z') })
+  assert.equal(out.action, 'FULL_EXIT', 'an unpriceable position past its cap must still exit')
+  assert.match(out.reason, /time_cap_expired/)
+  assert.equal(out.exitFraction, 1)
+})
+
+test('an unpriceable position BEFORE its cap still holds', () => {
+  // The fix must not turn "no price" into "close everything".
+  const pos = {
+    id: 2, symbol: 'VIX', side: 'long', entry_price: null,
+    current_sl: 17.26, current_tp: 18.35, initial_risk: 1, mfe_r: 0, mae_r: 0,
+    be_moved: 0, scaled_out: 0, invalidation_trigger: null,
+    time_cap_at: '2026-08-03T09:00:00.000Z',
+    created_at: '2026-08-03 08:50:00',
+  }
+  const out = evaluatePosition(pos, { currentPrice: null, now: new Date('2026-08-03T08:55:00Z') })
+  assert.equal(out.action, 'HOLD')
+  assert.equal(out.reason, 'no_current_price')
+})
+
+test('a position with NO time cap and no price is unaffected', () => {
+  const pos = {
+    id: 3, symbol: 'EURUSD', side: 'long', entry_price: 1.1,
+    current_sl: 1.09, current_tp: null, initial_risk: 0.01, mfe_r: 0, mae_r: 0,
+    be_moved: 0, scaled_out: 0, invalidation_trigger: null,
+    time_cap_at: null, created_at: '2026-08-03 08:50:00',
+  }
+  const out = evaluatePosition(pos, { currentPrice: null, now: new Date('2026-08-03T09:55:00Z') })
+  assert.equal(out.action, 'HOLD')
+  assert.equal(out.reason, 'no_current_price')
+})

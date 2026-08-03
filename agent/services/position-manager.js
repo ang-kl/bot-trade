@@ -121,6 +121,41 @@ export function evaluatePosition(pos, ctx) {
     mae_r: newMae,
   }
 
+  const createdAtEarly = pos.created_at ? new Date(pos.created_at) : null
+  const minutesEarly = createdAtEarly ? (now - createdAtEarly) / 60_000 : null
+
+  // --- 0. Time cap, BEFORE the price gate --------------------------------
+  //
+  // A time cap is a comparison of two clocks. It needs no price, and it used
+  // to sit below the `r == null` bail-out at step 1, which meant a position
+  // whose price OR entry price could not be read never had its cap evaluated
+  // at all — it just returned HOLD, every pass, forever.
+  //
+  // Production, 2026-08-03: seven burn-in positions on account 43097342, each
+  // carrying the thesis "closes in ≤12m", still open 5h18m to 8h31m after
+  // their caps expired, holding −$52.91. Every one had `entry_price: null`
+  // and logged "Price data unavailable" — so `currentR` returned null and the
+  // only exit those positions had besides the stop was unreachable.
+  //
+  // That is the same shape as the loss cap that could not fire earlier today:
+  // a protective check placed downstream of a data dependency it does not
+  // actually have. The cap is now evaluated first, and a missing price makes
+  // it MORE urgent to honour, not less — a position nobody can price is
+  // exactly the one that should not be left running past its deadline.
+  if (pos.time_cap_at) {
+    const capEarly = new Date(pos.time_cap_at)
+    if (Number.isFinite(capEarly.getTime()) && now >= capEarly) {
+      return {
+        action: 'FULL_EXIT',
+        reason: `time_cap_expired (${pos.time_cap_at})`,
+        newSL: null,
+        exitFraction: 1,
+        updates,
+        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade: minutesEarly },
+      }
+    }
+  }
+
   // If we can't price-check, record what we know and bail.
   if (r == null) {
     return {
@@ -136,20 +171,7 @@ export function evaluatePosition(pos, ctx) {
   const createdAt = pos.created_at ? new Date(pos.created_at) : null
   const minutesInTrade = createdAt ? (now - createdAt) / 60_000 : null
 
-  // --- 1. Time cap expired -----------------------------------------------
-  if (pos.time_cap_at) {
-    const cap = new Date(pos.time_cap_at)
-    if (Number.isFinite(cap.getTime()) && now >= cap) {
-      return {
-        action: 'FULL_EXIT',
-        reason: `time_cap_expired (${pos.time_cap_at})`,
-        newSL: null,
-        exitFraction: 1,
-        updates,
-        metrics: { currentR: r, mfeR: newMfe, maeR: newMae, minutesInTrade },
-      }
-    }
-  }
+  // --- 1. Time cap expired — handled at step 0, above the price gate. ----
 
   // --- 2. Price-based invalidation trigger -------------------------------
   // We only enforce triggers expressed as `price<X` or `price>X` here; free-
