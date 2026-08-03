@@ -841,3 +841,54 @@ test('convergence: a CHANGING disagreement never converges', () => {
     assert.deepEqual(r.ledgerSynced, [], `sl ${sl} must not resync`)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Production, 2026-08-03: monitored_positions rows carrying `entry_price: null`
+// broke two unrelated things — the time cap could not be evaluated (#580) and
+// the SL/TP money column reported notional instead of risk (#581). Broker truth
+// (`bp.price`) was present on every reconcile pass but was only ever applied
+// when the SIDE reversed, so a plain missing entry stayed null forever.
+// ---------------------------------------------------------------------------
+function seedEntrylessPosition(db, { symbol = 'EURUSD', positionId = '9001', entry = null }) {
+  const tradeId = db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, volume, ctrader_position_id, source, status, opened_at)
+     VALUES (?, 'BUY', ?, 0.1, ?, 'autopilot', 'open', datetime('now'))`
+  ).run(symbol, entry, positionId).lastInsertRowid
+  db.prepare(
+    `INSERT INTO monitored_positions (symbol, trade_id, side, entry_price, source, status)
+     VALUES (?, ?, 'long', ?, 'autopilot', 'active')`
+  ).run(symbol, tradeId, entry)
+  return tradeId
+}
+
+test('reconcile BACKFILLS a null entry price from broker truth', () => {
+  const db = mkDb()
+  const tradeId = seedEntrylessPosition(db, { positionId: '9001', entry: null })
+
+  reconcilePositions(
+    db,
+    [makeBrokerPosition({ positionId: '9001', symbolName: 'EURUSD', openPrice: 1.0855 })],
+    [],
+    mkSetState(db),
+  )
+
+  const mp = db.prepare('SELECT entry_price FROM monitored_positions WHERE trade_id = ?').get(tradeId)
+  assert.equal(mp.entry_price, 1.0855, 'broker truth must fill the gap')
+})
+
+test('reconcile NEVER overwrites an entry price it already has', () => {
+  const db = mkDb()
+  const tradeId = seedEntrylessPosition(db, { positionId: '9002', entry: 1.08 })
+
+  // A later broker snapshot of an averaged or partially-closed position is NOT
+  // a better answer to "what did we get in at" than the fill we recorded.
+  reconcilePositions(
+    db,
+    [makeBrokerPosition({ positionId: '9002', symbolName: 'EURUSD', openPrice: 1.0999 })],
+    [],
+    mkSetState(db),
+  )
+
+  const mp = db.prepare('SELECT entry_price FROM monitored_positions WHERE trade_id = ?').get(tradeId)
+  assert.equal(mp.entry_price, 1.08, 'a recorded entry is never rewritten')
+})
