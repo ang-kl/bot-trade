@@ -13,6 +13,7 @@ import Input from '../components/common/Input.jsx'
 import Field from '../components/common/Field.jsx'
 import FolioTabs from '../components/common/FolioTabs.jsx'
 import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-api.js'
+import { strategyTfGrid } from '../lib/strategy-tf-grid.js'
 import { useLensAccount } from '../lib/use-lens-account.js'
 import { stratShort, strategyLabel, STRATEGY_KEYS } from '../lib/strategy-labels.js'
 import RiskConfigCompare from '../components/RiskConfigCompare.jsx'
@@ -208,11 +209,9 @@ function StrategyTfPerformance() {
         if (!alive) return
         // Owner 02-08: the grid must list the FULL 12-strategy roster, not
         // only strategies with closed trades — a missing row read as a bug.
-        if (d && Array.isArray(d.strategies)) {
-          const have = new Set(d.strategies.map(s => s.strategy))
-          for (const k of STRATEGY_KEYS) if (!have.has(k)) d.strategies.push({ strategy: k, cells: {}, total: null })
-        }
-        setGrid(d); setErr(d?.error || null)
+        // The padding, and every other shape assumption this table used to
+        // make inline, now lives in strategyTfGrid, which is unit-tested.
+        setGrid(strategyTfGrid(d, STRATEGY_KEYS)); setErr(d?.error || null)
       })
       .catch(e => { if (alive) setErr(e.message) })
     return () => { alive = false }
@@ -226,7 +225,8 @@ function StrategyTfPerformance() {
   const money = (v) => `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}`
   const [pageSize, setPageSize] = useState(50)
   const [page, setPage] = useState(0)
-  const pager = usePager(grid?.strategies || [], pageSize, page, setPage)
+  const pager = usePager(grid?.rows || [], pageSize, page, setPage)
+  const tfs = grid?.timeframes || []
 
   return (
     <div className="mt-3">
@@ -249,7 +249,7 @@ function StrategyTfPerformance() {
                 <thead>
                   <tr>
                     <th className="py-0.5 pr-3">Strategy</th>
-                    {grid.timeframes.map(tf => <th key={tf} className="py-0.5 px-2 text-right whitespace-nowrap">{tf}</th>)}
+                    {tfs.map(tf => <th key={tf} className="py-0.5 px-2 text-right whitespace-nowrap">{tf}</th>)}
                     <th className="py-0.5 pl-3 text-right">Total</th>
                   </tr>
                 </thead>
@@ -261,8 +261,8 @@ function StrategyTfPerformance() {
                           rendered `fib_618_fade`, which is both inconsistent
                           and the widest column in a dense grid. */}
                       <td className="py-1 pr-3 whitespace-nowrap" title={s.strategy}>{stratShort(s.strategy)}</td>
-                      {grid.timeframes.map(tf => {
-                        const c = s.cells[tf]
+                      {tfs.map(tf => {
+                        const c = s.cells?.[tf]
                         return (
                           <td key={tf} className="py-1 px-2 text-right whitespace-nowrap" title={c ? `${c.n} trades · ${c.winRate}% wins` : ''}>
                             {c
@@ -272,20 +272,21 @@ function StrategyTfPerformance() {
                         )
                       })}
                       <td className="py-1 pl-3 text-right whitespace-nowrap">
-                        <span className="text-[var(--color-text-sub)]">{s.total.n}·</span>
-                        <span className={`font-semibold ${s.total.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(s.total.net)}</span>
+                        {s.total
+                          ? <><span className="text-[var(--color-text-sub)]">{s.total.n}·</span><span className={`font-semibold ${s.total.net >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{money(s.total.net)}</span></>
+                          : <span className="text-[var(--color-text-sub)]" title="No closed trades in this window">—</span>}
                       </td>
                     </tr>
                   ))}
-                  {grid.strategies.length === 0 && (
-                    <tr><td className="py-1.5 text-[var(--color-text-sub)]" colSpan={grid.timeframes.length + 2}>No closed trades in the last {grid.days} days.</td></tr>
+                  {grid.rows.length === 0 && (
+                    <tr><td className="py-1.5 text-[var(--color-text-sub)]" colSpan={tfs.length + 2}>No closed trades in the last {grid.days ?? 30} days.</td></tr>
                   )}
                 </tbody>
               </table>
               <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
-                Cell = trades · net P&L, {grid.days}d window, hover for win rate. Grid total {grid.total_closed} = every closed trade once — nothing double-counted or dropped.
+                Cell = trades · net P&L, {grid.days ?? 30}d window, hover for win rate. Grid total {grid.totalClosed ?? '—'} = every closed trade once — nothing double-counted or dropped.
               </p>
-              {grid.strategies.length > 0 && <Pager {...pager} pageSize={pageSize} setPageSize={setPageSize} />}
+              {grid.rows.length > 0 && <Pager {...pager} pageSize={pageSize} setPageSize={setPageSize} />}
             </>
           )}
         </div>
@@ -2750,7 +2751,7 @@ export default function Tune() {
                       <div className="flex flex-wrap items-center gap-1.5 mb-2">
                         <Input value={browseQ} onChange={e => setBrowseQ(e.target.value)} placeholder="Filter symbols…" className="max-w-[180px] !py-1 !min-h-0" />
                         <span className="ml-auto text-[9px] text-[var(--color-text-sub)]">
-                          {tree.total.toLocaleString()} instruments · tick "whole class"/"whole group" to add hundreds at once as ONE watchlist band
+                          {(tree.total ?? 0).toLocaleString()} instruments · tick "whole class"/"whole group" to add hundreds at once as ONE watchlist band
                         </span>
                       </div>
                       {/* One card per asset class in a responsive grid — 1900+
