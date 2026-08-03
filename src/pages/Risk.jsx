@@ -22,6 +22,7 @@ import { useLensAccount } from '../lib/use-lens-account.js'
 import RiskReassess from '../components/RiskReassess.jsx'
 import AccountScopePills from '../components/common/AccountScopePills.jsx'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
+import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-dirty.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -100,6 +101,12 @@ function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = fa
 // Save buttons: "Overall save button can be 1 point increase font size."
 const SAVE_BTN = '!text-[10px]'
 
+// Every independently-saved form on this page, and the three that make up the
+// Position Protection card. Module scope so load() can name them without
+// taking a dependency that changes every render.
+const SECTIONS = ['risk', 'guard', 'loss-cap', 'ratchet', 'loss-guardian']
+const PROTECTION_SECTIONS = ['loss-cap', 'ratchet', 'loss-guardian']
+
 // Compact labelled field. `pct` fields edit in % but store fractions.
 // EVERY entry field is the SAME fixed width (owner 2026-07-24: "the size of
 // field-entry must be uniform as I am OCD"). The !important prefix is
@@ -176,7 +183,7 @@ export default function Risk() {
   // "✓ Saved at HH:MM:SS" line for exactly this reason; Risk now does too.
   const [savedAt, setSavedAt] = useState(null) // { section, at }
   // Local editable copies — saved per section.
-  const [risk, setRisk] = useState({})
+  const [risk, setRiskRaw] = useState({})
   // WHOSE limits are on screen. 'all' = the global config, which is what this
   // page has always edited — so that stays the default and nothing re-scopes
   // itself silently. Picking an account edits that account's OVERLAY: a
@@ -185,7 +192,7 @@ export default function Risk() {
   // you switch; the dropdown below still overrides for a one-off comparison.
   const [riskAcct, setRiskAcct] = useLensAccount('all')
   const [acct, setAcct] = useState({ balance: null, leverage: null })
-  const [guard, setGuard] = useState({})
+  const [guard, setGuardRaw] = useState({})
   const [guardianPct, setGuardianPct] = useState(0.05)
   const [weekendBank, setWeekendBank] = useState(true)
   const [weekendLossFlag, setWeekendLossFlag] = useState(true)
@@ -195,11 +202,38 @@ export default function Risk() {
   // A2 protection layers (owner 2026-07-28: the GOOGL −$900 sat unprotected
   // because nothing enforced an absolute floor). Local editable copies of the
   // three layers' configs; each saves to its own /actions route.
-  const [lossCap, setLossCap] = useState(null)
-  const [ratchet, setRatchet] = useState(null)
+  const [lossCap, setLossCapRaw] = useState(null)
+  const [ratchet, setRatchetRaw] = useState(null)
   const [ratchetState, setRatchetState] = useState(null)
   const [ratchetAcct, setRatchetAcct] = useState(null)
-  const [guardian2, setGuardian2] = useState(null)
+  const [guardian2, setGuardian2Raw] = useState(null)
+
+  // UNSAVED-EDIT TRACKING (owner 04-08-2026: "i try to change but it reset").
+  // Each form on this page saves to its own route, but every save — and every
+  // account switch — re-read the whole config and pushed it into ALL of them,
+  // wiping edits the operator had not saved yet. A reload may now refresh only
+  // the forms nobody has touched. Rationale and the scope-change exception:
+  // src/lib/form-dirty.js.
+  const [dirty, setDirty] = useState({})
+  // A ref as well as state: load() must read the CURRENT set without taking a
+  // dependency on it, or every keystroke would rebuild load and re-fetch.
+  const dirtyRef = useRef({})
+  const touch = useCallback((section) => {
+    dirtyRef.current = markDirty(dirtyRef.current, section)
+    setDirty(dirtyRef.current)
+  }, [])
+  const untouch = useCallback((section) => {
+    dirtyRef.current = clearDirty(dirtyRef.current, section)
+    setDirty(dirtyRef.current)
+  }, [])
+  // The setters the forms call. Same names and signatures as before, so no
+  // field changed — they just record that the form is now unsaved.
+  const setRisk = useCallback((v) => { setRiskRaw(v); touch('risk') }, [touch])
+  const setGuard = useCallback((v) => { setGuardRaw(v); touch('guard') }, [touch])
+  const setLossCap = useCallback((v) => { setLossCapRaw(v); touch('loss-cap') }, [touch])
+  const setRatchet = useCallback((v) => { setRatchetRaw(v); touch('ratchet') }, [touch])
+  const setGuardian2 = useCallback((v) => { setGuardian2Raw(v); touch('loss-guardian') }, [touch])
+  const loadedScope = useRef(null)
 
   const load = useCallback(async () => {
     if (!agentConfigured()) { setError('Agent not connected — configure it on the Connect tab.'); return }
@@ -208,21 +242,30 @@ export default function Risk() {
       // one with its overlay merged on top. 'all' = the global config itself,
       // which is what this page has always shown.
       const r = await agentGet(`/state/risk-full${riskAcct && riskAcct !== 'all' ? `?account=${encodeURIComponent(riskAcct)}` : ''}`)
+      // A scope change REPLACES everything: the incoming numbers belong to a
+      // different account, and carrying edits across would write one
+      // account's limits onto another. Same scope = keep unsaved work.
+      const scope = riskAcct || 'all'
+      const scopeChanged = loadedScope.current !== scope
+      loadedScope.current = scope
+      if (scopeChanged) { dirtyRef.current = {}; setDirty({}) }
+      const apply = new Set(sectionsToApply(SECTIONS, dirtyRef.current, { scopeChanged }))
       setData(r)
-      setRisk(r.risk.effective)
+      if (apply.has('risk')) setRiskRaw(r.risk.effective)
       setAcct({ balance: r.account.balance, leverage: r.account.leverage })
-      setGuard({ requireBracket: true, requireTarget: true, halt: false, maxOrderVolume: 0, ...r.execGuard })
+      if (apply.has('guard')) setGuardRaw({ requireBracket: true, requireTarget: true, halt: false, maxOrderVolume: 0, ...r.execGuard })
       setGuardianPct(r.guardian.movePct)
       setWeekendBank(r.weekendBank)
       setWeekendLossFlag(r.weekendLossFlag)
       setVpoEnabled(r.vpo.enabled)
-      if (r.lossCap) setLossCap(r.lossCap.effective)
+      if (r.lossCap && apply.has('loss-cap')) setLossCapRaw(r.lossCap.effective)
       if (r.profitRatchet) {
-        setRatchet(r.profitRatchet.effective)
+        if (apply.has('ratchet')) setRatchetRaw(r.profitRatchet.effective)
+        // Live staircase state is READ-ONLY — always refreshed, never an edit.
         setRatchetState(r.profitRatchet.state)
         setRatchetAcct(r.profitRatchet.accountId ?? null)
       }
-      if (r.lossGuardian) setGuardian2(r.lossGuardian.effective)
+      if (r.lossGuardian && apply.has('loss-guardian')) setGuardian2Raw(r.lossGuardian.effective)
       setError('')
     } catch (e) { setError(e.message) }
   }, [riskAcct])
@@ -238,6 +281,10 @@ export default function Risk() {
     setSaving(section)
     try {
       await fn()
+      // Saved = no longer unsaved, so the reload below is free to refresh it
+      // with what the agent actually stored.
+      dirtyRef.current = clearDirty(dirtyRef.current, section)
+      setDirty(dirtyRef.current)
       await load()
       // Stamped only after the reload, so the line means "the agent has it and
       // this page has re-read it", not "the request left the browser".
@@ -467,13 +514,44 @@ export default function Risk() {
            position safety net. Each saves to its own route so a typo in one
            card can't wipe another layer's config. ---- */}
       <Card id="sec-protection" data-risk-card className="w3-hover-shadow">
-        <SectionTitle badge={<Badge tone="down">Protection</Badge>}>Position Protection — Loss Floors &amp; Profit Lock-In form</SectionTitle>
+        <SectionTitle badge={<Badge tone="down">Protection</Badge>}>Position Protection — Loss Floors &amp; Profit Lock-In</SectionTitle>
+        {/* THREE FORMS, THREE SAVES — and until now no way to know that.
+            Owner, 04-08-2026: "where is the save button for Position
+            Protection". Each layer posts to its own route on purpose (a typo
+            in one cannot wipe another), but the heading read as ONE form, so
+            three Save buttons at the bottom of three columns were easy to miss
+            on a phone. This bar says so, and offers the single button the
+            heading implies. */}
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
+          <span className="text-[var(--color-text-sub)]">
+            Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
+          </span>
+          <Button
+            size="sm" className={SAVE_BTN} disabled={!anyDirty(dirty, PROTECTION_SECTIONS)}
+            onClick={() => save('protection-all', async () => {
+              // Sequential, not parallel: each route re-reads and rewrites its
+              // own state key, and a failure part-way must leave what it has
+              // already written intact rather than half-applied.
+              if (dirtyRef.current['loss-cap'] && lossCap) { await agentPost('/actions/loss-cap', lossCap); untouch('loss-cap') }
+              if (dirtyRef.current['ratchet'] && ratchet) { await agentPost('/actions/profit-ratchet', ratchet); untouch('ratchet') }
+              if (dirtyRef.current['loss-guardian'] && guardian2) { await agentPost('/actions/loss-guardian', guardian2); untouch('loss-guardian') }
+            })}
+          >
+            {saving === 'protection-all' ? 'Saving…' : 'Save all three layers'}
+          </Button>
+          {anyDirty(dirty, PROTECTION_SECTIONS) && (
+            <span className="font-semibold" style={{ color: 'var(--color-down)' }}>
+              Unsaved changes — nothing takes effect until you save.
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-start">
 
           {/* Layer 1 — per-position loss cap (A1) */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
+              {dirty['loss-cap'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!lossCap?.on} label="On" offLabel="Off" onClick={() => setLossCap(c => ({ ...c, on: !c?.on }))} />
             </div>
             <Field label="Max loss per position" unit="$" value={lossCap?.maxLossUsd} onChange={v => setLossCap(c => ({ ...c, maxLossUsd: v }))}
@@ -515,6 +593,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
+              {dirty['ratchet'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!ratchet?.on} label="On" offLabel="Off" onClick={() => setRatchet(c => ({ ...c, on: !c?.on }))} />
             </div>
             <Field label="Step size" unit="$" value={ratchet?.stepUsd} onChange={v => setRatchet(c => ({ ...c, stepUsd: v }))}
@@ -605,6 +684,7 @@ export default function Risk() {
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
             <div className="flex items-center justify-between text-[9px]">
               <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
+              {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
               <Pill on={!!guardian2?.on} label="On" offLabel="Off" onClick={() => setGuardian2(c => ({ ...c, on: !c?.on }))} />
             </div>
             <div className="flex items-center justify-between text-[9px]">
