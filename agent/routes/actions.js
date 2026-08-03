@@ -570,6 +570,64 @@ export default function actionsRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // POST /actions/ratchet-account — ONE account's ratchet hold.
+  //
+  // Body: { accountId, action: 'rearm' | 'keepoff' | 'rebaseline' }
+  //   rearm      clear the halt and the entry pause; keep the staircase
+  //   keepoff    stay halted and stop the auto re-arm watching
+  //   rebaseline clear the halt AND restart the staircase from current equity
+  //
+  // Until now the ONLY way to clear one account's halt was the Telegram
+  // [Re-arm] button (telegram-control.js). The one HTTP path that touched a
+  // halt was POST /actions/profit-ratchet with { resetState: true }, which
+  // walks the whole registry and clears EVERY account's staircase and hold —
+  // so "unblock 5203012" meant also silently discarding the other account's
+  // banked floor. A per-account gesture needs a per-account route.
+  //
+  // This is a money-moving route by consequence, not by mechanism: it does not
+  // place an order, but clearing a halt is what lets entries resume. It sits
+  // behind the same write-tier auth as every other /actions route, and it
+  // never touches the S.A.T. switches — the ratchet never does, post-01-08.
+  // -----------------------------------------------------------------------
+  router.post('/ratchet-account', async (req, res) => {
+    try {
+      const b = req.body || {}
+      const accountId = b.accountId != null ? String(b.accountId) : ''
+      if (!accountId) return res.status(400).json({ error: 'accountId is required' })
+      const action = String(b.action || 'rearm').toLowerCase()
+      if (!['rearm', 'keepoff', 'rebaseline'].includes(action)) {
+        return res.status(400).json({ error: "action must be 'rearm', 'keepoff' or 'rebaseline'" })
+      }
+      // A typo'd id would otherwise write hold keys nothing ever reads, and
+      // report success — the same failure /actions/account-phases guards.
+      try {
+        const row = db.prepare('SELECT account_id FROM accounts WHERE account_id = ?').get(accountId)
+        if (!row) return res.status(404).json({ error: `unknown account ${accountId}` })
+      } catch { /* registry absent (old single-account boxes) — proceed */ }
+
+      const pr = await import('../services/profit-ratchet.js')
+      const before = pr.ratchetGate(db, accountId)
+      if (action === 'rearm') pr.rearmRatchet(db, accountId)
+      else if (action === 'keepoff') pr.keepRatchetOff(db, accountId)
+      else pr.rebaselineRatchet(db, accountId)
+      const after = pr.ratchetGate(db, accountId)
+
+      try {
+        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)')
+          .run('POST', '/actions/ratchet-account', JSON.stringify({ accountId, action }))
+      } catch { /* audit best-effort */ }
+      console.log(`[actions] ratchet ${action} on ${accountId}: blocked ${before.blocked} (${before.stage ?? 'none'}) → ${after.blocked} (${after.stage ?? 'none'})`)
+      res.json({
+        ok: true, accountId, action,
+        before, after,
+        state: pr.loadRatchetState(db, accountId),
+      })
+    } catch (err) {
+      res.status(400).json({ error: err.message })
+    }
+  })
+
+  // -----------------------------------------------------------------------
   // POST /actions/loss-guardian — partial update of loss_guardian_json.
   // maxAtrMult / fallbackAdversePct existed as config keys with NO route or
   // UI (calibration audit, A2) — the protective-stop distance was

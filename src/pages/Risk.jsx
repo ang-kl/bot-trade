@@ -195,6 +195,7 @@ export default function Risk() {
   const [lossCap, setLossCap] = useState(null)
   const [ratchet, setRatchet] = useState(null)
   const [ratchetState, setRatchetState] = useState(null)
+  const [ratchetAcct, setRatchetAcct] = useState(null)
   const [guardian2, setGuardian2] = useState(null)
 
   const load = useCallback(async () => {
@@ -213,7 +214,11 @@ export default function Risk() {
       setWeekendLossFlag(r.weekendLossFlag)
       setVpoEnabled(r.vpo.enabled)
       if (r.lossCap) setLossCap(r.lossCap.effective)
-      if (r.profitRatchet) { setRatchet(r.profitRatchet.effective); setRatchetState(r.profitRatchet.state) }
+      if (r.profitRatchet) {
+        setRatchet(r.profitRatchet.effective)
+        setRatchetState(r.profitRatchet.state)
+        setRatchetAcct(r.profitRatchet.accountId ?? null)
+      }
       if (r.lossGuardian) setGuardian2(r.lossGuardian.effective)
       setError('')
     } catch (e) { setError(e.message) }
@@ -519,6 +524,38 @@ export default function Risk() {
                 <Pill radio on={ratchet?.floorAction === 'halt'} label="Halt only" onClick={() => setRatchet(c => ({ ...c, floorAction: 'halt' }))} />
               </span>
             </div>
+            {/* HALTED — the state the owner had no way to see or lift.
+                On 02-08 22:24 UTC account 46130058 halted, and the only paths
+                out were a Telegram button on a message that had scrolled away
+                and "Reset staircase", which wipes EVERY account's banked
+                floor. A halt has to be visible where the ladder is, and
+                liftable for the one account it belongs to. */}
+            {ratchetState?.halt && (
+              <div className="glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-[9px] space-y-1.5">
+                <div className="font-semibold" style={{ color: 'var(--color-down)' }}>
+                  ⛔ Ratchet halt — new entries blocked on this account
+                </div>
+                <div className="text-[var(--color-text-sub)]">
+                  Tripped {ratchetState.haltAt ? new Date(ratchetState.haltAt).toLocaleString() : 'earlier'}
+                  {ratchetState.haltFloor != null && <> at the protected floor ${fmt$(ratchetState.haltFloor)}</>}.
+                  {ratchetState.keepOff
+                    ? ' You chose "keep off", so it will not re-arm on its own.'
+                    : ' It re-arms on its own once equity holds above the recovery line — until then, nothing enters.'}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" className={SAVE_BTN} onClick={() => {
+                    save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rearm' }).then(load))
+                  }}>Clear hold</Button>
+                  {/* Separate button, not a flag on the first: keeping the old
+                      ladder and starting a new one have different consequences,
+                      and a checkbox would hide that. */}
+                  <Button size="sm" variant="danger" onClick={() => {
+                    if (!window.confirm('Restart THIS account\'s staircase from its current equity? Its banked floor is forgotten; other accounts are untouched.')) return
+                    save('ratchethold', () => agentPost('/actions/ratchet-account', { accountId: ratchetAcct, action: 'rebaseline' }).then(load))
+                  }}>Clear + restart ladder</Button>
+                </div>
+              </div>
+            )}
             {(() => {
               const st = ratchetState
               const balNow = Number(acct.balance) || null
