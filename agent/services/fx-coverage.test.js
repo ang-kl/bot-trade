@@ -71,3 +71,34 @@ test('an empty map reports everything unresolvable rather than throwing', () => 
   assert.equal(out.symbols, 0)
   assert.equal(out.probes[0].sizeable, false)
 })
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-08-03, reading the first live response: NATGAS appeared as two
+// unresolvable "currencies", NAT and GAS. The probes were right — they import
+// fxQuoteCurrency and returned sizeable:true — but the CENSUS used the naive
+// 6-letter rule and invented two currencies that do not exist. A permanent
+// false alarm in a diagnostic is how a real gap later gets ignored.
+// ---------------------------------------------------------------------------
+const WITH_COMMODITIES = { GBPUSD: 1.27, NATGAS: 3.1, COFFEE: 2.4, COTTON: 0.7, XAUUSD: 4046 }
+
+test('a six-letter commodity is not split into invented currencies', () => {
+  const out = fxCoverage(WITH_COMMODITIES, ['NATGAS', 'COFFEE', 'COTTON'])
+  for (const ghost of ['NAT', 'GAS', 'COF', 'FEE', 'COT', 'TON']) {
+    assert.ok(!(ghost in out.currencies), `${ghost} is not a currency`)
+  }
+  assert.deepEqual(out.unresolvable, [], 'nothing here is unresolvable')
+  for (const p of out.probes) assert.equal(p.sizeable, true)
+})
+
+test('real currencies are still censused alongside the commodities', () => {
+  const out = fxCoverage(WITH_COMMODITIES, [])
+  assert.equal(out.currencies.GBP, 1.27)
+  assert.equal(out.currencies.USD, 1)
+})
+
+test('a suggested hop is never via a non-pair', () => {
+  // "add NATUSD so NATGAS becomes a hop" would send the operator after a
+  // symbol that could not supply a rate even if it existed.
+  const legs = missingLegsFor('PLN', WITH_COMMODITIES)
+  for (const h of legs.hops) assert.notEqual(h.via, 'NATGAS')
+})
