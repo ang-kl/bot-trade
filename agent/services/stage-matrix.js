@@ -46,6 +46,18 @@ export const FILTER_KEYS = FILTER_DEFS.map(f => f.key)
 
 const STATE_KEY = 'stage_matrix_json'
 
+// PER-ACCOUNT OVERLAY (owner 04-08-2026: "i try to change the setup for
+// different account but it didn't work" — arming a strategy armed it
+// everywhere, because this file only ever had one global key).
+//
+// Same shape as the risk-config overlay: a PARTIAL matrix stored under the
+// account, merged OVER the global one. Only the cells actually saved for an
+// account enter its overlay; every other cell keeps following the global
+// setting, so a global change still reaches accounts that never diverged.
+// No overlay = byte-identical to the old behaviour.
+export const acctMatrixKey = (accountId) => `acct:${accountId}:stage_matrix_json`
+export const acctEnabledKey = (accountId) => `acct:${accountId}:enabled_strategies_json`
+
 const DEFAULTS = {
   strategy: { scan: true, backtest: true, manage: true },
   filter: { scan: false, backtest: false },
@@ -65,12 +77,58 @@ function filterTradeDefault(raw, key) {
   return key === 'rsi'
 }
 
-function readStored(db, getState) {
+function readJson(db, getState, key) {
   try {
-    const parsed = JSON.parse(getState(db, STATE_KEY) || 'null')
+    const parsed = JSON.parse(getState(db, key) || 'null')
     if (parsed && typeof parsed === 'object') return parsed
-  } catch { /* corrupt state — defaults below */ }
-  return {}
+  } catch { /* corrupt state — treated as absent, never as "all off" */ }
+  return null
+}
+
+function readStored(db, getState, accountId = null) {
+  const global = readJson(db, getState, STATE_KEY) || {}
+  if (accountId == null) return global
+  const overlay = readJson(db, getState, acctMatrixKey(accountId))
+  if (!overlay) return global
+  // Cell-level merge: { strategy: { fib: { scan: false } } } over the global,
+  // so an overlay that names ONE cell cannot silently reset its neighbours.
+  const out = {}
+  for (const kind of ['strategy', 'filter']) {
+    const g = global[kind] || {}
+    const o = overlay[kind] || {}
+    const merged = {}
+    for (const k of new Set([...Object.keys(g), ...Object.keys(o)])) {
+      merged[k] = { ...(g[k] || {}), ...(o[k] || {}) }
+    }
+    out[kind] = merged
+  }
+  return out
+}
+
+/** Which cells this account has pinned — the UI badges these, so an override
+ *  can never be invisible. Shape: ['strategy:fib_618_fade:trade', …]. */
+export function stageOverlayKeys(db, getState, accountId) {
+  if (accountId == null) return []
+  const overlay = readJson(db, getState, acctMatrixKey(accountId)) || {}
+  const out = []
+  for (const kind of ['strategy', 'filter']) {
+    for (const [key, cells] of Object.entries(overlay[kind] || {})) {
+      for (const [stage, v] of Object.entries(cells || {})) {
+        if (typeof v === 'boolean') out.push(`${kind}:${key}:${stage}`)
+      }
+    }
+  }
+  if (readJson(db, getState, acctEnabledKey(accountId))) out.push('strategy:*:trade')
+  return out
+}
+
+/** The trade-armed strategy keys FOR ONE ACCOUNT (its own list, or global). */
+function armedTradeKeys(db, getState, accountId) {
+  if (accountId != null) {
+    const own = readJson(db, getState, acctEnabledKey(accountId))
+    if (Array.isArray(own)) return new Set(own.filter(k => STRATEGY_KEYS.includes(k)))
+  }
+  return new Set(enabledStrategies(db, getState).map(s => s.key))
 }
 
 /**
@@ -81,9 +139,9 @@ function readStored(db, getState) {
  *   stages = { scan: bool, backtest: bool, trade: bool, manage: bool|null }
  *   (filters have manage: null — the monitor phase has no filter concept).
  */
-export function loadStageMatrix(db, getState) {
-  const stored = readStored(db, getState)
-  const tradeOn = new Set(enabledStrategies(db, getState).map(s => s.key))
+export function loadStageMatrix(db, getState, accountId = null) {
+  const stored = readStored(db, getState, accountId)
+  const tradeOn = armedTradeKeys(db, getState, accountId)
 
   const strategies = STRATEGY_REGISTRY.map(s => {
     const row = stored.strategy?.[s.key] || {}
@@ -121,26 +179,33 @@ export function loadStageMatrix(db, getState) {
  * truth); scan/backtest/manage go to stage_matrix_json.
  * Throws on unknown kind/key/stage or filter+manage (no such cell).
  */
-export function setStage(db, { kind, key, stage, on }, { getState, setState }) {
+export function setStage(db, { kind, key, stage, on, accountId = null }, { getState, setState }) {
+  // With an accountId every write lands in that account's OVERLAY and nothing
+  // else moves: the global matrix, and every other account, are untouched.
+  const acct = accountId == null ? null : String(accountId)
   if (!STAGES.includes(stage)) throw new Error(`unknown stage '${stage}' — valid: ${STAGES.join(', ')}`)
   const flag = on === true
 
   if (kind === 'strategy') {
     if (!STRATEGY_KEYS.includes(key)) throw new Error(`unknown strategy '${key}' — valid: ${STRATEGY_KEYS.join(', ')}`)
     if (stage === 'trade') {
-      const enabled = new Set(enabledStrategies(db, getState).map(s => s.key))
+      const enabled = armedTradeKeys(db, getState, acct)
       if (flag) enabled.add(key); else enabled.delete(key)
       const keys = STRATEGY_KEYS.filter(k => enabled.has(k)) // registry order
+      if (acct) {
+        // The account's own armed list. The global list and the legacy
+        // cup_handle_enabled flag stay exactly as they were — an account
+        // arming a strategy must not arm it for anyone else.
+        setState(db, acctEnabledKey(acct), JSON.stringify(keys))
+        return loadStageMatrix(db, getState, acct)
+      }
       setState(db, 'enabled_strategies_json', JSON.stringify(keys))
       // Back-compat: the old cup-handle toggle reads this flag.
       setState(db, 'cup_handle_enabled', enabled.has('cup_handle') ? 'true' : 'false')
       return loadStageMatrix(db, getState)
     }
-    const stored = readStored(db, getState)
-    stored.strategy = stored.strategy || {}
-    stored.strategy[key] = { ...stored.strategy[key], [stage]: flag }
-    setState(db, STATE_KEY, JSON.stringify(stored))
-    return loadStageMatrix(db, getState)
+    writeCell(db, { getState, setState }, acct, 'strategy', key, stage, flag)
+    return loadStageMatrix(db, getState, acct)
   }
 
   if (kind === 'filter') {
@@ -148,17 +213,27 @@ export function setStage(db, { kind, key, stage, on }, { getState, setState }) {
     if (!def) throw new Error(`unknown filter '${key}' — valid: ${FILTER_KEYS.join(', ')}`)
     if (stage === 'manage') throw new Error('filters have no Live Tweak & Close cell')
     if (stage === 'trade') {
+      if (acct) {
+        writeCell(db, { getState, setState }, acct, 'filter', key, 'trade', flag)
+        return loadStageMatrix(db, getState, acct)
+      }
       setState(db, def.stateKey, flag ? 'true' : 'false')
       return loadStageMatrix(db, getState)
     }
-    const stored = readStored(db, getState)
-    stored.filter = stored.filter || {}
-    stored.filter[key] = { ...stored.filter[key], [stage]: flag }
-    setState(db, STATE_KEY, JSON.stringify(stored))
-    return loadStageMatrix(db, getState)
+    writeCell(db, { getState, setState }, acct, 'filter', key, stage, flag)
+    return loadStageMatrix(db, getState, acct)
   }
 
   throw new Error(`unknown kind '${kind}' — valid: strategy, filter`)
+}
+
+/** Write ONE cell into the global matrix, or into an account's overlay. */
+function writeCell(db, { getState, setState }, accountId, kind, key, stage, flag) {
+  const target = accountId == null ? STATE_KEY : acctMatrixKey(accountId)
+  const stored = readJson(db, getState, target) || {}
+  stored[kind] = stored[kind] || {}
+  stored[kind][key] = { ...stored[kind][key], [stage]: flag }
+  setState(db, target, JSON.stringify(stored))
 }
 
 /** Registry entries the SCAN column arms (wide by default — all strategies). */
@@ -199,8 +274,8 @@ export function scanFilterOptions(db, getState) {
  * ON, and no trade-armed filter may appear in the signal's filters_failed.
  * @returns {{ok: boolean, reason: string|null}}
  */
-export function tradeStageGate(db, getState, { strategy, filtersFailed } = {}) {
-  const m = loadStageMatrix(db, getState)
+export function tradeStageGate(db, getState, { strategy, filtersFailed, accountId = null } = {}) {
+  const m = loadStageMatrix(db, getState, accountId)
   const stratKey = strategy || 'fib_618_fade'
   const stratRow = m.strategies.find(s => s.key === stratKey)
   // Unknown strategy label → block: never open a trade the matrix can't name.
@@ -312,4 +387,29 @@ export function stageMatrixView(db, getState) {
     stats: stageMatrixStats(db, getState),
     windowDays: 30,
   }
+}
+
+/**
+ * Would ANY of these accounts trade this strategy right now?
+ *
+ * The loop evaluates the trade gate ONCE per signal, before it fans out to
+ * accounts. With per-account overlays that single verdict can no longer be
+ * authoritative — one account may have armed a strategy the global matrix has
+ * off. So the signal-level check becomes a UNION (an optimisation: stop early
+ * only when nobody could act on it) and the real decision moves inside the
+ * fan-out, where the account is known.
+ *
+ * An empty or unknown roster returns the GLOBAL verdict — never a silent
+ * "yes", and never a silent "no".
+ */
+export function anyAccountTradeGate(db, getState, { strategy, filtersFailed, accountIds } = {}) {
+  const ids = Array.isArray(accountIds) ? accountIds.filter(a => a != null) : []
+  if (ids.length === 0) return tradeStageGate(db, getState, { strategy, filtersFailed })
+  let last = null
+  for (const id of ids) {
+    const g = tradeStageGate(db, getState, { strategy, filtersFailed, accountId: String(id) })
+    if (g.ok) return g
+    last = g
+  }
+  return last
 }

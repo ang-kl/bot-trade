@@ -1973,10 +1973,12 @@ export default function actionsRouter(db) {
   // (enabled_strategies_json / fib_*_filter) so every older reader agrees.
   // -----------------------------------------------------------------------
   router.post('/stage-matrix', (req, res) => {
-    const { kind, key, stage, on } = req.body || {}
+    const { kind, key, stage, on, accountId = null } = req.body || {}
     try {
-      const matrix = setStage(db, { kind, key, stage, on: on === true }, { getState, setState })
-      console.log(`[actions] stage-matrix: ${kind} ${key} × ${stage} → ${on === true ? 'on' : 'off'}`)
+      // accountId writes THAT account's overlay and nothing else; absent, the
+      // global matrix — byte-identical to the behaviour before overlays.
+      const matrix = setStage(db, { kind, key, stage, on: on === true, accountId }, { getState, setState })
+      console.log(`[actions] stage-matrix${accountId ? ` (account ${accountId})` : ''}: ${kind} ${key} × ${stage} → ${on === true ? 'on' : 'off'}`)
       res.json({ ok: true, ...matrix })
     } catch (e) {
       res.status(400).json({ error: e.message })
