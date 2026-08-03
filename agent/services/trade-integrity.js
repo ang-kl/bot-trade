@@ -161,7 +161,12 @@ function pathOf(r) {
  * @param {object} db
  * @param {{days?: number, windowMinutes?: number, minCluster?: number}} opts
  */
-export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minCluster = 2, includeImported = true } = {}) {
+export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minCluster = 2, includeImported = true, scope = null } = {}) {
+  // S1 batch 7. The CLUSTER KEY was already account-scoped; the READ was not,
+  // so selecting an account still walked every account's rows and simply
+  // grouped them apart. That is correct output at the wrong cost, and it made
+  // `worst` a portfolio answer on a per-account screen.
+  const acct = accountWhere(scope, 'account_id')
   let rows = []
   try {
     rows = db.prepare(`
@@ -170,9 +175,9 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
              label_raw, source, COALESCE(label_strategy, strategy) AS strategy,
              label_session
       FROM trades
-      WHERE opened_at IS NOT NULL AND opened_at >= datetime('now', ?)
+      WHERE opened_at IS NOT NULL AND opened_at >= datetime('now', ?)${acct.active ? ` AND ${acct.where}` : ''}
       ORDER BY symbol, opened_at
-    `).all(`-${days} days`)
+    `).all(`-${days} days`, ...acct.params)
   } catch { return { clusters: [], byPath: {}, worst: null } }
 
   // Broker fills the bot never recorded (imported by
@@ -190,8 +195,8 @@ export function findSameSymbolClusters(db, { days = 14, windowMinutes = 60, minC
                NULL AS label_raw, 'broker-import' AS source, NULL AS strategy, NULL AS label_session
         FROM broker_deals
         WHERE matched_trade_id IS NULL AND opened_at IS NOT NULL
-          AND opened_at >= datetime('now', ?)
-      `).all(`-${days} days`))
+          AND opened_at >= datetime('now', ?)${acct.active ? ` AND ${acct.where}` : ''}
+      `).all(`-${days} days`, ...acct.params))
     } catch { /* table absent on an older DB — bot rows still cluster */ }
   }
 
@@ -305,7 +310,11 @@ export function normalisePositionId(v) {
   return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s
 }
 
-export function findOpenDuplicates(db) {
+export function findOpenDuplicates(db, { scope = null } = {}) {
+  // The same-second key is already account-scoped (see below); this filters
+  // the READ too, so an account view is answering about that account rather
+  // than reporting every account's duplicates under one count.
+  const acct = accountWhere(scope, 'mp.account_id')
   let rows = []
   try {
     rows = db.prepare(`
@@ -314,8 +323,8 @@ export function findOpenDuplicates(db) {
              t.opened_at, t.ctrader_position_id, t.volume
       FROM monitored_positions mp
       LEFT JOIN trades t ON t.id = mp.trade_id
-      WHERE mp.status = 'active'
-    `).all()
+      WHERE mp.status = 'active'${acct.active ? ` AND ${acct.where}` : ''}
+    `).all(...acct.params)
   } catch { return { groups: [], count: 0 } }
 
   const group = (keyFn, kind) => {

@@ -10,6 +10,7 @@
 
 import { getState } from '../db.js'
 import { armedTimeframes } from '../lib/timeframes.js'
+import { accountWhere } from '../lib/account-scope.js'
 
 export const WINDOWS = [
   { key: '2h', mod: '-2 hours' },
@@ -19,8 +20,14 @@ export const WINDOWS = [
   { key: '1w', mod: '-7 days' },
 ]
 
-export function timeframePerformance(db) {
+// S1 batch 7. `scope` is optional and unscoped by default, so every existing
+// caller keeps its behaviour. When passed, the windows answer for ONE account
+// — the same reason /attribution needed it: a demo running loosened gates and
+// the live account running tight ones average into a per-timeframe verdict
+// that neither of them has, and this table is what the arming decision reads.
+export function timeframePerformance(db, { scope = null } = {}) {
   const armed = armedTimeframes(db, getState)
+  const acct = accountWhere(scope, 'account_id')
 
   // closed_at is written both as "YYYY-MM-DD HH:MM:SS" (SQL datetime('now'))
   // and as ISO-with-T in older rows — datetime() normalises either form so
@@ -32,14 +39,14 @@ export function timeframePerformance(db) {
             SUM(CASE WHEN COALESCE(net_pnl, 0) < 0 THEN 1 ELSE 0 END) AS losses,
             ROUND(SUM(COALESCE(net_pnl, 0)), 2) AS pnl
      FROM trades
-     WHERE status = 'closed' AND datetime(closed_at) >= datetime('now', ?)
+     WHERE status = 'closed' AND datetime(closed_at) >= datetime('now', ?)${acct.active ? ` AND ${acct.where}` : ''}
      GROUP BY tf`
   )
 
   const byWindow = {}
   for (const w of WINDOWS) {
     let rows = []
-    try { rows = stmt.all(w.mod) } catch { /* fresh DB, no trades table yet */ }
+    try { rows = stmt.all(w.mod, ...acct.params) } catch { /* fresh DB, no trades table yet */ }
     byWindow[w.key] = new Map(rows.map(r => [r.tf, r]))
   }
 

@@ -1090,10 +1090,17 @@ export default function stateRouter(db) {
   // two historical pairs and was completely blind to a live 0003.HK pair
   // sitting in the book. Detecting a duplicate only once it closes is
   // detecting it after the money is gone.
-  router.get('/open-duplicates', async (_req, res) => {
+  router.get('/open-duplicates', async (req, res) => {
     try {
       const { findOpenDuplicates } = await import('../services/trade-integrity.js')
-      res.json(findOpenDuplicates(db))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...findOpenDuplicates(db, { scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'monitored_positions', scope, extraWhere: "status = 'active'",
+        })),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -1130,7 +1137,14 @@ export default function stateRouter(db) {
       const { findSameSymbolClusters } = await import('../services/trade-integrity.js')
       const days = Math.min(365, Math.max(1, Number(req.query.days) || 14))
       const windowMinutes = Math.min(1440, Math.max(1, Number(req.query.windowMinutes) || 60))
-      res.json(findSameSymbolClusters(db, { days, windowMinutes }))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...findSameSymbolClusters(db, { days, windowMinutes, scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope, extraWhere: 'opened_at IS NOT NULL',
+        })),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -1143,15 +1157,32 @@ export default function stateRouter(db) {
     try {
       const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200))
       const only = String(req.query.unmatchedOnly || '') === '1'
+      // S1 batch 7. broker_deals carries account_id from the import itself —
+      // this is BROKER truth, so an unmatched deal on another account is that
+      // account's unreconciled fill, not this one's. Pooling them makes the
+      // "unmatched" count read as a bigger reconciliation gap than any single
+      // account has.
+      const scope = requestedAccount(db, req)
+      const acct = accountWhere(scope, 'account_id')
+      const clauses = []
+      const params = []
+      if (only) clauses.push('matched_trade_id IS NULL')
+      if (acct.active) { clauses.push(acct.where); params.push(...acct.params) }
+      const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
       const rows = db.prepare(`
-        SELECT * FROM broker_deals
-        ${only ? 'WHERE matched_trade_id IS NULL' : ''}
+        SELECT * FROM broker_deals${where}
         ORDER BY closed_at DESC LIMIT ?
-      `).all(limit)
+      `).all(...params, limit)
       const tot = db.prepare(
-        'SELECT COUNT(*) AS all_rows, SUM(matched_trade_id IS NULL) AS unmatched FROM broker_deals',
-      ).get()
-      res.json({ rows, total: tot.all_rows || 0, unmatched: tot.unmatched || 0 })
+        `SELECT COUNT(*) AS all_rows, SUM(matched_trade_id IS NULL) AS unmatched
+           FROM broker_deals${acct.active ? ` WHERE ${acct.where}` : ''}`,
+      ).get(...acct.params)
+      res.json({
+        rows, total: tot.all_rows || 0, unmatched: tot.unmatched || 0,
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scoped: acct.active,
+        scope: scopeReport(scope, scopeCoverage(db, { table: 'broker_deals', scope })),
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -2349,9 +2380,16 @@ export default function stateRouter(db) {
   // GET /state/timeframe-performance — win/loss/no-trade per autotrade
   // timeframe over rolling windows (Tune → Pipeline table)
   // -----------------------------------------------------------------------
-  router.get('/timeframe-performance', (_req, res) => {
+  router.get('/timeframe-performance', (req, res) => {
     try {
-      res.json(timeframePerformance(db))
+      const scope = requestedAccount(db, req)
+      res.json({
+        ...timeframePerformance(db, { scope }),
+        accountId: scope.all ? 'all' : (scope.accountId ?? null),
+        scope: scopeReport(scope, scopeCoverage(db, {
+          table: 'trades', scope, extraWhere: "status = 'closed'",
+        })),
+      })
     } catch (e) {
       res.json({ windows: [], rows: [], error: e.message })
     }
