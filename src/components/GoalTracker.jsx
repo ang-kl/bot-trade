@@ -103,9 +103,30 @@ function AccountRow({ row }) {
       padding: '6px 9px', display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 320px', minWidth: 280,
     }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
+        {/* WHICH ACCOUNT. Owner, 2026-08-03: "Which account? I don't see the
+            Account # label and the alternate Account # labels in each card."
+            This read `row.label || row.accountId`, and `broker_label` is
+            'Pepperstone' on every registry row — so four cards carried four
+            IDENTICAL headings and the number was never shown at all.
+
+            Both ids are now on the card, because they are different ids for
+            the same thing and the owner uses the first one: the cTrader LOGIN
+            (5067353) is what the broker app shows, and the ctidTraderAccountId
+            (43097342) is what this system's tables, logs and ?account= use.
+            Showing only one leaves a translation step the operator has to do
+            in their head — which is the step that made "why is DEMO 5203012
+            ratchet" unanswerable from a screenshot. */}
         <span style={{ fontSize: 'var(--fs-d10)', fontWeight: 800, color: ACC }}>
-          {row.label || row.accountId}
+          {row.login ? `#${row.login}` : (row.label || row.accountId)}
         </span>
+        {row.login && row.label && (
+          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>{row.label}</span>
+        )}
+        {row.login && row.accountId !== 'all' && String(row.accountId) !== String(row.login) && (
+          <span style={{ fontSize: 'var(--fs-d9)', color: MU }} title="ctidTraderAccountId — the id used by ?account=, the ledger and the logs">
+            ({row.accountId})
+          </span>
+        )}
         {row.isLive && <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: DN }}>LIVE</span>}
         {row.enabled === false && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>disabled</span>}
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: v.tone }}>{v.label}</span>
@@ -209,7 +230,7 @@ export default function GoalTracker({ variant = 'full' }) {
         <SectionTools id="goal" title="Go-Live Gate — Progress card" data={data}
           toText={() => [
             `Go-live gate: win rate ${data.goal.winRatePct}% · profit factor ${data.goal.profitFactor} · by ${data.goal.deadline} (${data.daysRemaining}d left)`,
-            ...[p, ...ordered].map(r => `${r.label || r.accountId} · ${r.trades} closed · win ${pct(r.winRate.value)} (${VERDICT[r.winRate.verdict]?.label}) · PF ${num2(r.profitFactor.value)} (${VERDICT[r.profitFactor.verdict]?.label})`),
+            ...[p, ...ordered].map(r => `${r.login ? `#${r.login}` : (r.label || r.accountId)}${r.label && r.login ? ` ${r.label}` : ''} · ${r.trades} closed · win ${pct(r.winRate.value)} (${VERDICT[r.winRate.verdict]?.label}) · PF ${num2(r.profitFactor.value)} (${VERDICT[r.profitFactor.verdict]?.label})`),
           ].join('\n')}
           render={() => (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
