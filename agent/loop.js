@@ -3052,6 +3052,36 @@ async function runLoop(db) {
       }
 
       // Periodic broker-truth market-hours refresh — pull each mapped
+      // FX conversion legs — sizing infrastructure, refreshed on its own
+      // schedule (services/fx-legs.js). Production 03-08-2026: 1,859 entries
+      // in seven days died at `usd_per_lot_unknown` because USDPLN, USDNOK and
+      // USDCAD had not been scanned since 01-08 and the rate table correctly
+      // refuses anything older than 26 hours. The scanner looks for trades,
+      // not for conversion rates; leaving the rates to it is what broke.
+      // Cheap by construction: only legs older than six hours are fetched,
+      // capped per cycle, so the steady state is zero broker calls.
+      try {
+        const creds = getCtraderCreds(db)
+        if (creds.ready && !cycleOverBudget()) {
+          const { refreshFxLegs } = await import('./services/fx-legs.js')
+          const { readTradableUnion } = await import('./services/watchlists.js')
+          let symbols = []
+          try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
+          if (symbols.length) {
+            const symbolMap = getSymbolMap(db)
+            const { wsGetSpotOnce } = await import('./lib/ctrader-ws.js')
+            const r = await refreshFxLegs(db, {
+              symbols, symbolMap,
+              getSpot: (sid) => wsGetSpotOnce(creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId, sid),
+            })
+            if (r.fetched.length) log(`FX legs refreshed: ${r.fetched.join(', ')}${r.failed.length ? ` (failed: ${r.failed.join(', ')})` : ''}`)
+            else if (r.failed.length) log(`FX legs: ${r.failed.length} leg(s) could not be priced — ${r.failed.join(', ')}`)
+          }
+        }
+      } catch (err) {
+        log(`FX leg refresh failed (non-fatal): ${err.message}`)
+      }
+
       // symbol's real trading schedule from cTrader into symbol_hours so the
       // open/closed gate scales to 1,900+ instruments without hardcoded
       // categories. Roughly once a day (every ~288 five-min loops), and once

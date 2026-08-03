@@ -79,6 +79,32 @@ export function loadFxRates(db, now = Date.now()) {
   return out
 }
 
+/**
+ * Record ONE symbol's price. Same table, same ageing — used by the FX-leg
+ * refresher, which fetches conversion legs from the broker directly instead
+ * of waiting for the scan rotation to happen upon them.
+ */
+export function recordFxRate(db, symbol, price, now = Date.now()) {
+  const sym = String(symbol || '').toUpperCase()
+  const p = Number(price)
+  if (!sym || !Number.isFinite(p) || p <= 0) return false
+  try {
+    const table = readTable(db)
+    table[sym] = { p, t: now }
+    let entries = Object.entries(table).filter(([, v]) => now - (v?.t ?? 0) <= RATE_MAX_AGE_MS)
+    if (entries.length > MAX_ENTRIES) {
+      entries = entries.sort((a, b) => (b[1].t ?? 0) - (a[1].t ?? 0)).slice(0, MAX_ENTRIES)
+    }
+    setState(db, STATE_KEY, JSON.stringify(Object.fromEntries(entries)))
+    return true
+  } catch { return false }
+}
+
+/** The raw table WITH timestamps — the leg refresher needs the ages. */
+export function readFxTable(db) {
+  return readTable(db)
+}
+
 /** Diagnostics for the UI/logs: how many rates, and how old the oldest is. */
 export function fxRatesStatus(db, now = Date.now()) {
   const table = readTable(db)

@@ -2904,6 +2904,38 @@ export default function stateRouter(db) {
     res.json({ on: getState(db, 'fib_fvg_filter') === 'true' })
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/fx-legs — the conversion rates position sizing depends on.
+  //
+  // This view exists because its absence cost a day. 1,859 entries in seven
+  // days were vetoed `usd_per_lot_unknown` and nothing on any page said WHY:
+  // the answer was that USDPLN, USDNOK and USDCAD had not been re-scanned
+  // since 01-08 and had aged out of the rate table. One table of currency /
+  // leg / age / state would have shown that at a glance.
+  //
+  // Global by declaration: FX rates are market facts, not account data.
+  // -----------------------------------------------------------------------
+  router.get('/fx-legs', async (_req, res) => {
+    try {
+      const { fxLegReport } = await import('../services/fx-legs.js')
+      const { fxRatesStatus } = await import('../services/fx-rates.js')
+      const { readTradableUnion } = await import('../services/watchlists.js')
+      const { getSymbolMap } = await import('../lib/ctrader-creds.js')
+      let symbols = []
+      try { symbols = readTradableUnion(db).map(w => w.symbol).filter(Boolean) } catch { symbols = [] }
+      const report = fxLegReport(db, { symbols, symbolMap: getSymbolMap(db) })
+      res.json({
+        ok: true,
+        ...report,
+        table: fxRatesStatus(db),
+        watchlistSymbols: symbols.length,
+        scope: { mode: 'global', reason: 'FX rates are market-wide, not per-account' },
+      })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/prices', (_req, res) => {
     try {
       const rows = db.prepare(`
