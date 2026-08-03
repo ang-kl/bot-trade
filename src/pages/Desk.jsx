@@ -12,6 +12,8 @@ import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-a
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
+import ScopeDot from '../components/common/ScopeDot.jsx'
+import { useAccountScope, MODES } from '../lib/use-account-scope.js'
 import PositionChart from '../components/PositionChart.jsx'
 import TradeGaugeWall from '../components/TradeGaugeWall.jsx'
 import PositionManager from '../components/PositionManager.jsx'
@@ -152,7 +154,7 @@ export default function Desk() {
   // Whose positions the route says these are, + rows it hid for having no
   // account_id. /state/positions is account-scoped server-side now, so Desk
   // needs no query param — it gets the selected account by default.
-  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0, scope: null })
   const [events, setEvents] = useState([])
   const [armed, setArmed] = useState(null)
   const [config, setConfig] = useState(null)
@@ -297,7 +299,7 @@ export default function Desk() {
       const rows = s.lastResults?.scans || []
       setScans(rows)
       setPositions(p.rows || p.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
       setEvents(r.rows || [])
       setArmed(atf)
       setConfig(c)
@@ -404,6 +406,10 @@ export default function Desk() {
   // this and fixed it with a persistent table (services/fx-rates.js); this
   // page was still reading one batch, which is why a Hong Kong row's
   // stop-loss had no USDHKD to convert through.
+  const openPnlScope = useAccountScope({
+    id: 'desk.open-pnl', mode: MODES.ACCOUNT, payload: { scope: posScope.scope },
+  })
+
   const rateMap = useMemo(() => {
     const m = {}
     for (const [sym, v] of Object.entries(latestPrices || {})) {
@@ -508,7 +514,14 @@ export default function Desk() {
       <Section
         id="openpnl"
         title="Open trades — floating P&L"
-        tag={<AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />}
+        tag={<>
+          <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
+          {/* S4 — the DB-tracked positions declare 'account'. The "At the
+              broker" table below is a different question and declares
+              separately: it is BROKER truth for one connection, so pooling it
+              under this dot would be the same conflation the plan is about. */}
+          <ScopeDot scope={openPnlScope} />
+        </>}
         summary={(() => {
           const openPositions = broker?.positions || []
           if (openPositions.length === 0) return 'flat'

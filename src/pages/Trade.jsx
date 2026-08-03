@@ -13,6 +13,8 @@ import { agentGet, agentPost, agentConfigured, pageAsleep } from '../lib/agent-a
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import SwitchingNote from '../components/common/SwitchingNote.jsx'
 import AccountTag from '../components/common/AccountTag.jsx'
+import ScopeDot from '../components/common/ScopeDot.jsx'
+import { useAccountScope, MODES } from '../lib/use-account-scope.js'
 import { tpLadder } from '../lib/tp-ladder.js'
 import StdTradeTable from '../components/StdTradeTable.jsx'
 import OrderManager from '../components/OrderManager.jsx'
@@ -393,7 +395,11 @@ export default function Trade() {
   // Which account the positions payload says these rows belong to, plus how
   // many active rows it hid for carrying no account_id. Owner: "I still cannot
   // know which account I am trading in the page."
-  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0 })
+  const [posScope, setPosScope] = useState({ accountId: null, legacyRows: 0, scope: null })
+  // S4 — the closed-trades table answers a different question from the open
+  // one, so it declares separately. One dot per TABLE, not per page: the
+  // Go-Live card failed with six panels on one page, five of which were fine.
+  const [tradeScope, setTradeScope] = useState({ scope: null })
   const [trades, setTrades] = useState([])
   const [riskEvents, setRiskEvents] = useState([])
   const [account, setAccount] = useState(null)   // risk-config derived: balance, leverage
@@ -428,6 +434,16 @@ export default function Trade() {
   // handful), live tick as the override wherever the SSE stream has one —
   // same "poll instant-paints, live stream overwrites" two-tier pattern used
   // everywhere else in this app.
+  // S4 — THE DECLARATIONS. One per table, because the Go-Live card failed with
+  // six panels on one page and five of them were fine: a page-level dot would
+  // have been either wrongly green or uselessly amber.
+  const positionsScope = useAccountScope({
+    id: 'trade.open-positions', mode: MODES.ACCOUNT, payload: { scope: posScope.scope },
+  })
+  const closedScope = useAccountScope({
+    id: 'trade.closed-trades', mode: MODES.ACCOUNT, payload: { scope: tradeScope.scope },
+  })
+
   const priceMap = (() => {
     // THREE TIERS, not two. The base is /state/prices — the newest close per
     // symbol across ALL cycles (255 symbols), not the ~15 the current cycle
@@ -481,7 +497,8 @@ export default function Trade() {
       // duplicate `key={symbol}` rows in the list below (Codex review).
       setScans(s.lastResults?.scans || [])
       setPositions(p.rows || p.positions || [])
-      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0 })
+      setPosScope({ accountId: p?.accountId ?? null, legacyRows: p?.legacyRows ?? 0, scope: p?.scope ?? null })
+      setTradeScope({ scope: t?.scope ?? null })
       setTrades((t.rows || t.trades || []).slice(0, 8)) // match the order log's page size
       setRiskEvents(r.rows || [])
       setAccount(rc?.derived || null)
@@ -734,6 +751,7 @@ export default function Trade() {
         <h2 className="t-h3 mb-2 flex items-center gap-2">
           <span>Open positions ({positions.length})</span>
           <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
+          <ScopeDot scope={positionsScope} />
         </h2>
         {positions.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">Flat.</div>}
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
@@ -892,7 +910,10 @@ export default function Trade() {
         {/* Recent trades */}
         <Card id="sec-recent">
           <div className="flex items-center gap-2 mb-2">
-            <h2 className="t-h3">Recent Trades table <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></h2>
+            <h2 className="t-h3 flex items-center gap-2">
+              <span>Recent Trades table <span className="font-normal text-[var(--color-text-sub)]">— placed by the BOT on this account. Your manual cTrader trades live on the Accounts page.</span></span>
+              <ScopeDot scope={closedScope} />
+            </h2>
             <Button
               size="sm" variant="subtle" className="ml-auto" disabled={busy === 'reconcile'}
               onClick={async () => {
