@@ -2603,7 +2603,8 @@ export default function stateRouter(db) {
           // SELECTED account's ladder (its numbers are that account's money).
           const sel = getState(db, 'ctrader_account_id')
           return {
-            effective: loadProfitRatchetConfig(db),
+            effective: loadProfitRatchetConfig(db, acct),
+            overlayKeys: acct ? acctOverlayKeys(db, 'profit_ratchet_json', acct) : [],
             defaults: DEFAULT_PROFIT_RATCHET,
             state: sel ? loadRatchetState(db, sel) : null,
             // WHOSE ladder this is. Without the id the page can render a halt
@@ -2615,7 +2616,12 @@ export default function stateRouter(db) {
         })(),
         lossGuardian: await (async () => {
           const { loadLossGuardianConfig, DEFAULT_LOSS_GUARDIAN } = await import('../services/loss-guardian.js')
-          return { effective: loadLossGuardianConfig(db), defaults: DEFAULT_LOSS_GUARDIAN }
+          return {
+            effective: loadLossGuardianConfig(db, acct),
+            defaults: DEFAULT_LOSS_GUARDIAN,
+            accountId: acct,
+            overlayKeys: acct ? acctOverlayKeys(db, 'loss_guardian_json', acct) : [],
+          }
         })(),
       })
     } catch (err) {
