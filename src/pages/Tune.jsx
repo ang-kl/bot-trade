@@ -836,11 +836,20 @@ export default function Tune() {
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
   const [wlRemoved, setWlRemoved] = useState(null)   // previously-watched symbols (server record)
   // WHICH watchlist this tab is editing. 'all' = the SHARED list every account
-  // inherits until it is given one of its own, which is exactly what this page
-  // has always edited — so that is the default and nothing re-scopes itself
-  // behind the owner's back. Picking an account edits that account's list, and
-  // the first such save forks it off the shared one for good.
-  const [wlAcct, setWlAcct] = useState('all')
+  // inherits until it is given one of its own. Picking an account edits that
+  // account's list, and the first such save forks it off the shared one for
+  // good.
+  //
+  // This followed the sidebar lens LAST of everything (owner 03-08-2026:
+  // "wire the watchlist scope too"), and it was held back one round on
+  // purpose: a fork is permanent, and a scope that a glance can move should
+  // not be able to cause one silently. It isn't silent — the scope block below
+  // states the consequence BEFORE any save ("Saving here gives it its own copy
+  // and it stops following the shared list"), carries an INHERITING SHARED /
+  // OWN LIST badge, and the save path reports the fork the moment it happens.
+  // With the warning ahead of the action rather than behind it, the lens can
+  // drive this too.
+  const [wlAcct, setWlAcct] = useLensAccount('all')
   const [wlSelected, setWlSelected] = useState(() => new Set()) // checkbox bulk-select in the watchlist table
   // Symbol whose strategy picker is open, or '__bulk__' for the selected rows.
   const [stratEditor, setStratEditor] = useState(null)
