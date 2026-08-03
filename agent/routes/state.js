@@ -13,7 +13,7 @@ import { describeLabel } from '../lib/trade-labels.js'
 import { STRATEGY_REGISTRY, enabledStrategies } from '../services/strategies.js'
 import { stateEpoch } from '../lib/state-cache.js'
 import { armedTimeframes } from '../lib/timeframes.js'
-import { requestedAccount, accountWhere, countUnattributed } from '../lib/account-scope.js'
+import { requestedAccount, accountWhere, countUnattributed, scopeCoverage, scopeReport } from '../lib/account-scope.js'
 import { timeframePerformance } from '../services/timeframe-performance.js'
 import { sizingPreview } from '../services/sizing-preview.js'
 import { loadProfitKeeperConfig } from '../services/profit-keeper.js'
@@ -1782,6 +1782,13 @@ export default function stateRouter(db) {
       legacyRows: acct.active
         ? countUnattributed(db, 'trades', "status IN ('closed','rejected')")
         : 0,
+      // S1 — coverage over THESE rows, not the whole table. `legacyRows`
+      // above counts NULLs across every closed trade ever; this says what
+      // fraction of the answer on screen is actually this account's, which is
+      // the number the Go-Live card needed and did not have.
+      scope: scopeReport(scope, scopeCoverage(db, {
+        table: 'trades', scope, extraWhere: "status IN ('closed','rejected')",
+      })),
     })
   })
 

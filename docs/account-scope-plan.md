@@ -67,18 +67,45 @@ obliged to use it, and nothing notices when it doesn't.**
 | | Count |
 |---|---:|
 | `GET /state/*` routes | **96** |
-| …that accept `?account=` | **11** |
+| …that are account-aware | **23** |
 
-The eleven: `/account-analytics`, `/config`, `/decision-feed`, `/pause-plan`,
-`/perf-ledger`, `/risk-config`, `/risk-full`, `/strategy-insights`,
-`/strategy-tf-performance`, `/veto-breakdown`, `/watchlist-summary`.
+> **Corrected 2026-08-03, after starting S1.** The first version of this document said
+> **11**, from grepping `req.query.account`. That missed every route using the
+> `requestedAccount(db, req)` helper — which is the actual convention. The real figure is
+> **23**. It is corrected in place rather than quietly edited because the wrong number was
+> used to justify the sequencing below.
 
-**85 of 96 routes are account-blind.** So a component cannot be scoped today even when
+The 23: `/account-analytics`, `/account-settings`, `/config`, `/decision-feed`,
+`/decisions-daily`, `/orders`, `/pause-plan`, `/pending-orders`, `/perf-ledger`,
+`/phase-audit`, `/positions`, `/postmortems`, `/risk-config`, `/risk-events`,
+`/risk-full`, `/strategy-insights`, `/strategy-liveness`, `/strategy-tf-performance`,
+`/trades`, `/veto-breakdown`, `/watchlist-summary`, `/workspace-backtests`,
+`/workspace-log`.
+
+**73 of 96 routes are account-blind.** So a component cannot be scoped today even when
 it wants to be — there is no parameter to pass. Any plan that only paints dots on the
 front end would produce a wall of amber it cannot fix, which is how a warning becomes
 wallpaper.
 
-**Consequence for sequencing: the server work leads, the dots follow.**
+**Consequence for sequencing: the server work leads, the dots follow.** The correction
+does not change that — it changes how much of S1 was already done.
+
+### 2.3 The convention exists; coverage was the missing half
+
+`agent/lib/account-scope.js` is the real convention: `requestedAccount(db, req)` resolves
+`?account=` / `?account=all` / the selected account, `accountWhere()` builds the
+predicate, `countUnattributed()` counts NULL rows. Nine routes use it directly.
+
+`agent/services/viewed-account.js` implements the same idea a second time and has **zero
+callers in `state.js`**. S1 builds on `lib/account-scope.js` and does not extend the
+unused one — a second source of truth is the defect behind three separate bugs fixed on
+2026-08-03 alone, and the first attempt at S1 added coverage to the wrong file before
+this was noticed.
+
+What was missing is not the scoping. It is that `countUnattributed` counts NULLs across
+the **whole table**, so a route returning 20 open positions reports a figure drawn from
+thousands of closed ones. That is a footnote, not a per-panel signal — and it is why the
+Go-Live card could show six pooled panels with nothing contradicting it.
 
 ---
 
@@ -120,7 +147,7 @@ same dot, so the eye can follow one colour down the screen.
 
 | Dot | Meaning | Action |
 |---|---|---|
-| **Account colour** | Scoped, and the data matches the claim | none |
+| **Blue** (account colour) | Scoped, and the data matches the claim | none |
 | **Grey** | `global` or `portfolio` — account-independent **by declaration** | none |
 | **Amber** | Renders account data with **no scope declared**, or scoped but coverage < 100% | the Go-Live-card class |
 | **Red** | Declared scope, and the fetch **failed** or returned nothing attributable | reason on hover |
@@ -197,7 +224,7 @@ rewrite.
 
 | # | Milestone | What lands | Rough size |
 |---|---|---|---|
-| **S1** | `?account=` on the remaining routes | The 85 account-blind `/state` routes gain the parameter, using the existing scoped-read convention. **The scoped-read trap is the risk here** — `WHERE (account_id = ? OR account_id IS NULL)` is correct when unstamped rows are a residue and ruinous when they are all of them, which is exactly how the Go-Live card broke. Every route converted gets a coverage figure, not a silent OR-NULL. | Large, mechanical, high value |
+| **S1** | `?account=` + coverage on the remaining routes | `scopeCoverage()` / `scopeReport()` land in `lib/account-scope.js` (**done**), then the 73 account-blind `/state` routes gain the parameter, using the existing scoped-read convention. **The scoped-read trap is the risk here** — `WHERE (account_id = ? OR account_id IS NULL)` is correct when unstamped rows are a residue and ruinous when they are all of them, which is exactly how the Go-Live card broke. Every route converted gets a coverage figure, not a silent OR-NULL. | Large, mechanical, high value |
 | **S2** | `useAccountScope` + `ScopeDot` | The hook, the four states, the reason strings. No behaviour change — dots appear, nothing else moves. | Small |
 | **S3** | Sidebar switcher becomes the single source | One switcher in the sidebar; per-page switchers removed. Account colour defined once and consumed by every dot. | Small |
 | **S4** | Adopt across pages | Nine pages, ~34 account-touching components declare their mode. Expect a run of amber on first paint — **that is the deliverable**, not a regression. | Medium |
@@ -210,6 +237,11 @@ be scoped, S4 can only paint amber it has no way to clear.
 ---
 
 ## 8. Open decisions
+
+**Decided by the owner, 2026-08-03:** blue for OK · grey for declared global ·
+LIVE included in the portfolio roll-up but always labelled · amber below 100% ·
+30-day register retention. The four questions below are recorded as answered;
+the reasoning is kept because it is why the answers are what they are.
 
 1. **Where per-account settings sit.** Some things are global by design (the Stage
    Matrix), some per-account (S.A.T. switches, risk limits). Should `global` components be
