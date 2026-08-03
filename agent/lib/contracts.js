@@ -91,15 +91,60 @@ export function contractSize(symbol) {
   return 1
 }
 
+// ---------------------------------------------------------------------------
+// Quote currency for instruments that are NOT six-letter FX pairs.
+//
+// Owner, 2026-08-03: "The TP and SL is in hundreds of thousands when I dont
+// have such balance." Measured on the live book of account 46130058, every
+// one of eleven positions had been sized to a stop loss of ≈3,900 IN ITS OWN
+// QUOTE CURRENCY — US30 3,886 (USD, right), 0003.HK 3,620 (HKD, ≈$464),
+// 0016.HK 3,896 (HKD, ≈$500), GER40 3,707 (EUR, ≈$4,278). The uniform 3,900
+// across currencies IS the bug: `fxQuoteCurrency` returned null for anything
+// without six letters and `usdLossPerLot` read null as "USD", so the
+// conversion was skipped entirely. A JPY-quoted JPN225 reported 155× its real
+// risk; Hong Kong names 7.8×.
+//
+// This is NOT a display bug. risk.js:443 sizes positions through the same
+// function, so the overstated per-lot loss bought ~1/7.8th of the intended
+// lots on HK names — under-risked, but not the budget the owner set.
+//
+// ONLY instruments whose quote currency is actually known are listed. An
+// unlisted symbol keeps today's USD assumption rather than guessing, because
+// a wrong currency here mis-sizes real money in whichever direction it errs.
+// ---------------------------------------------------------------------------
+const QUOTE_CCY = {
+  // Indices, quoted in the local currency of their market.
+  JPN225: 'JPY',
+  GER40: 'EUR', FRA40: 'EUR', SPA35: 'EUR', SPAIN35: 'EUR',
+  ITALY40: 'EUR', NETH25: 'EUR', EUSTX: 'EUR', EUSTX50: 'EUR',
+  UK100: 'GBP',
+  SWISS20: 'CHF',
+  AUS200: 'AUD',
+  HK50: 'HKD',
+  // Explicitly USD, so the map states it rather than relying on the fallback.
+  US30: 'USD', US500: 'USD', NAS100: 'USD', US2000: 'USD', USTEC: 'USD',
+  VIX: 'USD', SDY: 'USD', CN50: 'USD',
+}
+
 /**
- * The quote currency of a 6-letter FX pair, or null for anything else
- * (indices, commodities, single names — all treated as USD-denominated).
- * Known non-FX symbols take priority over the 6-letter pattern — NATGAS,
- * COFFEE and COTTON are 6 uppercase letters but are NOT currency pairs
- * (treating them as crosses vetoed their sizing as usd_per_lot_unknown).
+ * The quote currency of a symbol, or null when we do not know and are
+ * deliberately treating it as USD-denominated.
+ *
+ * Order matters:
+ *  1. The explicit QUOTE_CCY map — the only place a non-USD non-FX
+ *     instrument's currency is declared.
+ *  2. Venue suffixes. Hong Kong share CFDs (`0003.HK`) trade in HKD and US
+ *     share CFDs (`TSLA.US`) in USD.
+ *  3. Other known non-FX symbols → null. NATGAS, COFFEE and COTTON are six
+ *     uppercase letters but are NOT currency pairs (treating them as crosses
+ *     vetoed their sizing as usd_per_lot_unknown).
+ *  4. The six-letter FX pattern.
  */
 export function fxQuoteCurrency(symbol) {
   const s = (symbol || '').toUpperCase()
+  if (QUOTE_CCY[s] != null) return QUOTE_CCY[s]
+  if (s.endsWith('.HK')) return 'HKD'
+  if (s.endsWith('.US')) return 'USD'
   if (CONTRACT_SIZE[s] != null) return null
   if (s.length === 6 && /^[A-Z]{6}$/.test(s)) return s.slice(3)
   return null

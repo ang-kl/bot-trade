@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import {
   contractSize,
   usdLossPerLot,
+  fxQuoteCurrency,
   usdRate,
   notionalUsd,
   tierForBalance,
@@ -230,4 +231,54 @@ test('usdLossPerLot — EURJPY sizes instead of vetoing once JPY is derivable', 
   assert.ok(Number.isFinite(v) && v > 0, `expected a finite loss/lot, got ${v}`)
   // 0.5 JPY × 100,000 = 50,000 JPY → × (1.08/170) USD
   assert.ok(Math.abs(v - 50_000 * (1.08 / 170)) < 1e-6, `got ${v}`)
+})
+
+// ---------------------------------------------------------------------------
+// Owner, 2026-08-03: "The TP and SL is in hundreds of thousands when I dont
+// have such balance." The quote currency of a non-FX instrument was never
+// asked for — fxQuoteCurrency returned null for anything without six letters
+// and usdLossPerLot read null as USD, so the conversion was skipped.
+// These pin the fix against the ACTUAL live book of account 46130058 at
+// 08:40 UTC, where every position had been sized to ≈3,900 in its own quote
+// currency. The uniform 3,900 across currencies was the bug.
+// ---------------------------------------------------------------------------
+test('the quote currency of a non-FX instrument is declared, not assumed', () => {
+  assert.equal(fxQuoteCurrency('JPN225'), 'JPY')
+  assert.equal(fxQuoteCurrency('GER40'), 'EUR')
+  assert.equal(fxQuoteCurrency('UK100'), 'GBP')
+  assert.equal(fxQuoteCurrency('AUS200'), 'AUD')
+  assert.equal(fxQuoteCurrency('0003.HK'), 'HKD', 'Hong Kong share CFDs trade in HKD')
+  assert.equal(fxQuoteCurrency('TSLA.US'), 'USD')
+  assert.equal(fxQuoteCurrency('US30'), 'USD')
+  // Unlisted stays as it was — an unknown currency is not a guess.
+  assert.equal(fxQuoteCurrency('NATGAS'), null)
+  assert.equal(fxQuoteCurrency('XAUUSD'), null)
+  assert.equal(fxQuoteCurrency('EURGBP'), 'GBP', 'the six-letter rule still applies')
+})
+
+test('0003.HK stop risk is HKD converted to USD, not HKD relabelled USD', () => {
+  // The live row: short, vol 23,658.48, entry 6.98, SL 7.133.
+  const rates = { USDHKD: 7.8 }
+  const perLot = usdLossPerLot('0003.HK', 7.133 - 6.98, 6.98, rates)
+  const risk = perLot * 23658.48
+  // Was reporting 3,620 "USD". The truth is about $464.
+  assert.ok(risk > 440 && risk < 480, `expected ≈464 USD, got ${risk}`)
+})
+
+test('without a USDHKD rate the answer is NaN — refuse, never guess a peg', () => {
+  // A pegged currency is still a currency. Inventing 7.8 here would be the
+  // same class of error as assuming USD: a number nobody measured.
+  assert.ok(Number.isNaN(usdLossPerLot('0003.HK', 0.153, 6.98, { EURUSD: 1.15 })))
+})
+
+test('GER40 stop risk converts through EUR', () => {
+  // Live row: long, vol 6.48, entry 25,905.1, SL 25,333.1 → 3,706.56 EUR.
+  const risk = usdLossPerLot('GER40', 25333.1 - 25905.1, 25905.1, { EURUSD: 1.15394 }) * 6.48
+  assert.ok(risk > 4250 && risk < 4300, `expected ≈4,278 USD, got ${risk}`)
+})
+
+test('USD-quoted instruments are untouched — US30 and NAS100 were always right', () => {
+  const us30 = usdLossPerLot('US30', 52813 - 51567.5, 52813, {}) * 3.12
+  assert.ok(Math.abs(us30 - 3885.96) < 0.01, `expected ≈3,885.96 USD, got ${us30}`)
+  assert.ok(Number.isFinite(usdLossPerLot('NAS100', 682.7376, 28447.4, {})))
 })
