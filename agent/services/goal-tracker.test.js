@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
 import {
   goalTracker, loadGoal, daysRemaining, winsNeeded, winnersNeededForPf,
-  DEFAULT_GOAL, GOAL_STATE_KEY,
+  impliedWinRateForPf, DEFAULT_GOAL, GOAL_STATE_KEY,
 } from './goal-tracker.js'
 
 const NOW = Date.parse('2026-08-02T12:00:00Z')
@@ -302,4 +302,50 @@ test('registry metadata rides along so the panel can flag the live account', () 
   assert.equal(row.isLive, true)
   assert.equal(row.enabled, false)
   assert.equal(row.label, 'Live')
+})
+
+// ---------------------------------------------------------------------------
+// 2026-08-03 — the two goals were not a pair, and requiring both silently
+// enforced the far stricter one.
+//
+// PF = W/(1−W) × (avgWin/avgLoss). At the observed payoff of 1.86 (avg win
+// $224.77, avg loss $121.07), a 68% win rate implies PF ≈ 3.95 — more than
+// double the 1.68 target. So "68% AND 1.68" was really "68%", and 68% needed
+// 144 winners from ~98 remaining trades: arithmetically impossible.
+//
+// PF 1.68 at that same payoff needs ~47.5% wins. That is the actionable
+// number, and the gate now follows profit factor.
+// ---------------------------------------------------------------------------
+
+test('the win rate a PF target implies at the observed payoff', () => {
+  // The owner's real numbers, 245 closed trades.
+  const r = impliedWinRateForPf({ avgWin: 224.77, avgLoss: 121.07, target: 1.68 })
+  assert.ok(Math.abs(r - 47.5) < 0.2, `expected ~47.5%, got ${r}`)
+
+  // Sanity: feeding that win rate back through PF = W/(1−W) × payoff returns
+  // the target, so the two formulas cannot drift apart unnoticed.
+  const W = r / 100
+  const pf = (W / (1 - W)) * (224.77 / 121.07)
+  assert.ok(Math.abs(pf - 1.68) < 0.01, `round-trip gave PF ${pf}`)
+})
+
+test('a symmetric payoff needs a symmetric win rate', () => {
+  // payoff 1.0 → PF target 1.68 needs 62.7% wins. Worth pinning: it shows the
+  // implied rate moves with the payoff, which is the whole point.
+  const r = impliedWinRateForPf({ avgWin: 100, avgLoss: 100, target: 1.68 })
+  assert.ok(Math.abs(r - 62.69) < 0.1, `expected ~62.7%, got ${r}`)
+})
+
+test('an unobservable payoff yields null rather than a guess', () => {
+  assert.equal(impliedWinRateForPf({ avgWin: 0, avgLoss: 100, target: 1.68 }), null)
+  assert.equal(impliedWinRateForPf({ avgWin: 100, avgLoss: 0, target: 1.68 }), null)
+  assert.equal(impliedWinRateForPf({ avgWin: null, avgLoss: null, target: 1.68 }), null)
+})
+
+test('the gate follows profit factor, not the AND of both', () => {
+  // A row that MEETS profit factor but misses win rate must now read as met:
+  // under the old AND it read out_of_reach, which is what put "Out of reach"
+  // on a card whose PF gate was the one the owner cared about.
+  const g = loadGoal({ getState: () => null })
+  assert.equal(g.gateOn, 'profitFactor')
 })

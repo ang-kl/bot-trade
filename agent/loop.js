@@ -3242,6 +3242,17 @@ async function runLoop(db) {
         await hbeat(db, 'atr_refresh', false, err.message)
       }
 
+      // Give historical trades their account back. The Go-Live Gate card was
+      // showing the SAME pooled history under six per-account headings —
+      // including the one labelled LIVE — because every closed trade had a
+      // NULL account_id and the scoped-read convention hands NULL rows to
+      // whoever asks. Bounded per pass; idempotent once drained.
+      try {
+        const { backfillTradeAccounts } = await import('./services/trade-account-backfill.js')
+        const bf = backfillTradeAccounts(db)
+        if (bf.stamped > 0) log(`Trade account backfill: stamped ${bf.stamped}, ${bf.remaining} still stampable, ${bf.unknowable} have no position row to learn it from`)
+      } catch { /* reporting repair, never fatal */ }
+
       // ---------------------------------------------------------------
       // DECISION AUDIT — the check AFTER the risk gate has decided.
       //

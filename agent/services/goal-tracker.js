@@ -63,6 +63,14 @@ export const GOAL_STATE_KEY = 'trading_goal_json'
 export const DEFAULT_GOAL = {
   winRatePct: 68,
   profitFactor: 1.68,
+  // WHICH METRIC IS THE GATE. Owner 2026-08-03: profit factor alone.
+  //
+  // It had been an AND of both, and that made the weaker-looking target the
+  // binding one for the wrong reason — 68% wins implies PF ~4.0 at the
+  // observed payoff, so requiring both meant requiring the far stricter of
+  // the two without anyone deciding to. Win rate is still computed and shown;
+  // it just no longer vetoes the gate. 'both' restores the old behaviour.
+  gateOn: 'profitFactor',
   deadline: '2026-08-12',
   // Below this many closed trades the numbers are noise, not evidence.
   minTrades: 30,
@@ -85,6 +93,7 @@ export function loadGoal(db) {
   return {
     winRatePct: num(saved.winRatePct, DEFAULT_GOAL.winRatePct),
     profitFactor: num(saved.profitFactor, DEFAULT_GOAL.profitFactor),
+    gateOn: ['both', 'profitFactor', 'winRate'].includes(saved.gateOn) ? saved.gateOn : DEFAULT_GOAL.gateOn,
     deadline,
     minTrades: Math.round(num(saved.minTrades, DEFAULT_GOAL.minTrades)),
   }
@@ -114,6 +123,32 @@ export function winsNeeded({ wins, trades, remaining, targetPct }) {
  * `target`, holding average win and average loss at their observed values.
  * null when there is no observed average win or loss to hold fixed.
  */
+/**
+ * The WIN RATE that reaches a target profit factor, holding the observed
+ * payoff ratio fixed.
+ *
+ * WHY THIS NUMBER MATTERS MORE THAN THE TWO TARGETS DID (owner 2026-08-03).
+ * Profit factor is not independent of win rate — it is determined by it and
+ * the payoff ratio:  PF = W/(1−W) × (avgWin/avgLoss).
+ *
+ * With the observed payoff of 1.86 (avg win $224.77 / avg loss $121.07), the
+ * 68% win-rate target implies a profit factor near 4.0, not 1.68. The two
+ * configured goals were not a pair — one was far stricter, and the strict one
+ * was arithmetically out of reach inside the deadline. Meanwhile PF 1.68 at
+ * that same payoff needs only ~47.5% wins, which is a real target.
+ *
+ * So the tracker now prints the win rate the PF target actually implies. It
+ * is the difference between "you need 144 winners from 98 trades" and "you
+ * need to win 47.5% instead of 36.3%".
+ *
+ * @returns {number|null} percent, or null when the payoff is unobservable
+ */
+export function impliedWinRateForPf({ avgWin, avgLoss, target }) {
+  if (!(avgWin > 0) || !(avgLoss > 0) || !(target > 0)) return null
+  const r = (target * avgLoss) / avgWin
+  return round2((r / (1 + r)) * 100)
+}
+
 export function winnersNeededForPf({ grossWin, grossLoss, avgWin, avgLoss, remaining, target }) {
   if (!(avgWin > 0) || !(avgLoss > 0)) return null
   const numer = target * (grossLoss + remaining * avgLoss) - grossWin
@@ -254,6 +289,12 @@ function buildRow({ key, label, isLive, enabled, stats, goal, left }) {
       needed: pfNeed, remaining: m, sampleOk, trades,
       meetsNow: noLosses || (stats.profitFactor != null && stats.profitFactor >= goal.profitFactor),
     }),
+    // The win rate this PF target implies at the CURRENT payoff — the
+    // actionable number, and usually far below the configured win-rate goal.
+    impliedWinRatePct: impliedWinRateForPf({
+      avgWin: stats.avgWin, avgLoss: stats.avgLoss, target: goal.profitFactor,
+    }),
+    payoffRatio: (stats.avgWin > 0 && stats.avgLoss > 0) ? round2(stats.avgWin / stats.avgLoss) : null,
     // Named so the UI can print it rather than implying the tracker knows the
     // size of trades that have not happened.
     assumes: pfNeed != null
@@ -277,8 +318,14 @@ function buildRow({ key, label, isLive, enabled, stats, goal, left }) {
     net: stats.net,
     winRate,
     profitFactor,
-    // Both gates, one word. The gate is an AND, so the weaker metric governs.
-    verdict: worstOf(winRate.verdict, profitFactor.verdict),
+    // ONE WORD, from whichever metric the owner made the gate. Both are still
+    // computed and returned; `gateOn` decides which one the verdict follows.
+    // An AND of the two silently enforced the stricter target — see
+    // impliedWinRateForPf for why 68% and PF 1.68 are not the same demand.
+    gateOn: goal.gateOn,
+    verdict: goal.gateOn === 'winRate' ? winRate.verdict
+      : goal.gateOn === 'profitFactor' ? profitFactor.verdict
+        : worstOf(winRate.verdict, profitFactor.verdict),
   }
 }
 
