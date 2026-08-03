@@ -62,33 +62,52 @@ Seven pages already import the switcher (Accounts, AccountsAudit, Desk, Performa
 Risk, Trade, Tune). **The plumbing is not missing. What is missing is that nothing is
 obliged to use it, and nothing notices when it doesn't.**
 
-### 2.2 Back end — this is the larger half
+### 2.2 Back end — measured twice, wrong twice, now stated properly
 
-| | Count |
+| | Count (2026-08-03, after S1) |
 |---|---:|
-| `GET /state/*` routes | **96** |
-| …that are account-aware | **23** |
+| `GET /state/*` routes | **95** |
+| …that are account-aware | **45** |
+| …that are account-blind | **50** |
 
-> **Corrected 2026-08-03, after starting S1.** The first version of this document said
-> **11**, from grepping `req.query.account`. That missed every route using the
-> `requestedAccount(db, req)` helper — which is the actual convention. The real figure is
-> **23**. It is corrected in place rather than quietly edited because the wrong number was
-> used to justify the sequencing below.
+> **Corrected TWICE. Both corrections are kept, because the pattern is the lesson.**
+>
+> **First**, before S1: the document said **11** account-aware, from grepping
+> `req.query.account`. That missed every route using the `requestedAccount(db, req)`
+> helper — the actual convention. Restated as **23**.
+>
+> **Second**, after S1 batch 9: it said **73 blind**, and I kept quoting that figure
+> while converting routes. Re-measuring across BOTH mechanisms — `requestedAccount`
+> *and* a raw `req.query.account` — gives **45 aware / 50 blind**. The 73 was never
+> right; the first correction fixed one direction of the same mistake and left the
+> other.
+>
+> The route count also dropped 96 → 95: `GET /state/veto-breakdown` was **declared
+> twice**, and Express serves the first registration while silently ignoring the
+> second. The dead handler had never run, and an audit that counts routes counted it.
+>
+> **The lesson is not the arithmetic.** Three times now, a number in this document
+> came from grepping one pattern and believing the result. That is the same defect
+> class the plan itself is about: a measurement that looks authoritative and is
+> answering a narrower question than the one asked. Any future count here should be
+> produced by a script that is shown, not by a grep that is trusted.
 
-The 23: `/account-analytics`, `/account-settings`, `/config`, `/decision-feed`,
-`/decisions-daily`, `/orders`, `/pause-plan`, `/pending-orders`, `/perf-ledger`,
-`/phase-audit`, `/positions`, `/postmortems`, `/risk-config`, `/risk-events`,
-`/risk-full`, `/strategy-insights`, `/strategy-liveness`, `/strategy-tf-performance`,
-`/trades`, `/veto-breakdown`, `/watchlist-summary`, `/workspace-backtests`,
-`/workspace-log`.
+**The 50 remaining blind routes, classified.** This is the part that matters more than
+the count, because "blind" and "wrong" are not the same thing:
 
-**73 of 96 routes are account-blind.** So a component cannot be scoped today even when
-it wants to be — there is no parameter to pass. Any plan that only paints dots on the
-front end would produce a wall of amber it cannot fix, which is how a warning becomes
-wallpaper.
+| Class | N | Routes | Verdict |
+|---|---:|---|---|
+| **Correctly global** — market and instrument facts | 6 | `/prices` `/regime` `/depth` `/market-hours` `/symbol-map` `/cluster-conviction` | Leave. A price is a fact about an instrument. `mode: 'global'` in S4. |
+| **Correctly global** — process and session health | 6 | `/heartbeats` `/storage` `/llm-spend` `/llm-monitor-health` `/client-ping` `/sessions` | Leave. These describe the agent, not an account. |
+| **Correctly global** — jobs and files | 4 | `/backtest-job` `/job/:kind` `/backtest-reports` `/backtest-reports/:name` | Leave. |
+| **Correctly global** — global config and filters | 11 | `/stage-matrix` `/fib-rsi-filter` `/fib-vwap-filter` `/fib-fvg-filter` `/autotrade-timeframes` `/arm-benchmarks` `/profit-keeper` `/loss-guardian` `/closed-market-limits` `/bot-changes` `/risk-reassess` | Leave. The Stage Matrix already prints *"Scope: GLOBAL"*; S2 makes that a machine-readable claim instead of a sentence. |
+| **Global by construction** | 3 | `/fx-coverage` `/broker-cache` `/watchlist-removed` | Leave. Currency rates, a snapshot blob, a shared list. |
+| **Already per-account INSIDE, no `?account=` outside** | 14 | `/profit-ratchet` `/loss-cap` `/goal-tracker` `/account-phases` `/account-engineering` `/account-settings` `/account-traffic-lights` `/account-capabilities` `/workspace-log` `/workspace-backtests` `/workspace-coverage` `/unresolvable-plan` `/protection-audit` `/sizing-preview` | These already answer per account by looping the registry or reading the selected one. They do not need converting; they need **declaring** in S4 so a dot can say which mode they are in. |
+| **Worth a look in S4** | 6 | `/phase-audit` `/phase-trace` `/watchlist-summary` `/strategy-liveness` `/weekend-loss-flags` `/risk-exposure` | Not obviously wrong, not obviously right. Deferred deliberately rather than converted on a guess. |
 
-**Consequence for sequencing: the server work leads, the dots follow.** The correction
-does not change that — it changes how much of S1 was already done.
+**S1 is done.** Not "50 routes remain" — the account-*meaningful* reads are scoped and
+report coverage. What is left is either correctly global or already per-account, and
+both of those are S4 declarations, not S1 conversions.
 
 ### 2.3 The convention exists; coverage was the missing half
 
@@ -224,7 +243,7 @@ rewrite.
 
 | # | Milestone | What lands | Rough size |
 |---|---|---|---|
-| **S1** | `?account=` + coverage on the remaining routes | `scopeCoverage()` / `scopeReport()` land in `lib/account-scope.js` (**done**), then the 73 account-blind `/state` routes gain the parameter, using the existing scoped-read convention. **The scoped-read trap is the risk here** — `WHERE (account_id = ? OR account_id IS NULL)` is correct when unstamped rows are a residue and ruinous when they are all of them, which is exactly how the Go-Live card broke. Every route converted gets a coverage figure, not a silent OR-NULL. | Large, mechanical, high value |
+| **S1** ✅ | `?account=` + coverage on every account-meaningful route | **DONE 2026-08-03.** `scopeCoverage()` / `scopeReport()` in `lib/account-scope.js`, then 22 routes converted across nine batches. Also fixed three defects found on the way: the closed-trade duplicate detector was blind to the account (copied legs merged into false duplicates that subtracted real P&L from Performance); `/state/scans` was scoped by default when it is a global market observation, which would have shrunk the price map the UI converts currencies through; and `/state/veto-breakdown` was declared twice, the second declaration dead. A guard test now fails the build on duplicate routes. | Large, mechanical, high value |
 | **S2** | `useAccountScope` + `ScopeDot` | The hook, the four states, the reason strings. No behaviour change — dots appear, nothing else moves. | Small |
 | **S3** | Sidebar switcher becomes the single source | One switcher in the sidebar; per-page switchers removed. Account colour defined once and consumed by every dot. | Small |
 | **S4** | Adopt across pages | Nine pages, ~34 account-touching components declare their mode. Expect a run of amber on first paint — **that is the deliverable**, not a regression. | Medium |
