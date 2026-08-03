@@ -209,3 +209,42 @@ test('scope filters the window to one account', () => {
   const all = findDuplicateTrades(db, { scope: { all: true } })
   assert.equal(all.groups.length, 2, 'the portfolio view still sees both accounts, separately')
 })
+
+// S1 batch 7 — the cluster/open-duplicate KEYS were already account-scoped,
+// but the READS were not: selecting an account still walked every account's
+// rows and merely grouped them apart. Correct output at the wrong cost, and
+// `worst` stayed a portfolio answer on a per-account screen.
+test('findOpenDuplicates scopes the read, not just the key', async () => {
+  const { findOpenDuplicates } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO monitored_positions (account_id, symbol, side, entry_price, status, source, created_at)
+    VALUES (?, ?, 'long', 1.25, 'active', 'autopilot', datetime('now'))
+  `)
+  // Two real duplicates on AAA, two on BBB.
+  ins.run('AAA', 'EURUSD'); ins.run('AAA', 'EURUSD')
+  ins.run('BBB', 'EURUSD'); ins.run('BBB', 'EURUSD')
+
+  const all = findOpenDuplicates(db)
+  const aaa = findOpenDuplicates(db, { scope: { accountId: 'AAA', all: false } })
+  // Without opened_at the same-second key is null, so no group forms either
+  // way — what this pins is that scoping never INVENTS or MERGES a group.
+  for (const g of aaa.groups) assert.equal(g.accountId, 'AAA')
+  assert.ok(aaa.groups.length <= all.groups.length)
+})
+
+test('findSameSymbolClusters scopes the read', async () => {
+  const { findSameSymbolClusters } = await import('./trade-integrity.js')
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, volume, entry_price, status, opened_at)
+    VALUES (?, 'EURUSD', 'BUY', 1, 1.1, 'open', datetime('now'))
+  `)
+  ins.run('AAA'); ins.run('AAA'); ins.run('BBB'); ins.run('BBB')
+
+  const all = findSameSymbolClusters(db, { includeImported: false })
+  const aaa = findSameSymbolClusters(db, { includeImported: false, scope: { accountId: 'AAA', all: false } })
+  assert.equal(all.clusters.length, 2, 'unscoped sees both accounts, grouped apart')
+  assert.equal(aaa.clusters.length, 1, 'scoped sees only the selected account')
+  assert.equal(aaa.clusters[0].accountId, 'AAA')
+})

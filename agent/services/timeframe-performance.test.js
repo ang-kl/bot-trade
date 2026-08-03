@@ -113,3 +113,33 @@ test('missing autotrade_timeframes state falls back to THE shared default', () =
   // agent/lib/timeframes.default.test.js.
   assert.deepEqual(out.rows.map(r => r.timeframe), [...DEFAULT_AUTOTRADE_TIMEFRAMES])
 })
+
+// S1 batch 7 — this table is what the ARMING decision reads. Pooled, a demo
+// running loosened gates and the live account running tight ones average into
+// a per-timeframe verdict neither of them has.
+test('timeframePerformance scopes to one account when asked, and pools when not', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO trades (account_id, symbol, side, status, label_timeframe, net_pnl, closed_at, opened_at)
+    VALUES (?, 'EURUSD', 'BUY', 'closed', '1h', ?, datetime('now'), datetime('now'))
+  `)
+  ins.run('AAA', 100)     // AAA wins
+  ins.run('BBB', -400)    // BBB loses harder
+
+  const cell = (res) => res.rows.find(x => x.timeframe === '1h')?.cells?.['1d']
+
+  const pooled = cell(timeframePerformance(db))
+  const aaa = cell(timeframePerformance(db, { scope: { accountId: 'AAA', all: false } }))
+  const bbb = cell(timeframePerformance(db, { scope: { accountId: 'BBB', all: false } }))
+
+  assert.equal(pooled.trades, 2)
+  assert.equal(pooled.pnl, -300)
+  assert.equal(pooled.outcome, 'loss', 'pooled, 1h reads as a LOSING timeframe')
+
+  assert.equal(aaa.trades, 1)
+  assert.equal(aaa.pnl, 100)
+  assert.equal(aaa.outcome, 'win', "but on AAA it is a WINNING timeframe — the arming decision reads this")
+
+  assert.equal(bbb.outcome, 'loss')
+  assert.equal(bbb.pnl, -400)
+})
