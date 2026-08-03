@@ -32,7 +32,26 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
       ? 'bg-[var(--md-secondary-container)] text-[var(--md-on-secondary-container)]'
       : 'bg-transparent text-[var(--md-on-surface)] hover:bg-[var(--color-accent-soft)]',
   ].join(' ')
+  // OVERFLOW IS THE COMPONENT'S PROBLEM, NOT THE CALLER'S (owner, iPhone
+  // screenshot 2026-08-03: Desk › "Your edge — backtest baseline" — the
+  // twelve-strategy strip ran off the right edge of the phone and out of its
+  // own card).
+  //
+  // The group is an inline-flex of min-w-[48px] whitespace-nowrap segments, so
+  // twelve of them are ~600px wide before padding — wider than any phone. With
+  // nothing to scroll in, that width became PAGE overflow: the strip escaped
+  // the card and the body scrolled sideways.
+  //
+  // Fixed here rather than at the call site. A caller cannot know how many
+  // options it will have next month, and the last three times this shape
+  // appeared it was fixed once per page — which is how the fourth page ships
+  // broken. The wrapper is max-w-full + overflow-x-auto, so the strip scrolls
+  // INSIDE its own bounds and the page never does.
+  //
+  // overflow-hidden stays on the GROUP: it is what clips the segment fills to
+  // the rounded ends. The scroll lives on the wrapper outside it.
   return (
+    <div className="max-w-full overflow-x-auto overscroll-x-contain">
     <div role="radiogroup" aria-label={label}
       className={`inline-flex items-stretch overflow-hidden rounded-full border border-[var(--md-outline-variant)] ${className}`}>
       {options.map((o, i) => (
@@ -51,6 +70,7 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
           {o.label}
         </button>
       ))}
+    </div>
     </div>
   )
 }
