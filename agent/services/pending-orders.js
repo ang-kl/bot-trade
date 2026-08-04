@@ -164,7 +164,21 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   // table but are reconciled by the general reconciler (autopilot-label
   // adoption), never by this fib-specific pass. Everything else (fib rows,
   // legacy null-note rows) is handled here exactly as before.
-  let working = db.prepare(`SELECT * FROM pending_orders WHERE status = 'working' AND (note IS NULL OR note != 'pending-closed')`).all()
+  //
+  // SCOPED TO THIS ACCOUNT (05-08-2026). `brokerOrders` above is ONE account's
+  // book — the one whose creds ran this pass — and a few lines down every row
+  // missing from it is written off as "gone at broker", then fed to
+  // exec.cancelOrder(creds, …) by the invalidation and pause-disposition
+  // passes. Unscoped, that means judging and cancelling another account's
+  // resting orders with the wrong credentials. It is the same defect that ran
+  // thirteen deep on the closed-market path; this path had it too and simply
+  // had not been caught doing it.
+  const acctKey = creds?.accountId != null ? String(creds.accountId) : null
+  let working = db.prepare(
+    `SELECT * FROM pending_orders
+      WHERE status = 'working' AND (note IS NULL OR note != 'pending-closed')
+        AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+  ).all(acctKey, acctKey)
 
   // Positions already persisted as trades must never be adopted twice — a
   // second stale row on the same symbol (pre-restart leftovers, expiry racing
@@ -435,9 +449,12 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
     try {
       const execEvent = await exec.placeOrder(creds, orderPayload)
       const orderId = execEvent?.order?.orderId ?? execEvent?.orderId ?? null
+      // account_id, same reason as closed-market-limits.js: an unattributed
+      // resting order cannot be scoped by anything downstream, and the reads
+      // that must scope it silently widen to every account instead.
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -450,6 +467,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         new Date(expiresAtMs).toISOString(),
         'pending-fib',
         riskEventId ?? null,
+        acctKey,
       )
       try {
         const { recordSubmitted } = await import('./opportunity-disposition.js')

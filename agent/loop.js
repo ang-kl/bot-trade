@@ -3977,6 +3977,45 @@ async function runLoop(db) {
         log('Symbol-cap detector failed (non-fatal):', err.message)
       }
 
+      // OVER-CEILING RESTING ORDERS — the half the detector above could not
+      // see. On 04-08 the DOW.US cluster was thirteen LIMIT orders resting at
+      // 29.84 from 10:41, and monitored_positions stayed empty until the US
+      // open turned all of them into positions at once. A detector that only
+      // reads the position book announces the fire after the building is gone;
+      // this one would have spoken at 10:56, on the third order, eighty-seven
+      // minutes early. Alert only, same as its sibling — cancelling resting
+      // orders on a reading is a bigger action than the one that placed them.
+      try {
+        const { overCapRestingOrders, restingLine } = await import('./services/symbol-position-cap.js')
+        const resting = overCapRestingOrders(db)
+        if (resting.length) {
+          let seen = new Set()
+          try { seen = new Set(JSON.parse(getState(db, 'resting_cap_alerts') || '[]')) } catch { seen = new Set() }
+          const keep = new Set()
+          const fresh = []
+          for (const c of resting) {
+            const key = `${c.accountId}|${c.symbol}|${c.n}`
+            keep.add(key)
+            if (!seen.has(key)) fresh.push(c)
+          }
+          setState(db, 'resting_cap_alerts', JSON.stringify([...keep]))
+          for (const c of fresh) {
+            const line = restingLine(c)
+            log(`RESTING ORDERS OVER CAP: ${line}`)
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+                'DETECTOR', '/resting-cap-exceeded', JSON.stringify(c))
+            } catch { /* the journal must never stall the loop */ }
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              await sendMessage(`⚠️ Resting limit orders stacked over the hard cap\n${line}\nThese have NOT been cancelled. They fill together the moment price reaches that level — check them before the market opens.`)
+            } catch { /* alerting must never stall the loop */ }
+          }
+        }
+      } catch (err) {
+        log('Resting-order cap detector failed (non-fatal):', err.message)
+      }
+
       // C-1 SPEAKS. The controller has been correct since #632 and nothing
       // was listening: configProposals was wired to a read route and to
       // nothing else, so the module built to catch a minRR regression caught
