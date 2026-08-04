@@ -10,7 +10,7 @@ import { runMonitorCheck } from './services/monitor-svc.js'
 import { evaluatePosition } from './services/position-manager.js'
 import { rulesForSymbol } from './services/asset-controllers.js'
 import { runWeekendPositionCheck } from './services/weekend-watch.js'
-import { evaluateTrade, loadRiskConfig, persistRiskEvent, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
+import { evaluateTrade, loadRiskConfig, persistRiskEvent, persistPostApprovalVeto, getAccountBalance, getAccountLeverage, portfolioMarginStatus } from './services/risk.js'
 import { registryAutopilotAccounts, setAccountState } from './services/account-registry.js'
 import { sendScanAlert } from './services/telegram.js'
 import { detectFlip } from './quant/signals.js'
@@ -415,7 +415,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   const symbolMap = symbolMapJson ? JSON.parse(symbolMapJson) : {}
   const symbolId = symbolMap[symbol.toUpperCase()]
   if (!symbolId) {
-    log(`Auto-trade ${symbol}: symbolId unknown — call POST /actions/symbol-map to register it`)
+    // §70.8: THE ONLY GENUINELY SILENT DROP ON THIS PATH. The gate approved,
+    // and this returned with nothing but a console line — no risk_events row,
+    // no decision_log row. Whoever later asked "why didn't it trade?" could
+    // only be told the count did not add up. Now it says so in the ledger.
+    const reason = `symbol_id_unknown: ${symbol} is not in symbol_id_map — call POST /actions/symbol-map to register it`
+    persistPostApprovalVeto(db, proposal, reason)
+    log(`RISK VETO ${symbol} ${side}: ${reason}`)
     return null
   }
 
@@ -431,13 +437,13 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     sized = lotsToVolume(volLots, meta)
     if (sized.belowMin) {
       const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume} — balance too small for this symbol at the configured risk`
-      persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+      persistPostApprovalVeto(db, proposal, reason)
       log(`RISK VETO ${symbol} ${side}: ${reason}`)
       await alertVetoOnce(db, symbol, side, reason, "sized volume is below the broker's minimum lot. Raise risk per trade or skip this symbol.")
       return null
     }
   } catch (err) {
-    persistRiskEvent(db, proposal, { approved: false, veto_reason: `sizing_failed: ${err.message}` })
+    persistPostApprovalVeto(db, proposal, `sizing_failed: ${err.message}`)
     log(`Auto-trade ${symbol}: sizing failed — ${err.message}`)
     return null
   }
@@ -495,7 +501,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
         entrySpread = spread
         if (spread > riskCfg.maxSpreadFracOfSL * slDistance) {
           const reason = `spread_too_wide: ${spread.toFixed(5)} > ${(riskCfg.maxSpreadFracOfSL * 100).toFixed(0)}% of SL distance ${slDistance.toFixed(5)}`
-          persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+          persistPostApprovalVeto(db, proposal, reason)
           log(`RISK VETO ${symbol} ${side}: ${reason}`)
           await alertVetoOnce(db, symbol, side, reason, `spread too wide (${spread.toFixed(5)} vs SL ${slDistance.toFixed(5)}). Likely off-hours/rollover — the signal stays; it can fire next loop when the spread normalises.`)
           return null
@@ -545,7 +551,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const reason = dupe
       ? `duplicate_submission: trade #${dupe.id} ${side} ${symbol} already recorded at ${dupe.opened_at} (${DEDUPE_WINDOW_MIN}-minute idempotency window)`
       : `duplicate_submission_ambiguous: a ${side} ${symbol} order was submitted at ${ambiguous.created_at} and its outcome is UNKNOWN (risk_event #${ambiguous.id}) — a position may already be open; not resubmitting inside the ${DEDUPE_WINDOW_MIN}-minute window`
-    persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+    persistPostApprovalVeto(db, proposal, reason)
     try {
       const { recordDecision } = await import('./services/decision-log.js')
       recordDecision(db, { accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy, stage: 'submission_dedupe', decision: 'veto', reason })
@@ -761,10 +767,7 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     const amb = isAmbiguousSubmitError(err) || isAmbiguousOrderOutcome(err)
     log(`Auto-trade ${amb ? 'AMBIGUOUS' : 'FAILED'} for ${symbol}: ${err.message}`)
     try {
-      persistRiskEvent(db, proposal, {
-        approved: false,
-        veto_reason: `${amb ? 'order_ambiguous' : 'order_failed'}: ${err.message}`,
-      })
+      persistPostApprovalVeto(db, proposal, `${amb ? 'order_ambiguous' : 'order_failed'}: ${err.message}`)
     } catch { /* audit only */ }
     setState(db, 'last_order_error', JSON.stringify({ symbol, side, error: err.message, ambiguous: amb, at: new Date().toISOString() }))
     if (process.env.TELEGRAM_BOT_TOKEN) {
