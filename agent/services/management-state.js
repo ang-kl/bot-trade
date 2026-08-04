@@ -170,7 +170,8 @@ export const RULE_TRIGGER = Object.freeze({
   'profit-keeper:spike_tighten': 'bar',       // completed bars — cannot go finer
 
   // ── loss-cap: one rule. Floating P&L is monotone in price for a fixed
-  // position, so the cap is a synthetic stop — currently evaluated on a timer.
+  // position, so the cap is a synthetic stop. Now screened on every guardian
+  // tick and escalated to the full reconcile-and-close pass only on a breach.
   'loss-cap:position_dollar_cap': 'tick',
 
   // ── loss-guardian: genuinely split, and the split is not what the module

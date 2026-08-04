@@ -208,6 +208,20 @@ export function startGuardian(db, getCreds, deps = {}) {
     // symbol is quiet, which is not when you want to lose sight of a position.
     recordSpot(tick.symbolId, price)
     if (heldIds.has(tick.symbolId)) {
+      // §70.6 — THE LOSS CAP, ON EVERY TICK, NOT EVERY MINUTE.
+      //
+      // This runs BEFORE the significant-move gate on purpose. That gate asks
+      // "has this moved enough to be worth a broker round-trip?", which is the
+      // right question for the guard sweep and the wrong one for a hard loss
+      // cap: the tick that carries a position past its cap need not be a big
+      // tick, only the one that crosses the line. The screen is pure
+      // arithmetic over a cache this handler just wrote — no DB, no broker —
+      // so asking it on every tick costs nothing, and it escalates to a real
+      // pass only when a position is actually at or past its cap.
+      import('./loss-cap.js')
+        .then(m => m.runLossCapOnTick(db, creds, tick.symbolId))
+        .catch(() => { /* the 60s pass remains the backstop */ })
+
       const minPct = Number(getState(db, 'guardian_move_pct')) || 0.05
       const prev = lastEval.get(tick.symbolId)
       if (prev == null) { lastEval.set(tick.symbolId, price); return }
