@@ -87,6 +87,21 @@ function AnimatedNumber({ value, decimals = 2, className = '' }) {
 //   radiogroup instead of independent aria-pressed toggles (finding: single
 //   choice presented as toggles). Boolean pills keep aria-pressed.
 // ON wears the state-on tint, not the navigation accent (finding 20).
+/**
+ * A labelled on/off row that carries a deep-link ANCHOR, so the summary table's
+ * ▸ can land on it (owner 04-08-2026). Field does this for numeric settings;
+ * every boolean on this page was hand-rolled without one, which is why a third
+ * of the table's triangles pointed at nothing.
+ */
+function Toggle({ id, label, on, onClick, title }) {
+  return (
+    <div id={id} className="flex items-center justify-between text-[9px]">
+      <span className="text-[var(--color-text-sub)]" title={title}>{label}</span>
+      <Pill on={on} label="On" offLabel="Off" onClick={onClick} />
+    </div>
+  )
+}
+
 function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = false }) {
   const off = offLabel != null
     ? 'border-[var(--color-down)] text-[var(--color-down)] font-bold bg-[color-mix(in_srgb,var(--color-down)_10%,transparent)]'
@@ -536,7 +551,7 @@ export default function Risk() {
                 : 'stored value — connect/refresh the broker for live truth'}
             </div>
           </div>
-          <Field label="Leverage (1:N)" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
+          <Field label="Leverage (1:N)" anchor="leverage" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
             hint="Used for margin-headroom checks before approving a position." recommend="1:100 — match whatever your broker account actually offers." />
           <div className="text-[9px]">
             <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
@@ -849,23 +864,94 @@ export default function Risk() {
             <Field label={`Margin level floor${mark('marginLevelFloorPct')}`} anchor="marginLevelFloorPct" applied={appliedKeys.has('marginLevelFloorPct')} unit="%" value={risk.marginLevelFloorPct} onChange={v => setRisk(r => ({ ...r, marginLevelFloorPct: v }))}
               hint="Equity ÷ used margin, as a %. New entries are refused below this line — it fires EARLIER than the broker's stop-out, which is the point." recommend="150% or higher; the broker stops out at 50%." />
             <div className="border-t border-[var(--glass-edge)] pt-2 space-y-2">
-              <div className="flex items-center justify-between text-[9px]">
+              <div id="risk-deriskOnDrawdown" className="flex items-center justify-between text-[9px]">
                 <span className="text-[var(--color-text-sub)]" title="A losing run sizes DOWN automatically instead of compounding.">Drawdown de-risk{mark('deriskOnDrawdown')}</span>
                 <Pill on={!!risk.deriskOnDrawdown} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, deriskOnDrawdown: !r.deriskOnDrawdown }))} />
               </div>
-              <Field label={`window${mark('deriskWindowHours')}`} unit="h" value={risk.deriskWindowHours} onChange={v => setRisk(r => ({ ...r, deriskWindowHours: v }))}
+              <Field label={`window${mark('deriskWindowHours')}`} anchor="deriskWindowHours" unit="h" value={risk.deriskWindowHours} onChange={v => setRisk(r => ({ ...r, deriskWindowHours: v }))}
                 recommend="24 hours." />
-              <Field label={`trigger${mark('deriskTriggerPct')}`} pct value={risk.deriskTriggerPct} onChange={v => setRisk(r => ({ ...r, deriskTriggerPct: v }))}
+              <Field label={`trigger${mark('deriskTriggerPct')}`} anchor="deriskTriggerPct" pct value={risk.deriskTriggerPct} onChange={v => setRisk(r => ({ ...r, deriskTriggerPct: v }))}
                 hint="Down more than this % of balance in the window → de-risk." recommend="5% down in the window." />
-              <Field label={`size multiplier${mark('deriskMult')}`} unit="×" value={risk.deriskMult} onChange={v => setRisk(r => ({ ...r, deriskMult: v }))}
+              <Field label={`size multiplier${mark('deriskMult')}`} anchor="deriskMult" unit="×" value={risk.deriskMult} onChange={v => setRisk(r => ({ ...r, deriskMult: v }))}
                 hint="Budget × this while de-risked (0.5 = half size)." recommend="0.5 (half size)." />
             </div>
-            <label className="block text-[9px]">
+            <label id="risk-blockedSymbols" className="block text-[9px]">
               <span className="text-[var(--color-text-sub)]" title="Symbols vetoed outright, comma-separated.">Blocked symbols{mark('blockedSymbols')}</span>
               <Input type="text" value={(risk.blockedSymbols || []).join(', ')}
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
                 placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
             </label>
+            </Advanced>
+            {/* ENFORCED, AND UNTIL NOW UNREACHABLE (owner 04-08-2026: "Risk
+                Setup Summary isnt wired … and coherent to the setups?").
+                The summary table's values were correct — measured against
+                /state/risk-config, zero disagreements. What was not wired was
+                the NAVIGATION: 29 of its 45 triangles pointed at an anchor
+                that did not exist, and for 17 of those the reason was that the
+                setting had no control ANYWHERE in the UI. Every one is applied
+                to real entries: the entry-stop trigger method, the four cost
+                and news gates, and the whole unknown-P&L family that was 69%
+                of last week's vetoes. Same class as marginLevelFloorPct, found
+                the same way. */}
+            <Advanced mode={viewMode} label="Entry gates, cost gates and P&L trust" total={17}
+              changed={['stopTriggerMethod', 'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
+                'newsGateEnabled', 'newsGateMinBefore', 'newsGateMinAfter', 'newsGateImpacts',
+                'carryGateEnabled', 'carryMaxNegativeSwapPoints',
+                'commissionGateEnabled', 'commissionMaxFracOfWin', 'commissionGateMinTrades',
+                'slippageGateEnabled', 'slippageMaxAdversePct', 'slippageGateMinTrades'].filter(k => overridden.has(k)).length}
+              dirty={!!dirty['risk']}>
+            <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
+              <Field label={`Stop trigger method${mark('stopTriggerMethod')}`} anchor="stopTriggerMethod" value={risk.stopTriggerMethod} onChange={v => setRisk(r => ({ ...r, stopTriggerMethod: v }))}
+                hint="How the broker decides a stop is hit: TRADE (last traded price) or TRADE_SIDE (the side that closes you). TRADE_SIDE fires earlier on a widening spread." recommend="TRADE unless spikes are stopping you out early." />
+              <Toggle id="risk-blockOnUnknownPnl" label={`Block on unknown P&L${mark('blockOnUnknownPnl')}`}
+                on={!!risk.blockOnUnknownPnl} onClick={() => setRisk(r => ({ ...r, blockOnUnknownPnl: !r.blockOnUnknownPnl }))}
+                title="A closed trade with no realised P&L makes the day's loss total untrustworthy. On = refuse new entries until it fills in." />
+              <Field label={`Unknown P&L grace${mark('unknownPnlGraceMin')}`} anchor="unknownPnlGraceMin" unit="min" value={risk.unknownPnlGraceMin} onChange={v => setRisk(r => ({ ...r, unknownPnlGraceMin: v }))}
+                hint="A freshly closed trade is EXPECTED to sit without P&L for a cycle or two. Nothing blocks inside this window." recommend="15 minutes." />
+              <Field label={`Unknown P&L age-out${mark('unknownPnlMaxAgeMin')}`} anchor="unknownPnlMaxAgeMin" unit="min" value={risk.unknownPnlMaxAgeMin} onChange={v => setRisk(r => ({ ...r, unknownPnlMaxAgeMin: v }))}
+                placeholder="off"
+                hint="Past this age a row stops blocking on TIME alone. Empty = block until it fills, which is a halt with no release." recommend="360 minutes (6h) — inside the FX day." />
+              <Field label={`Unknown P&L give-up${mark('unknownPnlMinAttempts')}`} anchor="unknownPnlMinAttempts" unit="tries" value={risk.unknownPnlMinAttempts} onChange={v => setRisk(r => ({ ...r, unknownPnlMinAttempts: v }))}
+                placeholder="off"
+                hint="A row the backfill has asked the broker for this many times, and never filled, stops blocking immediately — evidence rather than a clock. Empty = time only." recommend="6 attempts." />
+              <Toggle id="risk-newsGateEnabled" label={`News gate${mark('newsGateEnabled')}`}
+                on={!!risk.newsGateEnabled} onClick={() => setRisk(r => ({ ...r, newsGateEnabled: !r.newsGateEnabled }))}
+                title="Refuse entries in the window around a high-impact release." />
+              <Field label={`News: before${mark('newsGateMinBefore')}`} anchor="newsGateMinBefore" unit="min" value={risk.newsGateMinBefore} onChange={v => setRisk(r => ({ ...r, newsGateMinBefore: v }))}
+                hint="Minutes ahead of the release that entries stop." recommend="30 minutes." />
+              <Field label={`News: after${mark('newsGateMinAfter')}`} anchor="newsGateMinAfter" unit="min" value={risk.newsGateMinAfter} onChange={v => setRisk(r => ({ ...r, newsGateMinAfter: v }))}
+                hint="Minutes after it that entries resume." recommend="15 minutes." />
+              <Field label={`News: impacts${mark('newsGateImpacts')}`} anchor="newsGateImpacts" value={(risk.newsGateImpacts || []).join(', ')} onChange={v => setRisk(r => ({ ...r, newsGateImpacts: String(v ?? '').split(',').map(x => x.trim()).filter(Boolean) }))}
+                hint="Which impact levels count, comma-separated (e.g. HIGH)." recommend="HIGH only." />
+              <Toggle id="risk-carryGateEnabled" label={`Carry gate${mark('carryGateEnabled')}`}
+                on={!!risk.carryGateEnabled} onClick={() => setRisk(r => ({ ...r, carryGateEnabled: !r.carryGateEnabled }))}
+                title="Refuse entries whose overnight swap cost is worse than the limit below." />
+              <Field label={`Max negative swap${mark('carryMaxNegativeSwapPoints')}`} anchor="carryMaxNegativeSwapPoints" unit="pts" value={risk.carryMaxNegativeSwapPoints} onChange={v => setRisk(r => ({ ...r, carryMaxNegativeSwapPoints: v }))}
+                hint="Swap points per night, as a negative bound. A held position pays this every night it is open." />
+              <Toggle id="risk-commissionGateEnabled" label={`Commission gate${mark('commissionGateEnabled')}`}
+                on={!!risk.commissionGateEnabled} onClick={() => setRisk(r => ({ ...r, commissionGateEnabled: !r.commissionGateEnabled }))}
+                title="Refuse entries where commission eats too much of a typical win." />
+              <Field label={`Commission max of win${mark('commissionMaxFracOfWin')}`} anchor="commissionMaxFracOfWin" pct value={risk.commissionMaxFracOfWin} onChange={v => setRisk(r => ({ ...r, commissionMaxFracOfWin: v }))}
+                hint="Round-trip commission as a share of the average win. Above this the edge is the broker's." />
+              <Field label={`Commission min trades${mark('commissionGateMinTrades')}`} anchor="commissionGateMinTrades" unit="trades" value={risk.commissionGateMinTrades} onChange={v => setRisk(r => ({ ...r, commissionGateMinTrades: v }))}
+                hint="Below this count there is no average win to measure against, so the gate stands down." />
+              <Toggle id="risk-slippageGateEnabled" label={`Slippage gate${mark('slippageGateEnabled')}`}
+                on={!!risk.slippageGateEnabled} onClick={() => setRisk(r => ({ ...r, slippageGateEnabled: !r.slippageGateEnabled }))}
+                title="Refuse entries on symbols whose recent fills came in adversely." />
+              <Field label={`Max adverse slippage${mark('slippageMaxAdversePct')}`} anchor="slippageMaxAdversePct" pct value={risk.slippageMaxAdversePct} onChange={v => setRisk(r => ({ ...r, slippageMaxAdversePct: v }))}
+                hint="Average adverse fill, as a % away from the requested price." />
+              <Field label={`Slippage min trades${mark('slippageGateMinTrades')}`} anchor="slippageGateMinTrades" unit="trades" value={risk.slippageGateMinTrades} onChange={v => setRisk(r => ({ ...r, slippageGateMinTrades: v }))}
+                hint="Below this count the measurement is noise and the gate stands down." />
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+              <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk([
+                'stopTriggerMethod', 'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
+                'newsGateEnabled', 'newsGateMinBefore', 'newsGateMinAfter', 'newsGateImpacts',
+                'carryGateEnabled', 'carryMaxNegativeSwapPoints',
+                'commissionGateEnabled', 'commissionMaxFracOfWin', 'commissionGateMinTrades',
+                'slippageGateEnabled', 'slippageMaxAdversePct', 'slippageGateMinTrades',
+              ])}>Save gates</Button></span>
+            </div>
             </Advanced>
             <div className="flex items-center gap-2">
               <span data-save-pulse="risk"><Button size="sm" className={SAVE_BTN} onClick={() => saveRisk(['dailyLossPct', 'dailyLossPctMax', 'dailyLossLimit', 'equityStopPct', 'maxMarginUsagePct', 'marginLevelFloorPct', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'])}>Save account risk</Button></span>
@@ -911,15 +997,15 @@ export default function Risk() {
                   changed={['perTradeRiskUsd', 'maxRiskUsd', 'minLotSize', 'minTradesForKelly', 'allowNegativeExpectancyOverride'].filter(k => overridden.has(k)).length}
                   dirty={!!dirty['risk']}>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
-                  <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
+                  <Field label={`Risk $ override${mark('perTradeRiskUsd')}`} anchor="perTradeRiskUsd" unit="$" value={risk.perTradeRiskUsd} onChange={v => setRisk(r => ({ ...r, perTradeRiskUsd: v }))}
                     hint="Absolute $ risk per trade; when set, overrides the %." placeholder="% only" recommend="unset — leave the % in charge unless you specifically want a fixed $ risk." />
-                  <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} unit="$" value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
+                  <Field label={`Risk hard cap $${mark('maxRiskUsd')}`} anchor="maxRiskUsd" unit="$" value={risk.maxRiskUsd} onChange={v => setRisk(r => ({ ...r, maxRiskUsd: v }))}
                     hint="Optional absolute $ ceiling per trade." placeholder="no cap" recommend="unset — no $ ceiling by default." />
-                  <Field label={`Min lot size${mark('minLotSize')}`} unit="lots" value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
+                  <Field label={`Min lot size${mark('minLotSize')}`} anchor="minLotSize" unit="lots" value={risk.minLotSize} onChange={v => setRisk(r => ({ ...r, minLotSize: v }))}
                     recommend="0.01 — the broker's own minimum." />
-                  <Field label={`Kelly min trades${mark('minTradesForKelly')}`} unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
+                  <Field label={`Kelly min trades${mark('minTradesForKelly')}`} anchor="minTradesForKelly" unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
                     hint="Below this trade count, Kelly sizing is skipped." recommend="30 closed trades before Kelly sizing kicks in." />
-                  <div className="flex items-center justify-between text-[9px]">
+                  <div id="risk-allowNegativeExpectancyOverride" className="flex items-center justify-between text-[9px]">
                     <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
                     <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
                   </div>
@@ -933,7 +1019,7 @@ export default function Risk() {
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
                   <Field label={`Min R:R${mark('minRR')}`} anchor="minRR" applied={appliedKeys.has('minRR')} unit="×SL" value={risk.minRR} onChange={v => setRisk(r => ({ ...r, minRR: v }))}
                     hint="TP must sit at least this multiple of the SL distance from entry — the take-profit rule." recommend="1.5 — TP at least 1.5× the SL distance." />
-                  <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
+                  <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} anchor="maxSpreadFracOfSL" pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
                 </div>
                 <div className="text-[8px] text-[var(--color-text-sub)] mt-1">
