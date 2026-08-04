@@ -805,9 +805,76 @@ export default function Desk() {
                 </div>
               </div>
             ))}
-            <p className="text-[9px] text-[var(--color-text-sub)]">
-              Rolling live matrix: {correlation.liveMatrix?.computedAt ? `computed ${ago(correlation.liveMatrix.computedAt)} ago over ${correlation.liveMatrix.symbols} symbols` : 'not computed yet'} · caps tunable in Tune → Risk (cluster / currency exposure).
-            </p>
+            {/* THE LIVE MATRIX, not just its timestamp. Owner 05-08-2026:
+                "The correlation card doesn't update when market shifted." The
+                clusters above are HAND-WRITTEN and by construction never
+                change; the rolling matrix is the part that reacts, and until
+                now the only thing that reached this card from it was a
+                timestamp and a symbol count. */}
+            <div className="glass-inset rounded-lg p-2 text-[9px] space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">Rolling live matrix</span>
+                {correlation.liveMatrix?.builtAt
+                  ? <span className="text-[var(--color-text-sub)]">{ago(correlation.liveMatrix.builtAt)} ago · {correlation.liveMatrix.symbols} symbols · |r| ≥ {correlation.liveMatrix.config?.threshold} counts as stacked</span>
+                  : <span className="text-[var(--color-text-sub)]">not computed yet</span>}
+                {correlation.liveMatrix?.stale && (
+                  // Not cosmetic: liveCorrelationVeto FAILS OPEN past
+                  // maxAgeMin, so a stale matrix means the live correlation
+                  // cap is not being enforced at all right now.
+                  <span className="font-bold text-[var(--color-down)]"
+                    title={`Older than maxAgeMin (${correlation.liveMatrix.config?.maxAgeMin}m) — the live correlation cap fails OPEN while it is stale, so stacked-bet entries are not being blocked by it`}>
+                    STALE — live correlation cap not enforcing
+                  </span>
+                )}
+              </div>
+
+              {(correlation.liveMatrix?.shifts?.length ?? 0) > 0 && (
+                <div>
+                  <div className="font-semibold text-[var(--color-warning-text)]">
+                    Shifted since {correlation.liveMatrix.previousBuiltAt ? `${ago(correlation.liveMatrix.previousBuiltAt)} ago` : 'the previous matrix'}
+                  </div>
+                  {correlation.liveMatrix.shifts.slice(0, 8).map(sh => (
+                    <div key={`${sh.a}|${sh.b}`} className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold">{sh.a}/{sh.b}</span>
+                      <span className="tabular-nums text-[var(--color-text-sub)]">{sh.was} → {sh.r}</span>
+                      <span className={`tabular-nums font-semibold ${sh.delta > 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {sh.delta > 0 ? '+' : ''}{sh.delta}
+                      </span>
+                      {sh.flipped && <span className="font-bold text-[var(--color-down)]" title="The sign inverted while both readings were above threshold — every stacked position in this pair now means the opposite of what it did">FLIPPED</span>}
+                      {sh.became && <span className="font-semibold text-[var(--color-down)]" title="Was diversified, now stacks — two positions here are one bet that were not before">NOW STACKS</span>}
+                      {sh.broke && <span className="font-semibold" title="Was a hedge, no longer moves together — the offset you were relying on has gone">HEDGE BROKE</span>}
+                    </div>
+                  ))}
+                  {correlation.liveMatrix.shifts.length > 8 && (
+                    <div className="text-[var(--color-text-sub)]">+{correlation.liveMatrix.shifts.length - 8} more moved by ≥0.25</div>
+                  )}
+                </div>
+              )}
+              {correlation.liveMatrix?.builtAt && (correlation.liveMatrix.shifts?.length ?? 0) === 0 && (
+                <div className="text-[var(--color-text-sub)]">
+                  {correlation.liveMatrix.previousBuiltAt
+                    ? 'Nothing moved by 0.25 or more since the previous matrix — the relationships below are holding.'
+                    : 'No previous matrix to compare against yet — shifts appear after the next rebuild.'}
+                </div>
+              )}
+
+              {(correlation.liveMatrix?.pairs?.length ?? 0) > 0 && (
+                <div>
+                  <div className="font-semibold">Strongest pairs now</div>
+                  <div className="flex flex-wrap gap-x-3">
+                    {correlation.liveMatrix.pairs.slice(0, 12).map(p2 => (
+                      <span key={`${p2.a}|${p2.b}`} className="tabular-nums">
+                        {p2.a}/{p2.b}{' '}
+                        <span className={`font-semibold ${Math.abs(p2.r) >= (correlation.liveMatrix.config?.threshold ?? 0.7) ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+                          {p2.r > 0 ? '+' : ''}{p2.r}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <p className="text-[var(--color-text-sub)]">Caps tunable in Tune → Risk (cluster / currency exposure).</p>
+            </div>
           </div>
         )}
       </Section>

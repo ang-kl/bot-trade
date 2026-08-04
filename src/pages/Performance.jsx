@@ -2259,6 +2259,8 @@ export default function Performance() {
               trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
               positions={positions}
               accounts={accounts}
+              account={acct}
+              onAccount={setAcct}
             />
             <BalanceInOut />
             <DataFeed
@@ -2614,6 +2616,8 @@ export default function Performance() {
             trades30={shapedTrades.filter(t2 => t2.t >= loadedAt - 30 * D).map(t2 => ({ sym: t2.sym, cat: catOf(t2.sym), pnl: t2.pnl }))}
             positions={positions}
             accounts={accounts}
+            account={acct}
+            onAccount={setAcct}
           />
         </div>
         <div id="sec-balance"><BalanceInOut /></div>

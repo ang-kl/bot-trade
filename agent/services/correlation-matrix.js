@@ -142,6 +142,87 @@ export function loadStoredMatrix(db) {
 }
 
 /**
+ * The matrix as it stood BEFORE the current one, or null.
+ *
+ * Owner, 05-08-2026: "The correlation card doesn't update when market
+ * shifted." Half of that was a display gap — the card showed the hand-written
+ * clusters and only the live matrix's timestamp, never its contents. The other
+ * half was real: computeAndStoreMatrix overwrote its own output every 30
+ * minutes, so nothing anywhere held the previous reading and a SHIFT was not a
+ * computable quantity. A correlation that went from 0.2 to 0.85 looked
+ * identical to one that had been 0.85 all week.
+ */
+export function loadPreviousMatrix(db) {
+  try {
+    const p = JSON.parse(getState(db, 'correlation_matrix_prev') || 'null')
+    return p && p.m ? p : null
+  } catch { return null }
+}
+
+/**
+ * The strongest pairs in a matrix, |r| descending.
+ *
+ * Self-pairs and the mirror half are dropped — a matrix is symmetric, and
+ * listing EURUSD/GBPUSD twice is noise on a card with limited room.
+ */
+export function topPairs(matrix, { min = 0.5, limit = 20 } = {}) {
+  if (!matrix?.m) return []
+  const out = []
+  const syms = matrix.symbols || Object.keys(matrix.m)
+  for (let i = 0; i < syms.length; i++) {
+    for (let j = i + 1; j < syms.length; j++) {
+      const r = matrix.m[syms[i]]?.[syms[j]]
+      if (r == null || !Number.isFinite(r)) continue
+      if (Math.abs(r) < min) continue
+      out.push({ a: syms[i], b: syms[j], r: Math.round(r * 100) / 100 })
+    }
+  }
+  out.sort((x, y) => Math.abs(y.r) - Math.abs(x.r))
+  return out.slice(0, limit)
+}
+
+/**
+ * What MOVED between two matrices — the answer to "the market shifted".
+ *
+ * Reports the pairs whose correlation changed by at least `minDelta`, newest
+ * value first, and flags the two transitions that actually change how a book
+ * behaves: a pair that BECAME highly correlated (positions that were
+ * diversified no longer are) and one that STOPPED being (a hedge that is no
+ * longer a hedge). A sign FLIP is called out separately because it inverts the
+ * meaning of every stacked position in that pair.
+ */
+export function correlationShifts(current, previous, { minDelta = 0.25, threshold = 0.7, limit = 20 } = {}) {
+  if (!current?.m || !previous?.m) return []
+  const out = []
+  const syms = current.symbols || Object.keys(current.m)
+  for (let i = 0; i < syms.length; i++) {
+    for (let j = i + 1; j < syms.length; j++) {
+      const a = syms[i], b = syms[j]
+      const now = current.m[a]?.[b]
+      const was = previous.m[a]?.[b]
+      if (now == null || was == null || !Number.isFinite(now) || !Number.isFinite(was)) continue
+      const delta = now - was
+      if (Math.abs(delta) < minDelta) continue
+      const wasHigh = Math.abs(was) >= threshold
+      const nowHigh = Math.abs(now) >= threshold
+      out.push({
+        a, b,
+        r: Math.round(now * 100) / 100,
+        was: Math.round(was * 100) / 100,
+        delta: Math.round(delta * 100) / 100,
+        // The transitions worth a human's attention, named rather than left
+        // for the reader to derive from two decimals.
+        became: !wasHigh && nowHigh,
+        broke: wasHigh && !nowHigh,
+        flipped: Math.sign(now) !== Math.sign(was) && wasHigh && nowHigh,
+      })
+    }
+  }
+  out.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta))
+  return out.slice(0, limit)
+}
+
+/**
  * Compute + store the matrix for a set of symbols. deps.fetchBars(symbol) →
  * bars[] lets tests inject; production passes a trendbar-backed fetcher.
  * Bounded symbol count keeps the broker fetch sane.
@@ -164,6 +245,13 @@ export async function computeAndStoreMatrix(db, symbols, deps, nowIso) {
 
   const { symbols: syms, m } = buildCorrelationMatrix(returnsBySymbol)
   const payload = { builtAt: nowIso, timeframe: cfg.timeframe, lookback: cfg.lookback, symbols: syms, m }
+  // Keep the OUTGOING matrix before overwriting it, so "what shifted" is a
+  // computable quantity rather than something a reader has to remember. One
+  // extra agent_state row, bounded by the same symbol cap as the live one.
+  try {
+    const outgoing = getState(db, 'correlation_matrix_data')
+    if (outgoing) setState(db, 'correlation_matrix_prev', outgoing)
+  } catch { /* first run — nothing to keep */ }
   setState(db, 'correlation_matrix_data', JSON.stringify(payload))
   return { built: syms.length, builtAt: nowIso }
 }
