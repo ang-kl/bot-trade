@@ -3912,6 +3912,36 @@ async function runLoop(db) {
       // that are already written — one indexed scan, no broker call — and
       // because an approval needs a few minutes of grace before "nothing
       // acted on it" is a finding rather than a race.
+      // C-1 SPEAKS. The controller has been correct since #632 and nothing
+      // was listening: configProposals was wired to a read route and to
+      // nothing else, so the module built to catch a minRR regression caught
+      // one on 43097342 and had no way to say so. Danger severity only, and
+      // deduped on the proposal's identity, so a standing condition alerts
+      // once rather than every cycle. It PROPOSES — nothing is written.
+      try {
+        const { configProposals, newDangerProposals, dangerAlertText } =
+          await import('./services/config-controller.js')
+        const { getState: gs, setState: ss } = await import('./db.js')
+        const report = configProposals(db, { includeLive: false })
+        const { fresh } = newDangerProposals(db, report, { getState: gs, setState: ss })
+        for (const p of fresh) {
+          log(`CONFIG CONTROLLER (danger) [${p.accountId}] ${p.setting} ${p.current} → ${p.proposed}: ${p.why}`)
+          try {
+            db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+              'CONTROLLER', '/config-proposal-danger', JSON.stringify({
+                accountId: p.accountId, rule: p.rule, setting: p.setting,
+                current: p.current, proposed: p.proposed, why: p.why,
+              }))
+          } catch { /* the journal must never stall the loop */ }
+          try {
+            const { sendMessage } = await import('./services/telegram.js')
+            await sendMessage(dangerAlertText(p))
+          } catch { /* alerting must never stall the loop */ }
+        }
+      } catch (err) {
+        log('Config controller alert failed (non-fatal):', err.message)
+      }
+
       try {
         const { sweepDispositions } = await import('./services/opportunity-disposition.js')
         const sw = sweepDispositions(db)
