@@ -44,6 +44,18 @@ export const MIN_SAMPLE = 30
 export const TARGET_PF = 1.68
 
 /**
+ * How many FULL-RISK losing trades a daily cap should absorb before it stops
+ * the account.
+ *
+ * Five, because at the win rates these accounts actually run (21-30%) a run of
+ * five losses is an ordinary Tuesday: at 30% wins, P(5 straight losses) is
+ * 17%, so a cap set at three would stop the account on roughly a third of all
+ * days by variance alone. A brake that engages on a normal day is not a risk
+ * limit, it is an outage.
+ */
+export const MIN_LOSING_TRADES_PER_DAY = 5
+
+/**
  * Closed-trade economics for one account.
  *
  * Uses net_pnl only — a trade whose realised P&L never filled is UNKNOWN, and
@@ -64,7 +76,7 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
 
   const wins = rows.filter(r => r.net_pnl > 0).map(r => r.net_pnl)
   const losses = rows.filter(r => r.net_pnl <= 0).map(r => -r.net_pnl)
-  if (!rows.length) return { trades: 0, wins: 0, losses: 0, winRate: null, avgWin: null, avgLoss: null, payoff: null, profitFactor: null }
+  if (!rows.length) return { trades: 0, wins: 0, losses: 0, winRate: null, avgWin: null, avgLoss: null, maxLoss: null, payoff: null, profitFactor: null }
 
   const sum = (a) => a.reduce((s, n) => s + n, 0)
   const avgWin = wins.length ? sum(wins) / wins.length : null
@@ -77,6 +89,12 @@ export function accountEconomics(db, accountId, { days = 30 } = {}) {
     winRate,
     avgWin,
     avgLoss,
+    // THE WORST SINGLE LOSS, not just the average one. A daily cap sized off
+    // the average is blind to the trade that spends the whole day's budget by
+    // itself — 04-08-2026, JPN225 lost $2,681.29 against a $1,382 daily cap on
+    // 46130058. The average said the cap was seven losses wide; one trade
+    // proved it was not even one.
+    maxLoss: losses.length ? Math.max(...losses) : null,
     // Both null-safe: an account with no losses yet has no payoff ratio, and
     // reporting Infinity as though it were a measurement would be worse than
     // reporting that we cannot say.
@@ -204,6 +222,69 @@ export const RULES = Object.freeze([
         severity: 'danger',
         why: `The daily cap is ${capUsd.toFixed(2)} against an average loss of ${econ.avgLoss.toFixed(2)}. One ordinary losing trade stops the account for the day.`,
         expect: 'The cap becomes a brake on a bad day rather than on a normal one.',
+      }
+    },
+  },
+  {
+    key: 'daily_cap_vs_permitted_risk',
+    /**
+     * A daily cap has to be sized against the risk the gate PERMITS, not
+     * against the average loss it has happened to produce.
+     *
+     * Owner, 05-08-2026: "dailyLossPct must be calibrated with account
+     * sizing." The existing daily_cap_smaller_than_one_loss rule compares the
+     * cap to `avgLoss`, which is a backward-looking statistic — and on
+     * 04-08-2026 it was satisfied on every account while
+     * `daily_loss_limit_hit` was still the second-largest guard at 11,946
+     * vetoes. Average loss cannot see the trade that spends the whole day's
+     * budget by itself.
+     *
+     * Two questions, both about consistency between knobs the operator sets
+     * independently and which have to agree:
+     *
+     *   1. How many FULL-RISK losing trades does the cap allow? At a 21-30%
+     *      win rate a run of five losses is ordinary, not a bad day — a cap
+     *      that stops the account at three is a cap on variance, not on risk.
+     *   2. Has a single trade already exceeded the whole daily cap? If so the
+     *      per-trade sizing is not honouring the risk it claims, and raising
+     *      the cap would be treating the symptom.
+     */
+    evaluate({ econ, config, balance }) {
+      const pct = Number(config.dailyLossPct)
+      const perTrade = Number(config.perTradeRiskPct)
+      if (!Number.isFinite(pct) || !(pct > 0) || !(balance > 0)) return null
+      const capUsd = balance * pct
+
+      // (2) first — it is the stronger finding, and raising the cap would be
+      // the wrong response to it.
+      if (econ.maxLoss != null && econ.maxLoss > capUsd) {
+        return {
+          setting: 'perTradeRiskPct',
+          current: Number.isFinite(perTrade) ? perTrade : null,
+          proposed: null,
+          severity: 'danger',
+          why: `A single trade lost ${econ.maxLoss.toFixed(2)} against a daily cap of ${capUsd.toFixed(2)}.`
+            + ' One trade spent more than the whole day\'s risk budget, so position sizing is not enforcing the'
+            + ' per-trade risk it claims. Raising the daily cap would hide this, not fix it.',
+          expect: 'Find why that trade was sized past its own stop before changing any cap.',
+        }
+      }
+
+      if (!Number.isFinite(perTrade) || !(perTrade > 0)) return null
+      const permitted = balance * perTrade
+      if (!(permitted > 0)) return null
+      const lossesAllowed = capUsd / permitted
+      if (lossesAllowed >= MIN_LOSING_TRADES_PER_DAY) return null
+      return {
+        setting: 'dailyLossPct',
+        current: pct,
+        proposed: Math.round(MIN_LOSING_TRADES_PER_DAY * perTrade * 1000) / 1000,
+        severity: 'warn',
+        why: `The daily cap is ${capUsd.toFixed(2)} and one full-risk trade may lose ${permitted.toFixed(2)}`
+          + ` — ${lossesAllowed.toFixed(1)} losing trades and the account stops for the day.`
+          + ` At a ${econ.winRate != null ? (econ.winRate * 100).toFixed(1) : '?'}% win rate a run of`
+          + ` ${MIN_LOSING_TRADES_PER_DAY} losses is ordinary, so this caps variance rather than risk.`,
+        expect: `The account survives a normal losing run and still stops on a genuinely bad day.`,
       }
     },
   },
