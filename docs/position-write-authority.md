@@ -66,9 +66,9 @@ bug that appears the first time two filters overlap.
 2. Emergency account and equity controls
 3. Tick-level safety engine
 4. Fast position manager
-5. Per-minute management policy ← **does not exist (§70.4)**
+5. Per-minute management policy ← **exists as of 2026-08-04, `minute-review.js`**
 6. Bar-close strategy management
-7. Human owner instruction
+7. Human owner instruction ← **see the ruling below**
 8. Reconciliation correction
 
 Level 1 is genuinely primary: broker-side SL/TP survive the app, the database
@@ -79,6 +79,48 @@ and the network, and every open position carries them. Below that, levels 2, 3,
 record of who last acted (§70.3), and no way for a lower-authority component to
 know a higher one has already decided. `position_events` records what happened
 *after the fact*; nothing consults it *before* acting.
+
+## 3a. RULING: §41.1 wins over §41.2 (owner, 2026-08-04)
+
+Encoding §41 in `management-state.js` surfaced a contradiction inside the plan.
+
+- **§41.1's numbered list** puts *human owner instruction* at level 7, below
+  *fast position manager* at 4. A profit keeper **may** move a stop the owner
+  set by hand.
+- **§41.2's prose** says owner actions are *"normally respected and audited
+  rather than automatically reversed, unless they violate a non-negotiable
+  capital-safety rule"*. A fast manager is not a capital-safety rule, so under
+  the prose it should **not** reverse the owner.
+
+Both cannot hold. The owner's ruling: **follow the numbered list.** The
+automated managers outrank a hand-placed stop, and the code does not block them.
+
+What the owner asked for instead of a block:
+
+> "highlight/telegram if bot want to move the hand-placed stop because of
+> stop-loss adjustment"
+
+That is what `minute-review.js` does. A block would have traded one silent
+failure for another — a position left sitting on a stop that nothing is
+maintaining. A notice keeps the machinery working and puts the human in the
+loop. The notice distinguishes the two cases, because the right response
+differs:
+
+| Override by | §41 level | Both readings agree? | What it means |
+|---|---|---|---|
+| `loss_cap`, `profit_ratchet`, `equity_stop` | 2 — capital safety | **yes** | an account-level limit fired |
+| `cpp_trail_engine` | 3 — tick safety | no | ratchet in the profitable direction |
+| `profit_keeper`, `fast_monitor`, `session_open_guard`, `trade_guard`, `loss_guardian` | 4 — fast manager | no | the contested case |
+| `position_manager`, `llm_monitor`, `restrategize` | 6 — bar-close | no | the contested case |
+
+Detection is after-the-fact by design: the review reads `position_events` and
+reports, it never pre-empts. **It writes nothing to a position** — adding a
+fifth writer to a system whose four writers are kept apart only by convention
+would make the problem worse, not better (§36.2.3).
+
+One notice per owner instruction, not one per trailing step. The
+`authority_override` row it leaves behind is also what stops a repeat, so the
+dedupe survives a restart without any extra state.
 
 ## 4. Known-safe by convention, not by construction
 
@@ -103,7 +145,10 @@ concurrency change, not just a scope change:
 - **Cross-process arbitration.** The C++ TrailEngine and the Node keepers can
   both amend the same position's stop within the same second. Nothing detects
   it; `position_events` would record two writes and no conflict.
-- **§70.3's per-position management record**, which is the thing that would let
-  a writer ask "who has authority here right now" before acting.
+- **Wiring the writers to the arbiter.** §70.3 defined the state machine and
+  §41's hierarchy in code (`management-state.js`), and §70.4's review now
+  *consults* it — but no writer does. Each of the fourteen still acts on its own
+  filter and asks nobody. That is the larger and riskier half, and it remains
+  undone on purpose.
 
-Those are the next two items on §70, and this document is their input.
+Those are the next items on §70, and this document is their input.

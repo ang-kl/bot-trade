@@ -22,7 +22,12 @@ export const POSITION_EVENTS_RETENTION_DAYS = 90
 /**
  * Record one position amendment/lifecycle event.
  * `kind` is one of: sl_moved | tp_moved | scale_out | close | trail_armed
- * | trail_tightened | lot_trimmed | paused | resumed
+ * | trail_tightened | lot_trimmed | paused | resumed | authority_override
+ *
+ * `authority_override` is the odd one out: it records an OBSERVATION rather
+ * than an amendment. minute-review.js writes it when a lower-authority writer
+ * moved a stop the owner placed by hand (§41), and the row's presence is also
+ * what stops the same override being reported twice.
  */
 export function recordPositionEvent(db, {
   accountId = null,
