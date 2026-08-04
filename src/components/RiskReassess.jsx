@@ -22,6 +22,7 @@ import Badge from './common/Badge.jsx'
 import DoneCue from './common/DoneCue.jsx'
 import { useDoneCue } from '../lib/use-done-cue.js'
 import { agentGet, agentPost, agentConfigured } from '../lib/agent-api.js'
+import { proposalStatus } from '../lib/risk-proposal-status.js'
 import Collapse from './common/Collapse.jsx'
 
 const PROVIDERS = [
@@ -41,6 +42,26 @@ function stamp(iso) {
 }
 
 /** Show a fraction as a percentage, everything else as itself. */
+/**
+ * Scroll to the field this row controls and mark it, rather than relying on a
+ * bare #hash — the fields live inside collapsibles that may be shut, and a
+ * hash jump into a collapsed section lands nowhere.
+ */
+function jumpTo(key) {
+  const el = document.getElementById(`risk-${key}`)
+  if (!el) return
+  // Open every collapsed ancestor first. Without this the browser scrolls to
+  // an element with zero height and the owner sees nothing move.
+  let p = el.parentElement
+  while (p) {
+    if (p.tagName === 'DETAILS' && !p.open) p.open = true
+    p = p.parentElement
+  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el.classList.add('risk-jump-target')
+  setTimeout(() => el.classList.remove('risk-jump-target'), 2000)
+}
+
 function show(key, v, proposable) {
   if (v == null || v === '') return '—'
   const kind = proposable?.[key]?.kind
@@ -80,6 +101,14 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
   const last = data?.last || null
   const proposable = data?.proposable || {}
+  // THE LIVE VALUES. Every number in the table below used to come from `last`
+  // — the assessment record, frozen at apply time — and the footer asserted
+  // "the settings below hold these values now" without ever reading them back.
+  // Edit a field afterwards and the row went on insisting its own number was
+  // current while the field below disagreed. That is what the owner found by
+  // searching for the daily loss limit (2026-08-04).
+  const live = data?.live || {}
+  const changed = data?.changed || {}
   const available = data?.providers || {}
   // The agent's REASONING-tier model, per the model router — a risk
   // reassessment is `financial_analysis` in llm_ai_doc/AI_Model_Router_
@@ -314,6 +343,12 @@ export default function RiskReassess({ onChanged, onApplied }) {
                       // real confirmation is the highlight on the setting
                       // fields below (see onApplied).
                       const applied = last.applied && (last.appliedKeys || []).includes(p.key)
+                      // THREE states, not two. The middle one is the whole
+                      // point: a row that WAS applied and no longer holds. The
+                      // table could not express it, so it reported it as
+                      // "applied" and the field below quietly disagreed.
+                      const status = proposalStatus({ applied, proposed: p.proposed, live: live[p.key] })
+                      const ch = changed[p.key]
                       return (
                       <tr key={p.key} className="border-t border-[var(--color-border)]">
                         <td className="pr-2 py-0.5 whitespace-nowrap">
@@ -323,9 +358,18 @@ export default function RiskReassess({ onChanged, onApplied }) {
                             onChange={() => toggle(p.key)}
                             aria-label={`apply ${p.label}`}
                           />
-                          {applied && <span className="ml-1 font-semibold text-[var(--color-accent)]" title={`Applied ${stamp(last.appliedAt)} — the setting below holds the proposed value`}>✓</span>}
+                          {status === 'holds' && <span className="ml-1 font-semibold text-[var(--color-accent)]" title={`Applied ${stamp(last.appliedAt)} — the setting below still holds this value`}>✓</span>}
+                          {status === 'superseded' && <span className="ml-1 font-semibold text-[var(--color-warning-text)]" title="Applied, but the setting has been changed since — the live value is shown in Now">!</span>}
                         </td>
                         <td className="pr-2 py-0.5">
+                          {/* Owner 2026-08-04: "a small triangle to show where
+                              it is located below in this RISK page, hyperlink
+                              to change". The anchor is the config key, which
+                              is what the field below registers itself under. */}
+                          <a href={`#risk-${p.key}`}
+                             className="mr-1 text-[var(--color-text-sub)] hover:text-[var(--color-accent)]"
+                             title={`Jump to ${p.label} below`}
+                             onClick={(e) => { e.preventDefault(); jumpTo(p.key) }}>▸</a>
                           {p.label}
                           {p.clamped && (
                             <span className="ml-1 text-[var(--color-warning-text)]"
@@ -333,15 +377,32 @@ export default function RiskReassess({ onChanged, onApplied }) {
                               clamped
                             </span>
                           )}
+                          {/* When this setting last actually changed, and to
+                              what. Absent until something changes it — an
+                              invented stamp would be worse than none. */}
+                          {ch && (
+                            <div className="text-[8px] text-[var(--color-text-sub)]"
+                                 title={`Last changed ${stamp(ch.at)} by ${ch.by || 'unknown'}: ${show(p.key, ch.from, proposable)} → ${show(p.key, ch.to, proposable)}`}>
+                              last changed {stamp(ch.at)}{ch.by ? ` · ${ch.by}` : ''}
+                            </div>
+                          )}
                         </td>
                         <td className="pr-2 py-0.5 text-[var(--color-text-sub)]">
-                          {applied
-                            ? <span title="This was the value before the apply"><s>{show(p.key, p.current, proposable)}</s></span>
-                            : show(p.key, p.current, proposable)}
+                          {/* NOW IS THE LIVE VALUE, read back from the config.
+                              It used to be `p.current` — the value at the time
+                              the assessment ran, which is a fact about the
+                              past presented under a heading that says now. */}
+                          {show(p.key, live[p.key], proposable)}
+                          {status === 'superseded' && (
+                            <div className="text-[8px] text-[var(--color-warning-text)]" title="This row was applied, but the setting no longer carries the proposed value">
+                              changed since apply
+                            </div>
+                          )}
                         </td>
                         <td className="pr-2 py-0.5 font-semibold">
                           {show(p.key, p.proposed, proposable)}
-                          {applied && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
+                          {status === 'holds' && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
+                          {status === 'superseded' && <span className="ml-1 text-[8px] font-semibold uppercase text-[var(--color-warning-text)]">superseded</span>}
                         </td>
                         <td className="py-0.5 text-[var(--color-text-sub)]">{p.reason}</td>
                       </tr>
@@ -367,11 +428,27 @@ export default function RiskReassess({ onChanged, onApplied }) {
                 {picked.size === 0 && !last.applied && (
                   <span className="text-[9px] text-[var(--color-text-sub)]">tick the rows you accept, then Apply — the fields below update immediately</span>
                 )}
-                {last.applied && (
-                  <span className="text-[9px] text-[var(--color-accent)]">
-                    {(last.appliedKeys || []).length} applied {stamp(last.appliedAt)} — the settings below hold these values now
-                  </span>
-                )}
+                {last.applied && (() => {
+                  // COUNT WHAT IS TRUE, not what was applied. This line used
+                  // to say "N applied — the settings below hold these values
+                  // now" off the stored record alone, so it kept asserting a
+                  // state nobody had checked. Now it separates the two.
+                  const keys = last.appliedKeys || []
+                  const holding = keys.filter(k => proposalStatus({
+                    applied: true, proposed: (last.proposals || []).find(p => p.key === k)?.proposed, live: live[k],
+                  }) === 'holds')
+                  const gone = keys.length - holding.length
+                  return (
+                    <span className="text-[9px] text-[var(--color-accent)]">
+                      {holding.length} of {keys.length} applied {stamp(last.appliedAt)} still hold
+                      {gone > 0 && (
+                        <span className="ml-1 text-[var(--color-warning-text)]">
+                          · {gone} changed since
+                        </span>
+                      )}
+                    </span>
+                  )
+                })()}
               </div>
             </>
           )}

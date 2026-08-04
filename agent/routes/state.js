@@ -724,6 +724,9 @@ export default function stateRouter(db) {
         seen.add(r.model)
         openaiOptions.push({ model: r.model, tier, source: r.source })
       }
+      const { loadRiskConfig } = await import('../services/risk.js')
+      const { loadRiskConfigChanges } = await import('../services/risk-config-history.js')
+      const liveRisk = loadRiskConfig(db)
       res.json({
         last: loadLastAssessment(db),
         providers: availableProviders(),
@@ -732,6 +735,20 @@ export default function stateRouter(db) {
         proposable: Object.fromEntries(
           Object.entries(PROPOSABLE).map(([k, v]) => [k, { label: v.label, min: v.min, max: v.max, kind: v.kind }])
         ),
+        // THE LIVE VALUES, so the proposal table can COMPARE instead of claim.
+        //
+        // Every number in that table used to come from the stored assessment
+        // record, frozen at apply time, and the footer asserted "the settings
+        // below hold these values now" without ever reading them back. Edit a
+        // field afterwards and the row went on insisting its own number was
+        // current while the field below disagreed — which is exactly what the
+        // owner found by searching for the daily loss limit.
+        live: Object.fromEntries(
+          Object.keys(PROPOSABLE).map(k => [k, liveRisk?.[k] ?? null])
+        ),
+        // key -> { at, from, to, by }. Lets a superseded row say WHEN it
+        // stopped holding rather than just that it does not.
+        changed: loadRiskConfigChanges(db),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
