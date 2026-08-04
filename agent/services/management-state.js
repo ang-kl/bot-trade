@@ -122,6 +122,91 @@ export const EVENT_SOURCE_AUTHORITY = Object.freeze({
   reconciler: 'reconciliation',
 })
 
+/**
+ * §70.6 — "ensure rapid markets use tick or event-driven safeguards."
+ *
+ * WHY THIS IS PER RULE AND NOT PER MODULE. The trigger was always chosen per
+ * MODULE, and the rules inside one module do not share a shape. The profit
+ * keeper's chandelier ratchet is a price crossing; its spike-tighten reads
+ * COMPLETED BARS and cannot be evaluated any finer than the bar period. The
+ * loss guardian's headline job — putting a stop on a naked position — is not a
+ * price decision at all; it fires on a STATE. Running a whole module on ticks
+ * because one of its rules is tick-shaped is how a bar rule gets evaluated on
+ * a partial bar, and running it on a timer because one rule is slow is how a
+ * price crossing waits sixty seconds.
+ *
+ * Values:
+ *   'tick' — a price crossing a level. Belongs on a price trigger; the timer
+ *            remains the backstop.
+ *   'bar'  — needs a CLOSED bar. Evaluating it on a tick reads an incomplete
+ *            candle and produces a verdict the rule did not earn.
+ *   'poll' — an account aggregate, a position state, or elapsed time. Nothing
+ *            about a single instrument's spot price moves it.
+ *
+ * `human` marks the two owner entry points, which have no cadence of their own.
+ */
+export const TRIGGERS = Object.freeze(['tick', 'bar', 'poll', 'human'])
+
+/**
+ * Every management rule, and the trigger it is entitled to.
+ *
+ * Keys are `<writer>:<rule>`. The writer half must exist in WRITER_AUTHORITY —
+ * a rule whose writer is unknown has no authority, and a test enforces that.
+ */
+export const RULE_TRIGGER = Object.freeze({
+  // ── trade-guard: three price crossings, nothing else. The purest
+  // tick-shaped module of the five, and the cheapest — one broker call.
+  'trade-guard:break_even': 'tick',
+  'trade-guard:trailing': 'tick',
+  'trade-guard:take_profit_ladder': 'tick',   // a limit order the bot emulates
+
+  // ── profit-keeper: mixed, which is the whole reason this table exists.
+  'profit-keeper:chandelier_ratchet': 'tick', // ALREADY in C++ (TrailEngine)
+  'profit-keeper:chandelier_breach': 'tick',
+  'profit-keeper:take_profit_usd': 'tick',
+  'profit-keeper:arm': 'tick',                // slow threshold, price crossing
+  'profit-keeper:giveback': 'tick',
+  'profit-keeper:scale_out': 'tick',          // one-shot, gated on the arm
+  'profit-keeper:spike_tighten': 'bar',       // completed bars — cannot go finer
+
+  // ── loss-cap: one rule. Floating P&L is monotone in price for a fixed
+  // position, so the cap is a synthetic stop — currently evaluated on a timer.
+  'loss-cap:position_dollar_cap': 'tick',
+
+  // ── loss-guardian: genuinely split, and the split is not what the module
+  // name suggests. Only the "already blown through" branch is about price.
+  'loss-guardian:naked_past_max_loss': 'tick',
+  'loss-guardian:naked_stop': 'poll',         // fires on STATE: "there is no stop"
+  'loss-guardian:time_cap': 'poll',           // elapsed hours; price-independent
+
+  // ── profit-ratchet: every rule reads account equity or elapsed time.
+  // Nothing here crosses a price, and its `confirmReads` hysteresis exists
+  // SPECIFICALLY to suppress tick reactions — on 2026-08-01 06:39 UTC it
+  // flattened an account off one 60-second equity read, and the fix was
+  // hysteresis, not speed. Ticking these would have made that worse.
+  'profit-ratchet:floor_advance': 'poll',
+  'profit-ratchet:soft_band': 'poll',
+  'profit-ratchet:hard_trip': 'poll',
+  'profit-ratchet:auto_rearm': 'poll',
+
+  // ── bar-close and owner layers, for completeness.
+  'restrategize:bar_close_review': 'bar',
+  'weekend-bank:session_close': 'poll',
+  'position-protect:set_stop': 'human',
+  'position-protect:set_target': 'human',
+})
+
+/** The trigger a rule is entitled to, or null when the rule is not classified. */
+export function triggerForRule(key) {
+  return RULE_TRIGGER[String(key ?? '')] ?? null
+}
+
+/** Every classified rule belonging to one writer. */
+export function rulesForWriter(writer) {
+  const prefix = `${writer}:`
+  return Object.keys(RULE_TRIGGER).filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length))
+}
+
 /** §41 level for a `position_events.source`, or null when the source is unknown. */
 export function authorityForSource(source) {
   return EVENT_SOURCE_AUTHORITY[String(source ?? '')] ?? null

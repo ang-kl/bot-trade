@@ -26,6 +26,7 @@
 import { loadWithOverlay } from './account-overlay.js'
 import { roundToDigits } from './trade-guard.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
+import { recordPositionEvent } from './position-events.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
   on: true,                 // safety net on by default — no naked losers
@@ -69,7 +70,7 @@ export function decideLossGuardian(cfg, ctx) {
   // position-manager's to time out; the guardian defers.
   if (!hasOwnTimeCap
     && cfg.maxHoldHours != null && Number.isFinite(ageHours) && ageHours >= cfg.maxHoldHours) {
-    return { action: { close: true }, reason: `time_cap ${ageHours.toFixed(1)}h ≥ ${cfg.maxHoldHours}h` }
+    return { action: { close: true }, rule: 'time_cap', reason: `time_cap ${ageHours.toFixed(1)}h ≥ ${cfg.maxHoldHours}h` }
   }
 
   // 2) Only NAKED positions get a protective stop — never touch an existing one.
@@ -86,10 +87,10 @@ export function decideLossGuardian(cfg, ctx) {
   // loss is already exceeded; don't set a stop the broker would reject, close.
   const past = long ? price <= level : price >= level
   if (past) {
-    return { action: { close: true }, reason: `naked position already beyond max loss (${cfg.maxAtrMult}×ATR)` }
+    return { action: { close: true }, rule: 'naked_past_max_loss', reason: `naked position already beyond max loss (${cfg.maxAtrMult}×ATR)` }
   }
   const sl = roundToDigits(level, digits)
-  return { action: { sl }, reason: `protective stop on a naked position (${cfg.maxAtrMult}×ATR from entry)` }
+  return { action: { sl }, rule: 'naked_stop', reason: `protective stop on a naked position (${cfg.maxAtrMult}×ATR from entry)` }
 }
 
 function atrFromBars(bars, period) {
@@ -234,19 +235,43 @@ async function lossGuardianPass(db, creds, deps = {}) {
 
       if (decision.action.close) {
         try {
-          await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume: td.volume })
+          await exec.closePosition(creds, {
+            positionId: parseInt(r.position_id), volume: td.volume,
+            ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+          })
           updAct.run(null, 'loss_guardian_close', r.id)
           summary.closes++
           notify(`🛟 Loss Guardian closed ${r.symbol} (${r.side}) at ~${price}: ${decision.reason}`)
+          recordPositionEvent(db, {
+            accountId: r.account_id, positionId: r.position_id, symbol: r.symbol,
+            kind: 'close', toValue: td.volume, priceAt: price,
+            reason: decision.reason, source: 'loss_guardian',
+            detail: { rule: decision.rule ?? null, ageHours },
+          })
         } catch (err) { summary.errors.push(`${r.symbol} close: ${err.message}`) }
         continue
       }
       if (decision.action.sl != null) {
         try {
-          await exec.amendPosition(creds, { positionId: parseInt(r.position_id), stopLoss: decision.action.sl })
+          await exec.amendPosition(creds, {
+            positionId: parseInt(r.position_id), stopLoss: decision.action.sl,
+            ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+          })
           updAct.run(decision.action.sl, 'loss_guardian_stop', r.id)
           summary.stops++
           notify(`🛟 Loss Guardian: ${r.symbol} had NO stop — protective SL set at ${decision.action.sl} (${decision.reason})`)
+          // The stop that went from NOTHING to something. This is the single
+          // most consequential write in the file and it left no timeline entry
+          // at all until 2026-08-04 — so §70.4's owner-override notice and the
+          // P10 journal were both blind to the one layer whose job is putting
+          // a stop on a position that has none. fromValue is explicitly null:
+          // "there was no stop" is the fact worth recording.
+          recordPositionEvent(db, {
+            accountId: r.account_id, positionId: r.position_id, symbol: r.symbol,
+            kind: 'sl_moved', fromValue: null, toValue: decision.action.sl, priceAt: price,
+            reason: decision.reason, source: 'loss_guardian',
+            detail: { rule: decision.rule ?? null, wasNaked: true },
+          })
         } catch (err) { summary.errors.push(`${r.symbol} SL: ${err.message}`) }
       }
     }

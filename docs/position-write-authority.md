@@ -122,6 +122,82 @@ One notice per owner instruction, not one per trailing step. The
 `authority_override` row it leaves behind is also what stops a repeat, so the
 dedupe survives a restart without any extra state.
 
+## 3b. §70.6 — the trigger belongs to the RULE, not the module
+
+The trigger was always chosen per module, and the rules inside one module do
+not share a shape. Running a whole module on ticks because one of its rules is
+tick-shaped is how a bar rule gets evaluated on a partial candle; running it on
+a timer because one rule is slow is how a price crossing waits sixty seconds.
+
+`RULE_TRIGGER` in `agent/services/management-state.js` is the classification,
+and a test fails when a rule is unclassified, misclassified, renamed or
+removed.
+
+**Six things are distinct and are often confused.** A row in the table below
+answers all six for one rule:
+
+| | |
+|---|---|
+| **Trigger source** | what wakes the evaluation — a tick, a closed bar, a timer, the owner |
+| **Rule evaluation** | the decision itself, pure and testable |
+| **Broker write authority** | §41 level, from `WRITER_AUTHORITY` |
+| **Node ownership** | which module holds the rule |
+| **C++ trail ownership** | whether the sidecar executes it (exactly one rule does) |
+| **Timer backstop** | the 60s pass that runs it regardless |
+
+| Rule | Trigger | §41 | Owned by | In C++? |
+|---|---|---|---|---|
+| `trade-guard:break_even` | tick | 4 | Node | no |
+| `trade-guard:trailing` | tick | 4 | Node | no |
+| `trade-guard:take_profit_ladder` | tick | 4 | Node | no |
+| `profit-keeper:chandelier_ratchet` | tick | 4 | Node decides, **C++ executes** | **yes** |
+| `profit-keeper:chandelier_breach` | tick | 4 | Node | no |
+| `profit-keeper:take_profit_usd` / `arm` / `giveback` / `scale_out` | tick | 4 | Node | no |
+| `profit-keeper:spike_tighten` | **bar** | 4 | Node | no |
+| `loss-cap:position_dollar_cap` | tick | 2 | Node | no |
+| `loss-guardian:naked_past_max_loss` | tick | 4 | Node | no |
+| `loss-guardian:naked_stop` | **poll** | 4 | Node | no |
+| `loss-guardian:time_cap` | **poll** | 4 | Node | no |
+| `profit-ratchet:*` | **poll** | 2 | Node | no |
+
+Every rule keeps the 60-second pass as its backstop. A tick trigger is an
+*addition*, never a replacement — a price trigger that stops firing must
+degrade to slow, not to nothing.
+
+### Rules that must NOT be ticked, and why
+
+- **`profit-ratchet:*` — account equity is not one instrument's spot price.**
+  Equity is a sum over positions. Worse, on 2026-08-01 06:39 UTC this layer
+  flattened an account off *one* 60-second equity read, and the fix was
+  `confirmReads` hysteresis — machinery that exists specifically to *suppress*
+  fast reactions. Ticking it would make that incident worse, not better.
+- **`loss-guardian:naked_stop` — it fires on a STATE**, "this position has no
+  stop", which no price crossing announces. It should fire once shortly after a
+  naked position appears and then never again for that position.
+- **`loss-guardian:time_cap` — elapsed hours.** A 60-second poll is already
+  3600× finer than an hours-scale cap.
+- **`profit-keeper:spike_tighten` — completed bars.** On a tick it would read a
+  partial candle and produce a verdict the rule did not earn.
+
+## 3c. Two clocks, one pass
+
+`runTradeGuards` and `runProfitKeeper` are entered from **both** guardian's
+tick sweep (≥0.05% move, 2.5s cooldown, `guardian.js:191-192`) and the fast
+monitor's 60s band. That is deliberate — the rules above are tick-shaped — but
+until 2026-08-04 neither module had a re-entrancy guard, and `withBudget`
+abandons the *wait* rather than the work, so a slow pass was still running when
+the next started.
+
+`singleFlight` in `agent/services/acting-layer.js` is the invariant: a second
+caller **joins** the pass in flight. Consequence worth stating: tick response is
+bounded by pass duration, not by tick rate. That is strictly better than the
+overlap it replaced, but it is not "reacts on every tick".
+
+Ownership is enforced in the same module — every acting layer filters its query
+by the authorised account **and** requires the broker's reconcile to confirm the
+position. A pass that cannot establish ownership does nothing rather than acting
+on a position it could not verify.
+
 ## 4. Known-safe by convention, not by construction
 
 These are the filters that currently keep the writers apart. They are listed so
