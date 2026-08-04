@@ -24,6 +24,7 @@ import { rankVerdict, visibleRows, tallyVerdicts } from '../lib/backtest-rows.js
 import WorkedExample from '../components/common/WorkedExample.jsx'
 import { keeperExample, guardianExample, closedMarketExample } from '../lib/worked-examples.js'
 import StrategyPicker from '../components/watchlist/StrategyPicker.jsx'
+import InstrumentMatrix from '../components/watchlist/InstrumentMatrix.jsx'
 import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 // The SAME classifier the trading path uses for market hours, imported rather
 // than mirrored — a watchlist tree that disagreed with the engine about what
@@ -916,6 +917,7 @@ export default function Tune() {
   const [newSymbol, setNewSymbol] = useState('')
   const [allSymbols, setAllSymbols] = useState([])   // broker's full instrument list for autocomplete
   const [browse, setBrowse] = useState(false)        // full-catalogue browser open?
+  const [matrixOpen, setMatrixOpen] = useState(false) // 4x7 instrument matrix open?
   const [browseQ, setBrowseQ] = useState('')
   // Broker-truth classification tree (asset class → category → symbols) for
   // the tree browser; loaded once when the browser is first opened.
@@ -2887,6 +2889,30 @@ export default function Tune() {
               )}
               Symbol names must match your broker's cTrader names (e.g. EURUSD, XAUUSD) — IDs are mapped automatically when you link the account on the Connect tab.
             </p>
+
+            {/* THE MATRIX — the same 1,900 instruments as the browser below,
+                but as one screen you can point at instead of an accordion you
+                scroll. Owner 04-08-2026: session blocks down, exposure
+                character across, fixed-height cells, expand in place. */}
+            {allSymbols.length > 0 && (
+              <div className="mb-3">
+                <button type="button" aria-expanded={matrixOpen}
+                  onClick={() => flip(setMatrixOpen, 'tune_matrix_open')}
+                  className="text-[9px] font-semibold cursor-pointer flex items-center gap-1.5 mb-1">
+                  <span aria-hidden="true">{matrixOpen ? '▾' : '▸'}</span> Instrument Matrix
+                  <span className="font-normal text-[var(--color-text-sub)]">— {allSymbols.length.toLocaleString()} instruments by session &times; exposure</span>
+                </button>
+                {matrixOpen && (
+                  <InstrumentMatrix
+                    symbols={allSymbols}
+                    descriptions={symDesc}
+                    inList={new Set(symbols.map(x => x.symbol))}
+                    onAdd={addSymbolsPlain}
+                    onRemove={removeSymbolPlain}
+                  />
+                )}
+              </div>
+            )}
 
             {/* Full catalogue browser — every instrument the broker offers,
                 searchable + category-filtered, one tap to add. */}
