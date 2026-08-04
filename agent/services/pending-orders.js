@@ -348,7 +348,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       source: 'pending',
     }
     const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
-    risk.persistRiskEvent(db, proposal, riskResult)
+    const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
     if (!riskResult.approved) {
       summary.skipped.push(`${symbol}: risk veto — ${riskResult.veto_reason}`)
       continue
@@ -421,8 +421,8 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       const execEvent = await exec.placeOrder(creds, orderPayload)
       const orderId = execEvent?.order?.orderId ?? execEvent?.orderId ?? null
       db.prepare(`
-        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?)
+        INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, risk_event_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', ?, ?)
       `).run(
         symbol,
         timeframe || null,
@@ -434,6 +434,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         volLots,
         new Date(expiresAtMs).toISOString(),
         'pending-fib',
+        riskEventId ?? null,
       )
       notify(`⏳ pending PLACED: ${symbol} ${timeframe} — limit @ ${orderPayload.limitPrice}, SL ${signal.sl}, TP ${signal.tp1}`)
       symbolsWithWorking.add(symbol)

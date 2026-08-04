@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { initDB } from '../db.js'
 import { fxDayStartSql } from './risk.js'
 import {
-  auditDecisions, shouldAlert, publicPipelineView, toText, VERDICTS, guardName,
+  auditDecisions, shouldAlert, publicPipelineView, toText, VERDICTS, guardName, unlinkedApprovals,
 } from './decision-audit.js'
 
 /** A timestamp inside the current FX day, in SQLite's own space-separated form. */
@@ -328,4 +328,85 @@ test('a healthy day reads as traded and SAYS how many were refused downstream', 
   const a = auditDecisions(db)
   assert.equal(a.verdict, VERDICTS.TRADED)
   assert.match(a.because, /1 refused downstream/)
+})
+
+// ---------------------------------------------------------------------------
+// §70.9 — lineage: WHICH approval went nowhere, by name
+// ---------------------------------------------------------------------------
+
+test('with no lineage anywhere, the named list is EMPTY rather than confidently wrong', () => {
+  // Every row written before the risk_event_id migration has a NULL link, so a
+  // naive "approved with no child" query would report the entire history as
+  // dropped on the very first run. Absence of a link means something only once
+  // links exist.
+  const db = initDB(':memory:')
+  approve(db, {})
+  assert.deepEqual(auditDecisions(db).droppedApprovals, [])
+})
+
+test('once lineage exists, a dropped approval is named — symbol, side and id', () => {
+  const db = initDB(':memory:')
+  const linked = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                             VALUES ('EURUSD','buy',1,?)`).run(insideDay()).lastInsertRowid
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at, risk_event_id) VALUES ('EURUSD','buy',?,?)`)
+    .run(insideDay(1), linked)
+  const orphan = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                             VALUES ('XAUUSD','sell',1,?)`).run(insideDay(2)).lastInsertRowid
+
+  const a = auditDecisions(db)
+  assert.deepEqual(a.droppedApprovals.map(d => [d.symbol, d.side, d.id]), [['XAUUSD', 'sell', orphan]])
+  assert.match(a.because, /identified by lineage/)
+  assert.match(toText(a), /dropped approvals: XAUUSD sell/)
+})
+
+test('an approval that produced a PENDING order is linked, not dropped', () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                         VALUES ('EURUSD','buy',1,?)`).run(insideDay()).lastInsertRowid
+  db.prepare(`INSERT INTO pending_orders (symbol, placed_at, risk_event_id) VALUES ('EURUSD',?,?)`)
+    .run(insideDay(1), id)
+  assert.deepEqual(auditDecisions(db).droppedApprovals, [])
+})
+
+test('approvals from BEFORE the first linked landing are never named', () => {
+  // The honesty floor. Rows older than the oldest approval any landing points
+  // at predate lineage; a missing link there is the past, not a finding.
+  const db = initDB(':memory:')
+  const ancient = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                              VALUES ('GBPUSD','buy',1,?)`).run(insideDay()).lastInsertRowid
+  const linked = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                             VALUES ('EURUSD','buy',1,?)`).run(insideDay(1)).lastInsertRowid
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at, risk_event_id) VALUES ('EURUSD','buy',?,?)`)
+    .run(insideDay(2), linked)
+  const named = auditDecisions(db).droppedApprovals.map(d => d.id)
+  assert.equal(named.includes(ancient), false, 'the pre-lineage row is not accused')
+})
+
+test('a placement RECEIPT is not mistaken for a dropped approval', () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                         VALUES ('EURUSD','buy',1,?)`).run(insideDay()).lastInsertRowid
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at, risk_event_id) VALUES ('EURUSD','buy',?,?)`)
+    .run(insideDay(1), id)
+  gate(db, { approved: true, checks: { pending_order_placed: true }, at: insideDay(2) })
+  assert.deepEqual(auditDecisions(db).droppedApprovals, [], 'receipts carry no lineage and need none')
+})
+
+test('the named list never reaches the public projection', () => {
+  const db = initDB(':memory:')
+  const id = db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+                         VALUES ('EURUSD','buy',1,?)`).run(insideDay()).lastInsertRowid
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at, risk_event_id) VALUES ('EURUSD','buy',?,?)`)
+    .run(insideDay(1), id)
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, created_at)
+              VALUES ('XAUUSD','sell',1,?)`).run(insideDay(2))
+  const pub = JSON.stringify(publicPipelineView(auditDecisions(db)))
+  assert.equal(pub.includes('XAUUSD'), false, 'symbols are owner-only')
+  assert.equal(pub.includes('droppedApprovals'), false)
+})
+
+test('a broken lineage query reports nothing rather than throwing', () => {
+  const db = initDB(':memory:')
+  db.exec('DROP TABLE pending_orders')
+  assert.deepEqual(unlinkedApprovals(db, fxDayStartSql()), [])
 })

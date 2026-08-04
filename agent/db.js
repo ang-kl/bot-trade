@@ -963,6 +963,22 @@ export function initDB(dbPath) {
     }
   }
 
+  // §70.9 TRADE LINEAGE. Until 2026-08-04 an approval and the trade it
+  // produced were associated only by symbol, side and rough timing — which is
+  // why §70.8 could compare approvals to landings in AGGREGATE and never say
+  // WHICH approval went nowhere. risk_events.id is a stable identifier; this
+  // carries it forward onto the row the approval actually produced, so the
+  // chain decision -> order -> position -> economics can be walked in either
+  // direction instead of inferred.
+  for (const table of ['trades', 'pending_orders']) {
+    const cols = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+    if (!cols.has('risk_event_id')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN risk_event_id INTEGER`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
+           CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
+
   // Trade forensics (2026-07-24, Performance Ledger collect-forward): the
   // execution-quality and market-context fields the dashboard's trade
   // anatomy shows. Captured at fill time going FORWARD; historical rows stay
