@@ -20,6 +20,7 @@ import { liveCorrelationVeto, loadStoredMatrix, loadCorrelationMatrixConfig } fr
 import { minRrFor } from './strategies.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
+import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -141,6 +142,12 @@ export const DEFAULT_RISK_CONFIG = {
   // blocking straight away, without waiting out the age window — the repair
   // was tried and failed, which is better evidence than a clock. 0/null = off.
   unknownPnlMinAttempts: DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS,
+  // NULL-EXIT FLOOR (owner 2026-08-04, "this account has penny profit, took
+  // profits too early"). A discretionary close inside this many R of the
+  // entry banks nothing and pays the spread — measured, 26 of 31 explicit
+  // closes on 47790949 were inside 0.1R and cost -$3,348 between them.
+  // Protection writers are never blocked; see null-exit-guard.js. 0 = off.
+  nullExitMinR: DEFAULT_NULL_EXIT_MIN_R,
   // Per-trade risk (owner: "push default risk to 5% or absolute amount").
   // Size AGGRESSIVELY on the now-proven combos, with an ALGO HARD CAP as the
   // safety layer. The effective $ budget per trade is:

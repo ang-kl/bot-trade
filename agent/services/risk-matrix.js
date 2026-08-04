@@ -58,7 +58,7 @@ export const RISK_GROUPS = Object.freeze([
   ] },
   { id: 'pnl', label: 'P&L trust', keys: [
     'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
-    'minTradesForKelly', 'allowNegativeExpectancyOverride',
+    'minTradesForKelly', 'allowNegativeExpectancyOverride', 'nullExitMinR',
   ] },
   { id: 'cost', label: 'Cost gates', keys: [
     'newsGateEnabled', 'newsGateMinBefore', 'newsGateMinAfter', 'newsGateImpacts',

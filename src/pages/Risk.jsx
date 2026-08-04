@@ -893,8 +893,8 @@ export default function Risk() {
                 and news gates, and the whole unknown-P&L family that was 69%
                 of last week's vetoes. Same class as marginLevelFloorPct, found
                 the same way. */}
-            <Advanced mode={viewMode} label="Entry gates, cost gates and P&L trust" total={17}
-              changed={['stopTriggerMethod', 'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
+            <Advanced mode={viewMode} label="Entry gates, cost gates and P&L trust" total={18}
+              changed={['nullExitMinR', 'stopTriggerMethod', 'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
                 'newsGateEnabled', 'newsGateMinBefore', 'newsGateMinAfter', 'newsGateImpacts',
                 'carryGateEnabled', 'carryMaxNegativeSwapPoints',
                 'commissionGateEnabled', 'commissionMaxFracOfWin', 'commissionGateMinTrades',
@@ -914,6 +914,10 @@ export default function Risk() {
               <Field label={`Unknown P&L give-up${mark('unknownPnlMinAttempts')}`} anchor="unknownPnlMinAttempts" unit="tries" value={risk.unknownPnlMinAttempts} onChange={v => setRisk(r => ({ ...r, unknownPnlMinAttempts: v }))}
                 placeholder="off"
                 hint="A row the backfill has asked the broker for this many times, and never filled, stops blocking immediately — evidence rather than a clock. Empty = time only." recommend="6 attempts." />
+              <Field label={`Null-exit floor${mark('nullExitMinR')}`} anchor="nullExitMinR" unit="R" value={risk.nullExitMinR} onChange={v => setRisk(r => ({ ...r, nullExitMinR: v }))}
+                placeholder="off"
+                hint="A discretionary close this close to the entry banks nothing and pays the spread, so it is refused. Protection writers — equity stop, loss cap, loss guardian, weekend bank, ratchet — are never blocked, and neither is a close whose reason names one (invalidation, time cap, margin). 0 or empty = off."
+                recommend="0.1R. Measured on 47790949: 26 of 31 discretionary closes landed inside 0.1R and cost -$3,348 between them, while 15 managed stops made +$1,510." />
               <Toggle id="risk-newsGateEnabled" label={`News gate${mark('newsGateEnabled')}`}
                 on={!!risk.newsGateEnabled} onClick={() => setRisk(r => ({ ...r, newsGateEnabled: !r.newsGateEnabled }))}
                 title="Refuse entries in the window around a high-impact release." />
@@ -950,6 +954,7 @@ export default function Risk() {
                 'carryGateEnabled', 'carryMaxNegativeSwapPoints',
                 'commissionGateEnabled', 'commissionMaxFracOfWin', 'commissionGateMinTrades',
                 'slippageGateEnabled', 'slippageMaxAdversePct', 'slippageGateMinTrades',
+                'nullExitMinR',
               ])}>Save gates</Button></span>
             </div>
             </Advanced>
