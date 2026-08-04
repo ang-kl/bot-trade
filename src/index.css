@@ -147,6 +147,7 @@
   --color-border:       rgba(120, 140, 200, 0.28);
   --color-accent:       #a34718;
   --color-accent-soft:  rgba(163, 71, 24, 0.10);
+  --color-down-soft:    rgba(225, 29, 72, 0.10);
   /* Text drawn ON the accent fill (active nav pill). Measured, not assumed:
      white reads 6.05:1 on this deep clay. */
   --color-on-accent:    #ffffff;
@@ -275,6 +276,7 @@
   --color-border:       rgba(120, 150, 255, 0.18);
   --color-accent:       #d97757;
   --color-accent-soft:  rgba(217, 119, 87, 0.12);
+  --color-down-soft:    rgba(255, 77, 109, 0.14);
   /* This clay is LIGHT, so white on it is only 3.12:1 — fails AA for the
      9px nav labels. Near-black reads 5.93:1. */
   --color-on-accent:    #1a1207;
@@ -375,6 +377,7 @@
   --color-border:       rgba(160, 130, 60, 0.30);
   --color-accent:       #8c5a1c;
   --color-accent-soft:  rgba(140, 90, 28, 0.12);
+  --color-down-soft:    rgba(163, 58, 30, 0.12);
   --color-text:         #3a2f1b;
   --color-text-sub:     #5a4a30;
   --table-head-bg:      #efe7d8;

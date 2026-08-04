@@ -2801,9 +2801,45 @@ export default function stateRouter(db) {
       // invisible.
       const acct = req.query?.account && req.query.account !== 'all' ? String(req.query.account) : null
       const view = stageMatrixView(db, getState)
-      if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [] })
+      // A TALLY PER ACCOUNT (owner 04-08-2026: "have a count of tick/cross per
+      // account"). The matrix shows one scope at a time, so "how much is armed
+      // over there" was a question you could only answer by switching scope
+      // and counting cells by eye — across five accounts and every stage.
+      //
+      // Computed from the same loadStageMatrix() the cells render from, so the
+      // numbers cannot drift from the ticks: no second source, just a count of
+      // the first one. It is a pure state read per account, no broker calls.
+      const tallies = (() => {
+        try {
+          const rows = db.prepare(
+            'SELECT account_id, trader_login, is_live, enabled, mode FROM accounts ORDER BY is_live, account_id'
+          ).all()
+          return rows.map(r => {
+            const id = String(r.account_id)
+            const m = loadStageMatrix(db, getState, id)
+            const per = {}
+            for (const s of [...(m.strategies || []), ...(m.filters || [])]) {
+              for (const [stage, on] of Object.entries(s.stages || {})) {
+                if (on == null) continue          // not applicable — counted neither way
+                per[stage] = per[stage] || { on: 0, off: 0 }
+                per[stage][on ? 'on' : 'off'] += 1
+              }
+            }
+            return {
+              accountId: id,
+              traderLogin: r.trader_login ?? null,
+              isLive: r.is_live === 1,
+              enabled: r.enabled === 1,
+              mode: r.mode ?? null,
+              stages: per,
+              pinned: stageOverlayKeys(db, getState, id).length,
+            }
+          })
+        } catch { return [] }
+      })()
+      if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [], tallies })
       const scoped = loadStageMatrix(db, getState, acct)
-      res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct) })
+      res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct), tallies })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

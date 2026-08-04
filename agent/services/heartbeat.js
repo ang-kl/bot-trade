@@ -284,6 +284,19 @@ export function heartbeatView(db, { now = new Date(), loopSec = null } = {}) {
       last_run_at: row.last_run_at,
       last_ok_at: row.last_ok_at,
       last_error: row.last_error,
+      // IS THAT ERROR STILL TRUE? (owner, 04-08-2026, reading the panel:
+      // "ATR baseline refresh {hasn't refresh since 9 AM yesterday}".)
+      //
+      // beat() keeps last_error across a later success on purpose — it is
+      // useful forensics. But the panel printed it beside a controller that
+      // had since run clean, so `atr_refresh` showed `unknown period "D1"`
+      // (a bug fixed the day before, 185/185 symbols updated on its next run)
+      // as though it were happening now. An error that cannot go away teaches
+      // the operator to stop reading errors.
+      //
+      // consecutive_failures already knows the difference; this just says so,
+      // so the UI can show a resolved error as history instead of as an alarm.
+      error_is_current: row.consecutive_failures > 0,
       consecutive_failures: row.consecutive_failures,
       runs: row.runs,
     }

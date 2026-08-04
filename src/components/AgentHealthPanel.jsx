@@ -127,7 +127,22 @@ export function ControllerRows({ bad }) {
           {/* The error text is the actionable part and is never truncated
               away — a stalled controller with a hidden reason sends you to
               the logs, which is the trip this panel exists to save. */}
-          {c.last_error && <span style={{ color: 'var(--color-down)' }}>{c.last_error}</span>}
+          {/* …but only in RED while it is still happening. The row keeps its
+              last error across a later success, which is good forensics and a
+              bad alarm: `atr_refresh` showed `unknown period "D1"` — fixed the
+              day before, 185/185 symbols updated on its next run — in the same
+              red as a live failure, and the owner read the panel as broken.
+              Resolved errors stay visible, in the muted colour of history. */}
+          {c.last_error && (
+            <span
+              style={{ color: c.error_is_current === false ? 'var(--color-text-sub)' : 'var(--color-down)' }}
+              title={c.error_is_current === false
+                ? 'This controller has run successfully since — kept for reference, not a current failure.'
+                : 'Current failure.'}
+            >
+              {c.error_is_current === false ? 'last error (resolved): ' : ''}{c.last_error}
+            </span>
+          )}
         </li>
       ))}
     </ul>

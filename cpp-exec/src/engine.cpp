@@ -87,6 +87,12 @@ void ExecEngine::setCredentials(std::string host, std::string clientId,
       bool known = false;
       for (long long have : accountIds_) if (have == id) { known = true; break; }
       if (known) continue;
+      // Same rule on the incremental path: a newly-requested account that the
+      // token cannot authorize must not drop the session the others are
+      // already trading on. This is the path the owner's registry change went
+      // through — enabling one demo account should never be able to stop
+      // execution for the rest.
+      ExtraAuthScope guard(authorizingExtra_);
       EngineResult r = authAccountLocked(id);
       if (r.ok) {
         accountIds_.push_back(id);
@@ -173,14 +179,52 @@ void ExecEngine::maybeHeartbeatLocked() {
 // expired token left authed_ true forever — every order 502'd with a broker
 // error while /health said connected:true, which also suppressed the JS
 // fallback (audit #4).
-static bool isAuthFamilyError(const std::string& code) {
+bool isAuthFamilyError(const std::string& code) {
   return code == "CH_ACCESS_TOKEN_INVALID" || code == "ACCOUNT_NOT_AUTHORIZED" ||
          code == "NOT_AUTHENTICATED" || code == "CH_CLIENT_AUTH_FAILURE" ||
          code == "ALREADY_LOGGED_IN" || code == "CH_ACCESS_TOKEN_EXPIRED";
 }
 
+// The policy, as one pure function, so it can be tested without a broker
+// socket — the incident it exists to prevent was a disagreement between two
+// handlers, and a rule that only exists as scattered ifs is exactly how they
+// came to disagree.
+AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra) {
+  if (!isAuthFamilyError(code)) return AuthErrorAction::Ignore;
+  return authorizingExtra ? AuthErrorAction::SkipAccount : AuthErrorAction::KillSession;
+}
+
 void ExecEngine::noteBrokerErrorLocked(const std::string& errorCode) {
-  if (!isAuthFamilyError(errorCode)) return;
+  const AuthErrorAction act = authErrorAction(errorCode, authorizingExtra_);
+  if (act == AuthErrorAction::Ignore) return;
+  // ONE ACCOUNT'S REJECTION IS NOT THE SESSION'S DEATH (production incident,
+  // 2026-08-04, ~23:47Z onward).
+  //
+  // Authorizing an EXTRA account is per-account: CH_ACCESS_TOKEN_INVALID there
+  // means "this token does not cover THAT account", not "the token is dead".
+  // Tearing the socket down on it fought the skip-and-continue directly above
+  // — the loop logged "skipped this session, retried on next reconnect", this
+  // closed the connection anyway, and the sidecar reconnected roughly once a
+  // second, forever:
+  //
+  //   connected and authenticated (2/4 account(s))
+  //   auth-family broker error 'CH_ACCESS_TOKEN_INVALID' — closing session
+  //   extra account 46979908 auth failed — skipped this session…
+  //   extra account 47790949 auth failed — …NOT_CONNECTED   ← collateral
+  //
+  // The cost was not cosmetic: /health stopped answering inside its timeout,
+  // so the roster read `unknown` on every account row, the cpp_exec heartbeat
+  // went to error, and the execution engine had no stable session to place or
+  // close an order on — because one demo account had been enabled.
+  //
+  // The primary still tears the session down, which is the case this guard was
+  // written for: if the token cannot authorize the account we trade on, the
+  // session really is dead and must be rebuilt.
+  if (act == AuthErrorAction::SkipAccount) {
+    logLine("auth-family error '" + errorCode +
+            "' while authorizing an EXTRA account — session kept, that account skipped");
+    return;
+  }
   logLine("auth-family broker error '" + errorCode + "' — closing session for reauth");
   ws_.close();
   authed_ = false;
@@ -309,6 +353,7 @@ bool ExecEngine::connectAndAuth() {
   accountIds_.push_back(primaryAccountLocked());
   for (size_t i = 1; i < requestedAccountIds_.size(); ++i) {
     const long long id = requestedAccountIds_[i];
+    ExtraAuthScope guard(authorizingExtra_);
     EngineResult r = authAccountLocked(id);
     if (r.ok) {
       accountIds_.push_back(id);
