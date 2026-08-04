@@ -124,3 +124,36 @@ test('only the SAME side is swept — a demo token cannot read a live account', 
   await runProtectionAuditAllAccounts(db, creds, { exec })
   assert.ok(!asked.includes('42993489'), 'the live account is not swept with demo credentials')
 })
+
+test('an UNAUDITABLE account is reported apart from a real failure', async () => {
+  // Demo 5268549's token does not cover it, so every pass returned
+  // CH_ACCESS_TOKEN_INVALID and the first deploy of this path parked
+  // protection_audit permanently in `error`. A controller that is always red
+  // is a controller nobody reads — the same defect fixed in the health panel
+  // hours earlier, reintroduced here.
+  //
+  // "The broker will not let us look" is a fact about ACCESS. "We looked and
+  // it went wrong" is a fact about PROTECTION. Only the second should fail the
+  // sweep.
+  seedPosition(A, 'EURUSD', '111', 1.05)
+  const exec = {
+    reconcile: async (c) => {
+      if (String(c.accountId) === B) throw new Error('cTrader error: CH_ACCESS_TOKEN_INVALID — Invalid access token')
+      return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
+    },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.errors.length, 0, 'an unreachable account is not an audit failure')
+  assert.equal(out.unauditable.length, 1)
+  assert.match(out.unauditable[0], new RegExp(B))
+  assert.equal(out.accounts, 1, 'and the reachable account was still audited')
+})
+
+test('a NON-auth failure on a reachable account still fails the sweep', async () => {
+  // The safe default: anything not a recognised authorisation refusal means
+  // we tried to check and could not, which is a protection question.
+  const exec = { reconcile: async () => { throw new Error('socket hang up') } }
+  const out = await runProtectionAuditAllAccounts(db, creds, { exec })
+  assert.equal(out.unauditable.length, 0)
+  assert.equal(out.errors.length, 2, 'both accounts report a real failure')
+})

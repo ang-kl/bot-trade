@@ -504,11 +504,21 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
 // account's rows against one account's positions marks the rest `unmatched` —
 // checked but never verified — which staging showed on 2026-07-29 as
 // "all protected" over four unaudited positions.
+// Broker refusals that mean "this credential cannot reach that account" —
+// never "that account is in trouble". Kept narrow on purpose: anything not
+// listed here is treated as a real audit failure, which is the safe default.
+const UNAUTHORISED_CODES = [
+  'CH_ACCESS_TOKEN_INVALID', 'CH_ACCESS_TOKEN_EXPIRED', 'ACCOUNT_NOT_AUTHORIZED',
+  'NOT_AUTHENTICATED', 'CH_CLIENT_AUTH_FAILURE',
+]
+const UNAUDITABLE_RE = new RegExp(UNAUTHORISED_CODES.join('|'))
+
 /**
- * @returns {{accounts:number, naked:number, targetless:number, phantom:number, errors:string[]}}
+ * @returns {{accounts:number, naked:number, targetless:number, phantom:number,
+ *            errors:string[], unauditable:string[]}}
  */
 export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [] }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [], unauditable: [] }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -565,7 +575,24 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
       out.targetless += prot.targetless.length
       out.phantom += prot.phantom.length
     } catch (err) {
-      out.errors.push(`${id}: ${err?.message || err}`)
+      const msg = String(err?.message || err)
+      // UNAUDITABLE IS NOT UNPROTECTED, and the difference decides whether
+      // this controller is worth reading.
+      //
+      // Demo 5268549's token does not cover it, so every pass returned
+      // CH_ACCESS_TOKEN_INVALID and the first deploy of this path parked
+      // protection_audit permanently in `error` — a controller that is always
+      // red is a controller nobody reads, which is the same defect fixed in
+      // the health panel hours earlier and reintroduced here by me.
+      //
+      // An account the broker refuses to authorise cannot be audited; that is
+      // a fact about ACCESS, not about whether anything is exposed. It is
+      // reported by name and separately, and does not on its own mark the
+      // sweep failed. A genuine audit failure on a REACHABLE account still
+      // does — because there, "we could not check" really does mean positions
+      // may be sitting unprotected.
+      if (UNAUDITABLE_RE.test(msg)) out.unauditable.push(`${id}: ${msg}`)
+      else out.errors.push(`${id}: ${msg}`)
     }
   }
   return out
