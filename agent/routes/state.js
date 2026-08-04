@@ -1098,6 +1098,26 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/config-proposals — C-1. What the record says the settings
+  // should be, with the arithmetic attached. READ-ONLY BY CONSTRUCTION: the
+  // controller has no write path and a test asserts it never gains one.
+  //
+  // Live accounts are excluded unless ?includeLive=1 — a controller's first
+  // published opinion should not be about the account that can lose real
+  // money, and reading it should be a decision.
+  // -----------------------------------------------------------------------
+  router.get('/config-proposals', async (req, res) => {
+    try {
+      const { configProposals } = await import('../services/config-controller.js')
+      res.json(configProposals(db, {
+        days: Number(req.query.days) || 30,
+        minSample: Number(req.query.minSample) || undefined,
+        includeLive: req.query.includeLive === '1' || req.query.includeLive === 'true',
+      }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/account-chrome — the account facts that belong in the page
   // frame rather than on a page (owner §5502·C).
   //
