@@ -472,3 +472,101 @@ export function lastProtectionAudit(db, { nowMs = Date.now(), expectedSec = 900,
     summary,
   }
 }
+
+// ---------------------------------------------------------------------------
+// PROTECTION AUDIT ON ITS OWN PATH — every enabled account, off the main loop.
+//
+// Operating Goal Plan §43, the one Non-Negotiable Rule:
+//
+//   "A position must never be considered safely managed merely because the
+//    main strategy loop is running. Protection, active management, broker
+//    reconciliation and emergency authority must each have their own
+//    functioning and observable path."
+//
+// The audit did not have one. It ran inside the loop's per-account reconcile
+// block, sharing a heartbeat with order_monitor, and both went stalled at the
+// same instant on 2026-08-04 — 961s old against a 314s expectation — because
+// the phase that carries them had not completed. §70.7 names this exact
+// failure: "Ensure the five-minute strategy loop is never the sole position
+// protector."
+//
+// This is that second path. It runs from the fast monitor, which has its own
+// 3-second ticker, its own overlap guard, and no dependency on the loop — it
+// is in fact where the loop's OWN watchdog lives, so it keeps running when
+// the loop is wedged. Cadence is a wall clock, not a tick count.
+//
+// The loop-side audit is deliberately LEFT IN PLACE. Two paths asking "is this
+// position still protected" is the point; the audit only reads and alerts, so
+// a duplicate pass costs a muted alert at worst, and §43 asks for redundancy
+// rather than a handover.
+//
+// Per-account, against that account's OWN broker snapshot. Auditing every
+// account's rows against one account's positions marks the rest `unmatched` —
+// checked but never verified — which staging showed on 2026-07-29 as
+// "all protected" over four unaudited positions.
+/**
+ * @returns {{accounts:number, naked:number, targetless:number, phantom:number, errors:string[]}}
+ */
+export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, errors: [] }
+  if (!baseCreds?.ready) return out
+
+  const exec = deps.exec ?? await import('../lib/exec-engine.js')
+  const { getEnabledAccounts } = await import('./account-registry.js')
+
+  let roster = []
+  try {
+    // One credential set reaches one host: a demo token cannot read a live
+    // account's positions, so only the same side is swept.
+    const isLive = !!baseCreds.isLive
+    roster = getEnabledAccounts(db)
+      .filter(a => (a.is_live === 1) === isLive)
+      .map(a => String(a.account_id))
+  } catch { roster = [] }
+
+  const primary = baseCreds.accountId != null ? String(baseCreds.accountId) : null
+  const ids = [...new Set([...(primary ? [primary] : []), ...roster])]
+  if (!ids.length) return out
+
+  const stmt = db.prepare(
+    `SELECT mp.id, mp.trade_id, mp.symbol, mp.current_sl, mp.account_id, mp.source,
+            t.ctrader_position_id
+       FROM monitored_positions mp
+       LEFT JOIN trades t ON t.id = mp.trade_id
+      WHERE mp.status = 'active' AND t.ctrader_position_id IS NOT NULL
+        AND (mp.account_id = ? OR mp.account_id IS NULL)`
+  )
+
+  for (const id of ids) {
+    try {
+      const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
+      if (!creds?.ready) continue
+      const rec = await exec.reconcile(creds)
+      const positions = rec?.position || []
+      const openRows = stmt.all(String(id))
+      // No local rows AND no broker positions is a genuinely clean account —
+      // but a broker position with no local row is exactly what the audit is
+      // for, so an empty openRows does not skip the pass.
+      if (!openRows.length && !positions.length) { out.accounts++; continue }
+      const brokerSl = positions.map(p => ({
+        positionId: p.positionId,
+        stopLoss: p.stopLoss ?? null,
+        takeProfit: p.takeProfit ?? null,
+      }))
+      let sendMessage = null
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        sendMessage = (await import('./telegram.js')).sendMessage
+      }
+      const prot = await runProtectionAudit(db, openRows, brokerSl, {
+        sendMessage, accountId: id, ...(deps.auditOpts || {}),
+      })
+      out.accounts++
+      out.naked += prot.naked.length
+      out.targetless += prot.targetless.length
+      out.phantom += prot.phantom.length
+    } catch (err) {
+      out.errors.push(`${id}: ${err?.message || err}`)
+    }
+  }
+  return out
+}
