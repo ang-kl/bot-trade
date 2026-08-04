@@ -28,10 +28,16 @@ function skip(db, { stage, reason = null, accountId = null, at = insideDay() }) 
               VALUES (?,?,?,?,?,?)`).run(accountId, 'EURUSD', stage, 'skip', reason, at)
 }
 
-function gate(db, { approved, reason = null, at = insideDay() }) {
-  db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, created_at)
-              VALUES (?,?,?,?,?)`).run('EURUSD', 'buy', approved ? 1 : 0, reason, at)
+function gate(db, { approved, reason = null, at = insideDay(), accountId = null, symbol = 'EURUSD', checks = null }) {
+  db.prepare(`INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, account_id, created_at)
+              VALUES (?,?,?,?,?,?,?)`)
+    .run(symbol, 'buy', approved ? 1 : 0, reason, checks ? JSON.stringify(checks) : null, accountId, at)
 }
+
+const approve = (db, o) => gate(db, { ...o, approved: true })
+
+/** A refusal that happens AFTER the gate approved — loud, not silent. */
+const resolve = (db, o) => gate(db, { ...o, approved: false, checks: { post_approval: true } })
 
 test('scans ran and nothing set up reads as no_signal, not as a blocked gate', () => {
   const db = initDB(':memory:')
@@ -139,8 +145,24 @@ test('account scoping includes NULL-stamped rows, per the scoped-read convention
   const a = auditDecisions(db, { accountId: '46130058' })
   assert.equal(a.considered, 2, 'own rows plus unstamped rows, never another account\'s')
   assert.equal(a.scope, 'account 46130058')
-  // And the gate numbers must SAY they are not scoped rather than imply they are.
-  assert.match(a.gateScope, /no account column/)
+})
+
+test('§70.8 THE GATE IS SCOPED TOO — it was comparing every account\'s approvals', () => {
+  // This module used to assert, here and in `gateScope`, that risk_events
+  // carries no account column. It does: the M1a migration adds one to thirteen
+  // tables (db.js:954-964) and persistRiskEvent has written it ever since. So
+  // an audit asked about ONE account measured that account's trades against
+  // EVERY account's approvals — which manufactures silent drops out of a
+  // perfectly healthy portfolio, the exact false alarm this module exists not
+  // to raise. The old test encoded the wrong claim and passed for years.
+  const db = initDB(':memory:')
+  approve(db, { symbol: 'EURUSD', accountId: '46130058' })
+  approve(db, { symbol: 'XAUUSD', accountId: '99999999' })
+  approve(db, { symbol: 'GBPUSD', accountId: '99999999' })
+  const a = auditDecisions(db, { accountId: '46130058' })
+  assert.equal(a.approved, 1, 'only this account\'s approvals')
+  assert.equal(a.gateScope, 'account 46130058')
+  assert.equal(auditDecisions(db).approved, 3, 'and unscoped still sees them all')
 })
 
 // ---------------------------------------------------------------------------
@@ -227,4 +249,83 @@ test('sanitising merges reasons that share a guard, instead of listing it twice'
   assert.equal(over[0].n, 5, 'and carry the merged count')
   // And the merged entry must re-sort above the smaller one.
   assert.equal(v.topVetoes[0].guard, 'overexposed_USD')
+})
+
+// ---------------------------------------------------------------------------
+// §70.8 — a refusal with a reason is not a silent drop
+// ---------------------------------------------------------------------------
+
+test('a post-approval refusal is ACCOUNTED FOR, not counted as a silent drop', () => {
+  // The production reading that started §70.8: "96 approved at the gate but
+  // only 79 order(s)/trade(s) exist — 17 approval(s) went nowhere". A proposal
+  // that clears the gate can still be refused downstream — under the broker
+  // minimum, spread blown out, idempotency window, broker rejection — and each
+  // of those writes a SECOND risk_events row while the approved row stays.
+  // Subtracting landed from approved counted every one as unexplained.
+  const db = initDB(':memory:')
+  approve(db, {})
+  resolve(db, { reason: 'spread_too_wide: 0.00042 > 30% of SL distance 0.00110' })
+  const a = auditDecisions(db)
+  assert.equal(a.approved, 1)
+  assert.equal(a.resolutions, 1)
+  assert.equal(a.silentDrops, 0, 'it went somewhere loud, one row below')
+  assert.notEqual(a.verdict, VERDICTS.SILENT_DROP)
+})
+
+test('an ORDINARY veto is still not a resolution — only post-approval ones are', () => {
+  // A gate veto never had an approval to resolve. Counting it would let a day
+  // of pure rejections mask a real drop.
+  const db = initDB(':memory:')
+  approve(db, {})
+  gate(db, { approved: false, reason: 'daily_loss_limit_hit' })
+  const a = auditDecisions(db)
+  assert.equal(a.resolutions, 0)
+  assert.equal(a.silentDrops, 1, 'the approval is still unaccounted for')
+  assert.equal(a.verdict, VERDICTS.SILENT_DROP)
+})
+
+test('a REAL silent drop still fires — the alarm was made accurate, not quieter', () => {
+  const db = initDB(':memory:')
+  approve(db, {})
+  approve(db, {})
+  resolve(db, { reason: 'below_min_volume: 0.01 lots' })
+  const a = auditDecisions(db)
+  assert.equal(a.silentDrops, 1)
+  assert.equal(a.verdict, VERDICTS.SILENT_DROP)
+  assert.match(a.because, /nothing recorded/)
+  assert.equal(shouldAlert(a)?.level, 'error')
+})
+
+test('the reason for each downstream refusal is reported, not just the count', () => {
+  // "17 went nowhere" was unactionable. Naming what refused them is the point.
+  const db = initDB(':memory:')
+  approve(db, {}); approve(db, {})
+  resolve(db, { reason: 'below_min_volume: 0.01 lots' })
+  resolve(db, { reason: 'symbol_id_unknown: 0700.HK is not in symbol_id_map' })
+  const a = auditDecisions(db)
+  assert.equal(a.resolutions, 2)
+  assert.deepEqual(a.topResolutions.map(r => r.n), [1, 1])
+  assert.match(toText(a), /refused after approval/)
+})
+
+test('the public projection publishes the COUNT and never the reasons', () => {
+  // Same boundary as topVetoes: reasons carry prices, sizes and order ids.
+  const db = initDB(':memory:')
+  approve(db, {})
+  resolve(db, { reason: 'below_min_volume: 0.42 lots (4200) < broker minimum 10000' })
+  const pub = publicPipelineView(auditDecisions(db))
+  assert.equal(pub.resolutions, 1)
+  assert.equal(JSON.stringify(pub).includes('0.42'), false)
+  assert.equal(JSON.stringify(pub).includes('topResolutions'), false)
+})
+
+test('a healthy day reads as traded and SAYS how many were refused downstream', () => {
+  const db = initDB(':memory:')
+  approve(db, {}); approve(db, {})
+  resolve(db, { reason: 'duplicate_submission: trade #12 already recorded' })
+  db.prepare(`INSERT INTO trades (symbol, side, opened_at) VALUES (?,?,?)`)
+    .run('EURUSD', 'buy', insideDay(2))
+  const a = auditDecisions(db)
+  assert.equal(a.verdict, VERDICTS.TRADED)
+  assert.match(a.because, /1 refused downstream/)
 })

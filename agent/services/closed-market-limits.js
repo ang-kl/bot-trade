@@ -191,7 +191,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     digits = meta.digits ?? 5
     sized = sizing.lotsToVolume(volLots, meta)
     if (sized.belowMin) {
-      risk.persistRiskEvent(db, proposal, { approved: false, veto_reason: `below_min_volume: ${volLots} lots` })
+      risk.persistPostApprovalVeto(db, proposal, `below_min_volume: ${volLots} lots`)
       return { skipped: 'below_min_volume' }
     }
   } catch (err) {
@@ -241,7 +241,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     notify(`⏳ Closed-market LIMIT placed: ${symbol} ${synth.timeframe || ''} ${side} @ ${payload.limitPrice}, SL ${synth.sl}, TP ${synth.tp1} — fills at open`)
     return { placed: true, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString() }
   } catch (err) {
-    risk.persistRiskEvent(db, proposal, { approved: false, veto_reason: `closed_market_limit_failed: ${err.message}` })
+    risk.persistPostApprovalVeto(db, proposal, `closed_market_limit_failed: ${err.message}`)
     return { skipped: 'place_failed', reason: err.message }
   }
 }

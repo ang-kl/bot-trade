@@ -1135,6 +1135,36 @@ function veto(reason, checks) {
 }
 
 /**
+ * §70.8 — mark a refusal that happens AFTER the gate already approved.
+ *
+ * WHY THIS EXISTS. A proposal that clears the risk gate can still be refused
+ * downstream: the sized volume falls under the broker minimum, the spread has
+ * blown out, the idempotency window catches a duplicate, the broker rejects
+ * the order. Each of those writes a SECOND risk_events row with approved = 0,
+ * and the original approved row stays exactly where it was.
+ *
+ * decision-audit then computed `silentDrops = approved − landed` and counted
+ * every one of them as an approval that "went nowhere". They did not go
+ * nowhere. They went somewhere loud, with a named reason, one row below. A
+ * silent drop is an approval nobody can account for, and an alert that cannot
+ * tell those two apart is an alert that cries wolf — the exact failure that
+ * module's own header warns against, after a receipt double-count produced
+ * "135 approvals went nowhere" on its first production reading.
+ *
+ * So a post-approval refusal now says so, in the same place receipts do.
+ */
+export const POST_APPROVAL_FLAG = 'post_approval'
+
+/** Persist a refusal that RESOLVES an approval the gate already granted. */
+export function persistPostApprovalVeto(db, proposal, reason, checks = {}) {
+  return persistRiskEvent(db, proposal, {
+    approved: false,
+    veto_reason: reason,
+    checks: { ...checks, [POST_APPROVAL_FLAG]: true },
+  })
+}
+
+/**
  * Persist a risk evaluation to the risk_events audit table.
  */
 export function persistRiskEvent(db, proposal, result) {

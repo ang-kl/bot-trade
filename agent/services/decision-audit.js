@@ -103,6 +103,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     verdict: VERDICTS.IDLE, because: 'no decision records for this FX day', scope,
     sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0,
     tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
+    resolutions: 0, accountedFor: 0, topResolutions: [],
     silentDrops: 0, topVetoes: [], topSkipStages: [],
     quietMinutes: null, at,
   }
@@ -134,10 +135,6 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     `).all(dayStart, ...acctArgs)
     const skips = upstream.filter(r => r.decision === 'skip' || r.decision === 'veto')
 
-    // risk_events carries no account column, so a per-account view of the
-    // GATE is not available and must not be implied. Said in `gateScope`
-    // rather than silently returning portfolio numbers under an account
-    // heading — the mistake this whole module exists to stop.
     // PLACEMENT RECEIPTS ARE NOT GATE DECISIONS.
     //
     // Found by this module's FIRST production reading, 2026-08-03: it reported
@@ -153,15 +150,40 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     //
     // So receipts are separated out. They are not decisions; they are
     // EVIDENCE that a decision landed, and they are counted as such.
+    //
+    // §70.8 — AND A POST-APPROVAL REFUSAL IS NOT A SILENT DROP EITHER.
+    //
+    // The same arithmetic had a second false positive, and this one was worse
+    // because it fires on ordinary days. A proposal that clears the gate can
+    // still be refused downstream — sized volume under the broker minimum, the
+    // spread blown out, the idempotency window catching a duplicate, the broker
+    // rejecting the order. Each writes a SECOND risk_events row with
+    // approved = 0, and the approved row stays. `approved − landed` then counts
+    // every one of them as an approval that "went nowhere".
+    //
+    // They did not go nowhere. They went somewhere loud, with a named reason,
+    // one row below. Those refusals now carry `post_approval: true`
+    // (risk.js persistPostApprovalVeto) and are counted as RESOLUTIONS.
+    //
+    // AND THE GATE IS ACCOUNT-SCOPED NOW. This module used to state, in a
+    // comment and in the `gateScope` field, that risk_events carries no account
+    // column. It does — the M1a migration adds one to thirteen tables
+    // (db.js:954-964) and persistRiskEvent has written it ever since. So an
+    // audit asked about ONE account compared that account's trades against
+    // EVERY account's approvals, which manufactures silent drops out of a
+    // healthy portfolio. The claim was wrong, the scoping was missing, and the
+    // two together produced exactly the alarm this module exists not to raise.
     const gate = db.prepare(`
-      SELECT approved, veto_reason,
+      SELECT approved, veto_reason, symbol, side,
              CASE WHEN checks_json LIKE '%_placed":true%'
                     OR checks_json LIKE '%_placed": true%' THEN 1 ELSE 0 END AS is_receipt,
+             CASE WHEN checks_json LIKE '%"post_approval":true%'
+                    OR checks_json LIKE '%"post_approval": true%' THEN 1 ELSE 0 END AS is_resolution,
              COUNT(*) AS n
         FROM risk_events
-       WHERE REPLACE(created_at, 'T', ' ') >= ?
-       GROUP BY approved, veto_reason, is_receipt
-    `).all(dayStart)
+       WHERE REPLACE(created_at, 'T', ' ') >= ?${acctSql}
+       GROUP BY approved, veto_reason, symbol, side, is_receipt, is_resolution
+    `).all(dayStart, ...acctArgs)
 
     const placementReceipts = gate
       .filter(r => int(r.approved) === 1 && int(r.is_receipt) === 1)
@@ -170,6 +192,14 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       .filter(r => int(r.approved) === 1 && int(r.is_receipt) !== 1)
       .reduce((a, r) => a + int(r.n), 0)
     const vetoed = gate.filter(r => int(r.approved) !== 1).reduce((a, r) => a + int(r.n), 0)
+    // Approvals that a downstream refusal already accounted for.
+    const resolutions = gate
+      .filter(r => int(r.approved) !== 1 && int(r.is_resolution) === 1)
+      .reduce((a, r) => a + int(r.n), 0)
+    const topResolutions = topBy(
+      gate.filter(r => int(r.approved) !== 1 && int(r.is_resolution) === 1),
+      r => r.veto_reason || 'unspecified',
+    )
     const reachedGate = approved + vetoed
     const skipped = skips.reduce((a, r) => a + int(r.n), 0)
     // `considered` is EVERYTHING the pipeline looked at — proceeds included.
@@ -204,7 +234,10 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // counts toward landed even if the pending_orders row has since been
     // filled, cancelled or pruned out of the day's window.
     const landed = Math.max(tradesOpened + pending, placementReceipts)
-    const silentDrops = Math.max(0, approved - landed)
+    // ACCOUNTED FOR = it landed, or something said out loud why it did not.
+    // What remains is the only thing worth the word "silent".
+    const accountedFor = landed + resolutions
+    const silentDrops = Math.max(0, approved - accountedFor)
 
     const topVetoes = topBy(gate.filter(r => int(r.approved) !== 1), r => r.veto_reason || 'unspecified')
     const topSkipStages = topBy(skips, r => (r.reason ? `${r.stage}:${r.reason}` : r.stage))
@@ -237,10 +270,10 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     let verdict, because
     if (silentDrops > 0) {
       verdict = VERDICTS.SILENT_DROP
-      because = `${approved} approved at the gate but only ${landed} order(s)/trade(s) exist — ${silentDrops} approval(s) went nowhere`
+      because = `${approved} approved at the gate; ${landed} landed and ${resolutions} were refused downstream with a reason — ${silentDrops} approval(s) went nowhere with nothing recorded`
     } else if (landed > 0) {
       verdict = VERDICTS.TRADED
-      because = `${landed} order(s)/trade(s) from ${approved} approval(s)`
+      because = `${landed} order(s)/trade(s) from ${approved} approval(s)${resolutions ? ` (${resolutions} refused downstream, each with a reason)` : ''}`
     } else if (reachedGate > 0) {
       verdict = VERDICTS.BLOCKED
       // guardName, not the raw reason: `because` is published verbatim in the
@@ -266,10 +299,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       verdict, because, scope, sinceFxDayOpen: true,
       considered, reachedGate, approved, vetoed,
       tradesOpened, pendingOrders: pending, placementReceipts, landed,
+      resolutions, accountedFor, topResolutions,
       silentDrops, topVetoes, topSkipStages, quietMinutes, at,
-      // Stated, not implied: risk_events has no account column, so gate
-      // numbers are portfolio-wide even when the skip numbers are scoped.
-      gateScope: 'all accounts (risk_events carries no account column)',
+      gateScope: scope,
     }
   } catch (err) {
     // An auditor that throws would take down the loop phase it runs in. It
@@ -352,6 +384,8 @@ export function publicPipelineView(audit) {
     trades: audit.tradesOpened,
     pending: audit.pendingOrders,
     landed: audit.landed,
+    // Counts only, same as every field around it — the reasons stay owner-only.
+    resolutions: audit.resolutions ?? 0,
     silentDrops: audit.silentDrops,
     // Stage names and guard names only, each reduced to its identifier by
     // guardName(). `topSkipStages` keys are "stage:reason" — the stage is
@@ -392,8 +426,9 @@ export function toText(audit) {
   const bits = [
     `verdict ${audit.verdict}`,
     audit.because,
-    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.landed} (${audit.tradesOpened} trade(s), ${audit.pendingOrders} pending)`,
+    `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.landed} (${audit.tradesOpened} trade(s), ${audit.pendingOrders} pending) · ${audit.resolutions ?? 0} refused downstream`,
   ]
+  if (audit.topResolutions?.length) bits.push(`refused after approval: ${audit.topResolutions.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topSkipStages?.length) bits.push(`upstream: ${audit.topSkipStages.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topVetoes?.length) bits.push(`vetoes: ${audit.topVetoes.map(s => `${s.key} ${s.n}`).join(', ')}`)
   return bits.join('\n')

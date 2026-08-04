@@ -363,12 +363,12 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       sized = sizing.lotsToVolume(volLots, meta)
       if (sized.belowMin) {
         const reason = `below_min_volume: ${volLots} lots (${sized.volume}) < broker minimum ${meta.minVolume}`
-        risk.persistRiskEvent(db, proposal, { approved: false, veto_reason: reason })
+        risk.persistPostApprovalVeto(db, proposal, reason)
         summary.skipped.push(`${symbol}: ${reason}`)
         continue
       }
     } catch (err) {
-      risk.persistRiskEvent(db, proposal, { approved: false, veto_reason: `sizing_failed: ${err.message}` })
+      risk.persistPostApprovalVeto(db, proposal, `sizing_failed: ${err.message}`)
       summary.skipped.push(`${symbol}: sizing failed — ${err.message}`)
       continue
     }
@@ -446,7 +446,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       })
       log(`${symbol} ${timeframe}: LIMIT ${side} placed @ ${signal.entry} orderId=${orderId}`)
     } catch (err) {
-      risk.persistRiskEvent(db, proposal, { approved: false, veto_reason: `pending_order_failed: ${err.message}` })
+      risk.persistPostApprovalVeto(db, proposal, `pending_order_failed: ${err.message}`)
       summary.skipped.push(`${symbol}: place failed — ${err.message}`)
       log(`${symbol}: LIMIT placement FAILED — ${err.message}`)
     }
