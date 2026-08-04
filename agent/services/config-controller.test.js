@@ -13,6 +13,7 @@ import {
   accountEconomics, requiredPayoff, proposeForAccount, configProposals,
   MIN_SAMPLE, TARGET_PF, RULES,
   newDangerProposals, dangerAlertText,
+  MIN_LOSING_TRADES_PER_DAY,
 } from './config-controller.js'
 
 function fresh() {
@@ -186,11 +187,30 @@ test('a daily cap smaller than one average loss is DANGER', () => {
 test('a roomy daily cap is left alone', () => {
   const db = fresh()
   seed(db, { avgWin: 100, avgLoss: 200 })
-  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30, dailyLossPct: 0.18 })
+  // perTradeRiskPct is EXPLICIT here, and has to be. This fixture used to
+  // inherit the 0.05 default, under which an 18% daily cap is only 3.6
+  // full-risk losses wide — and daily_cap_vs_permitted_risk correctly said so,
+  // failing a test whose point was the OTHER rule. The two knobs have to be
+  // set together to mean anything, which is the finding that rule exists for.
+  cfg(db, '46130058', { minRR: 3.5, allowNegativeExpectancyOverride: false, minTradesForKelly: 30, dailyLossPct: 0.18, perTradeRiskPct: 0.01 })
   assert.equal(
     proposeForAccount(db, '46130058', { balance: 50000 }).proposals.some(p => p.setting === 'dailyLossPct'),
     false,
   )
+})
+
+test('THE PRODUCTION SHAPE: 5% per trade under a 3% daily cap contradicts itself', () => {
+  // Measured 05-08-2026: perTradeRiskPct defaults to 0.05 and dailyLossPct is
+  // 0.03. One full-risk trade may lose MORE than the entire day's budget —
+  // 0.6 losing trades and the account stops. That is not a brake, it is a
+  // guarantee of `daily_loss_limit_hit`, which was 11,946 vetoes in a week.
+  const db = fresh()
+  seed(db, { avgWin: 100, avgLoss: 200 })
+  cfg(db, '46130058', { dailyLossPct: 0.03, perTradeRiskPct: 0.05 })
+  const p = proposeForAccount(db, '46130058', { balance: 46072.92 })
+    .proposals.find(x => x.setting === 'dailyLossPct')
+  assert.ok(p, 'the contradiction must be reported')
+  assert.match(p.why, /0\.6 losing trades/)
 })
 
 test('every rule is a callable that tolerates an empty world', () => {
@@ -276,4 +296,91 @@ test('an empty or malformed report is silent, never a throw', () => {
   assert.deepEqual(newDangerProposals(null, null, st).fresh, [])
   assert.deepEqual(newDangerProposals(null, { accounts: [] }, st).fresh, [])
   assert.deepEqual(newDangerProposals(null, { accounts: [{ accountId: 'x' }] }, st).fresh, [])
+})
+
+// ---------------------------------------------------------------------------
+// DAILY CAP vs PERMITTED RISK. Owner, 05-08-2026: "dailyLossPct must be
+// calibrated with account sizing."
+//
+// The older daily_cap_smaller_than_one_loss rule compares the cap to avgLoss,
+// and on 04-08-2026 it was satisfied on every account while
+// daily_loss_limit_hit was still the second-largest guard at 11,946 vetoes.
+// Average loss is backward-looking and cannot see the trade that spends the
+// whole day's budget by itself.
+// ---------------------------------------------------------------------------
+
+const capRule = RULES.find(r => r.key === 'daily_cap_vs_permitted_risk')
+const ECON = (over = {}) => ({ trades: 210, winRate: 0.3, avgWin: 385, avgLoss: 192, maxLoss: 400, ...over })
+
+test('a cap that allows fewer than five full-risk losses is flagged', () => {
+  // 46072.92 × 0.03 = 1382.19 cap; 1% per trade = 460.73 → exactly 3 losses.
+  const p = capRule.evaluate({
+    econ: ECON(), balance: 46072.92,
+    config: { dailyLossPct: 0.03, perTradeRiskPct: 0.01 },
+  })
+  assert.equal(p.setting, 'dailyLossPct')
+  assert.equal(p.proposed, 0.05, 'five losses × 1% per trade')
+  assert.match(p.why, /3\.0 losing trades/)
+  assert.match(p.why, /caps variance rather than risk/)
+})
+
+test('a cap wide enough for five losses is left alone', () => {
+  assert.equal(capRule.evaluate({
+    econ: ECON(), balance: 46072.92,
+    config: { dailyLossPct: 0.06, perTradeRiskPct: 0.01 },
+  }), null)
+})
+
+test('THE JPN225 CASE: one trade past the whole cap is the STRONGER finding', () => {
+  // 04-08-2026: JPN225 lost 2,681.29 against a 1,382 daily cap. The rule must
+  // NOT respond by proposing a bigger cap — that hides a sizing failure.
+  const p = capRule.evaluate({
+    econ: ECON({ maxLoss: 2681.29 }), balance: 46072.92,
+    config: { dailyLossPct: 0.03, perTradeRiskPct: 0.01 },
+  })
+  assert.equal(p.severity, 'danger')
+  assert.equal(p.setting, 'perTradeRiskPct', 'the sizing is the problem, not the cap')
+  assert.match(p.why, /2681\.29 against a daily cap of 1382\.19/)
+  assert.match(p.why, /Raising the daily cap would hide this/)
+})
+
+test('the oversize-trade check runs BEFORE the too-few-losses one', () => {
+  // Both conditions hold here. The stronger, differently-actioned finding has
+  // to win, or the operator is told to raise a cap that a single trade has
+  // already blown through.
+  const p = capRule.evaluate({
+    econ: ECON({ maxLoss: 5000 }), balance: 46072.92,
+    config: { dailyLossPct: 0.03, perTradeRiskPct: 0.01 },
+  })
+  assert.equal(p.setting, 'perTradeRiskPct')
+})
+
+test('it says nothing when a knob it needs is missing', () => {
+  const base = { econ: ECON(), balance: 46072.92, config: { dailyLossPct: 0.03, perTradeRiskPct: 0.01 } }
+  assert.equal(capRule.evaluate({ ...base, config: { dailyLossPct: 0.03 } }), null, 'no per-trade risk to compare')
+  assert.equal(capRule.evaluate({ ...base, config: { perTradeRiskPct: 0.01 } }), null, 'no cap')
+  assert.equal(capRule.evaluate({ ...base, balance: 0 }), null)
+  assert.equal(capRule.evaluate({ ...base, econ: ECON({ maxLoss: null }), config: { dailyLossPct: 0.06, perTradeRiskPct: 0.01 } }), null)
+})
+
+test('accountEconomics reports the WORST loss, not only the average', () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, status, opened_at, closed_at, net_pnl, account_id)
+    VALUES ('JPN225','SELL',1,'closed',datetime('now'),datetime('now'),?,'46130058')
+  `)
+  for (const p of [-100, -200, -2681.29, 400]) ins.run(p)
+  const e = accountEconomics(db, '46130058')
+  assert.equal(e.maxLoss, 2681.29)
+  assert.ok(e.avgLoss < e.maxLoss, 'the average hides it — that is the whole point')
+})
+
+test('an account with no losses has no maxLoss, and nothing is invented', () => {
+  const db = initDB(':memory:')
+  db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, status, opened_at, closed_at, net_pnl, account_id)
+    VALUES ('EURUSD','BUY',1,'closed',datetime('now'),datetime('now'),50,'46130058')
+  `).run()
+  assert.equal(accountEconomics(db, '46130058').maxLoss, null)
+  assert.equal(accountEconomics(db, 'nobody').maxLoss, null)
 })
