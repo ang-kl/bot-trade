@@ -417,6 +417,46 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       } catch (err) {
         console.error('[fast-monitor] profit-ratchet failed:', err.message)
       }
+      // PROTECTION AUDIT — Operating Goal Plan §43, the Non-Negotiable Rule:
+      // protection must have its OWN functioning and observable path, not a
+      // seat on the strategy loop.
+      //
+      // It had one home, inside the loop's per-account reconcile block, where
+      // it shared a phase with order_monitor. On 2026-08-04 both went stalled
+      // at the same instant — 961s old against a 314s expectation — because
+      // that one phase had not completed. For sixteen minutes nothing asked
+      // whether the open positions still had stops at the broker, and the only
+      // layer still working was the broker's own.
+      //
+      // This path does not depend on the loop. The fast monitor has its own
+      // 3s ticker and its own overlap guard, and it is where the loop's
+      // watchdog lives — so it keeps auditing precisely when the loop is the
+      // thing that broke. §70.7: the five-minute loop is never the sole
+      // position protector.
+      try {
+        if (creds?.ready) {
+          const { runProtectionAuditAllAccounts } = await import('./naked-position-guard.js')
+          const pa = await runProtectionAuditAllAccounts(db, creds, deps)
+          if (pa.naked || pa.targetless || pa.phantom) {
+            console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
+          }
+          if (pa.errors.length) console.error(`[fast-monitor] protection audit errors: ${pa.errors.join(' · ')}`)
+          // BEAT ON THIS PATH TOO. The controller is what tells the operator
+          // protection is being checked; if only the loop could beat it, this
+          // path could run perfectly while the panel still read "stalled".
+          const hb = deps.heartbeat ?? await import('./heartbeat.js')
+          hb.beat(db, 'protection_audit', {
+            ok: pa.errors.length === 0,
+            error: pa.errors.length ? pa.errors.join(' · ') : null,
+          })
+        }
+      } catch (err) {
+        console.error('[fast-monitor] protection-audit failed:', err.message)
+        try {
+          const hb = deps.heartbeat ?? await import('./heartbeat.js')
+          hb.beat(db, 'protection_audit', { ok: false, error: err.message })
+        } catch { /* heartbeat is best-effort */ }
+      }
     }
     try {
       const hb = deps.heartbeat ?? await import('./heartbeat.js')
