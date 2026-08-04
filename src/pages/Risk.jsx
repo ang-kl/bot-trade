@@ -10,6 +10,7 @@
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import AccountSettingsScope from '../components/AccountSettingsScope.jsx'
 import RiskMatrix from '../components/RiskMatrix.jsx'
+import ConfigProposals from '../components/ConfigProposals.jsx'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -533,6 +534,10 @@ export default function Risk() {
           table because one account's numbers at a time could not answer
           "which account runs tighter, and where". */}
       <RiskMatrix />
+      {/* C-1 sits directly under the matrix: the matrix says what the settings
+          ARE, this says what the record thinks they should be. Reading them
+          apart was the whole reason minRR 1.5 survived a 34% win rate. */}
+      <ConfigProposals />
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
       {/* /actions/balance takes no accountId — one stored balance and leverage
