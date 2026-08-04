@@ -1250,3 +1250,18 @@ textarea {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
+
+/* The Risk page's proposal rows deep-link to the field they control (owner
+   2026-08-04: "a small triangle to show where it is located below"). A silent
+   scroll is easy to miss on a page this dense, so the target says so briefly.
+   Ring rather than background: a background change on a form field reads as a
+   validation state, which this is not. */
+.risk-jump-target {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: outline-color 400ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .risk-jump-target { transition: none; }
+}

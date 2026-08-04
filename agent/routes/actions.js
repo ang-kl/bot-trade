@@ -9,6 +9,7 @@ import { getCtraderCreds, getSymbolMap, ensureSymbolMap } from '../lib/ctrader-c
 import { ctraderEnv } from '../lib/ctrader-env.js'
 import { normPosId } from '../lib/pos-id.js'
 import { DEFAULT_RISK_CONFIG, loadRiskConfig, evaluateTrade, persistRiskEvent } from '../services/risk.js'
+import { noteRiskConfigChanges } from '../services/risk-config-history.js'
 import { wsGetTrendbarsBatch, wsGetSpotOnce } from '../lib/ctrader-ws.js'
 import { getActiveSessions, isSymbolMarketOpen } from '../lib/sessions.js'
 import { encodeLabel, parseLabel, convictionBucket, LABEL_VERSION } from '../lib/trade-labels.js'
@@ -3954,10 +3955,12 @@ export default function actionsRouter(db) {
         }
         let overlay = {}
         try { overlay = JSON.parse(getState(db, key) || '{}') || {} } catch { overlay = {} }
+        const beforeOverlay = { ...overlay }
         for (const k of allowed) {
           if (k in body) overlay[k] = body[k]
         }
         setState(db, key, JSON.stringify(overlay))
+        noteRiskConfigChanges(db, beforeOverlay, overlay, { accountId: acctId, by: 'manual' })
         console.log(`[actions] Risk overlay updated for account ${acctId}:`, overlay)
         return res.json({ ok: true, accountId: acctId, overlay, effective: loadRiskConfig(db, acctId) })
       }
@@ -3971,6 +3974,11 @@ export default function actionsRouter(db) {
         if (k in body) next[k] = body[k]
       }
       setState(db, 'risk_config_json', JSON.stringify(next))
+      // WHEN did each field last actually change? The Risk page's summary
+      // claimed "the settings below hold these values now" without ever
+      // reading them back, so a field edited after an apply left the row
+      // asserting a number that was no longer there.
+      noteRiskConfigChanges(db, current, next, { by: 'manual' })
       console.log('[actions] Risk config updated:', next)
       res.json({ ok: true, effective: next })
     } catch (err) {
@@ -4070,7 +4078,9 @@ export default function actionsRouter(db) {
       // reach this install).
       let rawOverrides = {}
       try { rawOverrides = JSON.parse(getState(db, 'risk_config_json') || '{}') || {} } catch { rawOverrides = {} }
+      const beforeEffective = loadRiskConfig(db)
       setState(db, 'risk_config_json', JSON.stringify({ ...rawOverrides, ...patch }))
+      noteRiskConfigChanges(db, beforeEffective, { ...beforeEffective, ...patch }, { by: 'reassess' })
       markApplied(db, Object.keys(patch))
       try {
         db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(

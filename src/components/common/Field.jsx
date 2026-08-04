@@ -93,13 +93,18 @@ function DurationField({ value, onChange, onCommit, placeholder }) {
 export default function Field({
   label, value, onChange, onCommit = null, pct = false, unit, hint, recommend,
   placeholder = 'not set', duration = false, min, max, step = 'any', applied = false,
+  // §Risk-page deep links (owner 2026-08-04). The proposal table's ▸ jumps
+  // here by config key, so the anchor has to live on the field itself rather
+  // than on a section heading — "Daily loss limit" and the row that changed it
+  // must be the same thing, not two places that agree by convention.
+  anchor = null,
 }) {
   const [showHint, setShowHint] = useState(false)
   const display = value == null ? '' : pct ? Number((value * 100).toFixed(4)) : value
   const isDefault = typeof label === 'string' && label.endsWith(DEFAULT_MARK)
   const text = isDefault ? label.slice(0, -DEFAULT_MARK.length) : label
   return (
-    <div className="text-[9px]">
+    <div className="text-[9px]" id={anchor ? `risk-${anchor}` : undefined}>
       <label className="flex items-center justify-between gap-2">
         <span className="text-[var(--color-text-sub)] min-w-0 leading-tight">
           {text}
