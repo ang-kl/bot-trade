@@ -9,6 +9,7 @@
 // /actions/vpo-settings, /actions/close-all.
 import SectionNavFab from '../components/common/SectionNavFab.jsx'
 import AccountSettingsScope from '../components/AccountSettingsScope.jsx'
+import RiskMatrix from '../components/RiskMatrix.jsx'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Card from '../components/common/Card.jsx'
 import Badge from '../components/common/Badge.jsx'
@@ -499,6 +500,12 @@ export default function Risk() {
           </div>
         )
       })()}
+
+      {/* The whole grid, global + per account, before the single-account
+          editors below. Owner 2026-08-04: the Account card became a summary
+          table because one account's numbers at a time could not answer
+          "which account runs tighter, and where". */}
+      <RiskMatrix />
 
       {/* ---- Global Account aka cTrader Risk Configuration ---- */}
       {/* /actions/balance takes no accountId — one stored balance and leverage
