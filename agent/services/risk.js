@@ -1168,7 +1168,10 @@ export function persistPostApprovalVeto(db, proposal, reason, checks = {}) {
  * Persist a risk evaluation to the risk_events audit table.
  */
 export function persistRiskEvent(db, proposal, result) {
-  db.prepare(
+  // §70.9: RETURNS THE ROW ID. Callers thread it onto the trade or pending
+  // order the approval produces, which is what turns "17 approvals went
+  // nowhere" from a subtraction into a list of rows.
+  const info = db.prepare(
     `INSERT INTO risk_events (symbol, side, approved, veto_reason, checks_json, proposal_json, account_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
@@ -1189,4 +1192,5 @@ export function persistRiskEvent(db, proposal, result) {
     proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null),
     new Date().toISOString()
   )
+  return info?.lastInsertRowid ?? null
 }

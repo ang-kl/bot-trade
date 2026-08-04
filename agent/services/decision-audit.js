@@ -103,7 +103,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     verdict: VERDICTS.IDLE, because: 'no decision records for this FX day', scope,
     sinceFxDayOpen: true, considered: 0, reachedGate: 0, approved: 0, vetoed: 0,
     tradesOpened: 0, pendingOrders: 0, placementReceipts: 0, landed: 0,
-    resolutions: 0, accountedFor: 0, topResolutions: [],
+    resolutions: 0, accountedFor: 0, topResolutions: [], droppedApprovals: [],
     silentDrops: 0, topVetoes: [], topSkipStages: [],
     quietMinutes: null, at,
   }
@@ -238,6 +238,9 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // What remains is the only thing worth the word "silent".
     const accountedFor = landed + resolutions
     const silentDrops = Math.max(0, approved - accountedFor)
+    // §70.9: the same finding, by NAME. Empty on a database with no lineage
+    // yet, which is why the count above stays as the coarse backstop.
+    const drops = unlinkedApprovals(db, dayStart, { accountId })
 
     const topVetoes = topBy(gate.filter(r => int(r.approved) !== 1), r => r.veto_reason || 'unspecified')
     const topSkipStages = topBy(skips, r => (r.reason ? `${r.stage}:${r.reason}` : r.stage))
@@ -271,6 +274,7 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     if (silentDrops > 0) {
       verdict = VERDICTS.SILENT_DROP
       because = `${approved} approved at the gate; ${landed} landed and ${resolutions} were refused downstream with a reason — ${silentDrops} approval(s) went nowhere with nothing recorded`
+        + (drops.length ? ` (${drops.length} identified by lineage)` : '')
     } else if (landed > 0) {
       verdict = VERDICTS.TRADED
       because = `${landed} order(s)/trade(s) from ${approved} approval(s)${resolutions ? ` (${resolutions} refused downstream, each with a reason)` : ''}`
@@ -300,6 +304,8 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
       considered, reachedGate, approved, vetoed,
       tradesOpened, pendingOrders: pending, placementReceipts, landed,
       resolutions, accountedFor, topResolutions,
+      // Symbol + side + when, per dropped approval. Owner-facing only.
+      droppedApprovals: drops,
       silentDrops, topVetoes, topSkipStages, quietMinutes, at,
       gateScope: scope,
     }
@@ -307,6 +313,59 @@ export function auditDecisions(db, { accountId = null, marketOpen = true, now = 
     // An auditor that throws would take down the loop phase it runs in. It
     // reports its own failure instead, which is still more than silence.
     return { ...blank, verdict: VERDICTS.IDLE, because: `audit failed: ${err?.message || err}` }
+  }
+}
+
+/**
+ * §70.9 — WHICH approvals went nowhere, by name.
+ *
+ * §70.8 could only subtract one aggregate from another, because nothing linked
+ * an approval to the row it produced. `risk_event_id` on trades and
+ * pending_orders is that link, so a drop is now a specific row with a symbol
+ * and a timestamp instead of a number nobody can act on.
+ *
+ * THE HONESTY GUARD, and it is the whole reason this is a separate function
+ * rather than folded into the count above. Every row written before the
+ * migration has a NULL risk_event_id, so a naive "approved with no child" query
+ * would report the entire history as dropped on the first run. Absence of a
+ * link only means something once links exist. So the floor is the OLDEST
+ * approval any landing actually names: at or after that point lineage was being
+ * written and a missing link is a finding; before it, a missing link is just
+ * the past, and this reports nothing.
+ *
+ * Returns [] when no landing carries lineage yet — the correct answer on a
+ * database that has not traded since the migration, and much better than a
+ * confident list of false positives.
+ */
+export function unlinkedApprovals(db, dayStart, { accountId = null, limit = 20 } = {}) {
+  try {
+    const floor = db.prepare(`
+      SELECT MIN(rid) AS id FROM (
+        SELECT MIN(risk_event_id) AS rid FROM trades WHERE risk_event_id IS NOT NULL
+        UNION ALL
+        SELECT MIN(risk_event_id) AS rid FROM pending_orders WHERE risk_event_id IS NOT NULL
+      )
+    `).get()?.id
+    if (floor == null) return []
+    const acct = accountId == null ? '' : ' AND (re.account_id = ? OR re.account_id IS NULL)'
+    const args = accountId == null ? [] : [String(accountId)]
+    return db.prepare(`
+      SELECT re.id, re.symbol, re.side, re.created_at
+        FROM risk_events re
+       WHERE re.approved = 1
+         AND re.id >= ?
+         AND REPLACE(re.created_at, 'T', ' ') >= ?
+         AND COALESCE(re.checks_json, '') NOT LIKE '%_placed":true%'
+         AND COALESCE(re.checks_json, '') NOT LIKE '%_placed": true%'
+         AND NOT EXISTS (SELECT 1 FROM trades t WHERE t.risk_event_id = re.id)
+         AND NOT EXISTS (SELECT 1 FROM pending_orders p WHERE p.risk_event_id = re.id)
+         ${acct}
+       ORDER BY re.id DESC LIMIT ?
+    `).all(floor, dayStart, ...args, Math.max(1, Math.min(100, Number(limit) || 20)))
+  } catch {
+    // Same rule as everything else here: an auditor that throws is worse than
+    // an auditor that reports less.
+    return []
   }
 }
 
@@ -428,6 +487,14 @@ export function toText(audit) {
     audit.because,
     `considered ${audit.considered} · gate ${audit.reachedGate} (${audit.approved} ok / ${audit.vetoed} veto) · landed ${audit.landed} (${audit.tradesOpened} trade(s), ${audit.pendingOrders} pending) · ${audit.resolutions ?? 0} refused downstream`,
   ]
+  // NAMES LIVE HERE, NOT IN `because`. `because` is published verbatim in the
+  // unauthenticated projection, and a symbol is exactly the kind of thing that
+  // promise excludes. Caught by the test that greps the public body for a
+  // symbol after the first draft put the list in `because` — the same boundary
+  // guardName() already enforces on veto reasons.
+  if (audit.droppedApprovals?.length) {
+    bits.push(`dropped approvals: ${audit.droppedApprovals.slice(0, 5).map(d => `${d.symbol} ${d.side} #${d.id}`).join(', ')}`)
+  }
   if (audit.topResolutions?.length) bits.push(`refused after approval: ${audit.topResolutions.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topSkipStages?.length) bits.push(`upstream: ${audit.topSkipStages.map(s => `${s.key} ${s.n}`).join(', ')}`)
   if (audit.topVetoes?.length) bits.push(`vetoes: ${audit.topVetoes.map(s => `${s.key} ${s.n}`).join(', ')}`)

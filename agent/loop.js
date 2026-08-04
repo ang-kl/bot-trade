@@ -399,7 +399,8 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
   }
   const riskCfg = loadRiskConfig(db)
   const riskResult = evaluateTrade(db, proposal, riskCfg)
-  persistRiskEvent(db, proposal, riskResult)
+  // §70.9: hold the approval's own row id so the trade it produces can name it.
+  const riskEventId = persistRiskEvent(db, proposal, riskResult)
   if (!riskResult.approved) {
     log(`RISK VETO ${symbol} ${side}: ${riskResult.veto_reason}`)
     await alertVetoOnce(db, symbol, side, riskResult.veto_reason)
@@ -582,11 +583,11 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // and the post-decision auditor counts it.
     const intentId = db.prepare(`
       INSERT INTO trades (symbol, side, entry_price, sl_price, tp_price, volume,
-                          opened_at, status, strategy, account_id, source)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade')
+                          opened_at, status, strategy, account_id, source, risk_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 'submitting', ?, ?, 'autotrade', ?)
     `).run(
       symbol, side, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, synth.strategy || null, String(accountId),
+      volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
     ).lastInsertRowid
 
     const submitT0 = Date.now()

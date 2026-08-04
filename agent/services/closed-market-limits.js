@@ -181,7 +181,7 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   }
   const riskCfg = risk.loadRiskConfig(db)
   const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
-  risk.persistRiskEvent(db, proposal, riskResult)
+  const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
   if (!riskResult.approved) return { skipped: 'risk_veto', reason: riskResult.veto_reason }
 
   const volLots = riskResult.adjusted_volume
@@ -227,12 +227,12 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     const ev = await exec.placeOrder(creds, payload)
     const orderId = ev?.order?.orderId ?? ev?.orderId ?? null
     db.prepare(`
-      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?)
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?)
     `).run(
       symbol, synth.timeframe || null, orderId != null ? String(orderId) : null,
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null
+      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null
     )
     risk.persistRiskEvent(db, proposal, {
       approved: true, veto_reason: null,
