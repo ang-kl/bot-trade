@@ -22,7 +22,7 @@ import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
-import { stageMatrixView, loadStageMatrix, stageOverlayKeys } from '../services/stage-matrix.js'
+import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
 // overlay, and the shadow made the call below resolve to that array.
 import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
@@ -2806,37 +2806,11 @@ export default function stateRouter(db) {
       // over there" was a question you could only answer by switching scope
       // and counting cells by eye — across five accounts and every stage.
       //
-      // Computed from the same loadStageMatrix() the cells render from, so the
-      // numbers cannot drift from the ticks: no second source, just a count of
-      // the first one. It is a pure state read per account, no broker calls.
-      const tallies = (() => {
-        try {
-          const rows = db.prepare(
-            'SELECT account_id, trader_login, is_live, enabled, mode FROM accounts ORDER BY is_live, account_id'
-          ).all()
-          return rows.map(r => {
-            const id = String(r.account_id)
-            const m = loadStageMatrix(db, getState, id)
-            const per = {}
-            for (const s of [...(m.strategies || []), ...(m.filters || [])]) {
-              for (const [stage, on] of Object.entries(s.stages || {})) {
-                if (on == null) continue          // not applicable — counted neither way
-                per[stage] = per[stage] || { on: 0, off: 0 }
-                per[stage][on ? 'on' : 'off'] += 1
-              }
-            }
-            return {
-              accountId: id,
-              traderLogin: r.trader_login ?? null,
-              isLive: r.is_live === 1,
-              enabled: r.enabled === 1,
-              mode: r.mode ?? null,
-              stages: per,
-              pinned: stageOverlayKeys(db, getState, id).length,
-            }
-          })
-        } catch { return [] }
-      })()
+      // The counting lives in stage-matrix.js beside loadStageMatrix, so this
+      // route and the WRITE route answer with the same numbers. They did not,
+      // at first: the write returned no tallies, so a freshly-flipped tick
+      // disagreed with the tally under it until the next poll.
+      const tallies = accountStageTallies(db, getState)
       if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [], tallies })
       const scoped = loadStageMatrix(db, getState, acct)
       res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct), tallies })

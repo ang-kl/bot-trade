@@ -1688,7 +1688,14 @@ export default function Tune() {
               armTarget={armTarget}
               onError={setError}
               onUpdated={(r) => {
-                setStageMx(prev => (prev ? { ...prev, strategies: r.strategies, filters: r.filters } : prev))
+                // `tallies` rides along with the write for the same reason the
+                // cells do: merging only strategies/filters left the
+                // per-account counts describing the matrix as it was BEFORE
+                // this edit, so the tick you just flipped disagreed with the
+                // number under it until the next poll (review, #609).
+                setStageMx(prev => (prev
+                  ? { ...prev, strategies: r.strategies, filters: r.filters, ...(r.tallies ? { tallies: r.tallies } : {}) }
+                  : prev))
                 // Keep the config/strategy + filter mirrors in step so the
                 // Backtest tab pills and Presets export stay truthful.
                 if (r.strategies) {

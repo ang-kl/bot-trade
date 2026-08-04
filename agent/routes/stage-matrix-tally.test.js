@@ -114,3 +114,54 @@ test('the tally rides along on a SCOPED read too — the page never has to ask t
     assert.equal(j.tallies.length, 2, 'still every account, so the scoped view can compare')
   } finally { s.close() }
 })
+
+// ---------------------------------------------------------------------------
+// THE WRITE ANSWERS WITH THE TALLY TOO (review finding on #609).
+//
+// The page merges the write's response into its matrix. When only strategies
+// and filters came back, the tick the operator had just flipped disagreed with
+// the per-account count underneath it until the next 20s poll — for the edited
+// account on an overlay write, and for every inheriting account on a shared
+// one. A count that lags the thing it counts is precisely the defect the tally
+// was added to remove.
+// ---------------------------------------------------------------------------
+test('POST /actions/stage-matrix returns tallies that already include the edit', async () => {
+  const s = await server()
+  try {
+    const key = loadStageMatrix(s.db, getState).strategies.find(r => !r.stages.trade)?.key
+    const before = (await mx(s)).tallies.find(t => t.accountId === A).stages.trade
+
+    const w = await fetch(s.url('/actions/stage-matrix'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'strategy', key, stage: 'trade', on: true, accountId: A }),
+    })
+    const body = await w.json()
+    assert.ok(Array.isArray(body.tallies), 'the write carries tallies')
+    const after = body.tallies.find(t => t.accountId === A).stages.trade
+    assert.equal(after.on, before.on + 1, 'and they already count this edit')
+    assert.equal(body.tallies.find(t => t.accountId === A).pinned, 1)
+    // The bystander is unchanged in the very same payload.
+    assert.deepEqual(
+      body.tallies.find(t => t.accountId === B).stages.trade,
+      (await mx(s)).tallies.find(t => t.accountId === B).stages.trade)
+  } finally { s.close() }
+})
+
+test('a SHARED edit moves every inheriting account in the write\'s own answer', async () => {
+  const s = await server()
+  try {
+    const key = loadStageMatrix(s.db, getState).strategies.find(r => !r.stages.trade)?.key
+    const before = (await mx(s)).tallies
+    const body = await (await fetch(s.url('/actions/stage-matrix'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'strategy', key, stage: 'trade', on: true }),   // no accountId
+    })).json()
+    for (const id of [A, B]) {
+      const b = before.find(t => t.accountId === id).stages.trade
+      const a = body.tallies.find(t => t.accountId === id).stages.trade
+      assert.equal(a.on, b.on + 1, `${id} follows the shared change`)
+    }
+  } finally { s.close() }
+})
