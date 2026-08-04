@@ -279,6 +279,67 @@ function authSteps(clientId, clientSecret, accessToken, accountId) {
   ]
 }
 
+/**
+ * Is this failure the broker telling us to slow down?
+ *
+ * cTrader answers a breached rate limit with an explicit error rather than a
+ * silent drop, and the strings differ by which limiter tripped. Matching a
+ * family of markers rather than one exact code, because a miss here is not a
+ * cosmetic bug: retrying a throttle at the SAME cadence that caused it is how
+ * a brief limit turns into a sustained one.
+ *
+ * Exported so a caller can ask the same question the retry policy asks.
+ */
+export function isThrottleError(err) {
+  return /throttl|rate.?limit|too.?many.?request|TOO_MANY|REQUEST_FREQUENCY|\b429\b/i.test(err?.message || '')
+}
+
+/** Seconds the broker asked us to wait, when it says so. Null when it does not. */
+export function retryAfterMs(err) {
+  // The gap class excludes '-' on purpose. With [^0-9] it swallowed the sign,
+  // so "retry after -5s" parsed as a five-second wait — a negative hint is
+  // malformed input and must be refused, not silently made positive. Caught by
+  // retry-backoff.test.js on the first run.
+  const m = /retry[ -]?after[^0-9-]{0,6}(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?)?/i.exec(err?.message || '')
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  const unit = (m[2] || 's').toLowerCase()
+  const ms = unit.startsWith('ms') ? n : n * 1000
+  // Cap: a malformed or hostile value must not park a management call for an
+  // hour. Two minutes is longer than any real broker backoff and short enough
+  // that a stuck call still surfaces within one management cycle.
+  return Math.min(ms, 120_000)
+}
+
+/**
+ * #123: THROTTLE-AWARE. The old policy was a flat linear ramp — 2s then 4s,
+ * the same for a dropped socket and for a breached rate limit. Those need
+ * opposite responses: a dropped socket wants a prompt retry, while a rate
+ * limit wants real distance, and retrying it on a 2s beat feeds the limiter
+ * that produced it.
+ *
+ * So: connection failures keep the linear ramp they always had, while a
+ * throttle gets exponential backoff with jitter, and an explicit retry-after
+ * from the broker wins over both — it is the only number in the exchange that
+ * comes from the side actually enforcing the limit.
+ *
+ * JITTER MATTERS MORE THAN THE CURVE HERE. Several controllers share one
+ * broker session (fast monitor, profit keeper, loss cap, the reconciler); an
+ * undithered backoff re-synchronises them onto the same instant and the
+ * second attempt arrives as one burst, exactly like the first.
+ */
+export const THROTTLE_BASE_MS = 5_000
+export const THROTTLE_MAX_MS = 60_000
+
+export function backoffMs(attempt, err, rand = Math.random) {
+  const explicit = retryAfterMs(err)
+  if (explicit != null) return explicit
+  if (!isThrottleError(err)) return (attempt + 1) * 2000     // unchanged for ordinary faults
+  const exp = Math.min(THROTTLE_MAX_MS, THROTTLE_BASE_MS * (2 ** attempt))
+  return Math.round(exp * (0.5 + rand() * 0.5))              // full-ish jitter, never below half
+}
+
 export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null) {
   let lastErr
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -290,8 +351,9 @@ export async function withRetry(fn, maxRetries = 2, label = 'ws', noRetry = null
       if (msg.includes('order rejected') || msg.includes('POSITION_NOT_FOUND')) throw err
       if (noRetry && noRetry(err)) throw err
       if (attempt < maxRetries) {
-        const delay = (attempt + 1) * 2000
-        console.log(`[${label}] retry ${attempt + 1}/${maxRetries} in ${delay}ms — ${msg}`)
+        const delay = backoffMs(attempt, err)
+        const why = isThrottleError(err) ? ' (throttled — backing off)' : ''
+        console.log(`[${label}] retry ${attempt + 1}/${maxRetries} in ${delay}ms${why} — ${msg}`)
         await new Promise(r => setTimeout(r, delay))
       }
     }

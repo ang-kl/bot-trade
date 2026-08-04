@@ -27,6 +27,7 @@ import { evaluatePosition } from './position-manager.js'
 import { rulesForSymbol } from './asset-controllers.js'
 import { manageStageAllows } from './stage-matrix.js'
 import { isSymbolOpenCached } from './symbol-hours.js'
+import { BoundedMap } from '../lib/bounded-map.js'
 
 /**
  * Pure cadence policy: milliseconds between checks for one position.
@@ -114,12 +115,32 @@ export function frozenQuoteUpdate(rec, mid, nowMs, thresholdMs) {
 
 // Per-position pacing + per-symbol volume cache. In-memory: a restart just
 // re-checks everything once, which is safe.
-const lastCheckAt = new Map()  // position id → ms
-const lastPriceAt = new Map()  // position id → { mid, at }
-const spikeUntil = new Map()   // symbol → ms timestamp; forces fastest cadence until then
-const volCache = new Map()     // symbol → { relVol, at }
-const quoteFreeze = new Map()  // symbol → { mid, changedAt, alerted }
+//
+// #123: BOUNDED, because two of these are keyed by POSITION ID and position
+// ids are minted per fill and never reused. Plain Maps here gained an entry
+// for every position this process ever saw and lost none — a slow leak with
+// no ceiling in a process that stays up for weeks, and one with no alarm,
+// because a Map does not complain. Eviction is oldest-first rather than a
+// flush, for the reason profit-keeper's ATR cache spells out: emptying a warm
+// cache at its ceiling stampedes whatever refills it.
+//
+// The two position-keyed maps are deliberately NOT lru: re-reading "when did
+// I last check this position" must not keep a stale entry alive ahead of a
+// newer one. The symbol-keyed caches are lru, because there a recent read
+// genuinely is evidence the entry is worth keeping.
+const POS_MAP_MAX = 2_000     // ~a fortnight of fills on this desk's volume
+const SYM_MAP_MAX = 500       // the instrument universe, with headroom
+const lastCheckAt = new BoundedMap(POS_MAP_MAX, { name: 'fast_monitor.lastCheckAt' })  // position id → ms
+const lastPriceAt = new BoundedMap(POS_MAP_MAX, { name: 'fast_monitor.lastPriceAt' })  // position id → { mid, at }
+const spikeUntil = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.spikeUntil' })   // symbol → ms
+const volCache = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.volCache' })       // symbol → { relVol, at }
+const quoteFreeze = new BoundedMap(SYM_MAP_MAX, { lru: true, name: 'fast_monitor.quoteFreeze' }) // symbol → { mid, changedAt, alerted }
 const VOL_TTL_MS = 5 * 60_000
+
+/** Sizes and evictions for /state/route-timings-adjacent diagnostics. */
+export function fastMonitorMapStats() {
+  return [lastCheckAt, lastPriceAt, spikeUntil, volCache, quoteFreeze].map(m => m.stats())
+}
 
 let running = false
 

@@ -103,3 +103,76 @@ test('risk-gate vetoes are account-filtered too, and unstamped rows still count'
   assert.equal(all.guards.filter(g => g.source === 'risk_gate').length, 3)
   assert.equal(all.note, null)
 })
+
+// ---------------------------------------------------------------------------
+// #122 — the cap, and why it must announce itself.
+//
+// Measured 2026-08-04: this route returned 506,936 bytes, 537 KB of it the
+// `guards` array — 1,548 rows. The row set is one per DISTINCT veto reason
+// STRING, and those strings embed live numbers, so it grows with every
+// distinct P&L the guard has ever seen. Unbounded by construction, and the
+// browser polls it.
+// ---------------------------------------------------------------------------
+
+test('live numbers are normalised OUT of the guard key — the root cause of the 507 KB response', () => {
+  const db = mkDb()
+  const ins = db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at)
+                          VALUES (?,0,?,datetime('now'))`)
+  // The exact shape production produced 1,548 rows of.
+  ins.run('EURUSD', 'daily_loss_limit_hit pnl=-912.72 limit=16.16')
+  ins.run('GBPUSD', 'daily_loss_limit_hit pnl=-1736.65 limit=1465.25')
+  ins.run('USDJPY', 'portfolio_margin_exhausted used=26266.06 cap=14383.37 source=estimate')
+  ins.run('AUDUSD', 'portfolio_margin_exhausted used=32545.44 cap=19408.71 source=broker')
+
+  const out = vetoBreakdown(db)
+  // THREE guards, not four: the two daily_loss_limit_hit rows merge into one,
+  // while the two portfolio_margin_exhausted rows stay apart because they
+  // differ by `source=`, which is not a number. That asymmetry is the whole
+  // point — normalise the live values, keep the categorical ones.
+  assert.equal(out.guards.length, 3)
+  assert.equal(out.summary.distinctGuards, 3)
+  const byCount = Object.fromEntries(out.guards.map(g => [g.guard, g.count]))
+  assert.equal(byCount['daily_loss_limit_hit pnl=<n> limit=<n>'], 2)
+  // source=estimate and source=broker stay DIFFERENT — only numbers are
+  // normalised, so a genuinely different guard is not merged away.
+  assert.equal(out.guards.filter(g => g.guard.startsWith('portfolio_margin_exhausted')).length, 2)
+
+  // Nothing is lost: the untouched original survives as the example.
+  const dl = out.guards.find(g => g.guard.startsWith('daily_loss_limit_hit'))
+  assert.match(dl.example, /pnl=-\d+\.\d+/, 'the real numbers are still readable in the sample')
+})
+
+test('the guard list is still capped as a backstop, and says so rather than truncating quietly', () => {
+  const db = mkDb()
+  const ins = db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at)
+                          VALUES (?,0,?,datetime('now'))`)
+  // 40 genuinely distinct guards — normalisation cannot collapse these, so
+  // the cap is the only thing standing between this route and an unbounded
+  // response if a future guard family misbehaves the way that one did.
+  for (let i = 0; i < 40; i++) {
+    for (let n = 0; n <= i; n++) ins.run('EURUSD', `guard_family_${i} tripped`)
+  }
+  const capped = vetoBreakdown(db, { limit: 10 })
+  assert.equal(capped.guards.length, 10)
+  assert.ok(capped.truncated, 'a silent cap on a "which guard is eating my entries" route reads as a complete answer')
+  assert.equal(capped.truncated.dropped, 30)
+  assert.ok(capped.truncated.droppedVetoes > 0)
+  assert.match(capped.truncated.note, /raise \?limit=/)
+
+  // The SUMMARY still reports the true distinct count — the cap must not
+  // rewrite the number an operator reads to judge how fragmented the reasons
+  // are.
+  assert.equal(capped.summary.distinctGuards, 40)
+
+  // Sorted by count, so what is dropped is the tail, not a random slice.
+  const counts = capped.guards.map(g => g.count)
+  assert.deepEqual(counts, [...counts].sort((a, b) => b - a))
+  assert.equal(counts[0], 40, 'the biggest guard survived the cap')
+})
+
+test('under the cap there is nothing to announce', () => {
+  const db = mkDb()
+  db.prepare(`INSERT INTO risk_events (symbol, approved, veto_reason, created_at)
+              VALUES ('EURUSD',0,'one_reason',datetime('now'))`).run()
+  assert.equal(vetoBreakdown(db).truncated, null)
+})

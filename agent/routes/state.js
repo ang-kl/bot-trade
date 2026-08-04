@@ -997,10 +997,29 @@ export default function stateRouter(db) {
       res.json(vetoBreakdown(db, {
         days: req.query.days,
         account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
+        // Capped by default — this route was returning half a megabyte per
+        // poll (#122). `truncated` in the response says what was left out.
+        limit: req.query.limit,
       }))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/route-timings — per-route p50/p90/p99/max and average payload
+  // size, since process start.
+  //
+  // #125 asked where the reported 8-29s goes. It goes nowhere measurable
+  // today — see route-timing.js for the numbers — so the deliverable is not a
+  // speedup, it is a recorder, so the NEXT episode has data instead of a
+  // reconstruction. Sorted worst-p90 first.
+  // -----------------------------------------------------------------------
+  router.get('/route-timings', async (req, res) => {
+    try {
+      const { routeTimings } = await import('../services/route-timing.js')
+      res.json(routeTimings({ minSamples: Number(req.query.minSamples) || 1 }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
   // GET /state/fx-coverage?symbols=AUDPLN,EURJPY — can the sizer convert?
