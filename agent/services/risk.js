@@ -23,7 +23,7 @@ import { evaluateGlobalGuards } from './global-guards.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
-import { pacedDailyCap, describePacing } from './daily-loss-pacing.js'
+import { pacedDailyCap, describePacing, describeBinding } from './daily-loss-pacing.js'
 
 /**
  * Carry-cost check (pure apart from the sync symbol_hours read). Returns
@@ -112,8 +112,17 @@ export function evaluateSlippageDrift(db, proposal, maxAdversePct, minTrades = 5
 }
 
 export const DEFAULT_RISK_CONFIG = {
-  dailyLossLimit: 300,             // USD. Absolute fallback when balance unset.
-  dailyLossPct: 0.03,              // 3% of balance — preferred when balance set.
+  // TWO INDEPENDENT DAILY BRAKES, EITHER DISABLE-ABLE (owner 04-08-2026).
+  // Both apply when both are set, so the cap is the TIGHTER of them; null on
+  // either turns that check off; null on BOTH leaves the day uncapped, which
+  // the Risk page warns about rather than hiding.
+  //
+  // dailyLossLimit used to apply only when the balance was unknown, which made
+  // it dead on every account that had one. It is a real bound now, so on a
+  // large account it can bind BELOW the percentage — check the Risk page's
+  // "which cap binds" line after changing either field.
+  dailyLossLimit: 300,             // USD, flat. null = check off.
+  dailyLossPct: 0.03,              // 3% of balance. null = check off.
   // Owner 03-08-2026: the daily budget may RAMP across the FX day instead of
   // being available all at once — dailyLossPct is what the day OPENS with,
   // dailyLossPctMax is the most it can ever reach, and the allowance moves
@@ -772,8 +781,16 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       ? Number(config.perTradeRiskUsd)
       : (balance > 0 ? balance * config.perTradeRiskPct : 0),
   })
+  // NULL MEANS UNCAPPED — both checks off — and it must not be able to look
+  // like a cap of zero, which would veto every entry forever. The checks row
+  // says so out loud so the state is visible in risk_events rather than
+  // inferable from a missing number.
   const effectiveDailyCap = pacing.capUsd
-  checks.daily_cap_usd = Number(effectiveDailyCap.toFixed(2))
+  checks.daily_cap_usd = effectiveDailyCap == null ? null : Number(effectiveDailyCap.toFixed(2))
+  checks.daily_cap_uncapped = effectiveDailyCap == null
+  checks.daily_cap_binding = pacing.binding
+  checks.daily_cap_pct_usd = pacing.pctCapUsd == null ? null : Number(pacing.pctCapUsd.toFixed(2))
+  checks.daily_cap_flat_usd = pacing.usdCapUsd == null ? null : Number(pacing.usdCapUsd.toFixed(2))
   if (pacing.paced) {
     checks.daily_cap_paced = true
     checks.daily_cap_pct = Number((pacing.pct * 100).toFixed(3))
@@ -782,8 +799,14 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   }
   checks.daily_budget_left_usd = pacing.remainingUsd == null ? null : Number(pacing.remainingUsd.toFixed(2))
   checks.daily_trades_left = pacing.tradesLeft
-  if (todayPnl <= -Math.abs(effectiveDailyCap)) {
-    const tail = describePacing(pacing)
+  // An uncapped day cannot breach a cap. This is deliberately NOT an
+  // approval-by-default hidden in a falsy check: with both fields empty the
+  // owner has turned the daily brake off, and the honest behaviour is to let
+  // entries through while the Risk page carries the warning. Every other
+  // guard — per-trade risk, margin, equity stop, the portfolio layer — is
+  // untouched, so "uncapped daily" is not "unprotected".
+  if (effectiveDailyCap != null && todayPnl <= -Math.abs(effectiveDailyCap)) {
+    const tail = [describeBinding(pacing), describePacing(pacing)].filter(Boolean).join(', ')
     return veto(
       `daily_loss_limit_hit pnl=${todayPnl.toFixed(2)} limit=${effectiveDailyCap.toFixed(2)}${tail ? ` — ${tail}` : ''}`,
       checks, proposal,

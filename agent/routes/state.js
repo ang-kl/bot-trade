@@ -2248,6 +2248,18 @@ export default function stateRouter(db) {
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // The day's binding cap in dollars: the TIGHTER of the two brakes that are
+  // switched on, or null when neither is. Deliberately the same combination
+  // rule as pacedDailyCap — this is the unpaced summary the config card shows,
+  // and the two disagreeing about which limit is live would be worse than the
+  // card not showing one at all.
+  const dailyCapOf = (cfg, balance) => {
+    const pct = cfg?.dailyLossPct > 0 && balance > 0 ? balance * cfg.dailyLossPct : null
+    const flat = cfg?.dailyLossLimit > 0 ? Math.abs(cfg.dailyLossLimit) : null
+    const on = [pct, flat].filter(v => v != null)
+    return on.length ? Number(Math.min(...on).toFixed(2)) : null
+  }
+
   // -----------------------------------------------------------------------
   // GET /state/risk-config — effective risk config (defaults merged with overrides)
   // -----------------------------------------------------------------------
@@ -2271,7 +2283,15 @@ export default function stateRouter(db) {
           balance,
           leverage,
           tier,
-          daily_cap_usd: Number((balance * effective.dailyLossPct).toFixed(2)),
+          // BOTH daily brakes, either of which may be off (owner 04-08-2026).
+          // The headline number is the one that actually binds — the tighter
+          // of the checks that are on — and null when neither is, because a
+          // number here would claim a limit that does not exist.
+          daily_cap_usd: dailyCapOf(effective, balance),
+          daily_cap_pct_usd: effective.dailyLossPct > 0
+            ? Number((balance * effective.dailyLossPct).toFixed(2)) : null,
+          daily_cap_flat_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
           per_trade_budget_usd: Number((balance * effective.perTradeRiskPct).toFixed(2)),
           margin_cap_usd: Number((balance * effective.maxMarginUsagePct).toFixed(2)),
           mode: 'equity_aware',
@@ -2280,7 +2300,15 @@ export default function stateRouter(db) {
           balance: null,
           leverage,
           tier: null,
-          daily_cap_usd: effective.dailyLossLimit,
+          // No balance → the % check has nothing to take a fraction of, so the
+          // flat cap is the only one left. Null when it too is off: the day is
+          // genuinely uncapped and the page says so rather than printing a
+          // number nothing enforces.
+          daily_cap_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
+          daily_cap_pct_usd: null,
+          daily_cap_flat_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
           per_trade_budget_usd: null,
           margin_cap_usd: null,
           mode: 'absolute_fallback',
@@ -2569,7 +2597,10 @@ export default function stateRouter(db) {
           const { fxDayOpenMs, fxDayStartSql } = await import('../services/risk.js')
           const { pacedDailyCap } = await import('../services/daily-loss-pacing.js')
           const balance = (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db)
-          if (!(balance > 0)) return null
+          // No balance no longer means nothing to report: the flat $ cap is a
+          // live check of its own now, and with the % check inapplicable it is
+          // the ONLY thing standing between the account and an uncapped day —
+          // exactly the state the Risk page has to be able to warn about.
           const nowMs = Date.now()
           const id = acct ?? (getState(db, 'ctrader_account_id') || null)
           let spent = 0
@@ -2591,9 +2622,9 @@ export default function stateRouter(db) {
             spentUsd: spent,
             perTradeRiskUsd: effective.perTradeRiskUsd > 0
               ? Number(effective.perTradeRiskUsd)
-              : balance * effective.perTradeRiskPct,
+              : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
           })
-          return { ...p, spentUsd: spent, accountId: id }
+          return { ...p, spentUsd: spent, accountId: id, balance: balance > 0 ? balance : null }
         })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',

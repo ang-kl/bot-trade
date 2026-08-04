@@ -48,62 +48,98 @@ export const FX_DAY_MS = 24 * 60 * 60 * 1000
 /**
  * Pure. The daily-loss allowance for one account at one instant.
  *
+ * TWO INDEPENDENT CHECKS, EITHER OF WHICH MAY BE TURNED OFF (owner,
+ * 04-08-2026): *"all Daily cap fallback be (null) mean not used to check. if %
+ * is (null) means not used to check. then warn that daily cap fallback isn't
+ * use it will be uncapped."*
+ *
+ *   `dailyLossPct`   — % of balance. Off when null/0, and inapplicable when
+ *                      the balance is unknown (a percentage of an unknown
+ *                      number is not a limit).
+ *   `dailyLossLimit` — flat USD. Off when null/0. It used to apply ONLY in the
+ *                      balance-unknown branch, which meant it was dead on every
+ *                      account that had a balance — i.e. all of them. It is now
+ *                      a real bound in its own right.
+ *
+ * Whichever checks are ON both apply, so the cap is the TIGHTER of them. That
+ * direction is not arbitrary: two limits that disagree can only be reconciled
+ * by obeying both, and taking the looser one would let either field silently
+ * cancel the other.
+ *
+ * WHEN NEITHER IS SET THE DAY IS UNCAPPED, and this says so with `capUsd:
+ * null` rather than a `0` that a caller could read as "cap of zero" (block
+ * everything) or a large number it could read as "plenty left". Null forces
+ * every consumer to handle the case; the UI turns it into the warning the
+ * owner asked for.
+ *
  * @param {object} a
  * @param {number|null} a.balance        account balance USD, null when unset
- * @param {number} a.basePct             dailyLossPct — spendable at day open
+ * @param {number|null} a.basePct        dailyLossPct — spendable at day open; null = check off
  * @param {number|null} a.maxPct         dailyLossPctMax — the day's ceiling
- * @param {number} a.absoluteFallback    dailyLossLimit USD, used when balance is null
+ * @param {number|null} a.absoluteFallback  dailyLossLimit USD; null = check off
  * @param {number} a.nowMs
  * @param {number} a.dayOpenMs           fxDayOpenMs(nowMs)
  * @param {number} [a.spentUsd]          today's realised loss as a POSITIVE number
  * @param {number} [a.perTradeRiskUsd]   $ at risk on a typical trade, for tradesLeft
- * @returns {{capUsd:number, pct:number|null, paced:boolean, elapsed:number,
+ * @returns {{capUsd:number|null, uncapped:boolean, binding:'pct'|'usd'|'both'|null,
+ *            pctCapUsd:number|null, usdCapUsd:number|null,
+ *            pct:number|null, paced:boolean, elapsed:number,
  *            ceilingUsd:number|null, remainingUsd:number|null, tradesLeft:number|null}}
  */
 export function pacedDailyCap({
   balance, basePct, maxPct, absoluteFallback,
   nowMs, dayOpenMs, spentUsd = 0, perTradeRiskUsd = 0,
 }) {
-  // No balance → the absolute USD fallback, unpaced. Pacing is a fraction of
-  // an equity figure; without one there is nothing to take a fraction of, and
-  // inventing a percentage of an unknown balance would be worse than the flat
-  // number the operator explicitly configured.
-  if (!(balance > 0)) {
-    const capUsd = Math.abs(Number(absoluteFallback) || 0)
-    return {
-      capUsd, pct: null, paced: false, elapsed: 0, ceilingUsd: null,
-      remainingUsd: capUsd > 0 ? Math.max(0, capUsd - spentUsd) : null,
-      tradesLeft: null,
-    }
-  }
+  // ---- the flat USD check -------------------------------------------------
+  // A limit of zero is not a limit of zero dollars — nobody configures "lose
+  // nothing, ever" — it is how an empty field arrives after a Number() cast.
+  // Treated as OFF, same as null.
+  const usdRaw = Number(absoluteFallback)
+  const usdCapUsd = Number.isFinite(usdRaw) && Math.abs(usdRaw) > 0 ? Math.abs(usdRaw) : null
 
+  // ---- the percentage check ----------------------------------------------
   const base = Number(basePct)
+  const pctOn = Number.isFinite(base) && base > 0 && balance > 0
   const ceil = Number(maxPct)
-  const hasCeiling = Number.isFinite(ceil) && Number.isFinite(base) && ceil > base
-  const flatUsd = balance * (Number.isFinite(base) ? base : 0)
-
-  if (!hasCeiling) {
-    return {
-      capUsd: flatUsd, pct: Number.isFinite(base) ? base : null, paced: false,
-      elapsed: 0, ceilingUsd: null,
-      remainingUsd: Math.max(0, flatUsd - spentUsd),
-      tradesLeft: tradesLeft(flatUsd - spentUsd, perTradeRiskUsd),
-    }
-  }
+  const hasCeiling = pctOn && Number.isFinite(ceil) && ceil > base
 
   // Elapsed fraction of the FX day, clamped. A clock that reads before the
   // day open (skew) or beyond its end (a box resuming late) must land on a
   // defined end of the ramp, not off it.
   const raw = (nowMs - dayOpenMs) / FX_DAY_MS
-  const elapsed = Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0))
+  const elapsed = hasCeiling ? Math.min(1, Math.max(0, Number.isFinite(raw) ? raw : 0)) : 0
 
-  const pct = base + (ceil - base) * elapsed
-  const capUsd = Math.min(balance * ceil, balance * pct)   // ceiling is absolute
-  const remainingUsd = Math.max(0, capUsd - spentUsd)
+  const pct = !pctOn ? null : hasCeiling ? base + (ceil - base) * elapsed : base
+  const pctCapUsd = !pctOn
+    ? null
+    : hasCeiling
+      ? Math.min(balance * ceil, balance * pct)   // ceiling is absolute
+      : balance * base
+
+  // ---- combine ------------------------------------------------------------
+  const both = [pctCapUsd, usdCapUsd].filter(v => v != null)
+  const capUsd = both.length ? Math.min(...both) : null
+  const binding = capUsd == null ? null
+    : pctCapUsd != null && usdCapUsd != null
+      ? (pctCapUsd === usdCapUsd ? 'both' : (pctCapUsd < usdCapUsd ? 'pct' : 'usd'))
+      : (pctCapUsd != null ? 'pct' : 'usd')
+
+  const remainingUsd = capUsd == null ? null : Math.max(0, capUsd - spentUsd)
 
   return {
-    capUsd, pct, paced: true, elapsed,
-    ceilingUsd: balance * ceil,
+    capUsd,
+    uncapped: capUsd == null,
+    binding,
+    pctCapUsd,
+    usdCapUsd,
+    pct,
+    // Pacing describes the percentage check, so it is only true when that
+    // check is the one actually holding the line. A ramp the flat USD cap sits
+    // below is not pacing anything, and saying so would explain the day's
+    // allowance with the wrong mechanism.
+    paced: hasCeiling && binding !== 'usd',
+    elapsed,
+    ceilingUsd: hasCeiling ? balance * ceil : null,
     remainingUsd,
     tradesLeft: tradesLeft(remainingUsd, perTradeRiskUsd),
   }
@@ -117,6 +153,29 @@ export function pacedDailyCap({
 function tradesLeft(remainingUsd, perTradeRiskUsd) {
   if (!(perTradeRiskUsd > 0) || !Number.isFinite(remainingUsd)) return null
   return Math.max(0, Math.floor(remainingUsd / perTradeRiskUsd))
+}
+
+/**
+ * Which check is holding the line, in words. Null when nothing is.
+ *
+ * This exists because the two caps are now both live, so "limit=300" on a veto
+ * line no longer says WHICH field produced it — and the answer decides where
+ * the operator goes to change it.
+ */
+export function describeBinding(p) {
+  if (!p || p.capUsd == null) return null
+  const usd = (v) => `$${Number(v).toFixed(2)}`
+  if (p.binding === 'usd') {
+    return p.pctCapUsd != null
+      ? `flat $ cap binds (${usd(p.usdCapUsd)}, tighter than ${usd(p.pctCapUsd)} from %)`
+      : `flat $ cap ${usd(p.usdCapUsd)} — % check off`
+  }
+  if (p.binding === 'pct') {
+    return p.usdCapUsd != null
+      ? `% cap binds (${usd(p.pctCapUsd)}, tighter than the ${usd(p.usdCapUsd)} flat cap)`
+      : `% cap ${usd(p.pctCapUsd)} — flat $ check off`
+  }
+  return `both caps agree at ${usd(p.capUsd)}`
 }
 
 /** Human-readable tail for the veto line and the Risk page. */

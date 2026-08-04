@@ -500,7 +500,9 @@ test('paced budget — a ceiling raises the cap and says so on the veto line', (
   const db = freshDB()
   setBalance(db, 10000)
   insertClosedTrade(db, -400)                 // over the flat 3% ($300)…
-  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
+  // dailyLossLimit null: this test is about the PACED % ramp, and the flat $
+  // cap (300 by default) would bind below it and mask what is under test.
+  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18, dailyLossLimit: null }
   // PIN THE CLOCK. The paced allowance ramps from 3% at the day open to 18% at
   // its close, so "over the flat cap but inside the paced one" is only true
   // once the day has moved. Run this at 21:08 UTC — minutes after the FX day
@@ -522,7 +524,9 @@ test('paced budget — the ceiling still stops it, with the pacing explained', (
   const db = freshDB()
   setBalance(db, 10000)
   insertClosedTrade(db, -1900)                // past 18% of 10k
-  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18 }
+  // dailyLossLimit null: this test is about the PACED % ramp, and the flat $
+  // cap (300 by default) would bind below it and mask what is under test.
+  const cfg = { ...NO_SYMBOL_COOLDOWN, dailyLossPct: 0.03, dailyLossPctMax: 0.18, dailyLossLimit: null }
   // Same pinned clock as above: at the day's midpoint the ceiling is what
   // stops this, not the ramp still being low.
   const res = evaluateTrade(db, goodProposal(), cfg, { nowMs: fxDayOpenMs() + 12 * 3600_000 })
