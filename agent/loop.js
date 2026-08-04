@@ -396,8 +396,12 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     // Provenance for the order log: who fired this attempt (auto_signal |
     // validation_fill | …). Rides inside proposal_json — no schema change.
     source: synth.source || 'auto_signal',
+    // Gate THIS account, not the selected one. The order below is placed with
+    // this account's creds, so a gate that read a different account's open
+    // positions would approve a duplicate every cycle.
+    accountId,
   }
-  const riskCfg = loadRiskConfig(db)
+  const riskCfg = loadRiskConfig(db, accountId)
   const riskResult = evaluateTrade(db, proposal, riskCfg)
   // §70.9: hold the approval's own row id so the trade it produces can name it.
   const riskEventId = persistRiskEvent(db, proposal, riskResult)

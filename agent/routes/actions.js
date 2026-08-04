@@ -4339,8 +4339,11 @@ export default function actionsRouter(db) {
       const wItem = symbols.find(s => (typeof s === 'string' ? s : s.symbol) === analysis.symbol) || {}
       const requestedVol = (typeof wItem === 'object' ? wItem.maxVolume : null) || 0.01
 
-      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction, source: 'execute_analysis' }
-      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+      const proposal = { symbol: analysis.symbol, side, entry, sl, tp1, requestedVolume: requestedVol, strategy: analysis.strategy, conviction: analysis.overall_conviction, source: 'execute_analysis', accountId }
+      // This route places against the same `accountId` it read above, so
+      // naming it here is what makes the gate and the order agree rather
+      // than agreeing by coincidence.
+      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, accountId))
       persistRiskEvent(db, proposal, riskResult)
 
       if (!riskResult.approved) {
@@ -4507,8 +4510,9 @@ export default function actionsRouter(db) {
         strategy: 'manual',
         conviction: null,
         source: 'manual',
+        accountId: creds?.accountId ?? null,
       }
-      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db))
+      const riskResult = evaluateTrade(db, proposal, loadRiskConfig(db, creds?.accountId ?? null))
       persistRiskEvent(db, proposal, riskResult)
       if (!riskResult.approved) {
         return res.json({ ok: false, vetoed: true, reason: riskResult.veto_reason, checks: riskResult.checks })
