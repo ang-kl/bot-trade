@@ -1395,6 +1395,39 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
     }
 
     if (action === 'FULL_EXIT') {
+      // §5490 NULL-EXIT GUARD. Two questions before any close reaches the
+      // broker: may this writer close at all, and does closing HERE do
+      // anything. Both were answered "yes, always" until now, which is how 31
+      // explicit closes on 47790949 turned -$3,348 while 15 managed stops
+      // turned +$1,510. Placed at this seam on purpose — every close-side
+      // writer funnels through executeBrokerAction, so one check covers all
+      // of them rather than each learning the rule separately.
+      //
+      // Protection writers are exempt inside the guard, not here: putting the
+      // exemption in the module keeps "who may be blocked" answerable by
+      // reading one file instead of tracing call sites.
+      {
+        const { nullExitVerdict } = await import('./services/null-exit-guard.js')
+        const v = nullExitVerdict({
+          writer: source,
+          reason: eval_.reason,
+          currentR: eval_.metrics?.currentR ?? null,
+          minR: loadRiskConfig(db, accountId)?.nullExitMinR,
+        })
+        if (v.block) {
+          // The position stays ACTIVE and its broker SL/TP still protect it.
+          // Journalled rather than silent: a refused close is a decision, and
+          // an unexplained non-action is exactly what makes the management
+          // layer unreadable.
+          recordPositionEvent(db, {
+            accountId, positionId: ctx.positionId, tradeId: pos.trade_id, symbol: pos.symbol,
+            kind: 'close_refused', fromValue: null, toValue: null,
+            reason: `${v.why} | asked: ${eval_.reason}`, source,
+          })
+          log(`CLOSE REFUSED ${pos.symbol} by ${source}: ${v.why}`)
+          return { skipped: true, reason: v.why }
+        }
+      }
       const snap = await brokerSnapshot()
       if (snap.ok && !snap.positions.some(p => String(p?.positionId) === String(ctx.positionId))) {
         // The broker no longer holds this position — closing "again" would
@@ -1680,63 +1713,42 @@ export async function monitorOnePosition(db, s, pos, currentPrice, client, skipL
     // price/risk data is missing) still executes normally: cutting a
     // loser early on a broken thesis is exactly the case an LLM read
     // should be allowed to act on.
+    // §5490: THE DEFERRAL IS NOW TOTAL. The gate above only declined exits at
+    // POSITIVE R, on the reasoning that "cutting a loser early on a broken
+    // thesis is exactly the case an LLM read should be allowed to act on."
+    // Fourteen days of production disagreed with that reasoning, measured on
+    // account 47790949: 12 llm_monitor exits, 2 of them positive, -$2,229.85,
+    // and not one stop moved. The worst were NAS100 -$826 and USDZAR -$592 at
+    // a realised 0.000R — closes AT the entry price, where the entire loss is
+    // cost. Those are precisely the exits the old `r > 0` test waved through,
+    // because zero is not positive.
+    //
+    // So llm_monitor keeps its voice and loses its hands. It is absent from
+    // CLOSE_AUTHORITY in null-exit-guard.js, and this site no longer calls the
+    // executor at all — calling it and being refused would be dishonest about
+    // where the decision is made. Its read is journalled and alerted; a human
+    // or a deterministic rule closes if it should be closed.
     const r = eval_.metrics.currentR
-    if (r != null && r > 0) {
-      log(`LLM EXIT deferred for ${pos.symbol}: currentR ${r.toFixed(2)} is positive — deterministic gate declined, no broker action taken. ${check.reasoning}`)
-      try {
-        db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
-          'LLM_EXIT_DEFERRED', '/monitor',
-          JSON.stringify({
-            monitoredId: pos.id, symbol: pos.symbol, currentR: r, reasoning: check.reasoning,
-            detail: 'LLM monitor asked for an exit while currentR was positive — deterministic gate declined. Position left ACTIVE and unmanaged by this decision; broker SL/TP still protect.',
-          }).slice(0, 2000),
-        )
-      } catch { /* audit best-effort */ }
-      return
-    }
-
-    // BUG FIX (owner: "why are 18 positions not being trimmed" — audit
-    // found this): this branch used to call s.closePosition.run()
-    // directly — a bare DB status flip with NO broker close. The
-    // position stayed open and margin-locked at the broker forever
-    // while the bot's own bookkeeping said 'closed', so nothing
-    // (profit-keeper, trade-guards, this very monitor) ever looked at
-    // it again. Route through the same executeBrokerAction the
-    // deterministic path uses so the broker position actually closes.
-    const outcome = await executeBrokerAction(db, s, pos, { action: 'FULL_EXIT', reason: check.reasoning }, 'llm_monitor')
-    if (outcome.error) {
-      log(`Position close (LLM) FAILED: ${pos.symbol} — ${outcome.error}`)
-    } else if (outcome.skipped) {
-      // AUDIT F-L6-02: this used to DB-close on ANY skip reason. The
-      // comment said "no broker to close against", but `skipped` also
-      // covers no_ctrader_position_id, unknown_volume and
-      // account_not_in_registry — cases where a LIVE broker position
-      // exists. Flipping the local row to 'closed' there re-created
-      // exactly the bug the block above says was fixed: the position
-      // survives at the broker with nothing watching it, because every
-      // manager reads status='active'.
-      //
-      // Only the genuinely-no-broker case may close DB-only. Every
-      // other skip leaves the row ACTIVE so the next tick retries, and
-      // says so loudly rather than quietly.
-      if (mayCloseDbOnlyAfterSkip(outcome.reason)) {
-        log(`Position close (LLM) intent-only for ${pos.symbol}: ${outcome.reason} — ${check.reasoning}`)
-        s.closePosition.run('closed', pos.id) // no broker configured at all — DB-only, as before
-      } else {
-        log(`Position close (LLM) NOT EXECUTED for ${pos.symbol}: ${outcome.reason} — position left ACTIVE (a broker position may still be open) — ${check.reasoning}`)
-        try {
-          db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
-            'CLOSE_NOT_EXECUTED', '/monitor',
-            JSON.stringify({
-              monitoredId: pos.id, symbol: pos.symbol, reason: outcome.reason,
-              detail: 'LLM monitor asked for an exit; the executor could not reach the broker position. Row left active on purpose — do NOT read this as closed.',
-            }).slice(0, 2000),
-          )
-        } catch { /* audit best-effort */ }
+    log(`LLM EXIT advisory for ${pos.symbol}${r == null ? '' : ` (currentR ${r.toFixed(2)})`}: recorded, not executed — ${check.reasoning}`)
+    try {
+      db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+        'LLM_EXIT_ADVISORY', '/monitor',
+        JSON.stringify({
+          monitoredId: pos.id, symbol: pos.symbol, currentR: r, reasoning: check.reasoning,
+          detail: 'LLM monitor asked for an exit. It holds no close authority (null-exit-guard.js CLOSE_AUTHORITY) — position left ACTIVE, broker SL/TP still protect, deterministic rules still manage it normally.',
+        }).slice(0, 2000),
+      )
+    } catch { /* audit best-effort */ }
+    try {
+      // The thesis_status write above already marked this 'broken' where the
+      // model said so, so the Desk shows the disagreement without an alert.
+      // Only tell the owner when the model is calling a LOSER broken — that is
+      // the case a human might actually want to act on.
+      if (r != null && r < -0.5) {
+        const { notify } = await import('./services/telegram.js')
+        await notify(`🧠 LLM says thesis broken: ${pos.symbol} at ${r.toFixed(2)}R — advisory only, position still open. ${String(check.reasoning || '').slice(0, 300)}`)
       }
-    } else {
-      log(`Position closed (LLM): ${pos.symbol} — ${outcome.summary} — ${check.reasoning}`)
-    }
+    } catch { /* alerting never blocks the monitor */ }
   }
 }
 
