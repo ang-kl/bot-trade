@@ -25,6 +25,7 @@
 import { getState, setState } from '../db.js'
 import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
+import { singleFlight, authorisedAccountId, accountFilterSql, sameSideAccountIds } from './acting-layer.js'
 
 export const DEFAULT_LOSS_CAP = {
   on: true,
@@ -79,7 +80,23 @@ export function effectiveCapUsd(cfg, balance) {
  * One sweep. Deps injectable for tests: { exec, ws, notify, now }.
  * Returns { checked, breaches, closes, errors: [] }.
  */
-export async function runLossCap(db, creds, deps = {}) {
+/** symbolId → symbol name, parsed once. */
+function symbolNamesById(db) {
+  try {
+    const m = JSON.parse(getState(db, 'symbol_id_map') || '{}')
+    return Object.fromEntries(Object.entries(m).map(([sym, id]) => [String(id), sym]))
+  } catch { return {} }
+}
+
+export function runLossCap(db, creds, deps = {}) {
+  // Keyed by ACCOUNT, not by layer. Unlike the other four this sweep is
+  // invoked once per account inside runLossCapAllAccounts, so a single global
+  // key would make the second account join the first account's pass and
+  // silently never be checked.
+  return singleFlight(`loss_cap:${authorisedAccountId(creds) ?? 'none'}`, () => lossCapPass(db, creds, deps))
+}
+
+async function lossCapPass(db, creds, deps = {}) {
   const out = { checked: 0, breaches: 0, closes: 0, errors: [] }
   // PER-ACCOUNT CONFIG (04-08-2026). This sweep already runs per account —
   // creds carries the one it is authorised for, and the balance below is that
@@ -126,11 +143,7 @@ export async function runLossCap(db, creds, deps = {}) {
   if (!pnlMap || !Object.keys(pnlMap).length) {
     const { deriveUnrealizedMap } = await import('./unrealized-pnl.js')
     const { spotFor } = await import('./guardian.js')
-    let idToSym = {}
-    try {
-      const m = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-      idToSym = Object.fromEntries(Object.entries(m).map(([sym, id]) => [String(id), sym]))
-    } catch { idToSym = {} }
+    const idToSym = symbolNamesById(db)
     const derived = deriveUnrealizedMap(
       positions,
       (id) => (deps.spotFor ?? spotFor)(id),
@@ -148,17 +161,17 @@ export async function runLossCap(db, creds, deps = {}) {
   out.pnlSource = pnlSource
 
   // symbolId → name for readable alerts; ledger set for scope 'bot'.
-  let idToSymbol = {}
-  try {
-    const map = JSON.parse(getState(db, 'symbol_id_map') || '{}')
-    idToSymbol = Object.fromEntries(Object.entries(map).map(([sym, id]) => [String(id), sym]))
-  } catch { /* names degrade to ids */ }
+  // ONE symbol-map read per pass. It was parsed twice — once here for alert
+  // names, once above for the derive path — off the same agent_state key.
+  const idToSymbol = symbolNamesById(db)
+  const accountId = authorisedAccountId(creds)
   const ledgerPids = new Set(
     db.prepare(
       `SELECT t.ctrader_position_id AS pid FROM monitored_positions m
         JOIN trades t ON t.id = m.trade_id
-       WHERE m.status = 'active' AND t.ctrader_position_id IS NOT NULL`
-    ).all().map(r => String(r.pid))
+       WHERE m.status = 'active' AND t.ctrader_position_id IS NOT NULL
+         AND ${accountFilterSql('t.account_id')}`
+    ).all(accountId).map(r => String(r.pid))
   )
 
   for (const bp of positions) {
@@ -240,23 +253,11 @@ export async function runLossCapAllAccounts(db, baseCreds, deps = {}) {
   const out = { checked: 0, breaches: 0, closes: 0, errors: [], accounts: 0, perAccount: [] }
   if (!baseCreds?.ready) return out
 
-  const { getEnabledAccounts } = await import('./account-registry.js')
-
-  let roster = []
-  try {
-    // Same live/demo side only — one credential set reaches one host, and a
-    // demo token cannot read a live account's positions.
-    const isLive = !!baseCreds.isLive
-    roster = getEnabledAccounts(db)
-      .filter(a => (a.is_live === 1) === isLive)
-      .map(a => String(a.account_id))
-  } catch { roster = [] }
-
-  // The selected account leads, and a registry that does not list it still
-  // gets it swept — never let a registry gap silently drop the account the
-  // operator is actually looking at.
-  const primary = baseCreds.accountId != null ? String(baseCreds.accountId) : null
-  const ids = [...new Set([...(primary ? [primary] : []), ...roster])]
+  // Same live/demo side only, selected account first. This logic now lives in
+  // acting-layer.js so profit-ratchet uses the SAME roster rather than walking
+  // every enabled row regardless of side.
+  const primary = authorisedAccountId(baseCreds)
+  const ids = sameSideAccountIds(db, baseCreds)
   if (!ids.length) return out
 
   for (const id of ids) {

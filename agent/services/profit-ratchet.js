@@ -38,6 +38,7 @@
 import { getState, setState } from '../db.js'
 import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
+import { singleFlight, sameSideAccountIds } from './acting-layer.js'
 
 export const DEFAULT_PROFIT_RATCHET = {
   on: true,
@@ -148,11 +149,13 @@ export function keepRatchetOff(db, accountId) {
  *  box with no registry rows (old single-account setups, most tests) still
  *  gets its one staircase. */
 function accountsToWatch(db, creds) {
-  try {
-    const rows = db.prepare('SELECT account_id FROM accounts WHERE enabled = 1').all()
-    if (rows.length) return rows.map(r => String(r.account_id))
-  } catch { /* registry absent */ }
-  return creds?.accountId != null ? [String(creds.accountId)] : []
+  // SAME LIVE/DEMO SIDE ONLY (04-08-2026). This walked every enabled row
+  // regardless of side while carrying ONE credential set — and a demo token
+  // cannot read a live account, so every off-side account produced an
+  // authorisation error instead of a staircase. loss-cap had this right;
+  // sameSideAccountIds is that logic, shared.
+  const ids = sameSideAccountIds(db, creds)
+  return ids.length ? ids : (creds?.accountId != null ? [String(creds.accountId)] : [])
 }
 
 /**
@@ -161,7 +164,11 @@ function accountsToWatch(db, creds) {
  * Returns { accounts: [{accountId, equity, hwm, floor, stage, triggered,
  * rearmed, closes, errors}], skipped? }.
  */
-export async function runProfitRatchet(db, creds, deps = {}) {
+export function runProfitRatchet(db, creds, deps = {}) {
+  return singleFlight('profit_ratchet', () => profitRatchetPass(db, creds, deps))
+}
+
+async function profitRatchetPass(db, creds, deps = {}) {
   if (!creds?.ready) return { skipped: 'off_or_no_creds', accounts: [] }
   // PER-ACCOUNT CONFIG (04-08-2026). The staircase STATE was already per
   // account; its settings were not, so "ratchet off for the demo account" was

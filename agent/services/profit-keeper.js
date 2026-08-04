@@ -41,6 +41,7 @@ import { instrumentType } from '../lib/contracts.js'
 import { getAccountBalance } from './risk.js'
 import { roundToDigits } from './trade-guard.js'
 import { recordPositionEvent } from './position-events.js'
+import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 
 // P10: last-seen broker SL per position, as reported by the C++ TrailEngine's
 // GET /trail-status (a full snapshot, not a delta stream). Diffed each pass
@@ -204,12 +205,17 @@ export function decideProfitKeeper(cfg, {
  * One keeper pass: broker-truth positions in scope → decide → act through
  * the exec engine. Never throws; returns a summary.
  */
-export async function runProfitKeeper(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, errors: [] }
+export function runProfitKeeper(db, creds, deps = {}) {
+  return singleFlight('profit_keeper', () => profitKeeperPass(db, creds, deps))
+}
+
+async function profitKeeperPass(db, creds, deps = {}) {
+  const summary = { checked: 0, slMoves: 0, closes: 0, scaleOuts: 0, refused: 0, errors: [] }
   try {
     const cfg = loadProfitKeeperConfig(db)
     if (!cfg.on) return summary
 
+    const accountId = authorisedAccountId(creds)
     const scopeSql = cfg.scope === 'all'
       ? "mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual')"
       : "mp.source IN ('external', 'manual')"
@@ -220,15 +226,20 @@ export async function runProfitKeeper(db, creds, deps = {}) {
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
-         AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})`
-    ).all()
+         AND t.ctrader_position_id IS NOT NULL AND (${scopeSql})
+         AND ${accountFilterSql('mp.account_id')}`
+    ).all(accountId)
     if (rows.length === 0) return summary
 
     const exec = deps.exec ?? await import('../lib/exec-engine.js')
     const ws = deps.ws ?? await import('../lib/ctrader-ws.js')
     const sizing = deps.sizing ?? await import('../lib/lot-sizing.js')
     const notify = deps.notify ?? (() => {})
-    const balance = getAccountBalance(db)
+    // PER-ACCOUNT balance. This read had no accountId, so it resolved to the
+    // SELECTED account while the row set spanned every account — arming
+    // thresholds and the balance-percent floor were computed from the wrong
+    // account's money for every account but one.
+    const balance = getAccountBalance(db, accountId)
 
     // Broker truth: live volume, entry, current SL per position.
     const rec = await exec.reconcile(creds)
@@ -237,7 +248,12 @@ export async function runProfitKeeper(db, creds, deps = {}) {
       if (p.positionId != null) live.set(String(p.positionId), p)
     }
 
-    const involved = rows
+    const scoped = scopeToAccount(rows, { accountId, live })
+    summary.refused = scoped.foreign.length
+    if (scoped.foreign.length) {
+      summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
+    }
+    const involved = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
     const symbolIds = [...new Set(involved.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
