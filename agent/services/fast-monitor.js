@@ -288,6 +288,40 @@ export async function runFastMonitor(db, creds, deps = {}) {
  * Re-anchors from `nowMs` rather than the missed deadline on purpose: a pass
  * that ran late owes one run, not a backlog of them.
  */
+// A slow pass must not starve the ticker.
+//
+// The loop wrapped these in runBudgetedSubPhase for exactly this reason. On
+// the fast path the stake is higher: the 3-second tick is what re-prices spike
+// windows, and tickRunning makes a long pass skip ticks rather than overlap
+// them. So a keeper that hangs on a broker call would silently disable spike
+// protection for as long as it hangs.
+//
+// The work is NOT cancelled — it finishes detached, and its own writes are
+// idempotent. Only the WAIT is abandoned, so the tick returns and the ticker
+// keeps its cadence.
+export async function withBudget(name, budgetMs, work) {
+  let timer = null
+  const startedAt = Date.now()
+  const raced = await Promise.race([
+    Promise.resolve().then(work).then(v => ({ value: v }), e => ({ error: e })),
+    // NOT unref'd, deliberately. An unref'd budget timer cannot fire when it is
+    // the only thing left on the event loop, so the race never settles and the
+    // caller silently returns nothing. In the ticker that never happens (the
+    // 3s interval keeps the loop alive), which is exactly what makes it the
+    // kind of bug you find in production rather than in a test. The timer is
+    // short and cleared on both paths, so keeping it referenced costs nothing.
+    new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), budgetMs) }),
+  ])
+  if (timer) clearTimeout(timer)
+  if (raced.timedOut) {
+    const msg = `${name} exceeded its ${Math.round(budgetMs / 1000)}s budget after ${Math.round((Date.now() - startedAt) / 1000)}s — wait abandoned, run continues detached`
+    console.warn(`[fast-monitor] ${msg}`)
+    return { timedOut: true, error: new Error(msg) }
+  }
+  if (raced.error) return { error: raced.error }
+  return { value: raced.value }
+}
+
 export function makeCadenceGate() {
   const nextAt = new Map()
   return function due(key, everySec, nowMs) {
@@ -417,6 +451,48 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       } catch (err) {
         console.error('[fast-monitor] profit-ratchet failed:', err.message)
       }
+      // TRADE GUARDS + PROFIT KEEPER — MOVED here from the loop, not copied.
+      //
+      // §43 wants protection on its own path; §36.2.3 forbids duplicating an
+      // ACTING one: "Two components must not unknowingly write the same stop."
+      // The protection audit only reads, so it runs on both paths deliberately.
+      // These two MOVE stops and CLOSE positions, so they run here and ONLY
+      // here — their loop call sites are gone. One writer, on a timer that
+      // does not depend on the scan cycle.
+      //
+      // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
+      // reason, and the stake is higher here because a hung pass would make
+      // tickRunning skip the 3-second ticks that spike protection depends on.
+      for (const job of [
+        { key: 'trade_guards', label: 'Trade guards', mod: './trade-guard.js', fn: 'runTradeGuards',
+          say: r => (r.slMoves || r.partialCloses) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)` : null },
+        { key: 'profit_keeper', label: 'Profit Keeper', mod: './profit-keeper.js', fn: 'runProfitKeeper',
+          say: r => (r.slMoves || r.closes) ? `${r.slMoves} lock(s), ${r.closes} close(s)` : null },
+      ]) {
+        try {
+          if (!creds?.ready) break
+          const m = await import(job.mod)
+          const res = await withBudget(job.key, 45_000, () => m[job.fn](db, creds, {
+            notify: (text) => import('./telegram-control.js').then(t => t.notifyOwner(text)).catch(() => {}),
+          }))
+          const hb = deps.heartbeat ?? await import('./heartbeat.js')
+          if (res.error) {
+            console.error(`[fast-monitor] ${job.label} failed:`, res.error.message)
+            hb.beat(db, job.key, { ok: false, error: res.error.message })
+          } else {
+            const line = job.say(res.value || {})
+            if (line) console.log(`[fast-monitor] ${job.label}: ${line}`)
+            if (res.value?.errors?.length) console.error(`[fast-monitor] ${job.label} errors: ${res.value.errors.join(' · ')}`)
+            hb.beat(db, job.key, { ok: true })
+          }
+        } catch (err) {
+          console.error(`[fast-monitor] ${job.label} threw:`, err.message)
+          try {
+            const hb = deps.heartbeat ?? await import('./heartbeat.js')
+            hb.beat(db, job.key, { ok: false, error: err.message })
+          } catch { /* heartbeat is best-effort */ }
+        }
+      }
       // PROTECTION AUDIT — Operating Goal Plan §43, the Non-Negotiable Rule:
       // protection must have its OWN functioning and observable path, not a
       // seat on the strategy loop.
@@ -441,9 +517,16 @@ export function startFastMonitor(db, getCreds, deps = {}) {
             console.warn(`[fast-monitor] protection audit: ${pa.naked} naked, ${pa.targetless} targetless, ${pa.phantom} stop disagreement(s) across ${pa.accounts} account(s)`)
           }
           if (pa.errors.length) console.error(`[fast-monitor] protection audit errors: ${pa.errors.join(' · ')}`)
+          if (pa.unauditable.length) console.warn(`[fast-monitor] protection audit could not reach: ${pa.unauditable.join(' · ')}`)
           // BEAT ON THIS PATH TOO. The controller is what tells the operator
           // protection is being checked; if only the loop could beat it, this
           // path could run perfectly while the panel still read "stalled".
+          //
+          // An UNAUDITABLE account does not fail the beat — see
+          // runProtectionAuditAllAccounts. 5268549's token does not cover it,
+          // and letting that hold the controller red forever would train the
+          // operator to ignore the one light that says their positions are
+          // being checked.
           const hb = deps.heartbeat ?? await import('./heartbeat.js')
           hb.beat(db, 'protection_audit', {
             ok: pa.errors.length === 0,

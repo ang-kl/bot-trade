@@ -38,8 +38,16 @@ export const CONTROLLERS = {
   burn_in:          { label: 'Burn-in engine',         tiedToLoop: true,  factor: 3 },
   pending_orders:   { label: 'Pending-order manager',  tiedToLoop: true,  factor: 3 },
   order_monitor:    { label: 'Order-fill monitor',     tiedToLoop: true,  factor: 3 },
-  trade_guards:     { label: 'Trade guards',           tiedToLoop: true,  factor: 3 },
-  profit_keeper:    { label: 'Profit keeper',          tiedToLoop: true,  factor: 3 },
+  // MOVED OFF THE LOOP (2026-08-04, Operating Goal Plan §70.7). Both of these
+  // move stops and close positions, and both used to run inside the 5-minute
+  // cycle — so a long scan stopped break-even moves, trailing and profit locks
+  // at exactly the moment a fast market makes them matter. They now run in the
+  // fast monitor's 60s band, and their expectation is a FIXED 60s rather than
+  // "one loop": a threshold derived from observed loop cadence stretches as
+  // the loop degrades, so the alarm quietly follows the failure it exists to
+  // catch. Grace of 4 covers a budgeted pass that abandons its wait.
+  trade_guards:     { label: 'Trade guards',           expectedSec: 60,   factor: 4 },
+  profit_keeper:    { label: 'Profit keeper',          expectedSec: 60,   factor: 4 },
   adaptive_breaker: { label: 'Adaptive breaker',       tiedToLoop: true,  factor: 3 },
   autopilot:        { label: 'Strategy autopilot',     tiedToLoop: true,  factor: 3 },
   hours_refresh:    { label: 'Market-hours refresh',   expectedSec: 86_400, factor: 2 },
@@ -52,7 +60,11 @@ export const CONTROLLERS = {
   // found to have closed with no stop loss at all while the ledger called it
   // "stopped beyond the SL". A stalled protection audit is itself dangerous:
   // it means nothing is checking, so it gets a heartbeat like everything else.
-  protection_audit: { label: 'Position protection audit', tiedToLoop: true, factor: 3 },
+  // Runs on BOTH paths deliberately (§43 asks for redundancy, and the audit
+  // only reads): the loop's reconcile phase AND the fast monitor's 60s band.
+  // The faster path sets the expectation — fixed, not loop-derived, for the
+  // same reason as above.
+  protection_audit: { label: 'Position protection audit', expectedSec: 60, factor: 4 },
   // D6 — the daily ATR baseline the volatility gate reads. If this stops
   // running, atr_history goes stale and every symbol quietly reads as NORMAL
   // volatility: a verdict none of them earned, and indistinguishable from a

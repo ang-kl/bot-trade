@@ -3053,45 +3053,18 @@ async function runLoop(db) {
         await hbeat(db, 'pending_signals', false, err.message)
       }
 
-      // Per-position trade guards — break-even / trailing / partial TPs the
-      // owner armed on individual positions. Inert when no position has
-      // rules; a failure must never take down the loop.
-      try {
-        const guardCreds = getCtraderCreds(db)
-        if (guardCreds.ready && !cycleOverBudget()) {
-          phase('trade guards')
-          const { runTradeGuards } = await import('./services/trade-guard.js')
-          const g = await runBudgetedSubPhase(db, 'trade_guards', () => runTradeGuards(db, guardCreds, {
-            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          }))
-          if (g.slMoves || g.partialCloses) log(`Trade guards: ${g.slMoves} SL move(s), ${g.partialCloses} partial close(s)`)
-          if (g.errors?.length) log(`Trade guards errors: ${g.errors.join(' · ')}`)
-        }
-        await hbeat(db, 'trade_guards')
-      } catch (err) {
-        log(`Trade guards failed (non-fatal): ${err.message}`)
-        await hbeat(db, 'trade_guards', false, err.message)
-      }
-
-      // Profit Keeper — opt-in profit protection for manual/external
-      // positions (ratchets broker-side SLs, closes on giveback). Inert
-      // when off; a failure must never take down the loop.
-      try {
-        const keeperCreds = getCtraderCreds(db)
-        if (keeperCreds.ready && !cycleOverBudget()) {
-          phase('profit keeper')
-          const { runProfitKeeper } = await import('./services/profit-keeper.js')
-          const k = await runBudgetedSubPhase(db, 'profit_keeper', () => runProfitKeeper(db, keeperCreds, {
-            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          }))
-          if (k.slMoves || k.closes) log(`Profit Keeper: ${k.slMoves} lock(s), ${k.closes} close(s)`)
-          if (k.errors?.length) log(`Profit Keeper errors: ${k.errors.join(' · ')}`)
-        }
-        await hbeat(db, 'profit_keeper')
-      } catch (err) {
-        log(`Profit Keeper failed (non-fatal): ${err.message}`)
-        await hbeat(db, 'profit_keeper', false, err.message)
-      }
+      // TRADE GUARDS + PROFIT KEEPER NOW RUN ON THE FAST MONITOR, not here.
+      //
+      // Operating Goal Plan §70.7: "Ensure the five-minute strategy loop is
+      // never the sole position protector." Both of these MOVE stops and CLOSE
+      // positions, and both were bolted to this cycle — so break-even moves,
+      // trailing and profit locks stopped whenever a scan ran long, which is
+      // precisely when a fast market makes them matter.
+      //
+      // They were MOVED rather than duplicated. §36.2.3: "Two components must
+      // not unknowingly write the same stop." The protection audit reads only,
+      // so it deliberately runs on both paths; an acting layer must have
+      // exactly one writer. See services/fast-monitor.js, 60s band.
 
       // Loss Guardian — safety net for LOSING/naked positions the Profit
       // Keeper won't touch (it only protects gains). Conservative: places a
