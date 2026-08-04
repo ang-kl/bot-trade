@@ -979,6 +979,19 @@ export function initDB(dbPath) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
 
+  // §70.9 P&L RECONCILIATION EVIDENCE. The backfill's "we tried and gave up"
+  // record lived in a module-level Map keyed by ACCOUNT — so it was forgotten
+  // on every restart, and this service redeploys on every push to main. The
+  // evidence mark-unresolvable.js requires before writing a row off therefore
+  // reset constantly, and a row nobody could ever fill kept blocking. These
+  // columns make the record PER TRADE and durable: how many times the repair
+  // has looked at this row, and when it last did.
+  {
+    const cols = new Set(db.prepare('PRAGMA table_info(trades)').all().map(c => c.name));
+    if (!cols.has('pnl_attempts')) db.exec('ALTER TABLE trades ADD COLUMN pnl_attempts INTEGER');
+    if (!cols.has('pnl_last_attempt_at')) db.exec('ALTER TABLE trades ADD COLUMN pnl_last_attempt_at TEXT');
+  }
+
   // Trade forensics (2026-07-24, Performance Ledger collect-forward): the
   // execution-quality and market-context fields the dashboard's trade
   // anatomy shows. Captured at fill time going FORWARD; historical rows stay
