@@ -171,6 +171,7 @@ export default function Desk() {
   const [dupeTrades, setDupeTrades] = useState(null)    // duplicate-trade audit (/state/duplicate-trades)
   const [weekendFlags, setWeekendFlags] = useState([])  // pre-closure losing positions (/state/weekend-loss-flags)
   const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
+  const [pulse, setPulse] = useState(null)              // market pulse (/state/market-pulse)
   const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
   const [sweepNote, setSweepNote] = useState('')
   const [labelBackfillBusy, setLabelBackfillBusy] = useState(false) // recover label_strategy from thesis fingerprints
@@ -272,7 +273,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, dupe, wlf, px] = await Promise.all([
+      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -286,6 +287,7 @@ export default function Desk() {
         agentGet('/state/orders').catch(() => null),
         agentGet('/state/postmortems').catch(() => null),
         agentGet('/state/correlation').catch(() => null),
+        agentGet('/state/market-pulse').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
         agentGet('/state/weekend-loss-flags').catch(() => null),
         agentGet('/state/prices').catch(() => null),
@@ -310,6 +312,7 @@ export default function Desk() {
       setOrders(ord || null)
       setPostmortems(pms || null)
       setCorrelation(corr || null)
+      setPulse(mp || null)
       setDupeTrades(dupe || null)
       setWeekendFlags(wlf?.flags || [])
       setError('')
@@ -771,6 +774,85 @@ export default function Desk() {
           {sweepNote && <span className="ml-2 text-[9px] text-[var(--color-text-sub)]">{sweepNote}</span>}
         </div>
         <LossReview postmortems={postmortems} />
+      </Section>
+
+      {/* MARKET PULSE — trending / herding / defended, per symbol.
+          Owner 05-08-2026: "Create an algo to understand movements and big
+          moves that give more awareness to the symbol trading and pending to
+          trade." ADVISORY: it vetoes nothing, it tells you what the market is
+          doing to the symbols you hold and the ones about to be entered. */}
+      <Section
+        id="pulse"
+        title="Market pulse — trend, herd, or a level being held"
+        summary={pulse?.builtAt
+          ? `${Object.keys(pulse.readings || {}).length} symbols · ${(pulse.sharp || []).length} sharp · ${(pulse.defended || []).length} held · ${(pulse.divergences || []).length} divergence(s)`
+          : null}
+        defaultOpen={false}
+      >
+        {!pulse && <Skeleton lines={3} />}
+        {pulse && !pulse.builtAt && (
+          <p className="text-[9px] text-[var(--color-text-sub)]">
+            Not computed yet — the pulse is written by the quant phase alongside the correlation matrix, from the same bars.
+          </p>
+        )}
+        {pulse?.builtAt && (
+          <div className="space-y-1.5 text-[9px]">
+            <p className="text-[var(--color-text-sub)]">
+              Read {ago(pulse.builtAt)} ago. Three independent measures per symbol: how DIRECTIONAL the move is, how big it is for
+              this symbol over this span, and how much range it spent going nowhere. Advisory — nothing here refuses a trade.
+            </p>
+
+            {(pulse.divergences || []).length > 0 && (
+              // The owner's own case, first: one leg of a correlated pair
+              // held while the other runs.
+              <div className="glass-inset rounded-lg p-2">
+                <div className="font-semibold text-[var(--color-warning-text)]">Correlated pairs under stress</div>
+                {pulse.divergences.slice(0, 6).map(d => (
+                  <div key={`${d.held}|${d.running}`} className="mt-0.5">
+                    <span className="font-semibold">{d.held}</span> held · <span className="font-semibold">{d.running}</span> running
+                    <span className="text-[var(--color-text-sub)]"> (r {d.r > 0 ? '+' : ''}{d.r})</span>
+                    <div className="text-[var(--color-text-sub)]">{d.note}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(pulse.sharp || []).length > 0 && (
+              <div>
+                <span className="font-semibold">Sharp movers</span>
+                <span className="text-[var(--color-text-sub)]"> — the span where the RATE changed, not merely a steep one: </span>
+                {pulse.sharp.slice(0, 10).map(m => (
+                  <span key={m.symbol} className="mr-2 tabular-nums">
+                    {m.symbol} <span className={`font-semibold ${m.netPct >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{m.netPct > 0 ? '+' : ''}{m.netPct}%</span>
+                    <span className="text-[var(--color-text-sub)]"> {m.sigma > 0 ? '+' : ''}{m.sigma}σ</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {(pulse.defended || []).length > 0 && (
+              <div>
+                <span className="font-semibold">Levels being held</span>
+                <span className="text-[var(--color-text-sub)]"> — a lot of range bought no distance; a net-change column reads these as calm: </span>
+                {pulse.defended.slice(0, 10).map(m => (
+                  <span key={m.symbol} className="mr-2 tabular-nums">{m.symbol} <span className="text-[var(--color-text-sub)]">{m.netPct > 0 ? '+' : ''}{m.netPct}%</span></span>
+                ))}
+              </div>
+            )}
+
+            {(pulse.herds || []).filter(h => h.moving).length > 0 && (
+              <div>
+                <span className="font-semibold">Herds on the move</span>
+                <span className="text-[var(--color-text-sub)]"> — a position in any member is a position in all of them: </span>
+                {pulse.herds.filter(h => h.moving).slice(0, 5).map((h, i) => (
+                  <div key={i} className="text-[var(--color-text-sub)]">
+                    {h.dir > 0 ? '↑' : '↓'} {h.n} symbols, {Math.round(h.agreement * 100)}% agreeing: {(h.members || []).join(' · ')}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </Section>
 
       {/* Correlation-symbols controller — the cluster exposure the risk gate

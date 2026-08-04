@@ -21,6 +21,7 @@ import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
+import { loadPulse, pulseFor, PULSE_STATES } from '../services/market-pulse.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
@@ -2898,6 +2899,25 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // GET /state/market-pulse — trending / herding / defended, per symbol.
+  //
+  // Owner 05-08-2026: "Create an algo to understand movements and big moves
+  // that give more awareness to the symbol trading and pending to trade."
+  // This is the read side of it. Global by construction — a market regime is
+  // not a property of an account, and scoping it to one would be a category
+  // error the way scoping cluster exposure to all of them was.
+  // -----------------------------------------------------------------------
+  router.get('/market-pulse', (req, res) => {
+    try {
+      const sym = String(req.query.symbol || '').toUpperCase().trim()
+      if (sym) return res.json({ symbol: sym, ...pulseFor(db, sym) })
+      const p = loadPulse(db)
+      if (!p) return res.json({ builtAt: null, states: PULSE_STATES, readings: {}, herds: [], sharp: [], defended: [], divergences: [] })
+      res.json({ states: PULSE_STATES, ...p })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/symbol-descriptions — SYMBOL → the broker's own long name.
   //

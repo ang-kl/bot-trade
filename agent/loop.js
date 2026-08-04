@@ -3804,14 +3804,32 @@ async function runLoop(db) {
             // covered, which is what actually needs correlating.
             const corrSymbols = [...new Set([...held, ...recentScans.map(r => r.symbol)])].filter(sym => symbolMap[String(sym).toUpperCase()])
             const { computeAndStoreMatrix } = await import('./services/correlation-matrix.js')
+            // The bars each symbol was correlated on, kept as they arrive.
+            // The market pulse reads the SAME window rather than fetching it
+            // again — one broker pass answers both questions.
+            const barsSeen = {}
             const res = await computeAndStoreMatrix(db, corrSymbols, {
               maxSymbols: 24,
               fetchBars: async (sym, tf, count) => {
                 const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolMap[String(sym).toUpperCase()], [tf], count, 20_000)
-                return byTf[tf] || []
+                const bars = byTf[tf] || []
+                barsSeen[String(sym).toUpperCase()] = bars
+                return bars
               },
             }, new Date().toISOString())
             if (res.built) log(`Correlation matrix: ${res.built} symbols`)
+
+            // MARKET PULSE — trending / herding / defended, per symbol.
+            // Advisory: it writes a reading, it does not gate anything.
+            try {
+              const { computeAndStorePulse } = await import('./services/market-pulse.js')
+              const p = computeAndStorePulse(db, barsSeen, new Date().toISOString())
+              if (p.symbols) {
+                log(`Market pulse: ${p.symbols} symbols · ${p.herds} herd(s) · ${p.sharp} sharp · ${p.defended} defended · ${p.divergences} divergence(s)`)
+              }
+            } catch (err) {
+              log('Market pulse failed (non-fatal):', err.message)
+            }
           }
         } catch (err) {
           log('Correlation matrix failed (non-fatal):', err.message)

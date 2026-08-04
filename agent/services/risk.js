@@ -21,6 +21,9 @@ import { minRrFor } from './strategies.js'
 import { unresolvedPnlSince, unknownPnlBlocks, DEFAULT_UNKNOWN_PNL_BLOCK, DEFAULT_UNKNOWN_PNL_GRACE_MIN, DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN, DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS } from './unresolved-pnl.js'
 import { evaluateGlobalGuards } from './global-guards.js'
 import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
+// Static, not dynamic: evaluateTrade is synchronous. market-pulse.js does
+// not import risk.js, so this adds no cycle.
+import { pulseFor } from './market-pulse.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -681,6 +684,25 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
     balance, leverage, account_id: acct,
     account_source: acctExplicit ? 'proposal' : 'selected',
   }
+
+  // MARKET PULSE — ADVISORY, recorded, never gating.
+  //
+  // Owner 05-08-2026 asked for movement awareness on "the symbol trading and
+  // pending to trade". This stamps the reading onto checks_json at the moment
+  // of the verdict, so every approval and every veto carries what the market
+  // was doing when it was made — which is the only way to answer, later,
+  // whether entering into a defended level or against a moving herd was the
+  // thing that went wrong.
+  //
+  // IT DOES NOT VETO. A new refusal condition is a risk-limit change and
+  // CLAUDE.md reserves those for the owner. The data has to exist before a
+  // threshold on it can be argued for; this is that step.
+  try {
+    const p = pulseFor(db, proposal.symbol, opts.nowMs ?? Date.now())
+    checks.pulse = p.known
+      ? { state: p.state, driver: p.driver, sharp: p.sharp, er: p.er, sigma: p.sigma, withHerd: p.withHerd, divergence: p.divergence ? p.divergence.note : null }
+      : { known: false, why: p.why }
+  } catch { checks.pulse = { known: false, why: 'pulse unavailable' } }
 
   // ---- 0. 5A global capital protection -----------------------------------
   // Portfolio-wide guards evaluated across ALL accounts' rows before any
