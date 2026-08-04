@@ -979,6 +979,27 @@ export function initDB(dbPath) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
 
+  // §70.8 / §69.4.3 TERMINAL DISPOSITION. The lineage above answers "which row
+  // did this approval produce" when there IS one. What it could not answer is
+  // the case §70.8 is named after: an approval that produced NOTHING. Absence
+  // is not a value, so it could only ever be inferred by subtraction, and
+  // decision-audit.js's header records what that cost — "96 approved, 79
+  // orders, 17 went nowhere" was wrong twice over before the arithmetic was
+  // corrected, because the aggregate had no way to name a single row.
+  //
+  // `disposition` is that value, written by a sweep rather than guessed by a
+  // reader. `submitted_at` is the other half: entry_latency_ms already timed
+  // submit -> fill, and nothing timed VERDICT -> submit, which is precisely
+  // the interval where an approval goes quiet.
+  {
+    const cols = new Set(db.prepare(`PRAGMA table_info(risk_events)`).all().map(c => c.name));
+    if (!cols.has('disposition')) db.exec(`ALTER TABLE risk_events ADD COLUMN disposition TEXT`);
+    if (!cols.has('disposition_at')) db.exec(`ALTER TABLE risk_events ADD COLUMN disposition_at TEXT`);
+    if (!cols.has('submitted_at')) db.exec(`ALTER TABLE risk_events ADD COLUMN submitted_at TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_risk_events_disposition
+             ON risk_events(disposition, created_at);`);
+
   // §70.9 P&L RECONCILIATION EVIDENCE. The backfill's "we tried and gave up"
   // record lived in a module-level Map keyed by ACCOUNT — so it was forgotten
   // on every restart, and this service redeploys on every push to main. The

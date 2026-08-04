@@ -1098,6 +1098,23 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/dispositions — §70.8. What became of every approval, and how
+  // long the gate's verdict took to reach the broker.
+  //
+  // `dropped` is the answer decision-audit.js could never give: not "the
+  // counts disagree by 17" but seventeen rows with ids, symbols and times.
+  // -----------------------------------------------------------------------
+  router.get('/dispositions', async (req, res) => {
+    try {
+      const { dispositionReport } = await import('../services/opportunity-disposition.js')
+      res.json(dispositionReport(db, {
+        days: req.query.days,
+        account: req.query.account != null && req.query.account !== '' ? String(req.query.account) : null,
+      }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/config-proposals — C-1. What the record says the settings
   // should be, with the arithmetic attached. READ-ONLY BY CONSTRUCTION: the
   // controller has no write path and a test asserts it never gains one.

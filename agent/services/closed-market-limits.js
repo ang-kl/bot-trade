@@ -237,6 +237,10 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
       volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null
     )
+    try {
+      const { recordSubmitted } = await import('./opportunity-disposition.js')
+      recordSubmitted(db, riskEventId)     // §70.8 verdict -> submit
+    } catch { /* provenance never blocks a placement */ }
     risk.persistRiskEvent(db, proposal, {
       approved: true, veto_reason: null,
       checks: { closed_market_limit_placed: true, orderId, limitPrice: payload.limitPrice, expiresAt: new Date(expiresAtMs).toISOString() },

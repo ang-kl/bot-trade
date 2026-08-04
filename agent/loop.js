@@ -594,6 +594,14 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
       volLots, synth.strategy || null, String(accountId), riskEventId ?? null,
     ).lastInsertRowid
 
+    // §70.8: stamp the moment the order LEAVES, so verdict -> submit is
+    // measurable. entry_latency_ms below times submit -> execution event; the
+    // gap this closes is the one an approval goes quiet in.
+    try {
+      const { recordSubmitted } = await import('./services/opportunity-disposition.js')
+      recordSubmitted(db, riskEventId)
+    } catch { /* provenance never blocks a submission */ }
+
     const submitT0 = Date.now()
     let exec
     try {
@@ -3881,6 +3889,23 @@ async function runLoop(db) {
       // Phase-flag tracer rows: tiny, but unbounded is unbounded. 90 days
       // matches risk_events — flips older than that are history, not evidence.
       try { db.prepare("DELETE FROM phase_flag_trace WHERE at < datetime('now', '-90 days')").run() } catch { /* housekeeping */ }
+      // §70.8: settle the terminal disposition of every approval that can be
+      // settled. Rides in housekeeping because it is a derivation over rows
+      // that are already written — one indexed scan, no broker call — and
+      // because an approval needs a few minutes of grace before "nothing
+      // acted on it" is a finding rather than a race.
+      try {
+        const { sweepDispositions } = await import('./services/opportunity-disposition.js')
+        const sw = sweepDispositions(db)
+        if (sw.written > 0) {
+          log(`Dispositions: settled ${sw.written} of ${sw.scanned} (${JSON.stringify(sw.counts)}), ${sw.pending} still in flight`)
+        }
+        if (sw.counts.dropped > 0) {
+          // The §70.8 finding itself: the gate said yes and nothing acted.
+          log(`§70.8 SILENT GAP: ${sw.counts.dropped} approval(s) produced no order — see GET /state/dispositions`)
+        }
+      } catch (e) { log('Disposition sweep failed (non-fatal):', e.message) }
+
       log(`Housekeeping: pruned ${d1.changes} scans, ${d2.changes} signals, ${d3.changes} regimes, ${d4.changes} risk_events, ${d5} decisions, ${d6} position_events, ${d7.trades} old trades, ${d7.postmortems + d7.orphanPostmortems} postmortems, ${d8.cupHandle} cup-handle diags, ${d8.analyses} analyses, ${d8.actionLog} action-log rows`)
     } catch (err) {
       log('Housekeeping error:', err.message)
