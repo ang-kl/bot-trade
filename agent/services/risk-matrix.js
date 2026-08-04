@@ -57,7 +57,7 @@ export const RISK_GROUPS = Object.freeze([
     'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult',
   ] },
   { id: 'pnl', label: 'P&L trust', keys: [
-    'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin',
+    'blockOnUnknownPnl', 'unknownPnlGraceMin', 'unknownPnlMaxAgeMin', 'unknownPnlMinAttempts',
     'minTradesForKelly', 'allowNegativeExpectancyOverride',
   ] },
   { id: 'cost', label: 'Cost gates', keys: [

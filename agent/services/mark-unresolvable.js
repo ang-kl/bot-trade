@@ -41,6 +41,39 @@
 export const DEFAULT_UNRESOLVABLE_HORIZON_DAYS = 7
 
 /**
+ * The DURABLE half of the "we tried and gave up" evidence.
+ *
+ * `exhaustedAccounts()` reads pnl-backfill's in-memory backoff ladder, which is
+ * erased by every restart — on a service that redeploys with each push to main
+ * it was almost always empty, so this planner reported "nothing qualifies" no
+ * matter how stuck the ledger was. Production, 04-08-2026: three rows on
+ * account 46130058 sitting at `pnl_attempts = 8`, and the plan route still
+ * said the backfill "has not exhausted its retries on any account".
+ *
+ * `pnl_attempts` is per ROW and survives deploys. An account holding a row the
+ * backfill tried this many times and never filled has demonstrably given up on
+ * it, whatever the current process happens to remember.
+ *
+ * Returned as ACCOUNT IDS rather than row ids so it composes with the existing
+ * gate: the age rule still applies on top, and neither piece of evidence alone
+ * marks anything.
+ */
+export function exhaustedAccountsFromLedger(db, { minAttempts = 6 } = {}) {
+  const n = Number.isFinite(Number(minAttempts)) && Number(minAttempts) > 0 ? Number(minAttempts) : 6
+  try {
+    return db.prepare(`
+      SELECT DISTINCT account_id AS id
+        FROM trades
+       WHERE status = 'closed'
+         AND net_pnl IS NULL
+         AND COALESCE(pnl_unresolvable, 0) = 0
+         AND account_id IS NOT NULL
+         AND COALESCE(pnl_attempts, 0) >= ?
+    `).all(n).map(r => String(r.id))
+  } catch { return [] }
+}
+
+/**
  * Rows that QUALIFY as unknowable, with the evidence, without writing anything.
  *
  * Read-only on purpose: the owner should be able to see exactly which rows would

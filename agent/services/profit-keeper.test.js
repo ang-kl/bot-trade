@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper } from './profit-keeper.js'
+import { decideProfitKeeper, loadProfitKeeperConfig, atrFromBars, DEFAULT_PROFIT_KEEPER, runProfitKeeper, clearAtrCache, readAtrCache, writeAtrCache } from './profit-keeper.js'
 import { recentPositionEvents } from './position-events.js'
 
 const CFG = { on: true, scope: 'external', armProfitUsd: 50, givebackPct: 40, takeProfitUsd: null }
@@ -351,4 +351,52 @@ test('runProfitKeeper never throws when getTrailStatus is unavailable or disable
   const out2 = await runProfitKeeper(db, CREDS, deps)
   assert.equal(out2.errors.length, 0)
   assert.equal(recentPositionEvents(db, { positionId: '9001' }).filter(r => r.kind === 'trail_tightened').length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// §70.6 follow-up: the ATR fetch used to BOUND TICK RESPONSE.
+//
+// The pass is single-flighted, so the cheap rules — chandelier breach,
+// takeProfitUsd, giveback, all of which need only a price already in hand —
+// queued behind one WS round-trip per symbol, run one after another. The
+// answers are unchanged; the waiting is not.
+// ---------------------------------------------------------------------------
+
+test('an ATR is cached for exactly one bar of its own timeframe, no longer', () => {
+  clearAtrCache()
+  const t0 = 1_000_000
+  writeAtrCache(7, '1h', { atr: 0.5, bars: [] }, t0)
+  assert.equal(readAtrCache(7, '1h', t0 + 59 * 60_000)?.atr, 0.5, 'still the same bar')
+  assert.equal(readAtrCache(7, '1h', t0 + 3_600_000), null, 'the bar closed; recompute')
+})
+
+test('a 5m ATR expires in five minutes, not an hour', () => {
+  // The TTL is the data\'s own period, not a guess at "long enough".
+  clearAtrCache()
+  const t0 = 2_000_000
+  writeAtrCache(9, '5m', { atr: 1.2, bars: [] }, t0)
+  assert.ok(readAtrCache(9, '5m', t0 + 299_000))
+  assert.equal(readAtrCache(9, '5m', t0 + 300_000), null)
+})
+
+test('an unrecognised timeframe is never served from cache', () => {
+  // One extra fetch beats an ATR held past the data that produced it.
+  clearAtrCache()
+  writeAtrCache(1, '3h', { atr: 1, bars: [] }, 0)
+  assert.equal(readAtrCache(1, '3h', 1), null)
+})
+
+test('the cache is bounded and evicts the OLDEST, not everything', () => {
+  // A full flush would make every symbol refetch at once — the burst the
+  // concurrency cap exists to avoid.
+  clearAtrCache()
+  for (let i = 0; i < 520; i++) writeAtrCache(i, '1h', { atr: i, bars: [] }, 1000 + i)
+  assert.ok(readAtrCache(519, '1h', 1600), 'the newest survives')
+  assert.equal(readAtrCache(0, '1h', 1600), null, 'the oldest was evicted')
+})
+
+test('symbols are independent — one cached entry does not answer for another', () => {
+  clearAtrCache()
+  writeAtrCache(11, '1h', { atr: 0.9, bars: [] }, 0)
+  assert.equal(readAtrCache(12, '1h', 0), null)
 })

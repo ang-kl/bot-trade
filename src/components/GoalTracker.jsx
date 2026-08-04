@@ -155,6 +155,23 @@ function AccountRow({ row }) {
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: v.tone }}>{v.label}</span>
       </span>
       <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+        {/* LIVE BALANCE (owner 04-08-2026: "Include Account Balance (Live) in
+            each of the sub-card here"). Per account, resolved — never the
+            legacy global key, which is what once printed one account's balance
+            beside another's login. "not read" rather than $0: a zero balance
+            reads as a wiped account. Absent on the roll-up, where summing live
+            and demo in different currencies would describe nothing. */}
+        {row.accountId !== 'all' && (
+          <>
+            <span style={{ fontWeight: 800, color: 'var(--color-text)' }}
+              title="Live account balance, read per account">
+              {row.balance != null
+                ? row.balance.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+                : 'balance not read'}
+            </span>
+            {' · '}
+          </>
+        )}
         {row.trades} closed · {row.wins}W / {row.losses}L
         {row.tradesPerDay != null && <> · {row.tradesPerDay}/day over {row.spanDays}d</>}
         {row.expectedRemaining != null && <> · ~{row.expectedRemaining} more expected</>}

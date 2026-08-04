@@ -1063,9 +1063,41 @@ export default function stateRouter(db) {
     }
   })
 
+  // -----------------------------------------------------------------------
+  // GET /state/ws05 — Live Trade Management and Exit, as one workstream.
+  //
+  // §70.1. Every part of WS-05 already ran; nothing could be asked whether the
+  // workstream was healthy, or by what authority each part acts. Read-only by
+  // design — a workstream that also acted would be one more writer on the same
+  // stops, which §36.2.3 forbids in as many words.
+  // -----------------------------------------------------------------------
+  router.get('/ws05', async (req, res) => {
+    try {
+      const { ws05Health } = await import('../services/workstream-ws05.js')
+      res.json(ws05Health(db))
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
+  // GET /state/management-reflection — what the MANAGEMENT of recent trades
+  // did, and what that says about how this desk manages trades (§70.10).
+  //
+  // Observations only. Nothing here tunes anything: the "controlled" in
+  // "controlled adaptation" is the step where a human or the lessons tuner
+  // decides, and a module that adapted on its own evidence would remove it.
+  // -----------------------------------------------------------------------
+  router.get('/management-reflection', async (req, res) => {
+    try {
+      const { managementObservations } = await import('../services/management-reflection.js')
+      const scope = requestedAccount(db, req)
+      const days = Math.min(90, Math.max(1, Number(req.query.days) || 14))
+      res.json(managementObservations(db, { days, accountId: scope.all ? null : (scope.accountId ?? null) }))
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   router.get('/unresolvable-plan', async (req, res) => {
     try {
-      const { findUnresolvableCandidates, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =
+      const { findUnresolvableCandidates, exhaustedAccountsFromLedger, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =
         await import('../services/mark-unresolvable.js')
       const { exhaustedAccounts } = await import('../services/pnl-backfill.js')
       const { unresolvedPnlSince } = await import('../services/unresolved-pnl.js')
@@ -1082,7 +1114,15 @@ export default function stateRouter(db) {
       // The "we tried and gave up" half of the evidence. In-memory on the
       // running agent, so a freshly restarted process reports none — which
       // correctly yields an EMPTY plan rather than a confident write-off list.
-      const exhausted = exhaustedAccounts()
+      // TWO SOURCES, UNIONED. The in-memory ladder is erased by every restart,
+      // and this service redeploys on every push to main — so on its own it
+      // reported "nothing qualifies" while the ledger held rows attempted eight
+      // times (measured on production, 04-08-2026). `pnl_attempts` is per row
+      // and durable, so it answers the same question without depending on how
+      // long the process has been up.
+      const inMemory = exhaustedAccounts()
+      const fromLedger = exhaustedAccountsFromLedger(db)
+      const exhausted = [...new Set([...inMemory, ...fromLedger])]
       const plan = findUnresolvableCandidates(db, { horizonDays, exhaustedAccounts: exhausted })
 
       // What the veto is doing right now, so the plan is read in context: how
@@ -1099,9 +1139,14 @@ export default function stateRouter(db) {
         exhaustedAccounts: exhausted,
         // Stated out loud: an empty list here is usually "the backfill has not
         // given up on anything", not "there is nothing stuck".
+        // WHICH evidence produced the list, named. "The running process gave
+        // up" and "the ledger records N failed attempts per row" are different
+        // strengths, and a reader deciding whether to write off money data
+        // should not have to guess which one they are looking at.
+        exhaustedFrom: { inMemory, ledger: fromLedger },
         note: exhausted.length === 0
-          ? 'pnl-backfill has not exhausted its retries on any account (it resets on any successful fill, and its state is in-memory so a restart clears it). Nothing qualifies as unknowable yet — this is not the same as nothing being stuck.'
-          : `pnl-backfill has given up on ${exhausted.length} account(s); rows below are older than ${horizonDays} days on those accounts.`,
+          ? 'Neither the running backfill nor the persisted attempt counts show a give-up on any account. Nothing qualifies as unknowable yet — this is not the same as nothing being stuck.'
+          : `Give-up evidence on ${exhausted.length} account(s)${fromLedger.length ? ` (${fromLedger.length} from persisted attempt counts, which survive restarts)` : ''}; rows below are older than ${horizonDays} days on those accounts.`,
         found: plan.length,
         // hasExitPrice first in the mind of the reader: those rows deserve a
         // computed figure rather than a write-off.

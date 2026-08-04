@@ -55,6 +55,7 @@
 // consumed a slot and returned nothing.
 import { accountAnalytics } from './account-analytics.js'
 import { listAccounts } from './account-registry.js'
+import { getAccountBalance } from './risk.js'
 import { getState } from '../db.js'
 import { GO_LIVE_BAR } from './edge-bars.js'
 
@@ -249,6 +250,17 @@ function verdictFor({ needed, remaining, sampleOk, trades, meetsNow }) {
  *   days: restrict the statistics to a rolling window (null = whole record).
  * @returns {{goal, now, daysRemaining, accounts: object[], portfolio: object}}
  */
+/**
+ * One account's balance, or null. Never throws and never guesses: a failed
+ * read is "not read", which the card prints as such.
+ */
+function safeBalance(db, accountId) {
+  try {
+    const b = getAccountBalance(db, accountId)
+    return Number.isFinite(Number(b)) && Number(b) > 0 ? Number(b) : null
+  } catch { return null }
+}
+
 export function goalTracker(db, { now = Date.now(), days = null, accountIds = null } = {}) {
   const goal = loadGoal(db)
   // Every read of the gate is also a chance to notice the gate moved. Hung
@@ -274,6 +286,16 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
       // cTrader login (5067353, 5203012 …) is the id they recognise, it has
       // been in the registry since M0, and nothing returned it.
       login: reg?.trader_login || null,
+      // LIVE BALANCE, PER ACCOUNT (owner 04-08-2026: "Include Account Balance
+      // (Live) in each of the sub-card here").
+      //
+      // getAccountBalance(db, id) reads `acct:<id>:account_balance_usd` and
+      // resolves — it never falls back to the legacy global key for a NAMED
+      // account, which is the bug that printed one account's balance beside
+      // another's login on the Trade header. Null when never read, and the card
+      // says "not read" rather than $0: a zero balance reads as a wiped
+      // account.
+      balance: safeBalance(db, id),
       isLive: reg?.is_live === 1,
       enabled: reg?.enabled === 1,
       stats: accountAnalytics(db, { accountId: id, days, now }),
@@ -295,6 +317,12 @@ export function goalTracker(db, { now = Date.now(), days = null, accountIds = nu
     label: 'All accounts',
     isLive: null,
     enabled: null,
+    // NO SUMMED BALANCE ON THE ROLL-UP, deliberately. These accounts are a
+    // mix of live and demo in different currencies; adding them produces a
+    // number that describes no account and no portfolio. The per-account
+    // cards carry the balances; this row carries the pooled RECORD, which is
+    // a different kind of thing.
+    balance: null,
     stats: accountAnalytics(db, { accountId: null, days, now }),
     // The roll-up is portfolio BY DESIGN — every closed trade belongs in it,
     // so coverage is 100 by definition rather than by measurement.
@@ -339,7 +367,7 @@ function rowCoverage(db, accountId, days) {
   } catch { return null }
 }
 
-function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left, coverage = null }) {
+function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left, coverage = null, balance = null }) {
   const trades = stats.trades || 0
   const sampleOk = trades >= goal.minTrades
   // Observed closing rate over this account's own span, floored at one day so
@@ -410,6 +438,7 @@ function buildRow({ key, label, login = null, isLive, enabled, stats, goal, left
 
   return {
     accountId: key,
+    balance,
     // What fraction of the rows behind this card are actually this account's.
     // null on the portfolio row, which spans them all by design.
     attributablePct: coverage ? coverage.pct : null,

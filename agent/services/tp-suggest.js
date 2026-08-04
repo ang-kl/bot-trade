@@ -75,3 +75,59 @@ export function makeTargetSuggester(db, creds, positions, deps = {}) {
     }
   }
 }
+
+/**
+ * Apply a suggested target at the broker.
+ *
+ * Owner, 04-08-2026: "SO MANY POSITIONS WITH NO TARGET SET". The suggestion
+ * has been computed and printed for days while nothing acted on it; this is the
+ * hand that puts it on the position.
+ *
+ * SAFE BY CONSTRUCTION IN THREE WAYS:
+ *  · it amends the TAKE PROFIT only and passes the existing stop straight
+ *    through, so a bug here can widen nothing and cannot move a stop;
+ *  · a take profit can only ever close in profit, so the downside is an early
+ *    exit, never a loss the position would not otherwise have taken;
+ *  · every application is journalled as a position event, so a target that
+ *    appears on a position is always attributable.
+ *
+ * @returns {(finding, suggestion) => Promise<{ok:boolean, error?:string}>}
+ */
+export function makeTargetApplier(db, creds, { amendPosition = null, recordEvent = null } = {}) {
+  return async function applyTarget(finding, suggestion) {
+    const tp = Number(suggestion?.tp)
+    const sl = Number(finding?.brokerSl)
+    if (!Number.isFinite(tp) || tp <= 0) return { ok: false, error: 'no usable target' }
+    try {
+      const amend = amendPosition
+        ?? (await import('../lib/exec-engine.js')).amendPosition
+      const res = await amend(creds, {
+        positionId: finding.positionId,
+        stopLoss: Number.isFinite(sl) ? sl : undefined,
+        takeProfit: tp,
+      })
+      if (res && res.error) return { ok: false, error: String(res.error) }
+      try {
+        const rec = recordEvent
+          ?? (await import('./position-events.js')).recordPositionEvent
+        rec(db, {
+          positionId: finding.positionId,
+          accountId: finding.accountId ?? null,
+          symbol: finding.symbol,
+          // `tp_moved` is the existing vocabulary — a new kind for this would
+          // fragment the timeline the P10 journal exists to make readable.
+          // from_value null says it had none, which is the whole story.
+          kind: 'tp_moved',
+          source: 'naked_position_guard',
+          fromValue: null,
+          toValue: tp,
+          reason: 'adopted_no_target',
+          detail: `adopted position had no take profit; set to ${tp} (${suggestion.basis})`,
+        })
+      } catch { /* the journal must never undo the amend */ }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: e?.message || 'amend failed' }
+    }
+  }
+}
