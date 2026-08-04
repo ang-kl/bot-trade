@@ -490,15 +490,41 @@ export default function stateRouter(db) {
     // (the ~30s monitor refresh), so the UI can split OPEN/FLOATING from
     // OPEN-BUT-MARKET-CLOSED and show real numbers. Best effort — a failure
     // here must never break the positions list.
-    let snapPositions = new Map()
-    let snapAt = null
-    try {
-      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
-      snapAt = snap?.fetchedAt ?? null
-      for (const p of snap?.account?.positions || []) {
-        if (p?.positionId != null) snapPositions.set(String(p.positionId), p)
-      }
-    } catch { snapPositions = new Map() }
+    //
+    // ENRICH FROM THE POSITION'S OWN ACCOUNT (owner 04-08-2026: "floating
+    // table > computation of summation and individual P/L and TP/SL missing
+    // again"). The global cache holds ONE account's snapshot — whichever was
+    // selected when the monitor last ran — so every row belonging to any other
+    // account matched nothing and rendered "—" for P&L, price and the daily
+    // bar. Measured on production the same day: of 21 open positions, only the
+    // 6 on account 47790949 carried numbers.
+    //
+    // Each account now caches its own snapshot (actions.js), and a row is
+    // enriched from ITS account's cache. The global key stays as the fallback
+    // for a row with no account_id and for a database written before this.
+    const snapById = new Map()          // accountId → { positions: Map, at }
+    let globalSnap = { positions: new Map(), at: null }
+    const readSnap = (key) => {
+      const positions = new Map()
+      let at = null
+      try {
+        const snap = JSON.parse(getState(db, key) || 'null')
+        at = snap?.fetchedAt ?? null
+        for (const p of snap?.account?.positions || []) {
+          if (p?.positionId != null) positions.set(String(p.positionId), p)
+        }
+      } catch { /* an unreadable cache enriches nothing; it never throws the list away */ }
+      return { positions, at }
+    }
+    globalSnap = readSnap('broker_snapshot_cache_json')
+    for (const id of new Set(rows.map(r => (r.account_id == null ? null : String(r.account_id))))) {
+      if (id == null) continue
+      const s = readSnap(`acct:${id}:broker_snapshot_cache_json`)
+      // Fall back per account, not once globally: an account with no cache of
+      // its own is better served by the shared one than by nothing, and an
+      // account WITH one must never be read from another account's.
+      snapById.set(id, s.positions.size ? s : globalSnap)
+    }
     let isOpenFn = null
     try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
     const enriched = rows.map(r => {
@@ -506,11 +532,12 @@ export default function stateRouter(db) {
       try {
         if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
       } catch { market_open = null }
-      const sp = r.ctrader_position_id != null ? snapPositions.get(String(r.ctrader_position_id)) : null
+      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
+      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
       return {
         ...r, market_open, market_source,
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
-        live_pnl_at: sp ? snapAt : null,
+        live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.
         // For a closed market these are the last computed values before/at
         // close — day.t says which session the bar belongs to.
@@ -530,7 +557,11 @@ export default function stateRouter(db) {
     // left as a silent assumption.
     res.json({
       positions: enriched,
-      snapshotAt: snapAt,
+      // The SHARED cache's fetch time. Per-account caches refresh at their own
+      // moments, so each row carries its own `live_pnl_at` rather than being
+      // stamped with one page-level timestamp that would be wrong for most of
+      // them.
+      snapshotAt: globalSnap.at,
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
