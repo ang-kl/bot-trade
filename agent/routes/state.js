@@ -755,6 +755,19 @@ export default function stateRouter(db) {
     }
   })
 
+  // Every risk setting, global and per account, side by side (owner
+  // 2026-08-04). The page could only show ONE account's effective settings at
+  // a time, so "does this account run tighter than that one, and where?" could
+  // not be answered without switching and remembering.
+  router.get('/risk-matrix', async (_req, res) => {
+    try {
+      const { buildRiskMatrix } = await import('../services/risk-matrix.js')
+      res.json(buildRiskMatrix(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/cluster-conviction', async (_req, res) => {
     try {
       const { clusterConviction, loadClusterConvictionConfig } = await import('../services/cluster-conviction.js')
