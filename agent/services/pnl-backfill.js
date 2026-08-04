@@ -212,6 +212,20 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   })
   tx([...byPosition])
 
+  // §70.9: STAMP THE ATTEMPT ON EVERY ROW WE JUST LOOKED AT.
+  //
+  // Until now the only record that the repair had tried lived in a per-ACCOUNT
+  // Map in this module's memory, which a restart erased — and this service
+  // redeploys on every push. So "we tried repeatedly and never filled it", the
+  // evidence mark-unresolvable.js demands before writing a row off, kept
+  // resetting to zero, and a permanently unfillable row went on blocking the
+  // desk with nothing able to say how hard anyone had tried.
+  //
+  // Per TRADE, not per account, because that is the granularity the decision
+  // is made at. Rows that just filled are excluded — their net_pnl is no
+  // longer NULL, so the UPDATE below cannot reach them.
+  noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
+
   return { backfilled, attributed, closingDeals, scanned: deals.length, gap: gap.n }
 }
 
@@ -285,4 +299,91 @@ export function resetBackfillPacing() { attempts.clear() }
 export function exhaustedAccounts() {
   const top = BACKOFF_MS.length - 1
   return [...attempts.entries()].filter(([, a]) => a.n >= top).map(([id]) => id)
+}
+
+
+/**
+ * Record that the repair looked at every still-unresolved closed trade in
+ * scope and could not fill it. Never throws — bookkeeping must not break a
+ * best-effort repair.
+ *
+ * Scope note: NULL-account rows are stamped by every account's pass, matching
+ * the gap check above. An orphan row's close may live in ANY account's deal
+ * history, so every pass genuinely did try it.
+ */
+export function noteTradeAttempts(db, { accountId = null, at = new Date().toISOString() } = {}) {
+  try {
+    const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+    const args = accountId == null ? [at] : [at, String(accountId)]
+    return db.prepare(`
+      UPDATE trades
+         SET pnl_attempts = COALESCE(pnl_attempts, 0) + 1,
+             pnl_last_attempt_at = ?
+       WHERE status = 'closed' AND net_pnl IS NULL ${scope}
+    `).run(...args).changes
+  } catch { return 0 }
+}
+
+/**
+ * Closed trades the repair has tried at least `minAttempts` times and still
+ * cannot fill. This is the DURABLE form of the evidence mark-unresolvable.js
+ * wants — "we tried and gave up" as a fact on the row rather than a counter in
+ * a process that restarts.
+ *
+ * It deliberately says nothing about WHY. A row here has been looked at
+ * repeatedly and never filled; whether the broker has no deal history or the
+ * fetch kept failing is a separate question, and conflating them is how a
+ * transient outage would get a trade written off permanently.
+ */
+export function exhaustedTradeIds(db, { minAttempts = 6, accountId = null, limit = 200 } = {}) {
+  try {
+    const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+    const args = accountId == null
+      ? [Math.max(1, minAttempts), Math.max(1, Math.min(1000, limit))]
+      : [Math.max(1, minAttempts), String(accountId), Math.max(1, Math.min(1000, limit))]
+    return db.prepare(`
+      SELECT id, symbol, account_id, closed_at, pnl_attempts, pnl_last_attempt_at
+        FROM trades
+       WHERE status = 'closed' AND net_pnl IS NULL
+         AND COALESCE(pnl_attempts, 0) >= ?
+         AND COALESCE(pnl_unresolvable, 0) = 0
+         ${scope}
+       ORDER BY pnl_attempts DESC, id ASC LIMIT ?
+    `).all(...args)
+  } catch { return [] }
+}
+
+/**
+ * One number for "is the money ledger complete?", with enough shape to act on.
+ * Read-only; the loop beats a heartbeat from it so a repair that STOPS is
+ * visible as a stalled controller rather than only as a daily-loss veto
+ * firing hours later — the same "silence is not health" lesson as §43.
+ */
+export function pnlReconciliationState(db, { accountId = null } = {}) {
+  try {
+    const scope = accountId == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'
+    const args = accountId == null ? [] : [String(accountId)]
+    const row = db.prepare(`
+      SELECT COUNT(*) AS unresolved,
+             MIN(closed_at) AS oldest,
+             MAX(COALESCE(pnl_attempts, 0)) AS maxAttempts,
+             SUM(CASE WHEN COALESCE(pnl_attempts, 0) = 0 THEN 1 ELSE 0 END) AS neverTried
+        FROM trades
+       WHERE status = 'closed' AND net_pnl IS NULL
+         AND COALESCE(pnl_unresolvable, 0) = 0 ${scope}
+    `).get(...args) || {}
+    return {
+      unresolved: Number(row.unresolved) || 0,
+      oldestClosedAt: row.oldest || null,
+      maxAttempts: Number(row.maxAttempts) || 0,
+      // A row nobody has tried is a DIFFERENT problem from one tried twenty
+      // times: the first says the repair is not reaching it, the second says
+      // the broker has nothing to give. Reporting one number for both is how
+      // the earlier "deal history had no matching close" log blamed coverage
+      // for what was an account-scoping bug.
+      neverTried: Number(row.neverTried) || 0,
+    }
+  } catch {
+    return { unresolved: -1, oldestClosedAt: null, maxAttempts: 0, neverTried: 0, error: true }
+  }
 }

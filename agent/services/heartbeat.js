@@ -96,6 +96,11 @@ export const CONTROLLERS = {
   // ticker is safe (§36.2.3 forbids duplicating an ACTING layer, not an
   // observing one) and §43 asks for exactly that: its own path, its own light.
   minute_review: { label: 'Per-minute review', expectedSec: 60, factor: 4 },
+  // §70.9. The P&L repair had NO heartbeat, so a backfill that stopped was
+  // invisible until the daily-loss veto fired hours later on a total it could
+  // no longer trust — the "silence is not health" shape this repo has now hit
+  // four times. Loop-tied because it runs in the reconcile phase.
+  pnl_reconcile: { label: 'P&L reconciliation', tiedToLoop: true, factor: 3 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

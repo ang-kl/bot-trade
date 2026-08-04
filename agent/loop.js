@@ -2310,6 +2310,24 @@ async function runLoop(db) {
                 }
               }
 
+              // §70.9: BEAT IT, whatever happened. A repair that stops must be
+              // visible as a stalled controller, not discovered later through
+              // the veto it causes. `ok` is false only when the ledger has
+              // rows the repair has never even reached — a gap it cannot fill
+              // is a broker fact, a gap it never tried is our own.
+              try {
+                const { pnlReconciliationState } = await import('./services/pnl-backfill.js')
+                const st = pnlReconciliationState(db)
+                const hb = await import('./services/heartbeat.js')
+                hb.beat(db, 'pnl_reconcile', {
+                  ok: st.unresolved >= 0,
+                  error: st.unresolved > 0 && st.neverTried > 0
+                    ? `${st.neverTried} closed trade(s) with no realised P&L have never been attempted`
+                    : null,
+                  detail: st,
+                })
+              } catch { /* observability only */ }
+
               if (filled === 0) {
                 if (gapBefore === 0) {
                   log('P&L backfill: no gap this cycle — every closed trade already has realized P&L')
