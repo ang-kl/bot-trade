@@ -319,11 +319,21 @@ function MxCell({ on, counts, selected, na, onClick }) {
       {/* aria-pressed reports SELECTION (which cell the editor below edits),
           not the cell's on/off value — the value is in the visible ✓/✗ text
           (inventory: "aria-pressed misreports"). */}
+      {/* THE SELECTION RING CARRIES THE CELL'S STATE (owner 04-08-2026: "use
+          blue-colour tick for active and blue-border-line (upon selection) for
+          active, red-colour for not-active and red-border-line cross for
+          non-active").
+          It used to be accent-blue whichever way the cell was set, so a
+          selected ✗ was ringed in the colour that means ARMED — the one moment
+          the operator is about to change something is the worst moment to blur
+          which way it currently points. */}
       <button
         type="button" aria-pressed={!!selected} onClick={onClick}
         className={`w-full rounded-md px-1.5 py-0.5 cursor-pointer border whitespace-nowrap ${
           selected
-            ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft,rgba(37,99,235,0.12))]'
+            ? (on
+              ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft,rgba(37,99,235,0.12))]'
+              : 'border-[var(--color-down)] bg-[var(--color-down-soft,rgba(220,38,38,0.12))]')
             : 'border-transparent hover:border-[var(--color-border)]'
         }`}
       >
@@ -337,6 +347,77 @@ function MxCell({ on, counts, selected, na, onClick }) {
         )}
       </button>
     </td>
+  )
+}
+
+/**
+ * How much each account has armed, at a glance.
+ *
+ * Owner, 04-08-2026: "have a count of tick/cross per account." The matrix
+ * renders ONE scope at a time, so comparing accounts meant switching the pill
+ * and counting cells by eye — five accounts × every stage. The server counts
+ * the same merged matrices the cells come from, so these numbers cannot drift
+ * from the ticks above; they are a count of the one source, not a second one.
+ *
+ * Each row is also a shortcut into that account's scope, because the first
+ * thing you want after spotting an odd count is to look at it.
+ */
+function MxTallies({ tallies, columns, acct, onAcct }) {
+  if (!Array.isArray(tallies) || tallies.length === 0) return null
+  const cols = (columns || []).filter(c => c.key)
+  return (
+    <div className="overflow-x-auto">
+      <table className="std-cols w-auto text-[9px]">
+        <thead>
+          <tr>
+            <th className="py-0.5 pr-3">Armed per Account</th>
+            {cols.map(c => <th key={c.key} className="py-0.5 px-2 text-center whitespace-nowrap">{c.label}</th>)}
+            <th className="py-0.5 px-2 text-center whitespace-nowrap">Pinned</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tallies.map(t => {
+            const isSel = String(acct) === String(t.accountId)
+            return (
+              <tr key={t.accountId} className={isSel ? 'bg-[var(--color-accent-soft,rgba(37,99,235,0.10))]' : undefined}>
+                <td className="py-0.5 pr-3 whitespace-nowrap">
+                  <button
+                    type="button" onClick={() => onAcct?.(String(t.accountId))}
+                    title={`Show ${t.traderLogin || t.accountId}'s matrix — mode ${t.mode || 'unknown'}${t.enabled ? '' : ', disabled in the registry'}`}
+                    className="cursor-pointer font-bold tabular-nums hover:underline"
+                  >
+                    <span className={t.isLive ? 'text-[var(--color-down)]' : ''}>{t.isLive ? 'LIVE' : 'DEMO'} {t.traderLogin || t.accountId}</span>
+                  </button>
+                  {/* The mode belongs beside the count: an account can have
+                      every cell armed and still enter nothing. */}
+                  <span className="ml-1 text-[8px] text-[var(--color-text-sub)]">
+                    · {t.enabled ? (t.mode || '') : 'disabled'}
+                  </span>
+                </td>
+                {cols.map(c => {
+                  const s = t.stages?.[c.key]
+                  return (
+                    <td key={c.key} className="py-0.5 px-2 text-center tabular-nums whitespace-nowrap">
+                      {s
+                        ? <>
+                            <span className="font-bold text-[var(--color-accent)]">{s.on}✓</span>
+                            <span className="text-[var(--color-text-sub)]">/</span>
+                            <span className="font-bold text-[var(--color-down)]">{s.off}✗</span>
+                          </>
+                        : <span className="text-[var(--color-text-sub)]">—</span>}
+                    </td>
+                  )
+                })}
+                <td className="py-0.5 px-2 text-center tabular-nums"
+                  title="Cells this account has pinned to its own overlay — everything else follows the shared matrix">
+                  {t.pinned || <span className="text-[var(--color-text-sub)]">—</span>}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -455,6 +536,7 @@ function StageMatrix({ mx, onUpdated, onError, armTarget, acct = 'all', onAcct }
                 </p>
               : <p className="text-[9px] text-[var(--color-text-sub)]">This account follows the shared matrix entirely. Changing a cell here gives it its own copy of that cell only.</p>)
             : <GlobalScopeNote what="Which strategies and filters run at each pipeline stage, including Auto Trade &amp; Open" />}
+          <MxTallies tallies={mx.tallies} columns={columns} acct={acct} onAcct={onAcct} />
         </div>
       )}
       {open && (
@@ -1606,7 +1688,14 @@ export default function Tune() {
               armTarget={armTarget}
               onError={setError}
               onUpdated={(r) => {
-                setStageMx(prev => (prev ? { ...prev, strategies: r.strategies, filters: r.filters } : prev))
+                // `tallies` rides along with the write for the same reason the
+                // cells do: merging only strategies/filters left the
+                // per-account counts describing the matrix as it was BEFORE
+                // this edit, so the tick you just flipped disagreed with the
+                // number under it until the next poll (review, #609).
+                setStageMx(prev => (prev
+                  ? { ...prev, strategies: r.strategies, filters: r.filters, ...(r.tallies ? { tallies: r.tallies } : {}) }
+                  : prev))
                 // Keep the config/strategy + filter mirrors in step so the
                 // Backtest tab pills and Presets export stay truthful.
                 if (r.strategies) {

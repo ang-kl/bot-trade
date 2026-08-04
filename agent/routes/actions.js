@@ -19,7 +19,7 @@ import { setPhaseFlag } from '../services/phase-audit.js'
 import { amendPosition as execAmendPosition, closePosition as execClosePosition, placeOrder as execPlaceOrder, reconcile as execReconcile, validateExecGuard } from '../lib/exec-engine.js'
 import { STRATEGY_REGISTRY, STRATEGY_KEYS, enabledStrategies } from '../services/strategies.js'
 import { invalidateStateCache } from '../lib/state-cache.js'
-import { setStage } from '../services/stage-matrix.js'
+import { setStage, accountStageTallies } from '../services/stage-matrix.js'
 import { loadManualGuards, checkAddCap, inheritedBracket, mirroredBracket, isDuplicateCall } from '../services/manual-position-guards.js'
 import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js'
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
@@ -2044,7 +2044,13 @@ export default function actionsRouter(db) {
       // global matrix — byte-identical to the behaviour before overlays.
       const matrix = setStage(db, { kind, key, stage, on: on === true, accountId }, { getState, setState })
       console.log(`[actions] stage-matrix${accountId ? ` (account ${accountId})` : ''}: ${kind} ${key} × ${stage} → ${on === true ? 'on' : 'off'}`)
-      res.json({ ok: true, ...matrix })
+      // THE TALLIES COME BACK WITH THE WRITE (review, #609). Without them the
+      // page merged only strategies/filters, so the tick the operator had just
+      // flipped disagreed with the per-account count underneath it until the
+      // next poll — for the edited account on an overlay write, and for every
+      // inheriting account on a shared one. A count that lags the thing it
+      // counts is the defect the tally was added to remove.
+      res.json({ ok: true, ...matrix, tallies: accountStageTallies(db, getState) })
     } catch (e) {
       res.status(400).json({ error: e.message })
     }

@@ -468,3 +468,27 @@ test('probeCppExec persists the roster for the read path', async () => {
   assert.equal(saved.ok, true)
   assert.equal(saved.at, T0.toISOString())
 })
+
+// ---------------------------------------------------------------------------
+// A RESOLVED ERROR IS NOT A CURRENT ONE (owner, 04-08-2026, reading the panel:
+// "ATR baseline refresh {hasn't refresh since 9 AM yesterday}").
+//
+// beat() deliberately keeps last_error across a later success. The panel then
+// printed it in the same red as a live failure, so `atr_refresh` advertised
+// `unknown period "D1"` — a bug fixed the day before, 185/185 symbols updated
+// on its next run — as though it were happening now.
+// ---------------------------------------------------------------------------
+test('the view says whether the stored error is still happening', () => {
+  const db = initDB(':memory:')
+  beat(db, 'atr_refresh', { ok: false, error: 'unknown period "D1"' })
+  let row = heartbeatView(db).find(c => c.name === 'atr_refresh')
+  assert.equal(row.error_is_current, true)
+  assert.match(row.last_error, /D1/)
+
+  // …then it runs clean. The text stays for forensics; the claim does not.
+  beat(db, 'atr_refresh', { ok: true })
+  row = heartbeatView(db).find(c => c.name === 'atr_refresh')
+  assert.equal(row.error_is_current, false, 'no longer a current failure')
+  assert.match(row.last_error, /D1/, 'but still readable')
+  assert.equal(row.consecutive_failures, 0)
+})

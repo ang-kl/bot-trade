@@ -81,10 +81,23 @@ Measurement history — each line is a real run of the script, not a claim:
 - 2026-07-30 00:00 UTC, **all 63 session files**: **3,403** reply turns
   (767 owner turns, 22,166 assistant entries, 54 compact events). Rebased to
   `№ 3,403` as the last reply; the next reply is `№ 3,404`.
+- 2026-08-04 00:25 UTC, **all 74 session files**: **5,269** reply turns
+  (1,274 owner turns, 34,583 assistant entries, 22,365 user entries, 90
+  compact events). Rebased to `№ 5,269` as the last reply; the next reply is
+  `№ 5,270`. Owner: *"rebase the CLAUDE.md"*.
 
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.
+
+THE 2026-08-04 RUN IS THE SMALL-DRIFT CASE, and it is the more instructive
+one. The in-context count had reached `№ 5,241`; the measurement said 5,269.
+Twenty-eight replies, no compaction boundary crossed in between, no moment
+where anything looked wrong. That is the shape the error normally takes —
+not a visible 1,500-reply collapse but a quiet undercount that nobody would
+catch by reading. It is why the rule is "run the script first", not "run the
+script when the number looks wrong": a number that looks wrong is already the
+rare case.
 
 Two earlier claims in this file were wrong and are corrected here:
 

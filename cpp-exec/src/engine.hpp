@@ -17,6 +17,20 @@
 #include "order_guard.hpp"
 #include "telemetry.hpp"
 
+// What an auth-family broker error should cost.
+//
+// Production incident 2026-08-04: authorizing an EXTRA account that the token
+// does not cover returned CH_ACCESS_TOKEN_INVALID, the session-level handler
+// read that as "the token is dead", closed the socket — and the sidecar
+// reconnected roughly once a second for as long as that account stayed in the
+// roster. Two handlers, each right on its own, disagreeing about whose fact
+// the error was.
+//
+// Pure and free-standing so the rule can be tested without a broker socket.
+enum class AuthErrorAction { Ignore, SkipAccount, KillSession };
+bool isAuthFamilyError(const std::string& code);
+AuthErrorAction authErrorAction(const std::string& code, bool authorizingExtra);
+
 namespace pt {
 constexpr int HEARTBEAT               = 51;
 constexpr int APP_AUTH_REQ            = 2100;
@@ -122,6 +136,20 @@ private:
   // /health's socket state says — force a reconnect+reauth. Caller must hold
   // mtx_.
   void noteBrokerErrorLocked(const std::string& errorCode);
+
+  // True only while an EXTRA (non-primary) account is being authorized, so an
+  // auth-family rejection there is charged to that account instead of killing
+  // the session every other account is trading on. See noteBrokerErrorLocked.
+  // Always set through ExtraAuthScope below — an early return that left this
+  // true would make the engine ignore a genuinely dead token.
+  bool authorizingExtra_ = false;
+  struct ExtraAuthScope {
+    bool& flag;
+    explicit ExtraAuthScope(bool& f) : flag(f) { flag = true; }
+    ~ExtraAuthScope() { flag = false; }
+    ExtraAuthScope(const ExtraAuthScope&) = delete;
+    ExtraAuthScope& operator=(const ExtraAuthScope&) = delete;
+  };
 
   std::string host_, clientId_, clientSecret_, accessToken_;
   // requestedAccountIds_ is what the keeper ASKED for (primary first);

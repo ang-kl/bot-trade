@@ -22,7 +22,7 @@ import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
 import { assetControllersView } from '../services/asset-controllers.js'
-import { stageMatrixView, loadStageMatrix, stageOverlayKeys } from '../services/stage-matrix.js'
+import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
 // overlay, and the shadow made the call below resolve to that array.
 import { overlayKeys as acctOverlayKeys } from '../services/account-overlay.js'
@@ -2801,9 +2801,19 @@ export default function stateRouter(db) {
       // invisible.
       const acct = req.query?.account && req.query.account !== 'all' ? String(req.query.account) : null
       const view = stageMatrixView(db, getState)
-      if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [] })
+      // A TALLY PER ACCOUNT (owner 04-08-2026: "have a count of tick/cross per
+      // account"). The matrix shows one scope at a time, so "how much is armed
+      // over there" was a question you could only answer by switching scope
+      // and counting cells by eye — across five accounts and every stage.
+      //
+      // The counting lives in stage-matrix.js beside loadStageMatrix, so this
+      // route and the WRITE route answer with the same numbers. They did not,
+      // at first: the write returned no tallies, so a freshly-flipped tick
+      // disagreed with the tally under it until the next poll.
+      const tallies = accountStageTallies(db, getState)
+      if (!acct) return res.json({ ...view, accountId: null, overlayKeys: [], tallies })
       const scoped = loadStageMatrix(db, getState, acct)
-      res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct) })
+      res.json({ ...view, ...scoped, accountId: acct, overlayKeys: stageOverlayKeys(db, getState, acct), tallies })
     } catch (e) {
       res.status(500).json({ error: e.message })
     }

@@ -413,3 +413,47 @@ export function anyAccountTradeGate(db, getState, { strategy, filtersFailed, acc
   }
   return last
 }
+
+/**
+ * How much each registry account has armed, per stage.
+ *
+ * Owner, 04-08-2026: "have a count of tick/cross per account." The matrix
+ * renders ONE scope at a time, so comparing accounts meant switching the pill
+ * and counting cells by eye.
+ *
+ * IT LIVES HERE, next to loadStageMatrix, because a tally is only worth
+ * anything if it counts the SAME merged matrix the cells render from. It was
+ * first written inline in the state route, and the write route then answered
+ * without it — so a freshly-flipped tick disagreed with the tally underneath
+ * it until the next poll (caught in review on #609). Two call sites, one
+ * implementation, no room for them to drift.
+ */
+export function accountStageTallies(db, getState) {
+  let rows = []
+  try {
+    rows = db.prepare(
+      'SELECT account_id, trader_login, is_live, enabled, mode FROM accounts ORDER BY is_live, account_id'
+    ).all()
+  } catch { return [] }
+  return rows.map(r => {
+    const id = String(r.account_id)
+    const m = loadStageMatrix(db, getState, id)
+    const stages = {}
+    for (const s of [...(m.strategies || []), ...(m.filters || [])]) {
+      for (const [stage, on] of Object.entries(s.stages || {})) {
+        if (on == null) continue          // not applicable — counted neither way
+        stages[stage] = stages[stage] || { on: 0, off: 0 }
+        stages[stage][on ? 'on' : 'off'] += 1
+      }
+    }
+    return {
+      accountId: id,
+      traderLogin: r.trader_login ?? null,
+      isLive: r.is_live === 1,
+      enabled: r.enabled === 1,
+      mode: r.mode ?? null,
+      stages,
+      pinned: stageOverlayKeys(db, getState, id).length,
+    }
+  })
+}
