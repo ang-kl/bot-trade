@@ -361,3 +361,49 @@ test('placement refuses past the PENDING_MAX_TOTAL cap', async () => {
     delete process.env.PENDING_MAX_TOTAL
   }
 })
+
+// ---------------------------------------------------------------------------
+// ACCOUNT SCOPING (05-08-2026) — traced from the closed-market path, found here
+// ---------------------------------------------------------------------------
+
+test('a placed row is STAMPED with the account whose creds placed it', async () => {
+  const db = freshDb()
+  const { deps } = makeDeps({ setups: [{ symbol: 'EURUSD', timeframe: '4h', signal: SIGNAL }] })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  const row = db.prepare(`SELECT account_id FROM pending_orders WHERE symbol = 'EURUSD'`).get()
+  assert.equal(row.account_id, '123')
+})
+
+test("ANOTHER account's resting order is neither written off nor cancelled", async () => {
+  // `reconcile` here is ONE account's book. Before scoping, every working row
+  // missing from it was marked "gone at broker" and handed to cancelOrder with
+  // THIS pass's credentials — judging and cancelling a foreign account's order.
+  // It is the same defect that ran thirteen deep on the closed-market path.
+  const db = freshDb()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, account_id)
+    VALUES ('EURUSD', '4h', '777', 1, 1.1, 1.095, 1.11, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib', '999')
+  `).run()
+  // This account's broker book is empty, and price is far through the foreign
+  // row's stop — which would have triggered the invalidation cancel too.
+  const { deps, calls } = makeDeps({ reconcile: { order: [], position: [] }, lastClose: { EURUSD: 1.0 } })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+
+  const row = db.prepare(`SELECT status FROM pending_orders WHERE order_id = '777'`).get()
+  assert.equal(row.status, 'working', "another account's order is not ours to retire")
+  assert.deepEqual(calls.cancelled, [], 'and certainly not ours to cancel with our credentials')
+})
+
+test('a legacy unattributed row is still claimed — not orphaned forever', async () => {
+  // Rows written before the stamp exist in production. Leaving them
+  // unclaimable would strand them 'working' with nothing able to settle them.
+  const db = freshDb()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, account_id)
+    VALUES ('EURUSD', '4h', '778', 1, 1.1, 1.095, 1.11, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib', NULL)
+  `).run()
+  const { deps } = makeDeps({ reconcile: { order: [], position: [] } })
+  await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
+  const row = db.prepare(`SELECT status FROM pending_orders WHERE order_id = '778'`).get()
+  assert.equal(row.status, 'expired', 'legacy rows stay settleable by whichever pass sees them')
+})

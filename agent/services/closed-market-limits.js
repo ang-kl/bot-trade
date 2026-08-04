@@ -72,18 +72,20 @@ export function buildLimitPayload({ accountId, symbolId, side, volume, entry, sl
  * the broker — or whose placeOrder call never even returned an order_id —
  * could sit "working" forever if that symbol just didn't signal again.
  *
- * broker_orders is the authoritative live-broker snapshot (refreshed every
- * reconcile, regardless of which module placed the order), so this is a pure
- * DB-only reconciliation against it — no network call of its own.
+ * broker_orders is the live-broker snapshot (refreshed every reconcile), so
+ * this is a pure DB-only reconciliation against it — no network call of its
+ * own. It is NOT authoritative by absence: see the `!broker` branch.
  *
- * @returns {{ stillWorking:number, filled:number, expired:number }}
+ * @returns {{ stillWorking:number, filled:number, expired:number, unknown:number }}
+ *   `unknown` is the subset of stillWorking held open because the broker had
+ *   nothing to say about them — worth watching, never a reason to retire a row.
  */
 export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}) {
   const rows = db.prepare(
     `SELECT * FROM pending_orders WHERE status = 'working' AND note = 'pending-closed'`
   ).all()
 
-  let stillWorking = 0, filled = 0, expired = 0
+  let stillWorking = 0, filled = 0, expired = 0, unknown = 0
   const markFilled = db.prepare(`UPDATE pending_orders SET status = 'filled', note = ? WHERE id = ?`)
   const markExpired = db.prepare(`UPDATE pending_orders SET status = 'expired', note = ? WHERE id = ?`)
 
@@ -91,12 +93,43 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
     if (row.order_id) {
       const broker = db.prepare(`SELECT status FROM broker_orders WHERE order_id = ?`).get(String(row.order_id))
       if (broker?.status === 'working') { stillWorking++; continue } // genuinely still resting — leave it
-      // Left the broker's book (filled, rejected, cancelled, or expired
-      // there) — best-effort check for an adopted trade on the same symbol
-      // opened since this order was placed; otherwise it never filled.
+
+      // ABSENCE IS NOT EVIDENCE OF DEATH. This used to fall straight through
+      // to the expire branch when broker_orders had NO row at all for the
+      // order id — and there are ordinary reasons for that: the account it
+      // belongs to has not been reconciled yet this run, its reconcile
+      // returned no order list, or the order was placed seconds ago and the
+      // first sync has not landed. broker_orders is per-account
+      // (syncBrokerOrders scopes gone-detection by account_id), so a row for
+      // account A is simply not there when the sweep runs after account B.
+      //
+      // Reading that as "gone at broker" retired thirteen LIVE resting DOW.US
+      // limits on 04-08-2026, which freed the idempotency check above to place
+      // a fourteenth, and a fifteenth. The orders never left the book; only our
+      // record of them did. An unknown order stays working and is settled by
+      // its own expiry, exactly like an order that never returned an id.
+      if (!broker) {
+        if (row.expires_at && new Date(row.expires_at).getTime() < nowMs) {
+          markExpired.run('pending-closed: no broker record and own expiry passed', row.id)
+          expired++
+        } else {
+          unknown++
+          stillWorking++
+        }
+        continue
+      }
+
+      // The broker HAS a record and it is not 'working' — filled, rejected,
+      // cancelled or expired there. Best-effort check for an adopted trade on
+      // the same symbol and ACCOUNT opened since this order was placed;
+      // otherwise it never filled. (Unscoped, this credited a fill on one
+      // account to a resting order on another.)
       const adopted = db.prepare(
-        `SELECT id FROM trades WHERE symbol = ? AND opened_at >= ? ORDER BY opened_at ASC LIMIT 1`
-      ).get(row.symbol, row.placed_at || '1970-01-01')
+        `SELECT id FROM trades
+          WHERE symbol = ? AND opened_at >= ?
+            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+          ORDER BY opened_at ASC LIMIT 1`
+      ).get(row.symbol, row.placed_at || '1970-01-01', row.account_id ?? null, row.account_id ?? null)
       if (adopted) {
         markFilled.run('pending-closed: adopted as trade', row.id)
         filled++
@@ -116,7 +149,7 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       stillWorking++
     }
   }
-  return { stillWorking, filled, expired }
+  return { stillWorking, filled, expired, unknown }
 }
 
 /**
@@ -154,9 +187,19 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   // Idempotency FIRST (before any WS call): if a limit already rests at
   // essentially this entry, leave it — this runs every loop while the market
   // is closed and must not cancel/replace (and re-pay sizing) each cycle.
+  //
+  // SCOPED TO THIS ACCOUNT. The rows below are also the set the cancel loop
+  // further down feeds to exec.cancelOrder(creds, …), so an unscoped read
+  // would let a pass authorised for one account cancel another account's
+  // resting order with the wrong credentials. NULL-account rows are legacy
+  // (written before this function stamped the column) and are still claimed,
+  // which keeps them cancellable instead of orphaning them forever.
+  const acctKey = creds?.accountId != null ? String(creds.accountId) : null
   const working = db.prepare(
-    `SELECT order_id, level FROM pending_orders WHERE symbol = ? AND status = 'working' AND note = 'pending-closed'`
-  ).all(symbol)
+    `SELECT order_id, level FROM pending_orders
+      WHERE symbol = ? AND status = 'working' AND note = 'pending-closed'
+        AND (account_id = ? OR account_id IS NULL OR ? IS NULL)`
+  ).all(symbol, acctKey, acctKey)
   const tol = Math.abs(synth.entry) * 1e-4
   const alreadyResting = working.find(r => r.level != null && Math.abs(r.level - synth.entry) <= tol)
   if (alreadyResting) return { skipped: 'already_working', orderId: alreadyResting.order_id }
@@ -229,13 +272,21 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
   try {
     const ev = await exec.placeOrder(creds, payload)
     const orderId = ev?.order?.orderId ?? ev?.orderId ?? null
+    // account_id is NOT optional. The column has existed since the M1
+    // multi-account migration and this writer never filled it, so every row it
+    // ever wrote was unattributed — which is why the staleness sweep below
+    // judged one account's live resting order against another account's broker
+    // book and retired it as "gone", and why the idempotency read above then
+    // found nothing working and placed a replacement. Thirteen times on
+    // DOW.US, 04-08-2026, 10:41 to 12:03.
     db.prepare(`
-      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?)
+      INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, strategy, risk_event_id, account_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'working', 'pending-closed', ?, ?, ?)
     `).run(
       symbol, synth.timeframe || null, orderId != null ? String(orderId) : null,
       side === 'BUY' ? 1 : -1, synth.entry ?? null, synth.sl ?? null, synth.tp1 ?? null,
-      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null
+      volLots, new Date(expiresAtMs).toISOString(), synth.strategy || null, riskEventId ?? null,
+      acctKey,
     )
     try {
       const { recordSubmitted } = await import('./opportunity-disposition.js')
