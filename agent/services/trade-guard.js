@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { getSymbolMap } from '../lib/ctrader-creds.js'
+import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 
 /**
  * Pure decision: given one position's state and its guard rules, return the
@@ -87,17 +88,24 @@ export function roundToDigits(price, digits) {
  * execute (SL amends + partial closes) through the exec engine, persist the
  * updated guard state. Never throws — callers get a summary either way.
  */
-export async function runTradeGuards(db, creds, deps = {}) {
-  const summary = { checked: 0, slMoves: 0, partialCloses: 0, errors: [] }
+export function runTradeGuards(db, creds, deps = {}) {
+  return singleFlight('trade_guards', () => tradeGuardsPass(db, creds, deps))
+}
+
+async function tradeGuardsPass(db, creds, deps = {}) {
+  const summary = { checked: 0, slMoves: 0, partialCloses: 0, refused: 0, errors: [] }
   try {
+    const accountId = authorisedAccountId(creds)
     const rows = db.prepare(
       `SELECT mp.id, mp.symbol, mp.side, mp.entry_price, mp.current_sl, mp.current_tp,
-              mp.guard_json, mp.be_moved, t.ctrader_position_id AS position_id
+              mp.guard_json, mp.be_moved, mp.trade_id,
+              t.ctrader_position_id AS position_id, t.account_id AS account_id
        FROM monitored_positions mp
        JOIN trades t ON t.id = mp.trade_id
        WHERE mp.status = 'active' AND mp.guard_json IS NOT NULL
-         AND t.ctrader_position_id IS NOT NULL`
-    ).all()
+         AND t.ctrader_position_id IS NOT NULL
+         AND ${accountFilterSql('t.account_id')}`
+    ).all(accountId)
     if (rows.length === 0) return summary
 
     const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -105,9 +113,29 @@ export async function runTradeGuards(db, creds, deps = {}) {
     const sizing = deps.sizing ?? await import('../lib/lot-sizing.js')
     const notify = deps.notify ?? (() => {})
 
+    // BROKER TRUTH, added 2026-08-04. This was the only acting layer with no
+    // reconcile: it amended stops using `current_sl` and `entry_price` read
+    // from the DB, against whatever account the caller's creds pointed at.
+    // Both halves of that were wrong — a stale local stop makes "is this
+    // tighter?" a question about the wrong number, and an unverified position
+    // id makes it a question about the wrong account. One extra round-trip per
+    // pass buys both, and single-flight means the pass count went DOWN.
+    const rec = await exec.reconcile(creds)
+    const live = new Map()
+    for (const p of (rec?.position || [])) {
+      if (p.positionId != null) live.set(String(p.positionId), p)
+    }
+    const scoped = scopeToAccount(rows, { accountId, live })
+    summary.refused = scoped.foreign.length + scoped.unknown.length
+    if (scoped.foreign.length) {
+      summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
+    }
+    const owned = scoped.owned
+    if (owned.length === 0) return summary
+
     const map = getSymbolMap(db)
     const bySymbol = {}
-    for (const r of rows) {
+    for (const r of owned) {
       const id = map[String(r.symbol).toUpperCase()]
       if (id != null) bySymbol[r.symbol] = id
     }
@@ -126,7 +154,7 @@ export async function runTradeGuards(db, creds, deps = {}) {
        WHERE id = ?`
     )
 
-    for (const r of rows) {
+    for (const r of owned) {
       const symbolId = bySymbol[r.symbol]
       const price = symbolId != null ? prices[symbolId] : null
       if (price == null) continue
@@ -144,15 +172,28 @@ export async function runTradeGuards(db, creds, deps = {}) {
       const pipSize = meta.pipPosition != null ? Math.pow(10, -meta.pipPosition) : null
       if (!pipSize) continue
 
+      // Broker SL beats the DB column. The C++ trail engine amends the broker
+      // WITHOUT writing `current_sl` — it reports via /trail-status, which only
+      // the profit keeper reads — so between keeper passes the local value is
+      // behind the real stop, and "is this tighter?" answered against it can
+      // WIDEN a stop the ratchet already moved. Same for the entry price on an
+      // adopted position.
+      const bp = live.get(String(r.position_id))
+      const brokerSl = bp?.stopLoss ?? null
+      const entryPrice = bp?.price ?? r.entry_price
+
       const acts = decideGuardActions({
-        side: r.side, entryPrice: r.entry_price, currentSl: r.current_sl,
+        side: r.side, entryPrice, currentSl: brokerSl ?? r.current_sl,
         price, pipSize, guard, beMoved: !!r.be_moved,
       })
 
       if (acts.moveSlTo != null) {
         const sl = roundToDigits(acts.moveSlTo, meta.digits)
         try {
-          await exec.amendPosition(creds, { positionId: parseInt(r.position_id), stopLoss: sl })
+          await exec.amendPosition(creds, {
+            positionId: parseInt(r.position_id), stopLoss: sl,
+            ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+          })
           updSl.run(sl, acts.beMoved ? 1 : 0, acts.beMoved ? 'guard_break_even' : 'guard_trail', r.id)
           summary.slMoves++
           notify(`🛡 ${r.symbol}: SL moved to ${sl} (${acts.beMoved ? 'break-even' : 'trailing'})`)
@@ -164,7 +205,10 @@ export async function runTradeGuards(db, creds, deps = {}) {
       for (const c of acts.closes) {
         const volume = Math.round(c.lots * meta.lotSize)
         try {
-          await exec.closePosition(creds, { positionId: parseInt(r.position_id), volume })
+          await exec.closePosition(creds, {
+            positionId: parseInt(r.position_id), volume,
+            ctidTraderAccountId: r.account_id ?? accountId ?? undefined,
+          })
           guard.takeProfits[c.index].done = true
           updGuard.run(JSON.stringify(guard), r.id)
           summary.partialCloses++

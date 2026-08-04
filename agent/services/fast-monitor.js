@@ -456,9 +456,21 @@ export function startFastMonitor(db, getCreds, deps = {}) {
       // §43 wants protection on its own path; §36.2.3 forbids duplicating an
       // ACTING one: "Two components must not unknowingly write the same stop."
       // The protection audit only reads, so it runs on both paths deliberately.
-      // These two MOVE stops and CLOSE positions, so they run here and ONLY
-      // here — their loop call sites are gone. One writer, on a timer that
-      // does not depend on the scan cycle.
+      // These two MOVE stops and CLOSE positions, so their LOOP call sites are
+      // gone — the loop no longer runs them at all.
+      //
+      // CORRECTION (2026-08-04): this comment used to claim they run "here and
+      // ONLY here". That was written about loop.js and was wrong the moment
+      // the guardian existed — guardian.js also calls runTradeGuards and
+      // runProfitKeeper on every ≥0.05% price move, which is deliberate (§70.6
+      // wants price-shaped rules on a price trigger) but means TWO clocks
+      // enter the same module. Neither module had a re-entrancy guard, and
+      // `withBudget` below abandons the WAIT rather than the work, so a slow
+      // pass was still running when the next one started.
+      //
+      // The invariant now lives in the layers themselves: acting-layer.js's
+      // singleFlight means a second caller JOINS the pass in flight instead of
+      // starting another. Two clocks, one pass.
       //
       // Budgeted: the loop wrapped them in runBudgetedSubPhase for the same
       // reason, and the stake is higher here because a hung pass would make

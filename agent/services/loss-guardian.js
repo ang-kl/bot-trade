@@ -25,6 +25,7 @@
 
 import { loadWithOverlay } from './account-overlay.js'
 import { roundToDigits } from './trade-guard.js'
+import { singleFlight, authorisedAccountId, accountFilterSql, scopeToAccount } from './acting-layer.js'
 
 export const DEFAULT_LOSS_GUARDIAN = {
   on: true,                 // safety net on by default — no naked losers
@@ -105,9 +106,14 @@ function atrFromBars(bars, period) {
  * One guardian pass: broker-truth positions in scope → decide → act through
  * the exec engine. Never throws; returns a summary.
  */
-export async function runLossGuardian(db, creds, deps = {}) {
-  const summary = { checked: 0, stops: 0, closes: 0, errors: [] }
+export function runLossGuardian(db, creds, deps = {}) {
+  return singleFlight('loss_guardian', () => lossGuardianPass(db, creds, deps))
+}
+
+async function lossGuardianPass(db, creds, deps = {}) {
+  const summary = { checked: 0, stops: 0, closes: 0, refused: 0, errors: [] }
   try {
+    const accountId = authorisedAccountId(creds)
     // PER-ACCOUNT CONFIG (04-08-2026). `scope` and the on switch used to come
     // from one shared key and were baked into the SQL, so one account could
     // not guard external-only while another guarded everything.
@@ -131,8 +137,9 @@ export async function runLossGuardian(db, creds, deps = {}) {
        WHERE mp.status = 'active' AND mp.guard_json IS NULL
          AND (mp.keeper_opt_out IS NULL OR mp.keeper_opt_out != 1)
          AND t.ctrader_position_id IS NOT NULL
-         AND (mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual'))`
-    ).all()
+         AND (mp.source IS NULL OR mp.source IN ('autopilot', 'external', 'manual'))
+         AND ${accountFilterSql('t.account_id')}`
+    ).all(accountId)
     const rows = allRows.filter(r => {
       const c = cfgFor(r.account_id)
       if (!c.on) return false
@@ -156,7 +163,12 @@ export async function runLossGuardian(db, creds, deps = {}) {
       if (p.positionId != null) live.set(String(p.positionId), p)
     }
 
-    const involved = rows
+    const scoped = scopeToAccount(rows, { accountId, live })
+    summary.refused = scoped.foreign.length
+    if (scoped.foreign.length) {
+      summary.errors.push(`${scoped.foreign.length} position(s) belong to another account and were not touched`)
+    }
+    const involved = scoped.owned
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
     const symbolIds = [...new Set(involved.map(x => x.bp.tradeData?.symbolId).filter(Boolean))]
