@@ -71,7 +71,7 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   // `gap: 0` joined the shape when the caller gained the ability to tell
   // "nothing was missing" from "something was missing and would not fill" —
   // this test's point is the assertion above: NO broker call.
-  assert.deepEqual(r, { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0 })
+  assert.deepEqual(r, { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -336,4 +336,77 @@ test('a row already attributed to ANOTHER account is never re-claimed', async ()
   const row = db.prepare(`SELECT account_id, net_pnl FROM trades WHERE ctrader_position_id = '888'`).get()
   assert.equal(row.account_id, '46130058')
   assert.equal(row.net_pnl, null)
+})
+
+// ---------------------------------------------------------------------------
+// THE LADDER MUST NOT BE PACED BY ROWS NOBODY CAN FIX.
+//
+// Measured 04-08-2026 in production: unknown_daily_pnl was 34,818 of 56,304
+// vetoes over seven days. The rows actually blocking were FRESH — 17 trades
+// closed inside the previous 78 minutes — and they were blocking because their
+// P&L had not arrived for over an hour. It had not arrived because three rows
+// on that account sit at 42 failed attempts and can never fill, and those three
+// were counted in the "did this pass get stuck" test, ratcheting the account to
+// the six-hour retry rung and holding it there.
+// ---------------------------------------------------------------------------
+
+test('a pass that only failed on written-off rows does NOT step the ladder', () => {
+  resetBackfillPacing()
+  // gap 3 (all dead), liveGap 0 → nothing a retry could have helped.
+  const step = noteBackfillAttempt('46130058', { backfilled: 0, gap: 3, liveGap: 0 })
+  assert.equal(step.n, 0, 'dead rows must not cost a rung')
+  assert.equal(dueForBackfill('46130058'), true, 'and the next cycle may fetch immediately')
+})
+
+test('a pass that failed on a LIVE row still steps the ladder', () => {
+  resetBackfillPacing()
+  const step = noteBackfillAttempt('46130058', { backfilled: 0, gap: 4, liveGap: 1 })
+  assert.equal(step.n, 1, 'a repairable row that did not repair is the case backoff is for')
+})
+
+test('three dead rows can no longer park an account on the six-hour rung', () => {
+  // The production shape, run forward: every pass fails, but only on rows the
+  // repair has already given up on. Before this change each pass cost a rung
+  // and by the fifth the account was fetching deal history every six hours —
+  // so every fresh close waited six hours for a figure that would otherwise
+  // have arrived in one cycle, blocking entries the whole time.
+  resetBackfillPacing()
+  for (let i = 0; i < 8; i++) noteBackfillAttempt('46130058', { backfilled: 0, gap: 3, liveGap: 0 })
+  assert.equal(dueForBackfill('46130058'), true)
+})
+
+test('a caller that predates liveGap keeps the old behaviour exactly', () => {
+  // Falls back to `gap`, so this is preserved rather than silently loosened.
+  resetBackfillPacing()
+  assert.equal(noteBackfillAttempt('x', { backfilled: 0, gap: 2 }).n, 1)
+})
+
+test('filling something always resets the ladder, dead rows present or not', () => {
+  resetBackfillPacing()
+  noteBackfillAttempt('y', { backfilled: 0, gap: 5, liveGap: 5 })
+  const step = noteBackfillAttempt('y', { backfilled: 1, gap: 4, liveGap: 4 })
+  assert.equal(step.n, 0)
+})
+
+test('liveGap excludes written-off and exhausted rows, and gap still counts them', async () => {
+  const db = initDB(':memory:')
+  const ins = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, status, opened_at, closed_at, ctrader_position_id, account_id, net_pnl, pnl_attempts, pnl_unresolvable)
+    VALUES (?, 'BUY', 1.1, 'closed', datetime('now'), datetime('now'), ?, '46130058', NULL, ?, ?)
+  `)
+  ins.run('GBPJPY', '101', 42, 0)     // exhausted — 42 attempts, never filled
+  ins.run('GBPCNH', '102', 42, 0)     // exhausted
+  ins.run('0066.HK', '103', 3, 1)     // written off outright
+  ins.run('EURUSD', '104', 1, 0)      // FRESH — the one a retry could help
+
+  const out = await backfillClosedPnl(db, {}, {
+    accountId: '46130058',
+    getDeals: async () => ({ deal: [] }),      // broker returns nothing
+  })
+  assert.equal(out.gap, 4, 'the hole in the ledger is still four rows wide')
+  assert.equal(out.liveGap, 1, 'but only one of them is worth asking about again')
+
+  // …and that one live row is what decides the pacing.
+  resetBackfillPacing()
+  assert.equal(noteBackfillAttempt('46130058', out).n, 1)
 })

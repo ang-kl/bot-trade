@@ -12,6 +12,7 @@ import { initDB, setState } from '../db.js'
 import {
   accountEconomics, requiredPayoff, proposeForAccount, configProposals,
   MIN_SAMPLE, TARGET_PF, RULES,
+  newDangerProposals, dangerAlertText,
 } from './config-controller.js'
 
 function fresh() {
@@ -211,3 +212,68 @@ test('THE CONTROLLER NEVER WRITES', () => {
 function readSelf() {
   return readFileSync(new URL('./config-controller.js', import.meta.url), 'utf8')
 }
+
+// ---------------------------------------------------------------------------
+// THE ALERT. C-1 shipped correct in #632 and nothing listened: configProposals
+// was wired to a read route and to nothing else. Measured 05-08-2026, its live
+// output flagged 43097342 at minRR 1.5 with a 21.4% win rate — #185 recurring
+// on the one account the fix missed — and the only way to see it was to open a
+// card and know to look.
+// ---------------------------------------------------------------------------
+
+const memState = () => {
+  const m = new Map()
+  return { getState: (_db, k) => m.get(k) ?? null, setState: (_db, k, v) => m.set(k, v) }
+}
+const report = (proposals) => ({ accounts: [{ accountId: '43097342', proposals }] })
+const DANGER = { rule: 'minRR_below_breakeven', setting: 'minRR', current: 1.5, proposed: 6.16, severity: 'danger', why: 'BELOW breakeven' }
+const WARN = { rule: 'kelly_sample_too_thin', setting: 'minTradesForKelly', current: 10, proposed: 30, severity: 'warn', why: 'thin' }
+
+test('a danger proposal is announced once, not every cycle', () => {
+  const st = memState()
+  const first = newDangerProposals(null, report([DANGER]), st)
+  assert.equal(first.fresh.length, 1)
+  assert.equal(first.fresh[0].setting, 'minRR')
+  // A standing condition must not re-alert — that is how a channel gets muted.
+  assert.equal(newDangerProposals(null, report([DANGER]), st).fresh.length, 0)
+})
+
+test('warn severity never alerts', () => {
+  // Several warns stand at any time. Alerting on them trains the reader to
+  // ignore the channel, which is exactly how a danger goes unread.
+  const st = memState()
+  assert.equal(newDangerProposals(null, report([WARN]), st).fresh.length, 0)
+})
+
+test('the same wrong value returning DOES alert again', () => {
+  const st = memState()
+  newDangerProposals(null, report([DANGER]), st)          // seen
+  newDangerProposals(null, report([]), st)                 // acted on — clears
+  const back = newDangerProposals(null, report([DANGER]), st)
+  assert.equal(back.fresh.length, 1, 'a regression must speak, not be muted by a memory of the fix')
+})
+
+test('a drift to a DIFFERENT wrong value is its own alert', () => {
+  const st = memState()
+  newDangerProposals(null, report([DANGER]), st)
+  const drifted = newDangerProposals(null, report([{ ...DANGER, current: 2.0 }]), st)
+  assert.equal(drifted.fresh.length, 1)
+  assert.equal(drifted.fresh[0].current, 2.0)
+})
+
+test('the alert text says the limit was NOT changed', () => {
+  // Changing a risk limit is the owner's, per CLAUDE.md. A message that read
+  // as an action taken would be a lie about what the controller does.
+  const t = dangerAlertText({ accountId: '43097342', ...DANGER })
+  assert.match(t, /43097342/)
+  assert.match(t, /minRR: 1\.5 → proposed 6\.16/)
+  assert.match(t, /RISK LIMIT/)
+  assert.match(t, /Nothing has been changed/)
+})
+
+test('an empty or malformed report is silent, never a throw', () => {
+  const st = memState()
+  assert.deepEqual(newDangerProposals(null, null, st).fresh, [])
+  assert.deepEqual(newDangerProposals(null, { accounts: [] }, st).fresh, [])
+  assert.deepEqual(newDangerProposals(null, { accounts: [{ accountId: 'x' }] }, st).fresh, [])
+})

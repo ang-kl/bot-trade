@@ -10,6 +10,7 @@ import { initDB, setState } from '../db.js'
 import {
   logReturns, pearson, buildCorrelationMatrix, liveCorrelationVeto,
   computeAndStoreMatrix, loadStoredMatrix, loadCorrelationMatrixConfig,
+  loadPreviousMatrix, topPairs, correlationShifts,
   DEFAULT_CORRELATION_MATRIX,
 } from './correlation-matrix.js'
 
@@ -111,4 +112,91 @@ test('config: defaults + clamps', () => {
   const cfg = loadCorrelationMatrixConfig(db)
   assert.equal(cfg.threshold, 0.99)
   assert.equal(cfg.maxCorrelated, 10)
+})
+
+// ---------------------------------------------------------------------------
+// Surfacing the matrix — owner 05-08-2026: "The correlation card doesn't
+// update when market shifted." Half display gap, half a real one: nothing
+// retained the previous matrix, so "shifted" was not a computable quantity.
+// ---------------------------------------------------------------------------
+
+test('topPairs lists each pair once, strongest first', () => {
+  const m = {
+    symbols: ['A', 'B', 'C'],
+    m: {
+      A: { A: 1, B: 0.92, C: -0.81 },
+      B: { A: 0.92, B: 1, C: 0.10 },
+      C: { A: -0.81, B: 0.10, C: 1 },
+    },
+  }
+  const pairs = topPairs(m, { min: 0.5 })
+  // A/B and A/C only — the mirror half and the self-pairs are noise on a card.
+  assert.deepEqual(pairs, [{ a: 'A', b: 'B', r: 0.92 }, { a: 'A', b: 'C', r: -0.81 }])
+  // Ranked by MAGNITUDE: a -0.81 is as much a stacked bet as a +0.81 when the
+  // two positions face opposite ways.
+  assert.equal(Math.abs(pairs[0].r) >= Math.abs(pairs[1].r), true)
+  assert.deepEqual(topPairs(null), [])
+  assert.equal(topPairs(m, { min: 0.5, limit: 1 }).length, 1)
+})
+
+const mat = (ab) => ({ symbols: ['A', 'B'], m: { A: { A: 1, B: ab }, B: { A: ab, B: 1 } } })
+
+test('a pair that BECAME correlated is named, not left as two decimals', () => {
+  const [s] = correlationShifts(mat(0.85), mat(0.20))
+  assert.equal(s.was, 0.2)
+  assert.equal(s.r, 0.85)
+  assert.equal(s.delta, 0.65)
+  assert.equal(s.became, true, 'positions that were diversified now stack')
+  assert.equal(s.broke, false)
+})
+
+test('a hedge that stopped working is its own finding', () => {
+  const [s] = correlationShifts(mat(0.15), mat(0.90))
+  assert.equal(s.broke, true, 'the offset you were relying on has gone')
+  assert.equal(s.became, false)
+})
+
+test('a SIGN FLIP is called out separately — it inverts every stacked position', () => {
+  const [s] = correlationShifts(mat(-0.80), mat(0.85))
+  assert.equal(s.flipped, true)
+  assert.equal(s.delta, -1.65)
+})
+
+test('a pair that barely moved is not reported at all', () => {
+  assert.deepEqual(correlationShifts(mat(0.86), mat(0.85)), [])
+})
+
+test('no previous matrix means no shifts — never a fabricated one', () => {
+  // The first run after a deploy has nothing to compare against. Reporting
+  // every pair as "became correlated" would cry wolf on every restart.
+  assert.deepEqual(correlationShifts(mat(0.9), null), [])
+  assert.deepEqual(correlationShifts(null, mat(0.9)), [])
+})
+
+test('shifts are ranked by how far they moved, and capped', () => {
+  const big = { symbols: ['A', 'B', 'C'], m: { A: { A: 1, B: 0.9, C: 0.9 }, B: { A: 0.9, B: 1, C: 0.9 }, C: { A: 0.9, B: 0.9, C: 1 } } }
+  const small = { symbols: ['A', 'B', 'C'], m: { A: { A: 1, B: 0.6, C: 0.0 }, B: { A: 0.6, B: 1, C: 0.3 }, C: { A: 0.0, B: 0.3, C: 1 } } }
+  const out = correlationShifts(big, small)
+  assert.equal(out[0].delta >= out[1].delta, true)
+  assert.equal(correlationShifts(big, small, { limit: 1 }).length, 1)
+})
+
+test('computeAndStoreMatrix keeps the outgoing matrix so a shift is diffable', async () => {
+  const db = initDB(':memory:')
+  // Same bar shape the module reads, with real variance — a constant series
+  // has zero stdev and correlates with nothing, which would store no matrix.
+  const series = (n, seed) => bars(Array.from({ length: n },
+    (_, i) => 100 + Math.sin((i + seed) / 3) * 5 + i * 0.1))
+  const deps = { fetchBars: async (sym) => series(70, sym === 'A' ? 0 : 1) }
+
+  await computeAndStoreMatrix(db, ['A', 'B'], deps, '2026-08-05T00:00:00.000Z')
+  // Nothing to keep on the FIRST run — and that must not be an error.
+  assert.equal(loadPreviousMatrix(db), null)
+  const first = loadStoredMatrix(db)
+  assert.equal(first.builtAt, '2026-08-05T00:00:00.000Z')
+
+  await computeAndStoreMatrix(db, ['A', 'B'], deps, '2026-08-05T00:30:00.000Z')
+  assert.equal(loadStoredMatrix(db).builtAt, '2026-08-05T00:30:00.000Z')
+  assert.equal(loadPreviousMatrix(db).builtAt, '2026-08-05T00:00:00.000Z',
+    'without this the previous reading is gone and "what shifted" cannot be computed')
 })

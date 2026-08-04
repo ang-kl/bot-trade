@@ -12,7 +12,6 @@
 //    tracked in the DB) → exact panel with an honest empty state;
 //  - data feed panel: real values where the APIs provide them, '—' else.
 import { useState } from 'react'
-import { useLensAccount } from '../lib/use-lens-account.js'
 import SectionTools from './common/SectionTools.jsx'
 import { sideLabelUpper } from '../lib/side.js'
 
@@ -104,8 +103,24 @@ function QuadCard({ q }) {
 }
 
 /** trades30: [{sym, cat, pnl}] real closed 30D · positions: monitored rows */
-export function RegimeMatrix({ trades30, positions, accounts, inModal = false }) {
-  const [rAcct, setRAcct] = useLensAccount('all')
+export function RegimeMatrix({ trades30, positions, accounts, account, onAccount, inModal = false }) {
+  // ONE SCOPE, NOT TWO. Owner 05-08-2026: "Macro regime matrix doesn't refresh
+  // when selected by account."
+  //
+  // It did not, and the reason is that this card used to hold its OWN
+  // useLensAccount — a second selector, independent of the page's — and that
+  // selector only ever filtered `positions`, the four quadrant cards. The DOTS
+  // are computed from `trades30`, which the PAGE scopes before passing it in.
+  // So picking an account here moved the cards and left the matrix untouched,
+  // while the page's own selector moved the matrix and left these pills
+  // reading the wrong account. Two representations of "which account am I
+  // looking at" on one card, disagreeing — the same failure class as the six
+  // representations of "armed" that #624 had to collapse.
+  //
+  // The pills now drive the PAGE's scope, so the closed trades behind the dots
+  // and the open positions behind the cards are always the same account's.
+  const rAcct = account ?? 'all'
+  const setRAcct = onAccount ?? (() => {})
   // Linked highlighting (owner spec A2): one shared selectedKey — legend row
   // click/hover highlights its dot (1.6×, others dim to .35) and dot click
   // highlights the legend row.
@@ -157,7 +172,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
           <SectionTools id="regime" title="Macro Regime Matrix — Where the Book Sits table" window="30D"
             data={dots.map(d => ({ group: d.name, net30d: d.pnl }))}
             toText={() => ['Macro regime matrix — 30D net per asset group', ...dots.map(d => `${d.name} · ${d.pnl}`)].join('\n')}
-            render={() => <RegimeMatrix trades30={trades30} positions={positions} accounts={accounts} inModal />} />
+            render={() => <RegimeMatrix trades30={trades30} positions={positions} accounts={accounts} account={account} onAccount={onAccount} inModal />} />
         )}
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -171,7 +186,7 @@ export function RegimeMatrix({ trades30, positions, accounts, inModal = false })
             </button>
           )
         })}
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>filters the four quadrant cards — where this account&apos;s open trades sit right now{unclassified.length ? ` · ${unclassified.length} in no plotted group (listed below)` : ''}</span>
+        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>scopes the WHOLE card — the 30-day dots and the four quadrant cards move together{unclassified.length ? ` · ${unclassified.length} in no plotted group (listed below)` : ''}</span>
       </div>
       <div className="perf-regime">
         <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>

@@ -273,3 +273,65 @@ export function configProposals(db, { days = 30, minSample = MIN_SAMPLE, include
     at: new Date().toISOString(),
   }
 }
+
+// ---------------------------------------------------------------------------
+// THE ALERT — because a controller nobody reads is not a controller.
+//
+// MEASURED 05-08-2026. C-1 shipped in #632 and has been correct ever since,
+// and nothing was listening. Its live output right now:
+//
+//   43097342  minRR 1.5, win rate 21.4% over 70 trades  → severity DANGER
+//             "a trade must average 3.67x its risk just to break even… That
+//              is BELOW breakeven: the gate is approving trades that lose
+//              money in expectation."
+//
+// That is #185 recurring, on the one account the fix missed — and it was
+// reachable only by opening a card and knowing to look. configProposals was
+// wired to a read route and to nothing else, so the controller built to catch
+// this regression caught it and had no way to say so.
+//
+// SEVERITY `danger` ONLY. `warn` is a suggestion and there are several of them
+// standing at any time; alerting on those trains the reader to ignore the
+// channel, which is how a danger goes unread. Deduped on the proposal's
+// identity INCLUDING its current value, so a repeat is silent but a drift to a
+// new wrong value speaks again.
+// ---------------------------------------------------------------------------
+
+/** Stable identity for a proposal, so a standing condition alerts once. */
+const proposalKey = (accountId, p) => `${accountId}|${p.rule}|${p.setting}|${p.current}`
+
+/**
+ * Danger-severity proposals not yet announced. Pure apart from the state row,
+ * so the decision is testable without a Telegram token.
+ *
+ * @returns {{fresh: Array, seen: number}} `fresh` is what to say out loud.
+ */
+export function newDangerProposals(db, report, { getState, setState } = {}) {
+  const gs = getState, ss = setState
+  let seen = new Set()
+  try { seen = new Set(JSON.parse(gs(db, 'config_proposal_alerts') || '[]')) } catch { seen = new Set() }
+  const fresh = []
+  const keep = new Set()
+  for (const acct of report?.accounts || []) {
+    for (const p of acct.proposals || []) {
+      if (p.severity !== 'danger') continue
+      const key = proposalKey(acct.accountId, p)
+      keep.add(key)
+      if (!seen.has(key)) fresh.push({ accountId: acct.accountId, ...p })
+    }
+  }
+  // Only currently-standing conditions are remembered. A proposal that has
+  // been ACTED ON drops out of the report and therefore out of this set, so
+  // if the same wrong value ever returns it alerts again rather than being
+  // suppressed by a memory of the time it was fixed.
+  try { ss(db, 'config_proposal_alerts', JSON.stringify([...keep])) } catch { /* best effort */ }
+  return { fresh, seen: keep.size }
+}
+
+/** The message text for one danger proposal. Separated so it is testable. */
+export function dangerAlertText(p) {
+  return `⚠️ Config controller — ${p.accountId}\n`
+    + `${p.setting}: ${p.current} → proposed ${p.proposed}\n`
+    + `${p.why}\n`
+    + `This is a RISK LIMIT. Nothing has been changed — it is yours to set.`
+}

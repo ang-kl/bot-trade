@@ -3804,14 +3804,32 @@ async function runLoop(db) {
             // covered, which is what actually needs correlating.
             const corrSymbols = [...new Set([...held, ...recentScans.map(r => r.symbol)])].filter(sym => symbolMap[String(sym).toUpperCase()])
             const { computeAndStoreMatrix } = await import('./services/correlation-matrix.js')
+            // The bars each symbol was correlated on, kept as they arrive.
+            // The market pulse reads the SAME window rather than fetching it
+            // again — one broker pass answers both questions.
+            const barsSeen = {}
             const res = await computeAndStoreMatrix(db, corrSymbols, {
               maxSymbols: 24,
               fetchBars: async (sym, tf, count) => {
                 const byTf = await wsGetTrendbarsBatch(host, clientId, clientSecret, accessToken, accountId, symbolMap[String(sym).toUpperCase()], [tf], count, 20_000)
-                return byTf[tf] || []
+                const bars = byTf[tf] || []
+                barsSeen[String(sym).toUpperCase()] = bars
+                return bars
               },
             }, new Date().toISOString())
             if (res.built) log(`Correlation matrix: ${res.built} symbols`)
+
+            // MARKET PULSE — trending / herding / defended, per symbol.
+            // Advisory: it writes a reading, it does not gate anything.
+            try {
+              const { computeAndStorePulse } = await import('./services/market-pulse.js')
+              const p = computeAndStorePulse(db, barsSeen, new Date().toISOString())
+              if (p.symbols) {
+                log(`Market pulse: ${p.symbols} symbols · ${p.herds} herd(s) · ${p.sharp} sharp · ${p.defended} defended · ${p.divergences} divergence(s)`)
+              }
+            } catch (err) {
+              log('Market pulse failed (non-fatal):', err.message)
+            }
           }
         } catch (err) {
           log('Correlation matrix failed (non-fatal):', err.message)
@@ -3894,6 +3912,36 @@ async function runLoop(db) {
       // that are already written — one indexed scan, no broker call — and
       // because an approval needs a few minutes of grace before "nothing
       // acted on it" is a finding rather than a race.
+      // C-1 SPEAKS. The controller has been correct since #632 and nothing
+      // was listening: configProposals was wired to a read route and to
+      // nothing else, so the module built to catch a minRR regression caught
+      // one on 43097342 and had no way to say so. Danger severity only, and
+      // deduped on the proposal's identity, so a standing condition alerts
+      // once rather than every cycle. It PROPOSES — nothing is written.
+      try {
+        const { configProposals, newDangerProposals, dangerAlertText } =
+          await import('./services/config-controller.js')
+        const { getState: gs, setState: ss } = await import('./db.js')
+        const report = configProposals(db, { includeLive: false })
+        const { fresh } = newDangerProposals(db, report, { getState: gs, setState: ss })
+        for (const p of fresh) {
+          log(`CONFIG CONTROLLER (danger) [${p.accountId}] ${p.setting} ${p.current} → ${p.proposed}: ${p.why}`)
+          try {
+            db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+              'CONTROLLER', '/config-proposal-danger', JSON.stringify({
+                accountId: p.accountId, rule: p.rule, setting: p.setting,
+                current: p.current, proposed: p.proposed, why: p.why,
+              }))
+          } catch { /* the journal must never stall the loop */ }
+          try {
+            const { sendMessage } = await import('./services/telegram.js')
+            await sendMessage(dangerAlertText(p))
+          } catch { /* alerting must never stall the loop */ }
+        }
+      } catch (err) {
+        log('Config controller alert failed (non-fatal):', err.message)
+      }
+
       try {
         const { sweepDispositions } = await import('./services/opportunity-disposition.js')
         const sw = sweepDispositions(db)

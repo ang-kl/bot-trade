@@ -105,7 +105,57 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // "something was missing and the broker had no matching close". Those two
   // look identical from backfilled === 0 alone, and only the second one
   // should cost a retry.
-  if (!gap || gap.n === 0) return { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0 }
+  if (!gap || gap.n === 0) return { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 }
+
+  // THE LIVE GAP — rows still worth retrying for, which is NOT the same set.
+  //
+  // MEASURED 04-08-2026, production. `unknown_daily_pnl` was 34,818 of 56,304
+  // vetoes over seven days, 62% of everything, and the age-out and
+  // exhausted-attempts write-offs that were supposed to have fixed it were
+  // both working. The rows actually blocking were FRESH — 17 trades closed
+  // within the previous 78 minutes, well inside the 6-hour age-out and well
+  // under the 6-attempt cap. They were blocking simply because their P&L had
+  // not arrived yet, for over an hour.
+  //
+  // WHY IT HAD NOT ARRIVED: three rows on 46130058 (GBPJPY, GBPCNH and
+  // 0066.HK — the same three named in unresolved-pnl.js) sit at 42 failed
+  // attempts and will never fill. `noteBackfillAttempt` calls a pass "stuck"
+  // when `gap > 0 && backfilled === 0`, and `gap` counted those three. So on
+  // any pass that happened to fill nothing new, three dead rows ratcheted the
+  // account one rung up a [0, 5m, 15m, 1h, 6h] ladder — and, since they can
+  // never fill, nothing ever reset it. /state/unresolvable-plan reports
+  // 46130058 and 47790949 both at the TOP rung.
+  //
+  // The consequence is the veto: an account parked on the 6-hour rung does
+  // not fetch deal history, so every trade that closes waits up to six hours
+  // for its P&L while a 15-minute grace window blocks every new entry. Three
+  // rows nobody could fix stopped an account from trading, indefinitely, by
+  // way of a retry ladder that was never meant to be about them.
+  //
+  // So pacing is decided on the rows a retry could still HELP: not written
+  // off, and not past the attempt cap. The dead rows stay in `gap` — they are
+  // still a real hole in the ledger and the veto still reports them — they
+  // just stop voting on how often we ask the broker.
+  const liveGap = (() => {
+    try {
+      const cols = db.prepare('PRAGMA table_info(trades)').all()
+      const hasUnresolvable = cols.some(c => c.name === 'pnl_unresolvable')
+      const hasAttempts = cols.some(c => c.name === 'pnl_attempts')
+      const clauses = []
+      const args = [...scopeParams]
+      if (hasUnresolvable) clauses.push('AND COALESCE(pnl_unresolvable, 0) = 0')
+      if (hasAttempts) { clauses.push('AND COALESCE(pnl_attempts, 0) < ?'); args.push(LIVE_GAP_MAX_ATTEMPTS) }
+      const row = db.prepare(
+        `SELECT COUNT(*) AS n FROM trades
+          WHERE status = 'closed' AND net_pnl IS NULL ${gapScopeSql} ${clauses.join(' ')}`
+      ).get(...args)
+      return row?.n ?? gap.n
+    } catch {
+      // A schema without the columns behaves exactly as before: every missing
+      // row counts. Same fail-safe reasoning as unresolved-pnl.js.
+      return gap.n
+    }
+  })()
 
   const days = Math.min(190, Math.max(1, Number(opts.days) || 14))
   const now = opts.now ?? Date.now()
@@ -226,7 +276,7 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
   // longer NULL, so the UPDATE below cannot reach them.
   noteTradeAttempts(db, { accountId: acct, at: new Date(now).toISOString() })
 
-  return { backfilled, attributed, closingDeals, scanned: deals.length, gap: gap.n }
+  return { backfilled, attributed, closingDeals, scanned: deals.length, gap: gap.n, liveGap }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +304,18 @@ export async function backfillClosedPnl(db, creds, opts = {}) {
 // rather pay one fetch than stay quiet about money the brakes need.
 // ---------------------------------------------------------------------------
 const BACKOFF_MS = [0, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 3_600_000]
+
+/**
+ * Attempts past which a row stops voting on the retry cadence.
+ *
+ * Deliberately the same number as unresolved-pnl.js's
+ * DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS: the row that has stopped blocking the
+ * gate because the repair gave up on it is exactly the row that should stop
+ * pacing the repair. Two different numbers here would mean a row that no
+ * longer blocks entries can still slow the fetch that unblocks everything
+ * else — which is the bug, wearing a smaller hat.
+ */
+export const LIVE_GAP_MAX_ATTEMPTS = 6
 const attempts = new Map() // accountId → { n, nextAt }
 
 /** Is this account due for a backfill attempt? */
@@ -271,7 +333,14 @@ export function dueForBackfill(accountId, now = Date.now()) {
 export function noteBackfillAttempt(accountId, result, now = Date.now()) {
   const id = String(accountId)
   const filled = (result?.backfilled || 0) > 0
-  const stuck = !filled && (result?.gap || 0) > 0
+  // LIVE gap, not total gap — see backfillClosedPnl. A row the repair has
+  // already given up on must not keep an account climbing this ladder, or a
+  // handful of permanently-dead rows park it on the six-hour rung forever and
+  // every FRESH close then waits six hours for a figure that would have
+  // arrived in one cycle. Falls back to `gap` for a caller that predates the
+  // field, so old behaviour is preserved rather than silently loosened.
+  const outstanding = result?.liveGap ?? result?.gap ?? 0
+  const stuck = !filled && outstanding > 0
   if (!stuck) { attempts.delete(id); return { n: 0, nextAt: now } }
   const prev = attempts.get(id)?.n || 0
   const n = Math.min(prev + 1, BACKOFF_MS.length - 1)

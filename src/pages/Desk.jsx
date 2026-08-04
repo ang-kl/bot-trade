@@ -171,6 +171,7 @@ export default function Desk() {
   const [dupeTrades, setDupeTrades] = useState(null)    // duplicate-trade audit (/state/duplicate-trades)
   const [weekendFlags, setWeekendFlags] = useState([])  // pre-closure losing positions (/state/weekend-loss-flags)
   const [correlation, setCorrelation] = useState(null)  // cluster exposure (/state/correlation)
+  const [pulse, setPulse] = useState(null)              // market pulse (/state/market-pulse)
   const [sweepBusy, setSweepBusy] = useState(false)     // on-demand lessons sweep
   const [sweepNote, setSweepNote] = useState('')
   const [labelBackfillBusy, setLabelBackfillBusy] = useState(false) // recover label_strategy from thesis fingerprints
@@ -272,7 +273,7 @@ export default function Desk() {
       })
       .catch(() => {})
     try {
-      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, dupe, wlf, px] = await Promise.all([
+      const [h, s, p, r, atf, c, hb, ls, ad, mh, ord, pms, corr, mp, dupe, wlf, px] = await Promise.all([
         agentGet('/state/health'),
         agentGet('/state/scans'),
         agentGet('/state/positions'),
@@ -286,6 +287,7 @@ export default function Desk() {
         agentGet('/state/orders').catch(() => null),
         agentGet('/state/postmortems').catch(() => null),
         agentGet('/state/correlation').catch(() => null),
+        agentGet('/state/market-pulse').catch(() => null),
         agentGet('/state/duplicate-trades').catch(() => null),
         agentGet('/state/weekend-loss-flags').catch(() => null),
         agentGet('/state/prices').catch(() => null),
@@ -310,6 +312,7 @@ export default function Desk() {
       setOrders(ord || null)
       setPostmortems(pms || null)
       setCorrelation(corr || null)
+      setPulse(mp || null)
       setDupeTrades(dupe || null)
       setWeekendFlags(wlf?.flags || [])
       setError('')
@@ -773,6 +776,85 @@ export default function Desk() {
         <LossReview postmortems={postmortems} />
       </Section>
 
+      {/* MARKET PULSE — trending / herding / defended, per symbol.
+          Owner 05-08-2026: "Create an algo to understand movements and big
+          moves that give more awareness to the symbol trading and pending to
+          trade." ADVISORY: it vetoes nothing, it tells you what the market is
+          doing to the symbols you hold and the ones about to be entered. */}
+      <Section
+        id="pulse"
+        title="Market pulse — trend, herd, or a level being held"
+        summary={pulse?.builtAt
+          ? `${Object.keys(pulse.readings || {}).length} symbols · ${(pulse.sharp || []).length} sharp · ${(pulse.defended || []).length} held · ${(pulse.divergences || []).length} divergence(s)`
+          : null}
+        defaultOpen={false}
+      >
+        {!pulse && <Skeleton lines={3} />}
+        {pulse && !pulse.builtAt && (
+          <p className="text-[9px] text-[var(--color-text-sub)]">
+            Not computed yet — the pulse is written by the quant phase alongside the correlation matrix, from the same bars.
+          </p>
+        )}
+        {pulse?.builtAt && (
+          <div className="space-y-1.5 text-[9px]">
+            <p className="text-[var(--color-text-sub)]">
+              Read {ago(pulse.builtAt)} ago. Three independent measures per symbol: how DIRECTIONAL the move is, how big it is for
+              this symbol over this span, and how much range it spent going nowhere. Advisory — nothing here refuses a trade.
+            </p>
+
+            {(pulse.divergences || []).length > 0 && (
+              // The owner's own case, first: one leg of a correlated pair
+              // held while the other runs.
+              <div className="glass-inset rounded-lg p-2">
+                <div className="font-semibold text-[var(--color-warning-text)]">Correlated pairs under stress</div>
+                {pulse.divergences.slice(0, 6).map(d => (
+                  <div key={`${d.held}|${d.running}`} className="mt-0.5">
+                    <span className="font-semibold">{d.held}</span> held · <span className="font-semibold">{d.running}</span> running
+                    <span className="text-[var(--color-text-sub)]"> (r {d.r > 0 ? '+' : ''}{d.r})</span>
+                    <div className="text-[var(--color-text-sub)]">{d.note}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(pulse.sharp || []).length > 0 && (
+              <div>
+                <span className="font-semibold">Sharp movers</span>
+                <span className="text-[var(--color-text-sub)]"> — the span where the RATE changed, not merely a steep one: </span>
+                {pulse.sharp.slice(0, 10).map(m => (
+                  <span key={m.symbol} className="mr-2 tabular-nums">
+                    {m.symbol} <span className={`font-semibold ${m.netPct >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>{m.netPct > 0 ? '+' : ''}{m.netPct}%</span>
+                    <span className="text-[var(--color-text-sub)]"> {m.sigma > 0 ? '+' : ''}{m.sigma}σ</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {(pulse.defended || []).length > 0 && (
+              <div>
+                <span className="font-semibold">Levels being held</span>
+                <span className="text-[var(--color-text-sub)]"> — a lot of range bought no distance; a net-change column reads these as calm: </span>
+                {pulse.defended.slice(0, 10).map(m => (
+                  <span key={m.symbol} className="mr-2 tabular-nums">{m.symbol} <span className="text-[var(--color-text-sub)]">{m.netPct > 0 ? '+' : ''}{m.netPct}%</span></span>
+                ))}
+              </div>
+            )}
+
+            {(pulse.herds || []).filter(h => h.moving).length > 0 && (
+              <div>
+                <span className="font-semibold">Herds on the move</span>
+                <span className="text-[var(--color-text-sub)]"> — a position in any member is a position in all of them: </span>
+                {pulse.herds.filter(h => h.moving).slice(0, 5).map((h, i) => (
+                  <div key={i} className="text-[var(--color-text-sub)]">
+                    {h.dir > 0 ? '↑' : '↓'} {h.n} symbols, {Math.round(h.agreement * 100)}% agreeing: {(h.members || []).join(' · ')}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
+
       {/* Correlation-symbols controller — the cluster exposure the risk gate
           vetoes on, made visible (owner: "when are you going to use all the
           correlation-symbols controller"). */}
@@ -805,9 +887,76 @@ export default function Desk() {
                 </div>
               </div>
             ))}
-            <p className="text-[9px] text-[var(--color-text-sub)]">
-              Rolling live matrix: {correlation.liveMatrix?.computedAt ? `computed ${ago(correlation.liveMatrix.computedAt)} ago over ${correlation.liveMatrix.symbols} symbols` : 'not computed yet'} · caps tunable in Tune → Risk (cluster / currency exposure).
-            </p>
+            {/* THE LIVE MATRIX, not just its timestamp. Owner 05-08-2026:
+                "The correlation card doesn't update when market shifted." The
+                clusters above are HAND-WRITTEN and by construction never
+                change; the rolling matrix is the part that reacts, and until
+                now the only thing that reached this card from it was a
+                timestamp and a symbol count. */}
+            <div className="glass-inset rounded-lg p-2 text-[9px] space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">Rolling live matrix</span>
+                {correlation.liveMatrix?.builtAt
+                  ? <span className="text-[var(--color-text-sub)]">{ago(correlation.liveMatrix.builtAt)} ago · {correlation.liveMatrix.symbols} symbols · |r| ≥ {correlation.liveMatrix.config?.threshold} counts as stacked</span>
+                  : <span className="text-[var(--color-text-sub)]">not computed yet</span>}
+                {correlation.liveMatrix?.stale && (
+                  // Not cosmetic: liveCorrelationVeto FAILS OPEN past
+                  // maxAgeMin, so a stale matrix means the live correlation
+                  // cap is not being enforced at all right now.
+                  <span className="font-bold text-[var(--color-down)]"
+                    title={`Older than maxAgeMin (${correlation.liveMatrix.config?.maxAgeMin}m) — the live correlation cap fails OPEN while it is stale, so stacked-bet entries are not being blocked by it`}>
+                    STALE — live correlation cap not enforcing
+                  </span>
+                )}
+              </div>
+
+              {(correlation.liveMatrix?.shifts?.length ?? 0) > 0 && (
+                <div>
+                  <div className="font-semibold text-[var(--color-warning-text)]">
+                    Shifted since {correlation.liveMatrix.previousBuiltAt ? `${ago(correlation.liveMatrix.previousBuiltAt)} ago` : 'the previous matrix'}
+                  </div>
+                  {correlation.liveMatrix.shifts.slice(0, 8).map(sh => (
+                    <div key={`${sh.a}|${sh.b}`} className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold">{sh.a}/{sh.b}</span>
+                      <span className="tabular-nums text-[var(--color-text-sub)]">{sh.was} → {sh.r}</span>
+                      <span className={`tabular-nums font-semibold ${sh.delta > 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}`}>
+                        {sh.delta > 0 ? '+' : ''}{sh.delta}
+                      </span>
+                      {sh.flipped && <span className="font-bold text-[var(--color-down)]" title="The sign inverted while both readings were above threshold — every stacked position in this pair now means the opposite of what it did">FLIPPED</span>}
+                      {sh.became && <span className="font-semibold text-[var(--color-down)]" title="Was diversified, now stacks — two positions here are one bet that were not before">NOW STACKS</span>}
+                      {sh.broke && <span className="font-semibold" title="Was a hedge, no longer moves together — the offset you were relying on has gone">HEDGE BROKE</span>}
+                    </div>
+                  ))}
+                  {correlation.liveMatrix.shifts.length > 8 && (
+                    <div className="text-[var(--color-text-sub)]">+{correlation.liveMatrix.shifts.length - 8} more moved by ≥0.25</div>
+                  )}
+                </div>
+              )}
+              {correlation.liveMatrix?.builtAt && (correlation.liveMatrix.shifts?.length ?? 0) === 0 && (
+                <div className="text-[var(--color-text-sub)]">
+                  {correlation.liveMatrix.previousBuiltAt
+                    ? 'Nothing moved by 0.25 or more since the previous matrix — the relationships below are holding.'
+                    : 'No previous matrix to compare against yet — shifts appear after the next rebuild.'}
+                </div>
+              )}
+
+              {(correlation.liveMatrix?.pairs?.length ?? 0) > 0 && (
+                <div>
+                  <div className="font-semibold">Strongest pairs now</div>
+                  <div className="flex flex-wrap gap-x-3">
+                    {correlation.liveMatrix.pairs.slice(0, 12).map(p2 => (
+                      <span key={`${p2.a}|${p2.b}`} className="tabular-nums">
+                        {p2.a}/{p2.b}{' '}
+                        <span className={`font-semibold ${Math.abs(p2.r) >= (correlation.liveMatrix.config?.threshold ?? 0.7) ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
+                          {p2.r > 0 ? '+' : ''}{p2.r}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <p className="text-[var(--color-text-sub)]">Caps tunable in Tune → Risk (cluster / currency exposure).</p>
+            </div>
           </div>
         )}
       </Section>

@@ -21,6 +21,7 @@ import { loadPerformanceBreakerConfig } from '../services/performance-breaker.js
 import { loadSessionOpenGuardConfig } from '../services/session-open-guard.js'
 import { loadRegimeGateConfig } from '../services/regime-gate.js'
 import { loadCorrelationMatrixConfig } from '../services/correlation-matrix.js'
+import { loadPulse, pulseFor, PULSE_STATES } from '../services/market-pulse.js'
 import { assetControllersView } from '../services/asset-controllers.js'
 import { stageMatrixView, loadStageMatrix, stageOverlayKeys, accountStageTallies } from '../services/stage-matrix.js'
 // Aliased: this handler already has a local `overlayKeys` for the RISK
@@ -831,7 +832,7 @@ export default function stateRouter(db) {
   router.get('/correlation', async (req, res) => {
     try {
       const { CORRELATION_CLUSTERS, clusterExposure } = await import('../services/correlation.js')
-      const { loadStoredMatrix } = await import('../services/correlation-matrix.js')
+      const { loadStoredMatrix, loadPreviousMatrix, topPairs, correlationShifts } = await import('../services/correlation-matrix.js')
       // S1 batch 6. Cluster exposure is a CONCENTRATION reading — "how much
       // of one correlated basket am I holding". Summed across accounts it
       // overstates it for every account individually: three accounts each
@@ -855,11 +856,32 @@ export default function stateRouter(db) {
         })),
         maxClusterExposure: cfg.maxClusterExposure,
         maxCurrencyExposure: cfg.maxCurrencyExposure,
-        liveMatrix: {
-          config: loadCorrelationMatrixConfig(db),
-          computedAt: matrix?.computedAt || null,
-          symbols: matrix?.symbols?.length || 0,
-        },
+        liveMatrix: (() => {
+          const mcfg = loadCorrelationMatrixConfig(db)
+          let prev = null
+          try { prev = loadPreviousMatrix(db) } catch { /* first run */ }
+          const builtAt = matrix?.builtAt || matrix?.computedAt || null
+          const ageMin = builtAt ? Math.round((Date.now() - Date.parse(builtAt)) / 60_000) : null
+          return {
+            config: mcfg,
+            // `computedAt` kept for the existing card; `builtAt` is what
+            // computeAndStoreMatrix actually writes and what the age uses.
+            computedAt: matrix?.computedAt || builtAt,
+            builtAt,
+            ageMin,
+            // A matrix past maxAgeMin is IGNORED by the gate (fail open). The
+            // card said "computed 4 hours ago" and left the reader to know
+            // that; now it says the gate is not using it.
+            stale: ageMin != null && ageMin > mcfg.maxAgeMin,
+            symbols: matrix?.symbols?.length || 0,
+            // THE CONTENTS, which were never surfaced. Owner: "The
+            // correlation card doesn't update when market shifted" — it could
+            // not, because only the timestamp and a count ever reached it.
+            pairs: matrix ? topPairs(matrix, { min: Math.min(0.5, mcfg.threshold), limit: 20 }) : [],
+            shifts: correlationShifts(matrix, prev, { threshold: mcfg.threshold, limit: 20 }),
+            previousBuiltAt: prev?.builtAt || null,
+          }
+        })(),
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
         scope: scopeReport(scope, scopeCoverage(db, {
@@ -2877,6 +2899,25 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // GET /state/market-pulse — trending / herding / defended, per symbol.
+  //
+  // Owner 05-08-2026: "Create an algo to understand movements and big moves
+  // that give more awareness to the symbol trading and pending to trade."
+  // This is the read side of it. Global by construction — a market regime is
+  // not a property of an account, and scoping it to one would be a category
+  // error the way scoping cluster exposure to all of them was.
+  // -----------------------------------------------------------------------
+  router.get('/market-pulse', (req, res) => {
+    try {
+      const sym = String(req.query.symbol || '').toUpperCase().trim()
+      if (sym) return res.json({ symbol: sym, ...pulseFor(db, sym) })
+      const p = loadPulse(db)
+      if (!p) return res.json({ builtAt: null, states: PULSE_STATES, readings: {}, herds: [], sharp: [], defended: [], divergences: [] })
+      res.json({ states: PULSE_STATES, ...p })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // -----------------------------------------------------------------------
   // GET /state/symbol-descriptions — SYMBOL → the broker's own long name.
   //
