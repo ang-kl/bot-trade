@@ -1041,6 +1041,9 @@ export default function Risk() {
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Max open positions${mark('maxOpenPositions')}`} anchor="maxOpenPositions" applied={appliedKeys.has('maxOpenPositions')} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
                     recommend="5 concurrent positions." />
+                  <Field label={`Max per symbol${mark('maxPositionsPerSymbol')}`} anchor="maxPositionsPerSymbol" applied={appliedKeys.has('maxPositionsPerSymbol')} unit="pos" value={risk.maxPositionsPerSymbol} onChange={v => setRisk(r => ({ ...r, maxPositionsPerSymbol: v }))}
+                    hint="HARD CEILING on concurrent positions in one symbol on one account, counting orders submitted but not yet reconciled. Not a permission — the one-per-symbol gate still refuses the second on the normal path. This is the backstop every OTHER submitter must obey."
+                    recommend="2. On 04-08-2026 seventeen DOW.US orders landed on one account inside 89 milliseconds, none through the risk gate, and cost $1,615." />
                   <Field label={`Cluster exposure${mark('maxClusterExposure')}`} anchor="maxClusterExposure" applied={appliedKeys.has('maxClusterExposure')} unit="bets" value={risk.maxClusterExposure} onChange={v => setRisk(r => ({ ...r, maxClusterExposure: v }))}
                     hint="Net directional bets allowed per correlation cluster. 0 = off." recommend="2 net directional bets per cluster." />
                   <Field label={`Currency exposure${mark('maxCurrencyExposure')}`} anchor="maxCurrencyExposure" applied={appliedKeys.has('maxCurrencyExposure')} unit="bets" value={risk.maxCurrencyExposure} onChange={v => setRisk(r => ({ ...r, maxCurrencyExposure: v }))}
@@ -1089,7 +1092,7 @@ export default function Risk() {
             </div>
             <div className="mt-3">
               <span data-save-pulse="risk"><Button size="sm" onClick={() => {
-                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize', 'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxOpenPositions', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
+                saveRisk(['perTradeRiskPct', 'perTradeRiskUsd', 'maxRiskCapPct', 'maxRiskUsd', 'minLotSize', 'minRR', 'minSLDistancePct', 'maxSpreadFracOfSL', 'maxOpenPositions', 'maxPositionsPerSymbol', 'symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes', 'maxClusterExposure', 'maxCurrencyExposure', 'minTradesForKelly', 'allowNegativeExpectancyOverride'])
                 save('guardian', () => agentPost('/actions/guardian-move-pct', { pct: guardianPct }))
               }}>Save bot risk</Button></span>
             </div>

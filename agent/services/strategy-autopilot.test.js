@@ -3,7 +3,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decideChanges, isBusyWindow } from './strategy-autopilot.js'
+import { decideChanges, isBusyWindow, applyChanges } from './strategy-autopilot.js'
+import { initDB, getState, setState } from '../db.js'
 import { explainVerdict, equitySvg, renderAutopilotReport } from '../lib/autopilot-report.js'
 
 // GO fixture clears the strict arming bar (PF≥1.7, win≥60%, ≥25 trades).
@@ -97,4 +98,48 @@ test('renderAutopilotReport is self-contained html grouped by strategy', () => {
   assert.match(html, /ema_pullback/)
   assert.match(html, /GBPUSD 12h/)
   assert.ok(!/https?:\/\//.test(html), 'no external resources')
+})
+
+// ---------------------------------------------------------------------------
+// THE ONE-WAY LATCH. Owner, 05-08-2026: the Desk badge "keeps ⏳ pending armed
+// regardless of accounts and stay like that".
+//
+// It did. `if (Object.keys(pendM).length) setState(db, 'pending_mode_enabled',
+// 'true')` set the key and never cleared it, so turning the mode off on Tune
+// lasted until the next autopilot pass turned it back on. An automated writer
+// that can only ever ARM an operator switch is not a setting, it is a latch.
+// ---------------------------------------------------------------------------
+
+test('an emptied pending matrix turns the mode OFF, not just leaves it on', () => {
+  const db = initDB(':memory:')
+  setState(db, 'pending_mode_enabled', 'true')
+  setState(db, 'pending_matrix_json', JSON.stringify({ 'DOW.US': ['1h'] }))
+
+  applyChanges(db, { arm: [], disarm: [{ kind: 'pending', symbol: 'DOW.US', timeframe: '1h' }] })
+
+  assert.equal(getState(db, 'pending_mode_enabled'), 'false',
+    'the operator switch must be clearable — this is the whole defect')
+  assert.equal(getState(db, 'pending_matrix_json'), null)
+})
+
+test('arming a pending row still turns the mode on', () => {
+  const db = initDB(':memory:')
+  setState(db, 'pending_mode_enabled', 'false')
+  applyChanges(db, { arm: [{ kind: 'pending', symbol: 'EURUSD', timeframe: '1h' }], disarm: [] })
+  assert.equal(getState(db, 'pending_mode_enabled'), 'true')
+})
+
+test('the mode always MIRRORS the matrix — the two can never disagree', () => {
+  // Before this, mode could be 'true' with an empty matrix, which is what the
+  // badge was reporting: armed, with nothing armed.
+  const db = initDB(':memory:')
+  for (const arm of [true, false]) {
+    applyChanges(db, {
+      arm: arm ? [{ kind: 'pending', symbol: 'EURUSD', timeframe: '1h' }] : [],
+      disarm: arm ? [] : [{ kind: 'pending', symbol: 'EURUSD', timeframe: '1h' }],
+    })
+    const matrix = getState(db, 'pending_matrix_json')
+    const mode = getState(db, 'pending_mode_enabled') === 'true'
+    assert.equal(mode, matrix != null, `mode ${mode} disagrees with matrix ${matrix}`)
+  }
 })

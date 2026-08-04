@@ -472,8 +472,8 @@ export default function Desk() {
           {health?.pendingModeEnabled && (
             <span
               className="whitespace-nowrap text-[var(--color-warning-text)] font-semibold"
-              title="Resting-limit-order mode is ON in Settings — new signals place a resting limit order instead of a market order. This is a standing mode, not a per-trade status; it stays lit until you turn it off on the Tune page."
-            >⏳ pending armed</span>
+              title="GLOBAL setting, not this account's: resting-limit-order mode is ON, so new signals place a resting limit order instead of a market order on EVERY account. Turn it off in Tune › Pipeline. (Until 05-08-2026 the strategy autopilot could silently re-arm this after you turned it off — it now mirrors its own matrix in both directions.)"
+            >⏳ pending armed <span className="font-normal text-[var(--color-text-sub)]">(all accounts)</span></span>
           )}
           <span className={`font-semibold whitespace-nowrap ${health?.broker?.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}>
             {health?.broker?.isLive ? '⚠ LIVE' : 'DEMO'}

@@ -1,0 +1,150 @@
+// ---------------------------------------------------------------------------
+// agent/services/symbol-position-cap.js — a HARD CEILING on how many positions
+// one symbol may hold on one account, obeyed by every submitter.
+//
+// WHAT HAPPENED (measured from the broker statement and the ledger, 04-08-2026,
+// account 46130058 / login 5203012):
+//
+//   17 × DOW.US SELL, 250 lots each, broker order ids 353071385–353071402,
+//   submitted inside 89 MILLISECONDS, every one stopped out at SL 30.18.
+//   −$95 each: −$1,615, of which $170 is pure commission.
+//
+// The size was not the problem — 250 lots is the correct risk-based size for
+// that balance, and the same signal placed ONE correctly-sized 59.7-lot
+// position on 43097342. One signal produced seventeen full-risk positions on
+// one symbol.
+//
+// WHY EVERY EXISTING GUARD MISSED IT. All seventeen local rows carry
+// risk_event_id NULL and were created by the RECONCILER adopting them 89
+// seconds after the fills — so they never went through autoTrade, whose
+// write-ahead intent row and 3-minute duplicate_submission window would have
+// stopped the second one. And risk.js's `duplicate_symbol` gate reads
+// monitored_positions, which was empty for all seventeen: they were in flight,
+// not yet reconciled. Every guard in the system reads a local table that an
+// 89-millisecond burst outruns.
+//
+// THIS IS A CEILING, NOT A PERMISSION (owner, 05-08-2026: "maximum 2 positions
+// hard cap"). It does NOT relax duplicate_symbol — that gate still refuses the
+// second position through the normal path, and this changes nothing about it.
+// What this adds is a floor under every OTHER path: whatever submits, however
+// it got there, the seventeenth order cannot exist. A cap that only the
+// well-behaved caller consults would have stopped none of these.
+//
+// AND IT COUNTS IN-FLIGHT WORK. The count is broker-reconciled positions PLUS
+// the write-ahead intents that have not resolved yet — because the whole
+// failure was seventeen orders that were all "not a position yet" at the
+// moment each one was checked.
+// ---------------------------------------------------------------------------
+
+/**
+ * Owner-set, 05-08-2026. Two, not one: `duplicate_symbol` already refuses the
+ * second entry on the normal path, so anything reaching this line is either a
+ * deliberate second leg or a submitter that bypassed the gate. Two lets the
+ * former through and stops the latter from becoming seventeen.
+ */
+export const DEFAULT_MAX_PER_SYMBOL = 2
+
+/** Ledger states that mean "an order may be live at the broker right now". */
+export const IN_FLIGHT_STATUSES = Object.freeze(['submitting', 'unconfirmed'])
+
+/**
+ * How many positions does this account hold on this symbol, counting work that
+ * has not landed yet?
+ *
+ * @returns {{total, open, inFlight}} — `open` is broker-reconciled,
+ *   `inFlight` is submitted-and-unresolved. Both are real exposure.
+ */
+export function countForSymbol(db, accountId, symbol) {
+  const sym = String(symbol || '').toUpperCase()
+  const acct = accountId != null ? String(accountId) : null
+  let open = 0
+  let inFlight = 0
+  try {
+    // NULL-account rows count for every account. That only ever makes the cap
+    // STRICTER, which is the correct direction for a safety ceiling — the
+    // same reasoning risk.js uses for its scoped reads.
+    const row = db.prepare(`
+      SELECT COUNT(*) AS n FROM monitored_positions
+       WHERE status = 'active' AND UPPER(symbol) = ?
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+    `).get(sym, acct, acct)
+    open = row?.n || 0
+  } catch { open = 0 }
+  try {
+    const marks = IN_FLIGHT_STATUSES.map(() => '?').join(',')
+    const row = db.prepare(`
+      SELECT COUNT(*) AS n FROM trades
+       WHERE status IN (${marks}) AND UPPER(symbol) = ?
+         AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
+    `).get(...IN_FLIGHT_STATUSES, sym, acct, acct)
+    inFlight = row?.n || 0
+  } catch { inFlight = 0 }
+  return { total: open + inFlight, open, inFlight }
+}
+
+/**
+ * May this account open ANOTHER position on this symbol?
+ *
+ * Pure given the counts, so the decision is testable without a database and
+ * the same table can be read from a route.
+ *
+ * @returns {{allow: boolean, reason?: string, count, cap}}
+ */
+export function symbolCapVerdict({ symbol, accountId, count, cap = DEFAULT_MAX_PER_SYMBOL }) {
+  const n = Number(count?.total ?? count) || 0
+  const limit = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : DEFAULT_MAX_PER_SYMBOL
+  if (n < limit) return { allow: true, count: n, cap: limit }
+  const held = count?.open ?? n
+  const flight = count?.inFlight ?? 0
+  return {
+    allow: false,
+    count: n,
+    cap: limit,
+    reason: `symbol_position_cap ${symbol}=${n}/${limit} on ${accountId ?? 'selected'}`
+      + ` (${held} open at the broker, ${flight} submitted and unresolved)`
+      + ' — hard ceiling, obeyed by every submitter',
+  }
+}
+
+/** The whole check, for a caller that has a db. */
+export function checkSymbolCap(db, { accountId, symbol, cap = DEFAULT_MAX_PER_SYMBOL } = {}) {
+  const count = countForSymbol(db, accountId, symbol)
+  return { ...symbolCapVerdict({ symbol, accountId, count, cap }), ...count }
+}
+
+/**
+ * Clusters ALREADY over the ceiling — the detector half.
+ *
+ * Owner, 05-08-2026, on what to do about positions that exist now: "if exist
+ * now, alert only. It should not happen again." So this reports and never
+ * closes. Auto-closing seventeen positions on a reading is a bigger action
+ * than the one that created them, and #179's nine 0066.HK were protected by
+ * their own SL/TP the whole time — loud is right, automatic is not.
+ *
+ * Counts BROKER-RECONCILED positions only. An in-flight order is a burst in
+ * progress, which the cap above refuses; it is not yet a cluster to report.
+ */
+export function overCapClusters(db, { cap = DEFAULT_MAX_PER_SYMBOL } = {}) {
+  const limit = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.floor(Number(cap)) : DEFAULT_MAX_PER_SYMBOL
+  try {
+    // opened_at lives on `trades`, not on monitored_positions — the position
+    // row carries no timestamp of its own, so the join is what makes the
+    // report say WHEN a cluster formed. An adopted row with no trade link
+    // still counts; it just has no time to show.
+    return db.prepare(`
+      SELECT UPPER(mp.symbol) AS symbol, mp.account_id AS accountId, COUNT(*) AS n,
+             MIN(t.opened_at) AS firstAt, MAX(t.opened_at) AS lastAt
+        FROM monitored_positions mp
+        LEFT JOIN trades t ON t.id = mp.trade_id
+       WHERE mp.status = 'active'
+       GROUP BY UPPER(mp.symbol), mp.account_id
+      HAVING COUNT(*) > ?
+       ORDER BY n DESC
+    `).all(limit).map(r => ({ ...r, cap: limit, over: r.n - limit }))
+  } catch { return [] }
+}
+
+/** One line per cluster, for the log and the alert. */
+export const clusterLine = (c) =>
+  `${c.symbol} × ${c.n} on ${c.accountId ?? 'unattributed'} (cap ${c.cap}, ${c.over} over)`
+  + `${c.firstAt ? ` — opened ${c.firstAt}${c.lastAt && c.lastAt !== c.firstAt ? ` … ${c.lastAt}` : ''}` : ''}`
