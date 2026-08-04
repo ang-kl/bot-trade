@@ -56,7 +56,15 @@ function posField(p, key) {
  * we weren't looking. Column set intentionally identical to loop.js so every
  * downstream analytics query treats these fills as first-class bot trades.
  */
-function persistFilledTrade(db, row, pos) {
+function persistFilledTrade(db, row, pos, accountId = null) {
+  // The account is a PARAMETER, not a state read. It used to be
+  // getState(db, 'ctrader_account_id') at the monitored_positions insert
+  // below, which stamps the SELECTED account onto a fill that belongs to
+  // whichever account's creds ran this pass. The row then sat under the wrong
+  // account, the reconciler on the right one saw an unowned broker position
+  // and adopted it as a second row, and the duplicate gate — which reads
+  // monitored_positions — never saw the first. 2026-08-04, six 0005.HK.
+  const acct = accountId != null ? String(accountId) : (getState(db, 'ctrader_account_id') || null)
   const side = row.dir < 0 ? 'SELL' : 'BUY'
   const executionPrice = pos?.price ?? row.level
   const positionId = normPosId(pos?.positionId)
@@ -77,11 +85,11 @@ function persistFilledTrade(db, row, pos) {
         symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         status, ctrader_position_id, analysis_id, strategy, conviction,
         label_raw, source, label_version, label_strategy, label_conviction,
-        label_session, label_timeframe, label_regime
+        label_session, label_timeframe, label_regime, account_id
       ) VALUES (
         ?, ?, ?, ?, ?, ?, datetime('now'),
         'open', ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,
@@ -89,6 +97,9 @@ function persistFilledTrade(db, row, pos) {
       parsedLabel.raw, parsedLabel.source, parsedLabel.version,
       parsedLabel.strategy, parsedLabel.conviction, parsedLabel.session,
       parsedLabel.timeframe, parsedLabel.regime,
+      // Same account as the monitored_positions row below — an unstamped
+      // trade is invisible to every account-scoped query that follows it.
+      acct,
     )
     const tradeId = tradeInsert.lastInsertRowid
 
@@ -109,7 +120,7 @@ function persistFilledTrade(db, row, pos) {
       'fib_618_fade',
       parsedLabel.source,
       parsedLabel.raw,
-      getState(db, 'ctrader_account_id'),
+      acct,
     )
 
     return tradeId
@@ -186,7 +197,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         p.positionId != null && !adoptedIds.has(String(p.positionId))
     })
     if (pos) {
-      persistFilledTrade(db, row, pos)
+      persistFilledTrade(db, row, pos, creds?.accountId ?? null)
       adoptedIds.add(String(pos.positionId))
       updateStatus.run('filled', `filled: position ${pos.positionId}`, row.id)
       notify(`✅ pending FILLED: ${row.symbol} ${row.timeframe} @ level ${row.level} — now a live position (${pos.positionId})`)
@@ -304,7 +315,7 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
   }
 
   const symbolsWithWorking = new Set(afterDisposition.map(r => r.symbol))
-  const riskCfg = risk.loadRiskConfig(db)
+  const riskCfg = risk.loadRiskConfig(db, creds?.accountId ?? null)
   const maxTotal = Math.max(1, Number(process.env.PENDING_MAX_TOTAL || 20))
   let totalWorking = db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status = 'working'`).get()?.n || 0
 
@@ -346,6 +357,10 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
       conviction: signal.conviction ?? null,
       timeframe,
       source: 'pending',
+      // The order 60 lines below carries parseInt(creds.accountId); the gate
+      // must read the SAME account's positions or the duplicate check is
+      // looking at a different book than the one the fill lands in.
+      accountId: creds?.accountId ?? null,
     }
     const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
     const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage

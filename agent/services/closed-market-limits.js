@@ -178,8 +178,11 @@ export async function placeClosedMarketLimit(db, creds, symbol, synth, opts = {}
     strategy: synth.strategy || null,
     conviction: synth.overall_conviction ?? null,
     source: 'closed_market_limit',
+    // A resting limit can't bypass risk — and it can't be gated against a
+    // different account than the one whose creds place it either.
+    accountId: creds?.accountId ?? null,
   }
-  const riskCfg = risk.loadRiskConfig(db)
+  const riskCfg = risk.loadRiskConfig(db, creds?.accountId ?? null)
   const riskResult = risk.evaluateTrade(db, proposal, riskCfg)
   const riskEventId = risk.persistRiskEvent(db, proposal, riskResult) // §70.9 lineage
   if (!riskResult.approved) return { skipped: 'risk_veto', reason: riskResult.veto_reason }

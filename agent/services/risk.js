@@ -642,7 +642,24 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // for every account, which only makes guards stricter, never looser.
   // In the single-account era (backfill stamped everything to the one
   // account) this is behaviour-identical to the previous global queries.
-  const acct = proposal.accountId != null ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null)
+  //
+  // THE FALLBACK IS NOT FREE, AND IT COST SIX POSITIONS ON 2026-08-04.
+  //
+  // "In the single-account era this is behaviour-identical" stopped being
+  // true the moment a second account was enabled. A caller that omits
+  // proposal.accountId is gated against the SELECTED account while its order
+  // is placed with its own creds — so the duplicate-symbol check at step 4
+  // reads account A's open positions and the fill lands on account B. A
+  // re-scan next cycle finds A still clean and approves again. Six 0005.HK
+  // fills on 43097342 while every risk_events row that day said 47790949,
+  // and the day before, nine 0066.HK the same way.
+  //
+  // The seam was always here; nothing filled it in. `account_source` below
+  // makes an inferred account visible in checks_json instead of silently
+  // identical to a deliberate one, so the next occurrence is one query away
+  // rather than a two-day reconstruction.
+  const acctExplicit = proposal.accountId != null
+  const acct = acctExplicit ? String(proposal.accountId) : (getState(db, 'ctrader_account_id') || null)
   // Per-account risk overlay applies ON TOP of whatever config arrived —
   // callers pre-load the global config once per cycle (loop.js, pending
   // orders) and would silently bypass the overlay otherwise.
@@ -653,7 +670,10 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
   // stamped, legacy global keys otherwise) so caps size off the right equity.
   const balance = getAccountBalance(db, acct)
   const leverage = getAccountLeverage(db, config, acct)
-  const checks = { balance, leverage, account_id: acct }
+  const checks = {
+    balance, leverage, account_id: acct,
+    account_source: acctExplicit ? 'proposal' : 'selected',
+  }
 
   // ---- 0. 5A global capital protection -----------------------------------
   // Portfolio-wide guards evaluated across ALL accounts' rows before any
