@@ -2176,6 +2176,24 @@ async function runLoop(db) {
             if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
               log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
             }
+            // #144 DUPLICATE WATCH. findOpenDuplicates was already correct and
+            // already detected both real incidents — nine 0066.HK, six
+            // 0005.HK. Nothing CALLED it. It was a route, answering when asked,
+            // and nobody was asking; the owner found both from a phone, a day
+            // later. It rides here because this block already holds the
+            // per-account scope and the notifier.
+            try {
+              const { duplicateWatchPass } = await import('./services/duplicate-watch.js')
+              const dw = duplicateWatchPass(db, { accountId })
+              for (const line of dw.alerts) {
+                log(`DUPLICATE WATCH: ${line.split('\n')[0]}`)
+                try {
+                  db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+                    'DUPLICATE_CLUSTER', '/duplicate-watch', JSON.stringify({ accountId, line }).slice(0, 2000))
+                } catch { /* audit best-effort */ }
+                if (notify) { try { await notify(line) } catch { /* alerting never blocks the loop */ } }
+              }
+            } catch (e) { log('Duplicate watch failed (non-fatal):', e.message) }
             const { beat: beatProt } = await import('./services/heartbeat.js')
             beatProt(db, 'protection_audit')
           } catch (err) {
