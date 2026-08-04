@@ -1079,6 +1079,23 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // GET /state/account-chrome — the account facts that belong in the page
+  // frame rather than on a page (owner §5502·C).
+  //
+  // ONE READ, because the alternative is the chrome making five calls on every
+  // page and the numbers on screen arriving from different moments. Cheap
+  // enough for that: per account it is four indexed queries and no broker
+  // round-trip — every figure comes from state the loop already wrote.
+  // -----------------------------------------------------------------------
+  router.get('/account-chrome', async (req, res) => {
+    try {
+      const { accountChrome, defaultChromeAccount } = await import('../services/account-chrome.js')
+      const accounts = accountChrome(db)
+      res.json({ accounts, defaultAccountId: defaultChromeAccount(db, accounts), at: new Date().toISOString() })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // -----------------------------------------------------------------------
   // GET /state/management-reflection — what the MANAGEMENT of recent trades
   // did, and what that says about how this desk manages trades (§70.10).
   //
