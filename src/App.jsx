@@ -98,6 +98,7 @@ import PageAccountLine from './components/PageAccountLine.jsx'
 import LlmMonitorStatus from './components/LlmMonitorStatus.jsx'
 import AgentHealthPanel from './components/AgentHealthPanel.jsx'
 import SessionFooter from './components/SessionFooter.jsx'
+import AccountChrome from './components/AccountChrome.jsx'
 import { useBotChanges, BotChangesFooterButton, BotChangeHighlighter } from './components/BotChanges.jsx'
 import { useTheme } from './lib/theme.js'
 import { Toaster } from 'sonner'
@@ -313,6 +314,14 @@ export default function App() {
               so it cannot overlap the strategy table the way the old
               page-wide footer did. */}
           <div className="shrink-0">
+            {/* Owner §5502·C: the account line sits at the TOP of the frame
+                chrome. It is the only thing here that changes minute to
+                minute, and the one an operator needs without navigating —
+                login, balance, armed state, and how close today is to the
+                equity stop. Everything below it is session and build state. */}
+            <div className="px-1 pb-1 overflow-x-auto">
+              <AccountChrome />
+            </div>
             {/* Owner 02-08: the Bot Changes ledger sits ABOVE the session
                 line — what the bot changed on their behalf, and when. */}
             <BotChangesFooterButton rows={botChanges} />
@@ -427,7 +436,7 @@ export default function App() {
             which on this app is the More sheet. Same component, same popover,
             same protections — not a reduced phone variant. */}
         <MobileTabBar
-          footerNote={<><BotChangesFooterButton rows={botChanges} /><SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} /></>}
+          footerNote={<><div className="pb-1 overflow-x-auto"><AccountChrome compact /></div><BotChangesFooterButton rows={botChanges} /><SessionFooter appVersion={__APP_VERSION__} buildSha={__GIT_COMMIT__} /></>}
           themeButton={
             <button
               type="button"
