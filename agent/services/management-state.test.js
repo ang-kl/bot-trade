@@ -10,8 +10,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  STATES, EXCEPTIONS, AUTHORITIES, WRITER_AUTHORITY,
+  STATES, EXCEPTIONS, AUTHORITIES, WRITER_AUTHORITY, EVENT_SOURCE_AUTHORITY,
   canTransition, arbitrate, deriveState, isException,
+  authorityForSource, isOwnerSource, isCapitalSafetySource,
 } from './management-state.js'
 
 test('the vocabularies are disjoint — a state is either happy-path or exception', () => {
@@ -128,6 +129,54 @@ test('an unknown writer never wins, and two unknowns are a conflict', () => {
   assert.equal(arbitrate('some-new-service', 'loss-cap').winner, 'loss-cap')
   assert.equal(arbitrate('loss-cap', 'some-new-service').winner, 'loss-cap')
   assert.equal(arbitrate('mystery-a', 'mystery-b').winner, null)
+})
+
+// ---------------------------------------------------------------------------
+// §41 by event source — the vocabulary position_events actually uses
+// ---------------------------------------------------------------------------
+
+test('every event source maps to a real authority level', () => {
+  for (const [src, auth] of Object.entries(EVENT_SOURCE_AUTHORITY)) {
+    assert.ok(AUTHORITIES.includes(auth), `${src} → ${auth}`)
+  }
+})
+
+test('the two tables agree wherever they name the same component', () => {
+  // WRITER_AUTHORITY is keyed by module, EVENT_SOURCE_AUTHORITY by the
+  // journal's snake_case source. Where both describe the same thing they must
+  // not drift — a component that is level 4 in the doc and level 6 in the
+  // journal would make every report about it wrong.
+  for (const [writer, auth] of Object.entries(WRITER_AUTHORITY)) {
+    const snake = writer.replace(/-/g, '_')
+    if (!(snake in EVENT_SOURCE_AUTHORITY)) continue
+    assert.equal(EVENT_SOURCE_AUTHORITY[snake], auth, snake)
+  }
+})
+
+test('the owner acts through exactly two sources — a route and a button', () => {
+  assert.equal(isOwnerSource('manual'), true)
+  assert.equal(isOwnerSource('telegram'), true)
+  const owners = Object.entries(EVENT_SOURCE_AUTHORITY)
+    .filter(([, a]) => a === 'human_owner').map(([s]) => s)
+  assert.deepEqual(owners.sort(), ['manual', 'telegram'])
+})
+
+test('capital safety is levels 1-2 and nothing else', () => {
+  // The one point §41.1's numbered list and §41.2's prose agree on, and the
+  // distinction the minute review reports.
+  for (const src of ['loss_cap', 'profit_ratchet', 'equity_stop']) {
+    assert.equal(isCapitalSafetySource(src), true, src)
+  }
+  for (const src of ['cpp_trail_engine', 'profit_keeper', 'fast_monitor', 'position_manager', 'manual']) {
+    assert.equal(isCapitalSafetySource(src), false, src)
+  }
+})
+
+test('an unknown source has no authority and is not mistaken for the owner', () => {
+  assert.equal(authorityForSource('brand_new_thing'), null)
+  assert.equal(authorityForSource(undefined), null)
+  assert.equal(isOwnerSource('brand_new_thing'), false)
+  assert.equal(isCapitalSafetySource(null), false)
 })
 
 // ---------------------------------------------------------------------------

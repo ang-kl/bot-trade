@@ -89,6 +89,13 @@ export const CONTROLLERS = {
   // stalled auditor is visible rather than being mistaken for a clean day —
   // an auditor that silently stops is the exact bug it was built to detect.
   decision_audit: { label: 'Post-decision audit', tiedToLoop: true, factor: 3 },
+  // §41's level 5 — "per-minute management policy" — which until 2026-08-04 was
+  // the one authority level with no code behind it at all. It reads the
+  // position-event journal and reports when a lower-authority writer took a
+  // stop the owner placed by hand. It writes nothing to a position, so its own
+  // ticker is safe (§36.2.3 forbids duplicating an ACTING layer, not an
+  // observing one) and §43 asks for exactly that: its own path, its own light.
+  minute_review: { label: 'Per-minute review', expectedSec: 60, factor: 4 },
 }
 
 const FAIL_ALERT_AT = 3 // consecutive in-controller failures before alerting

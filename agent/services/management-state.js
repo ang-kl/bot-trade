@@ -90,6 +90,61 @@ export const WRITER_AUTHORITY = Object.freeze({
   'reconciler': 'reconciliation',
 })
 
+/**
+ * The same mapping again, keyed by the `source` string that actually appears in
+ * `position_events`.
+ *
+ * WHY A SECOND TABLE. WRITER_AUTHORITY is keyed by module name, which is how
+ * docs/position-write-authority.md talks about these components. The event
+ * journal was written earlier and uses its own snake_case vocabulary, and some
+ * of its sources are not modules at all — `manual` is a route, `telegram` is a
+ * button, `position_manager` is the loop's default `source` argument to
+ * executeBrokerAction. Every entry below was taken from a call site, not
+ * guessed: see recordPositionEvent's callers in loop.js, profit-keeper.js,
+ * loss-cap.js, position-protect.js and routes/actions.js.
+ */
+export const EVENT_SOURCE_AUTHORITY = Object.freeze({
+  manual: 'human_owner',                  // routes/actions.js → protectPosition
+  telegram: 'human_owner',                // telegram-control.js Set-TP button
+  loss_cap: 'emergency_control',
+  profit_ratchet: 'emergency_control',
+  equity_stop: 'emergency_control',       // loop.js:3573
+  cpp_trail_engine: 'tick_safety',
+  profit_keeper: 'fast_manager',
+  trade_guard: 'fast_manager',
+  loss_guardian: 'fast_manager',
+  fast_monitor: 'fast_manager',           // fast-monitor.js:239
+  session_open_guard: 'fast_manager',     // session-open-guard.js:117
+  position_manager: 'bar_close_strategy', // executeBrokerAction's default
+  llm_monitor: 'bar_close_strategy',      // loop.js:1698
+  restrategize: 'bar_close_strategy',
+  weekend_bank: 'bar_close_strategy',
+  reconciler: 'reconciliation',
+})
+
+/** §41 level for a `position_events.source`, or null when the source is unknown. */
+export function authorityForSource(source) {
+  return EVENT_SOURCE_AUTHORITY[String(source ?? '')] ?? null
+}
+
+/** True when this event source is the owner acting directly — a route or a button. */
+export function isOwnerSource(source) {
+  return authorityForSource(source) === 'human_owner'
+}
+
+/**
+ * True when this source is one of §41's capital-safety layers (levels 1–2).
+ *
+ * This is the ONE place §41.1's numbered list and §41.2's prose agree: capital
+ * safety overrides the owner. Everything else that outranks `human_owner` does
+ * so only because the numbered list says so — see the arbitrate() note — and
+ * that distinction is what the minute review reports on.
+ */
+export function isCapitalSafetySource(source) {
+  const a = authorityForSource(source)
+  return a === 'broker_native' || a === 'emergency_control'
+}
+
 /** True when `state` is one of §40's exception states rather than a happy-path one. */
 export const isException = (state) => EXCEPTIONS.includes(state)
 

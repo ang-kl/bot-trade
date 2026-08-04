@@ -3888,6 +3888,13 @@ export function startLoop(db) {
   import('./services/fast-monitor.js')
     .then(m => m.startFastMonitor(db, getCtraderCreds))
     .catch(err => log('fast-monitor failed to start:', err.message))
+  // Per-minute review (§70.4) — §41's level 5, on its own ticker so it keeps
+  // reviewing precisely when the loop or the fast monitor is the thing that
+  // broke. Reads only: it reports when a lower-authority writer moved a stop
+  // the owner placed by hand, and never writes to a position itself.
+  import('./services/minute-review.js')
+    .then(m => m.startMinuteReview(db))
+    .catch(err => log('minute-review failed to start:', err.message))
   // Tick-driven guardian — live spot subscription on symbols with open
   // positions; guard sweeps fire on price movement, the loop stays the
   // guaranteed backstop (owner: attention proportional to risk).

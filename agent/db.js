@@ -407,6 +407,9 @@ const TABLES = `
     kind         TEXT NOT NULL,      -- sl_moved | tp_moved | scale_out | close
                                       -- | trail_armed | trail_tightened
                                       -- | lot_trimmed | paused | resumed
+                                      -- | authority_override (§41 observation,
+                                      --   written by minute-review.js, not an
+                                      --   amendment — see position-events.js)
     from_value   REAL,
     to_value     REAL,
     r_at         REAL,               -- R at the moment of the event

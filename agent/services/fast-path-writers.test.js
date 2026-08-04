@@ -14,7 +14,7 @@
 // the test that matters is that the loop no longer calls these.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { withBudget } from './fast-monitor.js'
 import { CONTROLLERS } from './heartbeat.js'
 
@@ -85,8 +85,17 @@ test('EVERY controller that beats a heartbeat is in the registry', () => {
   // writer whose job is to put a stop on a position that has NONE was the one
   // writer nobody could see running. A beat to an unregistered name is worse
   // than no beat — it looks like instrumentation and reports nothing.
+  //
+  // WIDENED 2026-08-04: this used to read loop.js and fast-monitor.js only,
+  // which was every host there was — until §70.4's review got its own ticker.
+  // A test that only knows two hosts stops catching the defect the moment a
+  // third appears, so it now walks every service.
   const beaten = new Set()
-  for (const src of [loopSrc, fastSrc]) {
+  const dir = new URL('./', import.meta.url)
+  const sources = [loopSrc, fastSrc, ...readdirSync(dir)
+    .filter(f => f.endsWith('.js') && !f.endsWith('.test.js'))
+    .map(f => readFileSync(new URL(f, dir), 'utf8'))]
+  for (const src of sources) {
     for (const m of src.matchAll(/(?:hbeat|hb\.beat|beat)\(db,\s*'([a-z_]+)'/g)) beaten.add(m[1])
   }
   const missing = [...beaten].filter(k => !CONTROLLERS[k])
