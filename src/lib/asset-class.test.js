@@ -13,16 +13,24 @@ describe('buildClassTree', () => {
     // in a bucket labelled "Singles" meaning UNGROUPED, next to MSFT.
     const bands = buildClassTree(wl(['EURJPY'], ['AUDPLN'], ['MSFT.US']))
     const by = Object.fromEntries(bands)
-    expect([...by.fx.get(UNGROUPED)].map(i => i.symbol)).toEqual(['EURJPY', 'AUDPLN'])
-    expect([...by.stock.get(UNGROUPED)].map(i => i.symbol)).toEqual(['MSFT.US'])
+    expect([...by.fx.get('FX crosses')].map(i => i.symbol)).toEqual(['EURJPY'])
+    expect([...by.fx.get('FX exotics')].map(i => i.symbol)).toEqual(['AUDPLN'])
+    expect([...by.stock.get('United States equities')].map(i => i.symbol)).toEqual(['MSFT.US'])
   })
 
-  it('groups sit UNDER a classification, and only the group level can be Ungrouped', () => {
-    const bands = buildClassTree(wl(['EURUSD', 'Majors'], ['GBPJPY', 'Minors'], ['AUDPLN']))
-    const fx = Object.fromEntries(bands).fx
-    expect([...fx.keys()]).toEqual(['Majors', 'Minors', UNGROUPED])
-    // Every symbol has a classification; that level is never "Ungrouped".
-    for (const [cls] of bands) expect(cls).not.toBe(UNGROUPED)
+  it('an untagged symbol gets a DERIVED sub-group, never an Ungrouped drawer', () => {
+    // Owner 04-08-2026: "properly classify them into groupings, sub-groups."
+    // "Ungrouped" was the name of the complaint, so nothing may land in it.
+    const bands = buildClassTree(wl(['EURUSD', 'Majors'], ['GBPJPY', 'Minors'], ['AUDPLN'], ['JPN225'], ['BTCUSD']))
+    const by = Object.fromEntries(bands)
+    // An owner's own tag still wins — it is a set they deliberately chose.
+    expect([...by.fx.keys()]).toEqual(['Majors', 'Minors', 'FX exotics'])
+    expect([...by.index.keys()]).toEqual(['Japan indices'])
+    expect([...by.crypto.keys()]).toEqual(['Crypto 24/7'])
+    for (const [cls, byGroup] of bands) {
+      expect(cls).not.toBe(UNGROUPED)
+      for (const g of byGroup.keys()) expect(g).not.toBe(UNGROUPED)
+    }
   })
 
   it('drops empty classifications — eight headings over four symbols is worse', () => {
@@ -40,8 +48,8 @@ describe('buildClassTree', () => {
 
   it('classifies against the ENGINE, so metals do not become currency pairs', () => {
     const by = Object.fromEntries(buildClassTree(wl(['XAUUSD'], ['XAGUSD'], ['USDJPY'])))
-    expect([...by.metal.get(UNGROUPED)].map(i => i.symbol)).toEqual(['XAUUSD', 'XAGUSD'])
-    expect([...by.fx.get(UNGROUPED)].map(i => i.symbol)).toEqual(['USDJPY'])
+    expect([...by.metal.get('Precious metals')].map(i => i.symbol)).toEqual(['XAUUSD', 'XAGUSD'])
+    expect([...by.fx.get('FX majors')].map(i => i.symbol)).toEqual(['USDJPY'])
   })
 
   it('survives junk without throwing', () => {

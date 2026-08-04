@@ -29,6 +29,7 @@ import { pillState, sweepLabel, advanceSweep } from '../lib/backtest-sweep.js'
 // than mirrored — a watchlist tree that disagreed with the engine about what
 // an instrument is would be worse than no tree at all.
 import { buildClassTree, classLabel, groupLabel, UNGROUPED } from '../lib/asset-class.js'
+import { ddmm, capMarker, backtestCell, describeInstrument } from '../lib/watchlist-format.js'
 import { useAccountSwitch } from '../lib/use-account-switch.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 import WatchlistScreener from '../components/WatchlistScreener.jsx'
@@ -940,6 +941,7 @@ export default function Tune() {
   const [screenerChatOpen, setScreenerChatOpen] = useState(false)
   const [screenerAiSymbols, setScreenerAiSymbols] = useState(null)
   const [wlStats, setWlStats] = useState(null)       // live per-symbol closed-trade results
+  const [symDesc, setSymDesc] = useState(null)       // SYMBOL -> broker long name
   const [wlRemoved, setWlRemoved] = useState(null)   // previously-watched symbols (server record)
   // WHICH watchlist this tab is editing. 'all' = the SHARED list every account
   // inherits until it is given one of its own. Picking an account edits that
@@ -1173,6 +1175,10 @@ export default function Tune() {
     agentGet('/state/sizing-preview').then(r => setSizingPrev(r || null)).catch(() => {})
     // Live per-symbol results — evidence beside the config (owner order).
     agentGet('/state/watchlist-stats').then(r => setWlStats(r || null)).catch(() => {})
+    // Served from the 24h instrument-tree cache — never a broker round trip.
+    // An empty map is fine: describeInstrument falls back to the curated
+    // table and then to the bare ticker, so the column is never blank.
+    agentGet('/state/symbol-descriptions').then(r => setSymDesc(r?.descriptions || {})).catch(() => setSymDesc({}))
     // Previously-watched record — powers the re-add card.
     agentGet('/state/watchlist-removed').then(r => setWlRemoved(r?.removed || [])).catch(() => {})
   }, [tab])
@@ -2549,6 +2555,11 @@ export default function Tune() {
               const renderRow = (s) => {
                 const i = symbols.indexOf(s)
                 const tested = btTradeCount(s.symbol)
+                const stUp = String(s.symbol).toUpperCase()
+                const desc = describeInstrument(s.symbol, symDesc)
+                const bt2 = backtestCell(tested, wlStats?.backtests?.[stUp])
+                const cap = capMarker(s.symbol)
+                const lastTraded = ddmm(wlStats?.by?.[stUp]?.lastAt)
                 const scan = scanInfo?.by?.[s.symbol]
                 const prev = prevBy[String(s.symbol).toUpperCase()]
                 const on = s.enabled !== false
@@ -2560,6 +2571,12 @@ export default function Tune() {
                       <input type="checkbox" checked={wlSelected.has(s.symbol)} onChange={() => toggleWlSel(s.symbol)} aria-label={`Select ${s.symbol}`} />
                     </td>
                     <td className="pr-2 py-1 whitespace-nowrap">{s.symbol}</td>
+                    {/* Ten characters, and the overflow is REACHABLE rather
+                        than clipped — the owner asked to be able to scroll
+                        right to see the rest, not to be told it was there. */}
+                    <td className="pr-2 text-[9px] text-[var(--color-text-sub)]">
+                      <div className="w-[10ch] overflow-x-auto whitespace-nowrap" title={desc}>{desc}</div>
+                    </td>
                     <td className="pr-2 text-[9px] text-[var(--color-text-sub)] whitespace-nowrap">{prev?.type || ''}</td>
                     <td className="pr-2"><Badge tone={on ? 'on' : 'off'}>{on ? 'ON' : 'OFF'}</Badge></td>
                     <td className="pr-2 text-[9px] tabular-nums whitespace-nowrap">
@@ -2574,8 +2591,21 @@ export default function Tune() {
                               : <span className="text-[var(--color-text-sub)]">no setup</span>}
                           </>
                         : <span className="text-[var(--color-text-sub)]">—</span>}
+                      {/* Owner: "Live signal to add {last traded date DD/MM in
+                          tiny font size}". Blank when the symbol has never
+                          closed a trade here — an empty stamp says that more
+                          honestly than a dash pretending to be a date. */}
+                      {lastTraded && (
+                        <span className="ml-1 text-[8px] text-[var(--color-text-sub)]"
+                          title={`Last closed trade on this account: ${wlStats?.by?.[stUp]?.lastAt}`}>
+                          {lastTraded}
+                        </span>
+                      )}
                     </td>
-                    <td className="pr-2 text-[9px] tabular-nums text-center">{tested != null ? tested : '—'}</td>
+                    <td className="pr-2 text-[9px] tabular-nums text-center" title={bt2.title}>
+                      {bt2.text}
+                      {bt2.stale && <span className="text-[var(--color-text-sub)]" aria-hidden="true">·</span>}
+                    </td>
                     {/* Live results — closed trades · net · win rate; LOSER
                         flag once the sample is big enough and net < 0. */}
                     <td className="pr-2 text-[9px] tabular-nums whitespace-nowrap">
@@ -2603,10 +2633,16 @@ export default function Tune() {
                         <span className="text-[var(--color-text-sub)]"> → {prev.maxCap.toFixed(2)} (capped)</span>
                       )}
                     </td>
-                    <td className="pr-2">
+                    <td className="pr-2 whitespace-nowrap">
+                      {/* Owner: "The CAP field, short to 4 character width and
+                          specify in… field-type in tiny symbol font-size to
+                          indicate at the start of the field." The marker says
+                          `lot` because that is what the field holds — see
+                          capMarker() for why a $ here would be a lie. */}
+                      <span className="text-[7px] text-[var(--color-text-sub)] align-middle mr-0.5" title={cap.title}>{cap.mark}</span>
                       <Input
-                        type="number" step="0.01" min="0.01" className="w-16 !py-0.5 !min-h-0 text-[9px]" value={s.maxVolume ?? ''}
-                        placeholder="auto" aria-label={`Max lots cap for ${s.symbol}`}
+                        type="number" step="0.01" min="0.01" className="w-[4ch] !px-1 !py-0.5 !min-h-0 text-[9px]" value={s.maxVolume ?? ''}
+                        placeholder="auto" title={cap.title} aria-label={`Max lots cap for ${s.symbol}`}
                         onChange={e => {
                           const next = [...symbols]
                           next[i] = { ...s, maxVolume: e.target.value === '' ? undefined : Number(e.target.value) }
@@ -2659,7 +2695,7 @@ export default function Tune() {
                   </tr>
                   {stratEditor === s.symbol && (
                     <tr className="border-t border-[var(--color-border)] bg-[var(--glass-bg)]">
-                      <td colSpan={11} className="py-2 px-2">
+                      <td colSpan={12} className="py-2 px-2">
                         <StrategyPicker
                           all={config?.strategies || []}
                           value={s.strategies || null}
@@ -2747,10 +2783,18 @@ export default function Tune() {
                       <tr>
                         <th className="pr-1 pb-1" title="Tick rows, then Remove/Disable selected above">✓</th>
                         <th className="pr-2 pb-1">Symbol</th>
+                        {/* Owner 04-08-2026: "Add a Description column next to
+                            the symbol as second column… 10 characters with a
+                            scrolling horizontal feature". Broker long name
+                            first, curated table second, bare ticker last. */}
+                        <th className="pr-2 pb-1" title="What the instrument is — the broker's own name where we have it (XAUUSD is Gold, GEV is GE Vernova). Ten characters wide; scroll the cell sideways to read the rest.">Description</th>
                         <th className="pr-2 pb-1">Type</th>
-                        <th className="pr-2 pb-1">Scanned</th>
-                        <th className="pr-2 pb-1">Live signal</th>
-                        <th className="pr-2 pb-1 text-center" title="Trades this symbol produced in the last backtest, all timeframes">Backtest trades</th>
+                        {/* WAS "Scanned", which sat over the enabled toggle and
+                            said nothing about scanning — the same mislabel
+                            class as the CAP field below. */}
+                        <th className="pr-2 pb-1" title="Whether this symbol is enabled for trading. Nothing to do with the scan — that is the Live signal column.">Enabled</th>
+                        <th className="pr-2 pb-1" title="The last scan's read, plus the date this symbol last CLOSED a trade on this account (DD/MM) — a symbol with an opinion but no recent fills reads very differently from one that traded this morning">Live signal</th>
+                        <th className="pr-2 pb-1 text-center" title="Trades this symbol produced in backtests. A run in this browser session wins; otherwise the durable backtest_runs record, marked with a dot.">Backtest trades</th>
                         <th className="pr-2 pb-1" title="LIVE closed trades on this account: count · net P&L · win rate. LOSER = net negative after enough sample — consider disabling">Live results</th>
                         <th className="pr-2 pb-1" title="Computed per instrument from your balance and risk % — the size the risk gate would approve at the tightest allowed stop">Auto lots</th>
                         <th className="pr-2 pb-1" title="Optional manual CAP on the auto size — leave empty for pure risk-based sizing">Max lots (cap)</th>
@@ -2775,7 +2819,7 @@ export default function Tune() {
                         return (
                           <Fragment key={clsKey}>
                             <tr className="border-t-2 border-[var(--color-border)] bg-[var(--glass-bg)]">
-                              <td colSpan={11} className="py-1.5">
+                              <td colSpan={12} className="py-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <button
                                     type="button" onClick={() => toggleBand(clsKey)} aria-expanded={clsOpen}
@@ -2797,7 +2841,7 @@ export default function Tune() {
                               return (
                                 <Fragment key={grpKey}>
                                   <tr className="border-t border-[var(--color-border)]">
-                                    <td colSpan={11} className="py-1 pl-4">
+                                    <td colSpan={12} className="py-1 pl-4">
                                       <div className="flex flex-wrap items-center gap-2">
                                         <button
                                           type="button" onClick={() => toggleBand(grpKey)} aria-expanded={grpOpen}
