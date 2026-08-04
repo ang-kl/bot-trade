@@ -1082,16 +1082,20 @@ export default function stateRouter(db) {
   // GET /state/management-reflection — what the MANAGEMENT of recent trades
   // did, and what that says about how this desk manages trades (§70.10).
   //
-  // Observations only. Nothing here tunes anything: the "controlled" in
-  // "controlled adaptation" is the step where a human or the lessons tuner
-  // decides, and a module that adapted on its own evidence would remove it.
+  // A SCOREBOARD, not a survey. Every row is built from exits a writer CAUSED
+  // — the position would still have been open without its action — priced in R
+  // so symbols are comparable. Which management rule banks money and which one
+  // gives it away, per writer.
+  //
+  // Still no tuning here: the "controlled" in "controlled adaptation" is the
+  // step where a human or the lessons tuner decides.
   // -----------------------------------------------------------------------
   router.get('/management-reflection', async (req, res) => {
     try {
-      const { managementObservations } = await import('../services/management-reflection.js')
+      const { managementScoreboard } = await import('../services/management-reflection.js')
       const scope = requestedAccount(db, req)
       const days = Math.min(90, Math.max(1, Number(req.query.days) || 14))
-      res.json(managementObservations(db, { days, accountId: scope.all ? null : (scope.accountId ?? null) }))
+      res.json(managementScoreboard(db, { days, accountId: scope.all ? null : (scope.accountId ?? null) }))
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

@@ -1,102 +1,146 @@
 // ---------------------------------------------------------------------------
-// agent/services/management-reflection.js — what the MANAGEMENT of a trade did,
-// and what that says about how the desk manages trades.
+// agent/services/management-reflection.js — what each management rule is
+// actually WORTH, in R, on the exits it caused.
 //
 // §70.10: "Connect management history to reflection and controlled adaptation."
 //
-// THE GAP. P10 gave every stop move, scale-out, trail arm and close its own row
-// in `position_events`. Reflection, meanwhile, reads `trades` — entry, exit,
-// net P&L — and produces lessons about ENTRIES. So the entire middle of a
-// trade, the part WS-05 exists for, has been written down for weeks and read by
-// nobody. A trade that entered well, was managed badly and closed flat is
-// indistinguishable in the lesson stream from a trade that never had an edge.
+// THE FIRST VERSION OF THIS FILE WAS A REPORT THAT SAID NOTHING. It computed
+// averages over managed and unmanaged trades, attached a sample size to each,
+// and then disclaimed the comparison as "an association, not a cause". Owner,
+// 04-08-2026: "why samples! make it real". They were right. Every sentence it
+// produced was true and none of them told anyone what to do, because a mean
+// over two populations nobody assigned is not evidence about a rule — it is
+// evidence that winning trades run long enough to get trailed.
 //
-// WHAT THIS PRODUCES, and what it deliberately does not. It produces the
-// management NARRATIVE of a closed trade and a small set of observations over
-// many of them. It does not tune anything. §70.10 says "and controlled
-// adaptation", and the control is that a human — or the existing lessons tuner,
-// deliberately — decides what to do with an observation. An analysis module
-// that also changed thresholds would be adapting on its own evidence with no
-// step in between, which is the opposite of controlled.
+// WHAT IS ACTUALLY KNOWABLE, and it is a great deal more than that. When a
+// management writer moves a stop and price later comes back and takes the
+// position out AT THAT STOP, the exit is not correlated with the move — it is
+// CAUSED by it. The position would still be open otherwise. That is an
+// identification, not an association, and it is visible in the data we already
+// keep: `sl_moved` carries from_value and to_value, `close` carries the price,
+// and the trade carries entry, exit and side.
 //
-// EVERY OBSERVATION CARRIES ITS SAMPLE SIZE, for the reason this codebase keeps
-// relearning: `n` is what separates a finding from a coincidence, and an
-// observation quoted without it reads as settled. Below `MIN_SAMPLE` an
-// observation is still returned, flagged `provisional`, rather than hidden —
-// suppressing it would leave the reader thinking nothing was seen.
+// So each exit is attributed to the rule that produced it, and priced in R:
+//
+//     R          = |entry − the stop the trade STARTED with|
+//     realised   = (exit − entry) / R      (sign-flipped for a short)
+//
+// R is the trade's own unit of risk, so +0.4R from a trail on one symbol is
+// directly comparable to +0.4R on another. Summed per writer, that is a
+// scoreboard: which management rule banks money and which one gives it away.
+//
+// THE ONE HONEST LIMIT, stated once and not repeated as a hedge on every line:
+// we cannot know what price would have done had the stop stayed where it was.
+// A tightened stop that took +0.4R might have gone on to reach the target, or
+// might have run to the original stop for −1R. What IS certain is what the move
+// banked, because it happened. `vsOriginalStop` reports the difference between
+// the realised outcome and −1R — the outcome the original bracket would have
+// produced had price continued — and it is labelled as the conditional it is.
 // ---------------------------------------------------------------------------
 
-/** Under this many trades, an observation is labelled provisional, not hidden. */
-export const MIN_SAMPLE = 12
+/** How close an exit must sit to a stop to count as having been taken at it. */
+const STOP_TOUCH_TOLERANCE = 0.0015   // 0.15% of price
 
-/** Event kinds that constitute MANAGEMENT, as opposed to the trade's own life. */
-const MANAGEMENT_KINDS = new Set(['sl_moved', 'tp_moved', 'scale_out', 'trail_armed'])
+/** Stop-moving rules. A tp_moved does not close anything, so it cannot cause an exit. */
+const STOP_MOVE = 'sl_moved'
+
+const num = (v) => (v == null ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
 
 /**
- * The management story of ONE closed trade: what touched it, in order, and by
- * whose authority.
+ * The management story of ONE closed trade, priced.
  *
- * Returns null when the trade has no management events at all — which is itself
- * a fact worth having, and the caller reports it as `unmanaged` rather than
- * silently skipping the trade.
+ * @returns {null|{
+ *   tradeId, symbol, side, entry, exit, originalStop, finalStop,
+ *   riskPerR, realisedR, exitCause: 'managed_stop'|'explicit_close'|'other',
+ *   causedBy: string|null, stopMoves: number, sources: string[],
+ *   vsOriginalStop: number|null,
+ * }}
  */
-export function managementNarrative(db, { tradeId = null, positionId = null } = {}) {
-  if (tradeId == null && positionId == null) return null
-  let rows = []
-  try {
-    rows = db.prepare(`
-      SELECT kind, source, reason, from_value, to_value, r_at, at
-        FROM position_events
-       WHERE ${tradeId != null ? 'trade_id = ?' : 'position_id = ?'}
-       ORDER BY id
-    `).all(tradeId != null ? tradeId : String(positionId))
-  } catch { return null }
-  if (!rows.length) return null
+export function tradeManagementOutcome(db, trade) {
+  const entry = num(trade?.entry_price)
+  const exit = num(trade?.exit_price)
+  const long = String(trade?.side || '').toLowerCase().startsWith('b')
+    || String(trade?.side || '').toLowerCase() === 'long'
 
-  const touches = rows.filter(r => MANAGEMENT_KINDS.has(r.kind))
+  let events = []
+  try {
+    events = db.prepare(`
+      SELECT kind, source, reason, from_value, to_value, price_at, at
+        FROM position_events
+       WHERE trade_id = ?
+       ORDER BY id
+    `).all(trade.id)
+  } catch { return null }
+  if (!events.length) return null
+
+  const moves = events.filter(e => e.kind === STOP_MOVE)
+  const closes = events.filter(e => e.kind === 'close')
+
+  // The stop the trade STARTED with: the from_value of the first move, which is
+  // what was in place before management touched it. `sl_price` on the trade is
+  // the fallback, and it is second choice because several writers update it as
+  // they go — reading it after the fact can return the LAST stop and silently
+  // make R zero.
+  const originalStop = num(moves[0]?.from_value) ?? num(trade?.sl_price)
+  const finalStop = num(moves[moves.length - 1]?.to_value) ?? originalStop
+
+  const riskPerR = entry != null && originalStop != null ? Math.abs(entry - originalStop) : null
+  const realisedR = riskPerR > 0 && entry != null && exit != null
+    ? ((long ? exit - entry : entry - exit) / riskPerR)
+    : null
+
+  // WHY DID IT EXIT? Three answers, and only the first two are attributable.
+  //   managed_stop  — price returned to a stop a writer had MOVED. Without the
+  //                   move the position would still be open, so the exit is
+  //                   that writer's, not the market's.
+  //   explicit_close— a writer closed it outright. Attribution is direct.
+  //   other         — the original bracket, a target, the owner, the broker.
+  let exitCause = 'other'
+  let causedBy = null
+  if (closes.length) {
+    exitCause = 'explicit_close'
+    causedBy = closes[closes.length - 1].source || null
+  } else if (moves.length && exit != null && finalStop != null && finalStop !== originalStop) {
+    const touched = Math.abs(exit - finalStop) <= Math.abs(finalStop) * STOP_TOUCH_TOLERANCE
+    if (touched) {
+      exitCause = 'managed_stop'
+      causedBy = moves[moves.length - 1].source || null
+    }
+  }
+
   return {
-    events: rows.length,
-    managementTouches: touches.length,
-    // WHO managed it. A trade touched by four different writers is a different
-    // object from one touched four times by the same writer, and the §41
-    // authority question ("who was allowed to") starts here.
-    sources: [...new Set(rows.map(r => r.source).filter(Boolean))],
-    kinds: [...new Set(rows.map(r => r.kind))],
-    stopMoves: rows.filter(r => r.kind === 'sl_moved').length,
-    targetMoves: rows.filter(r => r.kind === 'tp_moved').length,
-    scaleOuts: rows.filter(r => r.kind === 'scale_out').length,
-    trailArmed: rows.some(r => r.kind === 'trail_armed'),
-    firstAt: rows[0]?.at ?? null,
-    lastAt: rows[rows.length - 1]?.at ?? null,
+    tradeId: trade.id,
+    symbol: trade.symbol,
+    side: long ? 'long' : 'short',
+    entry, exit, originalStop, finalStop,
+    riskPerR,
+    realisedR: realisedR == null ? null : Number(realisedR.toFixed(3)),
+    exitCause,
+    causedBy,
+    stopMoves: moves.length,
+    sources: [...new Set(events.map(e => e.source).filter(Boolean))],
+    // What the move is worth AGAINST THE ALTERNATIVE THAT WAS RESTING: the
+    // original stop, which would have produced −1R had price continued to it.
+    // Conditional on that continuation, and named as such by the field's own
+    // documentation rather than by a disclaimer on every reader.
+    vsOriginalStop: realisedR == null ? null : Number((realisedR + 1).toFixed(3)),
   }
 }
 
 /**
- * Observations across recently closed trades, each with its sample size.
+ * The scoreboard: what each management writer's exits were worth.
  *
- * The three questions asked here are the ones WS-05's own record can answer and
- * the entry-focused lesson stream cannot:
- *
- *   1. How many closed trades were MANAGED AT ALL? A high unmanaged share means
- *      the layers exist and are not reaching positions — which is exactly what
- *      "the 5-minute loop is the sole protector" looks like from the outside.
- *   2. Does management correlate with outcome? Stated as a comparison of means
- *      with both counts shown, never as a cause: a trade that ran far enough to
- *      be trailed was already winning, and this module must not let that read
- *      as "trailing causes wins".
- *   3. Which writers actually touch positions? A writer that has never appeared
- *      is either dead or unreachable, and both are worth knowing before the
- *      next incident rather than after.
- *
- * @param {{days?: number, accountId?: string|null, limit?: number}} opts
+ * No averages over populations nobody assigned. Every row here is built from
+ * exits that writer CAUSED — the position would still have been open without
+ * its action.
  */
-export function managementObservations(db, { days = 14, accountId = null, limit = 500 } = {}) {
+export function managementScoreboard(db, { days = 14, accountId = null, limit = 1000 } = {}) {
   const d = Number.isFinite(Number(days)) && Number(days) > 0 ? Number(days) : 14
   const acct = accountId != null ? String(accountId) : null
   let trades = []
   try {
     trades = db.prepare(`
-      SELECT id, symbol, net_pnl, closed_at
+      SELECT id, symbol, side, entry_price, exit_price, sl_price, net_pnl, closed_at
         FROM trades
        WHERE status = 'closed'
          AND closed_at IS NOT NULL
@@ -106,82 +150,62 @@ export function managementObservations(db, { days = 14, accountId = null, limit 
        LIMIT ?
     `).all(...(acct == null ? [`-${d} days`, limit] : [`-${d} days`, acct, limit]))
   } catch {
-    // A failed read is reported as such. Returning empty observations would say
-    // "management was never involved", which is a claim, not an absence.
-    return { ok: false, error: 'query failed', days: d, trades: 0, observations: [] }
+    // A failed read is reported as a failed read. An empty scoreboard would
+    // say "no management rule earned anything", which is a claim.
+    return { ok: false, error: 'query failed', days: d, writers: [], trades: [] }
   }
 
-  let touchedIds = new Set()
-  const sourceCounts = new Map()
-  try {
-    const rows = db.prepare(`
-      SELECT trade_id, source FROM position_events
-       WHERE trade_id IS NOT NULL
-         AND REPLACE(at, 'T', ' ') >= datetime('now', ?)
-    `).all(`-${d} days`)
-    for (const r of rows) {
-      touchedIds.add(Number(r.trade_id))
-      if (r.source) sourceCounts.set(r.source, (sourceCounts.get(r.source) || 0) + 1)
+  const outcomes = []
+  for (const t of trades) {
+    const o = tradeManagementOutcome(db, t)
+    if (o) outcomes.push({ ...o, netPnl: t.net_pnl == null ? null : Number(t.net_pnl) })
+  }
+
+  const byWriter = new Map()
+  for (const o of outcomes) {
+    if (o.exitCause === 'other' || !o.causedBy || o.realisedR == null) continue
+    const w = byWriter.get(o.causedBy) || {
+      writer: o.causedBy, exits: 0, positive: 0, negative: 0,
+      totalR: 0, bestR: null, worstR: null, netPnl: 0, pnlKnown: 0,
+      viaManagedStop: 0, viaExplicitClose: 0,
     }
-  } catch { touchedIds = new Set() }
-
-  const managed = trades.filter(t => touchedIds.has(Number(t.id)))
-  const unmanaged = trades.filter(t => !touchedIds.has(Number(t.id)))
-  // Trades with no realised P&L are excluded from the COMPARISON and counted
-  // separately. Reading a NULL as zero is the defect this codebase has already
-  // paid for twice; it would drag both means towards nothing here.
-  const withPnl = (list) => list.filter(t => t.net_pnl != null).map(t => Number(t.net_pnl))
-  const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null)
-  const mPnl = withPnl(managed)
-  const uPnl = withPnl(unmanaged)
-
-  const obs = []
-  const note = (id, text, n, extra = {}) =>
-    obs.push({ id, text, n, provisional: n < MIN_SAMPLE, ...extra })
-
-  note(
-    'management_coverage',
-    `${managed.length} of ${trades.length} closed trades were touched by a management writer; ${unmanaged.length} closed with no management event at all.`,
-    trades.length,
-    { managed: managed.length, unmanaged: unmanaged.length },
-  )
-
-  if (mPnl.length && uPnl.length) {
-    note(
-      'managed_vs_unmanaged',
-      `Managed trades averaged ${mean(mPnl).toFixed(2)} over ${mPnl.length}; unmanaged averaged ${mean(uPnl).toFixed(2)} over ${uPnl.length}. This is an ASSOCIATION, not a cause — a trade that ran far enough to be trailed was already winning when it was touched.`,
-      Math.min(mPnl.length, uPnl.length),
-      { managedMean: mean(mPnl), unmanagedMean: mean(uPnl), managedN: mPnl.length, unmanagedN: uPnl.length },
-    )
+    w.exits++
+    if (o.realisedR > 0) w.positive++; else w.negative++
+    w.totalR += o.realisedR
+    w.bestR = w.bestR == null ? o.realisedR : Math.max(w.bestR, o.realisedR)
+    w.worstR = w.worstR == null ? o.realisedR : Math.min(w.worstR, o.realisedR)
+    if (o.netPnl != null) { w.netPnl += o.netPnl; w.pnlKnown++ }
+    if (o.exitCause === 'managed_stop') w.viaManagedStop++
+    else w.viaExplicitClose++
+    byWriter.set(o.causedBy, w)
   }
 
-  const unknownPnl = trades.filter(t => t.net_pnl == null).length
-  if (unknownPnl > 0) {
-    note(
-      'unknown_pnl_excluded',
-      `${unknownPnl} closed trade(s) in the window have no realised P&L and are excluded from every average above — they are unknown, not zero.`,
-      trades.length,
-      { unknownPnl },
-    )
-  }
+  const writers = [...byWriter.values()]
+    .map(w => ({
+      ...w,
+      totalR: Number(w.totalR.toFixed(2)),
+      avgR: Number((w.totalR / w.exits).toFixed(3)),
+      netPnl: Number(w.netPnl.toFixed(2)),
+      // Money is reported only over the exits whose P&L is actually known.
+      // Rolling unknowns in as zero is the defect that turned off the daily
+      // brake; it would understate a writer's damage here.
+      pnlCoverage: `${w.pnlKnown}/${w.exits}`,
+    }))
+    .sort((a, b) => b.totalR - a.totalR)
 
-  const sources = [...sourceCounts.entries()].sort((a, b) => b[1] - a[1])
-  note(
-    'active_writers',
-    sources.length
-      ? `${sources.length} writer(s) touched positions: ${sources.map(([s, n]) => `${s} (${n})`).join(', ')}.`
-      : 'No writer touched any position in this window — every management layer was silent, which is worth checking against the WS-05 health readout.',
-    trades.length,
-    { sources: Object.fromEntries(sources) },
-  )
-
+  const attributed = outcomes.filter(o => o.exitCause !== 'other').length
   return {
     ok: true,
     days: d,
     accountId: acct,
-    trades: trades.length,
-    managed: managed.length,
-    unmanaged: unmanaged.length,
-    observations: obs,
+    closedTrades: trades.length,
+    withManagementHistory: outcomes.length,
+    attributedExits: attributed,
+    // Which rules are making money and which are giving it away, in the trade's
+    // own unit of risk so symbols are comparable.
+    writers,
+    // The per-trade rows behind every number above, so a figure that looks
+    // wrong can be taken apart instead of argued with.
+    trades: outcomes,
   }
 }

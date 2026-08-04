@@ -13,7 +13,7 @@ import { initDB } from '../db.js'
 import { LAYERS, members, ws05Health, memberControllers, WS05 } from './workstream-ws05.js'
 import { CONTROLLERS, beat } from './heartbeat.js'
 import { recordPositionEvent } from './position-events.js'
-import { managementNarrative, managementObservations, MIN_SAMPLE } from './management-reflection.js'
+import { tradeManagementOutcome, managementScoreboard } from './management-reflection.js'
 import { AUTHORITIES } from './management-state.js'
 
 // ---------------------------------------------------------------------------
@@ -79,86 +79,152 @@ test('the workstream states its own goal and boundary', () => {
 })
 
 // ---------------------------------------------------------------------------
-// management history → reflection
+// management history → reflection, as a SCOREBOARD
+//
+// The first version of this computed averages over managed and unmanaged
+// trades, attached a sample size, and disclaimed the comparison. Owner,
+// 04-08-2026: "why samples! make it real". Every sentence it produced was true
+// and none told anyone what to do — a mean over two populations nobody assigned
+// is evidence that winners run long enough to get trailed, not evidence about a
+// rule.
+//
+// What IS knowable: when a writer moves a stop and price later takes the
+// position out AT THAT STOP, the exit is CAUSED by the move. The position would
+// still be open otherwise. Priced in R, that is a per-rule scoreboard.
 // ---------------------------------------------------------------------------
 
-const closeTrade = (db, { pnl = 10, symbol = 'EURUSD', daysAgo = 1 } = {}) =>
+const mkTrade = (db, { entry = 1.1, exit = 1.12, sl = 1.09, side = 'buy', pnl = 20, daysAgo = 1, symbol = 'EURUSD' } = {}) =>
   db.prepare(
-    `INSERT INTO trades (symbol, side, status, net_pnl, closed_at, account_id)
-     VALUES (?, 'buy', 'closed', ?, datetime('now', ?), '111')`
-  ).run(symbol, pnl, `-${daysAgo} days`).lastInsertRowid
+    `INSERT INTO trades (symbol, side, status, entry_price, exit_price, sl_price, net_pnl, closed_at, account_id)
+     VALUES (?, ?, 'closed', ?, ?, ?, ?, datetime('now', ?), '111')`
+  ).run(symbol, side, entry, exit, sl, pnl, `-${daysAgo} days`).lastInsertRowid
 
-test('a trade\'s management narrative names WHO touched it and how often', () => {
+test('an exit AT A MOVED STOP is attributed to the writer that moved it', () => {
+  // Entry 1.10, original stop 1.09 → R = 0.01. The trail moved the stop to
+  // 1.115 and price came back to it: +1.5R, banked by profit_keeper. Without
+  // that move the position would still have been open.
   const db = initDB(':memory:')
-  const id = closeTrade(db)
-  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard', toValue: 1.1 })
-  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', toValue: 1.2 })
-  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'scale_out', source: 'profit_keeper' })
+  const id = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.115 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', fromValue: 1.09, toValue: 1.115 })
 
-  const n = managementNarrative(db, { tradeId: id })
-  assert.equal(n.stopMoves, 2)
-  assert.equal(n.scaleOuts, 1)
-  assert.deepEqual(n.sources.sort(), ['profit_keeper', 'trade_guard'])
-  assert.equal(n.managementTouches, 3)
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.exitCause, 'managed_stop')
+  assert.equal(o.causedBy, 'profit_keeper')
+  assert.equal(o.realisedR, 1.5)
+  assert.equal(o.vsOriginalStop, 2.5, 'against the -1R the resting bracket would have produced')
 })
 
-test('an UNMANAGED trade returns null rather than an empty story', () => {
-  // The caller reports it as unmanaged. A zero-filled narrative would read as
-  // "management ran and did nothing", which is a different fact.
+test('R is measured from the stop the trade STARTED with, not the last one', () => {
+  // Reading sl_price after the fact returns whatever the last writer left, and
+  // R would collapse towards zero — every trade would score as a huge multiple.
   const db = initDB(':memory:')
-  assert.equal(managementNarrative(db, { tradeId: closeTrade(db) }), null)
+  const id = mkTrade(db, { entry: 1.1, sl: 1.118, exit: 1.12 })   // sl_price already trailed
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard', fromValue: 1.09, toValue: 1.118 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.originalStop, 1.09)
+  assert.ok(Math.abs(o.riskPerR - 0.01) < 1e-9)
 })
 
-test('coverage is reported as managed vs unmanaged, with the sample size', () => {
+test('a SHORT is scored the right way round', () => {
   const db = initDB(':memory:')
-  const touched = closeTrade(db, { pnl: 40 })
-  closeTrade(db, { pnl: -10 })
-  closeTrade(db, { pnl: -20 })
-  recordPositionEvent(db, { tradeId: touched, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard' })
-
-  const r = managementObservations(db, { days: 30 })
-  assert.equal(r.trades, 3)
-  assert.equal(r.managed, 1)
-  assert.equal(r.unmanaged, 2)
-  const cov = r.observations.find(o => o.id === 'management_coverage')
-  assert.equal(cov.n, 3)
-  assert.equal(cov.provisional, true, `n=3 is below the ${MIN_SAMPLE} floor`)
+  const id = mkTrade(db, { side: 'sell', entry: 1.1, sl: 1.11, exit: 1.085 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard', fromValue: 1.11, toValue: 1.085 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.side, 'short')
+  assert.equal(o.realisedR, 1.5)
+  assert.equal(o.causedBy, 'trade_guard')
 })
 
-test('the managed/unmanaged comparison refuses to claim a cause', () => {
+test('an exit at the ORIGINAL stop is nobody\'s — the market took it', () => {
+  // The whole point of attribution: a stop nobody moved cannot have caused
+  // anything, and crediting a writer for it would flatter every scoreboard.
   const db = initDB(':memory:')
-  const t = closeTrade(db, { pnl: 100 })
-  closeTrade(db, { pnl: -5 })
-  recordPositionEvent(db, { tradeId: t, symbol: 'EURUSD', kind: 'trail_armed', source: 'profit_keeper' })
-  const o = managementObservations(db, { days: 30 }).observations.find(x => x.id === 'managed_vs_unmanaged')
-  assert.match(o.text, /ASSOCIATION, not a cause/)
-  assert.equal(o.managedN, 1)
-  assert.equal(o.unmanagedN, 1)
+  const id = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.09 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'tp_moved', source: 'profit_keeper', toValue: 1.2 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.exitCause, 'other')
+  assert.equal(o.causedBy, null)
 })
 
-test('UNKNOWN P&L is excluded from the averages and said out loud', () => {
-  // Reading a NULL as zero is the defect that turned off the daily-loss brake.
-  // Here it would drag both means towards nothing and look like a finding.
+test('an explicit close is attributed directly', () => {
   const db = initDB(':memory:')
-  closeTrade(db, { pnl: null })
-  closeTrade(db, { pnl: 50 })
-  const r = managementObservations(db, { days: 30 })
-  const u = r.observations.find(o => o.id === 'unknown_pnl_excluded')
-  assert.equal(u.unknownPnl, 1)
-  assert.match(u.text, /unknown, not zero/)
+  const id = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.095 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'close', source: 'loss_guardian', priceAt: 1.095 })
+  const o = tradeManagementOutcome(db, db.prepare('SELECT * FROM trades WHERE id = ?').get(id))
+  assert.equal(o.exitCause, 'explicit_close')
+  assert.equal(o.causedBy, 'loss_guardian')
+  assert.equal(o.realisedR, -0.5)
 })
 
-test('a silent window says so instead of reporting nothing', () => {
+test('the scoreboard totals R per writer and counts winners against losers', () => {
   const db = initDB(':memory:')
-  closeTrade(db, { pnl: 5 })
-  const o = managementObservations(db, { days: 30 }).observations.find(x => x.id === 'active_writers')
-  assert.match(o.text, /every management layer was silent/)
+  const a = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.115, pnl: 15 })
+  const b = mkTrade(db, { entry: 1.2, sl: 1.19, exit: 1.195, pnl: -5 })
+  recordPositionEvent(db, { tradeId: a, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', fromValue: 1.09, toValue: 1.115 })
+  recordPositionEvent(db, { tradeId: b, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', fromValue: 1.19, toValue: 1.195 })
+
+  const s = managementScoreboard(db, { days: 30 })
+  const pk = s.writers.find(w => w.writer === 'profit_keeper')
+  assert.equal(pk.exits, 2)
+  assert.equal(pk.positive, 1)
+  assert.equal(pk.negative, 1)
+  assert.equal(pk.totalR, 1)         // +1.5R and -0.5R
+  assert.equal(pk.netPnl, 10)
+  assert.equal(pk.pnlCoverage, '2/2')
 })
 
-test('a broken query reports ok:false, never an empty set of findings', () => {
+test('money is reported only over the exits whose P&L is KNOWN', () => {
+  // Rolling an unknown in as zero is the defect that turned off the daily
+  // brake. Here it would understate a writer's damage.
+  const db = initDB(':memory:')
+  const a = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.115, pnl: 15 })
+  const b = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.115, pnl: null })
+  for (const id of [a, b]) {
+    recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard', fromValue: 1.09, toValue: 1.115 })
+  }
+  const w = managementScoreboard(db, { days: 30 }).writers.find(x => x.writer === 'trade_guard')
+  assert.equal(w.exits, 2)
+  assert.equal(w.netPnl, 15)
+  assert.equal(w.pnlCoverage, '1/2', 'and it says so rather than implying full coverage')
+})
+
+test('a trade with no management history contributes to no writer', () => {
+  const db = initDB(':memory:')
+  mkTrade(db, { pnl: 100 })
+  const s = managementScoreboard(db, { days: 30 })
+  assert.equal(s.closedTrades, 1)
+  assert.equal(s.withManagementHistory, 0)
+  assert.deepEqual(s.writers, [])
+})
+
+test('writers are ranked by total R, best first', () => {
+  const db = initDB(':memory:')
+  const good = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.13 })
+  const bad = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.095 })
+  recordPositionEvent(db, { tradeId: good, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', fromValue: 1.09, toValue: 1.13 })
+  recordPositionEvent(db, { tradeId: bad, symbol: 'EURUSD', kind: 'sl_moved', source: 'trade_guard', fromValue: 1.09, toValue: 1.095 })
+  const s = managementScoreboard(db, { days: 30 })
+  assert.equal(s.writers[0].writer, 'profit_keeper')
+  assert.equal(s.writers[1].writer, 'trade_guard')
+  assert.ok(s.writers[0].totalR > s.writers[1].totalR)
+})
+
+test('the per-trade rows behind every figure are returned', () => {
+  // A number that looks wrong should be takeable apart, not argued with.
+  const db = initDB(':memory:')
+  const id = mkTrade(db, { entry: 1.1, sl: 1.09, exit: 1.115 })
+  recordPositionEvent(db, { tradeId: id, symbol: 'EURUSD', kind: 'sl_moved', source: 'profit_keeper', fromValue: 1.09, toValue: 1.115 })
+  const s = managementScoreboard(db, { days: 30 })
+  assert.equal(s.trades.length, 1)
+  assert.equal(s.trades[0].tradeId, id)
+  assert.equal(s.trades[0].originalStop, 1.09)
+  assert.equal(s.trades[0].finalStop, 1.115)
+})
+
+test('a broken query reports ok:false, never an empty scoreboard', () => {
   const db = initDB(':memory:')
   db.exec('DROP TABLE trades')
-  const r = managementObservations(db, { days: 30 })
-  assert.equal(r.ok, false)
-  assert.deepEqual(r.observations, [])
+  const s = managementScoreboard(db, { days: 30 })
+  assert.equal(s.ok, false)
+  assert.deepEqual(s.writers, [])
 })
