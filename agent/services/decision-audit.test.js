@@ -177,7 +177,17 @@ test('the public view carries counts and stage names, never instruments or money
   db.prepare(`INSERT INTO trades (symbol, side, volume, entry_price, status, opened_at)
               VALUES ('XAUUSD','buy',2.5,3310.55,'open',?)`).run(insideDay())
 
-  const pub = JSON.stringify(publicPipelineView(auditDecisions(db)))
+  // THE TIMESTAMP IS EXCLUDED FROM THE SUBSTRING SCAN, and this is a fix for a
+  // real flake rather than a convenience. `at` is an ISO instant WE generate,
+  // and its digits collide with the numeric needles: `…T08:59:12.518Z` contains
+  // "2.5", so this test failed on CI purely because of the second it ran in.
+  // A leak check that depends on the clock is worse than no leak check — it
+  // trains a reader to re-run until green, which is exactly how a real leak
+  // would get waved through.
+  const view = publicPipelineView(auditDecisions(db))
+  const { at, ...content } = view
+  assert.match(String(at), /^\d{4}-\d{2}-\d{2}T/, 'at is a timestamp, which is why it is exempt')
+  const pub = JSON.stringify(content)
   for (const leak of ['XAUUSD', 'EURUSD', '3310', '2.5', '46130058']) {
     assert.ok(!pub.includes(leak), `public view must not carry "${leak}" — it is ${pub}`)
   }

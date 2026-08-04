@@ -603,3 +603,146 @@ test('action_log: a condition that CLEARS and returns logs again immediately', a
   await runProtectionAudit(db, [row()], naked, { nowMs: t0 + 300_000 })
   assert.equal(logRows(db, 'POSITION_UNPROTECTED'), 2, 'a re-occurrence is not muted')
 })
+
+// ---------------------------------------------------------------------------
+// THE MUTE MAPS ARE PER ACCOUNT (owner, 04-08-2026)
+//
+// The owner pasted three targetless alerts, two of them the identical USDBRL
+// position. The mute maps were global while this pass runs once per account,
+// and the prune step deletes every entry whose position is not in THIS pass's
+// findings — so account A alerted and stamped its ids, account B's pass pruned
+// them as "no longer open", and A re-alerted on the next cycle. Between two
+// accounts the mute window was not leaky, it was cancelled.
+// ---------------------------------------------------------------------------
+
+test('one account\'s pass does not un-mute another account\'s alert', async () => {
+  const db = initDB(':memory:')
+  const sent = []
+  const send = async (m) => { sent.push(m) }
+
+  const posA = { positionId: 'A1', symbol: 'USDBRL', stopLoss: 5.09, takeProfit: null }
+  const posB = { positionId: 'B1', symbol: 'EURNOK', stopLoss: 10.9, takeProfit: null }
+  const rowA = [{ id: 1, ctrader_position_id: 'A1', symbol: 'USDBRL', current_sl: 5.09, account_id: 'A' }]
+  const rowB = [{ id: 2, ctrader_position_id: 'B1', symbol: 'EURNOK', current_sl: 10.9, account_id: 'B' }]
+
+  // Account A alerts once…
+  await runProtectionAudit(db, rowA, [posA], { sendMessage: send, accountId: 'A' })
+  const afterA = sent.length
+  assert.ok(afterA > 0, 'A must alert the first time')
+
+  // …account B runs its own pass on its own book…
+  await runProtectionAudit(db, rowB, [posB], { sendMessage: send, accountId: 'B' })
+
+  // …and A, still inside its mute window, must stay silent.
+  const before = sent.length
+  await runProtectionAudit(db, rowA, [posA], { sendMessage: send, accountId: 'A' })
+  assert.equal(sent.length, before, 'A was muted; B\'s pass must not have cleared that')
+})
+
+test('the prune still works WITHIN an account — a closed position stops being remembered', async () => {
+  // Scoping the map must not cost the bound it was there for.
+  const db = initDB(':memory:')
+  const send = async () => {}
+  const pos = { positionId: 'A1', symbol: 'USDBRL', stopLoss: 5.09, takeProfit: null }
+  await runProtectionAudit(db, [{ id: 1, ctrader_position_id: 'A1', symbol: 'USDBRL', current_sl: 5.09, account_id: 'A' }], [pos], { sendMessage: send, accountId: 'A' })
+  assert.match(getState(db, 'acct:A:targetless_position_alerts_json') || '', /A1/)
+  await runProtectionAudit(db, [], [], { sendMessage: send, accountId: 'A' })
+  const after = JSON.parse(getState(db, 'acct:A:targetless_position_alerts_json') || '{}')
+  assert.deepEqual(Object.keys(after), [], 'nothing open, nothing remembered')
+})
+
+// ---------------------------------------------------------------------------
+// APPLYING THE TARGET (owner, 04-08-2026: "SO MANY POSITIONS WITH NO TARGET SET")
+//
+// The suggestion had been computed and printed for days while nothing acted on
+// it. §43: protection must have its own functioning path — a target that only
+// appears if someone taps a phone is not one.
+// ---------------------------------------------------------------------------
+
+const targetlessPos = (id = 'P1', sym = 'USDBRL') =>
+  ({ positionId: id, symbol: sym, stopLoss: 5.09, takeProfit: null })
+const targetlessRow = (id = 'P1', sym = 'USDBRL', extra = {}) =>
+  ({ id: 1, ctrader_position_id: id, symbol: sym, current_sl: 5.09, account_id: 'A', ...extra })
+
+test('a bot-adopted targetless position gets its suggested target SET', async () => {
+  const db = initDB(':memory:')
+  const sent = []
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    sendMessage: async (m) => { sent.push(m) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async (f, s) => { applied.push([f.positionId, s.tp]); return { ok: true } },
+  })
+  assert.deepEqual(applied, [['P1', 5.4]])
+  assert.match(sent[0], /TP SET to 5\.4/)
+  assert.match(sent[0], /SET AUTOMATICALLY/)
+})
+
+test('a position opened OUTSIDE the bot is never touched', async () => {
+  // The owner's own trade and the owner's own exit.
+  const db = initDB(':memory:')
+  const sent = []
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow('P2', 'GBPAUD', { source: 'external' })], [targetlessPos('P2', 'GBPAUD')], {
+    sendMessage: async (m) => { sent.push(m) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 2.1, basis: 'HVN' }),
+    applyTarget: async () => { applied.push('should not happen'); return { ok: true } },
+  })
+  assert.deepEqual(applied, [])
+  assert.match(sent[0], /opened outside the bot, left alone/)
+})
+
+test('no suggestion means no target — an invented one is worse than none', async () => {
+  const db = initDB(':memory:')
+  const applied = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    sendMessage: async () => {},
+    accountId: 'A',
+    suggestTarget: async () => null,
+    applyTarget: async () => { applied.push('should not happen'); return { ok: true } },
+  })
+  assert.deepEqual(applied, [])
+})
+
+test('a FAILED amend still alerts, and still offers the button', async () => {
+  // The alert is the fallback. Losing it because the amend failed would leave
+  // the position targetless AND silent, which is worse than before.
+  const db = initDB(':memory:')
+  const sent = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    sendMessage: async (m) => { sent.push(m) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => ({ ok: false, error: 'broker said no' }),
+  })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /suggested TP 5\.4/)
+  assert.ok(!/TP SET to/.test(sent[0]))
+})
+
+test('an amend that THROWS does not lose the alert either', async () => {
+  const db = initDB(':memory:')
+  const sent = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    sendMessage: async (m) => { sent.push(m) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+    applyTarget: async () => { throw new Error('network') },
+  })
+  assert.equal(sent.length, 1)
+  assert.match(sent[0], /suggested TP 5\.4/)
+})
+
+test('with no applyTarget wired the behaviour is exactly what it was', async () => {
+  const db = initDB(':memory:')
+  const sent = []
+  await runProtectionAudit(db, [targetlessRow()], [targetlessPos()], {
+    sendMessage: async (m) => { sent.push(m) },
+    accountId: 'A',
+    suggestTarget: async () => ({ tp: 5.4, basis: 'HVN' }),
+  })
+  assert.match(sent[0], /suggested TP 5\.4/)
+  assert.ok(!/SET AUTOMATICALLY/.test(sent[0]))
+})

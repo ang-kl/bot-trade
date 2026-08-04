@@ -64,6 +64,36 @@ export const DEFAULT_UNKNOWN_PNL_GRACE_MIN = 15
 // null to restore the old block-forever behaviour.
 export const DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN = 360
 
+// EXHAUSTED — TRIED AND NEVER FILLED (owner, 04-08-2026, after the age-out was
+// already in place: "it is a wasted opportunities and time, if I don't check
+// mean a few hours gone for not trading").
+//
+// The age-out fixed "blocks forever". It did not fix "blocks for six hours a
+// day, every day", which is what production actually looks like. Measured
+// 04-08 08:31 UTC on account 46130058:
+//
+//   id 700  0066.HK  closed 05:26:32  pnl_attempts 8  ← blocking, 3h to run
+//   id 649  GBPJPY   closed 21:06:24  pnl_attempts 8
+//   id 655  GBPCNH   closed 21:06:24  pnl_attempts 8
+//
+// Each of those was attempted EIGHT times and never filled. The age-out then
+// makes the desk wait out the remainder of six hours for a figure that eight
+// attempts say is not coming. That is not caution; it is the clock being used
+// as a substitute for evidence we already have.
+//
+// `pnl_attempts` is that evidence, and it is durable — pnl-backfill.js persists
+// it per row precisely so it survives the redeploys that used to erase the old
+// in-memory counter. Past this many attempts the row stops blocking straight
+// away, regardless of age.
+//
+// THIS IS NOT A WEAKENING OF THE VETO, by the same argument the age-out uses
+// and with a stronger warrant: the age-out stops waiting because time passed,
+// this one stops waiting because the repair was attempted and failed, over and
+// over, on a row that is still there. net_pnl stays NULL either way — nothing
+// is estimated, and the day's total is still built only from figures the broker
+// gave us. Set the knob to 0 or null to restore pure time-based behaviour.
+export const DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS = 6
+
 /**
  * Closed trades in the window whose realised P&L is still unknown, older than
  * the grace period — i.e. the rows that make a daily-loss sum untrustworthy.
@@ -101,6 +131,7 @@ export function unresolvedPnlSince(db, dayStartSql, {
   accountId = null,
   graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN,
   maxAgeMin = DEFAULT_UNKNOWN_PNL_MAX_AGE_MIN,
+  minAttempts = DEFAULT_UNKNOWN_PNL_MIN_ATTEMPTS,
 } = {}) {
   const acct = accountId != null ? String(accountId) : null
   const grace = Number.isFinite(Number(graceMin)) && Number(graceMin) >= 0
@@ -141,11 +172,21 @@ export function unresolvedPnlSince(db, dayStartSql, {
   // trades table: 53 approvals turned into vetoes. Absent column simply means no
   // row has been written off yet, which is the pre-migration truth.
   let hasUnresolvable = false
+  let hasAttempts = false
   try {
-    hasUnresolvable = db.prepare('PRAGMA table_info(trades)').all()
-      .some(c => c.name === 'pnl_unresolvable')
-  } catch { hasUnresolvable = false }
+    const cols = db.prepare('PRAGMA table_info(trades)').all()
+    hasUnresolvable = cols.some(c => c.name === 'pnl_unresolvable')
+    // Same schema-gap reasoning: a database predating the attempts column must
+    // behave exactly as it did before, not start throwing (which this module
+    // reads as "the day's losses are unknown" and turns into a halt).
+    hasAttempts = cols.some(c => c.name === 'pnl_attempts')
+  } catch { hasUnresolvable = false; hasAttempts = false }
   const notWrittenOff = hasUnresolvable ? 'AND COALESCE(pnl_unresolvable, 0) = 0' : ''
+  // 0, null or junk = off, i.e. attempts are ignored and only age decides.
+  const attemptCap = hasAttempts && Number.isFinite(Number(minAttempts)) && Number(minAttempts) > 0
+    ? Number(minAttempts)
+    : null
+  const notExhausted = attemptCap == null ? '' : 'AND COALESCE(pnl_attempts, 0) < ?'
 
   // The blocking set is now BOUNDED AT BOTH ENDS: newer than the age-out line
   // (still worth waiting for) and older than the grace line (has had its
@@ -163,6 +204,23 @@ export function unresolvedPnlSince(db, dayStartSql, {
       AND REPLACE(closed_at, 'T', ' ') >= ?
       AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
       ${notAgedOut}
+      ${notExhausted}
+      ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
+  `
+  // Rows we have STOPPED blocking on because the repair was tried and kept
+  // failing. Counted separately from the age-out for the same reason the
+  // age-out is separate from the write-off: "we waited" and "we tried eight
+  // times" are different strengths of evidence, and the reason string must not
+  // let the weaker one borrow the stronger one's certainty.
+  const exhaustedSql = `
+    SELECT COUNT(*) AS n, MIN(closed_at) AS oldest, MAX(COALESCE(pnl_attempts, 0)) AS attempts
+      FROM trades
+    WHERE status = 'closed'
+      AND net_pnl IS NULL
+      ${notWrittenOff}
+      AND COALESCE(pnl_attempts, 0) >= ?
+      AND REPLACE(closed_at, 'T', ' ') >= ?
+      AND REPLACE(closed_at, 'T', ' ') <= datetime('now', ?)
       ${acct == null ? '' : 'AND (account_id = ? OR account_id IS NULL)'}
   `
   // Rows we have STOPPED blocking on purely because of age. Counted and named
@@ -202,16 +260,22 @@ export function unresolvedPnlSince(db, dayStartSql, {
     dayStartSql,
     `-${grace} minutes`,
     ...(maxAge == null ? [] : [`-${maxAge} minutes`]),
+    ...(attemptCap == null ? [] : [attemptCap]),
     ...(acct == null ? [] : [acct]),
   ]
+  const exhaustedParams = acct == null
+    ? [attemptCap, dayStartSql, `-${grace} minutes`]
+    : [attemptCap, dayStartSql, `-${grace} minutes`, acct]
   const agedParams = acct == null
     ? [dayStartSql, `-${maxAge} minutes`]
     : [dayStartSql, `-${maxAge} minutes`, acct]
   let row = null
   let unres = null
   let aged = { n: 0, oldest: null }
+  let exhausted = { n: 0, oldest: null, attempts: 0 }
   try {
     row = db.prepare(sql).get(...params)
+    if (attemptCap != null) exhausted = db.prepare(exhaustedSql).get(...exhaustedParams) || exhausted
     // Only when the column exists — see the note above.
     unres = hasUnresolvable ? db.prepare(unresolvableSql).get(
       ...(acct == null ? [dayStartSql, `-${grace} minutes`] : [dayStartSql, `-${grace} minutes`, acct]),
@@ -220,7 +284,10 @@ export function unresolvedPnlSince(db, dayStartSql, {
   } catch {
     // A query that cannot run tells us nothing about the day's losses, which
     // is exactly the state this module refuses to read as "zero".
-    return { count: -1, oldestClosedAt: null, unattributedCount: 0, unresolvableCount: 0, agedOutCount: 0, agedOutOldest: null }
+    return {
+      count: -1, oldestClosedAt: null, unattributedCount: 0, unresolvableCount: 0,
+      agedOutCount: 0, agedOutOldest: null, exhaustedCount: 0, exhaustedOldest: null, exhaustedAttempts: 0,
+    }
   }
   return {
     count: row?.n || 0,
@@ -239,6 +306,14 @@ export function unresolvedPnlSince(db, dayStartSql, {
     agedOutCount: Number(aged?.n) || 0,
     agedOutOldest: aged?.oldest || null,
     agedOutAfterMin: maxAge,
+    // Rows that stopped blocking because the REPAIR WAS TRIED and kept failing
+    // — the strongest of the three "stopped waiting" reasons short of the
+    // broker telling us outright, and the only one backed by a count of real
+    // attempts rather than a clock.
+    exhaustedCount: Number(exhausted?.n) || 0,
+    exhaustedOldest: exhausted?.oldest || null,
+    exhaustedAttempts: Number(exhausted?.attempts) || 0,
+    exhaustedAfterAttempts: attemptCap,
   }
 }
 
@@ -251,7 +326,11 @@ export function unresolvedPnlSince(db, dayStartSql, {
  *
  * @returns {{block:boolean, reason?:string}}
  */
-export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCount = 0, unresolvableCount = 0, agedOutCount = 0, agedOutOldest = null, agedOutAfterMin = null }, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
+export function unknownPnlBlocks({
+  count, oldestClosedAt = null, unattributedCount = 0, unresolvableCount = 0,
+  agedOutCount = 0, agedOutOldest = null, agedOutAfterMin = null,
+  exhaustedCount = 0, exhaustedOldest = null, exhaustedAttempts = 0, exhaustedAfterAttempts = null,
+}, { enabled = DEFAULT_UNKNOWN_PNL_BLOCK, graceMin = DEFAULT_UNKNOWN_PNL_GRACE_MIN, scope = 'account' } = {}) {
   // WRITTEN-OFF ROWS ARE NAMED, WHEREVER THE ANSWER LANDS.
   //
   // #513 claimed that excluding unresolvable rows from the blocking count meant
@@ -276,6 +355,14 @@ export function unknownPnlBlocks({ count, oldestClosedAt = null, unattributedCou
   // not borrow the first one's certainty.
   if (Number(agedOutCount) > 0) {
     parts.push(`${agedOutCount} closed trade(s) stopped blocking on AGE alone after ${agedOutAfterMin}m${agedOutOldest ? ` (oldest ${agedOutOldest})` : ''} — the backfill never filled them, so the day's loss total is incomplete by an unknown amount rather than known to be complete`)
+  }
+  // EXHAUSTED is stated separately again, and it is the stronger of the two
+  // "we stopped waiting" sentences: age says a clock ran out, this says the
+  // repair ran N times against the broker and came back empty every time.
+  // Naming the attempt count is the point — it is the evidence, and it is what
+  // distinguishes this from simply giving up early.
+  if (Number(exhaustedCount) > 0) {
+    parts.push(`${exhaustedCount} closed trade(s) stopped blocking after ${exhaustedAfterAttempts}+ failed backfill attempts (up to ${exhaustedAttempts} on one row${exhaustedOldest ? `, oldest ${exhaustedOldest}` : ''}) — the broker was asked repeatedly and never returned a fill, so their P&L is missing from the day's total`)
   }
   const writtenOff = parts.length ? parts.join('; ') : null
   if (enabled === false) return { block: false, ...(writtenOff ? { note: writtenOff } : {}) }

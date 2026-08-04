@@ -160,7 +160,7 @@ test('WITH candidates: the plan lists them and STILL writes nothing', async () =
     assert.equal(r.withExitPrice, 1)
     assert.equal(r.plan.find(x => x.id === older).hasExitPrice, true)
     assert.equal(r.plan.find(x => x.id === noExit).hasExitPrice, false)
-    assert.match(r.note, /given up on 1 account/)
+    assert.match(r.note, /Give-up evidence on 1 account/)
 
     // THE POINT: rows qualified, and not one was marked.
     assert.equal(unresolvableCount(s.db), 0)

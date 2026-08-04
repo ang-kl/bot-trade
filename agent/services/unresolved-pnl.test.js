@@ -307,3 +307,92 @@ test('the account scope still binds correctly with the age clause in the middle'
   const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { accountId: '111', graceMin: 15, maxAgeMin: 360 })
   assert.equal(r.count, 1)
 })
+
+// ---------------------------------------------------------------------------
+// EXHAUSTED — tried and never filled (owner, 04-08-2026)
+//
+// The age-out fixed "blocks forever". It did not fix "blocks six hours a day,
+// every day". Production on that date: three rows on account 46130058 at
+// pnl_attempts = 8, one of them still inside the age window and therefore
+// still holding every entry on the account. Eight failed attempts is better
+// evidence than a clock, and it was already being recorded.
+// ---------------------------------------------------------------------------
+
+const withAttempts = (db, id, n) =>
+  db.prepare('UPDATE trades SET pnl_attempts = ? WHERE id = ?').run(n, id)
+
+test('a row tried past the threshold stops blocking WITHOUT waiting out the age window', () => {
+  const db = mkDb()
+  const id = closeTrade(db, { pnl: null, minutesAgo: 30 })   // inside the 360m age-out
+  assert.equal(unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360 }).count, 1)
+
+  withAttempts(db, id, 8)
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360, minAttempts: 6 })
+  assert.equal(r.count, 0, 'eight failed attempts is evidence; the clock is not needed')
+  assert.equal(r.exhaustedCount, 1)
+  assert.equal(r.exhaustedAttempts, 8)
+})
+
+test('below the threshold it still blocks — attempts are evidence, not an excuse', () => {
+  const db = mkDb()
+  const id = closeTrade(db, { pnl: null, minutesAgo: 30 })
+  withAttempts(db, id, 5)
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360, minAttempts: 6 })
+  assert.equal(r.count, 1)
+  assert.equal(r.exhaustedCount, 0)
+})
+
+test('minAttempts 0/null restores pure time-based behaviour', () => {
+  const db = mkDb()
+  const id = closeTrade(db, { pnl: null, minutesAgo: 30 })
+  withAttempts(db, id, 99)
+  // `undefined` is deliberately absent: it means "argument omitted", so the
+  // default (6) applies. Only an explicit 0/null/junk turns the check off.
+  for (const minAttempts of [0, null, 'nonsense']) {
+    const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360, minAttempts })
+    assert.equal(r.count, 1, `minAttempts=${minAttempts} must not release anything`)
+  }
+})
+
+test('a row STILL INSIDE THE GRACE WINDOW is not released by attempts either', () => {
+  // The grace window exists because a fresh close is expected to sit NULL for a
+  // cycle or two. A row that has not yet started blocking cannot stop blocking.
+  const db = mkDb()
+  const id = closeTrade(db, { pnl: null, minutesAgo: 2 })
+  withAttempts(db, id, 20)
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360, minAttempts: 6 })
+  assert.equal(r.count, 0, 'inside grace: not blocking')
+  assert.equal(r.exhaustedCount, 0, '…and not counted as released, because it was never held')
+})
+
+test('the account scope still binds with BOTH the age and attempt clauses in the middle', () => {
+  // Positional params again: attempts sits between age and account. A miscount
+  // binds the account id to a number and the query silently returns nothing —
+  // which this module reads as "nothing is blocking".
+  const db = mkDb()
+  closeTrade(db, { pnl: null, minutesAgo: 20, accountId: '111' })
+  closeTrade(db, { pnl: null, minutesAgo: 20, accountId: '222' })
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { accountId: '111', graceMin: 15, maxAgeMin: 360, minAttempts: 6 })
+  assert.equal(r.count, 1)
+})
+
+test('the release is NAMED, and does not borrow the write-off\'s certainty', () => {
+  const v = unknownPnlBlocks(
+    { count: 0, exhaustedCount: 2, exhaustedAttempts: 8, exhaustedAfterAttempts: 6, agedOutCount: 1, agedOutAfterMin: 360 },
+    { graceMin: 15 },
+  )
+  assert.match(v.note, /failed backfill attempts/)
+  assert.match(v.note, /up to 8 on one row/)
+  assert.match(v.note, /AGE alone/)
+  assert.ok(!/marked unresolvable/.test(v.note), 'never claims the broker said anything')
+})
+
+test('a written-off row is not double-counted as exhausted', () => {
+  const db = mkDb()
+  const id = closeTrade(db, { pnl: null, minutesAgo: 30 })
+  withAttempts(db, id, 9)
+  db.prepare('UPDATE trades SET pnl_unresolvable = 1 WHERE id = ?').run(id)
+  const r = unresolvedPnlSince(db, EPOCH_ANCHOR, { graceMin: 15, maxAgeMin: 360, minAttempts: 6 })
+  assert.equal(r.exhaustedCount, 0, 'it is already written off; that is the stronger statement')
+  assert.equal(r.unresolvableCount, 1)
+})

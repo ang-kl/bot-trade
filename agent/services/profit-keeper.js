@@ -91,6 +91,47 @@ export function loadProfitKeeperConfig(db) {
  * Wilder's ATR from OHLC bars [{h,l,c}…] oldest→newest. Returns null when
  * there are not enough bars for the period.
  */
+/**
+ * How long an ATR stays good for: one bar of its own timeframe.
+ *
+ * Not a guess at "long enough" — it is exactly the interval at which the input
+ * can change. A 1h ATR recomputed at 09:15 and again at 09:20 is the same
+ * number, because the same completed bars produced it.
+ */
+export const ATR_TF_MS = Object.freeze({
+  '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+  '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
+})
+
+const ATR_CACHE = new Map()   // `${symbolId}|${tf}` → { atr, bars, at }
+
+/** Bounded so a long-running process with a wide symbol universe cannot grow it forever. */
+const ATR_CACHE_MAX = 500
+
+export function readAtrCache(symbolId, timeframe, now = Date.now()) {
+  const ttl = ATR_TF_MS[timeframe]
+  // An unrecognised timeframe is never served from cache: better one extra
+  // fetch than an ATR held past the data that produced it.
+  if (!ttl) return null
+  const hit = ATR_CACHE.get(`${symbolId}|${timeframe}`)
+  if (!hit || (now - hit.at) >= ttl) return null
+  return hit
+}
+
+export function writeAtrCache(symbolId, timeframe, { atr, bars }, now = Date.now()) {
+  if (ATR_CACHE.size >= ATR_CACHE_MAX) {
+    // Drop the oldest rather than clearing: a full flush would make every
+    // symbol refetch at once, which is the burst the concurrency cap avoids.
+    let oldK = null, oldAt = Infinity
+    for (const [k, v] of ATR_CACHE) if (v.at < oldAt) { oldAt = v.at; oldK = k }
+    if (oldK) ATR_CACHE.delete(oldK)
+  }
+  ATR_CACHE.set(`${symbolId}|${timeframe}`, { atr, bars, at: now })
+}
+
+/** Test seam — the cache is process-level, so a test must be able to clear it. */
+export function clearAtrCache() { ATR_CACHE.clear() }
+
 export function atrFromBars(bars, period = 14) {
   if (!Array.isArray(bars) || bars.length < period + 1) return null
   const trs = []
@@ -264,19 +305,52 @@ async function profitKeeperPass(db, creds, deps = {}) {
 
     // ATR per symbol (adaptive mode only) — one bar fetch per symbol per
     // pass. The bar tail rides along for the spike-tighten check.
+    // §70.6 follow-up: THIS FETCH USED TO BOUND TICK RESPONSE.
+    //
+    // The whole pass is single-flighted, so everything else the keeper does —
+    // the chandelier breach, takeProfitUsd, the giveback rule, all of which need
+    // only a price already in hand — waited behind one WS round-trip PER SYMBOL,
+    // run one after another. On a busy book that is the difference between a
+    // sub-second pass and a multi-second one, and a tick-driven caller arriving
+    // mid-pass waits for the whole thing.
+    //
+    // Two changes, neither of which alters a single decision:
+    //
+    //   1. CACHED FOR THE BAR. The ATR timeframe is an hour by default, so
+    //      refetching it every 60 seconds asked for the same answer sixty times
+    //      per bar. The cache expires on the timeframe's own period, so the ATR
+    //      is exactly as fresh as the data it is computed from — no staler.
+    //   2. FETCHED CONCURRENTLY. Serial was never required; the symbols are
+    //      independent. Bounded so a large book cannot turn one pass into a
+    //      burst the broker throttles.
     const atrBySymbolId = {}
     const barsBySymbolId = {}
     if (cfg.mode === 'adaptive') {
+      const stale = []
       for (const id of symbolIds) {
-        try {
-          const bars = await ws.wsGetTrendbarsBatch(
-            creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
-            id, [cfg.atrTimeframe], Math.max(cfg.atrPeriod * 3, 50)
-          )
-          const list = bars?.[cfg.atrTimeframe] || []
-          atrBySymbolId[id] = atrFromBars(list, cfg.atrPeriod)
-          barsBySymbolId[id] = list.slice(-Math.max(1, Math.floor(Number(cfg.spikeBars) || 3)))
-        } catch { atrBySymbolId[id] = null /* falls back to fixed thresholds */ }
+        const hit = readAtrCache(id, cfg.atrTimeframe)
+        if (hit) { atrBySymbolId[id] = hit.atr; barsBySymbolId[id] = hit.bars; continue }
+        stale.push(id)
+      }
+      const CONCURRENCY = 4
+      for (let i = 0; i < stale.length; i += CONCURRENCY) {
+        await Promise.all(stale.slice(i, i + CONCURRENCY).map(async (id) => {
+          try {
+            const bars = await ws.wsGetTrendbarsBatch(
+              creds.host, creds.clientId, creds.clientSecret, creds.accessToken, creds.accountId,
+              id, [cfg.atrTimeframe], Math.max(cfg.atrPeriod * 3, 50)
+            )
+            const list = bars?.[cfg.atrTimeframe] || []
+            const atr = atrFromBars(list, cfg.atrPeriod)
+            const tail = list.slice(-Math.max(1, Math.floor(Number(cfg.spikeBars) || 3)))
+            atrBySymbolId[id] = atr
+            barsBySymbolId[id] = tail
+            // Only a REAL answer is cached. Caching a failed fetch would make
+            // one bad round-trip suppress retries for a whole bar, and the
+            // fallback (fixed thresholds) is looser than the adaptive one.
+            if (atr != null) writeAtrCache(id, cfg.atrTimeframe, { atr, bars: tail })
+          } catch { atrBySymbolId[id] = null /* falls back to fixed thresholds */ }
+        }))
       }
     }
 

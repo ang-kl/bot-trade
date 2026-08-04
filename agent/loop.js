@@ -2145,10 +2145,17 @@ async function runLoop(db) {
             if (process.env.TELEGRAM_BOT_TOKEN) {
               notify = (await import('./services/telegram.js')).sendMessage
             }
-            const { makeTargetSuggester } = await import('./services/tp-suggest.js')
+            const { makeTargetSuggester, makeTargetApplier } = await import('./services/tp-suggest.js')
+            const protCreds = { host, clientId, clientSecret, accessToken, accountId }
             const prot = await runProtectionAudit(db, openRows, brokerSl, {
               sendMessage: notify,
-              suggestTarget: makeTargetSuggester(db, { host, clientId, clientSecret, accessToken, accountId }, positions),
+              // accountId scopes the alert-mute maps. Without it this pass and
+              // the per-account pass below pruned each other's mute stamps, so
+              // the same position alerted every cycle (owner 04-08: the same
+              // USDBRL line twice in one digest).
+              accountId,
+              suggestTarget: makeTargetSuggester(db, protCreds, positions),
+              applyTarget: makeTargetApplier(db, protCreds),
             })
             if (prot.naked.length || prot.phantom.length || prot.targetless.length) {
               log(`PROTECTION AUDIT: ${prot.naked.length} position(s) with NO stop at the broker, ${prot.targetless.length} with NO take profit, ${prot.phantom.length} stop disagreement(s) — see action_log /protection-audit`)
@@ -2576,12 +2583,16 @@ async function runLoop(db) {
                     }))
                     let notify2 = null
                     if (process.env.TELEGRAM_BOT_TOKEN) notify2 = (await import('./services/telegram.js')).sendMessage
-                    const { makeTargetSuggester: mkSuggest2 } = await import('./services/tp-suggest.js')
+                    const { makeTargetSuggester: mkSuggest2, makeTargetApplier: mkApply2 } =
+                      await import('./services/tp-suggest.js')
+                    // Same creds shape the suggester's bar fetch needs, scoped
+                    // to THIS account — the pass's own snapshot, own truth, and
+                    // the amend below must never land on another account.
+                    const creds2 = { host, clientId, clientSecret, accessToken, accountId: acc.account_id }
                     const p2 = await runProtectionAudit(db, rows2, bp2, {
                       sendMessage: notify2, accountId: acc.account_id,
-                      // Same creds shape the suggester's bar fetch needs, scoped
-                      // to THIS account — the pass's own snapshot, own truth.
-                      suggestTarget: mkSuggest2(db, { host, clientId, clientSecret, accessToken, accountId: acc.account_id }, pos2),
+                      suggestTarget: mkSuggest2(db, creds2, pos2),
+                      applyTarget: mkApply2(db, creds2),
                     })
                     if (p2.naked.length || p2.targetless.length || p2.phantom.length) {
                       log(`PROTECTION AUDIT[${acc.account_id}]: ${p2.naked.length} with NO stop, ${p2.targetless.length} with no take profit, ${p2.phantom.length} disagreement(s)`)

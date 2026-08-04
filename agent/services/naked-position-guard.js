@@ -39,11 +39,32 @@
 // from. The 0003.HK pair found on 2026-07-29 had stops and no targets.
 //
 // It cannot be enforced retroactively — a position is already open — so the
-// equivalent is to detect it and say so. What this deliberately does NOT do:
+// equivalent is to detect it and, since 04-08-2026, to FIX it.
 //
-//   · attach a target itself. Choosing a take-profit price is a strategy
-//     judgement (structure, R-multiple, session). A guessed one closes trades
-//     at a level nothing supports, which is worse than none at all.
+// THAT LAST PART REVERSES A DECISION MADE HERE, and the reversal is the point.
+// This module used to say, in as many words, that it would not attach a target
+// itself: "choosing a take-profit price is a strategy judgement … a guessed one
+// closes trades at a level nothing supports, which is worse than none at all."
+// That was right about guessing and wrong about the conclusion, because the
+// alternative shipped was not "a human decides" — it was a Telegram button
+// nobody taps. Owner, 04-08-2026: "SO MANY POSITIONS WITH NO TARGET SET",
+// pasting six. §43 requires protection to have its own functioning path, and a
+// target that materialises only if someone happens to be looking at their phone
+// is not one.
+//
+// What changed underneath is that the guess is gone: tp-suggest.js computes a
+// target from real volume structure (the HVN work, #163), and the alert has
+// been printing it for days. Applying the number we already trust enough to
+// recommend is a smaller step than continuing to recommend it and do nothing.
+//
+// STILL DELIBERATELY NOT DONE:
+//
+//   · touching a position opened OUTSIDE the bot (`source === 'external'`).
+//     That is the owner's own trade and their own exit; choosing one for them
+//     is overruling a decision nobody asked us about.
+//   · inventing a target when the suggester returns nothing. No target is
+//     better than an unsupported one — that half of the original reasoning
+//     stands unchanged.
 //   · report a take-profit DISAGREEMENT the way it reports a stop
 //     disagreement. Targets are amended constantly in normal operation — the
 //     profit keeper ratchets them, partial ladders move them — so a mismatch
@@ -166,6 +187,24 @@ const auditKeyFor = (accountId) =>
   (accountId == null || accountId === '' ? LAST_AUDIT_KEY : `acct:${accountId}:${LAST_AUDIT_KEY}`)
 
 /**
+ * THE MUTE MAPS ARE PER ACCOUNT TOO — and for a sharper reason than the audit
+ * record above (owner, 04-08-2026: three targetless alerts pasted back, two of
+ * them the identical USDBRL position).
+ *
+ * They were global while this pass runs once per account, and the prune step at
+ * the end of the pass deletes every entry whose position is not in THIS pass's
+ * findings. So account A alerted and stamped its ids, then account B's pass
+ * pruned them away as "no longer open" — and A re-alerted on the next cycle,
+ * for ever. The mute window was not merely leaky; between two accounts it was
+ * cancelled outright.
+ *
+ * Scoping the map makes the prune correct by construction: a pass only ever
+ * sees, stamps and prunes the account it is auditing.
+ */
+const muteKeyFor = (accountId, key) =>
+  (accountId == null || accountId === '' ? key : `acct:${accountId}:${key}`)
+
+/**
  * Run the audit, record it, and alert on anything newly unprotected.
  *
  * Never throws: a protection AUDIT that can crash the loop would remove more
@@ -173,7 +212,7 @@ const auditKeyFor = (accountId) =>
  */
 export async function runProtectionAudit(db, openRows, brokerPositions, {
   nowMs = Date.now(), sendMessage = null, muteMs = MUTE_MS, targetMuteMs = TARGET_MUTE_MS,
-  logMuteMs = LOG_MUTE_MS, accountId = null, suggestTarget = null,
+  logMuteMs = LOG_MUTE_MS, accountId = null, suggestTarget = null, applyTarget = null,
 } = {}) {
   try {
     const audit = auditProtection(openRows, brokerPositions)
@@ -181,8 +220,8 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     const readMap = (key) => {
       try { return JSON.parse(getState(db, key) || '{}') } catch { return {} }
     }
-    const lastAlerts = readMap(STATE_KEY)
-    const lastTargetAlerts = readMap(TARGET_STATE_KEY)
+    const lastAlerts = readMap(muteKeyFor(accountId, STATE_KEY))
+    const lastTargetAlerts = readMap(muteKeyFor(accountId, TARGET_STATE_KEY))
 
     const due = dueForAlert(audit.naked, lastAlerts, nowMs, muteMs)
     const targetDue = dueForAlert(audit.targetless, lastTargetAlerts, nowMs, targetMuteMs)
@@ -204,7 +243,7 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
     // duration — a position naked for six hours leaves six rows, which is
     // enough to answer "how long was it exposed" — while a page of
     // action_log stops being one position repeating itself.
-    const logMutes = readMap(LOG_STATE_KEY)
+    const logMutes = readMap(muteKeyFor(accountId, LOG_STATE_KEY))
     for (const [f, method] of KIND) {
       const key = `${method}|${f.positionId}`
       const last = Number(logMutes[key] || 0)
@@ -245,19 +284,48 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
           } catch { /* a failed suggestion must not lose the alert */ }
         }
       }
+      // APPLY IT, DON'T ONLY ASK (owner, 04-08-2026: "SO MANY POSITIONS WITH
+      // NO TARGET SET"). §43 says protection must have its own functioning
+      // path; a target that exists only if a human taps a Telegram button is
+      // not one, and the owner's own policy has required a TP at order time
+      // since #23 — an adopted position is the same position, arriving by a
+      // different door.
+      //
+      // BOUNDED DELIBERATELY. Only positions the bot owns: `source === 'external'`
+      // is the owner's own hand-placed trade, and choosing an exit for it would
+      // be the bot overruling a human decision it was never asked about. Only
+      // when a suggestion actually computed — no target is better than an
+      // invented one. And a TP can only ever close in profit, so the worst case
+      // is a suboptimal exit, never a loss the position would not otherwise
+      // have taken.
+      const applied = new Map()
+      if (typeof applyTarget === 'function') {
+        for (const f of targetDue) {
+          if (f.source === 'external') continue
+          const s = suggestions.get(f)
+          if (!s || !(Number(s.tp) > 0)) continue
+          try {
+            const r = await applyTarget(f, s)
+            if (r && r.ok) applied.set(f, s)
+          } catch { /* a failed amend must not lose the alert — it still tells the owner */ }
+        }
+      }
       const lines = targetDue.map(f => {
         const s = suggestions.get(f)
-        return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot' : ''}` +
+        if (applied.has(f)) return `· ${f.symbol} (position ${f.positionId}) — TP SET to ${s.tp} (${s.basis})`
+        return `· ${f.symbol} (position ${f.positionId}) — stop ${f.brokerSl}, no target${f.source === 'external' ? ' · opened outside the bot, left alone' : ''}` +
           (s ? `\n  suggested TP ${s.tp} (${s.basis})` : '')
       })
       // One button row per suggested position. callback_data is capped at 64
       // bytes by Telegram — `prottp|<id>|<price>` fits comfortably.
+      // No button for a target already set — offering to do what was just done
+      // is how an operator learns to distrust the buttons.
       const buttons = targetDue
-        .filter(f => suggestions.has(f))
+        .filter(f => suggestions.has(f) && !applied.has(f))
         .map(f => [{ text: `Set TP ${suggestions.get(f).tp} on ${f.symbol}`, callback_data: `prottp|${f.positionId}|${suggestions.get(f).tp}` }])
       try {
         await sendMessage(
-          `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT\n${lines.join('\n')}\n\nThe order path refuses to submit these (guard_no_target) — these were adopted from the broker, so the guard never saw them. Tap a button below, or set your own with POST /actions/position-protect {positionId, tp}.`,
+          `\u{26A0}\u{FE0F} ${targetDue.length} OPEN POSITION${targetDue.length > 1 ? 'S' : ''} WITH NO TAKE PROFIT${applied.size ? ` — ${applied.size} SET AUTOMATICALLY` : ''}\n${lines.join('\n')}\n\nThese were adopted from the broker, so the entry guard never saw them. The bot now sets a target on its OWN adopted positions where it can compute one; anything opened outside the bot is left for you. Tap a button below, or set your own with POST /actions/position-protect {positionId, tp}.`,
           buttons.length ? { buttons } : undefined,
         )
         for (const f of targetDue) lastTargetAlerts[String(f.positionId)] = nowMs
@@ -280,9 +348,9 @@ export async function runProtectionAudit(db, openRows, brokerPositions, {
       for (const k of Object.keys(logMutes)) if (!live.has(k)) delete logMutes[k]
     }
     try {
-      setState(db, STATE_KEY, JSON.stringify(lastAlerts))
-      setState(db, TARGET_STATE_KEY, JSON.stringify(lastTargetAlerts))
-      setState(db, LOG_STATE_KEY, JSON.stringify(logMutes))
+      setState(db, muteKeyFor(accountId, STATE_KEY), JSON.stringify(lastAlerts))
+      setState(db, muteKeyFor(accountId, TARGET_STATE_KEY), JSON.stringify(lastTargetAlerts))
+      setState(db, muteKeyFor(accountId, LOG_STATE_KEY), JSON.stringify(logMutes))
     } catch { /* non-fatal */ }
 
     // ¶D·2 — the audit must never simply go quiet. See recordAuditUnavailable.
