@@ -27,6 +27,7 @@ import { markDirty, clearDirty, anyDirty, sectionsToApply } from '../lib/form-di
 import { ESSENTIALS, EVERYTHING, loadRiskMode, saveRiskMode, cardVisible } from '../lib/risk-view.js'
 import Advanced from '../components/common/Advanced.jsx'
 import GlobalScopeNote from '../components/common/GlobalScopeNote.jsx'
+import { dailyCapState, describeBinding } from '../lib/daily-cap-state.js'
 import ScopeMismatchNote from '../components/common/ScopeMismatchNote.jsx'
 
 // W3C-style international number formatting (owner: "use w3 international
@@ -330,6 +331,13 @@ export default function Risk() {
   const overridden = new Set(data?.risk?.overridden || [])
   const mark = (k) => overridden.has(k) ? '' : DEFAULT_MARK
 
+  // The two daily brakes and what to say about them, computed from the DRAFT
+  // config rather than the saved one — so clearing a field warns immediately,
+  // while it is still the operator's decision to make, instead of after a save
+  // has already left the account uncapped.
+  const capState = dailyCapState(risk, Number(acct.balance) || null)
+  const capBinding = describeBinding(capState)
+
   // GSAP entrance + scroll reveals (guarded — static page if the CDN is
   // blocked). Runs once after the first successful data load.
   const animated = useRef(false)
@@ -486,7 +494,11 @@ export default function Risk() {
         const tiles = [
           ['Balance', b > 0 ? money(b) : 'not set'],
           ['Risk per trade', perTrade != null ? `${money(perTrade)} (fixed $)` : usd(risk.perTradeRiskPct)],
-          ['Daily stop-out', usd(risk.dailyLossPct)],
+          // THE CAP THAT ACTUALLY BINDS, not the % field. Two brakes are live
+          // now and either can be off, so reading the % here would print a
+          // limit the gate is not enforcing — the exact defect the owner found
+          // in the reassessment summary.
+          ['Daily stop-out', capState.capUsd != null ? money(capState.capUsd) : 'UNCAPPED'],
           ['Worst case open', worst != null ? money(worst) : '—'],
         ]
         return (
@@ -773,7 +785,22 @@ export default function Risk() {
           <SectionTitle>Account Risk Configuration form</SectionTitle>
           <div className="space-y-2">
             <Field label={`Daily loss cap${mark('dailyLossPct')}`} anchor="dailyLossPct" applied={appliedKeys.has('dailyLossPct')} pct value={risk.dailyLossPct} onChange={v => setRisk(r => ({ ...r, dailyLossPct: v }))}
-              hint="New entries stop for the day once closed P&L is down this % of balance. When a day ceiling is set below, this is what the day OPENS with." recommend="3% of balance." />
+              placeholder="off"
+              hint="New entries stop for the day once closed P&L is down this % of balance. Empty = this check is off. Checked alongside the flat $ cap under Drawdown response — whichever is tighter binds. When a day ceiling is set below, this is what the day OPENS with." recommend="3% of balance." />
+            {/* THE WARNING THE OWNER ASKED FOR. It sits directly under the two
+                fields that produce it rather than in a page-level banner: the
+                state is a property of this pair, and a banner elsewhere is
+                something you read once and stop seeing. */}
+            {capState.message && (
+              <div className={`glass-inset rounded-[1px] p-1.5 text-[9px] leading-snug ${capState.severity === 'danger' ? 'text-[var(--color-warning-text)] border border-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}
+                role={capState.severity === 'danger' ? 'alert' : undefined}>
+                <span className="font-semibold">{capState.severity === 'danger' ? 'Daily loss is UNCAPPED. ' : 'Heads up. '}</span>
+                {capState.message}
+              </div>
+            )}
+            {capBinding && (
+              <div className="text-[9px] text-[var(--color-text-sub)]">{capBinding}</div>
+            )}
             {/* Owner 03-08-2026: "raise to 8.8% and dynamic-intelligent
                 adjusted down from 18.8% … for longevity to trade". Empty =
                 the flat cap above, unchanged — the ramp is opt-in. */}
@@ -801,8 +828,15 @@ export default function Risk() {
             <Advanced mode={viewMode} label="Drawdown response and fallbacks" total={6}
               changed={['dailyLossLimit', 'deriskOnDrawdown', 'deriskWindowHours', 'deriskTriggerPct', 'deriskMult', 'blockedSymbols'].filter(k => overridden.has(k)).length}
               dirty={!!dirty['risk']}>
-            <Field label={`Daily cap fallback $${mark('dailyLossLimit')}`} anchor="dailyLossLimit" applied={appliedKeys.has('dailyLossLimit')} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
-              hint="Absolute USD cap used only when balance is unknown." recommend="$300." />
+            {/* Owner 04-08-2026: "all Daily cap fallback be (null) mean not
+                used to check. if % is (null) means not used to check. then
+                warn that daily cap fallback isn't use it will be uncapped."
+                It is no longer a fallback — it is a live check that binds
+                whenever it is tighter than the %. */}
+            <Field label={`Daily cap, flat $${mark('dailyLossLimit')}`} anchor="dailyLossLimit" applied={appliedKeys.has('dailyLossLimit')} unit="$" value={risk.dailyLossLimit} onChange={v => setRisk(r => ({ ...r, dailyLossLimit: v }))}
+              placeholder="off"
+              hint="A flat dollar cap on the day, checked alongside the % cap above — whichever is tighter binds. Empty = this check is off, and with the % cap also empty the day is uncapped."
+              recommend="$300, or empty on a large account where the % cap should lead." />
             <Field label={`Equity stop${mark('equityStopPct')}`} anchor="equityStopPct" applied={appliedKeys.has('equityStopPct')} pct value={risk.equityStopPct} onChange={v => setRisk(r => ({ ...r, equityStopPct: v }))}
               hint="Daily drawdown at which the loop CLOSES all bot positions and disarms (empty = same as daily loss cap)." recommend="unset — falls back to the daily loss cap above." />
             <Field label={`Max margin usage${mark('maxMarginUsagePct')}`} anchor="maxMarginUsagePct" applied={appliedKeys.has('maxMarginUsagePct')} pct value={risk.maxMarginUsagePct} onChange={v => setRisk(r => ({ ...r, maxMarginUsagePct: v }))}

@@ -3352,6 +3352,25 @@ export default function actionsRouter(db) {
       try {
         const sel = results.find(a => a.selected && !a.error)
         if (sel) setState(db, 'broker_snapshot_cache_json', JSON.stringify({ account: sel, fetchedAt }))
+        // PER ACCOUNT TOO (owner 04-08-2026: "floating table > computation of
+        // summation and individual P/L and TP/SL missing again").
+        //
+        // The line above caches ONE account — the selected one — under a
+        // global key, and /state/positions enriched every row from it. So a
+        // position on any other account matched nothing and rendered P&L,
+        // price and the daily bar as "—", while the selected account's rows
+        // looked fine. Which rows were blank moved with the account picker,
+        // which is why it read as intermittent rather than as a scoping bug.
+        //
+        // This route already fetched every account's reconcile; throwing all
+        // but one away was the whole defect. Bounded by the number of
+        // registered accounts, and only successful snapshots are written — a
+        // failed fetch must not overwrite a good cache with an empty one.
+        for (const a of results) {
+          if (a.error || a.accountId == null) continue
+          setState(db, `acct:${String(a.accountId)}:broker_snapshot_cache_json`,
+            JSON.stringify({ account: a, fetchedAt }))
+        }
       } catch { /* cache is best-effort */ }
       return { ok: true, accounts: results, fetchedAt }
     })()

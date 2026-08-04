@@ -490,15 +490,41 @@ export default function stateRouter(db) {
     // (the ~30s monitor refresh), so the UI can split OPEN/FLOATING from
     // OPEN-BUT-MARKET-CLOSED and show real numbers. Best effort — a failure
     // here must never break the positions list.
-    let snapPositions = new Map()
-    let snapAt = null
-    try {
-      const snap = JSON.parse(getState(db, 'broker_snapshot_cache_json') || 'null')
-      snapAt = snap?.fetchedAt ?? null
-      for (const p of snap?.account?.positions || []) {
-        if (p?.positionId != null) snapPositions.set(String(p.positionId), p)
-      }
-    } catch { snapPositions = new Map() }
+    //
+    // ENRICH FROM THE POSITION'S OWN ACCOUNT (owner 04-08-2026: "floating
+    // table > computation of summation and individual P/L and TP/SL missing
+    // again"). The global cache holds ONE account's snapshot — whichever was
+    // selected when the monitor last ran — so every row belonging to any other
+    // account matched nothing and rendered "—" for P&L, price and the daily
+    // bar. Measured on production the same day: of 21 open positions, only the
+    // 6 on account 47790949 carried numbers.
+    //
+    // Each account now caches its own snapshot (actions.js), and a row is
+    // enriched from ITS account's cache. The global key stays as the fallback
+    // for a row with no account_id and for a database written before this.
+    const snapById = new Map()          // accountId → { positions: Map, at }
+    let globalSnap = { positions: new Map(), at: null }
+    const readSnap = (key) => {
+      const positions = new Map()
+      let at = null
+      try {
+        const snap = JSON.parse(getState(db, key) || 'null')
+        at = snap?.fetchedAt ?? null
+        for (const p of snap?.account?.positions || []) {
+          if (p?.positionId != null) positions.set(String(p.positionId), p)
+        }
+      } catch { /* an unreadable cache enriches nothing; it never throws the list away */ }
+      return { positions, at }
+    }
+    globalSnap = readSnap('broker_snapshot_cache_json')
+    for (const id of new Set(rows.map(r => (r.account_id == null ? null : String(r.account_id))))) {
+      if (id == null) continue
+      const s = readSnap(`acct:${id}:broker_snapshot_cache_json`)
+      // Fall back per account, not once globally: an account with no cache of
+      // its own is better served by the shared one than by nothing, and an
+      // account WITH one must never be read from another account's.
+      snapById.set(id, s.positions.size ? s : globalSnap)
+    }
     let isOpenFn = null
     try { isOpenFn = (await import('../services/symbol-hours.js')).isSymbolOpenCached } catch { isOpenFn = null }
     const enriched = rows.map(r => {
@@ -506,11 +532,12 @@ export default function stateRouter(db) {
       try {
         if (isOpenFn) { const o = isOpenFn(db, r.symbol); market_open = !!o.open; market_source = o.source || null }
       } catch { market_open = null }
-      const sp = r.ctrader_position_id != null ? snapPositions.get(String(r.ctrader_position_id)) : null
+      const src = (r.account_id != null ? snapById.get(String(r.account_id)) : null) ?? globalSnap
+      const sp = r.ctrader_position_id != null ? src.positions.get(String(r.ctrader_position_id)) : null
       return {
         ...r, market_open, market_source,
         live_pnl: sp?.pnl ?? sp?.netPnl ?? null,
-        live_pnl_at: sp ? snapAt : null,
+        live_pnl_at: sp ? src.at : null,
         // Owner (open-trade tables): current price + latest daily OHLCV.
         // For a closed market these are the last computed values before/at
         // close — day.t says which session the bar belongs to.
@@ -530,7 +557,11 @@ export default function stateRouter(db) {
     // left as a silent assumption.
     res.json({
       positions: enriched,
-      snapshotAt: snapAt,
+      // The SHARED cache's fetch time. Per-account caches refresh at their own
+      // moments, so each row carries its own `live_pnl_at` rather than being
+      // stamped with one page-level timestamp that would be wrong for most of
+      // them.
+      snapshotAt: globalSnap.at,
       accountId: scope.all ? 'all' : (scope.accountId ?? null),
       scoped: acct.active,
       legacyRows: acct.active ? countUnattributed(db, 'monitored_positions', "status = 'active'") : 0,
@@ -2248,6 +2279,18 @@ export default function stateRouter(db) {
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // The day's binding cap in dollars: the TIGHTER of the two brakes that are
+  // switched on, or null when neither is. Deliberately the same combination
+  // rule as pacedDailyCap — this is the unpaced summary the config card shows,
+  // and the two disagreeing about which limit is live would be worse than the
+  // card not showing one at all.
+  const dailyCapOf = (cfg, balance) => {
+    const pct = cfg?.dailyLossPct > 0 && balance > 0 ? balance * cfg.dailyLossPct : null
+    const flat = cfg?.dailyLossLimit > 0 ? Math.abs(cfg.dailyLossLimit) : null
+    const on = [pct, flat].filter(v => v != null)
+    return on.length ? Number(Math.min(...on).toFixed(2)) : null
+  }
+
   // -----------------------------------------------------------------------
   // GET /state/risk-config — effective risk config (defaults merged with overrides)
   // -----------------------------------------------------------------------
@@ -2271,7 +2314,15 @@ export default function stateRouter(db) {
           balance,
           leverage,
           tier,
-          daily_cap_usd: Number((balance * effective.dailyLossPct).toFixed(2)),
+          // BOTH daily brakes, either of which may be off (owner 04-08-2026).
+          // The headline number is the one that actually binds — the tighter
+          // of the checks that are on — and null when neither is, because a
+          // number here would claim a limit that does not exist.
+          daily_cap_usd: dailyCapOf(effective, balance),
+          daily_cap_pct_usd: effective.dailyLossPct > 0
+            ? Number((balance * effective.dailyLossPct).toFixed(2)) : null,
+          daily_cap_flat_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
           per_trade_budget_usd: Number((balance * effective.perTradeRiskPct).toFixed(2)),
           margin_cap_usd: Number((balance * effective.maxMarginUsagePct).toFixed(2)),
           mode: 'equity_aware',
@@ -2280,7 +2331,15 @@ export default function stateRouter(db) {
           balance: null,
           leverage,
           tier: null,
-          daily_cap_usd: effective.dailyLossLimit,
+          // No balance → the % check has nothing to take a fraction of, so the
+          // flat cap is the only one left. Null when it too is off: the day is
+          // genuinely uncapped and the page says so rather than printing a
+          // number nothing enforces.
+          daily_cap_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
+          daily_cap_pct_usd: null,
+          daily_cap_flat_usd: effective.dailyLossLimit > 0
+            ? Number(Math.abs(effective.dailyLossLimit).toFixed(2)) : null,
           per_trade_budget_usd: null,
           margin_cap_usd: null,
           mode: 'absolute_fallback',
@@ -2569,7 +2628,10 @@ export default function stateRouter(db) {
           const { fxDayOpenMs, fxDayStartSql } = await import('../services/risk.js')
           const { pacedDailyCap } = await import('../services/daily-loss-pacing.js')
           const balance = (acct ? getAccountBalance(db, acct) : null) ?? brokerBalance ?? getAccountBalance(db)
-          if (!(balance > 0)) return null
+          // No balance no longer means nothing to report: the flat $ cap is a
+          // live check of its own now, and with the % check inapplicable it is
+          // the ONLY thing standing between the account and an uncapped day —
+          // exactly the state the Risk page has to be able to warn about.
           const nowMs = Date.now()
           const id = acct ?? (getState(db, 'ctrader_account_id') || null)
           let spent = 0
@@ -2591,9 +2653,9 @@ export default function stateRouter(db) {
             spentUsd: spent,
             perTradeRiskUsd: effective.perTradeRiskUsd > 0
               ? Number(effective.perTradeRiskUsd)
-              : balance * effective.perTradeRiskPct,
+              : (balance > 0 ? balance * effective.perTradeRiskPct : 0),
           })
-          return { ...p, spentUsd: spent, accountId: id }
+          return { ...p, spentUsd: spent, accountId: id, balance: balance > 0 ? balance : null }
         })(),
         guardian: {
           enabled: (getState(db, 'guardian') || 'true') !== 'false',
