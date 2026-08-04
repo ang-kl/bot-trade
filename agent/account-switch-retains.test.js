@@ -9,6 +9,17 @@
 // The owner's decision was "switching away from an account with open
 // positions should be okay, don't have to warn" — which is only true if the
 // old account keeps being managed. These tests are that guarantee.
+//
+// EXTENDED 04-08-2026. The A1 fix retained only accounts HOLDING POSITIONS,
+// and demoted even those to manage_only. So an armed account that was merely
+// flat when the owner clicked another one was silently disabled, and an armed
+// account with exposure stopped taking entries — with nothing said either way:
+// "it is a wasted opportunities and time, if I don't check mean a few hours
+// gone for not trading."
+//
+// Selection no longer changes ANY other account's arming. What A1 guaranteed
+// (the old account stays managed) still holds, and now holds for a flat
+// account too — because nothing is released on a switch at all.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -66,22 +77,29 @@ test('switching away KEEPS the old account managed while it holds positions', ()
   assert.ok(enabled.includes(OLD), `old account must stay enabled, got ${JSON.stringify(enabled)}`)
   assert.ok(enabled.includes(NEW), 'new account must be enabled')
 
-  // 3. But it must NOT be dispatched new entries — manage, don't trade.
-  const autopilot = registryAutopilotAccounts(db).map(a => a.accountId)
-  assert.deepEqual(autopilot, [NEW], 'only the newly selected account may take new entries')
+  // 3. And it KEEPS its arming (04-08-2026). It was active before the switch,
+  //    so it is active after: selection is a view, not a disarm. The old
+  //    assertion here demanded the opposite — that switching away demote it to
+  //    manage_only — which is exactly the behaviour that lost trading hours.
+  const autopilot = registryAutopilotAccounts(db).map(a => a.accountId).sort()
+  assert.deepEqual(autopilot, [NEW, OLD].sort(), 'both stay armed; only the VIEW moved')
   const oldRow = db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(OLD)
-  assert.equal(oldRow.mode, 'manage_only')
+  assert.equal(oldRow.mode, 'active')
 })
 
-test('switching away from a FLAT account fully releases it', () => {
+test('switching away from a FLAT account does NOT release it', () => {
+  // THE REGRESSION TEST FOR THE HOURS LOST. A flat account is the common case
+  // between trades, and it was precisely the case the old rule disabled: it
+  // retained only accounts holding positions, so an armed-but-flat account
+  // vanished from the enabled set the moment the owner looked at another one.
   const db = seed()
-  // OLD holds nothing.
   const retained = accountsWithOpenPositions(db).filter(id => id !== NEW)
-  assert.deepEqual(retained, [], 'a flat account is not retained')
+  assert.deepEqual(retained, [], 'OLD genuinely holds nothing')
   syncSelectedAccount(db, NEW, false, null, { retainAccountIds: retained })
 
-  const enabled = getEnabledAccounts(db).map(a => a.account_id)
-  assert.deepEqual(enabled, [NEW], 'a flat old account should not linger in the enabled set')
+  const enabled = getEnabledAccounts(db).map(a => a.account_id).sort()
+  assert.deepEqual(enabled, [NEW, OLD].sort(), 'a flat armed account survives the switch')
+  assert.equal(db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(OLD).mode, 'active')
 })
 
 test('unattributable NULL rows are still swept — they leak across accounts', () => {
@@ -101,16 +119,20 @@ test('unattributable NULL rows are still swept — they leak across accounts', (
   assert.equal(kept, 1, 'sweeping NULLs must not touch the retained account')
 })
 
-test('a third account with no exposure is released even while another is retained', () => {
+test('a third account keeps the exact state the owner left it in', () => {
+  // Neither promoted nor demoted. A manage_only account stays manage_only
+  // through a switch — selection must not decide arming in EITHER direction.
   const db = seed()
   const THIRD = '46130058'
   upsertAccount(db, { accountId: THIRD, isLive: false })
   db.prepare(`UPDATE accounts SET enabled = 1, mode = 'manage_only' WHERE account_id = ?`).run(THIRD)
-  addPosition(db, OLD, 'EURUSD') // only OLD holds anything
+  addPosition(db, OLD, 'EURUSD')
 
   const retained = accountsWithOpenPositions(db).filter(id => id !== NEW)
   syncSelectedAccount(db, NEW, false, null, { retainAccountIds: retained })
 
   const enabled = getEnabledAccounts(db).map(a => a.account_id).sort()
-  assert.deepEqual(enabled, [NEW, OLD].sort(), `THIRD holds nothing and must be released, got ${JSON.stringify(enabled)}`)
+  assert.deepEqual(enabled, [NEW, OLD, THIRD].sort(), 'nothing is released on a switch')
+  const third = db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(THIRD)
+  assert.equal(third.mode, 'manage_only', 'and nothing is promoted either')
 })

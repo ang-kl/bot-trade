@@ -32,22 +32,29 @@ test('an idempotent write leaves NO audit row — the trail records changes, not
   assert.equal(auditRows().length, 0)
 })
 
-test('per-account flips carry the accountId, and clearing to inherit is itself audited', () => {
+// PER-ACCOUNT ARMING MOVED TRAILS (owner 04-08-2026). It is stored in
+// accounts.mode now, not in a per-account agent_state flag, so its audit rows
+// are /arm/<id> rather than /phase/acct:<id>:autotrade_enabled. Same
+// guarantee, same table, and one MORE than before: the arming trail also
+// notifies, because a silent demotion is what cost the owner trading hours.
+
+test('a per-account arm change is attributed, both directions', () => {
   setAccountPhases(db, '46130058', { autotrade: false }, { actor: 'owner-ui', via: '/actions/account-phases' })
-  setAccountPhases(db, '46130058', { autotrade: null }, { actor: 'owner-ui', via: '/actions/account-phases' })
-  const rows = auditRows().map(r => JSON.parse(r.body))
+  setAccountPhases(db, '46130058', { autotrade: true }, { actor: 'owner-ui', via: '/actions/account-phases' })
+  const rows = auditRows().filter(r => r.path.startsWith('/arm/')).map(r => JSON.parse(r.body))
   assert.equal(rows.length, 2)
-  assert.equal(rows[0].key, 'acct:46130058:autotrade_enabled')
-  assert.equal(rows[0].to, 'false')
   assert.equal(rows[0].accountId, '46130058')
-  assert.equal(rows[1].to, null)         // cleared back to inherit — visible, not silent
+  assert.equal(rows[0].to, 'manage_only')
+  assert.equal(rows[0].actor, 'owner-ui')
+  assert.equal(rows[1].to, 'active', 're-arming is recorded too, not just the disarm')
 })
 
 test('the equity stop disarm is attributed — never an anonymous flip again', () => {
   disarmAccount(db, '46130058')
-  const rows = auditRows().map(r => JSON.parse(r.body))
+  const rows = auditRows().filter(r => r.path.startsWith('/arm/')).map(r => JSON.parse(r.body))
   assert.equal(rows.length, 1)
-  assert.equal(rows[0].key, 'acct:46130058:autotrade_enabled')
+  assert.equal(rows[0].accountId, '46130058')
+  assert.equal(rows[0].to, 'manage_only')
   assert.equal(rows[0].actor, 'equity_stop')
   assert.match(rows[0].reason, /equity stop/)
 })

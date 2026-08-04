@@ -3518,14 +3518,41 @@ export default function actionsRouter(db) {
 
       setState(db, 'ctrader_account_id', String(accountId))
       setState(db, 'ctrader_is_live', isLive ? 'true' : 'false')
-      // Retained accounts ride in the roster with autopilot:false —
-      // getAutopilotAccounts (loop.js:186) filters on that flag, so they are
-      // never dispatched a new entry, but they stay visible to the reconcile
-      // and sidecar paths that keep their stops honest.
-      setState(db, 'ctrader_account_roles_json', JSON.stringify([
-        { accountId, isLive: !!isLive, autopilot: true },
-        ...retained.map(id => ({ accountId: id, isLive: !!isLive, autopilot: false })),
-      ]))
+      // THE ROSTER MIRRORS THE REGISTRY, IT DOES NOT OVERRULE IT (owner
+      // 04-08-2026). This used to be written as "the selected account with
+      // autopilot:true, plus the accounts holding open positions with
+      // autopilot:false" — so every other ARMED account vanished from the
+      // roster on a selection, and getAutopilotAccounts prefers this key over
+      // the registry. Selection therefore disarmed accounts twice over: once
+      // in the registry rows and once here.
+      //
+      // The roster is now the registry's own answer, so the two cannot
+      // disagree. Any account the owner armed keeps autopilot:true whether or
+      // not it is the one being viewed; anything else rides along with
+      // autopilot:false, which keeps its stops managed without dispatching it
+      // a new entry.
+      try {
+        const { registryAutopilotAccounts: regAuto, getEnabledAccounts: regEnabled } =
+          await import('../services/account-registry.js')
+        const armed = new Set(regAuto(db).map(a => String(a.accountId)))
+        armed.add(String(accountId))
+        const roster = regEnabled(db).map(a => ({
+          accountId: String(a.accountId),
+          isLive: a.is_live === 1,
+          autopilot: armed.has(String(a.accountId)),
+        }))
+        if (!roster.some(r => r.accountId === String(accountId))) {
+          roster.unshift({ accountId: String(accountId), isLive: !!isLive, autopilot: true })
+        }
+        setState(db, 'ctrader_account_roles_json', JSON.stringify(roster))
+      } catch {
+        // A registry read that fails must not leave a stale roster naming the
+        // previous account: fall back to the selected one alone, which is the
+        // conservative answer and what the single-account era did.
+        setState(db, 'ctrader_account_roles_json', JSON.stringify([
+          { accountId, isLive: !!isLive, autopilot: true },
+        ]))
+      }
       // The human-facing account number (traderLogin, e.g. 5306502) — the
       // ctidTraderAccountId above is cTrader's internal id and confused the
       // owner when the health strip showed it. Stored best-effort at select

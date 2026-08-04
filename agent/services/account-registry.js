@@ -86,36 +86,43 @@ export function upsertAccount(db, { accountId, traderLogin = null, brokerLabel =
 }
 
 /**
- * M0 sole-enabled swap: make `accountId` the ONE enabled/active account and
- * every other row manage_only — the registry mirror of what
- * /actions/ctrader-select-account already does to the legacy state keys.
- * Creates the row if the id is new.
+ * Make `accountId` the selected account. It does NOT touch any other row.
+ *
+ * THE SOLE-ENABLED SWAP IS RETIRED (owner 04-08-2026: "autotrade disarmed
+ * again or switch to manage-only … it is a wasted opportunities and time, if I
+ * don't check mean a few hours gone for not trading").
+ *
+ * This used to run, on every account selection:
+ *
+ *   UPDATE accounts SET enabled = 0, mode = 'manage_only'
+ *    WHERE enabled = 1 AND account_id NOT IN (selected + retained)
+ *
+ * where `retained` was only the accounts holding open positions at that
+ * instant. So clicking an account on Accounts or Connect silently disarmed
+ * every OTHER armed account that happened to be flat, and demoted the ones
+ * that were not to manage_only. Nothing ever promoted them back, and nothing
+ * announced it — which is precisely the hours of not trading the owner was
+ * losing between checks.
+ *
+ * That rule made sense when the system traded exactly one account: "selected"
+ * and "the account we trade" were the same fact. They are not any more.
+ * Selection is now a VIEW and a default — which account the legacy state keys
+ * and the UI point at — while arming is a per-account state the owner sets
+ * deliberately and only the arming path may change. Two different questions,
+ * two different gestures.
+ *
+ * `retainAccountIds` is accepted and ignored, so callers computing it for
+ * their own logging do not break; there is nothing left to retain against.
  */
-export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, { retainAccountIds = [] } = {}) {
+export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, { retainAccountIds = [] } = {}) {  // eslint-disable-line no-unused-vars
   if (accountId == null) return
   upsertAccount(db, { accountId, traderLogin, isLive })
-  // Accounts named in `retainAccountIds` keep enabled = 1 but drop to
-  // mode = 'manage_only' (owner 2026-07-28). That combination is exactly
-  // "look after what is open, start nothing new": `enabled` is what keeps a
-  // row in getEnabledAccounts — and so in the reconcile sweep and the
-  // sidecar roster — while `mode !== 'active'` removes it from
-  // registryAutopilotAccounts, so it is never dispatched a new entry.
-  //
-  // Disabling it instead (the old behaviour) dropped it from the reconciler
-  // entirely, which is how switching accounts silently stopped managing
-  // positions that were still open at the broker.
-  const retain = new Set((retainAccountIds || []).map(String).filter(id => id !== String(accountId)))
-  const stamp = now()
-  for (const id of retain) {
-    db.prepare(`UPDATE accounts SET enabled = 1, mode = 'manage_only', updated_at = ? WHERE account_id = ?`)
-      .run(stamp, id)
-  }
-  const keep = [String(accountId), ...retain]
-  const placeholders = keep.map(() => '?').join(', ')
-  db.prepare(`UPDATE accounts SET enabled = 0, mode = 'manage_only', updated_at = ? WHERE enabled = 1 AND account_id NOT IN (${placeholders})`)
-    .run(stamp, ...keep)
+  // The selected account is enabled and active — selecting an account you
+  // intend to trade should not then require arming it separately. Promoting
+  // ONE row is the whole of the write; every other row keeps whatever the
+  // owner set.
   db.prepare(`UPDATE accounts SET enabled = 1, mode = 'active', is_live = ?, updated_at = ? WHERE account_id = ?`)
-    .run(isLive ? 1 : 0, stamp, String(accountId))
+    .run(isLive ? 1 : 0, now(), String(accountId))
 }
 
 /**

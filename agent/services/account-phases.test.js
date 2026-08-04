@@ -48,7 +48,12 @@ test('a per-account OFF stops that account and NOT the others', () => {
   armAll(db)
   setAccountPhases(db, '46130058', { autotrade: false })
   assert.equal(effectivePhases(db, '46130058').autotrade, false)
-  assert.equal(effectivePhases(db, '46130058').source.autotrade, 'account')
+  // 'capability', not 'account' (owner 04-08-2026: "do we need to have this
+  // extra layer"). Turning an account's autotrade off now SETS ITS MODE to
+  // manage_only rather than writing a second flag beside it, so the reason and
+  // the switch are the same fact. The old 'account' label described a store
+  // that no longer exists, and the two could disagree while it did.
+  assert.equal(effectivePhases(db, '46130058').source.autotrade, 'capability')
   // The other account is untouched BY THE OVERRIDE — but see below: it also
   // cannot enter, so its autotrade now reads false for a different reason.
   assert.equal(effectivePhases(db, '42993489').source.autotrade, 'capability')

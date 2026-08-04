@@ -51,7 +51,9 @@ test('phases are the EFFECTIVE ones, not the master flags', () => {
   assert.equal(out.master.autotrade, true)
   assert.equal(find(out, '46130058').phases.autotrade, true)
   assert.equal(find(out, '46979908').phases.autotrade, false)
-  assert.equal(find(out, '46979908').phases.source.autotrade, 'account')
+  // 'capability' since the per-account autotrade flag was folded into
+  // accounts.mode — one store for "may this account enter".
+  assert.equal(find(out, '46979908').phases.source.autotrade, 'capability')
 })
 
 test('an UNKNOWN sidecar roster reports null, never false', () => {

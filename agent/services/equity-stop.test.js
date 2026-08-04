@@ -42,7 +42,12 @@ test('IRONCLAD: disarming one account never writes the master flag', () => {
   const key = disarmAccount(db, A)
 
   assert.equal(key, 'acct:43097342:autotrade_enabled')
-  assert.equal(getState(db, key), 'false')
+  // The disarm no longer writes that agent_state key — it sets the account's
+  // MODE (owner 04-08-2026: "do we need to have this extra layer"). Two stores
+  // of "may this account enter" could disagree, and did: account selection
+  // wrote the mode, the equity stop wrote the flag, and neither saw the other.
+  assert.equal(getState(db, key), null, 'the retired per-account flag stays unwritten')
+  assert.equal(db.prepare('SELECT mode FROM accounts WHERE account_id = ?').get(A).mode, 'manage_only')
   // THE ASSERTION THAT MATTERS. The old code did
   // setState(db, 'autotrade_enabled', 'false') here, which per
   // `effective = master AND (override ?? master)` turned off every account.

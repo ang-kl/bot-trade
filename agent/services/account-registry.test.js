@@ -39,39 +39,75 @@ test('ensureAccountRegistry: bootstraps the current legacy account as the single
   assert.equal(r2.enabled, '47790949')
 })
 
-test('ensureAccountRegistry: never re-enables when a row is already enabled', () => {
+test('ensureAccountRegistry: a later boot does not resurrect a disarmed account', () => {
   const db = fresh()
   setState(db, 'ctrader_account_id', 'A')
   ensureAccountRegistry(db)
-  // Operator later switched to B; state key follows, registry synced:
+  setAccountEnabled(db, 'A', false)          // the owner disarmed A deliberately
   syncSelectedAccount(db, 'B', true)
   setState(db, 'ctrader_account_id', 'B')
-  // A later boot must keep B enabled, not resurrect A.
   ensureAccountRegistry(db)
-  const enabled = getEnabledAccounts(db)
-  assert.equal(enabled.length, 1)
-  assert.equal(enabled[0].account_id, 'B')
+  const enabled = getEnabledAccounts(db).map(a => a.account_id)
+  assert.deepEqual(enabled, ['B'], 'the boot bootstrap only runs when NOTHING is enabled')
 })
 
-test('syncSelectedAccount: M0 sole-enabled swap — exactly one enabled row, others manage_only', () => {
+// ---------------------------------------------------------------------------
+// THE SOLE-ENABLED SWAP IS RETIRED (owner 04-08-2026)
+//
+// "autotrade disarmed again or switch to manage-only … it is a wasted
+// opportunities and time, if I don't check mean a few hours gone for not
+// trading."
+//
+// Selecting an account used to disable or demote every other one, keeping only
+// the accounts that happened to hold open positions at that instant. Nothing
+// promoted them back and nothing said it had happened. Selection is a VIEW
+// now; arming is a separate, deliberate state.
+// ---------------------------------------------------------------------------
+
+test('selecting an account does NOT disarm any other account', () => {
   const db = fresh()
   upsertAccount(db, { accountId: 'A', isLive: false })
   upsertAccount(db, { accountId: 'B', isLive: true })
   upsertAccount(db, { accountId: 'C', isLive: false })
+  setAccountEnabled(db, 'A', true, 'active')
+  setAccountEnabled(db, 'C', true, 'active')
+
   syncSelectedAccount(db, 'B', true, '1251247')
-  let enabled = getEnabledAccounts(db)
-  assert.equal(enabled.length, 1)
-  assert.equal(enabled[0].account_id, 'B')
-  assert.equal(enabled[0].is_live, 1)
-  assert.equal(enabled[0].trader_login, '1251247')
-  // Swap again — the invariant holds and the old row demotes to manage_only.
-  syncSelectedAccount(db, 'C', false)
-  enabled = getEnabledAccounts(db)
-  assert.equal(enabled.length, 1)
-  assert.equal(enabled[0].account_id, 'C')
-  const b = listAccounts(db).find(a => a.account_id === 'B')
-  assert.equal(b.enabled, 0)
-  assert.equal(b.mode, 'manage_only')
+
+  const rows = Object.fromEntries(listAccounts(db).map(a => [a.account_id, a]))
+  assert.equal(rows.A.enabled, 1, 'A was armed before the switch and must still be')
+  assert.equal(rows.A.mode, 'active')
+  assert.equal(rows.C.enabled, 1)
+  assert.equal(rows.C.mode, 'active')
+  // …and the selected account is armed, so selecting one you mean to trade is
+  // not two gestures.
+  assert.equal(rows.B.enabled, 1)
+  assert.equal(rows.B.mode, 'active')
+  assert.equal(rows.B.trader_login, '1251247')
+})
+
+test('a FLAT armed account survives a switch — the exact case that lost hours', () => {
+  // The old rule retained only accounts holding open positions, so an armed
+  // account that was merely between trades when the owner clicked another one
+  // was silently set enabled = 0, mode = manage_only.
+  const db = fresh()
+  upsertAccount(db, { accountId: 'FLAT', isLive: false })
+  setAccountEnabled(db, 'FLAT', true, 'active')
+  syncSelectedAccount(db, 'OTHER', false)
+  const flat = listAccounts(db).find(a => a.account_id === 'FLAT')
+  assert.equal(flat.enabled, 1)
+  assert.equal(flat.mode, 'active')
+})
+
+test('a DISARMED account is not armed by selecting something else', () => {
+  // The reverse guarantee: selection must not promote either.
+  const db = fresh()
+  upsertAccount(db, { accountId: 'OFF', isLive: false })
+  setAccountEnabled(db, 'OFF', false)
+  syncSelectedAccount(db, 'OTHER', false)
+  const off = listAccounts(db).find(a => a.account_id === 'OFF')
+  assert.equal(off.enabled, 0)
+  assert.equal(off.mode, 'manage_only')
 })
 
 test('upsertAccount: enriches metadata without touching enabled/mode', () => {

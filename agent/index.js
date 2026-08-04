@@ -176,6 +176,11 @@ try {
   console.log(`[boot] account registry: ${reg.total} account(s), enabled=${reg.enabled ?? 'none'}`)
   const bf = backfillAccountIds(db)
   if (bf.backfilled != null) console.log(`[boot] M1 account_id backfill: ${bf.backfilled} historical row(s) stamped to ${bf.accountId}`)
+  // Fold the retired per-account autotrade flags into accounts.mode, so
+  // "may this account enter" has exactly one home. Idempotent — after the
+  // first boot there is nothing left to fold. See services/account-arming.js.
+  const { migrateLegacyArmFlags } = await import('./services/account-arming.js')
+  migrateLegacyArmFlags(db)
 } catch (e) {
   console.warn('[boot] account registry init failed (non-fatal):', e.message)
 }
