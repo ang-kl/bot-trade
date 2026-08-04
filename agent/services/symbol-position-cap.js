@@ -60,12 +60,21 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Owner-set, 05-08-2026. Two, not one: `duplicate_symbol` already refuses the
- * second entry on the normal path, so anything reaching this line is either a
- * deliberate second leg or a submitter that bypassed the gate. Two lets the
- * former through and stops the latter from becoming seventeen.
+ * Owner-set: 2 on 05-08-2026, raised to 3 the same day.
+ *
+ * THIS IS A CONCURRENCY LIMIT, NOT A QUOTA (owner: "2 symbol capped means
+ * concurrent trading at the same time, not over time"). Every input below is
+ * a live state — `active` positions, `submitting`/`unconfirmed` orders,
+ * `working` limits. A symbol the bot traded seventeen times last week, all
+ * closed, is at zero: closed, filled, cancelled and expired rows never count,
+ * so the ceiling caps simultaneous exposure and never rations opportunity.
+ *
+ * `duplicate_symbol` still refuses the second entry on the normal path, so
+ * anything reaching this line is either a deliberate extra leg or a submitter
+ * that bypassed the gate. Three lets the former through and stops the latter
+ * from becoming seventeen.
  */
-export const DEFAULT_MAX_PER_SYMBOL = 2
+export const DEFAULT_MAX_PER_SYMBOL = 3
 
 /** Ledger states that mean "an order may be live at the broker right now". */
 export const IN_FLIGHT_STATUSES = Object.freeze(['submitting', 'unconfirmed'])
@@ -111,14 +120,17 @@ export function countForSymbol(db, accountId, symbol) {
     // a pending row with no broker id yet still counts under a synthetic key
     // so an unacknowledged placement cannot be placed twice over.
     //
-    // is_bot = 1 deliberately: an owner's own manual limit order is exposure,
-    // but silently freezing the bot on a symbol because a human left an order
-    // resting there is a behaviour change nobody asked for. This ceiling
-    // exists to stop the bot stacking its OWN orders.
+    // EVERY resting order counts, the owner's manual ones included (owner,
+    // 05-08-2026: "flip"). This shipped with `is_bot = 1` on the reasoning
+    // that freezing the bot because a human left an order resting was a
+    // surprise nobody asked for — the owner's call is the other way, and it is
+    // the better one: a manual limit and a bot limit fill into the same
+    // account, at the same price, on the same margin. The ceiling is about
+    // total simultaneous exposure to one symbol, not about who typed it.
     const row = db.prepare(`
       SELECT COUNT(*) AS n FROM (
         SELECT CAST(order_id AS TEXT) AS k FROM broker_orders
-         WHERE status = 'working' AND is_bot = 1 AND UPPER(symbol) = ?
+         WHERE status = 'working' AND UPPER(symbol) = ?
            AND (account_id = ? OR account_id IS NULL OR ? IS NULL)
         UNION
         SELECT COALESCE(CAST(order_id AS TEXT), 'pending:' || id) AS k FROM pending_orders
