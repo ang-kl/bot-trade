@@ -80,3 +80,63 @@ describe('proposalStatus', () => {
     expect(proposalStatus({ applied: false, proposed: 150, live: 150 })).toBe('not_applied')
   })
 })
+
+// ---------------------------------------------------------------------------
+// EVERY GRID KEY MUST HAVE SOMEWHERE TO LAND (owner, 04-08-2026, with a PDF:
+// "Risk Setup Summary isnt wired … and coherent to the setups?").
+//
+// The summary table's VALUES were correct — measured against
+// /state/risk-config on production, zero disagreements. What was not wired was
+// the navigation: 29 of its 45 ▸ triangles pointed at an anchor that did not
+// exist, and for 17 of those the reason was that the setting had no control
+// anywhere in the UI at all. Every one is enforced on real entries.
+//
+// A link that goes nowhere is worse than no link: it tells the reader the
+// setting is somewhere below and sends them looking. This test is the thing
+// that would have caught it, and it is written against the SAME list the grid
+// renders from, so a new group key cannot ship without a home.
+// ---------------------------------------------------------------------------
+
+describe('Risk Setup Summary deep links', () => {
+  it('every key the summary table renders has an anchor on the page', async () => {
+    const { RISK_GROUPS } = await import('../../agent/services/risk-matrix.js')
+    const src = readFileSync(new URL('./Risk.jsx', import.meta.url), 'utf8')
+    const anchors = new Set([
+      ...[...src.matchAll(/anchor="([A-Za-z0-9_]+)"/g)].map(m => m[1]),
+      // Booleans and free-text rows are not Fields, so they carry the id the
+      // Field would have generated. Both forms are a valid landing place.
+      ...[...src.matchAll(/id="risk-([A-Za-z0-9_]+)"/g)].map(m => m[1]),
+    ])
+    const missing = RISK_GROUPS.flatMap(g => g.keys).filter(k => !anchors.has(k))
+    expect(missing, `these grid keys have no landing place: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('every key the OWNER has actually set is in a declared group', async () => {
+    // ungroupedKeys() checks DEFAULT_RISK_CONFIG, which misses a key written
+    // into an overlay but never given a default — `kellyFraction` was live on
+    // production and invisible in the grid for exactly that reason. It turned
+    // out to be RETIRED rather than merely ungrouped, so it is declared dead
+    // instead of grouped; the case below keeps those two answers apart.
+    const { RISK_GROUPS } = await import('../../agent/services/risk-matrix.js')
+    const { DEFAULT_RISK_CONFIG } = await import('../../agent/services/risk.js')
+    const grouped = new Set(RISK_GROUPS.flatMap(g => g.keys))
+    const missing = Object.keys(DEFAULT_RISK_CONFIG).filter(k => !grouped.has(k))
+    expect(missing, `ungrouped settings vanish from the table: ${missing.join(', ')}`).toEqual([])
+  })
+
+  it('a retired key is neither grouped nor given an editable control', async () => {
+    // Both would be lies: a row implies the grid enforces it, a Field implies
+    // editing it changes something. The grid reports retired keys separately.
+    const { RISK_GROUPS, RETIRED_KEYS } = await import('../../agent/services/risk-matrix.js')
+    const { DEFAULT_RISK_CONFIG } = await import('../../agent/services/risk.js')
+    const grouped = new Set(RISK_GROUPS.flatMap(g => g.keys))
+    const src = readFileSync(new URL('./Risk.jsx', import.meta.url), 'utf8')
+    for (const key of Object.keys(RETIRED_KEYS)) {
+      expect(grouped.has(key), `${key} is retired but still has a grid row`).toBe(false)
+      expect(src.includes(`anchor="${key}"`), `${key} is retired but still editable`).toBe(false)
+      // A retired key must also be genuinely gone from the engine's defaults —
+      // otherwise it is still shipping to every account and is not retired.
+      expect(DEFAULT_RISK_CONFIG, `${key} is retired but still a default`).not.toHaveProperty(key)
+    }
+  })
+})

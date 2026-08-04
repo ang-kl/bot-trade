@@ -105,6 +105,23 @@ export default function RiskMatrix() {
         {accounts.length === 0 && ' No accounts in the registry yet — the global column is the whole picture.'}
       </div>
 
+      {/* A stored setting nothing reads is invisible in a table built from the
+          groups — it has no row to appear in. Saying so here is the only place
+          an operator finds out the number they set stopped mattering. */}
+      {(data.retired || []).length > 0 && (
+        <div className="text-[9px] text-[var(--color-warning-text)] mb-1">
+          Stored but no longer enforced:{' '}
+          {data.retired.map(r => (
+            <span key={`${r.key}@${r.where}`} className="mr-2" title={r.why}>
+              <span className="font-semibold">{r.key}</span>
+              {' = '}{show(r.key, r.value)}
+              {' on '}{r.where}
+            </span>
+          ))}
+          — safe to delete from the overlay.
+        </div>
+      )}
+
       {(data.groups || []).map(g => (
         <div key={g.id} className="overflow-x-auto">
           <Collapse id={`RiskMatrix_${g.id}`} label={g.label} defaultOpen={g.id === 'day'}>

@@ -69,6 +69,25 @@ export const RISK_GROUPS = Object.freeze([
   { id: 'account', label: 'Account', keys: ['leverage'] },
 ])
 
+/**
+ * Keys that were once enforced, are still WRITTEN in somebody's overlay, and
+ * are read by nothing today.
+ *
+ * `kellyFraction` is the case that named this list: it sits in the production
+ * global overlay, and the only mention of it left in the engine is the comment
+ * at risk.js:588 explaining why the `kelly * kellyFraction * 4` haircut was
+ * removed. Giving it a control on the Risk page would have been the wrong fix —
+ * an editable field for a number nothing reads is a worse lie than a missing
+ * one. Giving it a group row would have been the same lie with a triangle.
+ *
+ * So it is declared dead here and the grid says so out loud, once, above the
+ * table. The value stays in the overlay: deleting an operator's stored setting
+ * to tidy a UI is not this module's call.
+ */
+export const RETIRED_KEYS = Object.freeze({
+  kellyFraction: 'no longer read — full Kelly ships the risk-budgeted size (risk.js kellyVolume)',
+})
+
 /** Which group a key belongs to. 'Other' is a bug, not a category. */
 export function groupOf(key) {
   return RISK_GROUPS.find(g => g.keys.includes(key))?.id ?? 'other'
@@ -131,7 +150,20 @@ export function buildRiskMatrix(db) {
     }
   })
 
-  return { groups: RISK_GROUPS.map(g => ({ ...g })), global, accounts, defaults }
+  // Retired keys somebody is still storing. Reported per writer, because
+  // "kellyFraction is set globally" and "kellyFraction is set on 5203012" are
+  // different things to go and clean up.
+  const retired = []
+  for (const [key, why] of Object.entries(RETIRED_KEYS)) {
+    if (global.overridden.includes(key)) retired.push({ key, where: 'global', value: globalRaw[key], why })
+    for (const a of accounts) {
+      if (a.overridden.includes(key)) {
+        retired.push({ key, where: a.accountId, value: overlayFor(db, a.accountId)[key], why })
+      }
+    }
+  }
+
+  return { groups: RISK_GROUPS.map(g => ({ ...g })), global, accounts, defaults, retired }
 }
 
 /**
