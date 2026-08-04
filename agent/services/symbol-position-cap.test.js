@@ -68,15 +68,44 @@ function inFlight(db, symbol, account = ACCT, n = 1, status = 'submitting') {
 // The owner's number
 // ---------------------------------------------------------------------------
 
-test('the ceiling is two, and it is a CEILING not a permission', () => {
-  // Owner 05-08-2026: "maximum 2 positions hard cap". duplicate_symbol still
-  // refuses the second on the normal path — this does not relax it. Anything
-  // reaching here bypassed that gate.
-  assert.equal(DEFAULT_MAX_PER_SYMBOL, 2)
+test('the ceiling is three, and it is a CEILING not a permission', () => {
+  // Owner 05-08-2026: "maximum 2 positions hard cap", raised the same day to
+  // three. duplicate_symbol still refuses the second on the normal path — this
+  // does not relax it. Anything reaching here bypassed that gate.
+  assert.equal(DEFAULT_MAX_PER_SYMBOL, 3)
   assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 0 }).allow, true)
-  assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 1 }).allow, true)
-  assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 2 }).allow, false)
+  assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 2 }).allow, true)
+  assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 3 }).allow, false)
   assert.equal(symbolCapVerdict({ symbol: 'DOW.US', count: 17 }).allow, false)
+})
+
+test('CONCURRENT, NOT CUMULATIVE — a symbol traded all week is at zero today', () => {
+  // Owner 05-08-2026: "2 symbol capped means concurrent trading at the same
+  // time, not over time." Every input is a live state, so a closed round trip
+  // leaves no residue. Seventeen DOW.US positions opened and closed last week
+  // must not ration this week's eighteenth.
+  const db = initDB(':memory:')
+  const tr = db.prepare(`
+    INSERT INTO trades (symbol, side, entry_price, volume, status, opened_at, closed_at, account_id, source)
+    VALUES ('DOW.US', 'SELL', 29.84, 250, 'closed', ?, ?, ?, 'autopilot')
+  `)
+  const mp = db.prepare(`
+    INSERT INTO monitored_positions (symbol, side, status, account_id, trade_id) VALUES ('DOW.US', 'short', 'closed', ?, ?)
+  `)
+  for (let i = 0; i < 17; i++) {
+    const id = tr.run('2026-08-04 15:33:17', '2026-08-04 17:59:45', ACCT).lastInsertRowid
+    mp.run(ACCT, id)
+  }
+  // …plus a week of retired resting orders on the same symbol.
+  for (const st of ['filled', 'cancelled', 'expired']) {
+    db.prepare(`INSERT INTO pending_orders (symbol, order_id, level, status, note, account_id) VALUES ('DOW.US', ?, 29.84, ?, 'pending-closed', ?)`)
+      .run(`hist-${st}`, st, ACCT)
+  }
+
+  const c = countForSymbol(db, ACCT, 'DOW.US')
+  assert.deepEqual({ ...c }, { total: 0, open: 0, inFlight: 0, resting: 0 })
+  assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, true,
+    'the ceiling caps simultaneous exposure — it never rations opportunity')
 })
 
 test('THE 89-MILLISECOND BURST: in-flight orders count, or the cap is useless', () => {
@@ -85,23 +114,23 @@ test('THE 89-MILLISECOND BURST: in-flight orders count, or the cap is useless', 
   // only the reconciled book would have let all seventeen through exactly as
   // duplicate_symbol did.
   const db = initDB(':memory:')
-  inFlight(db, 'DOW.US', ACCT, 2)
+  inFlight(db, 'DOW.US', ACCT, 3)
   const c = countForSymbol(db, ACCT, 'DOW.US')
   assert.equal(c.open, 0, 'nothing has reconciled yet')
-  assert.equal(c.inFlight, 2)
-  assert.equal(c.total, 2)
+  assert.equal(c.inFlight, 3)
+  assert.equal(c.total, 3)
   const v = symbolCapVerdict({ symbol: 'DOW.US', accountId: ACCT, count: c })
-  assert.equal(v.allow, false, 'the third order in the burst is refused')
-  assert.match(v.reason, /symbol_position_cap DOW\.US=2\/2/)
-  assert.match(v.reason, /2 submitted and unresolved/)
+  assert.equal(v.allow, false, 'the fourth order in the burst is refused')
+  assert.match(v.reason, /symbol_position_cap DOW\.US=3\/3/)
+  assert.match(v.reason, /3 submitted and unresolved/)
 })
 
 test('open and in-flight add up — they are both real exposure', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', ACCT, 1)
+  openPos(db, 'DOW.US', ACCT, 2)
   inFlight(db, 'DOW.US', ACCT, 1)
   const c = countForSymbol(db, ACCT, 'DOW.US')
-  assert.deepEqual({ ...c }, { total: 2, open: 1, inFlight: 1, resting: 0 })
+  assert.deepEqual({ ...c }, { total: 3, open: 2, inFlight: 1, resting: 0 })
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
@@ -109,7 +138,7 @@ test('open and in-flight add up — they are both real exposure', () => {
 // RESTING ORDERS — the hole the first version of this ceiling left open
 // ---------------------------------------------------------------------------
 
-test('THE REAL 04-08 SHAPE: two resting limits fill the cap, the third is refused', () => {
+test('THE REAL 04-08 SHAPE: three resting limits fill the cap, the fourth is refused', () => {
   // Not a burst — a QUEUE. Thirteen surviving pending_orders rows show one
   // closed-market limit placed every 4-8 minutes from 10:41 to 12:03, every
   // one at level 29.84, each with its own risk_event_id, all resting for over
@@ -119,20 +148,20 @@ test('THE REAL 04-08 SHAPE: two resting limits fill the cap, the third is refuse
   // trades. Both were EMPTY the whole time. It could not have refused one of
   // these, which is the entire reason this test exists.
   const db = initDB(':memory:')
-  resting(db, 'DOW.US', ACCT, 2)
+  resting(db, 'DOW.US', ACCT, 3)
   const c = countForSymbol(db, ACCT, 'DOW.US')
-  assert.deepEqual({ ...c }, { total: 2, open: 0, inFlight: 0, resting: 2 })
+  assert.deepEqual({ ...c }, { total: 3, open: 0, inFlight: 0, resting: 3 })
   const v = checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' })
-  assert.equal(v.allow, false, 'the third resting limit is refused')
-  assert.match(v.reason, /2 resting at a limit/)
+  assert.equal(v.allow, false, 'the fourth resting limit is refused')
+  assert.match(v.reason, /3 resting at a limit/)
 })
 
 test('a resting order and a position are the SAME exposure to the cap', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', ACCT, 1)
+  openPos(db, 'DOW.US', ACCT, 2)
   resting(db, 'DOW.US', ACCT, 1)
   const c = countForSymbol(db, ACCT, 'DOW.US')
-  assert.deepEqual({ ...c }, { total: 2, open: 1, inFlight: 0, resting: 1 })
+  assert.deepEqual({ ...c }, { total: 3, open: 2, inFlight: 0, resting: 1 })
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
@@ -148,8 +177,8 @@ test('an order missing from the broker book still counts — that is the failure
   // The whole incident was our record and the broker's disagreeing. Whichever
   // side knows about an order, it counts.
   const db = initDB(':memory:')
-  resting(db, 'DOW.US', ACCT, 2, { inBrokerBook: false })
-  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 2)
+  resting(db, 'DOW.US', ACCT, 3, { inBrokerBook: false })
+  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 3)
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
@@ -157,9 +186,9 @@ test('a pending row with no broker id yet still counts', () => {
   // Placement returned without an order id. Something may be live at the
   // broker; counting it as nothing is how a second one gets placed.
   const db = initDB(':memory:')
-  db.prepare(`INSERT INTO pending_orders (symbol, order_id, level, status, note, account_id) VALUES ('DOW.US', NULL, 29.84, 'working', 'pending-closed', ?)`).run(ACCT)
-  db.prepare(`INSERT INTO pending_orders (symbol, order_id, level, status, note, account_id) VALUES ('DOW.US', NULL, 29.84, 'working', 'pending-closed', ?)`).run(ACCT)
-  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 2, 'two distinct rows, not one')
+  const ins = db.prepare(`INSERT INTO pending_orders (symbol, order_id, level, status, note, account_id) VALUES ('DOW.US', NULL, 29.84, 'working', 'pending-closed', ?)`)
+  ins.run(ACCT); ins.run(ACCT); ins.run(ACCT)
+  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 3, 'three distinct rows, not one')
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
@@ -174,22 +203,35 @@ test('a retired resting order is not exposure', () => {
 
 test('resting orders are per-account and per-symbol like everything else', () => {
   const db = initDB(':memory:')
-  resting(db, 'DOW.US', '46130058', 2)
+  resting(db, 'DOW.US', '46130058', 3)
   assert.equal(checkSymbolCap(db, { accountId: '46130058', symbol: 'DOW.US' }).allow, false)
   assert.equal(checkSymbolCap(db, { accountId: '43097342', symbol: 'DOW.US' }).allow, true)
   assert.equal(checkSymbolCap(db, { accountId: '46130058', symbol: 'EURUSD' }).allow, true)
 })
 
-test("an owner's own manual limit order does NOT freeze the bot", () => {
-  // is_bot = 0. Real exposure, but silently stopping the bot on a symbol
-  // because a human left an order resting there is a behaviour change nobody
-  // asked for. This ceiling exists to stop the bot stacking its OWN orders.
+test("an owner's own manual limit orders COUNT (owner: \"flip\")", () => {
+  // is_bot = 0. This shipped the other way, on the reasoning that freezing the
+  // bot because a human left an order resting was a surprise nobody asked for.
+  // The owner's call is that a manual limit and a bot limit fill into the same
+  // account, at the same price, on the same margin — so the ceiling counts
+  // total simultaneous exposure, not who typed it.
   const db = initDB(':memory:')
   const bo = db.prepare(`INSERT INTO broker_orders (order_id, symbol, side, order_type, is_bot, account_id, status) VALUES (?, 'DOW.US', 'SELL', 'LIMIT', 0, ?, 'working')`)
   bo.run('manual-1', ACCT)
   bo.run('manual-2', ACCT)
-  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 0)
-  assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, true)
+  bo.run('manual-3', ACCT)
+  assert.equal(countForSymbol(db, ACCT, 'DOW.US').resting, 3)
+  assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
+})
+
+test('a manual order and a bot order stack toward the SAME ceiling', () => {
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO broker_orders (order_id, symbol, side, order_type, is_bot, account_id, status) VALUES ('manual-1', 'DOW.US', 'SELL', 'LIMIT', 0, ?, 'working')`).run(ACCT)
+  resting(db, 'DOW.US', ACCT, 1)
+  openPos(db, 'DOW.US', ACCT, 1)
+  const c = countForSymbol(db, ACCT, 'DOW.US')
+  assert.deepEqual({ ...c }, { total: 3, open: 1, inFlight: 0, resting: 2 })
+  assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
 test('both in-flight statuses count — an unconfirmed order may be live', () => {
@@ -213,7 +255,7 @@ test('a resolved order does NOT count — only live and in-flight do', () => {
 
 test('the cap is PER ACCOUNT — one account\'s book cannot block another', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', '46130058', 2)
+  openPos(db, 'DOW.US', '46130058', 3)
   assert.equal(checkSymbolCap(db, { accountId: '46130058', symbol: 'DOW.US' }).allow, false)
   assert.equal(checkSymbolCap(db, { accountId: '43097342', symbol: 'DOW.US' }).allow, true,
     'the other account placed one correctly-sized position and must still be able to')
@@ -221,7 +263,7 @@ test('the cap is PER ACCOUNT — one account\'s book cannot block another', () =
 
 test('the cap is PER SYMBOL', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', ACCT, 2)
+  openPos(db, 'DOW.US', ACCT, 3)
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'EURUSD' }).allow, true)
 })
 
@@ -229,22 +271,22 @@ test('an unattributed row counts for every account — stricter, never looser', 
   // The correct direction for a safety ceiling, and the same rule risk.js
   // uses for its scoped reads.
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', null, 2)
+  openPos(db, 'DOW.US', null, 3)
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
 test('symbols are matched case-insensitively', () => {
   const db = initDB(':memory:')
-  openPos(db, 'dow.us', ACCT, 2)
+  openPos(db, 'dow.us', ACCT, 3)
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US' }).allow, false)
 })
 
 test('a custom cap is honoured; junk falls back to the default', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', ACCT, 3)
+  openPos(db, 'DOW.US', ACCT, 4)
   assert.equal(checkSymbolCap(db, { accountId: ACCT, symbol: 'DOW.US', cap: 5 }).allow, true)
-  assert.equal(symbolCapVerdict({ symbol: 'X', count: 2, cap: 0 }).cap, DEFAULT_MAX_PER_SYMBOL)
-  assert.equal(symbolCapVerdict({ symbol: 'X', count: 2, cap: 'nonsense' }).cap, DEFAULT_MAX_PER_SYMBOL)
+  assert.equal(symbolCapVerdict({ symbol: 'X', count: 3, cap: 0 }).cap, DEFAULT_MAX_PER_SYMBOL)
+  assert.equal(symbolCapVerdict({ symbol: 'X', count: 3, cap: 'nonsense' }).cap, DEFAULT_MAX_PER_SYMBOL)
 })
 
 test('a database without the tables fails OPEN, not closed', () => {
@@ -271,7 +313,7 @@ test('clusters already over the ceiling are REPORTED, and nothing is closed', ()
   assert.equal(clusters.length, 2)
   assert.equal(clusters[0].symbol, 'DOW.US')
   assert.equal(clusters[0].n, 17)
-  assert.equal(clusters[0].over, 15)
+  assert.equal(clusters[0].over, 14)
   assert.ok(!clusters.some(c => c.symbol === 'EURUSD'), 'one position is not a cluster')
 
   // …and the rows are untouched. Auto-closing on a reading is a bigger action
@@ -281,14 +323,14 @@ test('clusters already over the ceiling are REPORTED, and nothing is closed', ()
 
 test('exactly AT the cap is not over it', () => {
   const db = initDB(':memory:')
-  openPos(db, 'DOW.US', ACCT, 2)
+  openPos(db, 'DOW.US', ACCT, 3)
   assert.deepEqual(overCapClusters(db), [])
 })
 
 test('the cluster line names symbol, count, account and cap', () => {
-  const line = clusterLine({ symbol: 'DOW.US', accountId: ACCT, n: 17, cap: 2, over: 15, firstAt: '2026-08-04 15:33:17', lastAt: '2026-08-04 15:33:17' })
+  const line = clusterLine({ symbol: 'DOW.US', accountId: ACCT, n: 17, cap: 3, over: 14, firstAt: '2026-08-04 15:33:17', lastAt: '2026-08-04 15:33:17' })
   assert.match(line, /DOW\.US × 17 on 46130058/)
-  assert.match(line, /cap 2, 15 over/)
+  assert.match(line, /cap 3, 14 over/)
   assert.match(line, /opened 2026-08-04 15:33:17/)
 })
 
@@ -302,30 +344,30 @@ test('THE 87-MINUTE WARNING: resting orders are reported while still resting', (
   // thirteen at once. This one reads the order book, so it speaks on the third
   // order at 10:56 — eighty-seven minutes before any of them was a position.
   const db = initDB(':memory:')
-  resting(db, 'DOW.US', ACCT, 3, { placedAt: '2026-08-04 10:41:50' })
+  resting(db, 'DOW.US', ACCT, 4, { placedAt: '2026-08-04 10:41:50' })
   assert.deepEqual(overCapClusters(db), [], 'nothing has filled — the position detector is blind here')
 
   const rest = overCapRestingOrders(db)
   assert.equal(rest.length, 1)
   assert.equal(rest[0].symbol, 'DOW.US')
-  assert.equal(rest[0].n, 3)
+  assert.equal(rest[0].n, 4)
   assert.equal(rest[0].over, 1)
   assert.equal(rest[0].minLevel, 29.84)
 
   // …and nothing was cancelled. Alert only, same instruction as its sibling.
-  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status='working'`).get().n, 3)
+  assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM pending_orders WHERE status='working'`).get().n, 4)
 })
 
-test('two resting orders are at the ceiling, not over it', () => {
+test('three resting orders are at the ceiling, not over it', () => {
   const db = initDB(':memory:')
-  resting(db, 'DOW.US', ACCT, 2)
+  resting(db, 'DOW.US', ACCT, 3)
   assert.deepEqual(overCapRestingOrders(db), [])
 })
 
 test('the resting line names the price — that is the tell', () => {
   // Thirteen orders at ONE price is the signature of a replace loop; thirteen
   // at thirteen prices would be a ladder somebody meant to build.
-  const line = restingLine({ symbol: 'DOW.US', accountId: ACCT, n: 13, cap: 2, over: 11, minLevel: 29.84, maxLevel: 29.84, firstAt: '2026-08-04 10:41:50', lastAt: '2026-08-04 12:03:42' })
+  const line = restingLine({ symbol: 'DOW.US', accountId: ACCT, n: 13, cap: 3, over: 10, minLevel: 29.84, maxLevel: 29.84, firstAt: '2026-08-04 10:41:50', lastAt: '2026-08-04 12:03:42' })
   assert.match(line, /DOW\.US × 13 RESTING on 46130058/)
   assert.match(line, /@ 29\.84/)
   assert.match(line, /placed 2026-08-04 10:41:50 … 2026-08-04 12:03:42/)
