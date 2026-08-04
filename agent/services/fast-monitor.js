@@ -468,6 +468,12 @@ export function startFastMonitor(db, getCreds, deps = {}) {
           say: r => (r.slMoves || r.partialCloses) ? `${r.slMoves} SL move(s), ${r.partialCloses} partial close(s)` : null },
         { key: 'profit_keeper', label: 'Profit Keeper', mod: './profit-keeper.js', fn: 'runProfitKeeper',
           say: r => (r.slMoves || r.closes) ? `${r.slMoves} lock(s), ${r.closes} close(s)` : null },
+        // The safety net for LOSING and NAKED positions the Profit Keeper will
+        // not touch. Last of the level-4 writers off the loop, and the one
+        // that most needed to be: it is what puts a stop on a position that
+        // has none.
+        { key: 'loss_guardian', label: 'Loss Guardian', mod: './loss-guardian.js', fn: 'runLossGuardian',
+          say: r => (r.stops || r.closes) ? `${r.stops} protective stop(s), ${r.closes} close(s)` : null },
       ]) {
         try {
           if (!creds?.ready) break

@@ -65,6 +65,20 @@ export const CONTROLLERS = {
   // The faster path sets the expectation — fixed, not loop-derived, for the
   // same reason as above.
   protection_audit: { label: 'Position protection audit', expectedSec: 60, factor: 4 },
+  // NEVER REGISTERED UNTIL 2026-08-04. loss-guardian.js has been amending stops
+  // and closing positions since it shipped, and beat `loss_guardian` on every
+  // loop cycle — a name absent from this registry, so heartbeatView skipped it
+  // and the panel never showed it. The one writer whose job is to put a stop on
+  // a position that has NONE was the one writer nobody could see running.
+  // Now on the fast monitor's 60s band with the other level-4 writers.
+  loss_guardian:    { label: 'Loss Guardian',          expectedSec: 60,   factor: 4 },
+  // Found by the same test, same defect: both beat every loop cycle to a name
+  // this registry did not contain, so neither has ever been visible. Neither
+  // writes to a position — pending_signals re-checks queued setups against a
+  // fresh scan, edge_watchdog watches strategy decay — so they are loop-tied
+  // like their peers rather than moved.
+  pending_signals:  { label: 'Pending-signal retry',   tiedToLoop: true,  factor: 3 },
+  edge_watchdog:    { label: 'Edge watchdog',          tiedToLoop: true,  factor: 3 },
   // D6 — the daily ATR baseline the volatility gate reads. If this stops
   // running, atr_history goes stale and every symbol quietly reads as NORMAL
   // volatility: a verdict none of them earned, and indistinguishable from a

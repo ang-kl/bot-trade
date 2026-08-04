@@ -22,14 +22,14 @@ const loopSrc = readFileSync(new URL('../loop.js', import.meta.url), 'utf8')
 const fastSrc = readFileSync(new URL('./fast-monitor.js', import.meta.url), 'utf8')
 
 test('the loop no longer invokes the acting layers — one writer, not two', () => {
-  for (const fn of ['runTradeGuards', 'runProfitKeeper']) {
+  for (const fn of ['runTradeGuards', 'runProfitKeeper', 'runLossGuardian']) {
     assert.equal(loopSrc.includes(`${fn}(db,`), false,
       `loop.js still calls ${fn} — two components would write the same stop (§36.2.3)`)
   }
 })
 
 test('the fast monitor does invoke them, and budgets each pass', () => {
-  for (const fn of ['runTradeGuards', 'runProfitKeeper']) {
+  for (const fn of ['runTradeGuards', 'runProfitKeeper', 'runLossGuardian']) {
     assert.ok(fastSrc.includes(fn), `fast-monitor.js must call ${fn}`)
   }
   assert.ok(/withBudget\(job\.key/.test(fastSrc), 'each job runs under a budget')
@@ -38,7 +38,7 @@ test('the fast monitor does invoke them, and budgets each pass', () => {
 test('their heartbeat expectation is FIXED, not derived from the loop', () => {
   // A threshold computed from observed loop cadence stretches as the loop
   // degrades — the alarm quietly follows the failure it exists to catch.
-  for (const key of ['trade_guards', 'profit_keeper', 'protection_audit']) {
+  for (const key of ['trade_guards', 'profit_keeper', 'protection_audit', 'loss_guardian']) {
     const def = CONTROLLERS[key]
     assert.equal(def.tiedToLoop, undefined, `${key} must not be loop-tied any more`)
     assert.equal(def.expectedSec, 60, `${key} expects its own 60s cadence`)
@@ -77,4 +77,18 @@ test('a hung pass abandons the WAIT so the ticker keeps its cadence', async () =
   // its writes are idempotent.
   finish('late')
   await work
+})
+
+test('EVERY controller that beats a heartbeat is in the registry', () => {
+  // loss_guardian beat `loss_guardian` on every loop cycle since it shipped and
+  // was never in CONTROLLERS, so heartbeatView skipped it entirely: the one
+  // writer whose job is to put a stop on a position that has NONE was the one
+  // writer nobody could see running. A beat to an unregistered name is worse
+  // than no beat — it looks like instrumentation and reports nothing.
+  const beaten = new Set()
+  for (const src of [loopSrc, fastSrc]) {
+    for (const m of src.matchAll(/(?:hbeat|hb\.beat|beat)\(db,\s*'([a-z_]+)'/g)) beaten.add(m[1])
+  }
+  const missing = [...beaten].filter(k => !CONTROLLERS[k])
+  assert.deepEqual(missing, [], `these controllers beat but are not registered: ${missing.join(', ')}`)
 })

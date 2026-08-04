@@ -3070,22 +3070,15 @@ async function runLoop(db) {
       // Keeper won't touch (it only protects gains). Conservative: places a
       // protective stop on a NAKED position and enforces an optional time cap;
       // never tightens a valid mean-reversion stop. Inert when off; non-fatal.
-      try {
-        const guardCreds = getCtraderCreds(db)
-        if (guardCreds.ready && !cycleOverBudget()) {
-          phase('loss guardian')
-          const { runLossGuardian } = await import('./services/loss-guardian.js')
-          const g = await runBudgetedSubPhase(db, 'loss_guardian', () => runLossGuardian(db, guardCreds, {
-            notify: (text) => import('./services/telegram-control.js').then(m => m.notifyOwner(text)).catch(() => {}),
-          }))
-          if (g.stops || g.closes) log(`Loss Guardian: ${g.stops} protective stop(s), ${g.closes} close(s)`)
-          if (g.errors?.length) log(`Loss Guardian errors: ${g.errors.join(' · ')}`)
-        }
-        await hbeat(db, 'loss_guardian')
-      } catch (err) {
-        log(`Loss Guardian failed (non-fatal): ${err.message}`)
-        await hbeat(db, 'loss_guardian', false, err.message)
-      }
+      // LOSS GUARDIAN NOW RUNS ON THE FAST MONITOR — see fast-monitor.js.
+      //
+      // It is the last §41 level-4 writer that was still riding the 5-minute
+      // cycle, and the one with the worst argument for being there: it places
+      // a protective stop on a position that has NONE. A naked losing position
+      // waiting out a slow scan is the exact case §70.7 is about.
+      //
+      // MOVED, not copied — it amends stops and closes positions, and
+      // §36.2.3 forbids two components writing the same stop.
 
       // Periodic broker-truth market-hours refresh — pull each mapped
       // FX conversion legs — sizing infrastructure, refreshed on its own
