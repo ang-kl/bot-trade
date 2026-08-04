@@ -493,3 +493,22 @@ test('pendingLessons scopes the wait-list to one account', () => {
   assert.equal(one.rows[0].symbol, 'EURUSD')
   assert.equal(one.rows[0].accountId, '111')
 })
+
+test('the window follows the INJECTED clock, not the real one', () => {
+  // This is the defect that made the two tests above start failing on
+  // 2026-08-04 after passing for a week: pendingLessons accepted `now` for its
+  // elapsed-time arithmetic while its SQL window used SQLite's datetime('now'),
+  // so a caller passing `now` got rows selected by one clock and classified by
+  // another. A frozen fixture eventually fell out of a window it could not
+  // influence — and any point-in-time replay was silently wrong the same way.
+  const db = pendDb()
+  closedTrade(db, { minsAgo: 60 })
+
+  // Inside the window against the injected clock.
+  assert.equal(pendingLessons(db, { now: NOW, windowDays: 7 }).rows.length, 1)
+  // A `now` far in the future must push that same row OUT, which it cannot do
+  // if the window is reading the real clock.
+  assert.equal(pendingLessons(db, { now: NOW + 30 * 86_400_000, windowDays: 7 }).rows.length, 0)
+  // …and a wide enough window brings it back, so the row itself is fine.
+  assert.equal(pendingLessons(db, { now: NOW + 30 * 86_400_000, windowDays: 60 }).rows.length, 1)
+})

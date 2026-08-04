@@ -314,6 +314,20 @@ export function sqliteMs(s) {
  *   never get a lesson).
  */
 export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 50, minAfterBars = MIN_AFTER_BARS, accountId = null } = {}) {
+  // ONE CLOCK. This function already accepted an injectable `now` for the
+  // elapsed-time arithmetic below, but the window used SQLite's own
+  // datetime('now') — so a caller passing `now` got a row set selected by the
+  // REAL clock and then classified against the injected one. Two clocks in one
+  // read, disagreeing by however far apart they were.
+  //
+  // It surfaced as a test that had passed for a week and began failing on
+  // 2026-08-04: the fixture is anchored at a frozen 2026-07-29, and real time
+  // finally walked past that plus seven days, so the fixture rows dropped out
+  // of a window the test could not influence. That is not a flaky test, it is
+  // the function reading a clock its caller thought it had replaced — and the
+  // same defect makes any point-in-time replay silently wrong.
+  const cutoff = new Date(now - Math.max(0, Number(windowDays) || 0) * 86_400_000)
+    .toISOString().replace('T', ' ').slice(0, 19)
   let rows = []
   try {
     // `accountId` scopes the wait-list to one account: a lesson still pending on
@@ -328,10 +342,10 @@ export function pendingLessons(db, { now = Date.now(), windowDays = 7, limit = 5
         FROM trades t
         LEFT JOIN trade_postmortems pm ON pm.trade_id = t.id
        WHERE t.status = 'closed' AND pm.id IS NULL
-         AND t.closed_at >= datetime('now', ?)
+         AND t.closed_at >= ?
          ${acct}
        ORDER BY t.closed_at DESC LIMIT ?
-    `).all(...[`-${windowDays} days`, ...(accountId == null ? [] : [String(accountId)]), limit])
+    `).all(...[cutoff, ...(accountId == null ? [] : [String(accountId)]), limit])
   } catch { return { rows: [], waiting: 0, ineligible: 0 } }
 
   // Best-effort: an unmapped or exotic symbol simply reports null rather than
