@@ -2877,6 +2877,35 @@ export default function stateRouter(db) {
   })
 
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // GET /state/symbol-descriptions — SYMBOL → the broker's own long name.
+  //
+  // Owner 04-08-2026: "Add a Description column next to the symbol… XAUUSD is
+  // Gold, AMD.US is AMD, GEV is GE Vernova." The names come from the cTrader
+  // catalogue, which /actions/instrument-tree already fetches and caches for
+  // 24h. This route serves the map OUT of that cache and NEVER calls the
+  // broker: the watchlist loads on every page view, and a 1,900-instrument
+  // catalogue fetch on each one would be a self-inflicted rate limit. An empty
+  // map is a correct answer — symbol-taxonomy.js's curated table is the
+  // fallback and covers every instrument with an unreadable ticker.
+  // -----------------------------------------------------------------------
+  router.get('/symbol-descriptions', (_req, res) => {
+    try {
+      const cached = getState(db, 'instrument_tree_json')
+      if (!cached) return res.json({ descriptions: {}, cached: false, builtAt: null })
+      const parsed = JSON.parse(cached)
+      res.json({
+        descriptions: parsed.descriptions || {},
+        cached: true,
+        builtAt: parsed.builtAt || null,
+        // Named, not silent: a tree cached before this shipped has no
+        // descriptions at all, and the UI should be able to say so rather
+        // than look like the broker has no names for anything.
+        count: Object.keys(parsed.descriptions || {}).length,
+      })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // GET /state/watchlist-stats — LIVE per-symbol results for the Watchlist
   // table: closed trades, net P&L, win rate, and a loser flag once a symbol
   // has enough sample (n >= min_n) and is net negative. The watchlist stays
@@ -2892,7 +2921,8 @@ export default function stateRouter(db) {
       const scope = requestedAccount(db, req)
       const acct = accountWhere(scope, 'account_id')
       const rows = db.prepare(
-        `SELECT UPPER(symbol) AS sym, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins
+        `SELECT UPPER(symbol) AS sym, COUNT(*) AS n, ROUND(SUM(net_pnl), 2) AS net, SUM(net_pnl > 0) AS wins,
+                MAX(COALESCE(closed_at, opened_at)) AS lastAt
          FROM trades WHERE status = 'closed' AND net_pnl IS NOT NULL${acct.active ? ` AND ${acct.where}` : ''}
          GROUP BY UPPER(symbol)`
       ).all(...acct.params)
@@ -2903,10 +2933,32 @@ export default function stateRouter(db) {
           net: r.net,
           winRate: r.n ? Math.round((r.wins / r.n) * 100) : null,
           loser: r.n >= MIN_N && r.net < 0,
+          // Owner 04-08-2026: "Live signal to add {last traded date DD/MM}".
+          // The scan tells you what the bot thinks NOW; without this the row
+          // never says when it last acted on that opinion, so a symbol that
+          // has not traded in three weeks looks identical to one that traded
+          // this morning.
+          lastAt: r.lastAt || null,
         }
       }
+      // DURABLE backtest counts, same request. The watchlist's "Backtest
+      // trades" column read the page's in-memory `bt` state — the result of a
+      // backtest run in THIS browser session — so it was empty on every fresh
+      // load, which is what the owner is looking at ("Backtest trade column
+      // isn't filled"). backtest_runs has carried the answer all along.
+      let backtests = {}
+      try {
+        const btRows = db.prepare(
+          `SELECT UPPER(symbol) AS sym, SUM(COALESCE(trades, 0)) AS trades,
+                  COUNT(*) AS runs, MAX(ran_at) AS lastRanAt
+             FROM backtest_runs${acct.active ? ` WHERE ${acct.where}` : ''}
+            GROUP BY UPPER(symbol)`
+        ).all(...acct.params)
+        for (const r of btRows) backtests[r.sym] = { trades: r.trades || 0, runs: r.runs, lastRanAt: r.lastRanAt }
+      } catch { backtests = {} }
+
       res.json({
-        min_n: MIN_N, by,
+        min_n: MIN_N, by, backtests,
         accountId: scope.all ? 'all' : (scope.accountId ?? null),
         scoped: acct.active,
         scope: scopeReport(scope, scopeCoverage(db, {

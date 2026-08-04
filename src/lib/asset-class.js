@@ -17,6 +17,7 @@
 // tree that disagreed with the engine about what an instrument is would be
 // worse than no tree.
 import { categoriseSymbol } from '../../agent/lib/sessions.js'
+import { subGroupOf } from '../../agent/lib/symbol-taxonomy.js'
 
 export const UNGROUPED = '__ungrouped__'
 
@@ -47,7 +48,15 @@ export function buildClassTree(items) {
     const cls = categoriseSymbol(it.symbol)
     if (!tree.has(cls)) tree.set(cls, new Map())
     const byGroup = tree.get(cls)
-    const g = it.group || UNGROUPED
+    // THE MIDDLE LEVEL NO LONGER HAS AN "UNGROUPED" DRAWER (owner 04-08-2026:
+    // "properly classify them into groupings, sub-groups"). A free-text
+    // `group` tag — written by the preset picker, absent on a manual add — is
+    // still honoured when it exists, because it is the owner's own label for a
+    // set they chose. Everything else now falls to a DERIVED sub-group
+    // (Japan indices, FX exotics, Crypto 24/7) instead of a bucket whose name
+    // was the complaint. The header comment above explains why classification
+    // could not be the tag; the same reasoning applies one level down.
+    const g = it.group || subGroupOf(it.symbol)
     if (!byGroup.has(g)) byGroup.set(g, [])
     byGroup.get(g).push(it)
   }

@@ -1,5 +1,7 @@
 // Shared market session utilities used by scan.js and analyze.js.
 
+import { REGIONS, SESSION_WINDOWS, regionFor, inWindow } from './exchange-regions.js'
+
 export const SESSIONS = [
   { id: 'tokyo',     label: 'Tokyo',     open: 0,  close: 6,  tz: 'Asia/Tokyo' },
   { id: 'sydney',    label: 'Sydney',    open: 22, close: 5,  tz: 'Australia/Sydney' },
@@ -125,7 +127,11 @@ export function categoriseSymbol(symbol) {
  * weekends, crypto never closes.
  *
  * Conservative approximations (UTC):
- *   stock/index        → NYSE cash-ish window, Mon–Fri 14:30–20:55
+ *   stock/index        → ITS OWN exchange window, by region (exchange-regions.js):
+ *                        Tokyo 00:00–06:00, Hong Kong 01:30–08:00, Frankfurt/
+ *                        Paris 07:00–15:30, London 08:00–16:30, New York
+ *                        14:30–20:55, Sydney 23:00–05:00. Region comes from the
+ *                        index table or the equity's dot suffix (.HK, .DE, …)
  *   soft (ICE)         → Mon–Fri 09:00–17:15 (cocoa/coffee/sugar/cotton
  *                        daytime exchange window — they were treated as 24/5
  *                        and the BROKER rejected the overnight orders)
@@ -144,11 +150,19 @@ export function isSymbolMarketOpen(symbol, now = new Date()) {
   const day = now.getUTCDay()            // 0 Sun … 6 Sat
   const mins = now.getUTCHours() * 60 + now.getUTCMinutes()
 
+  // EXCHANGE-AWARE, since 04-08-2026. Every stock and index used to be gated
+  // to the New York cash session, which meant JPN225 was refused for the whole
+  // of the Tokyo day and permitted through a New York afternoon in which the
+  // Tokyo cash market had been shut for eight hours — and 0066.HK, AMD.DE and
+  // every other non-US listing had the same window imposed on them. The class
+  // decides WHETHER an exchange window applies; the region decides WHICH one.
   if (cat === 'stock' || cat === 'index') {
-    const inSession = day >= 1 && day <= 5 && mins >= 14 * 60 + 30 && mins <= 20 * 60 + 55
-    return inSession
+    const region = regionFor(symbol, cat)
+    const key = REGIONS[region]?.session || 'us'
+    const win = SESSION_WINDOWS[key] || SESSION_WINDOWS.us
+    return inWindow(win, day, mins)
       ? { open: true }
-      : { open: false, reason: `${symbol} trades the New York session only (Mon–Fri 14:30–20:55 UTC) — signal skipped until the market opens` }
+      : { open: false, reason: `${symbol} trades the ${win.label} session only (${win.hours}) — signal skipped until the market opens` }
   }
 
   if (cat === 'soft') {
