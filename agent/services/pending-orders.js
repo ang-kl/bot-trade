@@ -451,6 +451,10 @@ export async function managePendingOrders(db, creds, symbolMap, deps = {}) {
         'pending-fib',
         riskEventId ?? null,
       )
+      try {
+        const { recordSubmitted } = await import('./opportunity-disposition.js')
+        recordSubmitted(db, riskEventId)   // §70.8 verdict -> submit
+      } catch { /* provenance never blocks a placement */ }
       notify(`⏳ pending PLACED: ${symbol} ${timeframe} — limit @ ${orderPayload.limitPrice}, SL ${signal.sl}, TP ${signal.tp1}`)
       symbolsWithWorking.add(symbol)
       summary.placed++
