@@ -72,7 +72,9 @@ test('a switch survives the round trip and leaves the other account alone', asyn
     const other = v.accounts.find(a => a.accountId === '46979908')
     assert.equal(off.overrides.autotrade, false)
     assert.equal(off.effective.autotrade, false)
-    assert.equal(off.effective.source.autotrade, 'account')
+    // 'capability': a per-account autotrade OFF now sets accounts.mode, so
+    // the switch and the reason are one fact (owner 04-08-2026).
+    assert.equal(off.effective.source.autotrade, 'capability')
     assert.equal(other.effective.autotrade, true, 'the other account must be untouched')
     assert.equal(other.overrides.autotrade, null)
   } finally { s.close() }
@@ -129,7 +131,11 @@ test('the master still vetoes: a per-account ON cannot arm anything', async () =
     const v = await view(s)
     assert.equal(v.master.autotrade, false)
     const a = v.accounts.find(x => x.accountId === '46130058')
-    assert.equal(a.overrides.autotrade, true, 'the override is remembered…')
+    // The arm is remembered as the account's MODE, not as a second boolean
+    // beside it (owner 04-08-2026). `overrides.autotrade` is null — inherit —
+    // for any account that MAY enter, and false only when its mode forbids it.
+    assert.equal(a.overrides.autotrade, null, 'armed accounts inherit; the mode is the memory')
+    assert.equal(a.capability.mode, 'active', '…and the arm itself is remembered there')
     assert.equal(a.effective.autotrade, false, '…but it does not arm while the master is off')
     assert.equal(a.effective.source.autotrade, 'master', 'the UI must blame the master, not the account')
   } finally { s.close() }

@@ -188,7 +188,16 @@ export function auditControllerEvent(db, { controller, event, detail = null }) {
   console.log(`[phase-audit] controller ${controller}: ${event}${detail ? ` — ${detail}` : ''}`)
 }
 
-/** Recent phase/controller audit rows, newest first, for /state readers. */
+/**
+ * Recent phase / arming / controller audit rows, newest first, for /state
+ * readers.
+ *
+ * `/arm/<id>` rows joined the trail on 04-08-2026, when per-account arming
+ * moved from an agent_state flag to `accounts.mode`. They belong here rather
+ * than in a second feed: "who stopped this account entering" is the same
+ * question as "who flipped the master", and the owner should not have to know
+ * which layer answered it to find out.
+ */
 export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
   try {
     // Scoping INCLUDES the NULL rows deliberately, and here that is more than
@@ -200,7 +209,8 @@ export function recentPhaseAudit(db, { limit = 100, accountId = null } = {}) {
       : { sql: '', params: [] }
     return db.prepare(
       `SELECT id, at, method, path, body, account_id FROM action_log
-        WHERE method = 'AUDIT' AND (path LIKE '/phase/%' OR path LIKE '/controller/%')
+        WHERE method = 'AUDIT' AND (path LIKE '/phase/%' OR path LIKE '/controller/%'
+                                     OR path LIKE '/arm/%')
         ${scope.sql}
         ORDER BY id DESC LIMIT ?`
     ).all(...scope.params, Math.min(500, Math.max(1, limit))).map(r => {

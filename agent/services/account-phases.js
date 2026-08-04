@@ -31,6 +31,8 @@ import { getState } from '../db.js'
 import { setPhaseFlag } from './phase-audit.js'
 // No cycle: account-capabilities imports db + account-registry, never this file.
 import { accountCapabilities } from './account-capabilities.js'
+// No cycle: account-arming imports db + account-capabilities, never this file.
+import { accountArmed, setAccountArmed } from './account-arming.js'
 
 /** The three phases, in pipeline order. */
 export const PHASES = ['scan', 'analyze', 'autotrade']
@@ -59,10 +61,30 @@ export function masterPhases(db) {
   }
 }
 
-/** One account's raw overrides: true / false / null (= inherit the master). */
+/**
+ * One account's raw overrides: true / false / null (= inherit the master).
+ *
+ * AUTOTRADE IS DERIVED FROM `accounts.mode`, not from its own key (owner
+ * 04-08-2026: "do we need to have this extra layer"). It used to be a second,
+ * independent store of the same fact, and nothing kept the two in agreement —
+ * account selection wrote `mode`, the equity stop wrote the key, and undoing
+ * either took two gestures. `mode` is the survivor because it can say
+ * `manage_only`, which is what a per-account disarm actually means. See
+ * services/account-arming.js.
+ *
+ * Scan and analyze keep their own keys: they are NOT the same question, and a
+ * manage_only account may legitimately still scan.
+ */
 export function accountOverrides(db, accountId) {
   const out = {}
   for (const p of PHASES) {
+    if (p === 'autotrade') {
+      // null (inherit) when the account may enter, false when it may not.
+      // Never `true`: a per-account ON must not be able to defeat the master,
+      // and returning true here would read as an override that does.
+      out.autotrade = accountArmed(db, accountId) ? null : false
+      continue
+    }
     let v = null
     try { v = getState(db, acctPhaseKey(accountId, p)) } catch { v = null }
     out[p] = v === 'true' ? true : v === 'false' ? false : null
@@ -119,9 +141,16 @@ export function effectivePhases(db, accountId, master = null) {
     // then capability. An override the owner set by hand is the more
     // actionable answer when both apply — capability explains an account they
     // never switched off.
+    // AUTOTRADE'S REASON IS ALWAYS 'capability' NOW, never 'account'. The
+    // per-account override IS the mode since the two were collapsed, so the
+    // old distinction — "you switched this off" against "its mode will not let
+    // it enter" — no longer exists as two facts. `capability` is the one that
+    // survives because it is the actionable half: it points at the mode the
+    // owner has to change, where 'account' pointed at a switch that is now the
+    // same thing.
     out.source[p] = !m[p] ? 'master'
-      : ov[p] === false ? 'account'
-        : (p === 'autotrade' && !canEnterAcct) ? 'capability' : 'master'
+      : p === 'autotrade' ? (canEnterAcct ? 'master' : 'capability')
+        : ov[p] === false ? 'account' : 'master'
   }
   return out
 }
@@ -143,6 +172,18 @@ export function setAccountPhases(db, accountId, patch = {}, meta = {}) {
     if (!(p in patch)) continue
     const v = patch[p]
     const audit = { actor: meta.actor || 'unknown', via: meta.via || null, reason: meta.reason || null, accountId: String(accountId) }
+    if (p === 'autotrade') {
+      // TRANSLATED, not stored. The switch keeps its shape for every caller —
+      // routes, Telegram, the equity stop — but lands on `accounts.mode`, so
+      // there is exactly one place that answers "may this account enter".
+      // `null` (clear the override) means "follow the master", which for a
+      // per-account state is the armed reading.
+      const on = v === null ? true : v === true
+      if (v !== null && typeof v !== 'boolean') continue
+      setAccountArmed(db, accountId, on, audit)
+      set.autotrade = v === null ? null : on
+      continue
+    }
     if (v === null) { setPhaseFlag(db, acctPhaseKey(accountId, p), null, audit); set[p] = null; continue }
     if (typeof v !== 'boolean') continue
     setPhaseFlag(db, acctPhaseKey(accountId, p), v ? 'true' : 'false', audit)

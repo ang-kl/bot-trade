@@ -43,14 +43,16 @@
 // portfolio halt, portfolio daily-loss cap, total position cap), which is
 // separately configurable. The equity stop had been duplicating that badly.
 //
-// The disarm writes the per-account OVERRIDE (`acct:<id>:autotrade_enabled`),
-// never the master. So the panic button still works, the other accounts keep
-// their own switches, and the owner's per-account intent survives.
+// The disarm sets that account's `accounts.mode` to 'manage_only' (see
+// services/account-arming.js), never the master. So the panic button still
+// works, the other accounts keep their own switches, and the owner's
+// per-account intent survives. It used to write a separate per-account
+// agent_state flag; that was a second store of the same fact and is retired.
 // ---------------------------------------------------------------------------
 
 import { getState, setState } from '../db.js'
 import { acctPhaseKey } from './account-phases.js'
-import { setPhaseFlag } from './phase-audit.js'
+import { setAccountArmed } from './account-arming.js'
 
 /** Per-account trip marker, so one account tripping cannot silence another. */
 export const trippedKey = (accountId) => `acct:${accountId}:equity_stop_tripped_at`
@@ -141,16 +143,22 @@ export function recordDisarm(db, { accountId, reason, pnl, cap, positionsClosed 
 }
 
 /**
- * Disarm ONE account by writing its per-account override, never the master.
- * Returns the key written, so callers and tests can assert the master was left
- * alone.
+ * Disarm ONE account, never the master. Returns the key it reports against, so
+ * callers and tests can keep asserting the master was left alone.
+ *
+ * The write now lands on `accounts.mode` (services/account-arming.js) rather
+ * than on a per-account agent_state flag. Same guarantee — the master is
+ * untouched, so the other accounts keep trading — and one fewer place for
+ * "this account may enter" to be stored. It also reads better: a breached
+ * account becomes `manage_only`, which is exactly what the stop intends —
+ * stop entering, keep managing what is open — and it announces itself on
+ * Telegram rather than going quiet until someone opens the page.
  */
 export function disarmAccount(db, accountId, nowIso = new Date().toISOString()) {
   const key = acctPhaseKey(accountId, 'autotrade')
-  setPhaseFlag(db, key, 'false', {
+  setAccountArmed(db, accountId, false, {
     actor: 'equity_stop',
     reason: 'daily equity stop tripped for this account',
-    accountId: String(accountId),
   })
   setState(db, trippedKey(accountId), nowIso)
   return key

@@ -38,12 +38,18 @@ beforeEach(() => {
   setState(db, 'analyze_enabled', 'true')
 })
 
-test('an armed manage_only account reports the arm AND the veto, not a bare OFF', () => {
+test('a manage_only account reports the veto AND names it, not a bare OFF', () => {
   seed('46130058', { mode: 'manage_only' })
-  setState(db, 'acct:46130058:autotrade_enabled', 'true')   // the owner's ON
+  // The legacy `acct:<id>:autotrade_enabled = 'true'` this test used to set is
+  // no longer read (owner 04-08-2026). It was a second store of "may this
+  // account enter" that could contradict the mode beside it, and did — the
+  // combination this test described, an "armed" account that cannot enter, was
+  // the contradiction itself rather than a state worth preserving. The mode is
+  // now the only answer, so there is nothing left to disagree with it.
+  setState(db, 'acct:46130058:autotrade_enabled', 'true')
 
   const r = row(phasesView(db), '46130058')
-  assert.equal(r.overrides.autotrade, true, 'the owner\'s answer is still stored')
+  assert.equal(r.overrides.autotrade, false, 'the mode says no, and that IS the override now')
   assert.equal(r.effective.autotrade, false, 'and it is not in force')
   assert.equal(r.effective.source.autotrade, 'capability')
   // The half that was missing: WHICH capability, so the UI can name it and
@@ -54,9 +60,8 @@ test('an armed manage_only account reports the arm AND the veto, not a bare OFF'
   assert.equal(r.capability.manage, true, 'management is never withdrawn')
 })
 
-test('the same arm on an ACTIVE account is in force — the mode is the only difference', () => {
+test('an ACTIVE account is armed — the mode is the whole difference', () => {
   seed('43097342', { mode: 'active' })
-  setState(db, 'acct:43097342:autotrade_enabled', 'true')
 
   const r = row(phasesView(db), '43097342')
   assert.equal(r.effective.autotrade, true)
