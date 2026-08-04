@@ -21,7 +21,24 @@ function reasonKey(reason) {
   // parenthesised scope kept — "unknown_daily_pnl (account)" and
   // "unknown_daily_pnl (portfolio)" are different knobs.
   const cut = s.search(/[:—]/)
-  const head = (cut === -1 ? s : s.slice(0, cut)).trim()
+  let head = (cut === -1 ? s : s.slice(0, cut)).trim()
+  // NUMBERS OUT OF THE KEY. Not every guard puts its scope before the first
+  // ':' — several append live values to the head itself:
+  //
+  //   daily_loss_limit_hit pnl=-912.72 limit=16.16
+  //   portfolio_margin_exhausted used=26266.06 cap=14383.37 source=estimate
+  //
+  // so the "distinct guard" count grew with every distinct P&L the guard had
+  // ever seen. Production, 2026-08-04: 1,548 rows for what is really about
+  // twenty guards, and a 507 KB response the browser polls. That is not a
+  // display problem, it is the group key being a function of live data.
+  //
+  // The value is replaced by a placeholder rather than deleted, so
+  // `pnl=<n> limit=<n>` still reads as the same guard with two numbers in it
+  // and cannot collide with a different guard that happens to share a prefix.
+  // The full original string survives untouched in `example`, so nothing an
+  // operator needs is lost — it moves from the key to the sample.
+  head = head.replace(/(=|\s)-?\d+(?:\.\d+)?\b/g, '$1<n>')
   return head.length > 80 ? head.slice(0, 80) : head
 }
 
@@ -37,7 +54,24 @@ function reasonKey(reason) {
  * NULL-account rows are included on both sides, the convention every scoped
  * read here uses: a row written before stamping belongs to whoever is asking.
  */
-export function vetoBreakdown(db, { days = 7, account = null } = {}) {
+/**
+ * How many guard rows a single response may carry.
+ *
+ * Measured on production 2026-08-04: this route returned 506,936 bytes, of
+ * which 537 KB was `guards` — 1,548 rows, each with a free-text `example` up
+ * to 236 bytes. The row set is one per DISTINCT veto reason STRING, and those
+ * strings embed live numbers ("daily_loss_limit_hit pnl=-912.72 limit=16.16"),
+ * so the count grows with every distinct P&L the guard has ever seen. It is
+ * unbounded by construction, and the browser polls it.
+ *
+ * A cap is the fix, but a SILENT cap would be the worse bug: the whole point
+ * of this route is "which guard is eating my entries", and a truncated list
+ * that does not say it was truncated reads as a complete answer. Hence
+ * `truncated` in the payload rather than a quiet slice.
+ */
+export const MAX_GUARD_ROWS = 200
+
+export function vetoBreakdown(db, { days = 7, account = null, limit = MAX_GUARD_ROWS } = {}) {
   const d = Math.max(1, Math.min(90, Number(days) || 7))
   const sinceExpr = `datetime('now', '-${d} days')`
 
@@ -89,7 +123,7 @@ export function vetoBreakdown(db, { days = 7, account = null } = {}) {
     })
   }
 
-  const guards = [...groups.values()]
+  const allGuards = [...groups.values()]
     .map(g => ({
       source: g.source,
       guard: g.guard,
@@ -102,6 +136,13 @@ export function vetoBreakdown(db, { days = 7, account = null } = {}) {
       example: g.example,
     }))
     .sort((a, b) => b.count - a.count)
+
+  // Sorted by count first, so the cap keeps the guards that actually matter
+  // and drops the long tail of one-off reason strings.
+  const cap = Math.max(1, Math.min(2000, Number(limit) || MAX_GUARD_ROWS))
+  const guards = allGuards.slice(0, cap)
+  const dropped = allGuards.length - guards.length
+  const droppedVetoes = allGuards.slice(cap).reduce((n, g) => n + g.count, 0)
 
   return {
     ok: true,
@@ -117,8 +158,19 @@ export function vetoBreakdown(db, { days = 7, account = null } = {}) {
         ? Math.round(approved / (approved + vetoed) * 1000) / 10
         : null,
       upstreamSkips: decisionRows.length,
-      distinctGuards: guards.length,
+      // The TRUE distinct count, not the returned length — otherwise the cap
+      // would quietly rewrite the very number an operator reads to judge how
+      // fragmented the veto reasons are.
+      distinctGuards: allGuards.length,
     },
     guards,
+    truncated: dropped > 0
+      ? {
+        dropped,
+        droppedVetoes,
+        returned: guards.length,
+        note: `${dropped} guard row(s) accounting for ${droppedVetoes} veto(es) are not in this response — raise ?limit= to see them. Rows are sorted by count, so what is missing is the tail.`,
+      }
+      : null,
   }
 }

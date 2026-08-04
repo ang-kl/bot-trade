@@ -19,6 +19,7 @@ import { historicalRateStatus } from './lib/ctrader-ws.js';
 import { publicPipelineView } from './services/decision-audit.js';
 import { readRecentErrors } from './services/error-log.js';
 import { startLagMonitor } from './services/event-loop-lag.js';
+import { recordRequest } from './services/route-timing.js';
 
 // Load .env file if present (no dotenv dependency needed)
 try {
@@ -338,7 +339,12 @@ app.use((req, res, next) => {
   if (req.path === '/health') return next();
   const t0 = Date.now();
   res.on('finish', () => {
-    console.log(`[http] ${req.method} ${req.path} → ${res.statusCode} (${Date.now() - t0}ms)`);
+    const ms = Date.now() - t0;
+    console.log(`[http] ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
+    // #125: the log line above is a STREAM — reading it means having the
+    // Railway window open at the moment. This keeps the shape in memory so an
+    // episode noticed a day later still has numbers. See route-timing.js.
+    recordRequest(req.path, ms, Number(res.getHeader('content-length')) || 0);
   });
   next();
 });
