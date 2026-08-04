@@ -24,6 +24,7 @@ import { DEFAULT_NULL_EXIT_MIN_R } from './null-exit-guard.js'
 // Static, not dynamic: evaluateTrade is synchronous. market-pulse.js does
 // not import risk.js, so this adds no cycle.
 import { pulseFor } from './market-pulse.js'
+import { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } from './symbol-position-cap.js'
 import { newsWindowEvent, cachedEventsSync } from './news-calendar.js'
 import { getSwapInfo } from './symbol-hours.js'
 import { loadFxRates } from './fx-rates.js'
@@ -136,6 +137,8 @@ export const DEFAULT_RISK_CONFIG = {
   // P1 / audit F-L6-06: a closed trade with NULL net_pnl is UNKNOWN, not zero.
   // Past the grace window it blocks new entries rather than letting the
   // daily-loss sum silently under-count it. See services/unresolved-pnl.js.
+  // Owner-set hard ceiling, 05-08-2026 — see symbol-position-cap.js.
+  maxPositionsPerSymbol: DEFAULT_MAX_PER_SYMBOL,
   blockOnUnknownPnl: DEFAULT_UNKNOWN_PNL_BLOCK,
   unknownPnlGraceMin: DEFAULT_UNKNOWN_PNL_GRACE_MIN,
   // Owner 03-08-2026: past this age a still-unfilled row stops blocking. 0 or
@@ -952,6 +955,27 @@ export function evaluateTrade(db, proposal, configOverride, opts = {}) {
       `duplicate_symbol existing_side=${existingSameSymbol.side} entry=${existingSameSymbol.entry_price ?? 'na'} opened=${existingSameSymbol.opened_at ?? 'na'} strat=${stratOf} lastcheck=${existingSameSymbol.lastCheckAt ?? 'na'}`,
       checks, proposal,
     )
+  }
+
+  // ---- 4a. HARD CEILING on positions per symbol ---------------------------
+  //
+  // Owner, 05-08-2026, after 17 × DOW.US SELL landed on 46130058 inside 89
+  // milliseconds: "maximum 2 positions hard cap".
+  //
+  // This does NOT relax the duplicate_symbol gate directly above — that still
+  // refuses the second entry on this path and is unchanged. The ceiling is a
+  // BACKSTOP, and it is here as well as at the submission boundary because a
+  // guard that only one caller consults stopped none of the seventeen.
+  //
+  // It counts IN-FLIGHT orders as well as reconciled positions, which is the
+  // whole point: at the moment each of those seventeen was checked, none of
+  // them was a position yet.
+  {
+    const capCfg = Number(config.maxPositionsPerSymbol) > 0
+      ? Number(config.maxPositionsPerSymbol) : DEFAULT_MAX_PER_SYMBOL
+    const cap = checkSymbolCap(db, { accountId: acct, symbol: proposal.symbol, cap: capCfg })
+    checks.symbol_positions = { open: cap.open, inFlight: cap.inFlight, cap: cap.cap }
+    if (!cap.allow) return veto(cap.reason, checks, proposal)
   }
 
   // ---- 4b. Per-symbol re-entry cooldown -----------------------------------

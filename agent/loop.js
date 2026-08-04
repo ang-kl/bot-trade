@@ -565,6 +565,34 @@ export async function autoTrade(db, symbol, synth, watchlistItem, accountOverrid
     return null
   }
 
+  // HARD CEILING, AT THE SUBMISSION BOUNDARY. The risk gate checks this too,
+  // but the seventeen DOW.US orders of 04-08-2026 never reached the gate —
+  // they carry risk_event_id NULL and were adopted by the reconciler 89
+  // seconds after filling. A ceiling that only the gate enforces is a ceiling
+  // the rogue path walks under. Re-read here, immediately before the order
+  // leaves, because the count can have changed since the verdict.
+  {
+    const { checkSymbolCap, DEFAULT_MAX_PER_SYMBOL } = await import('./services/symbol-position-cap.js')
+    let capCfg = DEFAULT_MAX_PER_SYMBOL
+    try {
+      const rc = JSON.parse(getState(db, 'risk_config_json') || '{}')
+      if (Number(rc.maxPositionsPerSymbol) > 0) capCfg = Number(rc.maxPositionsPerSymbol)
+    } catch { /* defaults */ }
+    const cap = checkSymbolCap(db, { accountId, symbol, cap: capCfg })
+    if (!cap.allow) {
+      persistPostApprovalVeto(db, proposal, cap.reason)
+      try {
+        const { recordDecision } = await import('./services/decision-log.js')
+        recordDecision(db, {
+          accountId: String(accountId), symbol, timeframe: synth.timeframe, strategy: synth.strategy,
+          stage: 'symbol_position_cap', decision: 'veto', reason: cap.reason,
+        })
+      } catch { /* provenance never blocks */ }
+      log(`RISK VETO ${symbol} ${side}: ${cap.reason}`)
+      return null
+    }
+  }
+
   log(`Auto-trade: ${side} ${symbol} vol=${volLots} on ${isLive ? 'LIVE' : 'DEMO'}`)
 
   try {
@@ -3912,6 +3940,43 @@ async function runLoop(db) {
       // that are already written — one indexed scan, no broker call — and
       // because an approval needs a few minutes of grace before "nothing
       // acted on it" is a finding rather than a race.
+      // OVER-CEILING CLUSTERS — ALERT ONLY (owner, 05-08-2026: "if exist now,
+      // alert only. It should not happen again."). Nothing is closed:
+      // auto-closing seventeen positions on a reading is a bigger action than
+      // the one that created them, and #179's nine were protected by their own
+      // SL/TP throughout. Deduped on the cluster's identity and size, so a
+      // standing cluster is announced once and a GROWING one speaks again.
+      try {
+        const { overCapClusters, clusterLine } = await import('./services/symbol-position-cap.js')
+        const clusters = overCapClusters(db)
+        if (clusters.length) {
+          let seen = new Set()
+          try { seen = new Set(JSON.parse(getState(db, 'symbol_cap_alerts') || '[]')) } catch { seen = new Set() }
+          const keep = new Set()
+          const fresh = []
+          for (const c of clusters) {
+            const key = `${c.accountId}|${c.symbol}|${c.n}`
+            keep.add(key)
+            if (!seen.has(key)) fresh.push(c)
+          }
+          setState(db, 'symbol_cap_alerts', JSON.stringify([...keep]))
+          for (const c of fresh) {
+            const line = clusterLine(c)
+            log(`SYMBOL CAP EXCEEDED: ${line}`)
+            try {
+              db.prepare('INSERT INTO action_log (method, path, body) VALUES (?, ?, ?)').run(
+                'DETECTOR', '/symbol-cap-exceeded', JSON.stringify(c))
+            } catch { /* the journal must never stall the loop */ }
+            try {
+              const { sendMessage } = await import('./services/telegram.js')
+              await sendMessage(`⚠️ Same-symbol cluster over the hard cap\n${line}\nNothing has been closed — this is a report. New entries on this symbol are refused until it is back under the cap.`)
+            } catch { /* alerting must never stall the loop */ }
+          }
+        }
+      } catch (err) {
+        log('Symbol-cap detector failed (non-fatal):', err.message)
+      }
+
       // C-1 SPEAKS. The controller has been correct since #632 and nothing
       // was listening: configProposals was wired to a read route and to
       // nothing else, so the module built to catch a minRR regression caught

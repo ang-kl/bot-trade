@@ -258,7 +258,12 @@ async function evaluateAll(db, creds, deps) {
   return { verdicts, errors }
 }
 
-function applyChanges(db, changes) {
+/**
+ * Write an autopilot decision to state. Exported for the test that pins the
+ * pending-mode mirror — the set-only bug lived here and nothing above this
+ * function could observe it.
+ */
+export function applyChanges(db, changes) {
   const readJson = (k, dflt) => { try { return JSON.parse(getState(db, k) || 'null') ?? dflt } catch { return dflt } }
   const enabled = new Set(readJson('enabled_strategies_json', ['fib_618_fade']))
   const autoM = readJson('autotrade_matrix_json', {})
@@ -281,7 +286,18 @@ function applyChanges(db, changes) {
   setState(db, 'enabled_strategies_json', JSON.stringify([...enabled]))
   setState(db, 'autotrade_matrix_json', Object.keys(autoM).length ? JSON.stringify(autoM) : null)
   setState(db, 'pending_matrix_json', Object.keys(pendM).length ? JSON.stringify(pendM) : null)
-  if (Object.keys(pendM).length) setState(db, 'pending_mode_enabled', 'true')
+  // TWO-WAY, since 05-08-2026. It used to be `if (…length) setState(…, 'true')`
+  // — set-only, never cleared. So the switch could be turned off on Tune and
+  // the next autopilot pass silently turned it back on, forever. Owner: the
+  // Desk badge "keeps ⏳ pending armed regardless of accounts and stay like
+  // that". It did, and no operator action could clear it.
+  //
+  // An automated writer that can only ever ARM an operator switch is not a
+  // setting, it is a latch. It now MIRRORS its own matrix in both directions:
+  // pending rows armed → mode on, none → mode off. The autopilot owns the
+  // matrix, so the mode that matrix implies is the one it may write — and a
+  // matrix it has emptied must be able to turn the mode off again.
+  setState(db, 'pending_mode_enabled', Object.keys(pendM).length ? 'true' : 'false')
 }
 
 const describe = (c) =>
