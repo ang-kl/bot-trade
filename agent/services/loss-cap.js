@@ -26,6 +26,7 @@ import { getState, setState } from '../db.js'
 import { loadWithOverlay } from './account-overlay.js'
 import { getAccountBalance } from './risk.js'
 import { singleFlight, authorisedAccountId, accountFilterSql, sameSideAccountIds } from './acting-layer.js'
+import { deriveUnrealizedMap } from './unrealized-pnl.js'
 
 export const DEFAULT_LOSS_CAP = {
   on: true,
@@ -141,7 +142,6 @@ async function lossCapPass(db, creds, deps = {}) {
     out.errors.push(`unrealized P&L unavailable from broker (${err?.message || err}) — deriving from live spot`)
   }
   if (!pnlMap || !Object.keys(pnlMap).length) {
-    const { deriveUnrealizedMap } = await import('./unrealized-pnl.js')
     const { spotFor } = await import('./guardian.js')
     const idToSym = symbolNamesById(db)
     const derived = deriveUnrealizedMap(
@@ -217,7 +217,124 @@ async function lossCapPass(db, creds, deps = {}) {
       await notify(`⛔ Loss cap: FAILED to close ${symbol} ${side} at −$${Math.abs(net).toFixed(2)} (${err.message}) — will retry in ${cfg.retryMinutes} min. Check the position manually.`)
     }
   }
+  // Leave the tick screen something to read. See SNAPSHOT below.
+  recordSnapshot(accountId, {
+    at: nowMs, cap, positions, scope: cfg.scope, ledgerPids,
+    // The screen needs the SAME symbolId → name map this pass used; without it
+    // deriveUnrealizedMap cannot resolve a contract size and every position
+    // reads as uncovered.
+    symbolOf: (id) => idToSymbol[String(id)] || null,
+  })
   return out
+}
+
+// ---------------------------------------------------------------------------
+// §70.6 — THE TICK PATH.
+//
+// RULE_TRIGGER classifies `loss-cap:position_dollar_cap` as `tick`, and it was
+// the only tick-shaped rule that acts on money still waiting on a timer.
+// Floating P&L is monotone in price for a fixed position, so the cap is a
+// synthetic stop-loss — one that was being evaluated once a minute, on a mid
+// that could itself be two minutes old.
+//
+// WHAT IS AND IS NOT ON THE TICK. The tick runs a SCREEN, not a close. It
+// re-prices the last pass's position snapshot against the guardian's fresh
+// spot and answers one question: is a full pass worth running right now? The
+// full pass then does what it always did — reconcile, re-read, close against
+// broker truth. So a close is still only ever attempted against the LATEST
+// reconciled position and volume, which is the property that matters when the
+// keeper may have scaled a position out since the snapshot was taken.
+//
+// COSTS NOTHING NEW. The guardian is already streaming spots for every held
+// symbol; loss-cap already reads that cache (wsGetUnrealizedPnl is refused in
+// production, so the derive path IS the live path). This is not a new data
+// source — it is the same read, no longer waiting sixty seconds.
+//
+// THE 60s PASS REMAINS. A tick trigger is an ADDITION, never a replacement: a
+// price trigger that stops firing must degrade to slow, not to nothing.
+// ---------------------------------------------------------------------------
+
+/** accountId → { at, cap, positions, scope, ledgerPids } from its last pass. */
+const SNAPSHOT = new Map()
+
+/** How stale a snapshot may be before the screen refuses to use it. */
+export const SNAPSHOT_MAX_AGE_MS = 5 * 60_000
+
+/** Shortest gap between two tick-triggered passes, per account. */
+export const TICK_COOLDOWN_MS = 5_000
+const lastTickPassAt = new Map()
+
+function recordSnapshot(accountId, snap) {
+  SNAPSHOT.set(accountId ?? 'none', snap)
+}
+
+/** Test seam — module state by design (one process, one broker book). */
+export function __resetLossCapTickState() {
+  SNAPSHOT.clear()
+  lastTickPassAt.clear()
+}
+
+/**
+ * Cheap screen: does any position on `symbolId` breach its account's cap at
+ * this price? Pure apart from the module snapshot; no DB, no broker.
+ *
+ * Returns the breaching rows so the caller can log WHY it escalated. An empty
+ * array means "nothing to do", which is the answer on the overwhelming
+ * majority of ticks.
+ */
+export function screenLossCapTick(symbolId, spotFor, { now = Date.now() } = {}) {
+  const hits = []
+  for (const [accountId, snap] of SNAPSHOT) {
+    if (!snap || !(snap.cap > 0)) continue
+    // A stale snapshot describes a book that may no longer exist. Refusing it
+    // costs one tick of latency; trusting it could escalate on a position that
+    // closed minutes ago.
+    if (now - snap.at > SNAPSHOT_MAX_AGE_MS) continue
+    const onSymbol = (snap.positions || []).filter(
+      p => String(p?.tradeData?.symbolId) === String(symbolId)
+    )
+    if (!onSymbol.length) continue
+    const { map } = deriveUnrealizedMap(onSymbol, spotFor, { symbolOf: snap.symbolOf ?? null })
+    for (const [pid, v] of Object.entries(map)) {
+      if (snap.scope === 'bot' && snap.ledgerPids && !snap.ledgerPids.has(pid)) continue
+      if (Number.isFinite(v?.net) && v.net <= -snap.cap) {
+        hits.push({ accountId, positionId: pid, net: v.net, cap: snap.cap })
+      }
+    }
+  }
+  return hits
+}
+
+/**
+ * Tick entry point. Screens; escalates to the ordinary account-scoped,
+ * single-flighted sweep only when the screen fires.
+ *
+ * Never throws — it is called from a websocket tick handler, and a loss cap
+ * that can kill the guardian's stream is a loss cap that removes protection.
+ */
+export async function runLossCapOnTick(db, baseCreds, symbolId, deps = {}) {
+  try {
+    const now = deps.now ?? Date.now()
+    const spotFor = deps.spotFor ?? (await import('./guardian.js')).spotFor
+    const hits = screenLossCapTick(symbolId, spotFor, { now })
+    if (!hits.length) return { screened: true, hits: 0 }
+
+    const accountId = authorisedAccountId(baseCreds) ?? 'none'
+    const last = lastTickPassAt.get(accountId) || 0
+    if (now - last < TICK_COOLDOWN_MS) return { screened: true, hits: hits.length, throttled: true }
+    lastTickPassAt.set(accountId, now)
+
+    console.warn(`[loss-cap] tick screen: ${hits.length} position(s) at or past the cap — running a full pass`)
+    // The FULL pass, not a shortcut. It reconciles, so the close it may make
+    // uses the volume the broker reports now rather than the one the snapshot
+    // remembers, and it is single-flighted, so a 60s pass already in progress
+    // absorbs this rather than racing it.
+    const res = await runLossCapAllAccounts(db, baseCreds, deps)
+    return { screened: true, hits: hits.length, pass: res }
+  } catch (err) {
+    console.error('[loss-cap] tick path failed:', err.message)
+    return { screened: false, error: err.message }
+  }
 }
 
 /**
