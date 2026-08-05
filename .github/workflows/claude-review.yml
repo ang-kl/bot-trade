@@ -1,0 +1,106 @@
+# Claude PR review — a SECOND opinion, from a different vendor.
+#
+# Owner, 05-08-2026: "try Anthropic … for now until Aug 8, 2026 12:04 PM".
+#
+# The existing reviewer is chatgpt-codex-connector[bot] — OpenAI's Codex — and
+# it has run out of code-review credits. Four PRs merged on 05-08 with only the
+# local gate reading them. The point of a second reviewer is not more eyes, it
+# is DIFFERENT eyes: a blind spot in one vendor's model is not automatically
+# shared by another's. A reviewer from the same family as the author is worth
+# much less, which is exactly why this is worth setting up rather than skipping.
+#
+# TEMPORARY BY INTENT. Codex limits reset 08-08-2026 12:04. Nothing here expires
+# on its own — a workflow that silently stops on a date is a trap. Delete this
+# file, or leave both running; they do not conflict.
+#
+# THE ONE STEP THIS FILE CANNOT DO. It needs repository secret
+# ANTHROPIC_API_KEY (Settings → Secrets and variables → Actions → New
+# repository secret). Until that exists this workflow SKIPS cleanly and stays
+# green — it must never be the reason a PR cannot merge, because the merge gate
+# in CLAUDE.md requires CI green and a review job that fails-closed on a missing
+# secret would block every PR on a missing convenience.
+#
+# COST: each review is an API call against that key, charged per PR push.
+#
+# SECURITY: `pull_request` (not `pull_request_target`) means a fork PR runs
+# WITHOUT secrets and therefore skips. That is the correct default here — this
+# repo holds broker credentials and a live trading account, and handing a
+# fork's code an API key is how that becomes someone else's key.
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      # Presence check first: `secrets` cannot be read in a job-level `if`, so
+      # the guard has to be a step that publishes an output.
+      - id: guard
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is not set — Claude review skipped (this is not a failure)."
+          fi
+
+      - if: steps.guard.outputs.have == 'true'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - if: steps.guard.outputs.have == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            This is a LIVE ALGORITHMIC TRADING SYSTEM. It holds broker
+            credentials and one real-money cTrader account (42993489). Review
+            accordingly: the expensive bugs here are not style, they are
+            arithmetic and scope.
+
+            Weight your attention in this order:
+
+            1. UNIT AND SCOPE ERRORS. This codebase's recurring defect class is
+               comparing two things that are not the same unit — evaluations
+               counted as positions, per-account state read globally, a per-
+               symbol cap compared against a per-account total, lots against
+               volume. Check every comparison and every aggregate for what it
+               is actually counting.
+            2. MONEY PATHS. Anything that sizes, submits, modifies or closes an
+               order. An off-by-one in a stop distance is a real loss.
+            3. ACCOUNT SCOPING. A query missing its account filter silently
+               mixes one account's data into another's numbers.
+            4. DIAGNOSTICS THAT LIE. A check, trace or report that is more
+               permissive than the code it describes is worse than none.
+            5. Correctness, then security, then performance. Style last, and
+               only if it hides a bug.
+
+            Say plainly when something looks fine — a review that manufactures
+            findings to look thorough trains the author to ignore it. If you
+            find nothing, say so.
+
+            NEVER suggest changes that enable, re-authorise or re-point the
+            live account, alter risk limits, or touch credentials. Flag those as
+            owner decisions instead.
+
+            The PR branch is already checked out in the working directory.
+            Use `gh pr comment` for top-level feedback.
+            Use `mcp__github_inline_comment__create_inline_comment` (with
+            `confirmed: true`) for specific lines.
+            Post GitHub comments only — do not return review text as messages.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
