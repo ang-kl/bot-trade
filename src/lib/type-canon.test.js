@@ -325,6 +325,23 @@ describe('the canon table in the CSS comment states what the CSS declares', () =
       [DESK['--fs-body'], DESK['--fs-head'], DESK['--fs-h'], DESK['--fs-title']])
   })
 
+  it('the "+1pt was set aside" argument still quotes the live --fs-h values', () => {
+    // The one piece of PROSE in this file that is pinned. The rest is exempt on
+    // purpose (prose that lags is a nuisance), but this paragraph's conclusion
+    // — the +1pt was set aside, not relocated — is true only because the touch
+    // --fs-h sits below the 11px reference plus a point. Move the tier and the
+    // paragraph would go on arguing, confidently, for the opposite of what the
+    // same file declares twenty lines below it.
+    const touch = CSS.match(/the touch --fs-h is now ([\d.]+)px/)
+    expect(touch, 'the touch --fs-h sentence is missing from the +1pt paragraph').toBeTruthy()
+    expect(Number(touch[1])).toBe(TOUCH['--fs-h'])
+    const deskH = CSS.match(/The desk --fs-h \(([\d.]+)px\)/)
+    expect(deskH, 'the desk --fs-h sentence is missing from the +1pt paragraph').toBeTruthy()
+    expect(Number(deskH[1])).toBe(DESK['--fs-h'])
+    // And the argument itself: below the reference + a point on touch.
+    expect(TOUCH['--fs-h']).toBeLessThan(12.3)
+  })
+
   it('the offsets printed in the header match the offsets that exist', () => {
     const m = CSS.match(/body\s+\+(\d) head\s+\+(\d) heading\s+\+(\d) title/)
     expect(m, 'the offset header line is missing from the canon comment').toBeTruthy()
@@ -372,9 +389,11 @@ describe('no size is attached to a type role outside the canon block', () => {
 
     // Selectors and tokens cannot be defeated by inflection; the role list
     // takes suffixes because "page titles" and "column header" are the exact
-    // forms that slipped through attempt 3.
+    // forms that slipped through attempt 3. `ing` is in the group too —
+    // "column heading" and "table heading" are the same word wearing the other
+    // suffix, and `(?:er)?s?` alone could not consume them.
     const NAMES = /\.t-h[123]\b|\.t-heading\b|--fs-(?:body|head|h|title)\b/
-    const ROLE = /\b(?:page title|section heading|column head|table head|data cell|body text|major heading)(?:er)?s?\b/i
+    const ROLE = /\b(?:page title|section head|column head|table head|data cell|body text|major head)(?:er|ing)?s?\b/i
     const SIZE = /\b(\d{1,2}(?:\.\d)?)px\b/g
 
     // Gather /* ... */ comment blocks, flattened, with their start line.
@@ -392,12 +411,22 @@ describe('no size is attached to a type role outside the canon block', () => {
 
     const offenders = []
     for (const b of blocks) {
-      // The canon block itself is where the numbers belong.
-      if (b.at <= start + 2 && b.endAt >= start) continue
+      // The canon block itself is where the numbers belong. `start` is
+      // 0-indexed (findIndex); `at`/`endAt` are 1-indexed — so the banner's own
+      // line number is start + 1, and the exemption must be exactly that wide.
+      // Anything looser silently exempts the block above or below it.
+      if (b.at <= start + 1 && b.endAt >= start + 1) continue
       // A block that ANNOUNCES ITSELF as history may quote superseded figures —
       // that is provenance, not a trap. The distinction the guard enforces is
       // "reads as current" vs "says it is past", which is the only distinction
       // a reader can act on. Marking is cheap and explicit; silence is not.
+      //
+      // DELIBERATELY CASE-SENSITIVE. Prose that merely uses the word — "these
+      // were superseded by the 05-08 canon", index.css:686 — is not a marker;
+      // it is a sentence, and exempting it would hand the escape hatch to every
+      // block that mentions its own history in passing. The shout is the
+      // signal. The failure message below names the convention so nobody has to
+      // find it here.
       if (/\bSUPERSEDED\b|\bHISTORY —/.test(b.text)) continue
       if (!NAMES.test(b.text) && !ROLE.test(b.text)) continue
       const sizes = [...b.text.matchAll(SIZE)].map(m => Number(m[1])).filter(n => n >= 8 && n <= 16)
@@ -405,7 +434,7 @@ describe('no size is attached to a type role outside the canon block', () => {
       offenders.push(`index.css:${b.at}  sizes ${[...new Set(sizes)].join('/')}px — ${b.text.trim().slice(0, 88)}`)
     }
 
-    expect(offenders, `A size attached to a type role, outside the canon block. Sizes live in ONE place:\n${offenders.join('\n\n')}`)
+    expect(offenders, `A size attached to a type role, outside the canon block. Sizes live in ONE place — strip the figure, or, if the block is genuinely a record of a past decision, open it with "HISTORY —" or the word SUPERSEDED in capitals (the check is case-sensitive: the shout is the marker, a passing mention is not):\n${offenders.join('\n\n')}`)
       .toEqual([])
   })
 })

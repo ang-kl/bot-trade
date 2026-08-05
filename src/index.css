@@ -77,16 +77,30 @@
      7-8px; 7px was unreadable. */
   --fs-caption:       0.6875rem; /* 11px @16 — smallest permitted label */
   --fs-secondary:     0.8125rem; /* 13px */
-  /* NO --fs-body HERE. SUPERSEDED — it used to be declared as 1rem in this
-     rem family and
-     was SHADOWED by the px canon further down the same :root — the later
-     declaration wins, so every consumer already got 9.5/11px and behaviour
-     never differed. But a dead declaration inside a LIVE family (--fs-caption,
-     --fs-secondary and --fs-heading-* are all still used) is a trap: someone
-     adding a consumer and reasoning "the rem scale's body is 1rem" would be
-     wrong by 6.5px. Removed 05-08-2026, found by the canon guard. */
-  --fs-heading-sm:    1.125rem;  /* 18px */
-  --fs-heading-md:    1.25rem;   /* 20px */
+  /* WHAT IS LEFT OF THE REM FAMILY, and what was taken out of it (05-08-2026).
+     Above are the two tokens with real consumers: --fs-caption and
+     --fs-secondary, both read by SessionFooter and BotChanges.
+
+     HISTORY — three tokens were removed here, all dead, for the same reason.
+     The sizes quoted below are what they DECLARED, not what anything renders.
+     A declaration nobody
+     reads is not harmless when it sits in a family a reader believes is live —
+     they reach for "the rem scale's body" or "the rem scale's heading" and get
+     a number this app renders nowhere.
+
+       --fs-body: 1rem      SHADOWED — the px canon further down the same :root
+                            re-declared it and the later declaration wins, so
+                            every consumer already got 9.5/11px and behaviour
+                            never differed. Reaching for it would have been
+                            wrong by 6.5px.
+       --fs-heading-sm      18px, --fs-heading-md 20px. ZERO consumers anywhere
+       --fs-heading-md      in the repo, and both ABOVE every value the canon
+                            permits — with no later declaration shadowing them
+                            into harmlessness the way --fs-body was.
+
+     Found by reading, not by a test: the canon guard matches `NAME: <n>px`, so
+     it never saw a rem value. That is a real gap and it is left stated rather
+     than papered over. */
   /* The session-status line the owner capped explicitly: "Keep the visible
      status text at a maximum font size of 10px" / "Maximum visible font size:
      10px. Suggested line height: 12px". A named token so the cap is one value
@@ -181,9 +195,13 @@
      BE PRECISE ABOUT WHAT HAPPENED TO THE "+1pt", because the tempting
      sentence — "the reference element still lands where the owner asked" —
      is FALSE on the touch tier. The reference .t-h3 was 11px; +1pt is ~12.3px
-     (12px on a 1px reading); --fs-h is now 11.5px. That is BELOW the
-     un-incremented picture size plus a point. On the desk tier (13px) it
-     clears. So the +1pt has been SET ASIDE, not relocated — superseded by a
+     (12px on a 1px reading); the touch --fs-h is now 11.5px. That is BELOW the
+     un-incremented picture size plus a point. The desk --fs-h (13px) clears
+     it. Those two figures are PINNED BY TEST — this is not decorative prose,
+     it is a reasoning chain whose conclusion holds only because 11.5 < 12.3,
+     so a later tier change must break the test rather than leave the paragraph
+     arguing confidently for the opposite of what the file declares.
+     So the +1pt has been SET ASIDE, not relocated — superseded by a
      later, better-informed instruction from the same owner, given after
      seeing the rendered result and the measurements. That is a stronger
      justification than a claimed continuity, and it is the true one.
