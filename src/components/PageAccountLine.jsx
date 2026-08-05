@@ -30,7 +30,7 @@ export default function PageAccountLine() {
   const trading = armed === true
   const label = `${acct.isLive ? 'LIVE' : 'DEMO'} ${acct.traderLogin ?? acct.accountId}`
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-1 text-[9px] leading-[1.35]">
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-1 text-(length:--fs-body) leading-[1.35]">
       <span
         className={`font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
         title={trading
@@ -51,7 +51,7 @@ export default function PageAccountLine() {
               <span
                 key={p.key}
                 title={`${p.label} is ${on ? 'ON' : 'OFF'}`}
-                className="inline-flex items-center gap-[3px] text-[9px] font-semibold uppercase tracking-wide"
+                className="inline-flex items-center gap-[3px] text-(length:--fs-body) font-semibold uppercase tracking-wide"
                 style={{ color: on ? 'var(--color-state-on-text)' : 'var(--color-state-off-text)' }}
               >
                 <span

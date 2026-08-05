@@ -84,7 +84,7 @@ function BandRow({ open, onOpen, allOn, someOn, onToggleAll, label, count, onCou
           type="button" onClick={onOpen} aria-expanded={open}
           className={`flex items-center gap-1.5 cursor-pointer ${strong ? 'font-bold' : 'font-semibold'}`}
         >
-          <span aria-hidden="true" className="inline-block w-3 text-[9px]">{open ? '▾' : '▸'}</span>
+          <span aria-hidden="true" className="inline-block w-3 text-(length:--fs-body)">{open ? '▾' : '▸'}</span>
           {label}
           <span className="font-normal text-[var(--color-text-sub)]">({count} symbol{count === 1 ? '' : 's'} · {onCount} armed)</span>
         </button>
@@ -117,7 +117,7 @@ function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compar
   return (
     <div className="mt-2">
       <div className="flex items-center gap-2 mb-1">
-        <label className="flex items-center gap-1.5 text-[9px] cursor-pointer">
+        <label className="flex items-center gap-1.5 text-(length:--fs-body) cursor-pointer">
           <input
             type="checkbox"
             checked={allOn}
@@ -130,7 +130,7 @@ function SymbolTable({ title, tone, rows, checked, onToggle, onToggleAll, compar
       </div>
       <div className="overflow-x-auto">
         <Collapse id="WatchlistCompare_83" label="Watchlist Rows">
-        <table className="std-cols w-full text-[9px] tabular-nums">
+        <table className="std-cols w-full text-(length:--fs-body) tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th className="py-1 pr-2 w-6" aria-label="Select" />
@@ -247,11 +247,11 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 mb-1">
-        <span className="text-[9px] font-bold uppercase tracking-wide text-[var(--color-accent)]">{role}</span>
+        <span className="text-(length:--fs-body) font-bold uppercase tracking-wide text-[var(--color-accent)]">{role}</span>
         <select
           value={value || ''}
           onChange={e => { onChange(e.target.value || null); setChecked(new Set()) }}
-          className="text-[9px] bg-transparent border border-[var(--color-border)] rounded-[6px] px-1.5 py-1 max-[430px]:!min-h-[44px]"
+          className="text-(length:--fs-body) bg-transparent border border-[var(--color-border)] rounded-[6px] px-1.5 py-1 max-[430px]:!min-h-[44px]"
           aria-label={`${role} account`}
         >
           <option value="">— pick an account —</option>
@@ -264,7 +264,7 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
                 has to hold the login↔id mapping in their head to tell whether
                 they are about to overwrite the account that is live-trading. */}
             {acct.isSelected && <Badge tone="warning">the bot trades this one</Badge>}
-            <span className="text-[9px] text-[var(--color-text-sub)]">
+            <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
               {acct.traderLogin && <>Login {acct.traderLogin} · id {acct.accountId} · </>}
               {acct.enabledCount}/{acct.count} armed · 1:{acct.leverage}
             </span>
@@ -275,9 +275,9 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
         )}
       </div>
 
-      {!acct && <p className="text-[9px] text-[var(--color-text-sub)]">Pick an account to see its watchlist.</p>}
+      {!acct && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Pick an account to see its watchlist.</p>}
       {acct && !otherAcct && (
-        <p className="text-[9px] text-[var(--color-text-sub)]">Pick the other account to see the comparison.</p>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Pick the other account to see the comparison.</p>
       )}
       {acct && otherAcct && (
         <>
@@ -288,7 +288,7 @@ function Panel({ role, accounts, value, onChange, other, data, checked, setCheck
           <SymbolTable title="Identical on both" tone="up" rows={same}
             checked={checked} onToggle={toggle} onToggleAll={toggleAll} />
           {!differs.length && !onlyHere.length && !same.length && (
-            <p className="text-[9px] text-[var(--color-text-sub)]">This account's watchlist is empty.</p>
+            <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">This account's watchlist is empty.</p>
           )}
         </>
       )}
@@ -371,17 +371,17 @@ export default function WatchlistCompare() {
         <h2 className="t-h3" id="sec-watchlists">3 · Compare & Copy Watchlists table</h2>
         <Button size="sm" variant="ghost" onClick={load} disabled={busy}>Refresh</Button>
       </div>
-      <p className="text-[9px] text-[var(--color-text-sub)] mb-2">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
         Tick symbols on either side and transfer them. A copy carries the symbol's settings —
         armed/off, market group, Max lots, conviction threshold, allowed styles, bias override —
         not just the ticker.
       </p>
 
-      {error && <div className="text-[9px] text-[var(--color-down)] mb-2">{error}</div>}
-      {!data && !error && <p className="text-[9px] text-[var(--color-text-sub)]">Loading…</p>}
+      {error && <div className="text-(length:--fs-body) text-[var(--color-down)] mb-2">{error}</div>}
+      {!data && !error && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>}
 
       {data && accounts.length < 2 && (
-        <p className="text-[9px] text-[var(--color-warning-text)]">
+        <p className="text-(length:--fs-body) text-[var(--color-warning-text)]">
           Only {accounts.length} account in the registry — link a second one above to compare.
         </p>
       )}
@@ -404,19 +404,19 @@ export default function WatchlistCompare() {
               onClick={() => copy(destination, [source], [...dstChecked])}>
               Source ← Copy {dstChecked.size || ''}
             </Button>
-            <label className="flex items-center gap-1.5 text-[9px] cursor-pointer">
+            <label className="flex items-center gap-1.5 text-(length:--fs-body) cursor-pointer">
               <input type="checkbox" checked={mode === 'replace'}
                 onChange={e => setMode(e.target.checked ? 'replace' : 'merge')} />
               {/* Replace is destructive, so it is opt-in by name and confirmed
                   before it runs. Merge never removes anything. */}
               <span>Replace the destination list entirely (otherwise merge)</span>
             </label>
-            {busy && <span className="text-[9px] text-[var(--color-text-sub)]">Copying…</span>}
+            {busy && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Copying…</span>}
           </div>
 
           {/* "Copied" with no numbers is not something an operator can check. */}
           {report && (
-            <div className="mt-2 text-[9px]">
+            <div className="mt-2 text-(length:--fs-body)">
               {report.results.map(r => (
                 <div key={r.accountId}>
                   <span className="font-semibold">{nameOf(report.from)} → {nameOf(r.accountId)}</span>

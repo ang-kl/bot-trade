@@ -22,7 +22,7 @@ export default function Segmented({ options, value, onChange, label, size = 'md'
   const seg = (selected, i) => [
     // Connected group: dividers between segments, rounding on the ends only.
     'inline-flex items-center justify-center gap-1 whitespace-nowrap font-semibold',
-    size === 'lg' ? 'px-3 text-[9px] h-[40px]' : 'px-2.5 text-[9px] h-[32px]',
+    size === 'lg' ? 'px-3 text-(length:--fs-body) h-[40px]' : 'px-2.5 text-(length:--fs-body) h-[32px]',
     'min-w-[48px] transition-colors duration-150 cursor-pointer',
     i > 0 ? 'border-l border-[var(--md-outline-variant)]' : '',
     i === 0 ? 'rounded-l-full' : '',

@@ -48,7 +48,7 @@ export default function OrderManager({ o, onDone }) {
       {/* Header — OID + symbol + lots, like the cTrader sheet title. Sticky so
           the title + close stay reachable while a tall tab scrolls. */}
       <div className="flex items-center justify-between mb-2 sticky top-0 z-10 -mx-3 -mt-3 px-3 pt-3 pb-2 bg-[var(--color-surface)] rounded-t-2xl sm:rounded-t-[12px]">
-        <h3 className="text-[12px] font-bold">OID{o.orderId} {o.symbol} ({qty})</h3>
+        <h3 className="text-(length:--fs-h) font-bold">OID{o.orderId} {o.symbol} ({qty})</h3>
         <IconButton size="sm" variant="ghost" label="Close sheet" onClick={onDone}>✕</IconButton>
       </div>
 
@@ -67,13 +67,13 @@ export default function OrderManager({ o, onDone }) {
               const n = (i + d + TABS.length) % TABS.length
               setTab(TABS[n]); tabRefs.current[n]?.focus()
             }}
-            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-[9px] font-semibold cursor-pointer ${tab === t ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
+            className={`flex-1 rounded-[var(--radius-control)] px-2 py-1 text-(length:--fs-body) font-semibold cursor-pointer ${tab === t ? 'bg-[var(--color-bg)] shadow' : 'text-[var(--color-text-sub)]'}`}>
             {t}
           </button>
         ))}
       </div>
 
-      {msg && <div className={`mb-2 text-[9px] ${msg.startsWith('Error') ? 'text-[var(--color-down)]' : 'text-[var(--color-accent)]'}`}>{msg}</div>}
+      {msg && <div className={`mb-2 text-(length:--fs-body) ${msg.startsWith('Error') ? 'text-[var(--color-down)]' : 'text-[var(--color-accent)]'}`}>{msg}</div>}
 
       {tab === 'Modify' && (
         <div>
@@ -85,24 +85,24 @@ export default function OrderManager({ o, onDone }) {
               </span>
             ))}
           </div>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-2">
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
             {type} @ {fmt(trigger, o.digits ?? 5)} · Now: {fmt(o.currentPrice, o.digits ?? 5)}
           </div>
-          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
+          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-(length:--fs-body)">
             <span>Quantity</span><span className="font-semibold">{qty}</span>
           </div>
-          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
+          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-(length:--fs-body)">
             <span>Stop Loss</span><span className="font-semibold">{fmt(o.sl, o.digits ?? 5)}</span>
           </div>
-          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-[9px]">
+          <div className="border-t border-[var(--color-border)] py-1.5 flex items-center justify-between text-(length:--fs-body)">
             <span>Take Profit</span><span className="font-semibold">{fmt(o.tp, o.digits ?? 5)}</span>
           </div>
 
           <button type="button" disabled className="w-full mt-2 rounded-[var(--radius-control)] glass-inset py-2.5 text-[15px] font-bold text-[var(--color-text-sub)] opacity-60">Modify</button>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] my-1.5">
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] my-1.5">
             Amend-in-place isn't wired yet — cancel and let the bot re-stage (or edit in cTrader)
           </div>
-          <div className="text-center text-[9px] text-[var(--color-text-sub)] mb-1.5">or</div>
+          <div className="text-center text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">or</div>
 
           <button type="button" disabled={busy}
             className="w-full rounded-[var(--radius-control)] bg-[var(--color-down)] text-white py-2.5 text-[15px] font-bold cursor-pointer disabled:opacity-50"
@@ -117,7 +117,7 @@ export default function OrderManager({ o, onDone }) {
       )}
 
       {tab === 'Details' && (
-        <div className="text-[9px] space-y-1">
+        <div className="text-(length:--fs-body) space-y-1">
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Order</span><span className="font-semibold">OID{o.orderId}</span></div>
           <div className="flex justify-between border-t border-[var(--color-border)] py-1"><span>Type</span><span>{type}</span></div>
           {/* Direction, not P&L — contract: blue = long, red = short (on/off tints). */}

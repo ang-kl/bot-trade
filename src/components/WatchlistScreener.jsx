@@ -97,7 +97,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(visible.map(r => r.symbol)))
 
   if (rows.length === 0) {
-    return <p className="text-[9px] text-[var(--color-text-sub)]">None of the {title.toLowerCase()} list is offered by this broker account.</p>
+    return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">None of the {title.toLowerCase()} list is offered by this broker account.</p>
   }
 
   const selSymbols = [...selected]
@@ -106,7 +106,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2 mb-1.5 text-[9px]">
+      <div className="flex flex-wrap items-center gap-2 mb-1.5 text-(length:--fs-body)">
         <span className="text-[var(--color-text-sub)]">{visible.length} shown · {selected.size} selected</span>
         <DoneCue message={done && `${done} — done`} />
         {hiddenCount > 0 && hideOnList && (
@@ -147,11 +147,11 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
         )}
       </div>
       {visible.length === 0 && (
-        <p className="text-[9px] text-[var(--color-text-sub)]">All {rows.length} available symbols in this set are already on the watchlist.</p>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">All {rows.length} available symbols in this set are already on the watchlist.</p>
       )}
       {visible.length > 0 && <div className="overflow-x-auto">
         <Collapse id="WatchlistScreener_152" label="Screener Rows">
-        <table className="w-full text-[9px] tabular-nums">
+        <table className="w-full text-(length:--fs-body) tabular-nums">
           <thead>
             <tr className="border-b border-[var(--color-border)]">
               <th className="py-1.5 pr-2 w-6">
@@ -183,7 +183,7 @@ export default function WatchlistScreener({ title = 'Defense stocks', curated, a
                 </tr>
                 {expanded === r.symbol && (
                   <tr className="border-b border-[var(--color-border)]">
-                    <td colSpan={5} className="py-2 px-2 text-[9px] text-[var(--color-text-sub)] bg-[var(--color-surface-2,rgba(127,127,127,0.06))]">
+                    <td colSpan={5} className="py-2 px-2 text-(length:--fs-body) text-[var(--color-text-sub)] bg-[var(--color-surface-2,rgba(127,127,127,0.06))]">
                       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:hidden mb-1">
                         <span>Volatility</span><span>{r.atrPct != null ? `${r.atrPct.toFixed(2)}% · ${r.regimeType ?? '—'}` : '—'}</span>
                         <span>Watchlist</span><span>{r.onList ? 'on list' : 'not added'}</span>

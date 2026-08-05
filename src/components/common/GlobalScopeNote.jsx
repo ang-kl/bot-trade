@@ -22,7 +22,7 @@
 export default function GlobalScopeNote({ what = 'These settings', className = '' }) {
   return (
     <div
-      className={`glass-inset rounded-[2px] px-2 py-1 text-[9px] text-[var(--color-text-sub)] ${className}`}
+      className={`glass-inset rounded-[2px] px-2 py-1 text-(length:--fs-body) text-[var(--color-text-sub)] ${className}`}
       style={{ borderLeft: '2px solid var(--color-warning-text)' }}
     >
       <b className="text-[var(--color-text)]">Applies to every account.</b>{' '}

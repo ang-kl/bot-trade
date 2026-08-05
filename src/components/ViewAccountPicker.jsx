@@ -60,14 +60,14 @@ export default function ViewAccountPicker() {
   return (
     <div className="mb-3 px-3">
       <label
-        className="mb-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]"
+        className="mb-0.5 flex items-center gap-1 text-(length:--fs-body) uppercase tracking-wide text-[var(--color-text-sub)]"
         htmlFor="view-account-picker"
       >
         Viewing
         {lensOn && (
           <span
             className="rounded-[3px] border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]
-                       px-1 text-[9px] font-bold not-italic text-[var(--color-warning-text)]"
+                       px-1 text-(length:--fs-body) font-bold not-italic text-[var(--color-warning-text)]"
             title="You are looking at an account the bot is NOT trading. Reads only — nothing here changes the agent."
           >
             LENS
@@ -80,7 +80,7 @@ export default function ViewAccountPicker() {
         onChange={(e) => setViewedAccount(e.target.value === '' ? null : e.target.value)}
         title="Changes which account these pages SHOW. It does not change which account the bot trades — that switch lives on Accounts."
         className="w-full cursor-pointer rounded-[6px] border border-[var(--color-border)]
-                   bg-transparent px-1.5 py-1 text-[9px] font-semibold tabular-nums
+                   bg-transparent px-1.5 py-1 text-(length:--fs-body) font-semibold tabular-nums
                    text-[var(--color-text)]"
       >
         {roster.map(a => (
@@ -95,7 +95,7 @@ export default function ViewAccountPicker() {
           type="button"
           onClick={() => setViewedAccount(null)}
           className="mt-1 w-full cursor-pointer rounded-[5px] border border-transparent px-1
-                     text-left text-[9px] text-[var(--color-text-sub)]
+                     text-left text-(length:--fs-body) text-[var(--color-text-sub)]
                      hover:border-[var(--color-border)]"
           title="Return to the account the bot is trading"
         >

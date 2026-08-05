@@ -69,7 +69,7 @@ export default class PageErrorBoundary extends Component {
     return (
       <div className="p-4">
         <div
-          className="glass-inset rounded-[2px] p-3 text-[9px]"
+          className="glass-inset rounded-[2px] p-3 text-(length:--fs-body)"
           style={{ borderTop: '2px solid var(--color-down)' }}
           role="alert"
         >
@@ -82,7 +82,7 @@ export default class PageErrorBoundary extends Component {
             carry on, or copy the detail below so it can be fixed.
           </p>
 
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-[2px] bg-[var(--color-bg)] p-2 text-[9px] text-[var(--color-text)]">
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-[2px] bg-[var(--color-bg)] p-2 text-(length:--fs-body) text-[var(--color-text)]">
 {`${error.name || 'Error'}: ${error.message || String(error)}`}
 {info?.componentStack ? `\n${info.componentStack.split('\n').slice(0, 8).join('\n')}` : ''}
           </pre>
@@ -90,19 +90,19 @@ export default class PageErrorBoundary extends Component {
           <div className="mt-2 flex flex-wrap gap-2">
             <button
               type="button" onClick={this.copy}
-              className="cursor-pointer rounded-[4px] border border-[var(--color-border)] px-2 py-1 text-[9px] font-semibold"
+              className="cursor-pointer rounded-[4px] border border-[var(--color-border)] px-2 py-1 text-(length:--fs-body) font-semibold"
             >
               Copy error detail
             </button>
             <button
               type="button" onClick={() => this.setState({ error: null, info: null })}
-              className="cursor-pointer rounded-[4px] border border-[var(--color-border)] px-2 py-1 text-[9px]"
+              className="cursor-pointer rounded-[4px] border border-[var(--color-border)] px-2 py-1 text-(length:--fs-body)"
             >
               Try rendering again
             </button>
             <button
               type="button" onClick={() => { try { window.location.reload() } catch { /* no-op */ } }}
-              className="cursor-pointer rounded-[4px] border border-transparent px-2 py-1 text-[9px] text-[var(--color-text-sub)] hover:border-[var(--color-border)]"
+              className="cursor-pointer rounded-[4px] border border-transparent px-2 py-1 text-(length:--fs-body) text-[var(--color-text-sub)] hover:border-[var(--color-border)]"
             >
               Reload the app
             </button>

@@ -63,7 +63,7 @@ export function Row({ s, verdictable }) {
 export function Table({ data }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[9px] border-collapse">
+      <table className="w-full text-(length:--fs-body) border-collapse">
         <thead>
           <tr className="text-left text-[var(--color-text-sub)]">
             <th className="py-1 pr-2 font-semibold">Strategy</th>
@@ -167,31 +167,31 @@ export default function StrategyLivenessCard() {
         )}
       </div>
       {shown?.armedScope && (
-        <p className="text-[9px] text-[var(--color-text-sub)] mb-0.5">
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-0.5">
           ARMED/OFF is the <strong>Auto Trade &amp; Open</strong> column for{' '}
           <strong>{shown.armedScope === 'global default' ? 'the global default' : `account ${shown.armedScope}`}</strong>
           {' '}— a different switch from an account being Active. Change it in Tune → Pipeline.
         </p>
       )}
-      <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">
         Does each armed strategy actually reach the market — signals → decisions → orders opened → trades closed.
         A stage at zero under a stage that is not is a findable problem; an armed strategy with no signal at all is
         the Cup &amp; Handle case, where the code could not run rather than the market being quiet. This says
         nothing about whether a strategy is profitable — that is Edge Health.
       </p>
 
-      {err && <p className="text-[9px] text-[var(--color-down)]">Liveness unavailable: {err}</p>}
-      {!shown && !err && <p className="text-[9px] text-[var(--color-text-sub)]">Loading…</p>}
+      {err && <p className="text-(length:--fs-body) text-[var(--color-down)]">Liveness unavailable: {err}</p>}
+      {!shown && !err && <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>}
 
       {shown && !shown.verdictable && (
-        <p className="text-[9px] text-[var(--color-warning-text)] mb-1.5">
+        <p className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1.5">
           Only {shown.totalScans.toLocaleString()} scans in the last {shown.windowDays} days — too little activity for
           silence to mean anything, so no verdict is offered. The counts below are still real.
         </p>
       )}
 
       {shown && shown.verdictable && silent.length > 0 && (
-        <p className="text-[9px] text-[var(--color-down)] font-semibold mb-1.5">
+        <p className="text-(length:--fs-body) text-[var(--color-down)] font-semibold mb-1.5">
           {silent.length === 1 ? '1 armed strategy produced' : `${silent.length} armed strategies produced`} no signal
           at all in {shown.windowDays} days: {silent.map(s => s.name).join(', ')}. Either the market offered nothing,
           or the code path cannot run — a backtest of that strategy over the same window separates the two.
@@ -210,7 +210,7 @@ export default function StrategyLivenessCard() {
       )}
 
       {shown && (
-        <p className="mt-1 text-[9px] text-[var(--color-text-sub)]">
+        <p className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">
           Window {shown.windowDays}d from {String(shown.since).slice(0, 10)} · {shown.totalScans.toLocaleString()} scans attributed to a strategy.
           Decisions counts every stage record; “stopped” is the subset that ended the setup.
         </p>

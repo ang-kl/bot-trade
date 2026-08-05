@@ -341,8 +341,8 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       {grid ? (
         // Grid mode: 16 mini charts — just name the current TF, no 20-button ladder.
         <div className="flex items-center gap-1.5 mb-1.5">
-          <span className="text-[9px] font-semibold text-[var(--color-text-sub)]">{timeframe}</span>
-          <span className="ml-auto text-[9px] text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
+          <span className="text-(length:--fs-body) font-semibold text-[var(--color-text-sub)]">{timeframe}</span>
+          <span className="ml-auto text-(length:--fs-body) text-[var(--color-text-sub)]">{niceFmt(lastClose, lastClose)}</span>
         </div>
       ) : (
         // ONE control row (owner: "so many choices of UI controls"): a TF
@@ -353,7 +353,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
             aria-label="Timeframe"
             value={CHART_TF_ROWS.some(r2 => r2.tfs.includes(timeframe)) ? timeframe : '__custom'}
             onChange={(e) => { if (e.target.value !== '__custom') setTimeframe(e.target.value) }}
-            className="glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] font-semibold bg-transparent cursor-pointer"
+            className="glass-inset rounded-[8px] px-2 min-h-[28px] text-(length:--fs-body) font-semibold bg-transparent cursor-pointer"
           >
             {CHART_TF_ROWS.map(row => (
               <optgroup key={row.label} label={row.label}>
@@ -380,11 +380,11 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
               onChange={(e) => { setTfCustom(e.target.value); if (tfCustomErr) setTfCustomErr('') }}
               placeholder="custom · 1.5h"
               aria-label="Custom timeframe"
-              className="w-24 glass-inset rounded-[8px] px-2 min-h-[28px] text-[9px] text-[var(--color-text)] placeholder:text-[var(--color-text-sub)] outline-none"
+              className="w-24 glass-inset rounded-[8px] px-2 min-h-[28px] text-(length:--fs-body) text-[var(--color-text)] placeholder:text-[var(--color-text-sub)] outline-none"
             />
-            {tfCustomErr && <span className="text-[9px] text-[var(--color-warning-text)]">{tfCustomErr}</span>}
+            {tfCustomErr && <span className="text-(length:--fs-body) text-[var(--color-warning-text)]">{tfCustomErr}</span>}
           </form>
-          <span className="ml-auto text-[9px] text-[var(--color-text-sub)]">
+          <span className="ml-auto text-(length:--fs-body) text-[var(--color-text-sub)]">
             {at
               ? <>historical — window around {new Date(at).toLocaleString()}</>
               : live && tick
@@ -396,7 +396,7 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
       {showPanel && (
         // Indicator toggles fold away — open on demand, zero rows when shut.
         <details className="mb-1.5">
-          <summary className="cursor-pointer select-none text-[9px] font-semibold text-[var(--color-text-sub)]">
+          <summary className="cursor-pointer select-none text-(length:--fs-body) font-semibold text-[var(--color-text-sub)]">
             Indicators{indPrefs.indicators.length ? ` · ${indPrefs.indicators.length} on` : ''}
           </summary>
           <IndicatorPanel
@@ -407,9 +407,9 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
           />
         </details>
       )}
-      {error && <div className="text-[9px] text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
+      {error && <div className="text-(length:--fs-body) text-[var(--color-warning-text)] py-2">Chart unavailable: {error}</div>}
       {!error && loadedKey !== chartKey && (
-        <div className="text-[9px] text-[var(--color-text-sub)] py-1" role="status">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] py-1" role="status">
           Loading {symbol} {timeframe} — one moment, fetching bars from the broker…
         </div>
       )}
@@ -433,14 +433,14 @@ export default function PositionChart({ symbol, timeframe: tf0 = '1h', lines = {
         )}
       </div>
       {showPanel && avwapAnchorT != null && indPrefs.indicators.includes('avwap') && (
-        <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">
           AVWAP anchored at {new Date(avwapAnchorT).toLocaleString()}
           {' · '}
           <button type="button" className="underline cursor-pointer" onClick={() => setAvwapAnchorT(null)}>clear</button>
         </div>
       )}
       {fib && (
-        <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">
           Fib read ({timeframe}): {String(fib.bias || '').toUpperCase()} fade at 61.8% {niceFmt(fib.level618, lastClose)} — entry {niceFmt(fib.entry, lastClose)}, SL {niceFmt(fib.sl, lastClose)}, TP1 {niceFmt(fib.tp1, lastClose)}, TP2 {niceFmt(fib.tp2, lastClose)}
         </div>
       )}

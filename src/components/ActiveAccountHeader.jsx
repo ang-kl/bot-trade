@@ -52,7 +52,7 @@ export function ActiveAccountHeaderCompact() {
   const trading = armed === true
   return (
     <span
-      className={`text-[9px] font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
+      className={`text-(length:--fs-body) font-bold tabular-nums whitespace-nowrap ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
       title={trading ? 'autotrade is ARMED on this account' : 'autotrade is OFF on this account'}
     >
       {acct.isLive ? 'LIVE' : 'DEMO'} {acct.traderLogin ?? acct.accountId}
@@ -110,10 +110,10 @@ export default function ActiveAccountHeader() {
                       : 'border border-transparent hover:bg-[var(--color-accent-soft)]'}`}
       >
         <div className="flex items-baseline justify-between gap-1">
-          <span className="text-[9px] uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
+          <span className="text-(length:--fs-body) uppercase tracking-wide text-[var(--color-text-sub)]">Account</span>
           {summary && (
             <span
-              className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
+              className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-state-off-text)]"
               title="Scan finds candidates, Analyze judges them, Autotrade sends the order. Anything off stops the pipeline at that point."
             >
               {summary}
@@ -121,7 +121,7 @@ export default function ActiveAccountHeader() {
           )}
         </div>
         <div
-          className={`text-[9px] font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
+          className={`text-(length:--fs-body) font-bold tabular-nums ${trading ? 'text-[var(--color-state-on-text)]' : 'text-[var(--color-muted)]'}`}
           title={armed == null
             ? 'checking whether autotrade is armed…'
             : trading ? 'autotrade is ARMED — the bot is trading this account' : 'autotrade is OFF — the bot is not opening new trades on this account'}
@@ -130,7 +130,7 @@ export default function ActiveAccountHeader() {
         </div>
         {/* Owner: "remove the word 'Balance' under the Account name" — the
             currency code and the number already say what it is. */}
-        <div className="flex items-center gap-1.5 text-[9px] text-[var(--color-text-sub)] tabular-nums">
+        <div className="flex items-center gap-1.5 text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">
           <span>{formatBalance(acct.balance, ccy)}</span>
           {/* Owner (2026-07-31, approved from § 3,972·B): the S·A·T dots are a
               TINY NAVIGATE-ONLY button — an invisible border around the status
@@ -166,7 +166,7 @@ export default function ActiveAccountHeader() {
           // smaller, which is what the instruction was for.
           <span
             className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 bg-[var(--color-bg)] px-1
-                       text-[9px] font-semibold uppercase tracking-wide leading-none text-[var(--color-down)]"
+                       text-(length:--fs-body) font-semibold uppercase tracking-wide leading-none text-[var(--color-down)]"
           >
             pause
           </span>

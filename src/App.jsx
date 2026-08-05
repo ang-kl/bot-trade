@@ -190,7 +190,7 @@ function AgentDownBanner() {
 
   return (
     <div role="alert" className="px-4 pt-3">
-      <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-[9px] font-semibold">
+      <div className="rounded-[12px] border-2 border-[var(--color-down)] bg-[var(--color-down)]/10 px-4 py-2 text-(length:--fs-body) font-semibold">
         ⚠ Can&apos;t reach the agent from this device — {fails} checks in a row failed
         {staleMins != null ? ` (last answered ~${staleMins}m ago)` : ''}. On a phone this is often the
         connection, not the bot; if other devices can reach it, the bot is still running.
@@ -201,7 +201,7 @@ function AgentDownBanner() {
 }
 
 function navLinkClasses(isActive) {
-  return `rounded-[10px] px-3 py-2 text-[9px] font-semibold inline-flex items-center gap-2 transition-all w-full ${
+  return `rounded-[10px] px-3 py-2 text-(length:--fs-body) font-semibold inline-flex items-center gap-2 transition-all w-full ${
     isActive
       ? 'text-[var(--md-on-secondary-container)] bg-[var(--md-secondary-container)]'
       : 'text-[var(--color-text-sub)] hover:text-[var(--color-text)] hover:bg-[var(--color-accent-soft)]'
@@ -291,7 +291,7 @@ export default function App() {
           <nav className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col gap-4" id="main-content">
             {NAV_GROUPS.map(g => (
               <div key={g.title}>
-                <div className="px-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
+                <div className="px-3 pb-1 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">{g.title}</div>
                 <div className="flex flex-col gap-0.5">
                   {g.items.map(t => (
                     <NavLink key={t.to} to={t.to} viewTransition className={({ isActive }) => navLinkClasses(isActive)}>
@@ -363,7 +363,7 @@ export default function App() {
             scrolled sideways. One row, no scroll, no nav. */}
         <header className="sticky top-2 z-40 px-3 lg:hidden">
           <div className="glass-bar flex items-center gap-2 rounded-[1px] px-3 py-1.5">
-            <span className="text-[13px] font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">bot-trade</span>
+            <span className="text-(length:--fs-title) font-extrabold tracking-tight text-[var(--color-accent)] shrink-0">bot-trade</span>
             {/* Same handle as the sidebar: the version tag carries the agent
                 health dot, so a stalled controller or a UI/agent build
                 mismatch is visible on the phone too — this bar is on every
@@ -396,7 +396,7 @@ export default function App() {
               to disarm because a card threw. Owner 03-08-2026: "the page keeps
               crashing", and there was no boundary anywhere in src/ to say why. */}
           <PageErrorBoundary key={appLocation.pathname}>
-          <Suspense fallback={<div className="p-6 text-[9px] text-[var(--color-text-sub)]">loading page…</div>}>
+          <Suspense fallback={<div className="p-6 text-(length:--fs-body) text-[var(--color-text-sub)]">loading page…</div>}>
           <Routes>
             <Route path="/" element={<Navigate to="/performance" replace />} />
             <Route path="/performance" element={<Performance />} />
@@ -441,7 +441,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setTheme(THEME_CYCLE[theme] || 'system')}
-              className="glass-inset rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-[9px] font-semibold text-[var(--color-text-sub)] cursor-pointer"
+              className="glass-inset rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] cursor-pointer"
             >{THEME_ICON[theme] || '◐'} Theme: {theme}</button>
           }
         />

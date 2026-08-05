@@ -55,7 +55,7 @@ export function ChromeRow({ row, compact = false }) {
   const day = dayText(row.day)
 
   return (
-    <span className="inline-flex items-center gap-1.5 text-[9px] tabular-nums">
+    <span className="inline-flex items-center gap-1.5 text-(length:--fs-body) tabular-nums">
       <Cell tone={row.isLive ? 'down' : 'muted'} title={row.isLive ? 'LIVE account' : 'demo account'}>
         {row.flag || (row.currency ?? '')} {accountLabel(row)}
       </Cell>

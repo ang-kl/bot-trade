@@ -202,7 +202,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
         >
           Re-Risk + Watchlist
         </Button>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           Re-Risk <strong>proposes</strong> — nothing changes until you apply it
         </span>
       </div>
@@ -216,7 +216,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
       {ask && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-[6px] border
                         border-[var(--color-border)] px-2 py-1">
-          <span className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">
+          <span className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">
             {ask.includeWatchlist ? 'Re-Risk + Watchlist' : 'Re-Risk'}
           </span>
           <select
@@ -224,7 +224,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
             onChange={e => { setProvider(e.target.value); setModel('') }}
             aria-label="LLM provider"
             className="rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)]
-                       px-1 py-0.5 text-[9px] font-semibold text-[var(--color-text)]"
+                       px-1 py-0.5 text-(length:--fs-body) font-semibold text-[var(--color-text)]"
           >
             {PROVIDERS.map(p => (
               <option key={p.id} value={p.id} disabled={available[p.id] === false}>
@@ -237,7 +237,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
             onChange={e => setModel(e.target.value)}
             aria-label="model"
             className="rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)]
-                       px-1 py-0.5 text-[9px] font-semibold tabular-nums text-[var(--color-text)]"
+                       px-1 py-0.5 text-(length:--fs-body) font-semibold tabular-nums text-[var(--color-text)]"
           >
             <option value="">choose a model…</option>
             {options.map(o => (
@@ -250,7 +250,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
             {busy === 'run' ? 'Assessing…' : 'Run'}
           </Button>
           <Button onClick={() => setAsk(null)} disabled={!!busy}>Cancel</Button>
-          <span className="text-[9px] text-[var(--color-text-sub)]">
+          <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
             {ask.includeWatchlist
               ? 'watchlist composition included'
               : 'balance + record only, no instruments'}
@@ -260,7 +260,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
       )}
 
       {error && (
-        <div className="rounded-[6px] border px-2 py-1 text-[9px] border-[var(--color-state-off-border)]
+        <div className="rounded-[6px] border px-2 py-1 text-(length:--fs-body) border-[var(--color-state-off-border)]
                         bg-[var(--color-state-off-bg)] text-[var(--color-state-off-text)]">
           {error}
         </div>
@@ -272,11 +272,11 @@ export default function RiskReassess({ onChanged, onApplied }) {
 
       {/* ---- last run ------------------------------------------------------ */}
       {!last && !ask && (
-        <div className="text-[9px] text-[var(--color-text-sub)]">No reassessment has been run yet.</div>
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No reassessment has been run yet.</div>
       )}
       {last && (
         <div className="space-y-1.5">
-          <div className="flex flex-wrap items-baseline gap-2 text-[9px]">
+          <div className="flex flex-wrap items-baseline gap-2 text-(length:--fs-body)">
             <span className="font-semibold text-[var(--color-text-sub)] uppercase tracking-wide">Last Re-Risk</span>
             <span className="tabular-nums">{stamp(last.at)}</span>
             <Badge tone="info">{last.provider === 'anthropic' ? 'Claude' : 'OpenAI'} · {last.model}</Badge>
@@ -293,10 +293,10 @@ export default function RiskReassess({ onChanged, onApplied }) {
             {last.applied && <Badge tone="on">applied {stamp(last.appliedAt)}</Badge>}
           </div>
 
-          {last.summary && <div className="text-[9px] leading-snug">{last.summary}</div>}
+          {last.summary && <div className="text-(length:--fs-body) leading-snug">{last.summary}</div>}
 
           {last.stats?.closedTrades != null && (
-            <div className="text-[9px] text-[var(--color-text-sub)] tabular-nums">
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">
               judged on {last.stats.closedTrades} closed trades
               {last.stats.winRatePct != null ? ` · ${last.stats.winRatePct}% win` : ''}
               {last.stats.worstLossUsd != null ? ` · worst single loss $${Math.abs(last.stats.worstLossUsd).toLocaleString()}` : ''}
@@ -306,7 +306,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
           {last.warnings?.length > 0 && (
             <ul className="space-y-0.5">
               {last.warnings.map((w, i) => (
-                <li key={i} className="rounded-[4px] border px-2 py-0.5 text-[9px]
+                <li key={i} className="rounded-[4px] border px-2 py-0.5 text-(length:--fs-body)
                                        border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]
                                        text-[var(--color-warning-text)]">{w}</li>
               ))}
@@ -314,7 +314,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
           )}
 
           {last.proposals?.length === 0 && (
-            <div className="text-[9px] text-[var(--color-text-sub)]">
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
               No changes proposed — the model judged the current limits appropriate.
             </div>
           )}
@@ -323,7 +323,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
             <>
               <div className="overflow-x-auto">
                 <Collapse id="RiskReassess_295" label="Proposal Rows">
-                <table className="w-full text-[9px] tabular-nums">
+                <table className="w-full text-(length:--fs-body) tabular-nums">
                   <thead>
                     <tr className="text-left text-[var(--color-text-sub)]">
                       <th className="pr-2 font-semibold">Apply</th>
@@ -381,7 +381,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
                               what. Absent until something changes it — an
                               invented stamp would be worse than none. */}
                           {ch && (
-                            <div className="text-[9px] text-[var(--color-text-sub)]"
+                            <div className="text-(length:--fs-body) text-[var(--color-text-sub)]"
                                  title={`Last changed ${stamp(ch.at)} by ${ch.by || 'unknown'}: ${show(p.key, ch.from, proposable)} → ${show(p.key, ch.to, proposable)}`}>
                               last changed {stamp(ch.at)}{ch.by ? ` · ${ch.by}` : ''}
                             </div>
@@ -394,15 +394,15 @@ export default function RiskReassess({ onChanged, onApplied }) {
                               past presented under a heading that says now. */}
                           {show(p.key, live[p.key], proposable)}
                           {status === 'superseded' && (
-                            <div className="text-[9px] text-[var(--color-warning-text)]" title="This row was applied, but the setting no longer carries the proposed value">
+                            <div className="text-(length:--fs-body) text-[var(--color-warning-text)]" title="This row was applied, but the setting no longer carries the proposed value">
                               changed since apply
                             </div>
                           )}
                         </td>
                         <td className="pr-2 py-0.5 font-semibold">
                           {show(p.key, p.proposed, proposable)}
-                          {status === 'holds' && <span className="ml-1 text-[9px] font-semibold uppercase text-[var(--color-accent)]">applied</span>}
-                          {status === 'superseded' && <span className="ml-1 text-[9px] font-semibold uppercase text-[var(--color-warning-text)]">superseded</span>}
+                          {status === 'holds' && <span className="ml-1 text-(length:--fs-body) font-semibold uppercase text-[var(--color-accent)]">applied</span>}
+                          {status === 'superseded' && <span className="ml-1 text-(length:--fs-body) font-semibold uppercase text-[var(--color-warning-text)]">superseded</span>}
                         </td>
                         <td className="py-0.5 text-[var(--color-text-sub)]">{p.reason}</td>
                       </tr>
@@ -426,7 +426,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
                   select all
                 </Button>
                 {picked.size === 0 && !last.applied && (
-                  <span className="text-[9px] text-[var(--color-text-sub)]">tick the rows you accept, then Apply — the fields below update immediately</span>
+                  <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">tick the rows you accept, then Apply — the fields below update immediately</span>
                 )}
                 {last.applied && (() => {
                   // COUNT WHAT IS TRUE, not what was applied. This line used
@@ -439,7 +439,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
                   }) === 'holds')
                   const gone = keys.length - holding.length
                   return (
-                    <span className="text-[9px] text-[var(--color-accent)]">
+                    <span className="text-(length:--fs-body) text-[var(--color-accent)]">
                       {holding.length} of {keys.length} applied {stamp(last.appliedAt)} still hold
                       {gone > 0 && (
                         <span className="ml-1 text-[var(--color-warning-text)]">
@@ -454,7 +454,7 @@ export default function RiskReassess({ onChanged, onApplied }) {
           )}
 
           {last.rejected?.length > 0 && (
-            <div className="text-[9px] text-[var(--color-text-sub)]">
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
               Ignored from the model&apos;s answer: {last.rejected.map(r => `${r.key} (${r.why})`).join('; ')}
             </div>
           )}

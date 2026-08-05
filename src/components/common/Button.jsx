@@ -65,9 +65,9 @@ const VARIANTS = {
 // 2px on every side, per the owner. Sizes differ only in type size now —
 // the padding is the same everywhere because "2px" was not size-dependent.
 const SIZES = {
-  sm: 'p-[2px] text-[9px]',
-  md: 'p-[2px] text-[9px]',
-  lg: 'p-[2px] text-[9px]',
+  sm: 'p-[2px] text-(length:--fs-body)',
+  md: 'p-[2px] text-(length:--fs-body)',
+  lg: 'p-[2px] text-(length:--fs-body)',
 }
 
 export default function Button({ children, variant = 'primary', size = 'md', loading = false, className = '', ...rest }) {

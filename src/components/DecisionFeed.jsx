@@ -87,7 +87,7 @@ export function StageBlock({ s, fill = false }) {
 export function RowsTable({ rows }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[9px] border-collapse">
+      <table className="w-full text-(length:--fs-body) border-collapse">
         <thead>
           <tr className="text-left" style={{ color: SB }}>
             <th className="py-1 pr-2 font-semibold">When</th>
@@ -157,17 +157,17 @@ export default function DecisionFeed({ variant = 'full' }) {
     return (
       <div id="sec-decisions-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
+          <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Why it did or did not trade</span>
           <Segmented label="Decision window" value={String(hours)}
             options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
             onChange={v => setHours(Number(v))} />
         </span>
 
-        {err && <span style={{ fontSize: 'var(--fs-d9)', color: 'var(--color-down)' }}>Unavailable: {err}</span>}
-        {!shown && !err && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>Loading…</span>}
+        {err && <span style={{ fontSize: 'var(--fs-body)', color: 'var(--color-down)' }}>Unavailable: {err}</span>}
+        {!shown && !err && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Loading…</span>}
 
         {shown && shown.total === 0 && (
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
             Nothing recorded in the last {shown.windowHours}h — a quiet window, or a controller that is not
             running. The agent health dot in the sidebar says which.
           </span>
@@ -175,26 +175,26 @@ export default function DecisionFeed({ variant = 'full' }) {
 
         {shown && shown.total > 0 && (
           <>
-            <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+            <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
               {shown.total.toLocaleString()} decisions ·{' '}
               {shown.accountId ? `account ${shown.accountId}` : 'all accounts'}
               {shown.unstamped > 0 && <> · {shown.unstamped.toLocaleString()} unstamped, included</>}
             </span>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} className="text-[9px]">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} className="text-(length:--fs-body)">
               {top.map(s2 => <StageBlock key={s2.stage} s={s2} fill />)}
             </div>
             {rest.length > 0 && (
               <details>
-                <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+                <summary style={{ fontSize: 'var(--fs-body)', color: SB, cursor: 'pointer' }}>
                   {rest.length} more {rest.length === 1 ? 'stage' : 'stages'}
                 </summary>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }} className="text-[9px]">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }} className="text-(length:--fs-body)">
                   {rest.map(s2 => <StageBlock key={s2.stage} s={s2} fill />)}
                 </div>
               </details>
             )}
             <details>
-              <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+              <summary style={{ fontSize: 'var(--fs-body)', color: SB, cursor: 'pointer' }}>
                 {shown.rows.length} newest decisions{shown.truncated ? ' (capped)' : ''}
               </summary>
               <div style={{ marginTop: 4 }}><RowsTable rows={shown.rows} /></div>
@@ -208,7 +208,7 @@ export default function DecisionFeed({ variant = 'full' }) {
   return (
     <div id="sec-decisions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Decision Feed card</span>
+        <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Decision Feed card</span>
         <Segmented label="Decision window" value={String(hours)}
           options={WINDOWS.map(h => ({ value: String(h), label: `${h}h` }))}
           onChange={v => setHours(Number(v))} />
@@ -231,17 +231,17 @@ export default function DecisionFeed({ variant = 'full' }) {
             )} />
         )}
       </div>
-      <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+      <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
         Every decision taken upstream of the risk gate — what stopped a setup before it became an order.
         Counts include repeats: one waiting setup re-logs its skip every five-minute cycle, so each stage
         also says how many different instruments produced it.
       </span>
 
-      {err && <span style={{ fontSize: 'var(--fs-d9)', color: 'var(--color-down)' }}>Decision feed unavailable: {err}</span>}
-      {!shown && !err && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>Loading…</span>}
+      {err && <span style={{ fontSize: 'var(--fs-body)', color: 'var(--color-down)' }}>Decision feed unavailable: {err}</span>}
+      {!shown && !err && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>Loading…</span>}
 
       {shown && shown.total === 0 && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
           No decisions recorded in the last {shown.windowHours}h
           {shown.accountId ? ` for account ${shown.accountId}` : ''}. That is either a quiet window or a
           controller that is not running — the Agent heartbeats say which.
@@ -250,21 +250,21 @@ export default function DecisionFeed({ variant = 'full' }) {
 
       {shown && shown.total > 0 && (
         <>
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
             {shown.total.toLocaleString()} decisions in {shown.windowHours}h ·{' '}
             {shown.accountId ? `account ${shown.accountId}` : 'all accounts'}
             {shown.unstamped > 0 && (
               <> · <strong>{shown.unstamped.toLocaleString()}</strong> carry no account stamp and are included here</>
             )}
           </span>
-          <div className="flex flex-wrap gap-1.5 text-[9px]">
+          <div className="flex flex-wrap gap-1.5 text-(length:--fs-body)">
             {shown.stages.map(s => <StageBlock key={s.stage} s={s} />)}
           </div>
           <button
             type="button"
             aria-expanded={showRows}
             onClick={() => setShowRows(v => !v)}
-            className="self-start text-[9px] glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer"
+            className="self-start text-(length:--fs-body) glass-inset rounded-[var(--radius-control)] px-2.5 py-1 cursor-pointer"
           >
             {showRows ? '▾' : '▸'} {shown.rows.length} newest decisions{shown.truncated ? ' (capped)' : ''}
           </button>

@@ -62,16 +62,16 @@ function MetricRow({ m, label, fmt, row }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: m.verdict === 'met' ? UP : TX }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: m.verdict === 'met' ? UP : TX }}>
           {fmt(m.value)}
         </span>
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>vs {fmt(m.target)}</span>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 700, color: v.tone }}>{v.label}</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>vs {fmt(m.target)}</span>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: 700, color: v.tone }}>{v.label}</span>
       </span>
       {/* The requirement, only where there is one to state. */}
       {m.verdict === 'at_risk' && m.winsNeeded > 0 && row.expectedRemaining > 0 && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           needs <strong>{m.winsNeeded}</strong> winners of the ~{row.expectedRemaining} trades still expected
           {m.requiredRateOnRemaining != null && (
             <> — a <strong>{pct(m.requiredRateOnRemaining)}</strong> hit rate, against {pct(row.winRate.value)} so far</>
@@ -79,19 +79,19 @@ function MetricRow({ m, label, fmt, row }) {
         </span>
       )}
       {m.verdict === 'out_of_reach' && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           {row.expectedRemaining > 0
             ? <>would need <strong>{m.winsNeeded}</strong> winners from only ~{row.expectedRemaining} trades before the deadline</>
             : <>no trades expected to close before the deadline</>}
         </span>
       )}
       {m.verdict === 'insufficient_sample' && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: SB }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: SB }}>
           {row.trades} of {row.minTrades} closed trades — too few to read as evidence
         </span>
       )}
       {m.assumes && m.verdict !== 'met' && m.verdict !== 'no_data' && (
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>assumes {m.assumes}</span>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>assumes {m.assumes}</span>
       )}
     </div>
   )
@@ -138,23 +138,23 @@ function AccountRow({ row }) {
             Showing only one leaves a translation step the operator has to do
             in their head — which is the step that made "why is DEMO 5203012
             ratchet" unanswerable from a screenshot. */}
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: ACC }}>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, color: ACC }}>
           {row.login ? `#${row.login}` : (row.label || row.accountId)}
         </span>
         {row.login && row.label && (
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>{row.label}</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>{row.label}</span>
         )}
         {row.login && row.accountId !== 'all' && String(row.accountId) !== String(row.login) && (
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }} title="ctidTraderAccountId — the id used by ?account=, the ledger and the logs">
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }} title="ctidTraderAccountId — the id used by ?account=, the ledger and the logs">
             ({row.accountId})
           </span>
         )}
         <ScopeDot scope={scope} />
-        {row.isLive && <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: DN }}>LIVE</span>}
-        {row.enabled === false && <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>disabled</span>}
-        <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-d9)', fontWeight: 800, color: v.tone }}>{v.label}</span>
+        {row.isLive && <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, color: DN }}>LIVE</span>}
+        {row.enabled === false && <span style={{ fontSize: 'var(--fs-body)', color: MU }}>disabled</span>}
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-body)', fontWeight: 800, color: v.tone }}>{v.label}</span>
       </span>
-      <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+      <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
         {/* LIVE BALANCE (owner 04-08-2026: "Include Account Balance (Live) in
             each of the sub-card here"). Per account, resolved — never the
             legacy global key, which is what once printed one account's balance
@@ -211,7 +211,7 @@ export default function GoalTracker({ variant = 'full' }) {
   useAccountSwitch(load)
 
   const sel = selectedAccountId()
-  if (err) return <span style={{ fontSize: 'var(--fs-d9)', color: DN }}>Goal tracker unavailable: {err}</span>
+  if (err) return <span style={{ fontSize: 'var(--fs-body)', color: DN }}>Goal tracker unavailable: {err}</span>
   if (!data) return null
   // `data` arriving is not proof `data.goal` did. The route can answer with an
   // error body, or an older agent build without the goal block, and reading
@@ -236,8 +236,8 @@ export default function GoalTracker({ variant = 'full' }) {
     return (
       <div id="sec-goal-mobile" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
-          <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+          <span style={{ fontSize: 'var(--fs-h)', fontWeight: 800, color: ACC }}>Go-Live Gate</span>
+          <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
             {data.goal.winRatePct}% win · PF {data.goal.profitFactor} ·{' '}
             <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
               {data.daysRemaining === 0 ? 'deadline passed' : `${data.daysRemaining}d left`}
@@ -247,7 +247,7 @@ export default function GoalTracker({ variant = 'full' }) {
         <AccountRow row={subject} />
         {others.length > 0 && (
           <details>
-            <summary style={{ fontSize: 'var(--fs-d9)', color: SB, cursor: 'pointer' }}>
+            <summary style={{ fontSize: 'var(--fs-body)', color: SB, cursor: 'pointer' }}>
               {others.length} more {others.length === 1 ? 'row' : 'rows'} — all accounts and the rest
             </summary>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
@@ -262,10 +262,10 @@ export default function GoalTracker({ variant = 'full' }) {
   return (
     <div id="sec-goal" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--fs-d9)', fontWeight: 800, color: ACC, flexShrink: 0 }}>
+        <span style={{ fontSize: 'var(--fs-body)', fontWeight: 800, color: ACC, flexShrink: 0 }}>
           Go-Live Gate — Progress card
         </span>
-        <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+        <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
           win rate {data.goal.winRatePct}% · profit factor {data.goal.profitFactor} · by {data.goal.deadline}
           {' · '}
           <strong style={{ color: data.daysRemaining <= 3 ? WRN : MU }}>
@@ -289,7 +289,7 @@ export default function GoalTracker({ variant = 'full' }) {
       </div>
       {/* Said once, here, rather than repeated per card: the pooled row is not
           an average of the account rows. */}
-      <span style={{ fontSize: 'var(--fs-d9)', color: MU }}>
+      <span style={{ fontSize: 'var(--fs-body)', color: MU }}>
         “All accounts” is rebuilt from every closed trade, not averaged from the per-account rates.
       </span>
     </div>

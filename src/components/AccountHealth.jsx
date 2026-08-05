@@ -46,10 +46,10 @@ export default function AccountHealth({ acct }) {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[9px] font-semibold">Account health</div>
+        <div className="text-(length:--fs-body) font-semibold">Account health</div>
         <Badge tone={acct.isLive ? 'down' : 'info'}>{acct.isLive ? 'LIVE' : 'DEMO'}</Badge>
-        {acct.traderLogin && <span className="text-[9px] text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
-        <span className="ml-auto flex items-center gap-2 text-[9px] text-[var(--color-text-sub)]">
+        {acct.traderLogin && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">Login {acct.traderLogin}</span>}
+        <span className="ml-auto flex items-center gap-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
           {(h.positionsInProfit != null || h.positionsInLoss != null) && (
             <span>
               Open book: <span className="font-semibold text-[var(--color-up)]">{h.positionsInProfit ?? 0} winning</span>
@@ -64,7 +64,7 @@ export default function AccountHealth({ acct }) {
       </div>
       <div className="overflow-x-auto">
         <Collapse id="AccountHealth_65" label="Health Rows">
-        <table className="w-full text-[9px]">
+        <table className="w-full text-(length:--fs-body)">
           <thead>
             <tr>
               <th className="pb-1 pr-3">Metric</th>

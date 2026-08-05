@@ -161,7 +161,7 @@ export function BotChangesFooterButton({ rows }) {
       <button type="button" ref={buttonRef}
         aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId}
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-1.5 rounded-[1px] px-2 py-1 text-[9px] cursor-pointer text-[var(--color-text-sub)] hover:text-[var(--color-text)]"
+        className="w-full flex items-center gap-1.5 rounded-[1px] px-2 py-1 text-(length:--fs-body) cursor-pointer text-[var(--color-text-sub)] hover:text-[var(--color-text)]"
         style={recent.length ? { outline: '1.5px solid #eab308', outlineOffset: '-1.5px' } : undefined}
         title="Changes the bot made on your behalf — click for the full ledger">
         <span aria-hidden="true">{open ? '⌄' : '›'}</span>
@@ -176,12 +176,12 @@ export function BotChangesFooterButton({ rows }) {
             <button type="button" onClick={() => { setOpen(false); buttonRef.current?.focus() }}
               className="compact-control button-normal ml-auto" aria-label="Close bot changes panel">Close</button>
           </div>
-          <p className="text-[9px] text-[var(--color-muted)] mb-2">
+          <p className="text-(length:--fs-body) text-[var(--color-muted)] mb-2">
             Changes the bot (Claude) made on your behalf — yellow-bordered in the app for {HIGHLIGHT_HOURS}h. Everything else was you.
           </p>
-          {rows.length === 0 && <p className="text-[9px] text-[var(--color-muted)]">No bot changes recorded.</p>}
+          {rows.length === 0 && <p className="text-(length:--fs-body) text-[var(--color-muted)]">No bot changes recorded.</p>}
           {rows.map((r, i) => (
-            <div key={`${r.at}-${i}`} className="text-[9px] leading-tight border-b border-[var(--glass-edge)] pb-1 mb-1 last:border-0 last:mb-0">
+            <div key={`${r.at}-${i}`} className="text-(length:--fs-body) leading-tight border-b border-[var(--glass-edge)] pb-1 mb-1 last:border-0 last:mb-0">
               <div className="flex items-baseline gap-1">
                 <span className="font-semibold">{r.what}</span>
                 <span className="ml-auto shrink-0 text-[var(--color-muted)] tabular-nums">{fmtSgt(r.at)}</span>

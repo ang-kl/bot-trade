@@ -37,7 +37,7 @@ export default function AccountScopePills({ value, onChange, allowAll = true, no
   ]
 
   return (
-    <div className="flex flex-wrap items-center gap-1 text-[9px]">
+    <div className="flex flex-wrap items-center gap-1 text-(length:--fs-body)">
       <span className="font-semibold uppercase tracking-[.04em] text-[var(--color-text-sub)]">Account</span>
       {pills.map(p => {
         const on = String(value) === p.id

@@ -55,8 +55,8 @@ function Group({ title, rows }) {
   return (
     <div>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-[9px] font-semibold text-[var(--color-text-sub)] mb-1">
-        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0">{open ? '▾' : '▸'}</span>
+        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-(length:--fs-body) font-semibold text-[var(--color-text-sub)] mb-1">
+        <span aria-hidden="true" className="w-2.5 text-(length:--fs-body) shrink-0">{open ? '▾' : '▸'}</span>
         {title} ({rows.length})
       </button>
       {/* Owner: 3 columns desktop, 2 columns iPad-mini-landscape and iPhone. */}
@@ -109,7 +109,7 @@ export default function LossReview({ postmortems }) {
 
   if (allRows.length === 0) {
     return (
-      <p className="text-[9px] text-[var(--color-text-sub)]">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">
         No classified trades yet — the sweep reviews every closed trade (wins AND losses) a few bars after it closes, working back through 90 days of history.
       </p>
     )
@@ -149,18 +149,18 @@ export default function LossReview({ postmortems }) {
   const bySymbol = {}
   for (const r of rows) (bySymbol[r.symbol] ||= []).push(r)
 
-  const selectCls = 'glass-inset rounded-[var(--radius-control)] px-1.5 py-1 text-[9px]'
+  const selectCls = 'glass-inset rounded-[var(--radius-control)] px-1.5 py-1 text-(length:--fs-body)'
   return (
     <div className="space-y-3">
       {Object.keys(byStrat).length > 0 && (
-        <div className="text-[9px] text-[var(--color-text-sub)]">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           <span className="font-semibold text-[var(--color-text)]">Pattern (30d): </span>
           {Object.entries(byStrat).map(([k, v]) => `${strategyLabel(k) || k}: ${v.join(' · ')}`).join('  |  ')}
         </div>
       )}
 
       {/* Sort/filter bar — applies to whichever view is selected below. */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+      <div className="flex flex-wrap items-center gap-1.5 text-(length:--fs-body)">
         <Segmented label="View" value={view} onChange={setView}
           options={[{ value: 'groups', label: 'Losses / Wins' }, { value: 'symbol', label: 'By symbol' }]} />
         <select className={selectCls} aria-label="Filter by symbol" value={filter.symbol} onChange={e => setFilter(f => ({ ...f, symbol: e.target.value }))}>
@@ -199,7 +199,7 @@ export default function LossReview({ postmortems }) {
       </div>
 
       {/* Pagination — owner: dropdown for 25/50/100/200 per page. */}
-      <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+      <div className="flex flex-wrap items-center gap-1.5 text-(length:--fs-body)">
         <select className={selectCls} value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>
           {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} / page</option>)}
         </select>
@@ -214,7 +214,7 @@ export default function LossReview({ postmortems }) {
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-[9px] text-[var(--color-text-sub)]">No trades match this filter.</p>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">No trades match this filter.</p>
       ) : view === 'groups' ? (
         <>
           <Group title="Losses — what the market did" rows={losses} />
@@ -241,13 +241,13 @@ function SymbolTable({ symbol, rows }) {
   return (
     <div>
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-[9px] font-semibold mb-1">
-        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        className="w-full flex items-center gap-1.5 text-left cursor-pointer text-(length:--fs-body) font-semibold mb-1">
+        <span aria-hidden="true" className="w-2.5 text-(length:--fs-body) shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
         {symbol} <span className="text-[var(--color-text-sub)] font-normal">({rows.length} · {wins}W/{rows.length - wins}L)</span>
       </button>
       {open && (
         <div className="overflow-x-auto">
-          <table className="w-full text-[9px] tabular-nums">
+          <table className="w-full text-(length:--fs-body) tabular-nums">
             <thead>
               <tr className="border-b border-[var(--color-border)]">
                 {['Date', 'Side', 'TF', 'Strategy', 'Verdict', 'Lesson', 'P&L', 'R'].map(h => (
@@ -285,8 +285,8 @@ function SymbolTable({ symbol, rows }) {
                     {isOpen && (
                       <tr className="border-b border-[var(--color-border)]">
                         <td colSpan={8} className="py-2">
-                          {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-                          <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+                          {r.lesson && <p className="text-(length:--fs-body) font-semibold leading-snug">Lesson: {r.lesson}</p>}
+                          <p className="text-(length:--fs-body) leading-snug text-[var(--color-text)]">{r.detail}</p>
                           <FieldGrid r={r} />
                         </td>
                       </tr>
@@ -317,29 +317,29 @@ function Verdict({ r }) {
           (owner iPhone screenshots, 2026-07-24: P&L amounts clipped). */}
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="w-full flex items-center gap-1.5 min-w-0 text-left cursor-pointer overflow-x-auto whitespace-nowrap">
-        <span aria-hidden="true" className="w-2.5 text-[9px] shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
+        <span aria-hidden="true" className="w-2.5 text-(length:--fs-body) shrink-0 text-[var(--color-text-sub)]">{open ? '▾' : '▸'}</span>
         {/* The TRADE's own timestamp, not the sweep's row-insertion time —
             Codex review caught pm.created_at reading as "when classified",
             which can be identical across many rows from one backfill/sweep
             pass and defeats the point of showing a date at all. */}
-        <span className="text-[9px] text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)] shrink-0 tabular-nums" title={r.trade_closed_at || r.trade_opened_at || r.created_at || ''}>
           {dateTime(r.trade_closed_at || r.trade_opened_at || r.created_at) || '—'}
         </span>
         <span className="font-semibold shrink-0">{r.symbol}</span>
         {/* Strategy is ALWAYS stated, never silently dropped (owner: "if you
             are using different strategy state it") — 'unlabelled' is an
             honest bucket (see the Pattern line above), not a blank. */}
-        <span className="text-[9px] text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {strategyLabel(r.strategy) || 'unlabelled'}</span>
-        <span className="text-[9px] font-bold tracking-wide shrink-0">{v.label}</span>
-        <span className="text-[9px] text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
-        <span className={`ml-auto text-[9px] shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)] shrink-0">{r.side} · {r.timeframe || '—'} · {strategyLabel(r.strategy) || 'unlabelled'}</span>
+        <span className="text-(length:--fs-body) font-bold tracking-wide shrink-0">{v.label}</span>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)] truncate">{r.lesson || v.hint}</span>
+        <span className={`ml-auto text-(length:--fs-body) shrink-0 ${r.net_pnl != null && r.net_pnl < 0 ? 'text-[var(--color-down)]' : r.net_pnl != null ? 'text-[var(--color-up)]' : ''}`}>
           {pnlText}{r.r_multiple != null ? ` · ${r.r_multiple.toFixed(2)}R` : ''}
         </span>
       </button>
       {open && (
         <div className="mt-1.5">
-          {r.lesson && <p className="text-[9px] font-semibold leading-snug">Lesson: {r.lesson}</p>}
-          <p className="text-[9px] leading-snug text-[var(--color-text)]">{r.detail}</p>
+          {r.lesson && <p className="text-(length:--fs-body) font-semibold leading-snug">Lesson: {r.lesson}</p>}
+          <p className="text-(length:--fs-body) leading-snug text-[var(--color-text)]">{r.detail}</p>
           <FieldGrid r={r} />
         </div>
       )}
@@ -382,7 +382,7 @@ function FieldGrid({ r }) {
   ]
   const rows = allRows.filter(([, value]) => value != null && value !== '')
   return (
-    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[9px]">
+    <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-(length:--fs-body)">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <span className="text-[var(--color-text-sub)]">{label}</span>
@@ -390,7 +390,7 @@ function FieldGrid({ r }) {
         </div>
       ))}
       {r.setup_thesis && (
-        <span className="col-span-2 mt-0.5 text-[9px] text-[var(--color-text-sub)] opacity-80">
+        <span className="col-span-2 mt-0.5 text-(length:--fs-body) text-[var(--color-text-sub)] opacity-80">
           Setup thesis (free text, not the structured Confluence breakdown above): {r.setup_thesis}
         </span>
       )}

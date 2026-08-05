@@ -44,8 +44,8 @@ export default function StrategyInsights({ account = 'all' }) {
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 mb-2">
-        <div className="text-[9px] font-semibold">Strategy Forecast vs. Actual table</div>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <div className="text-(length:--fs-body) font-semibold">Strategy Forecast vs. Actual table</div>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           {account === 'all' ? 'all accounts' : `account ${account} only`} · closed trades · Edge = actual win rate − the win rate the strategy's own R:R requires
         </span>
         {/* Emphasis follows selection (inventory: unselected was the BOLD
@@ -55,12 +55,12 @@ export default function StrategyInsights({ account = 'all' }) {
             options={[7, 30, 0].map(d => ({ value: d, label: d === 0 ? 'All' : `${d}D` }))} />
         </span>
       </div>
-      {error && <div className="text-[9px] text-[var(--color-warning-text)]">{error}</div>}
-      {rows && rows.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">No closed trades in this range.</div>}
+      {error && <div className="text-(length:--fs-body) text-[var(--color-warning-text)]">{error}</div>}
+      {rows && rows.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">No closed trades in this range.</div>}
       {rows && rows.length > 0 && (
         <div className="overflow-x-auto">
           <Collapse id="StrategyInsights_59" label="Strategy Rows">
-          <table className="w-full text-[9px]">
+          <table className="w-full text-(length:--fs-body)">
             <thead>
               <tr>
                 <th className="pb-1 pr-3">Strategy</th>

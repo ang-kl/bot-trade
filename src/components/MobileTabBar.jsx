@@ -22,7 +22,7 @@ import { PRIMARY_TABS, MORE_TABS } from '../lib/nav-tabs.js'
 
 const tabClass = (active) =>
   `flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 min-h-[49px] px-1 ` +
-  `text-[9px] font-semibold transition-colors ${
+  `text-(length:--fs-body) font-semibold transition-colors ${
     active ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-sub)]'
   }`
 
@@ -57,14 +57,14 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
             style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}
             onClick={e => e.stopPropagation()}
           >
-            <div className="mb-2 text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">More</div>
+            <div className="mb-2 text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)]">More</div>
             <div className="flex flex-col gap-1">
               {MORE_TABS.map(t => (
                 <NavLink
                   key={t.to} to={t.to} viewTransition
                   onClick={() => setMoreOpen(false)}
                   className={({ isActive }) =>
-                    `rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-[9px] font-semibold ${
+                    `rounded-[10px] px-3 min-h-[44px] inline-flex items-center gap-2 text-(length:--fs-body) font-semibold ${
                       isActive ? 'text-[var(--md-on-secondary-container)] bg-[var(--md-secondary-container)]' : 'glass-inset text-[var(--color-text-sub)]'
                     }`}
                 >
@@ -77,14 +77,14 @@ export default function MobileTabBar({ footerNote = null, themeButton = null }) 
                 lines at the bottom of every single screen (owner: "dense and
                 less screen scrolling"). */}
             {footerNote && (
-              <div className="mt-3 border-t border-[var(--color-border)] pt-2 text-[9px] leading-tight text-[var(--color-text-sub)]">
+              <div className="mt-3 border-t border-[var(--color-border)] pt-2 text-(length:--fs-body) leading-tight text-[var(--color-text-sub)]">
                 {footerNote}
               </div>
             )}
             <button
               type="button"
               onClick={() => setMoreOpen(false)}
-              className="mt-3 w-full glass-inset rounded-[10px] min-h-[44px] text-[9px] font-semibold cursor-pointer"
+              className="mt-3 w-full glass-inset rounded-[10px] min-h-[44px] text-(length:--fs-body) font-semibold cursor-pointer"
             >Close</button>
           </div>
         </div>

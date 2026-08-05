@@ -81,7 +81,7 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
       title={why}
       onClick={() => onSet(phase.key, overruled ? false : !eff)}
       className={`inline-flex items-center justify-center rounded-[3px] border leading-none
-                  min-w-[26px] px-[5px] py-[3px] text-[9px] font-bold transition-colors
+                  min-w-[26px] px-[5px] py-[3px] text-(length:--fs-body) font-bold transition-colors
                   ${blocked || busy ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'} ${
         overruled
           ? 'border-[var(--color-warning-border)] text-[var(--color-warning-text)] bg-[var(--color-warning-bg)]'
@@ -93,11 +93,11 @@ function PhaseSwitch({ phase, acct, masterOn, busy, onSet }) {
       {phase.initial}
       {/* The strike says the arm exists AND is not in force — two facts one
           colour cannot carry. */}
-      {overruled && <span aria-hidden="true" className="ml-[2px] text-[9px] leading-none">⃠</span>}
+      {overruled && <span aria-hidden="true" className="ml-[2px] text-(length:--fs-body) leading-none">⃠</span>}
       {/* The override marker: a dot means this account has its OWN setting
           rather than following the master. Without it, an account switched off
           individually is indistinguishable from one whose master is off. */}
-      {ov !== null && <span aria-hidden="true" className="ml-[2px] text-[9px] leading-none">•</span>}
+      {ov !== null && <span aria-hidden="true" className="ml-[2px] text-(length:--fs-body) leading-none">•</span>}
     </button>
   )
 }
@@ -253,7 +253,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
         <h3 className="t-h3">Per-account switches</h3>
         <DoneCue message={done} />
       </div>
-      <p className="text-[9px] text-[var(--color-text-sub)] mb-1.5">
+      <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1.5">
         S = Scan, A = Analyze, T = Autotrade, for each account on your cTrader ID. The master switches
         above are a veto — anything off there is off everywhere, and those switches grey out here.
         A dot on a switch means the account has its own setting instead of following the master.
@@ -261,7 +261,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
         either off on one account stops <em>that</em> account acting; the pass itself only stops once
         every account has it off.
       </p>
-      {err && <div className="text-[9px] text-[var(--color-down)]" role="alert">{err}</div>}
+      {err && <div className="text-(length:--fs-body) text-[var(--color-down)]" role="alert">{err}</div>}
 
       {/* STALE ACCOUNTS. Owner 02-08-2026: "I select only two account from the
           CTrader, but still shows 5 in the Tune > Pipeline. I am confuse."
@@ -272,7 +272,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
           disabled automatically; the button below is the only thing that
           writes, and only when clicked. */}
       {stale.length > 0 && (
-        <div className="rounded-[6px] border border-[var(--color-down)] p-2 mb-2 text-[9px]" role="alert">
+        <div className="rounded-[6px] border border-[var(--color-down)] p-2 mb-2 text-(length:--fs-body)" role="alert">
           <div className="font-bold text-[var(--color-down)]">
             {stale.length} account{stale.length === 1 ? '' : 's'} below {stale.length === 1 ? 'is' : 'are'} no longer listed by the broker
           </div>
@@ -288,7 +288,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                 <span className={`font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : ''}`}>
                   {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
                 </span>
-                <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
+                <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
                 {a.enabled
                   ? <span className="font-semibold text-[var(--color-down)]">STILL ENABLED — the bot can trade it</span>
                   : <span className="text-[var(--color-text-sub)]">already disabled — harmless, just clutter</span>}
@@ -309,9 +309,9 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
         </div>
       )}
 
-      {!view && !err && <div className="text-[9px] text-[var(--color-text-sub)]">Loading accounts…</div>}
+      {!view && !err && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading accounts…</div>}
       {view && accounts.length === 0 && (
-        <div className="text-[9px] text-[var(--color-text-sub)]">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           No accounts in the registry yet — pick them on Connect first.
         </div>
       )}
@@ -322,13 +322,13 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
           something wrote accounts.mode directly, and a small dot is not
           enough. */}
       {alarms.length > 0 && (
-        <div className="text-[9px] font-semibold text-[var(--color-down)] border border-[var(--color-down)] rounded-[6px] px-1.5 py-1 mb-1">
+        <div className="text-(length:--fs-body) font-semibold text-[var(--color-down)] border border-[var(--color-down)] rounded-[6px] px-1.5 py-1 mb-1">
           UNMANAGED EXPOSURE: {alarms.map(r => r.accountId).join(', ')} — open work with management off.
           {' '}{alarms[0].lights.manage.reason}
         </div>
       )}
       {globalHalt && (
-        <div className="text-[9px] text-[var(--color-warning-text)] mb-1">
+        <div className="text-(length:--fs-body) text-[var(--color-warning-text)] mb-1">
           Portfolio guard is blocking entries on every account{globalHaltReason ? ` — ${globalHaltReason}` : ''}.
           Accounts below can still show as armed; that is the account's own state, not permission to trade.
         </div>
@@ -341,10 +341,10 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
               key={a.accountId}
               className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1"
             >
-              <span className={`text-[9px] font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
+              <span className={`text-(length:--fs-body) font-bold tabular-nums ${a.isLive ? 'text-[var(--color-down)]' : 'text-[var(--color-text)]'}`}>
                 {a.isLive ? 'LIVE' : 'DEMO'} {a.traderLogin || a.accountId}
               </span>
-              <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
+              <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums">#{a.accountId}</span>
               {/* Owner (2026-07-31): "I need more details like current balance,
                   how many open positions, pending positions, disconnected or
                   active bot-trade." Balance is the loop's per-account stamp —
@@ -352,17 +352,17 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   zero. Counts are rows ATTRIBUTED to this account. The
                   connectivity chip is the sidecar's authorized roster:
                   active / disconnected / unknown, never guessed. */}
-              <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums" title="Last reconciled balance for this account (— = never reconciled)">
+              <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums" title="Last reconciled balance for this account (— = never reconciled)">
                 {a.balance != null
                   ? `${a.baseCurrency || 'USD'} ${Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                   : 'balance —'}
               </span>
-              <span className="text-[9px] text-[var(--color-text-sub)] tabular-nums" title="Open positions attributed to this account · working pending orders">
+              <span className="text-(length:--fs-body) text-[var(--color-text-sub)] tabular-nums" title="Open positions attributed to this account · working pending orders">
                 {a.openPositions ?? '—'} open · {a.pendingOrders ?? '—'} pending
               </span>
               {a.connectivity && (
                 <span
-                  className={`text-[9px] font-semibold uppercase ${
+                  className={`text-(length:--fs-body) font-semibold uppercase ${
                     a.connectivity === 'active' ? 'text-[var(--color-state-on-text)]'
                       : a.connectivity === 'disconnected' ? 'text-[var(--color-down)]'
                         : 'text-[var(--color-text-sub)]'}`}
@@ -397,7 +397,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   : 'Active = may open new trades · Manage only = keeps existing positions managed, opens nothing new · Paused = no scanning, no entries · Disabled = out of the broker roster entirely. Open positions are ALWAYS managed.'}
                 onChange={(e) => setMode(a, e.target.value)}
                 className={`rounded-[3px] border border-[var(--color-border)] bg-transparent px-[3px] py-[2px]
-                            text-[9px] font-semibold text-[var(--color-text)]
+                            text-(length:--fs-body) font-semibold text-[var(--color-text)]
                             ${a.isLive ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'}`}
               >
                 <option value="active">Active</option>
@@ -411,7 +411,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
               {/* Ratchet v2 hold — separate from the switches on purpose: the
                   ratchet never writes them, so its hold needs its own badge. */}
               {a.ratchet && (
-                <span className="text-[9px] font-bold text-[var(--color-warning-text)]"
+                <span className="text-(length:--fs-body) font-bold text-[var(--color-warning-text)]"
                   title={a.ratchet === 'halt'
                     ? 'Profit ratchet HALT — the protected floor was hit; entries stopped on this account. Re-arm from the Telegram alert, or it re-arms on sustained recovery.'
                     : 'Profit ratchet warning — equity is just above the protected floor; new entries paused until it recovers.'}>
@@ -422,7 +422,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   whatever these switches say — printing them without that fact
                   would overstate what they control. */}
               {!a.enabled && (
-                <span className="text-[9px] font-semibold uppercase text-[var(--color-state-off-text)]"
+                <span className="text-(length:--fs-body) font-semibold uppercase text-[var(--color-state-off-text)]"
                   title="This account is deselected on Connect, so the loop does not trade it at all. These switches apply if you re-enable it.">
                   off in Connect
                 </span>
@@ -442,7 +442,7 @@ export default function AccountPhaseSwitches({ master = null, onMasterTruth = nu
                   title={ownSetting
                     ? 'Clear this account\'s own settings so all three follow the master switches again'
                     : 'Already following the master switches'}
-                  className={`rounded-[3px] border border-[var(--color-border)] px-[5px] py-[3px] text-[9px] leading-none
+                  className={`rounded-[3px] border border-[var(--color-border)] px-[5px] py-[3px] text-(length:--fs-body) leading-none
                               text-[var(--color-text-sub)] ${ownSetting ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}
                 >
                   Inherit

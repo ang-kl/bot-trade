@@ -114,7 +114,7 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
       onKeyDown={onOpen ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }) : undefined}
       title={onOpen ? 'Open the Trade Cockpit for this trade' : undefined}
     >
-      <div className="flex items-center justify-between text-[9px] mb-0.5">
+      <div className="flex items-center justify-between text-(length:--fs-body) mb-0.5">
         <span className="flex items-center gap-1 min-w-0">
           {marketClosed && (
             <span aria-hidden="true" title="market closed — dial reads off the last known price, not a live tick">🔒</span>
@@ -124,7 +124,7 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
           <span className="font-semibold text-[var(--color-text)]">{label}</span>
           {stratTag && (
             <span
-              className="text-[9px] uppercase tracking-wide px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)] truncate"
+              className="text-(length:--fs-body) uppercase tracking-wide px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)] truncate"
               title={strategy ? `Opened by strategy: ${strategy}` : 'Manual / external position — no bot strategy attached'}
             >
               {stratTag}
@@ -145,12 +145,12 @@ function GaugeTile({ label, side, r, entry, sl, tp, price, noReason, marketClose
         <CockpitPFD entry={entry} sl={sl} tp={tp} side={side} price={price}
           pnl={pnlOk ? pnl : null} lots={volume} noReason={noReason} width={SIZE * 2 + 16} />
       </div>
-      <div className="text-center text-[9px] font-bold mt-1">
+      <div className="text-center text-(length:--fs-body) font-bold mt-1">
         {pnlOk ? money(pnl) : '—'}
-        <span className="text-[9px] font-normal text-[var(--color-text-sub)] ml-1">{ratePerMin == null ? '' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}</span>
+        <span className="text-(length:--fs-body) font-normal text-[var(--color-text-sub)] ml-1">{ratePerMin == null ? '' : `${ratePerMin >= 0 ? '+' : ''}${ratePerMin.toFixed(2)}R/min`}</span>
       </div>
       {/* Monitor review record — the verifiable proof each position is watched. */}
-      <div className="mt-1 pt-1 border-t border-[var(--color-border)] text-[9px] leading-tight flex items-center justify-between gap-1">
+      <div className="mt-1 pt-1 border-t border-[var(--color-border)] text-(length:--fs-body) leading-tight flex items-center justify-between gap-1">
         <span style={{ color: reviewColor }} className="truncate" title={lastCheckAt ? `Last monitor review at ${lastCheckAt}` : 'The monitor has not reviewed this position yet'}>
           ● {reviewText}
         </span>
@@ -168,7 +168,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
   const [selected, setSelected] = useState(null)
 
   if (positions.length === 0) {
-    return <p className="text-[9px] text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
+    return <p className="text-(length:--fs-body) text-[var(--color-text-sub)] py-1">Flat — no open positions.</p>
   }
 
   // Group the same symbol's trades together (owner: "group the same trades
@@ -270,7 +270,7 @@ export default function TradeGaugeWall({ positions = [], gridN = 4, marketHours 
         ))}
       </div>
       {withR.length > gridN && (
-        <p className="text-[9px] text-[var(--color-text-sub)] mt-1">{withR.length} open — scroll for the rest, or pick a bigger grid size to see more per screen.</p>
+        <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">{withR.length} open — scroll for the rest, or pick a bigger grid size to see more per screen.</p>
       )}
       {selected && <TradeChronograph pos={selected} onClose={() => setSelected(null)} />}
     </div>

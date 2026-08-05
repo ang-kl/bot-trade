@@ -13,7 +13,7 @@ export default function WorkedExample({ lines, label = 'Example' }) {
   const [open, setOpen] = useState(false)
   if (!Array.isArray(lines) || !lines.length) return null
   return (
-    <div className="w-full text-[9px]">
+    <div className="w-full text-(length:--fs-body)">
       <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
         className="cursor-pointer text-[var(--color-accent)] hover:underline font-semibold">
         {open ? '▾' : '▸'} {label}

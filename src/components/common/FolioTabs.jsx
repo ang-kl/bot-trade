@@ -42,7 +42,7 @@ export default function FolioTabs({ tabs, active, onChange, children }) {
               tabIndex={on ? 0 : -1}
               type="button"
               onClick={() => onChange(t.id)}
-              className={`shrink-0 rounded-t-[12px] border border-b-0 px-4 text-[9px] cursor-pointer transition-colors min-h-[44px] ${
+              className={`shrink-0 rounded-t-[12px] border border-b-0 px-4 text-(length:--fs-body) cursor-pointer transition-colors min-h-[44px] ${
                 on
                   ? 'bg-[var(--color-surface)] border-[var(--color-border)] font-bold text-[var(--color-text)] pt-2.5 pb-3'
                   : 'bg-transparent border-transparent font-medium text-[var(--color-text-sub)] pt-3 pb-2.5 hover:text-[var(--color-text)]'

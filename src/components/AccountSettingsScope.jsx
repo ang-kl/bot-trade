@@ -92,11 +92,11 @@ export default function AccountSettingsScope() {
     }
   }, [acct, load])
 
-  if (err) return <p className="text-[9px] text-[var(--color-down)]">Settings scope unavailable: {err}</p>
-  if (!view) return <p className="text-[9px] text-[var(--color-text-sub)]">Loading…</p>
+  if (err) return <p className="text-(length:--fs-body) text-[var(--color-down)]">Settings scope unavailable: {err}</p>
+  if (!view) return <p className="text-(length:--fs-body) text-[var(--color-text-sub)]">Loading…</p>
 
   return (
-    <div id="sec-settings-scope" className="text-[9px] flex flex-col gap-1">
+    <div id="sec-settings-scope" className="text-(length:--fs-body) flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-2">
         <h3 className="t-h3">Per-Account Settings card</h3>
         <span className="text-[var(--color-text-sub)]">

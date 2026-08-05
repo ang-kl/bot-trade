@@ -114,22 +114,22 @@ export default function TradeChronograph({ pos, onClose }) {
       <div ref={panelRef} className="w3-animate-zoom bg-[var(--color-bg)] border border-[var(--color-border)] shadow-2xl rounded-2xl p-4 max-w-[420px] w-full" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-baseline gap-2">
-            <span className="text-[9px] font-bold">{pos.symbol}</span>
-            <span className={isLong(side) ? 'text-[var(--color-up)] text-[9px]' : 'text-[var(--color-down)] text-[9px]'}>{isLong(side) ? 'Long' : 'Short'}</span>
-            {strat && <span className="text-[9px] uppercase px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)]">{strat}</span>}
-            {tf && <span className="text-[9px] text-[var(--color-text-sub)]">{tf}</span>}
-            {trend && <span className="text-[9px]" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
+            <span className="text-(length:--fs-body) font-bold">{pos.symbol}</span>
+            <span className={isLong(side) ? 'text-[var(--color-up)] text-(length:--fs-body)' : 'text-[var(--color-down)] text-(length:--fs-body)'}>{isLong(side) ? 'Long' : 'Short'}</span>
+            {strat && <span className="text-(length:--fs-body) uppercase px-1 rounded bg-[var(--color-surface-2,rgba(120,120,120,0.15))] text-[var(--color-text-sub)]">{strat}</span>}
+            {tf && <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">{tf}</span>}
+            {trend && <span className="text-(length:--fs-body)" style={{ color: trend === 'UP' ? UP : trend === 'DOWN' ? DOWN : 'var(--color-text-sub)' }}>EMA20 {trend}</span>}
           </div>
           <button type="button" onClick={onClose} className="text-[var(--color-text-sub)] text-[16px] leading-none px-1" aria-label="Close">×</button>
         </div>
 
         <div className="flex items-center gap-1.5 mb-1.5">
-          <label htmlFor="chrono-indicator" className="text-[9px] text-[var(--color-text-sub)] uppercase tracking-wide">Indicator</label>
+          <label htmlFor="chrono-indicator" className="text-(length:--fs-body) text-[var(--color-text-sub)] uppercase tracking-wide">Indicator</label>
           <select
             id="chrono-indicator"
             value={indicator}
             onChange={e => setIndicator(e.target.value)}
-            className="glass-inset rounded-[6px] px-1.5 py-0.5 text-[9px]"
+            className="glass-inset rounded-[6px] px-1.5 py-0.5 text-(length:--fs-body)"
           >
             {INDICATOR_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
           </select>
@@ -147,7 +147,7 @@ export default function TradeChronograph({ pos, onClose }) {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[9px] mt-2">
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-(length:--fs-body) mt-2">
           <span className="text-[var(--color-text-sub)]">Current price</span><span className="tabular-nums text-right font-semibold">{price5(price)}</span>
           <span className="text-[var(--color-text-sub)]">Velocity</span><span className="tabular-nums text-right font-semibold">{vel == null ? '—' : `${vel.toFixed(2)} R/hr`}</span>
           <span className="text-[var(--color-text-sub)]">Risk used (to stop)</span><span className="tabular-nums text-right font-semibold">{slProx == null ? '—' : `${Math.round(slProx * 100)}%`}</span>
@@ -155,12 +155,12 @@ export default function TradeChronograph({ pos, onClose }) {
           <span className="text-[var(--color-text-sub)]">Entry time</span><span className="tabular-nums text-right font-semibold">{openedAt ? new Date(openedAt).toLocaleString() : '—'}</span>
         </div>
         {indicator !== 'none' && (
-          <p className="tabular-nums text-[9px] font-semibold mt-1.5 pt-1.5 border-t border-[var(--color-border)]">
+          <p className="tabular-nums text-(length:--fs-body) font-semibold mt-1.5 pt-1.5 border-t border-[var(--color-border)]">
             {indicatorLine ?? 'loading…'}
           </p>
         )}
         {/* Legend — what the instrument means, in words (never colour-only). */}
-        <p className="text-[9px] leading-snug text-[var(--color-text-sub)] mt-1.5">
+        <p className="text-(length:--fs-body) leading-snug text-[var(--color-text-sub)] mt-1.5">
           Horizon level = your ENTRY price · nose up into sky = in profit, below into ground = in loss (±2R full scale) ·
           banked RIGHT = price converging on your TP, banked LEFT = diverging, wings level = holding ·
           left tape = P/L in R · right tape = live price with TP / entry / SL bugs · bottom strip = distance still to travel to the TP.

@@ -81,12 +81,12 @@ export default function AccountsAudit() {
       <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Accounts · Workflow audit</h1>
-        <span className="text-[9px] text-[var(--color-text-sub)]">
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
           Lab → Bridge → Market · did each trade run the full pipeline, and were early stops justified?
         </span>
       </div>
       <AccountsSubNav />
-      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+      {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
       <Card id="sec-clusters">
         <SymbolClusters
           data={clusters} loading={clusterLoading} error={clusterErr}

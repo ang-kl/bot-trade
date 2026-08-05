@@ -59,7 +59,7 @@
      these together. A hard-coded px value ignores them both.
 
      WHY A TOKEN AND NOT A REWRITE OF EVERY CALL SITE IN ONE GO. This app has
-     several hundred `text-[9px]` literals across 40+ components, tuned over
+     several hundred `text-(length:--fs-body)` literals across 40+ components, tuned over
      many rounds against the owner's own "dense desk, 9px tables, OCD about
      uniform field sizes" instructions. Swapping them blind would be a
      several-thousand-line change with no way to tell a deliberate density
@@ -109,14 +109,42 @@
      one edit here instead of a sweep. Pixel units on purpose: these sizes
      were chosen against the owner's screens as fixed px and must not breathe
      with the responsive rem base the --fs-* tokens above ride on. */
-  --fs-d6:  6px;
-  --fs-d7:  7px;
-  --fs-d8:  8px;
-  --fs-d9:  9px;
-  --fs-d10: 10px;
-  --fs-d11: 11px;
-  --fs-d12: 12px;
   --fs-d18: 18px;
+
+  /* =========================================================================
+     THE RESPONSIVE CANON (owner, 05-08-2026, in three messages):
+       "please canonical for tablet and iphones"
+       "9.5px will be ideal as minimum"
+       "11 px for desktop"
+
+     TWO TIERS, ONE BREAKPOINT. Tablet and iPhone share a tier because they
+     are the same thing for reading: a held device at arm's length, where the
+     constraint is fitting a dense table on a narrow screen. The desk is a
+     fixed screen at a fixed distance with room to spare, so it gets the
+     bigger type. This is why the desktop size is LARGER than the phone size
+     and not the other way round — the phone is not a small desktop.
+
+     These are the ONLY four type values in the app. Everything downstream is
+     derived from --fs-body by a fixed offset, so moving the body size moves
+     the whole ladder and the hierarchy cannot drift apart:
+
+                        body   +1 head   +3 heading   +4 title
+       tablet/iPhone     9.5     10.5       12.5        13.5
+       desktop ≥1280    11       12         14          15
+
+     9.5px is the FLOOR the owner set and the touch tier sits exactly on it.
+     The +3 heading offset is the owner's own measurement preserved: the
+     reference header was 11px against a 9px body (+2), then "increase by
+     1pt" made it +3.
+
+     px, not rem, deliberately: these were chosen against the owner's own
+     screens at fixed sizes (see the --fs-d* note above). The rem --fs-*
+     scale further up still exists for the chrome that rides the root size.
+     ========================================================================= */
+  --fs-body:  9.5px;
+  --fs-head:  10.5px;
+  --fs-h:     12.5px;
+  --fs-title: 13.5px;
   --lh-session:       0.75rem;
 
   /* ---------------------------------------------------------------------
@@ -539,13 +567,25 @@
    src/lib/type-canon.test.js enforces this against the source and lists the
    deliberate exceptions (icon glyphs, form fields, table heads).
    =========================================================================== */
-.t-h1, .t-heading { font-size: 13px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
-.t-h2  { font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
-.t-h3  { font-size: 12px; font-weight: 700; line-height: 1.35; color: var(--color-accent); }
-.t-body    { font-size: 9px; font-weight: 500; line-height: 1.5; }
-.t-label   { font-size: 9px; font-weight: 600; line-height: 1.5; }
-.t-sub     { font-size: 9px; font-weight: 400; line-height: 1.6; }
-.t-meta    { font-size: 9px; font-weight: 400; line-height: 1.65; }
+.t-h1, .t-heading { font-size: var(--fs-title); font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; color: var(--color-accent); }
+.t-h2  { font-size: var(--fs-h); font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+.t-h3  { font-size: var(--fs-h); font-weight: 700; line-height: 1.35; color: var(--color-accent); }
+.t-body    { font-size: var(--fs-body); font-weight: 500; line-height: 1.5; }
+.t-label   { font-size: var(--fs-body); font-weight: 600; line-height: 1.5; }
+.t-sub     { font-size: var(--fs-body); font-weight: 400; line-height: 1.6; }
+.t-meta    { font-size: var(--fs-body); font-weight: 400; line-height: 1.65; }
+
+/* The desk tier. One breakpoint, matching the ≤1279px tablet cutoff every
+   other responsive rule in this file already uses, so type and layout change
+   at the same moment rather than a viewport apart. */
+@media (min-width: 1280px) {
+  :root {
+    --fs-body:  11px;
+    --fs-head:  12px;
+    --fs-h:     14px;
+    --fs-title: 15px;
+  }
+}
 
 @media (min-width: 768px)  { html { font-size: 15px; } }
 @media (min-width: 1024px) { html { font-size: 16px; } }
@@ -580,11 +620,42 @@
    three in use (700 in the ledger, 600 in most tables, 500 in a few). Weight
    is 600, matching W_HEAD and docs/ui-spec.md. */
 /* Owner (2026-07-25): "All table data cell be 9px. Table heads 10px" —
-   app-wide, both kinds of table. Unlayered, so per-cell text-[12px]/[13px]
+   app-wide, both kinds of table. Unlayered, so per-cell text-(length:--fs-h)/[13px]
    utilities cannot override it, same mechanism as the head rule below. */
 tbody td {
-  font-size: 9px;
+  font-size: var(--fs-body);
+  /* Owner (05-08-2026): "please rescale the column to scrollable within table
+     cell or word wrap". Raising the desk body size to 11px widens every
+     column, and the old answer — push the overflow onto a horizontal page
+     scroll — stops being honest once the table is wider than the screen by
+     more than a nudge.
+
+     `anywhere` rather than `break-word`: the things that actually stretch a
+     column here have no spaces to break at (a 9-digit position id, a symbol
+     like `USDCNH.spot`, a thesis string), and `break-word` will not break
+     inside an unbroken run when the box can still grow. The column now
+     rescales instead of the table.
+
+     Deliberately NOT setting white-space here: numeric cells carry their own
+     `whitespace-nowrap` so a price or a timestamp never breaks mid-value, and
+     this rule is unlayered — it would beat every one of them. Cells that must
+     stay on one line AND are long get `.cell-scroll` below. */
+  overflow-wrap: anywhere;
 }
+
+/* The other half of the same instruction: a cell that must not wrap — an id,
+   a full instrument name, a raw thesis — scrolls INSIDE its own cell rather
+   than widening the column. Opt-in, on the cell's own child span, because the
+   scroll container needs a block box that the <td> itself is not. */
+.cell-scroll {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.cell-scroll::-webkit-scrollbar { display: none; }
 
 /* Owner (2026-07-25, later the same day): "Timeframe ledger — table cell font
    size 9.5px, except those tiny information like '5t · 40% · PF 0.76'". The
@@ -598,8 +669,39 @@ tbody td {
    deleted so the ledger still has a named place to differ if the owner asks
    for it back — it just no longer differs. */
 .t-ledger tbody td {
-  font-size: 9px;
+  font-size: var(--fs-body);
+  /* Owner (05-08-2026): "please rescale the column to scrollable within table
+     cell or word wrap". Raising the desk body size to 11px widens every
+     column, and the old answer — push the overflow onto a horizontal page
+     scroll — stops being honest once the table is wider than the screen by
+     more than a nudge.
+
+     `anywhere` rather than `break-word`: the things that actually stretch a
+     column here have no spaces to break at (a 9-digit position id, a symbol
+     like `USDCNH.spot`, a thesis string), and `break-word` will not break
+     inside an unbroken run when the box can still grow. The column now
+     rescales instead of the table.
+
+     Deliberately NOT setting white-space here: numeric cells carry their own
+     `whitespace-nowrap` so a price or a timestamp never breaks mid-value, and
+     this rule is unlayered — it would beat every one of them. Cells that must
+     stay on one line AND are long get `.cell-scroll` below. */
+  overflow-wrap: anywhere;
 }
+
+/* The other half of the same instruction: a cell that must not wrap — an id,
+   a full instrument name, a raw thesis — scrolls INSIDE its own cell rather
+   than widening the column. Opt-in, on the cell's own child span, because the
+   scroll container needs a block box that the <td> itself is not. */
+.cell-scroll {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.cell-scroll::-webkit-scrollbar { display: none; }
 
 thead th {
   font-family: inherit;
@@ -616,13 +718,26 @@ thead th {
      way to three lines. 10px + proper case + nowrap means one line, always.
      The table scrolls horizontally instead (owner: "we can scroll on the
      right"), which is the honest trade: a wider table you can reach beats a
-     squeezed one you can't read. */
-  font-size: 10px;
+     squeezed one you can't read.
+
+     REVISED 05-08-2026, owner: "please rescale the column to scrollable within
+     table cell or word wrap". The head is the widest thing in most columns, so
+     it is the first thing that has to give when the desk body size goes to
+     11px. `nowrap` is gone and the head wraps.
+
+     What the 2026-07-25 note was actually protecting against was a THREE-row
+     header, and that came from UPPERCASE + 12px + an unconstrained break, all
+     three at once. Proper case and the head size stay, so a wrapped head is
+     two lines, not three — and two readable lines beat one line the reader has
+     to scroll sideways to finish. */
+  font-size: var(--fs-head);
   font-weight: 600;
   text-transform: none;
   letter-spacing: normal;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   text-align: center;
+  vertical-align: bottom;
 }
 
 /* The same header treatment for the CSS-grid "tables" — the Performance page
@@ -636,20 +751,19 @@ thead th {
   font-family: inherit;
   background: var(--table-head-bg);
   color: var(--table-head-fg);
-  font-size: 10px;
+  font-size: var(--fs-head);
   font-weight: 600;
   text-transform: none;
   letter-spacing: normal;
 }
 .t-gridhead > * {
   border-right: 1px solid var(--table-head-rule);
-  /* One line, never three. A label longer than its track ellipsises rather
-     than wrapping or colliding with its neighbour; GradientBody puts the full
-     name in a title attribute, and the copy payloads always carry it in full,
-     so nothing is actually lost. */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Was: one line, ellipsised. Changed 05-08-2026 with the `thead th` rule
+     above, and this one was the weaker of the two — an ellipsis HIDES the
+     label, and a grid column template is fixed, so a truncated head could not
+     be recovered by scrolling the way a real table's could. It wraps now. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .t-gridhead > *:last-child { border-right: 0; }
 thead th:first-child { border-top-left-radius: 8px; }
@@ -668,7 +782,7 @@ thead th button { color: inherit; }
    smallest size that still reads as an icon (9px ≈ 60% of body). Tap/click
    toggles the explanation inline; hover shows it as a tooltip. */
 .info-i {
-  font-size: 9px;
+  font-size: var(--fs-body);
   line-height: 1;
   vertical-align: super;
   margin-left: 3px;
@@ -684,7 +798,7 @@ thead th button { color: inherit; }
    a label, not a heading, and uppercase + 700 + letter-spacing already carry
    it without the extra pixel. */
 .t-section-label {
-  font-size: 9px;
+  font-size: var(--fs-body);
   font-weight: 700;
   line-height: 1.5;
   letter-spacing: 0.05em;
@@ -987,7 +1101,7 @@ button, a, [role="button"], summary {
    `min()` implements the whole sentence: row + 1px where that is small, and
    never above the cap whatever the field is nested in. The !important still
    beats the scattered per-page text-[..px] utilities. */
-:root { --font-field-max: 10px; }
+:root { --font-field-max: var(--fs-head); }   /* body + 1, both tiers */
 input:not([type='checkbox']):not([type='radio']):not([type='range']),
 select,
 textarea {

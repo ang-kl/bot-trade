@@ -96,7 +96,7 @@ function AnimatedNumber({ value, decimals = 2, className = '' }) {
  */
 function Toggle({ id, label, on, onClick, title }) {
   return (
-    <div id={id} className="flex items-center justify-between text-[9px]">
+    <div id={id} className="flex items-center justify-between text-(length:--fs-body)">
       <span className="text-[var(--color-text-sub)]" title={title}>{label}</span>
       <Pill on={on} label="On" offLabel="Off" onClick={onClick} />
     </div>
@@ -111,7 +111,7 @@ function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = fa
   return (
     <button type="button" onClick={onClick} {...aria}
       title={commit === 'now' ? 'Applies IMMEDIATELY when tapped' : 'Takes effect when you press this section’s Save'}
-      className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-[9px] cursor-pointer ${on
+      className={`rounded-[var(--radius-control)] border px-[4px] py-[3px] text-(length:--fs-body) cursor-pointer ${on
         ? 'border-[var(--color-state-on-border)] text-[var(--color-state-on-text)] bg-[var(--color-state-on-bg)] font-normal'
         : off}`}>
       {on ? label : (offLabel ?? label.toUpperCase())}
@@ -120,7 +120,7 @@ function Pill({ on, label, offLabel = null, onClick, commit = 'save', radio = fa
 }
 
 // Save buttons: "Overall save button can be 1 point increase font size."
-const SAVE_BTN = '!text-[9px]'
+const SAVE_BTN = '!text-(length:--fs-body)'
 
 // Every independently-saved form on this page, and the three that make up the
 // Position Protection card. Module scope so load() can name them without
@@ -405,7 +405,7 @@ export default function Risk() {
       <SectionNavFab />
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-bold t-heading">Risk</h1>
-        <span className="text-[9px] text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
+        <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">every layer's limits in one place — changes apply to the live gate on save</span>
         {/* HOW MUCH TO SHOW (owner 04-08-2026: "the RISK page becomes
             complicated"). Essentials is the default; Everything is this page
             unchanged. Nothing is removed by Essentials — advanced groups
@@ -416,18 +416,18 @@ export default function Risk() {
           <Pill radio on={viewMode === EVERYTHING} label="Everything" onClick={() => chooseMode(EVERYTHING)} />
         </span>
         {viewMode === ESSENTIALS && (
-          <span className="text-[9px] text-[var(--color-text-sub)]">
+          <span className="text-(length:--fs-body) text-[var(--color-text-sub)]">
             showing the settings that get changed and every layer that can stop a loss — nothing is disabled or hidden from the bot
           </span>
         )}
         {saving && <Badge tone="info">saving {saving}…</Badge>}
       </div>
       {savedAt && !saving && (
-        <div className="text-[9px] text-[var(--color-text-sub)]" aria-live="polite">
+        <div className="text-(length:--fs-body) text-[var(--color-text-sub)]" aria-live="polite">
           ✓ Saved {savedAt.section} at {savedAt.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} — the fields below were re-read from the agent after saving, so what you see is what it holds.
         </div>
       )}
-      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+      {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
 
       {/* ---- WHOSE LIMITS ARE THESE ---------------------------------------
           Owner 02-08-2026: "each sub-page doesn't tie to the account selected
@@ -437,7 +437,7 @@ export default function Risk() {
           necessarily the limits that account trades under, and there was no
           way to tell. Per-account overlays already existed server-side and
           nothing here could reach them. */}
-      <Card className="text-[9px]">
+      <Card className="text-(length:--fs-body)">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <AccountScopePills
             value={riskAcct}
@@ -451,7 +451,7 @@ export default function Risk() {
             {!riskScoped ? 'GLOBAL' : (data?.risk?.overlayKeys?.length ?? 0) > 0 ? `${data.risk.overlayKeys.length} ACCOUNT OVERRIDE${data.risk.overlayKeys.length === 1 ? '' : 'S'}` : 'FOLLOWS GLOBAL'}
           </Badge>
           {riskScoped && (data?.risk?.overlayKeys?.length ?? 0) > 0 && (
-            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-[9px]" onClick={clearOverlay}>
+            <Button size="sm" variant="subtle" className="!px-2 !py-0.5 !min-h-0 text-(length:--fs-body)" onClick={clearOverlay}>
               Clear overrides — follow global again
             </Button>
           )}
@@ -521,8 +521,8 @@ export default function Risk() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {tiles.map(([label, value]) => (
               <div key={label} className="glass-inset rounded-[10px] px-3 py-2">
-                <div className="text-[9px] text-[var(--color-text-sub)]">{label}</div>
-                <div className="text-[9px] font-bold tabular-nums">{value}</div>
+                <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">{label}</div>
+                <div className="text-(length:--fs-body) font-bold tabular-nums">{value}</div>
               </div>
             ))}
           </div>
@@ -550,7 +550,7 @@ export default function Risk() {
           <div>
             <Field label="Account balance (USD)" value={acct.balance} onChange={v => setAcct(a => ({ ...a, balance: v }))}
               hint="The balance every % figure below is computed from." />
-            <div className="text-[9px] text-[var(--color-text-sub)] mt-0.5">
+            <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-0.5">
               {data?.account?.balanceSource === 'broker'
                 ? `live from the broker (snapshot ${data?.account?.balanceFetchedAt ? new Date(data.account.balanceFetchedAt).toLocaleTimeString() : ''}) — edits here override until the next sync`
                 : 'stored value — connect/refresh the broker for live truth'}
@@ -558,12 +558,12 @@ export default function Risk() {
           </div>
           <Field label="Leverage (1:N)" anchor="leverage" value={acct.leverage} onChange={v => setAcct(a => ({ ...a, leverage: v }))}
             hint="Used for margin-headroom checks before approving a position." recommend="1:100 — match whatever your broker account actually offers." />
-          <div className="text-[9px]">
+          <div className="text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Broker stop-out level </span>
             <span className="font-semibold">{data?.account?.brokerStopOutPct ?? 50}%</span>
-            <span className="text-[9px] text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
+            <span className="text-(length:--fs-body) text-[var(--color-text-sub)]"> margin level — broker-enforced liquidation, not editable</span>
           </div>
-          <div className="text-[9px]">
+          <div className="text-(length:--fs-body)">
             <span className="text-[var(--color-text-sub)]">Account </span>
             <span className="font-semibold">{data?.account?.accountId || '—'}</span>
           </div>
@@ -590,7 +590,7 @@ export default function Risk() {
         {/* The loss cap now has a real per-account overlay; the other two do
             not YET, and saying so is the whole point of this bar. */}
         {riskScoped
-          ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-[9px] text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
+          ? <div className="glass-inset mb-2 rounded-[2px] px-2 py-1 text-(length:--fs-body) text-[var(--color-text-sub)]" style={{ borderLeft: '2px solid var(--color-accent)' }}>
               <b className="text-[var(--color-text)]">Editing this account&apos;s overlay — all three layers.</b>{' '}
               {data?.lossCap?.overlayKeys?.length > 0
                 ? `${data.lossCap.overlayKeys.length} field${data.lossCap.overlayKeys.length === 1 ? '' : 's'} pinned here; the rest follow the shared settings.`
@@ -598,7 +598,7 @@ export default function Risk() {
               {' '}The profit ratchet and Loss Guardian are scoped the same way — each shows what it has pinned on its own card.
             </div>
           : <GlobalScopeNote className="mb-2" what="The per-position loss cap, the profit ratchet and the Loss Guardian" />}
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-[9px]">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-(length:--fs-body)">
           <span className="text-[var(--color-text-sub)]">
             Three independent layers. Each has its own <b className="text-[var(--color-text)]">Save</b> at the foot of its card — including the On/Off switch, which only takes effect once saved. Or save all three:
           </span>
@@ -625,7 +625,7 @@ export default function Risk() {
 
           {/* Layer 1 — per-position loss cap (A1) */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="font-semibold" title="Checks every open position's floating P&L each minute against the tighter of the $ and % caps below. On breach it closes the position (or alerts, per Action).">Per-position loss cap</span>
               {riskScoped && data?.lossCap?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossCap.overlayKeys.length} pinned</span>}
               {dirty['loss-cap'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
@@ -640,14 +640,14 @@ export default function Risk() {
             <Advanced mode={viewMode} label="Loss-cap details" total={3}
               changed={[lossCap?.scope === 'bot', lossCap?.action === 'alert', lossCap?.retryMinutes !== 10].filter(Boolean).length}
               dirty={!!dirty['loss-cap']}>
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="text-[var(--color-text-sub)]" title="'all' watches every broker position including manual ones; 'bot' only the bot's own ledger positions.">Scope</span>
               <span role="radiogroup" aria-label="Scope" className="flex gap-1">
                 <Pill radio on={lossCap?.scope !== 'bot'} label="All positions" onClick={() => setLossCap(c => ({ ...c, scope: 'all' }))} />
                 <Pill radio on={lossCap?.scope === 'bot'} label="Bot only" onClick={() => setLossCap(c => ({ ...c, scope: 'bot' }))} />
               </span>
             </div>
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="text-[var(--color-text-sub)]" title="'Close' flattens the breaching position at market; 'Alert' only sends Telegram and leaves it open.">Action on breach</span>
               <span role="radiogroup" aria-label="Action on breach" className="flex gap-1">
                 <Pill radio on={lossCap?.action !== 'alert'} label="Close" onClick={() => setLossCap(c => ({ ...c, action: 'close' }))} />
@@ -662,7 +662,7 @@ export default function Risk() {
               const pctCap = lossCap?.maxLossPctOfBalance != null && balNow ? balNow * lossCap.maxLossPctOfBalance / 100 : null
               const eff = [lossCap?.maxLossUsd, pctCap].filter(v => v != null && v > 0)
               return (
-                <div className="text-[9px] text-[var(--color-text-sub)]">
+                <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                   Effective cap right now: <b className="text-[var(--color-text)]">{eff.length ? `$${fmt$(Math.min(...eff))}` : 'none — both caps empty'}</b>
                 </div>
               )
@@ -672,7 +672,7 @@ export default function Risk() {
 
           {/* Layer 2 — profit ratchet staircase (A4) */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="font-semibold" title="Locks in gains on the way to the $100k goal: every full step of equity growth raises a protected floor one step behind the high-water mark. Falling back to the floor flattens bot positions and disarms autotrade — banked profit stays banked.">Profit ratchet (staircase)</span>
               {riskScoped && data?.profitRatchet?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.profitRatchet.overlayKeys.length} pinned</span>}
               {dirty['ratchet'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
@@ -681,7 +681,7 @@ export default function Risk() {
             <Field label="Step size" unit="$" value={ratchet?.stepUsd} onChange={v => setRatchet(c => ({ ...c, stepUsd: v }))}
               placeholder="auto"
               hint="Equity growth per banked step. Empty = automatic: 1% of balance, clamped $25–$500 — scales itself as the account grows." recommend="auto (owner's '$500 min. / 1% min.' rule)." />
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="text-[var(--color-text-sub)]" title="'Flatten' closes the bot's positions AND disarms autotrade at the floor; 'Halt' only disarms, leaving positions to their own SL/TP.">At the floor</span>
               <span role="radiogroup" aria-label="At the floor" className="flex gap-1">
                 <Pill radio on={ratchet?.floorAction !== 'halt'} label="Flatten" onClick={() => setRatchet(c => ({ ...c, floorAction: 'flatten' }))} />
@@ -695,7 +695,7 @@ export default function Risk() {
                 floor. A halt has to be visible where the ladder is, and
                 liftable for the one account it belongs to. */}
             {ratchetState?.halt && (
-              <div className="glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-[9px] space-y-1.5">
+              <div className="glass-inset rounded-[1px] border border-[var(--color-down)] p-2 text-(length:--fs-body) space-y-1.5">
                 <div className="font-semibold" style={{ color: 'var(--color-down)' }}>
                   ⛔ Ratchet halt — new entries blocked on this account
                 </div>
@@ -727,7 +727,7 @@ export default function Risk() {
               const steps = st && step > 0 ? Math.max(0, Math.floor((st.hwm - st.baseline) / step)) : 0
               const floor = st && step > 0 && steps >= 1 ? st.baseline + (steps - 1) * step : null
               return st ? (
-                <div className="glass-inset rounded-[1px] p-2 text-[9px] space-y-0.5">
+                <div className="glass-inset rounded-[1px] p-2 text-(length:--fs-body) space-y-0.5">
                   <div className="font-semibold">Live staircase</div>
                   <div className="grid grid-cols-2 gap-x-3">
                     <span className="text-[var(--color-text-sub)]">Baseline</span><span className="text-right tabular-nums">${fmt$(st.baseline)}</span>
@@ -745,7 +745,7 @@ export default function Risk() {
                 // No live staircase to show. THIS is where a worked example
                 // earns its place: once the ratchet has run, the real
                 // baseline/HWM/floor above beats any hypothetical.
-                <div className="text-[9px] text-[var(--color-text-sub)] space-y-1">
+                <div className="text-(length:--fs-body) text-[var(--color-text-sub)] space-y-1">
                   <div>No staircase state yet — it baselines at current equity on the ratchet's first pass after enabling.</div>
                   <WorkedExample label="What that will look like"
                     lines={ratchetExample({ balance: balNow, stepUsd: ratchet?.stepUsd })} />
@@ -764,7 +764,7 @@ export default function Risk() {
 
           {/* Layer 3 — Loss Guardian: the safety net for naked positions */}
           <div className="glass-inset rounded-[1px] p-2 space-y-2">
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="font-semibold" title="Safety net for positions with NO stop loss (usually manual/external ones): places a protective stop at the ATR distance below, or closes outright if price is already past it. Never touches a position that has its own stop.">Loss Guardian</span>
               {riskScoped && data?.lossGuardian?.overlayKeys?.length > 0 && <span className="ml-1 text-[var(--color-accent)]">{data.lossGuardian.overlayKeys.length} pinned</span>}
               {dirty['loss-guardian'] && <span className="ml-1 font-semibold" style={{ color: 'var(--color-down)' }}>• unsaved</span>}
@@ -773,7 +773,7 @@ export default function Risk() {
             <Advanced mode={viewMode} label="Guardian details" total={3}
               changed={[guardian2?.scope === 'external', guardian2?.fallbackAdversePct !== 0.02, guardian2?.maxHoldHours != null].filter(Boolean).length}
               dirty={!!dirty['loss-guardian']}>
-            <div className="flex items-center justify-between text-[9px]">
+            <div className="flex items-center justify-between text-(length:--fs-body)">
               <span className="text-[var(--color-text-sub)]" title="'all' = any naked position, bot or manual; 'external' = only manual/external ones.">Scope</span>
               <span role="radiogroup" aria-label="Scope" className="flex gap-1">
                 <Pill radio on={guardian2?.scope !== 'external'} label="All naked" onClick={() => setGuardian2(c => ({ ...c, scope: 'all' }))} />
@@ -812,14 +812,14 @@ export default function Risk() {
                 state is a property of this pair, and a banner elsewhere is
                 something you read once and stop seeing. */}
             {capState.message && (
-              <div className={`glass-inset rounded-[1px] p-1.5 text-[9px] leading-snug ${capState.severity === 'danger' ? 'text-[var(--color-warning-text)] border border-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}
+              <div className={`glass-inset rounded-[1px] p-1.5 text-(length:--fs-body) leading-snug ${capState.severity === 'danger' ? 'text-[var(--color-warning-text)] border border-[var(--color-down)]' : 'text-[var(--color-text-sub)]'}`}
                 role={capState.severity === 'danger' ? 'alert' : undefined}>
                 <span className="font-semibold">{capState.severity === 'danger' ? 'Daily loss is UNCAPPED. ' : 'Heads up. '}</span>
                 {capState.message}
               </div>
             )}
             {capBinding && (
-              <div className="text-[9px] text-[var(--color-text-sub)]">{capBinding}</div>
+              <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">{capBinding}</div>
             )}
             {/* Owner 03-08-2026: "raise to 8.8% and dynamic-intelligent
                 adjusted down from 18.8% … for longevity to trade". Empty =
@@ -834,7 +834,7 @@ export default function Risk() {
                 DST-aware FX-day anchor that drifts from the veto line twice a
                 year. */}
             {data?.dailyPacing?.paced && (
-              <div className="glass-inset rounded-[1px] p-1.5 text-[9px] text-[var(--color-text-sub)]">
+              <div className="glass-inset rounded-[1px] p-1.5 text-(length:--fs-body) text-[var(--color-text-sub)]">
                 Now, {(data.dailyPacing.elapsed * 100).toFixed(0)}% through the FX day:
                 <span className="font-semibold tabular-nums text-[var(--color-text)]">
                   {' '}{(data.dailyPacing.pct * 100).toFixed(2)}% = ${fmt$(data.dailyPacing.capUsd)}
@@ -869,7 +869,7 @@ export default function Risk() {
             <Field label={`Margin level floor${mark('marginLevelFloorPct')}`} anchor="marginLevelFloorPct" applied={appliedKeys.has('marginLevelFloorPct')} unit="%" value={risk.marginLevelFloorPct} onChange={v => setRisk(r => ({ ...r, marginLevelFloorPct: v }))}
               hint="Equity ÷ used margin, as a %. New entries are refused below this line — it fires EARLIER than the broker's stop-out, which is the point." recommend="150% or higher; the broker stops out at 50%." />
             <div className="border-t border-[var(--glass-edge)] pt-2 space-y-2">
-              <div id="risk-deriskOnDrawdown" className="flex items-center justify-between text-[9px]">
+              <div id="risk-deriskOnDrawdown" className="flex items-center justify-between text-(length:--fs-body)">
                 <span className="text-[var(--color-text-sub)]" title="A losing run sizes DOWN automatically instead of compounding.">Drawdown de-risk{mark('deriskOnDrawdown')}</span>
                 <Pill on={!!risk.deriskOnDrawdown} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, deriskOnDrawdown: !r.deriskOnDrawdown }))} />
               </div>
@@ -880,11 +880,11 @@ export default function Risk() {
               <Field label={`size multiplier${mark('deriskMult')}`} anchor="deriskMult" unit="×" value={risk.deriskMult} onChange={v => setRisk(r => ({ ...r, deriskMult: v }))}
                 hint="Budget × this while de-risked (0.5 = half size)." recommend="0.5 (half size)." />
             </div>
-            <label id="risk-blockedSymbols" className="block text-[9px]">
+            <label id="risk-blockedSymbols" className="block text-(length:--fs-body)">
               <span className="text-[var(--color-text-sub)]" title="Symbols vetoed outright, comma-separated.">Blocked symbols{mark('blockedSymbols')}</span>
               <Input type="text" value={(risk.blockedSymbols || []).join(', ')}
                 onChange={e => setRisk(r => ({ ...r, blockedSymbols: e.target.value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean) }))}
-                placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-[9px]" />
+                placeholder="e.g. BTCUSD, USDIDR" className="!min-h-[26px] !py-0.5 !px-2 !text-(length:--fs-body)" />
             </label>
             </Advanced>
             {/* ENFORCED, AND UNTIL NOW UNREACHABLE (owner 04-08-2026: "Risk
@@ -993,7 +993,7 @@ export default function Risk() {
                 and each number carries its unit chip). */}
             <div className="space-y-3">
               <div>
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Entry sizing</div>
+                <div className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Entry sizing</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Per-trade risk${mark('perTradeRiskPct')}`} anchor="perTradeRiskPct" applied={appliedKeys.has('perTradeRiskPct')} pct value={risk.perTradeRiskPct} onChange={v => setRisk(r => ({ ...r, perTradeRiskPct: v }))}
                     hint="% of balance one trade may lose at its SL." recommend="5% (aggressive default, sized against the proven combos)." />
@@ -1015,7 +1015,7 @@ export default function Risk() {
                     recommend="0.01 — the broker's own minimum." />
                   <Field label={`Kelly min trades${mark('minTradesForKelly')}`} anchor="minTradesForKelly" unit="trades" value={risk.minTradesForKelly} onChange={v => setRisk(r => ({ ...r, minTradesForKelly: v }))}
                     hint="Below this trade count, Kelly sizing is skipped." recommend="30 closed trades before Kelly sizing kicks in." />
-                  <div id="risk-allowNegativeExpectancyOverride" className="flex items-center justify-between text-[9px]">
+                  <div id="risk-allowNegativeExpectancyOverride" className="flex items-center justify-between text-(length:--fs-body)">
                     <span className="text-[var(--color-text-sub)]" title="If off, negative-expectancy combos are vetoed.">Allow −expectancy{mark('allowNegativeExpectancyOverride')}</span>
                     <Pill on={!!risk.allowNegativeExpectancyOverride} label="On" offLabel="Off" onClick={() => setRisk(r => ({ ...r, allowNegativeExpectancyOverride: !r.allowNegativeExpectancyOverride }))} />
                   </div>
@@ -1023,7 +1023,7 @@ export default function Risk() {
                 </Advanced>
               </div>
               <div>
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
+                <div className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Stop Loss &amp; Take Profit</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Min SL distance${mark('minSLDistancePct')}`} anchor="minSLDistancePct" applied={appliedKeys.has('minSLDistancePct')} unit="% px" value={risk.minSLDistancePct} onChange={v => setRisk(r => ({ ...r, minSLDistancePct: v }))}
                     hint="% of price — stops tighter than this get swept by noise. (Entered as a plain percent: 0.15 = 0.15% of price.)" recommend="0.15% of price." />
@@ -1032,12 +1032,12 @@ export default function Risk() {
                   <Field label={`Max spread / SL${mark('maxSpreadFracOfSL')}`} anchor="maxSpreadFracOfSL" pct value={risk.maxSpreadFracOfSL} onChange={v => setRisk(r => ({ ...r, maxSpreadFracOfSL: v }))}
                     hint="Veto when the live spread exceeds this fraction of the SL distance." recommend="25% of the SL distance." />
                 </div>
-                <div className="text-[9px] text-[var(--color-text-sub)] mt-1">
+                <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mt-1">
                   Dollar loss floors per position (the GOOGL case) live in <a href="#sec-protection" className="underline">Position protection</a> above — this group only shapes where SL/TP are PLACED at entry.
                 </div>
               </div>
               <div>
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Exposure limits</div>
+                <div className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Exposure limits</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Max open positions${mark('maxOpenPositions')}`} anchor="maxOpenPositions" applied={appliedKeys.has('maxOpenPositions')} unit="pos" value={risk.maxOpenPositions} onChange={v => setRisk(r => ({ ...r, maxOpenPositions: v }))}
                     recommend="5 concurrent positions." />
@@ -1054,7 +1054,7 @@ export default function Risk() {
                 changed={['symbolCooldownMinutes', 'maxConsecutiveLosses', 'cooldownMinutes'].filter(k => overridden.has(k)).length}
                 dirty={!!dirty['risk']}>
               <div>
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
+                <div className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Cooldowns &amp; streaks</div>
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label={`Symbol cooldown${mark('symbolCooldownMinutes')}`} anchor="symbolCooldownMinutes" applied={appliedKeys.has('symbolCooldownMinutes')} unit="min" duration value={risk.symbolCooldownMinutes} onChange={v => setRisk(r => ({ ...r, symbolCooldownMinutes: v }))}
                     hint="Lock a symbol after any closed trade on it." recommend="240 minutes (4h) after any closed trade on that symbol." />
@@ -1065,12 +1065,12 @@ export default function Risk() {
                 </div>
               </div>
               <div>
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
+                <div className="text-(length:--fs-body) font-semibold uppercase tracking-wide text-[var(--color-text-sub)] border-b border-[var(--glass-edge)] pb-0.5 mb-1">Monitoring &amp; weekends</div>
                 <GlobalScopeNote className="mb-1.5" what="The guardian move %, weekend profit bank and weekend loss flag" />
                 <div className="grid grid-cols-1 @sm:grid-cols-2 @xl:grid-cols-3 gap-x-5 gap-y-1">
                   <Field label="Guardian move" pct value={guardianPct} onChange={v => setGuardianPct(v ?? 0)}
                     hint="Tick move that wakes the guardian between sweeps." recommend="5%." />
-                  <div className="flex items-center justify-between text-[9px]">
+                  <div className="flex items-center justify-between text-(length:--fs-body)">
                     <span className="text-[var(--color-text-sub)]" title="Bank profitable positions before long market closures.">Weekend profit bank</span>
                     <Pill commit="now" on={weekendBank} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendBank
@@ -1078,7 +1078,7 @@ export default function Risk() {
                       save('weekend-bank', () => agentPost('/actions/weekend-bank', { on: next }))
                     }} />
                   </div>
-                  <div className="flex items-center justify-between text-[9px]">
+                  <div className="flex items-center justify-between text-(length:--fs-body)">
                     <span className="text-[var(--color-text-sub)]" title="Flag (action_log + Telegram) losing positions before long market closures. Never closes them — same reasoning as leaving losers alone in the profit bank above.">Weekend loss flag</span>
                     <Pill commit="now" on={weekendLossFlag} label="On" offLabel="Off" onClick={() => {
                       const next = !weekendLossFlag
@@ -1109,7 +1109,7 @@ export default function Risk() {
               const cap = bal * (Number(risk.maxMarginUsagePct) || 0)
               const headroom = m?.usedMargin != null ? cap - m.usedMargin : null
               return (
-                <div className="text-[9px] space-y-2">
+                <div className="text-(length:--fs-body) space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[var(--color-text-sub)]" title="Percentage: risk budget = balance × per-trade %. Absolute: a fixed $ amount (3-decimal precision) overrides the %.">Sizing mode</span>
                     <span role="radiogroup" aria-label="Sizing mode" className="flex gap-1">
@@ -1156,21 +1156,21 @@ export default function Risk() {
             <SectionTitle badge={<Badge tone="special">C++ sidecar</Badge>}>C++ Risk Configuration form</SectionTitle>
             <GlobalScopeNote className="mb-2" what="The sidecar's halt, bracket and volume guards" />
             <div className="grid grid-cols-1 @sm:grid-cols-2 gap-x-5 gap-y-1">
-              <div className="flex items-center justify-between text-[9px]">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
                 <span className="text-[var(--color-text-sub)]" title="Kill switch: the C++ engine refuses EVERY order while halted.">Halt (kill switch)</span>
                 <Pill on={!!guard.halt} label={guard.halt ? 'Halted — no orders' : 'Off'} onClick={() => setGuard(g => ({ ...g, halt: !g.halt }))} />
               </div>
-              <div className="flex items-center justify-between text-[9px]">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
                 <span className="text-[var(--color-text-sub)]" title="A market order with no stop loss is refused — last line of defence.">Require Stop Loss</span>
                 <Pill on={guard.requireBracket !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireBracket: !(g.requireBracket !== false) }))} />
               </div>
-              <div className="flex items-center justify-between text-[9px]">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
                 <span className="text-[var(--color-text-sub)]" title="A market order with no take profit is refused.">Require Take Profit</span>
                 <Pill on={guard.requireTarget !== false} label="On" offLabel="Off" onClick={() => setGuard(g => ({ ...g, requireTarget: !(g.requireTarget !== false) }))} />
               </div>
               <Field label="Max order volume" unit="×100" value={guard.maxOrderVolume} onChange={v => setGuard(g => ({ ...g, maxOrderVolume: v }))}
                 hint="Hard cap on a single order's cTrader volume. 0 = no cap." recommend="0 — no cap." />
-              <div className="flex items-center justify-between text-[9px]">
+              <div className="flex items-center justify-between text-(length:--fs-body)">
                 <span className="text-[var(--color-text-sub)]" title="Virtual Pending Order engine — feeder side. The sidecar's own VPO_ENABLED/VPO_SYMBOLS env must also be set.">VPO feeder</span>
                 <Pill commit="now" on={vpoEnabled} label="On" offLabel="Off" onClick={() => {
                   const next = !vpoEnabled
@@ -1178,7 +1178,7 @@ export default function Risk() {
                   save('vpo', () => agentPost('/actions/vpo-settings', { enabled: next }))
                 }} />
               </div>
-              <div className="text-[9px] text-[var(--color-text-sub)]">
+              <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">
                 VPO pairs: {data?.vpo?.config?.length ? data.vpo.config.map(c => `${c.symbol}·${c.key}`).join(', ') : 'none configured'} — set via /actions/vpo-settings; the sidecar's VPO_SYMBOLS env must match.
               </div>
             </div>
@@ -1193,14 +1193,14 @@ export default function Risk() {
           <Card id="sec-emergency" data-risk-card data-risk-reveal className="w3-hover-shadow">
             {/* Section label = classification, not a P&L number (finding: down tone misuse). */}
             <SectionTitle badge={<Badge tone="warning">Emergency</Badge>}>Close All Positions form</SectionTitle>
-            <p className="text-[9px] text-[var(--color-text-sub)] mb-2">
+            <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">
               Closes every open position at the broker right now — bot-placed and manual alike. Halt (above) only blocks NEW orders; this ends existing ones. Irreversible.
             </p>
             <Button size="sm" variant="danger" disabled={closingAll} onClick={closeAll}>
               {closingAll ? 'Closing…' : 'Close ALL positions'}
             </Button>
             {closeAllResult && (
-              <div className="mt-2 text-[9px] text-[var(--color-text-sub)]">
+              <div className="mt-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
                 Closed {closeAllResult.closed?.length || 0}
                 {closeAllResult.failures?.length ? `, ${closeAllResult.failures.length} failed: ${closeAllResult.failures.map(f => `${f.symbol || f.positionId} (${f.error})`).join('; ')}` : ''}
               </div>
@@ -1214,7 +1214,7 @@ export default function Risk() {
           <Card id="sec-example-live" data-risk-card className="w3-hover-shadow">
             <SectionTitle>Example Trade — Bot-Trade Live card</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} />
-            <div className="text-[9px] space-y-1 mt-2">
+            <div className="text-(length:--fs-body) space-y-1 mt-2">
               <div>Sample: EURUSD long at {entry.toFixed(4)}, balance {fmt$(bal, 0)} USD.</div>
               <div>SL {sl.toFixed(4)} (min distance {Number(risk.minSLDistancePct) || 0.15}%) · TP {tp.toFixed(4)} ({Number(risk.minRR) || 1.5}R).</div>
               <div>Risk budget: <AnimatedNumber value={budget} className="font-semibold" />{budget < budgetBase ? ` (capped from ${fmt$(budgetBase)})` : ''} → <AnimatedNumber value={lots} className="font-semibold" /> lots at ~<AnimatedNumber value={usdPerLot} />/lot.</div>
@@ -1228,7 +1228,7 @@ export default function Risk() {
           <Card id="sec-example-cpp" data-risk-card data-risk-reveal className="w3-hover-shadow">
             <SectionTitle>Example Trade — C++ Configuration card</SectionTitle>
             <MiniChart entry={entry} sl={sl} tp={tp} trigger={entry - slDist * 0.4} />
-            <div className="text-[9px] space-y-1 mt-2">
+            <div className="text-(length:--fs-body) space-y-1 mt-2">
               <div>Same order arrives at the C++ engine as volume {cppVolumeUnits.toLocaleString()}:</div>
               <div>{guard.halt ? '✗ REJECTED — engine halted (kill switch on)' : '✓ not halted'}</div>
               <div>{guard.requireBracket !== false ? '✓ stop loss attached — passes bracket guard' : '⚠ bracket guard OFF — naked orders allowed'}</div>

@@ -28,7 +28,7 @@ export default function Switch({
 }) {
   const cls = [
     'inline-flex items-center gap-1 border font-semibold',
-    'rounded-[var(--radius-control)] px-[4px] py-[2px] text-[9px] leading-none whitespace-nowrap',
+    'rounded-[var(--radius-control)] px-[4px] py-[2px] text-(length:--fs-body) leading-none whitespace-nowrap',
     'transition-colors cursor-pointer',
     'disabled:opacity-50 disabled:cursor-not-allowed',
     'focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] focus-visible:outline-offset-1',

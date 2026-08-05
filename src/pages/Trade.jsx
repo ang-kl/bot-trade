@@ -638,13 +638,13 @@ export default function Trade() {
     <div className="space-y-3">
       <SectionNavFab />
       <SwitchingNote to={switchingTo} />
-      {error && <Card className="border-[var(--color-down)] text-[9px]">{error}</Card>}
+      {error && <Card className="border-[var(--color-down)] text-(length:--fs-body)">{error}</Card>}
 
       {/* ONE card, ACCOUNT line first (owner spec): row 1 = who/where the
           money is + agent vitals + the page's actions; row 2 = trading
           status/scope. Guidance appears only when NOT ready. */}
       <Card id="sec-status">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-(length:--fs-body)">
           {/* ONE IDENTITY, ONE SENTENCE (owner 04-08-2026, with a screenshot:
               "conflicting account numbers … cause the user distrust the page
               information"). This line used to read
@@ -697,7 +697,7 @@ export default function Trade() {
           </span>
         </div>
         {/* Row 2 — trading status/scope under the account line */}
-        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px]">
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-(length:--fs-body)">
           <span className="font-semibold whitespace-nowrap">
             {/* OFF ≠ UNKNOWN (inventory T5/D2): OFF wears the red state tint,
                 'no data yet' stays muted; ON is state blue, not accent. */}
@@ -712,7 +712,7 @@ export default function Trade() {
         </div>
         {/* Next-step guide ONLY while something is missing */}
         {(!health || !health.broker?.linked || !health.autotradeEnabled) && (
-          <div className="mt-1.5 text-[9px]">
+          <div className="mt-1.5 text-(length:--fs-body)">
             {!health && <>Next: connect the agent on the <NavTab to="/connect">Connect</NavTab> tab (or redeploy Railway if it was working before).</>}
             {health && !health.broker?.linked && <>Next: tap your <strong>DEMO</strong> account on the <NavTab to="/connect">Connect</NavTab> tab — one tap links it and downloads the symbol list.</>}
             {health && health.broker?.linked && !health.autotradeEnabled && (
@@ -720,7 +720,7 @@ export default function Trade() {
             )}
           </div>
         )}
-        {vfillMsg && <div className="mt-1.5 text-[9px] font-semibold" role="status">{vfillMsg}</div>}
+        {vfillMsg && <div className="mt-1.5 text-(length:--fs-body) font-semibold" role="status">{vfillMsg}</div>}
       </Card>
 
       {/* Signals — folded by default (owner: "still needed?"). The Desk scan
@@ -728,14 +728,14 @@ export default function Trade() {
           full thesis text, one tap away instead of a page of rows. */}
       <Card id="sec-signals">
         <details open={signalScans.length > 0 && signalScans.length <= 4}>
-          <summary className="cursor-pointer select-none text-[9px] font-semibold">
+          <summary className="cursor-pointer select-none text-(length:--fs-body) font-semibold">
             Signals — {signalScans.length} active{skipScans.length > 0 ? ` · ${skipScans.length} scanned flat` : ''}
           </summary>
-        {signalScans.length === 0 && <div className="mt-1 text-[9px] text-[var(--color-text-sub)]">No active signals right now.</div>}
+        {signalScans.length === 0 && <div className="mt-1 text-(length:--fs-body) text-[var(--color-text-sub)]">No active signals right now.</div>}
         {signalScans.length > 0 && (
           <div className="overflow-x-auto">
             <Collapse id="Trade_673" label="Signal Rows">
-            <table className="std-cols w-full text-[9px]">
+            <table className="std-cols w-full text-(length:--fs-body)">
               <thead>
                 <tr>
                   <th aria-sort={sigSort.ariaSort('symbol')} className="pr-3 py-1">{sigSort.sortBtn('symbol', 'Symbol')}</th>
@@ -775,7 +775,7 @@ export default function Trade() {
           <AccountTag accountId={posScope.accountId} legacyRows={posScope.legacyRows} />
           <ScopeDot scope={positionsScope} />
         </h2>
-        {positions.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">Flat.</div>}
+        {positions.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">Flat.</div>}
         {positions.length > 0 && <StdTradeTable rows={openPositionRows(positions, priceMap, enrichById, account?.leverage)} countLabel="open positions" marketHours={marketHours} />}
       </Card>
 
@@ -790,7 +790,7 @@ export default function Trade() {
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               <Input list="watchlist-symbols" value={order.symbol} onChange={e => setOrder(o => ({ ...o, symbol: e.target.value }))}
-                placeholder="Symbol" aria-label="Symbol" className="w-[120px] text-[9px]" />
+                placeholder="Symbol" aria-label="Symbol" className="w-[120px] text-(length:--fs-body)" />
               <datalist id="watchlist-symbols">
                 {scans.map(sc => <option key={sc.symbol} value={sc.symbol} />)}
               </datalist>
@@ -800,7 +800,7 @@ export default function Trade() {
               <div className="flex rounded-[var(--radius-control)] overflow-hidden border border-[var(--color-border)]" role="radiogroup" aria-label="Side">
                 {['BUY', 'SELL'].map(s => (
                   <button key={s} type="button" role="radio" aria-checked={order.side === s} onClick={() => setOrder(o => ({ ...o, side: s }))}
-                    className={`px-2.5 py-1.5 text-[9px] font-semibold cursor-pointer ${
+                    className={`px-2.5 py-1.5 text-(length:--fs-body) font-semibold cursor-pointer ${
                       order.side === s
                         ? (s === 'BUY'
                             ? 'bg-[var(--color-state-on-bg)] text-[var(--color-state-on-text)]'
@@ -810,11 +810,11 @@ export default function Trade() {
                 ))}
               </div>
               <Input type="number" step="0.01" value={order.lots} onChange={e => setOrder(o => ({ ...o, lots: e.target.value }))}
-                placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-[120px] text-[9px]" />
+                placeholder="Lots (auto)" aria-label="Lots — blank sizes by risk" title="Blank = risk-based sizing" className="w-[120px] text-(length:--fs-body)" />
               <Input type="number" step="any" value={order.sl} onChange={e => setOrder(o => ({ ...o, sl: e.target.value }))}
-                placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-[9px]" />
+                placeholder="SL — required" aria-label="Stop loss price (required)" className="w-[120px] text-(length:--fs-body)" />
               <Input type="number" step="any" value={order.tp} onChange={e => setOrder(o => ({ ...o, tp: e.target.value }))}
-                placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-[9px]" />
+                placeholder="TP" aria-label="Take profit price (optional)" className="w-[120px] text-(length:--fs-body)" />
               {/* accent = the pad's single commit action; the variant no longer
                   flips by side — danger means destructive, not SHORT (contract
                   §1; SELL is not an error). Side stays in the label + the
@@ -825,7 +825,7 @@ export default function Trade() {
               </Button>
             </div>
             {orderResult && (
-              <div className={`mt-1.5 text-[9px] font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
+              <div className={`mt-1.5 text-(length:--fs-body) font-semibold ${orderResult.ok ? 'text-[var(--color-accent)]' : 'text-[var(--color-warning-text)]'}`} role="status">
                 {orderResult.ok ? `Filled — ${orderResult.text}` : orderResult.text}
               </div>
             )}
@@ -875,7 +875,7 @@ export default function Trade() {
           </div>
           {(liveOrders.length || 0) > 0 && (
             <div className="mb-2">
-              <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Pending orders ({liveOrders.length})</div>
+              <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">Pending orders ({liveOrders.length})</div>
               <StdTradeTable
                 rows={brokerOrderRows(liveOrders, { manageable: true })}
                 countLabel="pending orders"
@@ -886,7 +886,7 @@ export default function Trade() {
           )}
           {(broker.externalPositions?.length || 0) > 0 && (
             <div>
-              <div className="text-[9px] text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
+              <div className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-1">Positions opened outside the bot ({broker.externalPositions.length}) — observed, not managed</div>
               <StdTradeTable
                 rows={externalPositionRows(broker.externalPositions, priceMap, enrichById, account?.leverage)}
                 countLabel="external positions"
@@ -950,8 +950,8 @@ export default function Trade() {
               {busy === 'reconcile' ? 'Reconciling…' : 'Reconcile with broker'}
             </Button>
           </div>
-          {reconcileNote && <p className="text-[9px] text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
-          {trades.length === 0 && <div className="text-[9px] text-[var(--color-text-sub)]">None yet.</div>}
+          {reconcileNote && <p className="text-(length:--fs-body) text-[var(--color-text-sub)] mb-2">{reconcileNote}</p>}
+          {trades.length === 0 && <div className="text-(length:--fs-body) text-[var(--color-text-sub)]">None yet.</div>}
           {trades.length > 0 && <StdTradeTable rows={closedTradeRows(trades, priceMap, account?.leverage)} countLabel="trades" marketHours={marketHours} />}
         </Card>
 
@@ -1014,7 +1014,7 @@ export default function Trade() {
             const refused = rows.reduce((s, v) => s + (Number(v.count) || 0), 0)
             if (rows.length === 0 && !(approved > 0)) return null
             return (
-              <p className="mb-2 text-[9px] text-[var(--color-text-sub)]">
+              <p className="mb-2 text-(length:--fs-body) text-[var(--color-text-sub)]">
                 Last {days}d: {approved} approved · {refused} refused/skipped.
                 These are the auto-scan's proposals stopped by the pipeline's guards — top reasons:{' '}
                 {rows.slice(0, 3).map(v => `${humanVeto(v.reason)} ×${v.count}`).join(' · ') || '—'}.

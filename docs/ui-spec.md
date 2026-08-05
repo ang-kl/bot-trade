@@ -49,34 +49,56 @@ reason written next to it in a comment.
 
 ## 2 · Type scale
 
-**The scale is 13 / 12 / 10 / 9** (owner, 05-08-2026 — the *type canon*).
-Stated by screenshot, not by number: body is "the picture text `7d`, `30d`",
-which is `Segmented md` → **9px**; the header is "`Strategy Liveness table`
-but increase by 1pt", which is `.t-h3` at 11px → **12px**. Page titles follow
-the section headings up to 13px so a page still outranks the sections inside
-it. Table heads keep their own 10px (owner, 2026-07-25) — a head is not body.
+**Four tokens, two tiers** (owner, 05-08-2026 — the *type canon*).
 
-The 2026-07-25 scale this replaces was 12 / 11 / 10 / 9 with a 9.5px ledger
-exception; the ledger exception is gone. Enforced by
-`src/lib/type-canon.test.js`, which fails on any new size and lists the
-deliberate glyph exceptions.
+The sizes were stated by screenshot, not by number: body is "the picture text
+`7d`, `30d`", which is `Segmented md`; the header is "`Strategy Liveness
+table` but increase by 1pt", which was `.t-h3` at 11px against a 9px body —
+body + 2, so +1pt makes it **body + 3**. Then: *"please canonical for tablet
+and iphones"*, *"9.5px will be ideal as minimum"*, *"11 px for desktop"*.
 
-| Role | Size | Weight |
+|  | `--fs-body` | `--fs-head` (+1) | `--fs-h` (+3) | `--fs-title` (+4) |
+|---|---|---|---|---|
+| **tablet + iPhone** (`:root`) | `9.5px` | `10.5px` | `12.5px` | `13.5px` |
+| **desktop** (`≥1280px`) | `11px` | `12px` | `14px` | `15px` |
+
+Tablet and iPhone share a tier because they are the same thing for reading: a
+held device where the constraint is fitting a dense table on a narrow screen.
+The desk is a fixed screen with room to spare. **That is why desktop is larger
+than phone here and not the reverse** — the phone is not a small desktop.
+`9.5px` is the floor; the touch tier sits exactly on it.
+
+Everything downstream derives from `--fs-body` by a fixed offset, so moving
+the body size moves the whole ladder and the hierarchy cannot drift apart.
+Form fields ride it too (`--font-field-max: var(--fs-head)`).
+
+Nothing carries a px literal any more. Tailwind call sites use
+`text-(length:--fs-body)` — the explicit v4 length syntax, because
+`text-[var(--fs-body)]` silently compiles to `color` (see
+`css-token-syntax.test.js`). Inline styles use `var(--fs-body)` / `var(--fs-h)`.
+
+| Role | Token | Weight |
 |---|---|---|
-| Major heading (page title, modal/print title, `.t-h1`/`.t-heading`) | `13px` | `800` |
-| Section title (card heading, `.t-h2`/`.t-h3`, `--fs-d12`) | `12px` | `700–800`, accent |
-| Column header cell (`thead th` / `.t-gridhead`) | **`10px`**, proper case, one line | `600` (`W_HEAD`) |
-| Row identifier / first-column head | `9px` | `500` (`W_ROWLABEL`) |
-| Every data cell (`tbody td`, app-wide, ledger included) | `9px` | `400` (`W_CELL`) |
-| All other data / info text (captions, meta, pills, footnotes, controls) | `9px` (`--fs-d9`) | `400` |
-| Headline figure per card | `9px` | `800` — emphasis by weight + colour, not size |
+| Major heading (page title, modal/print title, `.t-h1`/`.t-heading`) | `--fs-title` | `800` |
+| Section title (card heading, `.t-h2`/`.t-h3`) | `--fs-h` | `700–800`, accent |
+| Column header cell (`thead th` / `.t-gridhead`) | `--fs-head`, proper case, **wraps** | `600` (`W_HEAD`) |
+| Row identifier / first-column head | `--fs-body` | `500` (`W_ROWLABEL`) |
+| Every data cell (`tbody td`, app-wide, ledger included) | `--fs-body` | `400` (`W_CELL`) |
+| All other data / info text (captions, meta, pills, footnotes, controls) | `--fs-body` | `400` |
+| Headline figure per card | `--fs-body` | `800` — emphasis by weight + colour, not size |
+
+The px-named `--fs-d*` scale is gone except `--fs-d18` (the ☰ FAB glyph): a
+token called `d9` that renders 11px on a desk is a lie in the source. Enforced
+by `src/lib/type-canon.test.js`, which fails on any new size, checks both
+tiers and the offsets, and lists the deliberate glyph exceptions.
 
 **The only things that are not on the canon** are glyphs — the mobile tab-bar
 icons, the `☰` table-of-contents FAB, the `+` order FAB, the `×` close marks
 and the `bot-trade` wordmark — plus the full-width phone BUY/SELL and CLOSE
 buttons in Order/Position Manager, where the tap target is the point. Form
-fields are governed by their own older rule (`min(calc(1em + 1px), 10px)`,
-owner 2026-07-28), which still wins over any class.
+fields keep their own older rule (`min(calc(1em + 1px), --font-field-max)`,
+owner 2026-07-28), which still wins over any class — but the cap now rides the
+canon (`--fs-head`) instead of pinning 10px, so fields move with the tier.
 
 ### Text colour
 
@@ -85,7 +107,7 @@ dark mode." Contrast is measured against the surface the app actually paints —
 the glass card, `rgba(255,255,255,.62)` over `--color-bg`, not `--color-bg`
 itself — and every text token clears **4.5:1** in all three themes. Two of them
 did not before: `--color-muted-light` sat at 2.83:1 (light) and 2.50:1 (dark),
-i.e. effectively invisible at 9px. `src/lib/type-canon.test.js` recomputes the
+i.e. effectively invisible at any size. `src/lib/type-canon.test.js` recomputes the
 ratios from `index.css` on every run.
 
 ### The bold rule
@@ -101,14 +123,15 @@ never from weight.
 ### Headings
 
 A heading is distinguished by weight, colour (`P_ACC`/accent for section
-titles) and position — scale moves only one step (12px heading, 13px major).
-`.t-h3` is `12px / 700` with no responsive bumps; the old escalating
-responsive heading scale is gone on purpose.
+titles) and position — the scale moves one step per level (`--fs-h` = body+3,
+`--fs-title` = body+4). `.t-h3` is `var(--fs-h) / 700`; the old escalating
+per-breakpoint heading scale is gone on purpose, and the two-tier canon
+replaced it with exactly one step.
 
 The Performance and Workflow-audit pages build several section titles as
-`<span style={{ fontSize: 'var(--fs-d12)', fontWeight: 800 }}>` rather than as
-`.t-h3` elements. Those spans are headings and carry the heading size; a
-`--fs-d12` on anything that is not a title is a bug the canon test will not
+`<span style={{ fontSize: 'var(--fs-h)', fontWeight: 800 }}>` rather than as
+`.t-h3` elements. Those spans are headings and carry the heading token; a
+`--fs-h` on anything that is not a title is a bug the canon test will not
 catch, because it cannot read intent.
 
 ### Numbers
@@ -329,14 +352,32 @@ thead th {
 }
 ```
 
-**Column heads are the single exception to the 9px body rule, and they are
-10px in proper case on one line.** All three parts exist for the same reason:
-with many columns, an uppercase wrapping label cramps the table and `SL / TP AWAY`
-was heading for a three-line cell. A head that is wider than its track
-ellipsises and carries the full text in a `title`; the table scrolls
-horizontally rather than squeezing, because a wide table you can reach beats a
-narrow one you can't read. Header cells are the only place where 10px is
-allowed — data cells, captions and detail lines all stay at 9px.
+**Column heads are `--fs-head` (body + 1), proper case, and they WRAP.**
+
+That last part changed on 05-08-2026, owner: *"please rescale the column to
+scrollable within table cell or word wrap."* Raising the desk body to 11px
+widens every column, and the previous answer — `nowrap` heads plus a
+horizontal page scroll — stops being honest once the table is wider than the
+screen by more than a nudge.
+
+What the 2026-07-25 `nowrap` was protecting against was a **three-row** header,
+and that came from UPPERCASE + 12px + an unconstrained break, all three at
+once. Proper case and the head size stay, so a wrapped head is two lines, not
+three — and two readable lines beat one line the reader has to scroll sideways
+to finish.
+
+Three rules carry it:
+
+- `thead th` and `.t-gridhead > *`: `white-space: normal; overflow-wrap:
+  anywhere`. The grid head also **lost its ellipsis** — that HID the label, and
+  a grid column template is fixed, so a truncated head could not be recovered
+  by scrolling the way a real table's could.
+- `tbody td`: `overflow-wrap: anywhere`, so a 9-digit position id or
+  `USDCNH.spot` breaks instead of stretching the column. Deliberately **no**
+  `white-space` here — the rule is unlayered and would beat the
+  `whitespace-nowrap` that keeps prices and timestamps on one line.
+- `.cell-scroll`: opt-in, on a cell's own child span. For content that must
+  stay on one line and is long, the **cell** scrolls, not the table.
 
 **CSS-grid tables** (most of the Performance page) get `.t-gridhead` on the
 header row, which declares the same font, size, weight, case, colour and
@@ -560,9 +601,11 @@ or any figure the app did not actually compute.
 Before a UI PR is opened, walk this list on an iPad-mini-width viewport, in
 **portrait and landscape**, in all three themes:
 
-- [ ] Every font size is `9px` except section titles (`12/800`), page titles
-      (`13/800`) and column heads (`10/600`). `npx vitest run
-      src/lib/type-canon.test.js` checks this without opening a browser.
+- [ ] Every font size comes from `--fs-body` / `--fs-head` / `--fs-h` /
+      `--fs-title` — no px literal anywhere. `npx vitest run
+      src/lib/type-canon.test.js` checks this, both tiers, without a browser.
+- [ ] Check the 1279/1280px boundary: the type tier and the layout breakpoint
+      must change together, not a viewport apart.
 - [ ] No bold body text anywhere.
 - [ ] No vertical gap over `12px` without a comment justifying it.
 - [ ] Data rows are `padding: '1px 0'`.

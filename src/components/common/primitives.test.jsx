@@ -118,11 +118,11 @@ describe('Input density variants', () => {
     const c = cls(Input({}))
     expect(c).toContain('w-full')
     expect(c).toContain('min-h-[36px]')
-    expect(c).toContain('text-[9px]')
+    expect(c).toContain('text-(length:--fs-body)')
   })
   it('compact reproduces the Field treatment class-for-class (pixel parity)', () => {
     const c = cls(Input({ density: 'compact' }))
-    for (const frag of ['!w-[76px]', '!min-h-[26px]', 'max-[430px]:!min-h-[44px]', '!py-0.5', '!px-2', '!text-[9px]', 'text-right']) {
+    for (const frag of ['!w-[76px]', '!min-h-[26px]', 'max-[430px]:!min-h-[44px]', '!py-0.5', '!px-2', '!text-(length:--fs-body)', 'text-right']) {
       expect(c).toContain(frag)
     }
     expect(c).not.toContain('w-full')
@@ -132,7 +132,7 @@ describe('Input density variants', () => {
 describe('Field after the density refactor', () => {
   it('renders its input with the exact legacy override classes via density=compact', () => {
     const html = renderToStaticMarkup(<Field label="Guardian move %" value={0.5} onChange={() => {}} />)
-    for (const frag of ['!w-[76px]', '!min-h-[26px]', '!text-[9px]', 'text-right']) {
+    for (const frag of ['!w-[76px]', '!min-h-[26px]', '!text-(length:--fs-body)', 'text-right']) {
       expect(html).toContain(frag)
     }
     expect(html).toContain('aria-label="Guardian move %"')
