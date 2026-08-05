@@ -732,3 +732,45 @@ test('account auth: watch state is cleared when no account is enabled', () => {
   checkAccountAuthorization(db, { now: plus(60) })
   assert.equal(getState(db, 'account_auth_watch_json'), '{}', 'stale entries must not linger')
 })
+
+test('account auth: a STALLED reconcile must not silence the alert — persisted ok is not the gate', () => {
+  // The divergence that matters. sidecarRoster reads the RAW http-level ok
+  // (exec-engine.js:197); the snapshot's `ok` is probeCppExec's verdict, which
+  // it sets false while connected===true on a stale reconcile (heartbeat.js:466).
+  //
+  // In this state sidecarRoster returns the roster, so loop.js:1173 IS skipping
+  // all four demo accounts — and cpp_exec goes red naming the loop, not the
+  // accounts. Gating on the persisted `ok` would make this check silent through
+  // exactly the outage it was written for.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: ['42993489'] })
+  const stalled = (atMs) => setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: false,   // ok=false: reconcile stale
+    lastReconcileAt: T0.getTime() - 600_000, at: new Date(atMs).toISOString(),
+  }))
+  stalled(T0.getTime())
+  assert.deepEqual(checkAccountAuthorization(db, { now: T0, notify }).events, [])
+  stalled(plus(300).getTime())
+  const fired = checkAccountAuthorization(db, { now: plus(301), notify })
+  assert.deepEqual(fired.events.map(e => e.event), ['unauthorized'])
+  assert.equal(alerts.length, 1, 'a stalled engine loop must not buy silence on unreachable accounts')
+})
+
+test('account auth: an EMPTY roster on a live session alerts — the gate skips everyone there too', () => {
+  // roster [] is truthy, so `if (sidecarAccounts && …)` at loop.js:1173 gates
+  // EVERY account. Reading [] as "cannot tell" would go quiet while the gate is
+  // at its most aggressive.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: [] })
+  checkAccountAuthorization(db, { now: T0, notify })
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: [], connected: true, ok: true, at: plus(300).toISOString(),
+  }))
+  const fired = checkAccountAuthorization(db, { now: plus(301), notify })
+  assert.equal(fired.events.length, 2, 'both enabled accounts are unreachable')
+  assert.equal(alerts.length, 2)
+})

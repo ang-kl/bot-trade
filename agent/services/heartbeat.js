@@ -555,25 +555,34 @@ export function checkAccountAuthorization(db, {
   // A snapshot older than the probe's own stall threshold tells us nothing about
   // NOW. Treat it as unknown rather than as evidence.
   const fresh = Number.isFinite(healthAtMs) && (nowMs - healthAtMs) < HEALTH_STALE_MS
-  // MATCH sidecarRoster'S RULE EXACTLY (exec-engine.js:244) — `ok && connected`.
-  // Not a stylistic echo: this alert DESCRIBES the connectivity gate's
-  // behaviour, so it has to agree with the value that gate reads.
+  // REPRODUCE THE GATE'S CONDITION, WHICH IS NOT THE SAME AS THE PERSISTED `ok`.
   //
-  // GET /health sets ok:true unconditionally (main.cpp:272) and fills
-  // `accounts` from engine.accountIds() — EMPTY right after a sidecar restart,
-  // stale-but-populated after a WS drop. `connected` is the only field that
-  // says the broker session is gone. In that state sidecarRoster() returns null,
-  // so `if (sidecarAccounts && …)` at loop.js:1173 gates NOBODY — and an alert
-  // saying "entries on this account are silently skipped" would assert
-  // something the code is not doing, while duplicating the cpp_exec alarm that
-  // already names the real cause. The 02-08 incident held exactly that state
-  // for 22 hours; with five enabled accounts that is five wrong alerts sitting
-  // next to the one right one.
+  // This alert describes the connectivity gate's behaviour, so it must agree
+  // with the value that gate reads — sidecarRoster (exec-engine.js:244), whose
+  // test is `h.ok && h.connected === true && Array.isArray(h.accounts)` where
+  // `h.ok` is HTTP-level only (`res.ok && body?.ok === true`, :197).
   //
-  // This does not weaken the 05-08 case this check exists for: there the
-  // sidecar was connected:true holding only the live account, so all four demo
-  // accounts still flag.
-  const sessionUp = health?.ok === true && health?.connected === true
+  // `health.ok` in the snapshot is NOT that value. probeCppExec overwrites it
+  // with its own verdict before persisting, and two of those overwrites fire
+  // while connected === true (:463 no reconcile yet, :466 reconcile stale). So
+  // gating on the persisted `ok` is strictly NARROWER than the gate, and the
+  // error mode is silence: sidecar up, session connected, roster holding only
+  // the live account, engine loop stalled → sidecarRoster returns the roster and
+  // loop.js:1173 skips all four demo accounts, while this check would say
+  // "unknown" and never alert. That is the 05-08 outage plus a stalled loop —
+  // and cpp_exec, which does go red, reports "last reconcile 10m ago": it names
+  // the loop, not the four unreachable accounts. Exactly the gap this check
+  // exists to close.
+  //
+  // `roster != null` stands in for the array test: probeCppExec persists
+  // `accounts` non-null only when the ping returned an array, which already
+  // implies a parsed /health body. `connected` is persisted raw.
+  //
+  // The 02-08 case is still covered — GET /health sets ok:true unconditionally
+  // (main.cpp:272) and fills `accounts` from engine.accountIds(), empty after a
+  // restart and stale after a WS drop, but `connected` is false there and
+  // sidecarRoster returns null too, so both stay silent together.
+  const sessionUp = health?.connected === true && roster != null
 
   let accounts = []
   try {
