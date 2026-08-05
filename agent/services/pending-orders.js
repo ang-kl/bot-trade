@@ -56,7 +56,7 @@ function posField(p, key) {
  * we weren't looking. Column set intentionally identical to loop.js so every
  * downstream analytics query treats these fills as first-class bot trades.
  */
-function persistFilledTrade(db, row, pos, accountId = null) {
+export function persistFilledTrade(db, row, pos, accountId = null) {
   // The account is a PARAMETER, not a state read. It used to be
   // getState(db, 'ctrader_account_id') at the monitored_positions insert
   // below, which stamps the SELECTED account onto a fill that belongs to
@@ -85,11 +85,11 @@ function persistFilledTrade(db, row, pos, accountId = null) {
         symbol, side, entry_price, sl_price, tp_price, volume, opened_at,
         status, ctrader_position_id, analysis_id, strategy, conviction,
         label_raw, source, label_version, label_strategy, label_conviction,
-        label_session, label_timeframe, label_regime, account_id
+        label_session, label_timeframe, label_regime, account_id, risk_event_id
       ) VALUES (
         ?, ?, ?, ?, ?, ?, datetime('now'),
         'open', ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )
     `).run(
       row.symbol, side, executionPrice, row.sl ?? null, row.tp ?? null, row.volume ?? null,
@@ -100,6 +100,14 @@ function persistFilledTrade(db, row, pos, accountId = null) {
       // Same account as the monitored_positions row below — an unstamped
       // trade is invisible to every account-scoped query that follows it.
       acct,
+      // §70.9 LINEAGE, CARRIED THROUGH THE FILL (05-08-2026). The approval id
+      // was written onto the pending_orders row at placement and then dropped
+      // here, so the trade it produced had no way back to the decision that
+      // authorised it. Measured across all three accounts, 7 days: 62
+      // fib_confluence and 26 fib_618_fade opens, EVERY ONE with
+      // risk_event_id NULL — while their pending rows carried ids 97150-97729.
+      // The lineage existed; it just did not survive the last hop.
+      row.risk_event_id ?? null,
     )
     const tradeId = tradeInsert.lastInsertRowid
 

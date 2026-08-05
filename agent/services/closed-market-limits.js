@@ -132,6 +132,26 @@ export function reconcileStaleClosedMarketLimits(db, { nowMs = Date.now() } = {}
       ).get(row.symbol, row.placed_at || '1970-01-01', row.account_id ?? null, row.account_id ?? null)
       if (adopted) {
         markFilled.run('pending-closed: adopted as trade', row.id)
+        // §70.9 LINEAGE (05-08-2026). This is the ONE moment the system knows
+        // which approval produced which position on this path — the reconciler
+        // adopts the fill with no idea an order preceded it, and the approval
+        // id sits on the pending row we are about to retire. Stamping it here
+        // is the difference between a trade that can name its authorisation
+        // and one that cannot.
+        //
+        // Measured before this: 62 fib_confluence and 26 fib_618_fade opens in
+        // seven days, every one with risk_event_id NULL, while their pending
+        // rows carried ids 97150-97729.
+        //
+        // COALESCE, never overwrite: if the trade already carries an id, a
+        // more direct writer put it there and knows better than this heuristic.
+        if (row.risk_event_id != null) {
+          try {
+            db.prepare(
+              `UPDATE trades SET risk_event_id = COALESCE(risk_event_id, ?) WHERE id = ?`
+            ).run(row.risk_event_id, adopted.id)
+          } catch { /* lineage is provenance, never a reason to fail the sweep */ }
+        }
         filled++
       } else {
         markExpired.run('pending-closed: gone at broker, no fill adopted', row.id)

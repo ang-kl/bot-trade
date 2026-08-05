@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initDB, setState } from '../db.js'
-import { managePendingOrders } from './pending-orders.js'
+import { managePendingOrders, persistFilledTrade } from './pending-orders.js'
 
 const SYMBOL_MAP = { EURUSD: 1, XAUUSD: 41 }
 const CREDS = { host: 'demo.ctraderapi.com', clientId: 'id', clientSecret: 'sec', accessToken: 'tok', accountId: '123' }
@@ -406,4 +406,19 @@ test('a legacy unattributed row is still claimed — not orphaned forever', asyn
   await managePendingOrders(db, CREDS, SYMBOL_MAP, deps)
   const row = db.prepare(`SELECT status FROM pending_orders WHERE order_id = '778'`).get()
   assert.equal(row.status, 'expired', 'legacy rows stay settleable by whichever pass sees them')
+})
+
+test('a filled fib order carries its approval id onto the trade', () => {
+  // §70.9 lineage. pending_orders.risk_event_id was written at placement and
+  // dropped at the fill, so the trade had no way back to its authorisation.
+  const db = freshDb()
+  db.prepare(`
+    INSERT INTO pending_orders (symbol, timeframe, order_id, dir, level, sl, tp, volume, expires_at, status, note, account_id, risk_event_id)
+    VALUES ('EURUSD', '4h', '880', 1, 1.1, 1.095, 1.11, 0.01, '2030-01-01T00:00:00Z', 'working', 'pending-fib', '123', 97150)
+  `).run()
+  const row = db.prepare(`SELECT * FROM pending_orders WHERE order_id = '880'`).get()
+  persistFilledTrade(db, row, { positionId: 555, price: 1.1002 }, '123')
+  const t = db.prepare(`SELECT risk_event_id, account_id FROM trades WHERE ctrader_position_id = '555'`).get()
+  assert.equal(t.risk_event_id, 97150)
+  assert.equal(t.account_id, '123')
 })
