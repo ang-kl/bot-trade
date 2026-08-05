@@ -1,4 +1,7 @@
 import Database from 'better-sqlite3';
+// Leaf module — imports nothing, takes `db` as a parameter — so this cannot
+// cycle back into db.js. See closeTradeRow for why the stamp lives here.
+import { realisedRR, checkTradeConsistency } from './services/trade-consistency.js';
 
 // ---------------------------------------------------------------------------
 // Schema DDL
@@ -976,6 +979,25 @@ export function initDB(dbPath) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN risk_event_id INTEGER`);
     }
   }
+
+  // GO-LIVE PHASE 0 (docs/go-live-plan.md, P0-1/P0-2). Two columns the gate
+  // needs and did not have.
+  //
+  // `realised_rr` — every R:R the system reported was PLANNED, derived from
+  // the bracket in perf-ledger.js. So `edge = winPct - requiredWinPct`
+  // compared a REALISED win rate against a PLANNED break-even, which only
+  // holds if trades finish where we aimed them. Measured 05-08-2026: only
+  // 52.5% of closed trades reach a bracket at all and 25% are cut by the time
+  // cap, so realised R sits below planned R and the reported edge flatters us.
+  //
+  // `pnl_price_mismatch` — 56 of 190 decidable closed rows (29.5%) carry a
+  // net_pnl whose sign contradicts their own side/entry/exit. A row that
+  // disagrees with itself is now marked, not silently averaged in.
+  {
+    const cols = new Set(db.prepare(`PRAGMA table_info(trades)`).all().map(c => c.name));
+    if (!cols.has('realised_rr')) db.exec(`ALTER TABLE trades ADD COLUMN realised_rr REAL`);
+    if (!cols.has('pnl_price_mismatch')) db.exec(`ALTER TABLE trades ADD COLUMN pnl_price_mismatch INTEGER`);
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_trades_risk_event ON trades(risk_event_id);
            CREATE INDEX IF NOT EXISTS idx_pending_risk_event ON pending_orders(risk_event_id);`);
 
@@ -1289,6 +1311,26 @@ export function closeTradeRow(db, tradeId, {
         net_pnl = COALESCE(?, net_pnl)
     WHERE id = ? AND status = 'open'
   `).run(closedAtMs, holdDurationMs, exitPrice, closeReason, grossPnl, netPnl, tradeId);
+
+  // GO-LIVE PHASE 0. Stamp realised R and the self-consistency verdict at the
+  // moment of close, from whatever the row now holds. Done HERE rather than in
+  // each caller because there are five of them and only one ever supplied an
+  // exit price — the other four would have gone on writing rows nobody
+  // checked. Best-effort: a bookkeeping column must never fail a close.
+  if (info.changes > 0) {
+    try {
+      const row = db.prepare(
+        `SELECT side, entry_price, exit_price, sl_price, net_pnl FROM trades WHERE id = ?`
+      ).get(tradeId);
+      if (row) {
+        const rr = realisedRR(row);
+        const check = checkTradeConsistency(row);
+        db.prepare(
+          `UPDATE trades SET realised_rr = ?, pnl_price_mismatch = ? WHERE id = ?`
+        ).run(rr, check.decidable && !check.ok ? 1 : 0, tradeId);
+      }
+    } catch { /* never let a close fail over an audit column */ }
+  }
   return { changed: info.changes > 0, holdDurationMs };
 }
 

@@ -1483,7 +1483,19 @@ export async function executeBrokerAction(db, s, pos, eval_, source = 'position_
         volume: volumeUnits,
       })
       setState(db, 'api_ctrader_last_ok', new Date().toISOString())
-      const closePrice = res.deal?.executionPrice || res.position?.price || null
+      // ONLY the deal's execution price is an exit price.
+      //
+      // This used to fall back to `res.position?.price` — the POSITION's price,
+      // which is where it OPENED, not where it closed. That is one of the ways
+      // 56 of 190 decidable closed rows ended up with a net_pnl contradicting
+      // their own entry/exit (docs/go-live-plan.md §4). Writing a wrong exit is
+      // worse than writing none: `net_pnl` still arrives from the broker and is
+      // correct either way, whereas a plausible-but-wrong price silently
+      // corrupts realised R, the loss postmortems and the playback.
+      //
+      // null means closeTradeRow's COALESCE leaves the column alone, and the
+      // row is marked pnl_price_mismatch if what remains disagrees with the money.
+      const closePrice = res.deal?.executionPrice ?? null
       const cpd = res.deal?.closePositionDetail || {}
       const grossPnl = typeof cpd.grossProfit === 'number' ? cpd.grossProfit / 100 : null
       const netPnl = cpd.grossProfit != null

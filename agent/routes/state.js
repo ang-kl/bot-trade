@@ -1194,6 +1194,37 @@ export default function stateRouter(db) {
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // GET /state/trade-consistency — does the closed book agree with itself?
+  //
+  // Go-live Phase 0 (docs/go-live-plan.md §4). Measured 05-08-2026, 56 of 190
+  // decidable closed rows carried a net_pnl whose sign contradicted their own
+  // side/entry/exit, and nothing in the system reported it. The gate is asked
+  // to certify win% and PF off this table; it should be possible to ask how
+  // much of it is self-consistent before betting on the answer.
+  router.get('/trade-consistency', async (req, res) => {
+    try {
+      const { inconsistentTrades, consistencySummary, inconsistencyLine } =
+        await import('../services/trade-consistency.js')
+      const scope = requestedAccount(db, req)
+      const acct = scope.all ? null : (scope.accountId ?? null)
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100))
+      const rows = inconsistentTrades(db, { accountId: acct, limit })
+      res.json({
+        ok: true,
+        accountId: acct,
+        scope: scope.all ? 'all' : 'account',
+        summary: consistencySummary(db, { accountId: acct }),
+        rows: rows.map(r => ({
+          id: r.id, symbol: r.symbol, side: r.side,
+          entry: r.entry_price, exit: r.exit_price, netPnl: r.net_pnl,
+          move: r.check.move, accountId: r.account_id,
+          closedAt: r.closed_at, closeReason: r.close_reason,
+          line: inconsistencyLine(r),
+        })),
+      })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   router.get('/unresolvable-plan', async (req, res) => {
     try {
       const { findUnresolvableCandidates, exhaustedAccountsFromLedger, DEFAULT_UNRESOLVABLE_HORIZON_DAYS } =
