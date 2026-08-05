@@ -84,9 +84,27 @@ const DESK_MIN_WIDTH = 1280
 // So the rule below is now absolute: no px literal, anywhere, in any file.
 const GLYPH_TOKENS = ['--fs-glyph-sm', '--fs-glyph-md', '--fs-glyph-lg', '--fs-glyph-xl', '--fs-wordmark']
 
+// A COMMENT MUST NOT BE ABLE TO SATISFY THIS GUARD. Two ways the old
+// `block.match(/NAME:\s*([\d.]+)px/)` could be fooled, in a file where most
+// lines are prose ABOUT sizes:
+//
+//   1. Write `--fs-h: 11.5px` in a comment above the declaration and change
+//      the declaration to 12.5px. The first match wins, the test reads the
+//      comment, the browser renders 12.5 — silent on the exact change the
+//      guard exists to catch.
+//   2. Declare a token twice. The cascade takes the LAST; an un-anchored
+//      first match takes the FIRST. That is the same shadowing this file just
+//      removed for --fs-body, which survived only because `1rem` is not `px`
+//      and the regex skipped it by luck rather than by design.
+//
+// So: strip comments, and collect ALL declarations. One is the only correct
+// count — zero and two are both reported, by `declsOf`'s own test below.
+const stripCssComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '')
+const declsOf = (block, name) =>
+  [...stripCssComments(block).matchAll(new RegExp(`${name}:\\s*([\\d.]+)px`, 'g'))].map(m => Number(m[1]))
 const tokenIn = (block, name) => {
-  const m = block.match(new RegExp(`${name}:\\s*([\\d.]+)px`))
-  return m ? Number(m[1]) : null
+  const d = declsOf(block, name)
+  return d.length === 1 ? d[0] : null
 }
 
 describe('the reference elements the canon is measured from', () => {
@@ -129,6 +147,18 @@ describe('the two tiers', () => {
   for (const [name, px] of Object.entries(DESK)) {
     it(`desktop ${name} is ${px}px`, () => expect(tokenIn(desk, name)).toBe(px))
   }
+
+  it('each token is declared EXACTLY ONCE per tier, in code and not in prose', () => {
+    // `tokenIn` returns null for a count other than one, so a duplicate would
+    // already fail the per-token tests above — but with the message "expected
+    // null to be 11.5", which sends the reader looking for a missing
+    // declaration rather than a second one. This names it.
+    for (const [block, tier, label] of [[root, TOUCH, ':root'], [desk, DESK, '@media 1280']]) {
+      for (const name of Object.keys(tier)) {
+        expect(declsOf(block, name).length, `${name} in ${label}`).toBe(1)
+      }
+    }
+  })
 
   it('NOTHING is below the 9.5px floor in either tier', () => {
     for (const tier of [TOUCH, DESK]) {

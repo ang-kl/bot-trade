@@ -135,9 +135,15 @@ for (const r of ROUTES) {
         const halo = after.content !== 'none' ? parseFloat(after.minHeight) || 0 : 0
         if (Math.max(c.height, halo) < 44) small++
       }
+      // isShown, NOT computed style alone. A hidden subtree still reports a
+      // fontSize, and reading it is exactly the mistake that made the 05-08
+      // type audit file a display:none 15px wordmark as the live one while the
+      // painted 12.5px element went unexamined. The rule the spec now states:
+      // filter on a NON-ZERO BOX, never on computed style by itself.
       let minPx = 99
       for (const el of document.querySelectorAll('body *')) {
         if (!el.textContent?.trim() || el.children.length) continue
+        if (!isShown(el)) continue
         const f = parseFloat(getComputedStyle(el).fontSize)
         if (f > 0 && f < minPx) minPx = f
       }
@@ -158,7 +164,13 @@ for (const r of ROUTES) {
         else fab = 'ok'
       }
       return { ov: de.scrollWidth - de.clientWidth, wide: [...new Set(wide)].slice(0, 3), small, total, minPx, dupes, fab }
-    }).catch(() => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [], fab: 'none' }))
+    // A SWALLOWED EXCEPTION USED TO READ AS HEALTH. The old sentinel was
+    // ov:0, dupes:[], fab:'none' — every one of which is a PASSING value, so a
+    // crashed evaluate printed a clean line and never incremented `failed`.
+    // The only tell was `0/0` in a column nobody reads. `fab:'none'` is
+    // legitimate for a route that mounts no FAB, which is precisely why it
+    // must not double as the error value. The sentinel now fails.
+    }).catch(e => ({ ov: 0, wide: [], small: 0, total: 0, minPx: 0, dupes: [], fab: 'EVAL-FAILED', evalError: String(e?.message || e) }))
     // bodyLen is the blank-page canary: a crashed React tree still renders the
     // skip-link and nothing else, which is ~20 characters.
     const bodyLen = await p.evaluate(() => document.body.innerText.trim().length).catch(() => 0)
@@ -173,7 +185,8 @@ for (const r of ROUTES) {
     if (errs.length || dupes.length || fabBad || (LIVE && bodyLen < 200)) failed++
     console.log(`${r} @${w} ov=${m.ov} touch<44=${m.small}/${m.total} minFont=${m.minPx} bodyLen=${bodyLen} fab=${m.fab}`
       + `${errs.length ? ' ERR: ' + errs[0] : ''}${dupes.length ? ' DUP: ' + dupes.join(',') : ''}`
-      + `${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`)
+      + `${m.wide.length ? ' WIDE: ' + m.wide.join(' | ') : ''}`
+      + `${m.evalError ? ' EVAL: ' + m.evalError : ''}`)
     await p.close()
   }
 }
