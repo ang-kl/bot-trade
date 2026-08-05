@@ -774,3 +774,74 @@ test('account auth: an EMPTY roster on a live session alerts — the gate skips 
   assert.equal(fired.events.length, 2, 'both enabled accounts are unreachable')
   assert.equal(alerts.length, 2)
 })
+
+test('account auth: a failed registry read must not wipe the dwell or the alerted flag', () => {
+  // `next` is built from the account list, so an empty list persists {} over the
+  // watch state. An already-alerted, still-down account would then restart its
+  // dwell and alert a SECOND time for one continuous outage — the exact
+  // repeat-alert shape the de-dup exists to prevent, triggered by an unrelated
+  // SQLITE_BUSY. "Read failed" and "nothing is enabled" are different states.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: ['42993489'] })
+  checkAccountAuthorization(db, { now: T0, notify })
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: plus(300).toISOString(),
+  }))
+  checkAccountAuthorization(db, { now: plus(301), notify })
+  assert.equal(alerts.length, 1)
+  const saved = getState(db, 'account_auth_watch_json')
+
+  // Simulate the read throwing on one tick.
+  const realPrepare = db.prepare.bind(db)
+  db.prepare = (sql) => {
+    if (String(sql).includes('FROM accounts')) throw new Error('SQLITE_BUSY')
+    return realPrepare(sql)
+  }
+  checkAccountAuthorization(db, { now: plus(360), notify })
+  db.prepare = realPrepare
+
+  assert.equal(getState(db, 'account_auth_watch_json'), saved, 'watch state survived the failed read')
+  // Still down on the next good tick: silence, not a duplicate page.
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: plus(900).toISOString(),
+  }))
+  assert.deepEqual(checkAccountAuthorization(db, { now: plus(901), notify }).events, [])
+  assert.equal(alerts.length, 1, 'one outage, one alert')
+})
+
+test('account auth: a LONG blind window re-arms the dwell; a short one does not', () => {
+  // Flip EXEC_ENGINE to js overnight and the roster goes unknown while trading
+  // is fine — there is no gate in js mode. Coming back must not page instantly
+  // with "absent for 720m"; the grace exists so a restarting sidecar can
+  // re-authorise first, and a deploy is the noisiest moment to have spent it.
+  const db = initDB(':memory:')
+  const alerts = []
+  const notify = (t) => alerts.push(t)
+  seedAuth(db, { roster: ['42993489'] })
+  checkAccountAuthorization(db, { now: T0, notify })            // timer starts
+
+  // Blind for an hour (>> the 5-minute dwell).
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: null, connected: null, ok: false, at: plus(60).toISOString(),
+  }))
+  checkAccountAuthorization(db, { now: plus(61), notify })
+
+  // Roster returns, still absent. The dwell restarts rather than firing at once.
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: plus(3600).toISOString(),
+  }))
+  assert.deepEqual(checkAccountAuthorization(db, { now: plus(3601), notify }).events, [],
+    'a blind hour must not spend the grace period')
+  assert.equal(alerts.length, 0)
+
+  // Five minutes of CONFIRMED absence later, it alerts — and reports minutes it
+  // actually observed, not the hour it could not see.
+  setState(db, 'cpp_exec_health_json', JSON.stringify({
+    accounts: ['42993489'], connected: true, ok: true, at: plus(3900).toISOString(),
+  }))
+  const fired = checkAccountAuthorization(db, { now: plus(3902), notify })
+  assert.deepEqual(fired.events.map(e => e.event), ['unauthorized'])
+  assert.ok(fired.events[0].downSec < 400, `reported ${fired.events[0].downSec}s — observed, not wall clock`)
+})

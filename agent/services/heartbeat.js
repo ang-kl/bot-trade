@@ -584,12 +584,23 @@ export function checkAccountAuthorization(db, {
   // sidecarRoster returns null too, so both stay silent together.
   const sessionUp = health?.connected === true && roster != null
 
+  // A FAILED READ IS NOT "NO ACCOUNTS ARE ENABLED", and conflating them wipes
+  // every dwell timer and every `alerted` flag. `next` is built from this list,
+  // so an empty list persists `{}` over the watch state: an account already
+  // alerted and still down would restart its dwell, alert a SECOND time for one
+  // continuous outage, and lose the flag that gates the recovery message.
+  // That is the exact repeat-alert shape the docstring calls a requirement,
+  // reintroduced by an unrelated SQLITE_BUSY. The `unknown` branch already
+  // treats "cannot tell" as "carry the state"; this is the same epistemic
+  // position, and only a flag can tell it apart from a legitimately empty
+  // registry (which SHOULD clear).
   let accounts = []
+  let registryRead = true
   try {
     accounts = db.prepare(
       'SELECT account_id, trader_login, is_live FROM accounts WHERE enabled = 1'
     ).all()
-  } catch { accounts = [] }
+  } catch { accounts = []; registryRead = false }
 
   let watch = {}
   try { watch = JSON.parse(getState(db, AUTH_WATCH_KEY) || '{}') } catch { watch = {} }
@@ -607,13 +618,30 @@ export function checkAccountAuthorization(db, {
     // restarting the dwell on every blip is how a real stall never reaches the
     // threshold.
     if (status === 'unknown') {
-      if (prev) next[id] = prev
+      if (prev) next[id] = { ...prev, unknownSince: prev.unknownSince ?? nowMs }
       continue
     }
 
     if (status === 'disconnected') {
-      const since = prev?.since ?? nowMs
+      let since = prev?.since ?? nowMs
       const alerted = prev?.alerted === true
+      // A LONG BLIND WINDOW RE-ARMS THE DWELL. Carrying `since` is right for a
+      // brief blip — the outage really was continuous. It is wrong when we
+      // stopped looking for hours: flip EXEC_ENGINE to js overnight (no roster,
+      // no gate, trading fine) and the first cpp probe next morning would fire
+      // instantly, reporting "absent for 720m", with none of the five-minute
+      // grace that exists so a restarting sidecar can re-authorise before
+      // anyone is paged. The noisiest moment — a deploy or a mode flip — is
+      // exactly where the dwell would already be spent.
+      //
+      // A blind window shorter than the dwell is still one outage and carries.
+      // One longer than it starts the clock again, which also makes the minutes
+      // in the message an observed span rather than mostly-unseen wall clock.
+      // `alerted` is deliberately NOT reset: someone already told is not told
+      // twice.
+      if (prev?.unknownSince != null && (nowMs - prev.unknownSince) >= afterMs) {
+        since = nowMs
+      }
       const downMs = nowMs - since
       if (!alerted && downMs >= afterMs) {
         const side = a.is_live === 1 ? 'LIVE' : 'Demo'
@@ -653,6 +681,10 @@ export function checkAccountAuthorization(db, {
     }
   }
 
-  try { setState(db, AUTH_WATCH_KEY, JSON.stringify(next)) } catch { /* watch state is best-effort */ }
+  // Only persist what we actually observed. See the registryRead note above:
+  // writing `{}` after a failed read is how a transient becomes a duplicate page.
+  if (registryRead) {
+    try { setState(db, AUTH_WATCH_KEY, JSON.stringify(next)) } catch { /* watch state is best-effort */ }
+  }
   return { events, roster, fresh }
 }

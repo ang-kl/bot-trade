@@ -591,7 +591,13 @@ export function startFastMonitor(db, getCreds, deps = {}) {
         // alive", this asks "is every enabled account actually reachable
         // through it". On 05-08-2026 the first answered yes for twelve hours
         // while four accounts were unreachable and nothing traded.
-        hb.checkAccountAuthorization?.(db, { notify })
+        // NO `?.` — deliberately. An optional call turns "this watchdog is not
+        // wired up" into silence, which is the failure mode this whole check
+        // exists to end (twelve hours of it on 05-08). A rename or a stubbed
+        // deps.heartbeat should throw into the enclosing catch and log
+        // "[fast-monitor] watchdog failed" — loud and findable. checkHeartbeats
+        // above is called the same way.
+        hb.checkAccountAuthorization(db, { notify })
       }
     } catch (err) {
       console.error('[fast-monitor] watchdog failed:', err.message)
