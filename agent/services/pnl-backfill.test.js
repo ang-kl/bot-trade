@@ -71,7 +71,7 @@ test('skips the broker round-trip entirely when no closed trade is missing P&L',
   // `gap: 0` joined the shape when the caller gained the ability to tell
   // "nothing was missing" from "something was missing and would not fill" —
   // this test's point is the assertion above: NO broker call.
-  assert.deepEqual(r, { backfilled: 0, attributed: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 })
+  assert.deepEqual(r, { backfilled: 0, attributed: 0, exitsRepaired: 0, closingDeals: 0, scanned: 0, gap: 0, liveGap: 0 })
 })
 
 test('an open trade is never backfilled, even with a matching deal', async () => {
@@ -409,4 +409,102 @@ test('liveGap excludes written-off and exhausted rows, and gap still counts them
   // …and that one live row is what decides the pacing.
   resetBackfillPacing()
   assert.equal(noteBackfillAttempt('46130058', out).n, 1)
+})
+
+// ---------------------------------------------------------------------------
+// EXIT-PRICE REPAIR (go-live Phase 0, P0-1)
+//
+// 56 of 190 decidable closed rows carry an exit_price that contradicts their
+// own P&L. The deal history is the only source that can settle them, and this
+// module is already fetching it.
+// ---------------------------------------------------------------------------
+
+// A closing deal that also carries the price and size it executed at.
+const pricedDeal = (positionId, grossCents, px, vol, opts = {}) => ({
+  ...deal(positionId, grossCents, opts),
+  executionPrice: px,
+  volume: vol,
+})
+
+function seedMismatch(db, { positionId, side = 'BUY', entry, exit, sl, net, acct = '46130058', flag = 1 }) {
+  return db.prepare(
+    `INSERT INTO trades (symbol, side, entry_price, exit_price, sl_price, volume, status,
+                         opened_at, closed_at, net_pnl, ctrader_position_id, account_id, pnl_price_mismatch)
+     VALUES ('JPN225', ?, ?, ?, ?, 1, 'closed', '2026-08-04 05:18:21', '2026-08-04 05:50:42', ?, ?, ?, ?)`
+  ).run(side, entry, exit, sl, net, String(positionId), acct, flag).lastInsertRowid
+}
+
+test('a flagged row gets the DEAL price, and the flag clears', async () => {
+  // The JPN225 shape: a long booked at a profit with an exit BELOW its entry.
+  // net_pnl is broker truth and stays; the price is what gets repaired.
+  const db = initDB(':memory:')
+  const id = seedMismatch(db, { positionId: 234866462, entry: 63557.3, exit: 63404.5, sl: 62031.9, net: 14259.55 })
+  const r = await backfillClosedPnl(db, {}, {
+    getDeals: dealsApi([pricedDeal(234866462, 1425955, 63814.8, 55.57)]),
+    now: NOW,
+  })
+  assert.equal(r.exitsRepaired, 1)
+  const t = db.prepare(`SELECT exit_price, net_pnl, pnl_price_mismatch, realised_rr FROM trades WHERE id = ?`).get(id)
+  assert.equal(Math.round(t.exit_price * 10) / 10, 63814.8, 'the deal price, not the snapshot')
+  assert.equal(t.net_pnl, 14259.55, 'broker P&L untouched — it was never the wrong half')
+  assert.equal(t.pnl_price_mismatch, 0, 'and the row now agrees with itself')
+  assert.ok(t.realised_rr > 0, 'realised R recomputed from the repaired price')
+})
+
+test('a SOUND row is never touched, however many deals arrive', async () => {
+  const db = initDB(':memory:')
+  const id = seedMismatch(db, { positionId: 999, entry: 100, exit: 110, sl: 98, net: 120, flag: 0 })
+  const r = await backfillClosedPnl(db, {}, {
+    getDeals: dealsApi([pricedDeal(999, 12000, 9.9999, 1)]),
+    now: NOW,
+  })
+  assert.equal(r.exitsRepaired, 0)
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE id = ?`).get(id).exit_price, 110)
+})
+
+test('THE GATE: a repairable row is reason enough to fetch, with no P&L missing', async () => {
+  // The bug this file caught in its own first run. Every one of the 56
+  // contradicting rows HAS its P&L, so a gate that only asked "is any P&L
+  // missing" would have skipped the round-trip forever and the repair would
+  // never once have fired in production.
+  const db = initDB(':memory:')
+  seedMismatch(db, { positionId: 777, entry: 100, exit: 90, sl: 98, net: 500 })
+  let asked = false
+  const r = await backfillClosedPnl(db, {}, {
+    getDeals: async (t0, t1) => {
+      asked = true
+      return dealsApi([pricedDeal(777, 50000, 106, 1)])(t0, t1)
+    },
+    now: NOW,
+  })
+  assert.equal(asked, true, 'the broker WAS asked')
+  assert.equal(r.exitsRepaired, 1)
+})
+
+test('a partial-close scale-out resolves to a VOLUME-WEIGHTED exit', async () => {
+  // Two closing deals at different prices. Taking whichever came last would
+  // report a price the position never averaged.
+  const db = initDB(':memory:')
+  const id = seedMismatch(db, { positionId: 888, entry: 100, exit: 90, sl: 98, net: 300 })
+  await backfillClosedPnl(db, {}, {
+    getDeals: dealsApi([
+      pricedDeal(888, 10000, 110, 1),
+      pricedDeal(888, 20000, 120, 3, { ts: NOW - 3_500_000 }),
+    ]),
+    now: NOW,
+  })
+  // (110*1 + 120*3) / 4 = 117.5
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE id = ?`).get(id).exit_price, 117.5)
+})
+
+test('a deal with no price leaves the flagged row alone rather than writing zero', async () => {
+  const db = initDB(':memory:')
+  const id = seedMismatch(db, { positionId: 666, entry: 100, exit: 90, sl: 98, net: 500 })
+  const r = await backfillClosedPnl(db, {}, {
+    getDeals: dealsApi([deal(666, 50000)]),   // no executionPrice, no volume
+    now: NOW,
+  })
+  assert.equal(r.exitsRepaired, 0)
+  assert.equal(db.prepare(`SELECT exit_price FROM trades WHERE id = ?`).get(id).exit_price, 90,
+    'a known-wrong price is still better than an invented zero')
 })
